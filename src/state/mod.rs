@@ -1,12 +1,14 @@
 //! Estado da aplicação, alimentado pelas respostas REST e pelos eventos do
 //! WebSocket.
 
+pub mod demo;
+
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Local, Utc};
 use egui::Color32;
 
-use crate::api::models::{self, parse_hex_color};
+use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::Update;
 use crate::api::ws::{Connection, Event};
 
@@ -34,7 +36,9 @@ pub struct Channel {
     pub kind: ChannelKind,
     pub topic: Option<String>,
     pub position: i32,
+    /// Chegou coisa nova desde a última vez que o canal foi visto.
     pub unread: bool,
+    /// Quantas dessas citam você.
     pub mentions: u32,
 }
 
@@ -76,11 +80,43 @@ impl Member {
     }
 }
 
+/// Um emoji de reação: do teclado ou do próprio servidor.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Emoji {
+    Unicode(String),
+    Custom(String),
+}
+
+impl Emoji {
+    pub fn from_parts(unicode: Option<String>, custom: Option<String>) -> Option<Self> {
+        match (unicode, custom) {
+            (Some(unicode), _) if !unicode.is_empty() => Some(Self::Unicode(unicode)),
+            (_, Some(id)) if !id.is_empty() => Some(Self::Custom(id)),
+            _ => None,
+        }
+    }
+
+    pub fn request(&self) -> models::ReactionRequest {
+        match self {
+            Self::Unicode(emoji) => models::ReactionRequest::unicode(emoji.clone()),
+            Self::Custom(id) => models::ReactionRequest::custom(id.clone()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Reaction {
-    pub emoji: String,
+    pub emoji: Emoji,
     pub count: u32,
     pub mine: bool,
+}
+
+/// Emoji custom do servidor, com a imagem em base64 como ela chega da API.
+#[derive(Clone, Debug)]
+pub struct CustomEmoji {
+    pub id: String,
+    pub name: String,
+    pub blob: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,11 +127,18 @@ pub struct Message {
     pub content: String,
     pub at: DateTime<Local>,
     pub edited: bool,
+    pub reply_to: Option<String>,
+    pub attachments: Vec<Attachment>,
     pub reactions: Vec<Reaction>,
-    #[allow(dead_code)] // a tela de fixadas usa isto
     pub pinned: bool,
     /// Mensagem ainda não confirmada pelo servidor.
     pub pending: bool,
+}
+
+impl Message {
+    pub fn mine(&self, me: &str) -> bool {
+        self.author_id == me
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -124,13 +167,23 @@ pub struct Store {
     pub channels: Vec<Channel>,
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
+    pub emojis: Vec<CustomEmoji>,
     pub me: String,
     pub my_name: String,
+    /// Nome de usuário (sem apelido): é o que aparece numa menção.
+    pub my_username: String,
     pub selected_channel: String,
     /// Canais já carregados, para não repetir a busca a cada troca.
     loaded_channels: HashSet<String>,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
+    /// Até quando cada canal foi visto; é o que define o não lido, já que o
+    /// backend registra `last_read_message` mas nunca o escreve.
+    pub read_marks: HashMap<String, DateTime<Utc>>,
+    /// Notificações já contadas, para não somar a mesma menção duas vezes.
+    counted_notifications: HashSet<String>,
+    /// Notificações por canal ainda não confirmadas no servidor.
+    open_notifications: HashMap<String, Vec<String>>,
     pub error: Option<String>,
     pub busy: bool,
 }
@@ -144,11 +197,16 @@ impl Default for Store {
             channels: Vec::new(),
             members: Vec::new(),
             messages: Vec::new(),
+            emojis: Vec::new(),
             me: String::new(),
             my_name: String::new(),
+            my_username: String::new(),
             selected_channel: String::new(),
             loaded_channels: HashSet::new(),
             typing: HashMap::new(),
+            read_marks: HashMap::new(),
+            counted_notifications: HashSet::new(),
+            open_notifications: HashMap::new(),
             error: None,
             busy: false,
         }
@@ -162,6 +220,10 @@ impl Store {
 
     pub fn member(&self, id: &str) -> Option<&Member> {
         self.members.iter().find(|member| member.id == id)
+    }
+
+    pub fn message(&self, id: &str) -> Option<&Message> {
+        self.messages.iter().find(|message| message.id == id)
     }
 
     pub fn messages_in<'a>(&'a self, channel_id: &'a str) -> impl Iterator<Item = &'a Message> {
@@ -200,12 +262,66 @@ impl Store {
         self.loaded_channels.insert(channel_id.to_owned());
     }
 
+    // -- Não lidos ---------------------------------------------------------
+
+    /// Menções somadas de todos os canais: é o número do badge.
+    pub fn mention_total(&self) -> u32 {
+        self.channels.iter().map(|channel| channel.mentions).sum()
+    }
+
+    pub fn has_unread(&self) -> bool {
+        self.channels.iter().any(|channel| channel.unread)
+    }
+
+    /// O canal foi visto agora: zera o realce e guarda a marca.
+    pub fn mark_read(&mut self, channel_id: &str) {
+        let now = Utc::now();
+        self.read_marks.insert(channel_id.to_owned(), now);
+        if let Some(channel) = self
+            .channels
+            .iter_mut()
+            .find(|channel| channel.id == channel_id)
+        {
+            channel.unread = false;
+            channel.mentions = 0;
+        }
+    }
+
+    /// Ids de notificação do canal para confirmar no servidor; some da lista
+    /// ao ser entregue.
+    pub fn take_open_notifications(&mut self, channel_id: &str) -> Vec<String> {
+        self.open_notifications
+            .remove(channel_id)
+            .unwrap_or_default()
+    }
+
+    pub fn mark_all_read(&mut self) {
+        let ids: Vec<String> = self.channels.iter().map(|c| c.id.clone()).collect();
+        for id in ids {
+            self.mark_read(&id);
+        }
+    }
+
+    /// A mensagem cita você? Menção direta ou chamado geral.
+    pub fn mentions_me(&self, message: &Message) -> bool {
+        if self.my_username.is_empty() || message.author_id == self.me {
+            return false;
+        }
+        let content = message.content.to_lowercase();
+        content.contains(&format!("@{}", self.my_username.to_lowercase()))
+            || content.contains("@everyone")
+            || content.contains("@todos")
+    }
+
+    // -- Atualizações ------------------------------------------------------
+
     /// Aplica uma atualização vinda da rede.
     pub fn apply(&mut self, update: Update) {
         match update {
             Update::Session(Some(me)) => {
                 self.me = me.id.clone();
                 self.my_name = me.display_name().to_owned();
+                self.my_username = me.username.clone();
                 self.screen = Screen::Chat;
                 self.error = None;
                 self.busy = false;
@@ -214,6 +330,7 @@ impl Store {
                 let was = std::mem::take(self);
                 self.screen = Screen::Auth;
                 self.error = was.error;
+                self.read_marks = was.read_marks;
             }
             Update::AuthFailed(message) => {
                 self.screen = Screen::Auth;
@@ -235,18 +352,38 @@ impl Store {
                 self.busy = false;
             }
             Update::Channels(channels) => {
+                let previous: HashMap<String, (bool, u32)> = self
+                    .channels
+                    .iter()
+                    .map(|channel| (channel.id.clone(), (channel.unread, channel.mentions)))
+                    .collect();
                 self.channels = channels
                     .into_iter()
                     .filter(|channel| channel.kind != "category")
-                    .map(|channel| Channel {
-                        unread: channel.last_read_message.is_none()
-                            && channel.last_message.is_some(),
-                        id: channel.id,
-                        name: channel.name,
-                        kind: ChannelKind::parse(&channel.kind),
-                        topic: channel.topic,
-                        position: channel.position,
-                        mentions: 0,
+                    .map(|channel| {
+                        let (unread, mentions) = previous
+                            .get(&channel.id)
+                            .copied()
+                            .unwrap_or((false, 0));
+                        // Sem marca local, o canal conta como visto: o
+                        // servidor não guarda o último lido.
+                        let mark = self.read_marks.get(&channel.id).copied();
+                        let fresh = channel
+                            .last_message
+                            .as_ref()
+                            .and_then(|last| last.created_at)
+                            .zip(mark)
+                            .map(|(at, mark)| at > mark)
+                            .unwrap_or(false);
+                        Channel {
+                            unread: unread || fresh,
+                            id: channel.id,
+                            name: channel.name,
+                            kind: ChannelKind::parse(&channel.kind),
+                            topic: channel.topic,
+                            position: channel.position,
+                            mentions,
+                        }
                     })
                     .collect();
                 self.channels.sort_by_key(|channel| channel.position);
@@ -286,13 +423,85 @@ impl Store {
             } => {
                 self.messages
                     .retain(|message| message.channel_id != channel_id);
-                self.messages.extend(messages.into_iter().map(convert));
+                let me = self.me.clone();
+                self.messages
+                    .extend(messages.into_iter().map(|message| convert(message, &me)));
                 self.sort_messages();
                 self.loaded_channels.insert(channel_id);
             }
             Update::Sent(message) => {
                 self.messages.retain(|existing| !existing.pending);
-                self.upsert(convert(*message));
+                let me = self.me.clone();
+                self.upsert(convert(*message, &me));
+            }
+            Update::Edited(message) => {
+                let me = self.me.clone();
+                let updated = convert(*message, &me);
+                if let Some(existing) = self
+                    .messages
+                    .iter_mut()
+                    .find(|existing| existing.id == updated.id)
+                {
+                    let pinned = existing.pinned;
+                    *existing = updated;
+                    existing.pinned = pinned;
+                }
+            }
+            Update::Deleted(id) => {
+                self.messages.retain(|message| message.id != id);
+            }
+            Update::Emojis(emojis) => {
+                self.emojis = emojis
+                    .into_iter()
+                    .map(|emoji| CustomEmoji {
+                        id: emoji.id,
+                        name: emoji.name,
+                        blob: emoji.image_blob,
+                    })
+                    .collect();
+            }
+            Update::Pinned { channel_id, ids } => {
+                let pinned: HashSet<String> = ids.into_iter().collect();
+                for message in self
+                    .messages
+                    .iter_mut()
+                    .filter(|message| message.channel_id == channel_id)
+                {
+                    message.pinned = pinned.contains(&message.id);
+                }
+            }
+            Update::Notifications(notifications) => {
+                for notification in notifications {
+                    if notification.read {
+                        continue;
+                    }
+                    let Some(channel_id) = notification.channel_id.clone() else {
+                        continue;
+                    };
+                    if !self.counted_notifications.insert(notification.id.clone()) {
+                        continue;
+                    }
+                    let newer = notification
+                        .created_at
+                        .zip(self.read_marks.get(&channel_id).copied())
+                        .map(|(at, mark)| at > mark)
+                        .unwrap_or(true);
+                    if !newer {
+                        continue;
+                    }
+                    if let Some(channel) = self
+                        .channels
+                        .iter_mut()
+                        .find(|channel| channel.id == channel_id)
+                    {
+                        channel.mentions += 1;
+                        channel.unread = true;
+                    }
+                    self.open_notifications
+                        .entry(channel_id)
+                        .or_default()
+                        .push(notification.id);
+                }
             }
             Update::Event(event) => self.apply_event(*event),
             Update::Connection(connection) => self.connection = connection,
@@ -306,20 +515,25 @@ impl Store {
     fn apply_event(&mut self, event: Event) {
         match event {
             Event::Message(message) => {
-                let message = convert(*message);
+                let me = self.me.clone();
+                let message = convert(*message, &me);
                 // Só guardamos mensagens de canais já carregados; os outros
                 // são buscados por inteiro quando abertos.
                 if self.loaded_channels.contains(&message.channel_id) {
                     self.messages.retain(|existing| !existing.pending);
                     self.upsert(message.clone());
                 }
-                if message.channel_id != self.selected_channel {
+                let mention = self.mentions_me(&message);
+                if message.channel_id != self.selected_channel && message.author_id != self.me {
                     if let Some(channel) = self
                         .channels
                         .iter_mut()
                         .find(|channel| channel.id == message.channel_id)
                     {
                         channel.unread = true;
+                        if mention {
+                            channel.mentions += 1;
+                        }
                     }
                 }
                 if let Some(users) = self.typing.get_mut(&message.channel_id) {
@@ -338,6 +552,37 @@ impl Store {
             }
             Event::MessageDeleted { id, .. } => {
                 self.messages.retain(|message| message.id != id);
+            }
+            Event::MessagePinned {
+                message_id,
+                pinned,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.pinned = pinned;
+                }
+            }
+            Event::AttachmentModeration {
+                message_id,
+                attachment_id,
+                status,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    if let Some(attachment) = message
+                        .attachments
+                        .iter_mut()
+                        .find(|attachment| attachment.id == attachment_id)
+                    {
+                        attachment.moderation_status = Some(status);
+                    }
+                }
             }
             Event::Typing {
                 channel_id,
@@ -415,13 +660,39 @@ impl Store {
                         .unwrap_or_default();
                 }
             }
-            Event::UserJoined { .. } | Event::Notification { .. } => {}
+            Event::UserJoined { .. } => {}
+            Event::Notification { id, message_id, .. } => {
+                // O evento não traz o canal; achamos pela mensagem quando ela
+                // já está em memória. O resto vem da listagem REST.
+                if !self.counted_notifications.insert(id) {
+                    return;
+                }
+                let Some(channel_id) = message_id
+                    .and_then(|id| self.message(&id).map(|message| message.channel_id.clone()))
+                else {
+                    return;
+                };
+                if channel_id == self.selected_channel {
+                    return;
+                }
+                if let Some(channel) = self
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.mentions += 1;
+                    channel.unread = true;
+                }
+            }
             Event::Reaction {
                 message_id,
-                emoji,
+                unicode,
+                emoji_id,
                 count,
             } => {
-                let Some(emoji) = emoji else { return };
+                let Some(emoji) = Emoji::from_parts(unicode, emoji_id) else {
+                    return;
+                };
                 if let Some(message) = self
                     .messages
                     .iter_mut()
@@ -432,10 +703,7 @@ impl Store {
                         .iter_mut()
                         .find(|reaction| reaction.emoji == emoji)
                     {
-                        Some(reaction) if count <= 0 => {
-                            reaction.count = 0;
-                        }
-                        Some(reaction) => reaction.count = count as u32,
+                        Some(reaction) => reaction.count = count.max(0) as u32,
                         None if count > 0 => message.reactions.push(Reaction {
                             emoji,
                             count: count as u32,
@@ -449,8 +717,45 @@ impl Store {
         }
     }
 
+    /// Reage na hora, sem esperar o servidor: o contador certo chega pelo
+    /// evento `react_update`.
+    pub fn toggle_reaction_local(&mut self, message_id: &str, emoji: &Emoji) -> bool {
+        let Some(message) = self
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        else {
+            return false;
+        };
+        match message
+            .reactions
+            .iter_mut()
+            .find(|reaction| &reaction.emoji == emoji)
+        {
+            Some(reaction) if reaction.mine => {
+                reaction.mine = false;
+                reaction.count = reaction.count.saturating_sub(1);
+                message.reactions.retain(|reaction| reaction.count > 0);
+                false
+            }
+            Some(reaction) => {
+                reaction.mine = true;
+                reaction.count += 1;
+                true
+            }
+            None => {
+                message.reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    count: 1,
+                    mine: true,
+                });
+                true
+            }
+        }
+    }
+
     /// Mensagem otimista: aparece antes da confirmação do servidor.
-    pub fn push_pending(&mut self, channel_id: &str, content: &str) {
+    pub fn push_pending(&mut self, channel_id: &str, content: &str, reply_to: Option<String>) {
         self.messages.push(Message {
             id: format!("pending-{}", self.messages.len()),
             channel_id: channel_id.to_owned(),
@@ -458,6 +763,8 @@ impl Store {
             content: content.to_owned(),
             at: Local::now(),
             edited: false,
+            reply_to,
+            attachments: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: true,
@@ -488,7 +795,16 @@ impl Store {
     }
 }
 
-fn convert(message: models::Message) -> Message {
+fn convert(message: models::Message, me: &str) -> Message {
+    let mine: HashSet<Emoji> = message
+        .user_reactions
+        .iter()
+        .filter_map(|reaction| {
+            Emoji::from_parts(reaction.unicode.clone(), reaction.emoji_id.clone())
+        })
+        .collect();
+    let _ = me;
+
     Message {
         id: message.id,
         channel_id: message.channel_id,
@@ -496,13 +812,18 @@ fn convert(message: models::Message) -> Message {
         content: message.content.unwrap_or_default(),
         at: DateTime::<Utc>::from(message.created_at).with_timezone(&Local),
         edited: message.edited_at.is_some(),
+        reply_to: message.reply_to,
+        attachments: message.attachments,
         reactions: message
             .reactions
             .into_iter()
-            .map(|reaction| Reaction {
-                emoji: reaction.emoji,
-                count: reaction.count,
-                mine: reaction.me,
+            .filter_map(|reaction| {
+                let emoji = Emoji::from_parts(reaction.unicode, reaction.emoji_id)?;
+                Some(Reaction {
+                    mine: mine.contains(&emoji),
+                    emoji,
+                    count: reaction.count,
+                })
             })
             .collect(),
         pinned: false,

@@ -10,12 +10,17 @@ use egui::{
 };
 use egui_phosphor::regular as icon;
 
+use crate::api::client::Upload;
 use crate::i18n::Strings;
+use crate::media::MediaStore;
 use crate::platform::menu::MenuCommand;
-use crate::state::{ChannelKind, Message, Presence, Store};
+use crate::state::{ChannelKind, Emoji, Message, Presence, Store};
 
+use super::attachments::{self, MediaAction};
+use super::emoji;
 use super::glass::SharedGlass;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
+use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
@@ -29,6 +34,72 @@ const PILL_MARGIN: f32 = 12.0;
 const PILL_RADIUS: f32 = 12.0;
 const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
+/// Quanto tempo a descrição do canal fica visível antes de recolher.
+const TOPIC_HOLD: f64 = 4.0;
+const TOPIC_SLIDE: f64 = 0.45;
+/// Altura da faixa de anexos à espera de envio, dentro da caixa de texto.
+const COMPOSER_ATTACH_H: f32 = 62.0;
+const COMPOSER_REPLY_H: f32 = 26.0;
+/// Altura da linha onde se digita, sem as faixas de cima.
+const COMPOSER_LINE_H: f32 = 44.0;
+const TOAST_SECONDS: f64 = 6.0;
+
+/// O que a conversa pede para a camada de cima fazer.
+#[derive(Debug, Clone)]
+pub enum ChatAction {
+    Send {
+        content: String,
+        reply_to: Option<String>,
+        attachments: Vec<Upload>,
+    },
+    Edit {
+        message_id: String,
+        content: String,
+    },
+    Delete(String),
+    React {
+        message_id: String,
+        emoji: Emoji,
+        add: bool,
+    },
+    Pin {
+        message_id: String,
+        pin: bool,
+    },
+    Download {
+        id: String,
+        name: String,
+    },
+    /// Abre o seletor de arquivos do sistema.
+    PickFiles,
+    /// O mesmo seletor, filtrado em imagens animadas.
+    PickGif,
+    /// Abre o que já está no cache com o aplicativo padrão.
+    OpenExternally(std::path::PathBuf),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupKind {
+    /// Reagir a uma mensagem.
+    Emoji,
+    Menu,
+    /// Inserir emoji no que está sendo escrito.
+    ComposerEmoji,
+    /// Só os emojis do servidor, que é o que faz as vezes de figurinha.
+    ComposerSticker,
+}
+
+/// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
+#[derive(Clone, Debug)]
+pub struct Popup {
+    pub kind: PopupKind,
+    pub message_id: String,
+    pub anchor: Rect,
+    /// O menu de contexto abre no ponteiro; o seletor, embaixo do botão.
+    pub at_pointer: bool,
+    /// Instante da abertura: o clique que abriu não pode fechar.
+    pub opened: f64,
+}
 
 /// Estado que pertence à interface, não ao servidor.
 pub struct UiState {
@@ -38,10 +109,34 @@ pub struct UiState {
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
     pub glass: Option<SharedGlass>,
-    /// Mensagem pronta para sair, preenchida quando o usuário envia.
-    pub outgoing: Option<String>,
     /// O texto mudou neste quadro (dispara o evento de digitação).
     pub typed: bool,
+    /// Mídia baixada, decodificada e tocando.
+    pub media: MediaStore,
+    /// Arquivos escolhidos, ainda não enviados.
+    pub attachments: Vec<Upload>,
+    /// Mensagem sendo respondida.
+    pub replying: Option<String>,
+    /// Mensagem sendo editada, com o texto em edição.
+    pub editing: Option<(String, String)>,
+    pub actions: Vec<ChatAction>,
+    pub viewer: Option<Viewer>,
+    pub popup: Option<Popup>,
+    pub emoji_query: String,
+    pub emoji_group: usize,
+    /// Canal desenhado no quadro anterior, para saber quando ele trocou.
+    pub last_channel: String,
+    /// Início da aparição da descrição do canal.
+    pub topic_since: Option<f64>,
+    /// A descrição aparece ao abrir o canal (ajuste do usuário).
+    pub reveal_topic: bool,
+    /// Botão de gravar recado na caixa de texto (ajuste do usuário).
+    pub show_record: bool,
+    /// Gravação em curso.
+    pub recorder: Option<crate::media::player::Recorder>,
+    /// Recado curto de erro da própria interface, com o instante em que
+    /// apareceu.
+    pub error: Option<(String, f64)>,
 }
 
 impl Default for UiState {
@@ -52,18 +147,54 @@ impl Default for UiState {
             translucent: true,
             pending: Vec::new(),
             glass: None,
-            outgoing: None,
             typed: false,
+            media: MediaStore::new(None),
+            attachments: Vec::new(),
+            replying: None,
+            editing: None,
+            actions: Vec::new(),
+            viewer: None,
+            popup: None,
+            emoji_query: String::new(),
+            emoji_group: 0,
+            last_channel: String::new(),
+            topic_since: None,
+            reveal_topic: true,
+            show_record: true,
+            recorder: None,
+            error: None,
         }
     }
 }
 
+impl UiState {
+    fn close_popup(&mut self) {
+        self.popup = None;
+        self.emoji_query.clear();
+    }
+}
+
 pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+    state.media.pump(ui.ctx());
+
+    // Trocou de canal: a descrição reaparece e a mídia que estava tocando
+    // para, porque ela já saiu da tela.
+    if state.last_channel != store.selected_channel {
+        state.last_channel = store.selected_channel.clone();
+        state.topic_since = Some(ui.input(|input| input.time));
+        state.media.pause_all();
+        state.media.saved = None;
+        state.editing = None;
+        state.replying = None;
+        state.close_popup();
+    }
+
     channels_sidebar(ui, store, state, t, s);
     if state.show_members {
         members_sidebar(ui, store, t, s);
     }
     conversation(ui, store, state, t, s);
+    overlays(ui, store, state, t, s);
 }
 
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
@@ -96,7 +227,6 @@ fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
         callback: std::sync::Arc::new(callback),
     });
 }
-
 // ---------------------------------------------------------------------------
 // Coluna esquerda — canais
 // ---------------------------------------------------------------------------
@@ -455,62 +585,6 @@ fn member_row(
     );
 }
 
-// ---------------------------------------------------------------------------
-// Centro — conversa
-// ---------------------------------------------------------------------------
-
-fn conversation(
-    root: &mut egui::Ui,
-    store: &mut Store,
-    state: &mut UiState,
-    t: &Tokens,
-    s: &Strings,
-) {
-    let frame = Frame::new().fill(t.content_bg);
-    egui::CentralPanel::default().frame(frame).show(root, |ui| {
-        let full = ui.max_rect();
-        let composer_height = composer_height(&state.composer);
-        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
-        let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
-
-        // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
-        // pastilhas.
-        ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.add_space(top_inset);
-                    message_list(ui, store, t, s, full.width());
-                    ui.add_space(bottom_inset);
-                });
-        });
-
-        // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
-        // ser cortado por ela.
-        scroll_edge_fade(
-            ui,
-            Rect::from_min_size(full.min, Vec2::new(full.width(), top_inset)),
-            t.content_bg,
-            true,
-        );
-        scroll_edge_fade(
-            ui,
-            Rect::from_min_size(
-                egui::pos2(full.min.x, full.max.y - bottom_inset),
-                Vec2::new(full.width(), bottom_inset),
-            ),
-            t.content_bg,
-            false,
-        );
-
-        // Camada funcional: tudo flutua.
-        connection_pill(ui, store, state, t, s, full);
-        channel_pill(ui, store, state, t, full);
-        actions_pill(ui, state, t, s, full);
-        composer(ui, store, state, t, s, full, composer_height);
-    });
-}
 
 /// Fundo de uma pastilha: vidro fosco, tinta translúcida e fio de contorno.
 fn pill_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {
@@ -626,8 +700,67 @@ fn typing_pill(
         t.label_secondary,
     );
 }
+// ---------------------------------------------------------------------------
+// Centro — conversa
+// ---------------------------------------------------------------------------
+
+fn conversation(
+    root: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let frame = Frame::new().fill(t.content_bg);
+    egui::CentralPanel::default().frame(frame).show(root, |ui| {
+        let full = ui.max_rect();
+        let composer_height = composer_height(state);
+        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
+        let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
+
+        // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
+        // pastilhas.
+        ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add_space(top_inset);
+                    message_list(ui, store, state, t, s, full);
+                    ui.add_space(bottom_inset);
+                });
+        });
+
+        // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
+        // ser cortado por ela.
+        scroll_edge_fade(
+            ui,
+            Rect::from_min_size(full.min, Vec2::new(full.width(), top_inset)),
+            t.content_bg,
+            true,
+        );
+        scroll_edge_fade(
+            ui,
+            Rect::from_min_size(
+                egui::pos2(full.min.x, full.max.y - bottom_inset),
+                Vec2::new(full.width(), bottom_inset),
+            ),
+            t.content_bg,
+            false,
+        );
+
+        // Camada funcional: tudo flutua.
+        connection_pill(ui, store, state, t, s, full);
+        channel_pill(ui, store, state, t, full);
+        actions_pill(ui, state, t, s, full);
+        composer(ui, store, state, t, s, full, composer_height);
+    });
+}
 
 /// Pastilha de identidade do canal, no alto à esquerda.
+///
+/// A descrição entra junto com o canal, fica alguns segundos e escorrega na
+/// direção do nome até sumir — a pastilha encolhe junto.
 fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, area: Rect) {
     let Some(channel) = store.channel(&store.selected_channel).cloned() else {
         return;
@@ -636,15 +769,41 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
     let painter = ui.painter();
     let glyph = painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
     let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
-    let topic = channel.topic.as_ref().map(|topic| {
+    let topic = channel.topic.as_ref().filter(|topic| !topic.is_empty()).map(|topic| {
         painter.layout_no_wrap(topic.clone(), text::callout(), t.label_tertiary)
     });
 
-    let mut width = space::LG + glyph.size().x + space::SM + name.size().x + space::LG;
-    if let Some(topic) = &topic {
-        width += space::LG + 1.0 + space::LG + topic.size().x;
-    }
-    let width = width.min(area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD);
+    // Quanto da descrição ainda está na tela: 1 inteira, 0 recolhida.
+    let reveal = match (&topic, state.reveal_topic, state.topic_since) {
+        (None, _, _) => 0.0,
+        (Some(_), false, _) => 0.0,
+        (Some(_), true, None) => 0.0,
+        (Some(_), true, Some(since)) => {
+            let elapsed = ui.input(|input| input.time) - since;
+            if elapsed < TOPIC_HOLD {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                    (TOPIC_HOLD - elapsed).max(0.01),
+                ));
+                1.0
+            } else if elapsed < TOPIC_HOLD + TOPIC_SLIDE {
+                ui.ctx().request_repaint();
+                let progress = ((elapsed - TOPIC_HOLD) / TOPIC_SLIDE) as f32;
+                // Desacelerando no fim, como todo movimento da casa.
+                1.0 - (1.0 - (1.0 - progress).powi(3))
+            } else {
+                state.topic_since = None;
+                0.0
+            }
+        }
+    };
+
+    let base_width = space::LG + glyph.size().x + space::SM + name.size().x + space::LG;
+    let topic_width = topic
+        .as_ref()
+        .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
+        .unwrap_or(0.0);
+    let limit = area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD;
+    let width = (base_width + topic_width * reveal).min(limit);
 
     let rect = Rect::from_min_size(
         area.min + Vec2::splat(PILL_MARGIN),
@@ -660,15 +819,27 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
     painter.galley(egui::pos2(x, mid - name.size().y / 2.0), name.clone(), t.label);
     x += name.size().x + space::LG;
 
-    if let Some(topic) = topic {
-        if x + space::LG + topic.size().x < rect.max.x {
-            painter.line_segment(
-                [egui::pos2(x, mid - 7.0), egui::pos2(x, mid + 7.0)],
-                Stroke::new(1.0, t.separator),
-            );
-            x += space::LG;
-            painter.galley(egui::pos2(x, mid - topic.size().y / 2.0), topic, t.label_tertiary);
-        }
+    // A descrição escorrega no mesmo passo em que a pastilha encolhe: a
+    // borda direita fica colada na pastilha e o que passa do nome é cortado,
+    // então ela some exatamente ali, sem aparecer do outro lado.
+    if let (Some(topic), true) = (topic, reveal > 0.001) {
+        let slide = (1.0 - reveal) * topic_width;
+        let start = x - slide;
+        let alpha = (reveal * 1.8).clamp(0.0, 1.0);
+        let clip = Rect::from_min_max(
+            egui::pos2(x, rect.min.y),
+            egui::pos2(rect.max.x - space::SM, rect.max.y),
+        );
+        let painter = painter.with_clip_rect(clip);
+        painter.line_segment(
+            [egui::pos2(start, mid - 7.0), egui::pos2(start, mid + 7.0)],
+            Stroke::new(1.0, t.separator.gamma_multiply(alpha)),
+        );
+        painter.galley(
+            egui::pos2(start + space::LG, mid - topic.size().y / 2.0),
+            topic,
+            t.label_tertiary.gamma_multiply(alpha),
+        );
     }
 }
 
@@ -700,23 +871,43 @@ fn actions_pill(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings,
     );
 }
 
-fn message_list(ui: &mut egui::Ui, store: &Store, t: &Tokens, s: &Strings, width: f32) {
-    let messages: Vec<&Message> = store.messages_in(&store.selected_channel).collect();
+// ---------------------------------------------------------------------------
+// Lista de mensagens
+// ---------------------------------------------------------------------------
+
+fn message_list(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+) {
+    let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
         empty_state(ui, t, s);
         return;
     }
 
+    let width = area.width();
     let gutter = space::XL;
     let avatar_size = 36.0;
     let text_indent = gutter + avatar_size + space::LG;
     let text_width = width - text_indent - space::XL;
+    let rows = egui::Rangef::new(area.min.x + space::MD, area.max.x - space::MD);
+    // Com um popup aberto, só a mensagem dona dele fica em destaque: o resto
+    // da lista não deve reagir ao ponteiro que está a caminho do menu.
+    let interactive = state.viewer.is_none();
+    let focused_message = state
+        .popup
+        .as_ref()
+        .map(|popup| popup.message_id.clone());
 
-    let mut last_author: Option<&str> = None;
+    let mut last_author: Option<String> = None;
     let mut last_at: Option<chrono::DateTime<Local>> = None;
     let mut last_day: Option<u32> = None;
 
-    for message in messages {
+    for message in &messages {
         let day = message.at.day();
         if last_day != Some(day) {
             day_divider(ui, t, s, message.at, width);
@@ -724,95 +915,422 @@ fn message_list(ui: &mut egui::Ui, store: &Store, t: &Tokens, s: &Strings, width
             last_author = None;
         }
 
-        let grouped = last_author == Some(message.author_id.as_str())
+        let grouped = last_author.as_deref() == Some(message.author_id.as_str())
             && last_at.is_some_and(|prev| {
                 (message.at - prev).num_minutes() < GROUP_GAP_MINUTES
             });
 
+        // O realce da linha é pintado depois, quando já sabemos a altura.
+        let backdrop = ui.painter().add(egui::Shape::Noop);
+
         let author = store.member(&message.author_id);
-        if grouped {
-            ui.horizontal(|ui| {
-                ui.add_space(text_indent);
-                ui.vertical(|ui| {
-                    ui.set_max_width(text_width);
-                    message_body(ui, t, s, message);
-                });
-            });
-        } else {
-            ui.add_space(space::LG);
+        let inner = ui.scope(|ui| {
+            if !grouped {
+                ui.add_space(space::LG);
+            }
             ui.horizontal_top(|ui| {
                 ui.add_space(gutter);
-                let initials = author.map(|a| a.initials()).unwrap_or_else(|| "?".into());
-                avatar(ui, t, &initials, avatar_size, author.and_then(|a| a.role_color));
-                ui.add_space(space::LG);
+                if grouped {
+                    ui.add_space(avatar_size + space::LG - gutter + gutter - gutter);
+                    ui.allocate_exact_size(
+                        Vec2::new(avatar_size + space::LG - space::LG, 0.0),
+                        Sense::hover(),
+                    );
+                } else {
+                    let initials = author.map(|a| a.initials()).unwrap_or_else(|| "?".into());
+                    avatar(ui, t, &initials, avatar_size, author.and_then(|a| a.role_color));
+                    ui.add_space(space::LG);
+                }
                 ui.vertical(|ui| {
                     ui.set_max_width(text_width);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
-                                .font(text::headline())
-                                .color(author.and_then(|a| a.role_color).unwrap_or(t.label)),
-                        );
-                        ui.add_space(space::XS);
-                        ui.label(
-                            RichText::new(message.at.format("%H:%M").to_string())
-                                .font(text::footnote())
-                                .color(t.label_tertiary),
-                        );
-                    });
-                    ui.add_space(space::XXS);
-                    message_body(ui, t, s, message);
+                    if !grouped {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
+                                    .font(text::headline())
+                                    .color(author.and_then(|a| a.role_color).unwrap_or(t.label)),
+                            );
+                            ui.add_space(space::XS);
+                            ui.label(
+                                RichText::new(message.at.format("%H:%M").to_string())
+                                    .font(text::footnote())
+                                    .color(t.label_tertiary),
+                            );
+                            if message.pinned {
+                                ui.add_space(space::XS);
+                                ui.label(
+                                    RichText::new(icon::PUSH_PIN)
+                                        .font(text::icon(11.0))
+                                        .color(t.label_tertiary),
+                                );
+                            }
+                        });
+                        ui.add_space(space::XXS);
+                    }
+                    if let Some(reply_to) = &message.reply_to {
+                        reply_quote(ui, store, t, s, reply_to, text_width);
+                    }
+                    message_body(ui, store, state, t, s, message, text_width);
                 });
             });
+        });
+
+        let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        // Mensagem que cita você fica marcada, com ou sem o ponteiro em cima.
+        let mentions_me = store.mentions_me(message);
+        let hovered = match &focused_message {
+            Some(id) => id == &message.id,
+            None => interactive && ui.rect_contains_pointer(row),
+        };
+        if mentions_me {
+            let band = row.expand2(Vec2::new(0.0, 2.0));
+            let wash = t.mention.gamma_multiply(if hovered { 0.16 } else { 0.10 });
+            ui.painter().set(
+                backdrop,
+                egui::epaint::RectShape::filled(
+                    band,
+                    CornerRadius::same(radius::CARD),
+                    wash,
+                ),
+            );
+            // Fio na borda esquerda, como um marcador de página.
+            ui.painter().rect_filled(
+                Rect::from_min_size(band.min, Vec2::new(2.5, band.height())),
+                CornerRadius::same(1),
+                t.mention.gamma_multiply(0.9),
+            );
+        } else if hovered {
+            ui.painter().set(
+                backdrop,
+                egui::epaint::RectShape::filled(
+                    row.expand2(Vec2::new(0.0, 2.0)),
+                    CornerRadius::same(radius::CARD),
+                    t.fill_soft,
+                ),
+            );
+        }
+        if hovered {
+            if focused_message.is_none() {
+                hover_pill(ui, state, t, s, message, row, store);
+            }
+
+            let secondary =
+                focused_message.is_none() && ui.input(|input| input.pointer.secondary_clicked());
+            if secondary {
+                let at = ui.ctx().pointer_latest_pos().unwrap_or(row.center());
+                state.popup = Some(Popup {
+                    kind: PopupKind::Menu,
+                    message_id: message.id.clone(),
+                    anchor: Rect::from_min_size(at, Vec2::ZERO),
+                    at_pointer: true,
+                    opened: ui.input(|input| input.time),
+                });
+            }
         }
 
-        last_author = Some(&message.author_id);
+        last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
     }
 }
 
-fn message_body(ui: &mut egui::Ui, t: &Tokens, s: &Strings, message: &Message) {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &message.content,
-        0.0,
-        egui::TextFormat {
-            font_id: text::message(),
-            color: t.label,
-            ..Default::default()
-        },
-    );
-    if message.edited {
-        job.append(
-            &format!("  ({})", s.edited),
-            0.0,
-            egui::TextFormat {
-                font_id: text::footnote(),
-                color: t.label_tertiary,
-                ..Default::default()
+/// Citação da mensagem respondida, acima do corpo.
+fn reply_quote(
+    ui: &mut egui::Ui,
+    store: &Store,
+    t: &Tokens,
+    s: &Strings,
+    reply_to: &str,
+    width: f32,
+) {
+    let (name, preview) = match store.message(reply_to) {
+        Some(target) => (
+            store
+                .member(&target.author_id)
+                .map(|member| member.name.clone())
+                .unwrap_or_else(|| "?".into()),
+            if target.content.is_empty() && !target.attachments.is_empty() {
+                format!("{} {}", icon::PAPERCLIP, target.attachments[0].name())
+            } else {
+                attachments::elide(&target.content, 80)
             },
+        ),
+        // Sem chave estrangeira no banco: a original pode ter sumido.
+        None => (String::new(), s.reply_missing.to_owned()),
+    };
+
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+    let painter = ui.painter();
+    painter.text(
+        egui::pos2(rect.min.x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        icon::ARROW_BEND_UP_LEFT,
+        text::icon(11.0),
+        t.label_tertiary,
+    );
+    let mut x = rect.min.x + 16.0;
+    if !name.is_empty() {
+        let galley = painter.layout_no_wrap(name, text::caption(), t.label_secondary);
+        painter.galley(
+            egui::pos2(x, rect.center().y - galley.size().y / 2.0),
+            galley.clone(),
+            t.label_secondary,
         );
+        x += galley.size().x + space::SM;
     }
-    job.wrap.max_width = ui.available_width();
-    ui.label(job);
+    painter.text(
+        egui::pos2(x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        preview,
+        text::footnote(),
+        t.label_tertiary,
+    );
+    ui.add_space(space::XXS);
+}
+
+fn message_body(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    message: &Message,
+    width: f32,
+) {
+    // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
+    if let Some((id, buffer)) = &mut state.editing {
+        if id == &message.id {
+            let mut buffer_copy = buffer.clone();
+            let response = ui.add(
+                TextEdit::multiline(&mut buffer_copy)
+                    .font(text::message())
+                    .desired_width(width)
+                    .desired_rows(1)
+                    .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
+            );
+            *buffer = buffer_copy;
+            response.request_focus();
+
+            let (save, cancel) = ui.input(|input| {
+                (
+                    input.key_pressed(egui::Key::Enter) && !input.modifiers.shift,
+                    input.key_pressed(egui::Key::Escape),
+                )
+            });
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(s.edit_hint)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
+            });
+            if cancel {
+                state.editing = None;
+            } else if save {
+                if let Some((id, content)) = state.editing.take() {
+                    let content = content.trim().to_owned();
+                    if content.is_empty() {
+                        state.actions.push(ChatAction::Delete(id));
+                    } else {
+                        state.actions.push(ChatAction::Edit {
+                            message_id: id,
+                            content,
+                        });
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    if !message.content.is_empty() {
+        let color = if message.pending {
+            t.label_secondary
+        } else {
+            t.label
+        };
+        let tokens = emoji::tokenize(&message.content, &store.emojis);
+        let plain = tokens
+            .iter()
+            .all(|token| matches!(token, emoji::Token::Text(_)));
+
+        if plain {
+            // Sem emoji, uma passada só de texto — é o caminho rápido.
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                &message.content,
+                0.0,
+                egui::TextFormat {
+                    font_id: text::message(),
+                    color,
+                    ..Default::default()
+                },
+            );
+            if message.edited {
+                job.append(
+                    &format!("  ({})", s.edited),
+                    0.0,
+                    egui::TextFormat {
+                        font_id: text::footnote(),
+                        color: t.label_tertiary,
+                        ..Default::default()
+                    },
+                );
+            }
+            job.wrap.max_width = width;
+            ui.label(job);
+        } else {
+            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+        }
+    }
+
+    if !message.attachments.is_empty() {
+        if let Some(action) = attachments::draw(
+            ui,
+            t,
+            s,
+            &mut state.media,
+            &message.id,
+            &message.attachments,
+            width,
+        ) {
+            match action {
+                MediaAction::Open { message_id, index } => {
+                    state.viewer = Some(Viewer::new(message_id, index));
+                    state.media.pause_all();
+                }
+                MediaAction::Download { id, name } => {
+                    state.actions.push(ChatAction::Download { id, name })
+                }
+                MediaAction::Reveal(id) => state.media.reveal(&id),
+            }
+        }
+    }
 
     if !message.reactions.is_empty() {
         ui.add_space(space::XS);
-        ui.horizontal(|ui| {
+        let mut toggled = None;
+        let mut open_picker = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
             for reaction in &message.reactions {
-                reaction_chip(ui, t, &reaction.emoji, reaction.count, reaction.mine);
+                if reaction_chip(ui, t, store, &mut state.media, reaction) {
+                    toggled = Some((reaction.emoji.clone(), !reaction.mine));
+                }
+            }
+            // Atalho para reagir com mais um emoji.
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0, 22.0), Sense::click());
+            if response.hovered() {
+                ui.painter()
+                    .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+            }
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::SMILEY_STICKER,
+                text::icon(13.0),
+                t.label_tertiary,
+            );
+            if response.clicked() {
+                open_picker = Some(rect);
             }
         });
+        if let Some((emoji, add)) = toggled {
+            state.actions.push(ChatAction::React {
+                message_id: message.id.clone(),
+                emoji,
+                add,
+            });
+        }
+        if let Some(anchor) = open_picker {
+            state.popup = Some(Popup {
+                kind: PopupKind::Emoji,
+                message_id: message.id.clone(),
+                anchor,
+                at_pointer: false,
+                opened: ui.input(|input| input.time),
+            });
+        }
     }
 }
 
-fn reaction_chip(ui: &mut egui::Ui, t: &Tokens, emoji: &str, count: u32, mine: bool) {
-    let label = format!("{emoji} {count}");
-    let galley = ui.painter().layout_no_wrap(label.clone(), text::callout(), t.label);
-    let size = Vec2::new(galley.size().x + space::LG, 22.0);
+/// Texto entremeado de emoji: cada emoji vira imagem, o resto é palavra
+/// solta para o egui quebrar a linha onde precisar.
+#[allow(clippy::too_many_arguments)]
+fn rich_body(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    store: &Store,
+    state: &mut UiState,
+    tokens: &[emoji::Token],
+    color: Color32,
+    edited: bool,
+    width: f32,
+) {
+    // Mensagem só de emoji aparece grande, como manda o costume.
+    let size = if emoji::jumbo(tokens) { 34.0 } else { 18.0 };
+    let font = text::message();
+
+    ui.set_max_width(width);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, space::XXS);
+        for token in tokens {
+            match token {
+                emoji::Token::Text(text) => {
+                    for word in text.split_inclusive(' ') {
+                        if word.trim().is_empty() && word != " " {
+                            continue;
+                        }
+                        ui.label(RichText::new(word).font(font.clone()).color(color));
+                    }
+                }
+                emoji::Token::Unicode(glyph) => {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+                    emoji::draw_unicode(ui, t, &mut state.media, glyph, rect);
+                }
+                emoji::Token::Custom(id) => {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+                    emoji::draw_reaction(
+                        ui,
+                        t,
+                        &mut state.media,
+                        store,
+                        &Emoji::Custom(id.clone()),
+                        rect,
+                    );
+                    if let Some(custom) = store.emojis.iter().find(|emoji| &emoji.id == id) {
+                        response.on_hover_text(format!(":{}:", custom.name));
+                    }
+                }
+            }
+        }
+        if edited {
+            ui.label(
+                RichText::new(format!("  ({})", s.edited))
+                    .font(text::footnote())
+                    .color(t.label_tertiary),
+            );
+        }
+    });
+}
+
+fn reaction_chip(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    store: &Store,
+    media: &mut MediaStore,
+    reaction: &crate::state::Reaction,
+) -> bool {
+    let count = reaction.count.to_string();
+    let glyph = emoji::reaction_width(&reaction.emoji);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(count.clone(), text::caption(), t.label);
+    let size = Vec2::new(glyph + galley.size().x + space::LG + space::XS, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
-    let (fill, stroke, text_color) = if mine {
+    let (fill, stroke, label) = if reaction.mine {
         (t.accent.gamma_multiply(0.20), t.accent, t.label)
     } else if response.hovered() {
         (t.fill_medium, t.separator, t.label)
@@ -821,19 +1339,553 @@ fn reaction_chip(ui: &mut egui::Ui, t: &Tokens, emoji: &str, count: u32, mine: b
     };
     ui.painter().rect(
         rect,
-        CornerRadius::same(11),
+        CornerRadius::same(radius::CONTROL),
         fill,
         Stroke::new(1.0, stroke),
         egui::StrokeKind::Inside,
     );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
+
+    let glyph_rect = Rect::from_center_size(
+        egui::pos2(rect.min.x + space::SM + glyph / 2.0, rect.center().y),
+        Vec2::splat(glyph),
+    );
+    emoji::draw_reaction(ui, t, media, store, &reaction.emoji, glyph_rect);
+    ui.painter().galley(
+        egui::pos2(
+            glyph_rect.max.x + space::XS,
+            rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
         label,
-        text::callout(),
-        text_color,
+    );
+    response.clicked()
+}
+
+/// Pastilha de ações que aparece no alto da linha ao passar o mouse.
+fn hover_pill(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    message: &Message,
+    row: Rect,
+    store: &Store,
+) {
+    if message.pending {
+        return;
+    }
+    let mine = message.mine(&store.me);
+    let buttons: Vec<(&str, &str)> = if mine {
+        vec![
+            (icon::SMILEY_STICKER, s.react),
+            (icon::ARROW_BEND_UP_LEFT, s.reply),
+            (icon::PENCIL_SIMPLE, s.edit),
+            (icon::DOTS_THREE, s.more),
+        ]
+    } else {
+        vec![
+            (icon::SMILEY_STICKER, s.react),
+            (icon::ARROW_BEND_UP_LEFT, s.reply),
+            (icon::DOTS_THREE, s.more),
+        ]
+    };
+
+    let height = 30.0;
+    let button = 26.0;
+    let width = button * buttons.len() as f32 + space::XS * 2.0;
+    let rect = Rect::from_min_size(
+        egui::pos2(row.max.x - width - space::MD, row.min.y - height / 2.0),
+        Vec2::new(width, height),
+    );
+
+    glass_backdrop(ui, state, rect, radius::CARD as f32);
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::CARD),
+        t.pill_fill(state.translucent),
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    for (index, (glyph, tooltip)) in buttons.iter().enumerate() {
+        let slot = Rect::from_min_size(
+            egui::pos2(rect.min.x + space::XS + index as f32 * button, rect.min.y + 2.0),
+            Vec2::new(button, height - 4.0),
+        );
+        let response = ui.interact(
+            slot,
+            Id::new(("hover", &message.id, index)),
+            Sense::click(),
+        );
+        if response.hovered() {
+            ui.painter()
+                .rect_filled(slot, CornerRadius::same(radius::CONTROL), t.fill_medium);
+        }
+        ui.painter().text(
+            slot.center(),
+            egui::Align2::CENTER_CENTER,
+            *glyph,
+            text::icon(14.0),
+            if response.hovered() {
+                t.label
+            } else {
+                t.label_secondary
+            },
+        );
+        let response = response.on_hover_text(*tooltip);
+        if response.clicked() {
+            let opened = ui.input(|input| input.time);
+            match *glyph {
+                icon::SMILEY_STICKER => {
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Emoji,
+                        message_id: message.id.clone(),
+                        anchor: slot,
+                        at_pointer: false,
+                        opened,
+                    })
+                }
+                icon::ARROW_BEND_UP_LEFT => state.replying = Some(message.id.clone()),
+                icon::PENCIL_SIMPLE => {
+                    state.editing = Some((message.id.clone(), message.content.clone()))
+                }
+                _ => {
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id: message.id.clone(),
+                        anchor: slot,
+                        at_pointer: false,
+                        opened,
+                    })
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Camada de cima: popups, visualizador e aviso de download
+// ---------------------------------------------------------------------------
+
+fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
+    let screen = ui.ctx().viewport_rect();
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+
+    saved_toast(&mut top, state, t, s);
+
+    if let Some(popup) = state.popup.clone() {
+        match popup.kind {
+            PopupKind::Emoji | PopupKind::ComposerEmoji | PopupKind::ComposerSticker => {
+                emoji_popup(&mut top, store, state, t, s, &popup)
+            }
+            PopupKind::Menu => context_menu(&mut top, store, state, t, s, &popup),
+        }
+    }
+
+    if let Some(mut viewer) = state.viewer.take() {
+        let attachments = store
+            .message(&viewer.message_id)
+            .map(|message| message.attachments.clone())
+            .unwrap_or_default();
+        match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
+            Some(ViewerAction::Close) => state.media.pause_all(),
+            Some(ViewerAction::Download { id, name }) => {
+                state.actions.push(ChatAction::Download { id, name });
+                state.viewer = Some(viewer);
+            }
+            None => state.viewer = Some(viewer),
+        }
+    }
+}
+
+fn emoji_popup(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    popup: &Popup,
+) {
+    let custom_only = popup.kind == PopupKind::ComposerSticker;
+    let size = Vec2::new(316.0, if custom_only { 300.0 } else { 380.0 });
+    let rect = emoji::popup_area(ui, popup.anchor, size);
+    let mut chosen = None;
+    let mut query = std::mem::take(&mut state.emoji_query);
+    let mut group = state.emoji_group;
+
+    emoji::popup_frame(ui, t, rect, |ui| {
+        chosen = emoji::picker(
+            ui,
+            t,
+            s,
+            store,
+            &mut state.media,
+            &mut query,
+            &mut group,
+            custom_only,
+        );
+    });
+    state.emoji_query = query;
+    state.emoji_group = group;
+
+    // No compositor o emoji entra no texto; o do servidor entra como
+    // `:apelido:`, que a mensagem desenha como imagem.
+    if matches!(
+        popup.kind,
+        PopupKind::ComposerEmoji | PopupKind::ComposerSticker
+    ) {
+        if let Some(emoji) = chosen {
+            let insert = match &emoji {
+                Emoji::Unicode(glyph) => glyph.clone(),
+                Emoji::Custom(id) => store
+                    .emojis
+                    .iter()
+                    .find(|custom| &custom.id == id)
+                    .map(|custom| format!(":{}:", custom.name))
+                    .unwrap_or_default(),
+            };
+            if !insert.is_empty() {
+                if !state.composer.is_empty() && !state.composer.ends_with(' ') {
+                    state.composer.push(' ');
+                }
+                state.composer.push_str(&insert);
+                state.composer.push(' ');
+            }
+            state.close_popup();
+            return;
+        }
+        dismiss_on_outside_click(ui, state, rect);
+        return;
+    }
+
+    if let Some(emoji) = chosen {
+        let mine = store
+            .message(&popup.message_id)
+            .and_then(|message| {
+                message
+                    .reactions
+                    .iter()
+                    .find(|reaction| reaction.emoji == emoji)
+            })
+            .map(|reaction| reaction.mine)
+            .unwrap_or(false);
+        state.actions.push(ChatAction::React {
+            message_id: popup.message_id.clone(),
+            emoji,
+            add: !mine,
+        });
+        state.close_popup();
+        return;
+    }
+
+    dismiss_on_outside_click(ui, state, rect);
+}
+
+fn context_menu(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    popup: &Popup,
+) {
+    let Some(message) = store.message(&popup.message_id).cloned() else {
+        state.close_popup();
+        return;
+    };
+    let mine = message.mine(&store.me);
+
+    let mut items: Vec<(&str, &str, MessageCommand)> = vec![
+        (icon::SMILEY_STICKER, s.add_reaction, MessageCommand::React),
+        (icon::ARROW_BEND_UP_LEFT, s.reply, MessageCommand::Reply),
+    ];
+    if mine {
+        items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
+    }
+    items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    items.push((
+        icon::PUSH_PIN,
+        if message.pinned { s.unpin } else { s.pin },
+        MessageCommand::Pin,
+    ));
+    if !message.attachments.is_empty() {
+        items.push((
+            icon::DOWNLOAD_SIMPLE,
+            s.save_attachment,
+            MessageCommand::Download,
+        ));
+    }
+    if mine {
+        items.push((icon::TRASH, s.delete, MessageCommand::Delete));
+    }
+
+    let row = 30.0;
+    let size = Vec2::new(212.0, row * items.len() as f32 + space::SM * 2.0);
+    let anchor = if popup.at_pointer {
+        Rect::from_min_size(popup.anchor.min - Vec2::new(0.0, 4.0), Vec2::ZERO)
+    } else {
+        popup.anchor
+    };
+    let rect = emoji::popup_area(ui, anchor, size);
+
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::SHEET),
+        t.elevated_bg,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut chosen = None;
+    for (index, (glyph, label, command)) in items.iter().enumerate() {
+        let slot = Rect::from_min_size(
+            egui::pos2(rect.min.x + space::XS, rect.min.y + space::SM + index as f32 * row),
+            Vec2::new(rect.width() - space::XS * 2.0, row),
+        );
+        let response = ui.interact(slot, Id::new(("menu", index)), Sense::click());
+        let destructive = matches!(command, MessageCommand::Delete);
+        if response.hovered() {
+            ui.painter().rect_filled(
+                slot,
+                CornerRadius::same(radius::CONTROL),
+                if destructive {
+                    t.danger.gamma_multiply(0.18)
+                } else {
+                    t.fill_soft
+                },
+            );
+        }
+        let color = if destructive { t.danger } else { t.label };
+        ui.painter().text(
+            egui::pos2(slot.min.x + space::MD, slot.center().y),
+            egui::Align2::LEFT_CENTER,
+            *glyph,
+            text::icon(14.0),
+            color,
+        );
+        ui.painter().text(
+            egui::pos2(slot.min.x + space::MD + 22.0, slot.center().y),
+            egui::Align2::LEFT_CENTER,
+            *label,
+            text::body(),
+            color,
+        );
+        if response.clicked() {
+            chosen = Some(*command);
+        }
+    }
+
+    if let Some(command) = chosen {
+        let anchor = rect;
+        match command {
+            MessageCommand::React => {
+                state.popup = Some(Popup {
+                    kind: PopupKind::Emoji,
+                    message_id: message.id.clone(),
+                    anchor: Rect::from_min_size(anchor.min, Vec2::ZERO),
+                    at_pointer: false,
+                    opened: ui.input(|input| input.time),
+                });
+                return;
+            }
+            MessageCommand::Reply => state.replying = Some(message.id.clone()),
+            MessageCommand::Edit => {
+                state.editing = Some((message.id.clone(), message.content.clone()))
+            }
+            MessageCommand::Copy => {
+                ui.ctx().copy_text(message.content.clone());
+            }
+            MessageCommand::Pin => state.actions.push(ChatAction::Pin {
+                message_id: message.id.clone(),
+                pin: !message.pinned,
+            }),
+            MessageCommand::Download => {
+                for attachment in &message.attachments {
+                    state.actions.push(ChatAction::Download {
+                        id: attachment.id.clone(),
+                        name: attachment.name().to_owned(),
+                    });
+                }
+            }
+            MessageCommand::Delete => state.actions.push(ChatAction::Delete(message.id.clone())),
+        }
+        state.close_popup();
+        return;
+    }
+
+    dismiss_on_outside_click(ui, state, rect);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MessageCommand {
+    React,
+    Reply,
+    Edit,
+    Copy,
+    Pin,
+    Download,
+    Delete,
+}
+
+/// Clique fora ou Esc fecha o popup — menos o clique que acabou de abri-lo.
+fn dismiss_on_outside_click(ui: &egui::Ui, state: &mut UiState, rect: Rect) {
+    let (now, clicked, escape, pointer) = ui.ctx().input(|input| {
+        (
+            input.time,
+            input.pointer.any_click(),
+            input.key_pressed(egui::Key::Escape),
+            input.pointer.interact_pos(),
+        )
+    });
+    let just_opened = state
+        .popup
+        .as_ref()
+        .map(|popup| now - popup.opened < 0.001)
+        .unwrap_or(false);
+    let anchor = state.popup.as_ref().map(|popup| popup.anchor);
+    let outside = pointer
+        .map(|pos| {
+            !rect.contains(pos) && !anchor.map(|anchor| anchor.contains(pos)).unwrap_or(false)
+        })
+        .unwrap_or(false);
+    if escape || (clicked && outside && !just_opened) {
+        state.close_popup();
+    }
+}
+
+/// Aviso discreto depois de salvar um anexo.
+fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) {
+    // Erro da interface usa o mesmo lugar, só que sem botão.
+    if let Some((message, at)) = state.error.clone() {
+        let now = ui.ctx().input(|input| input.time);
+        if now - at > TOAST_SECONDS {
+            state.error = None;
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+            toast_frame(ui, state, t, |ui, rect| {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{} {message}", icon::WARNING),
+                    text::body(),
+                    t.danger,
+                );
+            });
+            return;
+        }
+    }
+
+    let Some((name, path, at)) = state.media.saved.clone() else {
+        return;
+    };
+    let (now, scrolled) = ui.ctx().input(|input| {
+        (
+            input.time,
+            input.smooth_scroll_delta.length_sq() > 0.01,
+        )
+    });
+    // Sai de cena ao passar o tempo ou assim que o usuário mexe na conversa.
+    if now - at > TOAST_SECONDS || scrolled {
+        state.media.saved = None;
+        return;
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(250));
+
+    let rect = toast_rect(ui);
+
+    toast_surface(ui, state, t, rect);
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::XL, rect.center().y - 9.0),
+        egui::Align2::LEFT_CENTER,
+        format!("{} {}", icon::CHECK_CIRCLE, attachments::elide(&name, 28)),
+        text::body(),
+        t.label,
+    );
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::XL, rect.center().y + 10.0),
+        egui::Align2::LEFT_CENTER,
+        attachments::elide(&path.display().to_string(), 44),
+        text::footnote(),
+        t.label_tertiary,
+    );
+
+    let open = Rect::from_min_size(
+        egui::pos2(rect.max.x - space::XL - 64.0, rect.center().y - 12.0),
+        Vec2::new(64.0, 24.0),
+    );
+    let response = ui.interact(open, Id::new("toast-open"), Sense::click());
+    ui.painter().rect_filled(
+        open,
+        CornerRadius::same(radius::CONTROL),
+        if response.hovered() {
+            t.fill_medium
+        } else {
+            t.fill_soft
+        },
+    );
+    ui.painter().text(
+        open.center(),
+        egui::Align2::CENTER_CENTER,
+        s.open,
+        text::caption(),
+        t.label,
+    );
+    if response.clicked() {
+        state.actions.push(ChatAction::OpenExternally(path));
+        state.media.saved = None;
+    }
+}
+
+/// Lugar do aviso flutuante: centralizado, acima da caixa de texto.
+fn toast_rect(ui: &egui::Ui) -> Rect {
+    let screen = ui.ctx().viewport_rect();
+    let width = 320.0;
+    let height = 58.0;
+    Rect::from_min_size(
+        egui::pos2(
+            screen.center().x - width / 2.0,
+            screen.max.y - height - space::XXXL * 2.0,
+        ),
+        Vec2::new(width, height),
+    )
+}
+
+/// Mesmo vidro das pastilhas: o aviso pertence à camada flutuante.
+fn toast_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {
+    glass_backdrop(ui, state, rect, radius::SHEET as f32);
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::SHEET),
+        t.pill_fill(state.translucent),
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius::SHEET as f32 * 0.6, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - radius::SHEET as f32 * 0.6, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
     );
 }
+
+fn toast_frame(
+    ui: &mut egui::Ui,
+    state: &UiState,
+    t: &Tokens,
+    build: impl FnOnce(&mut egui::Ui, Rect),
+) {
+    let rect = toast_rect(ui);
+    toast_surface(ui, state, t, rect);
+    build(ui, rect);
+}
+
+// ---------------------------------------------------------------------------
+// Divisores e vazios
+// ---------------------------------------------------------------------------
 
 fn day_divider(
     ui: &mut egui::Ui,
@@ -905,18 +1957,114 @@ fn empty_state(ui: &mut egui::Ui, t: &Tokens, s: &Strings) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Caixa de mensagem
+// ---------------------------------------------------------------------------
+
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(state: &mut UiState) {
     let content = state.composer.trim().to_owned();
-    state.composer.clear();
-    if !content.is_empty() {
-        state.outgoing = Some(content);
+    if content.is_empty() && state.attachments.is_empty() {
+        return;
     }
+    state.composer.clear();
+    state.actions.push(ChatAction::Send {
+        content,
+        reply_to: state.replying.take(),
+        attachments: std::mem::take(&mut state.attachments),
+    });
 }
 
-fn composer_height(text: &str) -> f32 {
-    let lines = text.lines().count().clamp(1, 8) as f32;
-    44.0 + (lines - 1.0) * 18.0
+fn composer_height(state: &UiState) -> f32 {
+    let lines = state.composer.lines().count().clamp(1, 8) as f32;
+    let mut height = COMPOSER_LINE_H + (lines - 1.0) * 18.0;
+    if state.replying.is_some() {
+        height += COMPOSER_REPLY_H;
+    }
+    if !state.attachments.is_empty() {
+        height += COMPOSER_ATTACH_H;
+    }
+    height
+}
+
+/// Pastilha redonda com um ícone, solta ao lado da caixa de texto.
+fn side_pill(
+    ui: &mut egui::Ui,
+    state: &UiState,
+    t: &Tokens,
+    rect: Rect,
+    glyph: &str,
+    tooltip: &str,
+    tag: &str,
+    active: bool,
+) -> egui::Response {
+    let response = ui.interact(rect, Id::new(("side-pill", tag)), Sense::click());
+    glass_backdrop(ui, state, rect, PILL_RADIUS);
+    let fill = if active {
+        t.danger.gamma_multiply(0.85)
+    } else {
+        t.pill_fill(state.translucent)
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(PILL_RADIUS as u8),
+        fill,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + PILL_RADIUS * 0.6, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - PILL_RADIUS * 0.6, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
+    );
+    if response.hovered() && !active {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(PILL_RADIUS as u8), t.fill_soft);
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        text::icon(16.0),
+        if active {
+            t.accent_label
+        } else if response.hovered() {
+            t.label
+        } else {
+            t.label_secondary
+        },
+    );
+    response.on_hover_text(tooltip)
+}
+
+/// Botãozinho dentro da caixa de texto (emoji, figurinha, gif, enviar).
+fn inline_button(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    rect: Rect,
+    glyph: &str,
+    tooltip: &str,
+    tag: &str,
+) -> egui::Response {
+    let response = ui.interact(rect, Id::new(("composer", tag)), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        text::icon(15.0),
+        if response.hovered() {
+            t.label
+        } else {
+            t.label_secondary
+        },
+    );
+    response.on_hover_text(tooltip)
 }
 
 fn composer(
@@ -928,80 +2076,319 @@ fn composer(
     area: Rect,
     height: f32,
 ) {
+    // Anexar e gravar ficam de fora, cada um na sua pastilha; o resto mora
+    // dentro da caixa de texto.
+    let side = PILL_HEIGHT;
+    let recording = state.recorder.is_some();
+    let with_record = state.show_record || recording;
+    let left_count = 1 + usize::from(with_record);
+    let left_width = left_count as f32 * side + (left_count as f32 - 1.0) * space::SM + space::MD;
+
     let rect = Rect::from_min_max(
-        egui::pos2(area.min.x + PILL_MARGIN, area.max.y - PILL_MARGIN - height),
+        egui::pos2(
+            area.min.x + PILL_MARGIN + left_width,
+            area.max.y - PILL_MARGIN - height,
+        ),
         egui::pos2(area.max.x - PILL_MARGIN, area.max.y - PILL_MARGIN),
     );
 
     typing_pill(ui, store, state, t, s, rect);
     pill_surface(ui, state, t, rect);
 
+    // As pastilhas laterais acompanham a última linha da caixa.
+    let line_mid = rect.max.y - COMPOSER_LINE_H / 2.0;
+    let attach_rect = Rect::from_center_size(
+        egui::pos2(area.min.x + PILL_MARGIN + side / 2.0, line_mid),
+        Vec2::splat(side),
+    );
+    if side_pill(ui, state, t, attach_rect, icon::PAPERCLIP, s.attach, "attach", false).clicked() {
+        state.actions.push(ChatAction::PickFiles);
+    }
+    if with_record {
+        let record_rect = Rect::from_center_size(
+            egui::pos2(attach_rect.center().x + side + space::SM, line_mid),
+            Vec2::splat(side),
+        );
+        let label = if recording { s.record_stop } else { s.record };
+        let glyph = if recording {
+            icon::STOP_CIRCLE
+        } else {
+            icon::MICROPHONE
+        };
+        if side_pill(ui, state, t, record_rect, glyph, label, "record", recording).clicked() {
+            match state.recorder.take() {
+                // Parar vira anexo na hora.
+                Some(recorder) => {
+                    if let Some(path) = recorder.finish() {
+                        state
+                            .attachments
+                            .push(crate::platform::files::describe(&path));
+                    }
+                }
+                None => {
+                    state.recorder = crate::media::player::Recorder::start(
+                        &crate::media::cache_root().join("recordings"),
+                    );
+                    if state.recorder.is_none() {
+                        let now = ui.input(|input| input.time);
+                        state.error = Some((s.record_failed.to_owned(), now));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut cursor = rect.min.y;
+
+    // Faixa de resposta.
+    if let Some(reply_to) = state.replying.clone() {
+        let band = Rect::from_min_size(
+            egui::pos2(rect.min.x, cursor),
+            Vec2::new(rect.width(), COMPOSER_REPLY_H),
+        );
+        let name = store
+            .message(&reply_to)
+            .and_then(|message| store.member(&message.author_id))
+            .map(|member| member.name.clone())
+            .unwrap_or_else(|| s.reply_missing.to_owned());
+        ui.painter().text(
+            egui::pos2(band.min.x + space::LG, band.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{} {} {name}", icon::ARROW_BEND_UP_LEFT, s.replying_to),
+            text::footnote(),
+            t.label_secondary,
+        );
+        let close = Rect::from_center_size(
+            egui::pos2(band.max.x - space::LG - 8.0, band.center().y),
+            Vec2::splat(20.0),
+        );
+        let response = ui.interact(close, Id::new("reply-close"), Sense::click());
+        ui.painter().text(
+            close.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::X,
+            text::icon(12.0),
+            if response.hovered() {
+                t.label
+            } else {
+                t.label_tertiary
+            },
+        );
+        if response.clicked() {
+            state.replying = None;
+        }
+        cursor = band.max.y;
+    }
+
+    // Faixa dos anexos escolhidos.
+    if !state.attachments.is_empty() {
+        let band = Rect::from_min_size(
+            egui::pos2(rect.min.x, cursor),
+            Vec2::new(rect.width(), COMPOSER_ATTACH_H),
+        );
+        let mut remove = None;
+        let mut x = band.min.x + space::LG;
+        for (index, upload) in state.attachments.iter().enumerate() {
+            let chip = Rect::from_min_size(
+                egui::pos2(x, band.min.y + space::XS),
+                Vec2::new(168.0, COMPOSER_ATTACH_H - space::MD),
+            );
+            if chip.max.x > band.max.x - space::LG {
+                break;
+            }
+            ui.painter().rect(
+                chip,
+                CornerRadius::same(radius::CARD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+            let glyph = match crate::api::models::Kind::of(&upload.mime) {
+                crate::api::models::Kind::Image => icon::IMAGE,
+                crate::api::models::Kind::Video => icon::FILM_STRIP,
+                crate::api::models::Kind::Audio => icon::MICROPHONE,
+                crate::api::models::Kind::Other => icon::FILE,
+            };
+            ui.painter().text(
+                egui::pos2(chip.min.x + space::LG, chip.center().y),
+                egui::Align2::CENTER_CENTER,
+                glyph,
+                text::icon(16.0),
+                t.label_secondary,
+            );
+            ui.painter().text(
+                egui::pos2(chip.min.x + space::XXXL, chip.center().y - 7.0),
+                egui::Align2::LEFT_CENTER,
+                attachments::elide(&upload.name, 16),
+                text::caption(),
+                t.label,
+            );
+            ui.painter().text(
+                egui::pos2(chip.min.x + space::XXXL, chip.center().y + 8.0),
+                egui::Align2::LEFT_CENTER,
+                attachments::size_label(upload.size as i64),
+                text::footnote(),
+                t.label_tertiary,
+            );
+            let close = Rect::from_center_size(
+                egui::pos2(chip.max.x - space::MD, chip.min.y + space::MD),
+                Vec2::splat(18.0),
+            );
+            let response = ui.interact(close, Id::new(("chip", index)), Sense::click());
+            ui.painter().text(
+                close.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::X_CIRCLE,
+                text::icon(13.0),
+                if response.hovered() {
+                    t.label
+                } else {
+                    t.label_tertiary
+                },
+            );
+            if response.clicked() {
+                remove = Some(index);
+            }
+            x = chip.max.x + space::SM;
+        }
+        if let Some(index) = remove {
+            state.attachments.remove(index);
+        }
+        cursor = band.max.y;
+    }
+
+    let line = Rect::from_min_max(egui::pos2(rect.min.x, cursor), rect.max);
+
+    // Gravando: a caixa vira o painel da gravação, sem lugar para digitar.
+    if recording {
+        let elapsed = state
+            .recorder
+            .as_ref()
+            .map(|recorder| recorder.elapsed())
+            .unwrap_or(0.0);
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
+
+        let pulse = 0.55 + 0.45 * ((ui.input(|input| input.time) * 3.0).sin() as f32).abs();
+        ui.painter().circle_filled(
+            egui::pos2(line.min.x + space::XXL, line.center().y),
+            5.0,
+            t.danger.gamma_multiply(pulse),
+        );
+        ui.painter().text(
+            egui::pos2(line.min.x + space::XXL + space::LG, line.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{} · {}", s.recording, attachments::clock(elapsed)),
+            text::body(),
+            t.label,
+        );
+
+        let cancel = Rect::from_center_size(
+            egui::pos2(line.max.x - space::XXL, line.center().y),
+            Vec2::splat(HIT_TARGET),
+        );
+        if inline_button(ui, t, cancel, icon::TRASH, s.record_cancel, "record-cancel").clicked() {
+            if let Some(recorder) = state.recorder.take() {
+                recorder.cancel();
+            }
+        }
+        return;
+    }
+
     let channel_name = store
         .channel(&store.selected_channel)
         .map(|c| c.name.clone())
         .unwrap_or_default();
 
+    // Botões do lado direito, de fora para dentro: enviar, gif, figurinha,
+    // emoji.
+    let ready = !state.composer.trim().is_empty() || !state.attachments.is_empty();
+    let mid = line.center().y;
+    let send_rect = Rect::from_center_size(
+        egui::pos2(line.max.x - space::MD - HIT_TARGET / 2.0, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+    let gif_rect = Rect::from_center_size(
+        egui::pos2(send_rect.center().x - HIT_TARGET - space::XXS, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+    let sticker_rect = Rect::from_center_size(
+        egui::pos2(gif_rect.center().x - HIT_TARGET - space::XXS, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+    let emoji_rect = Rect::from_center_size(
+        egui::pos2(sticker_rect.center().x - HIT_TARGET - space::XXS, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+
+    let opened = ui.input(|input| input.time);
+    if inline_button(ui, t, emoji_rect, icon::SMILEY, s.emoji, "emoji").clicked() {
+        state.popup = Some(Popup {
+            kind: PopupKind::ComposerEmoji,
+            message_id: String::new(),
+            anchor: emoji_rect,
+            at_pointer: false,
+            opened,
+        });
+    }
+    if inline_button(ui, t, sticker_rect, icon::STICKER, s.sticker, "sticker").clicked() {
+        state.popup = Some(Popup {
+            kind: PopupKind::ComposerSticker,
+            message_id: String::new(),
+            anchor: sticker_rect,
+            at_pointer: false,
+            opened,
+        });
+    }
+    if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
+        state.actions.push(ChatAction::PickGif);
+    }
+
+    let send = ui.interact(send_rect, Id::new("composer-send"), Sense::click());
+    ui.painter().circle_filled(
+        send_rect.center(),
+        13.0,
+        if ready { t.accent } else { Color32::TRANSPARENT },
+    );
+    ui.painter().text(
+        send_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::PAPER_PLANE_TILT,
+        text::icon(14.0),
+        if ready { t.accent_label } else { t.label_tertiary },
+    );
+    if send.clicked() && ready {
+        submit(state);
+    }
+
+    // O campo de texto ocupa o que sobrou entre a borda e os botões.
+    let field = Rect::from_min_max(
+        egui::pos2(line.min.x + space::MD, line.min.y + space::XS),
+        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y - space::XS),
+    );
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(space::MD, space::SM)))
+            .max_rect(field)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            let _ = icon_button(ui, t, icon::PAPERCLIP, s.attach);
-            ui.add_space(space::XXS);
-
-            let has_text = !state.composer.trim().is_empty();
-            let send_width = HIT_TARGET + space::XS;
-            let text_width = ui.available_width() - send_width;
-
-            ui.scope_builder(
-                UiBuilder::new().max_rect(Rect::from_min_size(
-                    ui.cursor().min,
-                    Vec2::new(text_width, ui.available_height()),
-                )),
-                |ui| {
-                    let hint = format!("{} #{}…", s.composer_hint, channel_name);
-                    let response = ui.add(
-                        TextEdit::multiline(&mut state.composer)
-                            .hint_text(RichText::new(hint).color(t.label_tertiary))
-                            .frame(Frame::NONE)
-                            .font(text::message())
-                            .desired_rows(1)
-                            .vertical_align(Align::Center)
-                            .desired_width(f32::INFINITY)
-                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
-                    );
-                    state.typed = response.changed();
-                    // Enter envia; Shift+Enter quebra linha.
-                    let enter = response.has_focus()
-                        && ui.input(|input| {
-                            input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
-                        });
-                    if enter {
-                        submit(state);
-                    }
-                },
+            let hint = format!("{} #{}…", s.composer_hint, channel_name);
+            let response = ui.add(
+                TextEdit::multiline(&mut state.composer)
+                    .hint_text(RichText::new(hint).color(t.label_tertiary))
+                    .frame(Frame::NONE)
+                    .font(text::message())
+                    .desired_rows(1)
+                    .vertical_align(Align::Center)
+                    .desired_width(f32::INFINITY)
+                    .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
             );
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let (send_rect, response) =
-                    ui.allocate_exact_size(Vec2::splat(HIT_TARGET), Sense::click());
-                let fill = if has_text {
-                    t.accent
-                } else {
-                    Color32::TRANSPARENT
-                };
-                ui.painter().circle_filled(send_rect.center(), 13.0, fill);
-                ui.painter().text(
-                    send_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PAPER_PLANE_TILT,
-                    text::icon(14.0),
-                    if has_text { t.accent_label } else { t.label_tertiary },
-                );
-                if response.clicked() && has_text {
-                    submit(state);
-                }
-            });
+            state.typed = response.changed();
+            // Enter envia; Shift+Enter quebra linha.
+            let enter = response.has_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
+            if enter {
+                submit(state);
+            }
         },
     );
 }
@@ -1016,9 +2403,3 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
         Presence::Offline => t.label_tertiary,
     }
 }
-
-const _: () = {
-    // `Id` e `Frame` entram na assinatura pública de helpers futuros.
-    #[allow(dead_code)]
-    fn _unused(_: Id, _: Frame) {}
-};

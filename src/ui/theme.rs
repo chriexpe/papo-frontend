@@ -177,6 +177,7 @@ pub struct Tokens {
     pub away: Color32,
     pub busy: Color32,
     pub danger: Color32,
+    /// Amarelo das menções, opaco: quem usa é que decide a transparência.
     pub mention: Color32,
 }
 
@@ -202,7 +203,7 @@ impl Tokens {
                 away: rgb(0xFF, 0xD6, 0x0A),
                 busy: rgb(0xFF, 0x45, 0x3A),
                 danger: rgb(0xFF, 0x45, 0x3A),
-                mention: rgba(0xFF, 0xD6, 0x0A, 0x24),
+                mention: rgb(0xFF, 0xD6, 0x0A),
             },
             Appearance::Light => Self {
                 appearance,
@@ -223,7 +224,7 @@ impl Tokens {
                 away: rgb(0xFF, 0xCC, 0x00),
                 busy: rgb(0xFF, 0x3B, 0x30),
                 danger: rgb(0xFF, 0x3B, 0x30),
-                mention: rgba(0xFF, 0xCC, 0x00, 0x24),
+                mention: rgb(0xFF, 0xB8, 0x00),
             },
         };
         if let Some(accent) = accent {
@@ -403,13 +404,20 @@ pub fn apply(ctx: &egui::Context, t: &Tokens, translucent: bool, motion: f32) {
     v.window_stroke = Stroke::new(1.0, t.separator);
     v.window_corner_radius = CornerRadius::same(radius::SHEET);
     v.menu_corner_radius = CornerRadius::same(radius::SHEET);
+    // Dica de ferramenta: uma sombra de um fio, só para descolar do fundo.
     v.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 2],
+        blur: 8,
+        spread: 0,
+        color: Color32::from_black_alpha(if t.appearance.is_dark() { 60 } else { 24 }),
+    };
+    // Janela é outra coisa: essa sim flutua.
+    v.window_shadow = egui::epaint::Shadow {
         offset: [0, 8],
         blur: 24,
         spread: 0,
         color: Color32::from_black_alpha(if t.appearance.is_dark() { 120 } else { 40 }),
     };
-    v.window_shadow = v.popup_shadow;
     v.image_loading_spinners = false;
 
     let w = &mut v.widgets;
