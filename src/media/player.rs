@@ -3,16 +3,24 @@
 //! O egui não decodifica nada: o GStreamer decodifica, entrega quadros RGBA
 //! por um `appsink` e nós os subimos como textura. O áudio sai pelo sink
 //! padrão do sistema, com sincronia por conta do `playbin`.
+//!
+//! **Nada do GStreamer é chamado pela thread que desenha.** Uma busca com
+//! flush numa mídia que ainda não tocou pode não voltar nunca, e o preço
+//! disso é a janela inteira congelada. Cada player tem a sua thread: a
+//! interface só põe comandos numa fila e lê o que está publicado.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 use gstreamer_video::prelude::VideoFrameExt;
+
+/// De quanto em quanto tempo a thread do player republica posição e duração.
+const TICK: std::time::Duration = std::time::Duration::from_millis(40);
 
 /// Liga o GStreamer uma vez só; sem ele a mídia vira um cartão de arquivo.
 pub fn init() -> bool {
@@ -33,104 +41,94 @@ struct Frame {
     pixels: Vec<egui::Color32>,
 }
 
+/// O que a thread do player publica e a janela lê.
 #[derive(Default)]
 struct Shared {
     frame: Mutex<Option<Frame>>,
     seq: AtomicU64,
-    eos: AtomicBool,
+    position_ns: AtomicU64,
+    duration_ns: AtomicU64,
+    playing: AtomicBool,
+    /// Proporção do vídeo em bits de `f32`; zero enquanto não há quadro.
+    aspect: AtomicU32,
+    error: Mutex<Option<String>>,
+}
+
+impl Shared {
+    fn seconds(value: &AtomicU64) -> f64 {
+        value.load(Ordering::Relaxed) as f64 / 1e9
+    }
+}
+
+/// Ordens que a janela manda para a thread do player.
+enum Command {
+    Play,
+    Pause,
+    Seek(f64),
+    Muted(bool),
 }
 
 pub struct Player {
-    pipeline: gst::Element,
+    commands: mpsc::Sender<Command>,
     shared: Arc<Shared>,
     texture: Option<egui::TextureHandle>,
     shown: u64,
-    /// Proporção do vídeo, conhecida depois do primeiro quadro.
-    pub aspect: f32,
-    playing: bool,
     /// Posição em segundos enquanto o usuário arrasta o cursor.
     pub scrubbing: Option<f64>,
-    /// Última duração conhecida: a consulta só responde depois do preroll e
-    /// volta a falhar em alguns formatos, então guardamos a boa.
-    duration: std::cell::Cell<f64>,
     pub muted: bool,
-    pub error: Option<String>,
-    /// Uma busca em andamento, numa thread à parte.
-    seeking: Arc<AtomicBool>,
-    repaint: egui::Context,
 }
 
 impl Player {
+    /// Abre a mídia numa thread própria. Volta na hora: quem espera pelo
+    /// preroll é a thread, não a janela.
     pub fn open(path: &Path, video: bool, repaint: egui::Context) -> Option<Self> {
         if !init() {
             return None;
         }
         let uri = gst::glib::filename_to_uri(path, None).ok()?;
-        let pipeline = gst::ElementFactory::make("playbin3")
-            .build()
-            .or_else(|_| gst::ElementFactory::make("playbin").build())
-            .ok()?;
-        pipeline.set_property("uri", uri.as_str());
-
         let shared = Arc::new(Shared::default());
-        if video {
-            let sink = video_sink(Arc::clone(&shared), repaint.clone())?;
-            pipeline.set_property("video-sink", &sink);
-        } else if let Ok(fake) = gst::ElementFactory::make("fakesink").build() {
-            pipeline.set_property("video-sink", &fake);
-        }
+        let (tx, rx) = mpsc::channel();
 
-        // O playbin pede `autoaudiosink`, que vem do gst-plugins-good e nem
-        // sempre está instalado. Sem sink não há preroll: o pipeline morre em
-        // silêncio, sem duração e sem poder buscar posição.
-        if let Some(sink) = audio_sink() {
-            pipeline.set_property("audio-sink", &sink);
-        }
-
-        // Pausado já decodifica o primeiro quadro: o cartão aparece com a
-        // imagem do vídeo em vez de um retângulo vazio.
-        if pipeline.set_state(gst::State::Paused).is_err() {
-            log::warn!("não deu para preparar {}", path.display());
-            return None;
-        }
-        // O preroll é assíncrono; esperar um instante por ele faz a duração
-        // já existir na primeira vez que a linha do tempo for desenhada.
-        let (result, _, _) = pipeline.state(gst::ClockTime::from_mseconds(600));
-        if let Err(error) = result {
-            log::warn!("preroll de {}: {error}", path.display());
-        }
+        let worker_shared = Arc::clone(&shared);
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        std::thread::Builder::new()
+            .name("papo-player".into())
+            .spawn(move || {
+                run(uri.to_string(), video, worker_shared, repaint, rx, name);
+            })
+            .ok()?;
 
         Some(Self {
-            pipeline,
+            commands: tx,
             shared,
             texture: None,
             shown: 0,
-            aspect: 16.0 / 9.0,
-            playing: false,
             scrubbing: None,
-            duration: std::cell::Cell::new(0.0),
             muted: false,
-            error: None,
-            seeking: Arc::new(AtomicBool::new(false)),
-            repaint,
         })
     }
 
+    fn send(&self, command: Command) {
+        // A thread morreu (mídia quebrada, por exemplo): não há o que fazer,
+        // e a janela segue desenhando.
+        let _ = self.commands.send(command);
+    }
+
     pub fn play(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Playing);
-        self.playing = true;
-        self.shared.eos.store(false, Ordering::Relaxed);
+        self.shared.playing.store(true, Ordering::Relaxed);
+        self.send(Command::Play);
     }
 
     pub fn pause(&mut self) {
-        if self.playing {
-            let _ = self.pipeline.set_state(gst::State::Paused);
-            self.playing = false;
-        }
+        self.shared.playing.store(false, Ordering::Relaxed);
+        self.send(Command::Pause);
     }
 
     pub fn toggle(&mut self) {
-        if self.playing {
+        if self.is_playing() {
             self.pause();
         } else {
             self.play();
@@ -138,104 +136,63 @@ impl Player {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.playing
-    }
-
-    /// Lê o barramento do áudio, que não tem quadro para acordá-lo.
-    pub fn update(&mut self) {
-        self.pump_bus();
+        self.shared.playing.load(Ordering::Relaxed)
     }
 
     pub fn position(&self) -> f64 {
-        if let Some(at) = self.scrubbing {
-            return at;
-        }
-        self.pipeline
-            .query_position::<gst::ClockTime>()
-            .map(|time| time.seconds_f64())
-            .unwrap_or(0.0)
+        self.scrubbing
+            .unwrap_or_else(|| Shared::seconds(&self.shared.position_ns))
     }
 
     pub fn duration(&self) -> f64 {
-        if let Some(time) = self.pipeline.query_duration::<gst::ClockTime>() {
-            let seconds = time.seconds_f64();
-            if seconds > 0.0 {
-                self.duration.set(seconds);
-                return seconds;
-            }
-        }
-        self.duration.get()
+        Shared::seconds(&self.shared.duration_ns)
     }
 
-    /// Buscar é a única chamada que não pode sair daqui de dentro: num
-    /// pipeline que ainda não tocou, `seek_simple` com flush pode não
-    /// voltar, e como isto roda no laço de desenho a janela inteira
-    /// congelava. Então a busca vai para uma thread e a janela segue.
     pub fn seek(&mut self, seconds: f64) {
         let seconds = if seconds.is_finite() {
             seconds.max(0.0)
         } else {
             0.0
         };
-        if self.seeking.swap(true, Ordering::Relaxed) {
-            // Já tem uma busca a caminho; arrastar o cursor não enfileira
-            // dezenas delas.
-            return;
-        }
-
-        let target = gst::ClockTime::from_nseconds((seconds * 1e9) as u64);
-        let pipeline = self.pipeline.clone();
-        let seeking = Arc::clone(&self.seeking);
-        let resume = self.playing;
-        let repaint = self.repaint.clone();
-        let spawned = std::thread::Builder::new()
-            .name("papo-seek".into())
-            .spawn(move || {
-                let _ = pipeline
-                    .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, target);
-                // Estava tocando: continua tocando do ponto novo.
-                if resume {
-                    let _ = pipeline.set_state(gst::State::Playing);
-                }
-                seeking.store(false, Ordering::Relaxed);
-                repaint.request_repaint();
-            });
-        if spawned.is_err() {
-            self.seeking.store(false, Ordering::Relaxed);
-        }
-        self.shared.eos.store(false, Ordering::Relaxed);
-    }
-
-    pub fn aspect(&self) -> f32 {
-        self.aspect
-    }
-
-    pub fn error(&self) -> Option<String> {
-        self.error.clone()
+        // A posição anda na hora, para o cursor não voltar enquanto a busca
+        // acontece lá atrás; e o botão já vira pausa, porque buscar toca.
+        self.shared
+            .position_ns
+            .store((seconds * 1e9) as u64, Ordering::Relaxed);
+        self.shared.playing.store(true, Ordering::Relaxed);
+        self.send(Command::Seek(seconds));
     }
 
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
-        self.pipeline.set_property("mute", muted);
+        self.send(Command::Muted(muted));
     }
 
-    /// Lê o barramento e devolve a textura do quadro mais recente.
-    pub fn frame(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
-        self.pump_bus();
-
-        if self.playing {
-            // Enquanto toca, a janela precisa acompanhar o vídeo.
-            ctx.request_repaint();
+    /// Proporção do vídeo; 16:9 enquanto o primeiro quadro não chega.
+    pub fn aspect(&self) -> f32 {
+        let bits = self.shared.aspect.load(Ordering::Relaxed);
+        let aspect = f32::from_bits(bits);
+        if aspect.is_finite() && aspect > 0.05 {
+            aspect
+        } else {
+            16.0 / 9.0
         }
+    }
 
+    pub fn error(&self) -> Option<String> {
+        self.shared.error.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Mantida por compatibilidade: o barramento agora é lido pela thread.
+    pub fn update(&mut self) {}
+
+    /// Textura do quadro mais recente.
+    pub fn frame(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         let seq = self.shared.seq.load(Ordering::Relaxed);
         if seq != self.shown {
             if let Ok(mut slot) = self.shared.frame.lock() {
                 if let Some(frame) = slot.take() {
                     self.shown = seq;
-                    if frame.height > 0 {
-                        self.aspect = frame.width as f32 / frame.height as f32;
-                    }
                     let image = egui::ColorImage {
                         size: [frame.width, frame.height],
                         pixels: frame.pixels,
@@ -256,40 +213,182 @@ impl Player {
         }
         self.texture.as_ref()
     }
-
-    /// Chegou ao fim: volta ao começo e espera, como um player de verdade.
-    fn pump_bus(&mut self) {
-        if self.shared.eos.swap(false, Ordering::Relaxed) {
-            self.playing = false;
-            let _ = self.pipeline.set_state(gst::State::Paused);
-            self.seek(0.0);
-        }
-        let Some(bus) = self.pipeline.bus() else { return };
-        while let Some(message) = bus.pop() {
-            match message.view() {
-                gst::MessageView::Eos(_) => {
-                    self.playing = false;
-                    let _ = self.pipeline.set_state(gst::State::Paused);
-                    self.seek(0.0);
-                }
-                gst::MessageView::Error(error) => {
-                    self.error = Some(error.error().to_string());
-                    self.playing = false;
-                }
-                _ => {}
-            }
-        }
-    }
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
-        let _ = self.pipeline.set_state(gst::State::Null);
+        // Soltar o canal encerra a thread, que desmonta o pipeline. Esperar
+        // por ela aqui seria trocar um congelamento por outro.
+        let (dead, _) = mpsc::channel();
+        self.commands = dead;
     }
 }
 
-/// O primeiro sink de áudio que este sistema consegue criar.
+/// A thread do player: monta o pipeline, obedece à fila e publica o estado.
+fn run(
+    uri: String,
+    video: bool,
+    shared: Arc<Shared>,
+    repaint: egui::Context,
+    commands: mpsc::Receiver<Command>,
+    name: String,
+) {
+    let pipeline = match gst::ElementFactory::make("playbin3")
+        .build()
+        .or_else(|_| gst::ElementFactory::make("playbin").build())
+    {
+        Ok(pipeline) => pipeline,
+        Err(error) => {
+            report(&shared, format!("sem playbin: {error}"));
+            return;
+        }
+    };
+    pipeline.set_property("uri", uri.as_str());
+
+    if video {
+        match video_sink(Arc::clone(&shared), repaint.clone()) {
+            Some(sink) => pipeline.set_property("video-sink", &sink),
+            None => report(&shared, "sem sink de vídeo".into()),
+        }
+    } else if let Ok(fake) = gst::ElementFactory::make("fakesink").build() {
+        pipeline.set_property("video-sink", &fake);
+    }
+    // O playbin pede `autoaudiosink`, que vem do gst-plugins-good e nem
+    // sempre está instalado. Sem sink não há preroll: o pipeline morre em
+    // silêncio, sem duração e sem poder buscar posição.
+    if let Some(sink) = audio_sink() {
+        pipeline.set_property("audio-sink", &sink);
+    }
+
+    if pipeline.set_state(gst::State::Paused).is_err() {
+        report(&shared, format!("não deu para preparar {name}"));
+        let _ = pipeline.set_state(gst::State::Null);
+        return;
+    }
+    // Esperar o preroll aqui é de graça: a janela não depende desta thread.
+    let (result, _, _) = pipeline.state(gst::ClockTime::from_seconds(5));
+    if let Err(error) = result {
+        log::warn!("preroll de {name}: {error}");
+    }
+    publish(&pipeline, &shared);
+    repaint.request_repaint();
+
+    loop {
+        match commands.recv_timeout(TICK) {
+            Ok(Command::Play) => match pipeline.set_state(gst::State::Playing) {
+                // A troca de estado pode voltar como assíncrona, e enquanto
+                // ela não termina o relógio não anda: o pipeline diz PLAYING
+                // e a posição fica parada. Esperar aqui é de graça.
+                Ok(_) => {
+                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                }
+                Err(error) => report(&shared, format!("não tocou: {error}")),
+            },
+            Ok(Command::Pause) => {
+                let _ = pipeline.set_state(gst::State::Paused);
+                let _ = pipeline.state(gst::ClockTime::from_mseconds(300));
+            }
+            Ok(Command::Seek(seconds)) => {
+                let target = gst::ClockTime::from_nseconds((seconds * 1e9) as u64);
+                // Aqui a busca pode bloquear à vontade: quem espera é esta
+                // thread, não a janela.
+                if pipeline
+                    .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, target)
+                    .is_err()
+                {
+                    log::warn!("busca recusada em {name}");
+                }
+                // A busca com flush desfaz o preroll: é preciso esperar o
+                // pipeline se assentar antes de mandá-lo tocar, senão ele
+                // fica parado para sempre no ponto novo.
+                let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                // Quem arrasta o cursor quer ouvir dali em diante.
+                if pipeline.set_state(gst::State::Playing).is_ok() {
+                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                    shared.playing.store(true, Ordering::Relaxed);
+                }
+                repaint.request_repaint();
+            }
+            Ok(Command::Muted(muted)) => pipeline.set_property("mute", muted),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            // A janela soltou o player.
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+
+        if let Some(bus) = pipeline.bus() {
+            while let Some(message) = bus.pop() {
+                match message.view() {
+                    gst::MessageView::Eos(_) => {
+                        shared.playing.store(false, Ordering::Relaxed);
+                        let _ = pipeline.set_state(gst::State::Paused);
+                        let _ = pipeline
+                            .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO);
+                        repaint.request_repaint();
+                    }
+                    gst::MessageView::Error(error) => {
+                        shared.playing.store(false, Ordering::Relaxed);
+                        report(&shared, error.error().to_string());
+                        repaint.request_repaint();
+                    }
+                    // O sink avisa que a latência mudou e espera que alguém
+                    // recalcule. Quem ignora fica com o relógio parado: o
+                    // pipeline diz PLAYING e a posição não anda.
+                    gst::MessageView::Latency(_) => {
+                        if let Some(bin) = pipeline.downcast_ref::<gst::Bin>() {
+                            if let Err(error) = bin.recalculate_latency() {
+                                log::warn!("latência de {name}: {error}");
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        publish(&pipeline, &shared);
+        if shared.playing.load(Ordering::Relaxed) {
+            repaint.request_repaint();
+        }
+    }
+
+    let _ = pipeline.set_state(gst::State::Null);
+}
+
+/// Publica posição e duração para a janela ler sem perguntar ao GStreamer.
+fn publish(pipeline: &gst::Element, shared: &Shared) {
+    // Perguntar o estado (sem esperar) é o que fecha uma troca assíncrona
+    // pendente. Sem isso o pipeline anuncia PLAYING, o relógio não anda e a
+    // posição fica congelada — foi exatamente o que aconteceu aqui.
+    let _ = pipeline.state(gst::ClockTime::ZERO);
+    if let Some(position) = pipeline.query_position::<gst::ClockTime>() {
+        shared.position_ns.store(position.nseconds(), Ordering::Relaxed);
+    }
+    if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
+        if duration.nseconds() > 0 {
+            shared.duration_ns.store(duration.nseconds(), Ordering::Relaxed);
+        }
+    }
+}
+
+fn report(shared: &Shared, message: String) {
+    log::warn!("player: {message}");
+    if let Ok(mut slot) = shared.error.lock() {
+        *slot = Some(message);
+    }
+}
+
+/// O primeiro sink de áudio que este sistema consegue criar. `PAPO_AUDIO_SINK`
+/// força um deles, para quando o padrão do sistema não coopera.
 fn audio_sink() -> Option<gst::Element> {
+    if let Ok(forced) = std::env::var("PAPO_AUDIO_SINK") {
+        match gst::ElementFactory::make(&forced).build() {
+            Ok(sink) => {
+                log::info!("saída de áudio forçada: {forced}");
+                return Some(sink);
+            }
+            Err(error) => log::warn!("saída de áudio {forced} não existe: {error}"),
+        }
+    }
     for name in ["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"] {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
@@ -354,6 +453,12 @@ fn video_sink(shared: Arc<Shared>, repaint: egui::Context) -> Option<gst::Elemen
                         height,
                         pixels,
                     });
+                }
+                if height > 0 {
+                    shared.aspect.store(
+                        (width as f32 / height as f32).to_bits(),
+                        Ordering::Relaxed,
+                    );
                 }
                 shared.seq.fetch_add(1, Ordering::Relaxed);
                 repaint.request_repaint();
