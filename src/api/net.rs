@@ -17,6 +17,8 @@ use super::ws::{self, Connection, Event};
 pub enum Command {
     Login { username: String, password: String },
     Register { username: String, password: String },
+    /// Senha do servidor, para servidores fechados.
+    LoginServer { password: String },
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
@@ -65,6 +67,12 @@ pub enum Update {
     /// Sessão válida (`Some`) ou encerrada (`None`).
     Session(Option<Box<Whoami>>),
     AuthFailed(String),
+    /// O servidor é fechado e ainda não recebeu a senha do servidor.
+    ServerLocked,
+    /// A senha do servidor passou: dá para entrar ou criar conta.
+    ServerUnlocked,
+    /// O backend detectou reuso de token e derrubou as outras sessões.
+    ConnectionViolation,
     Server(Option<Box<Server>>),
     Channels(Vec<Channel>),
     Users(Vec<UserSummary>),
@@ -98,7 +106,7 @@ impl Net {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
         let session = Arc::new(Session::default());
-        session.set_token(load_token());
+        session.set_token(load_token(&base_url));
         let worker_session = Arc::clone(&session);
 
         std::thread::Builder::new()
@@ -185,13 +193,19 @@ async fn worker(
             }
             Err(_) => {
                 session.set_token(None);
-                store_token(None);
+                store_token(&base_url, None);
                 publish(&updates, &repaint, Update::Session(None));
             }
         }
     } else {
         publish(&updates, &repaint, Update::Session(None));
     }
+    // O token de sessão vale 24 h e a renovação o gira. Seis horas dá quatro
+    // chamadas por dia e sobra folga se a máquina dormir um pouco.
+    let mut renewal = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+    renewal.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    renewal.tick().await; // o primeiro tique sai na hora; a sessão acabou de abrir
+
     loop {
         // O socket acompanha a sessão: abre quando há cookie válido e fecha
         // quando ele some.
@@ -224,7 +238,7 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                handle(&api, &session, &me, &updates, &repaint, &outbound_tx, command).await;
+                handle(&api, &base_url, &session, &me, &updates, &repaint, &outbound_tx, command).await;
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
@@ -233,6 +247,23 @@ async fn worker(
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
                 publish(&updates, &repaint, Update::Connection(status));
+            }
+            _ = renewal.tick() => {
+                if !session.is_authenticated() {
+                    continue;
+                }
+                match api.refresh().await {
+                    // O cookie novo já entrou no pote; só falta o disco.
+                    Ok(()) => store_token(&base_url, session.token()),
+                    Err(ApiError::Unauthorized) => {
+                        session.set_token(None);
+                        store_token(&base_url, None);
+                        publish(&updates, &repaint, Update::Session(None));
+                    }
+                    // Rede fora do ar não encerra a sessão: tenta de novo no
+                    // próximo tique.
+                    Err(error) => log::warn!("renovação da sessão falhou: {error}"),
+                }
             }
         }
     }
@@ -261,6 +292,7 @@ fn start_socket(
 #[allow(clippy::too_many_arguments)]
 async fn handle(
     api: &Api,
+    base_url: &str,
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
     updates: &sync_mpsc::Sender<Update>,
@@ -270,8 +302,11 @@ async fn handle(
 ) {
     match command {
         Command::Login { username, password } => match api.login(&username, &password).await {
-            Ok(_) => {
-                store_token(session.token());
+            Ok(login) => {
+                store_token(base_url, session.token());
+                if login.connection_violation {
+                    publish(updates, repaint, Update::ConnectionViolation);
+                }
                 match api.whoami().await {
                     Ok(whoami) => {
                         let id = whoami.id.clone();
@@ -284,6 +319,7 @@ async fn handle(
                     Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
                 }
             }
+            Err(ApiError::ServerLocked) => publish(updates, repaint, Update::ServerLocked),
             Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
         },
         Command::Register { username, password } => {
@@ -292,6 +328,7 @@ async fn handle(
                     // O registro não entrega sessão: entra em seguida.
                     Box::pin(handle(
                         api,
+                        base_url,
                         session,
                         me,
                         updates,
@@ -301,6 +338,7 @@ async fn handle(
                     ))
                     .await;
                 }
+                Err(ApiError::ServerLocked) => publish(updates, repaint, Update::ServerLocked),
                 Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
             }
         }
@@ -400,9 +438,13 @@ async fn handle(
                 r#"{{"type":"typing","channel_id":"{channel_id}"}}"#
             ));
         }
+        Command::LoginServer { password } => match api.login_server(&password).await {
+            Ok(()) => publish(updates, repaint, Update::ServerUnlocked),
+            Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
+        },
         Command::Logout => {
             let _ = api.logout().await;
-            store_token(None);
+            store_token(base_url, None);
             publish(updates, repaint, Update::Session(None));
         }
     }
@@ -480,22 +522,27 @@ fn report(updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context, error: A
 // Sessão em disco
 // ---------------------------------------------------------------------------
 
-fn session_path() -> Option<std::path::PathBuf> {
+/// Cada servidor guarda o próprio token. Compartilhar um arquivo só seria
+/// pior do que perder a sessão: reusar o token de outro servidor conta como
+/// reuso de token e derruba todas as sessões da conta.
+fn session_path(base_url: &str) -> Option<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "papo")?;
-    let dir = dirs.data_dir().to_path_buf();
+    let dir = dirs.data_dir().join("sessions");
     std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join("session"))
+    Some(dir.join(format!("{}.token", crate::state::server_key(base_url))))
 }
 
-fn load_token() -> Option<String> {
-    let path = session_path()?;
+fn load_token(base_url: &str) -> Option<String> {
+    let path = session_path(base_url)?;
     let token = std::fs::read_to_string(path).ok()?;
     let token = token.trim();
     (!token.is_empty()).then(|| token.to_owned())
 }
 
-fn store_token(token: Option<String>) {
-    let Some(path) = session_path() else { return };
+fn store_token(base_url: &str, token: Option<String>) {
+    let Some(path) = session_path(base_url) else {
+        return;
+    };
     match token {
         Some(token) => {
             if std::fs::write(&path, token).is_ok() {

@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use reqwest::header::{HeaderValue, COOKIE};
+use reqwest::header::{HeaderValue, ACCEPT, COOKIE};
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -16,6 +16,42 @@ use super::models::Notification as NotificationItem;
 use super::models::*;
 
 const COOKIE_NAME: &str = "Auth";
+
+/// Identificador único por requisição. O backend registra o valor no log e o
+/// devolve no corpo do erro, então um problema relatado pelo usuário dá para
+/// achar do outro lado. Não vale a pena um UUID de verdade aqui: o relógio em
+/// nanossegundos mais um contador já não repete.
+fn request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("papo-{nanos:x}-{count:x}")
+}
+
+/// Traduz o corpo de um erro do backend. O 401 tem dois significados bem
+/// diferentes: sessão expirada ou servidor fechado esperando a senha.
+fn problem_error(status: StatusCode, body: &str) -> ApiError {
+    let problem: Problem = serde_json::from_str(body).unwrap_or_default();
+    match status {
+        StatusCode::UNAUTHORIZED => {
+            if problem.kind.ends_with("server-access-required") {
+                ApiError::ServerLocked
+            } else {
+                ApiError::Unauthorized
+            }
+        }
+        StatusCode::NOT_FOUND => ApiError::NotFound,
+        _ => ApiError::Problem(if problem.status == 0 {
+            format!("erro {status}")
+        } else {
+            problem.message()
+        }),
+    }
+}
 
 /// Arquivo escolhido no seletor, à espera de subir junto com a mensagem.
 #[derive(Debug, Clone)]
@@ -32,6 +68,9 @@ pub enum ApiError {
     Problem(String),
     #[error("sessão expirada")]
     Unauthorized,
+    /// Servidor fechado: falta a senha do servidor (`/auth/login_server`).
+    #[error("este servidor pede uma senha")]
+    ServerLocked,
     #[error("recurso não encontrado")]
     NotFound,
     #[error("falha de rede: {0}")]
@@ -82,6 +121,11 @@ impl Session {
     }
 }
 
+#[derive(Debug, Serialize)]
+struct ServerPassword {
+    server_password: String,
+}
+
 #[derive(Clone)]
 pub struct Api {
     http: reqwest::Client,
@@ -123,7 +167,11 @@ impl Api {
             .base
             .join(path)
             .map_err(|e| ApiError::Network(e.to_string()))?;
-        let mut request = self.http.request(method, url);
+        let mut request = self
+            .http
+            .request(method, url)
+            .header("X-Request-ID", request_id())
+            .header(ACCEPT, "application/problem+json, application/json");
         if let Some(token) = self.session.token() {
             let cookie = format!("{COOKIE_NAME}={token}");
             if let Ok(value) = HeaderValue::from_str(&cookie) {
@@ -156,18 +204,7 @@ impl Api {
             return serde_json::from_str(&body).map_err(|e| ApiError::Decode(e.to_string()));
         }
 
-        match status {
-            StatusCode::UNAUTHORIZED => Err(ApiError::Unauthorized),
-            StatusCode::NOT_FOUND => Err(ApiError::NotFound),
-            _ => {
-                let problem: Problem = serde_json::from_str(&body).unwrap_or_default();
-                Err(ApiError::Problem(if problem.status == 0 {
-                    format!("erro {status}")
-                } else {
-                    problem.message()
-                }))
-            }
-        }
+        Err(problem_error(status, &body))
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> ApiResult<T> {
@@ -193,18 +230,7 @@ impl Api {
             return Ok(());
         }
         let body = response.text().await.unwrap_or_default();
-        Err(match status {
-            StatusCode::UNAUTHORIZED => ApiError::Unauthorized,
-            StatusCode::NOT_FOUND => ApiError::NotFound,
-            _ => {
-                let problem: Problem = serde_json::from_str(&body).unwrap_or_default();
-                ApiError::Problem(if problem.status == 0 {
-                    format!("erro {status}")
-                } else {
-                    problem.message()
-                })
-            }
-        })
+        Err(problem_error(status, &body))
     }
 
     /// Baixa um recurso binário (anexo, miniatura ou mídia) inteiro na
@@ -213,11 +239,8 @@ impl Api {
         let response = self.send::<()>(Method::GET, path, None).await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(match status {
-                StatusCode::UNAUTHORIZED => ApiError::Unauthorized,
-                StatusCode::NOT_FOUND => ApiError::NotFound,
-                _ => ApiError::Problem(format!("erro {status}")),
-            });
+            let body = response.text().await.unwrap_or_default();
+            return Err(problem_error(status, &body));
         }
         let mime = response
             .headers()
@@ -257,6 +280,40 @@ impl Api {
 
     pub async fn whoami(&self) -> ApiResult<Whoami> {
         self.get("/auth/whoami").await
+    }
+
+    /// Senha do servidor: um servidor fechado recusa login e cadastro até
+    /// receber esta autorização, que vem no mesmo cookie `Auth` e vale meia
+    /// hora — tempo de entrar ou criar a conta.
+    pub async fn login_server(&self, password: &str) -> ApiResult<()> {
+        let response = self
+            .send(
+                Method::POST,
+                "/auth/login_server",
+                Some(&ServerPassword {
+                    server_password: password.to_owned(),
+                }),
+            )
+            .await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(problem_error(status, &body))
+    }
+
+    /// Renova a sessão. O backend gira o token a cada chamada: o antigo passa
+    /// a ser um token reusado e, se voltar a aparecer, derruba todas as
+    /// sessões da conta. Por isso só existe um lugar que chama isto.
+    pub async fn refresh(&self) -> ApiResult<()> {
+        let response = self.send::<()>(Method::POST, "/auth/refresh", None).await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(problem_error(status, &body))
     }
 
     pub async fn logout(&self) -> ApiResult<()> {
@@ -330,7 +387,12 @@ impl Api {
             form = form.part("attachments", part);
         }
 
-        let mut request = self.http.post(url).multipart(form);
+        let mut request = self
+            .http
+            .post(url)
+            .header("X-Request-ID", request_id())
+            .header(ACCEPT, "application/problem+json, application/json")
+            .multipart(form);
         if let Some(token) = self.session.token() {
             if let Ok(value) = HeaderValue::from_str(&format!("{COOKIE_NAME}={token}")) {
                 request = request.header(COOKIE, value);

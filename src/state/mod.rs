@@ -147,6 +147,69 @@ pub struct Server {
     pub description: Option<String>,
 }
 
+/// Aviso que o servidor manda e a interface traduz.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// O backend viu um token de sessão antigo voltar e, por segurança,
+    /// derrubou todas as conexões da conta.
+    ConnectionViolation,
+}
+
+/// Chave estável e segura para nome de arquivo a partir do endereço de um
+/// servidor. É o que separa o token, o cache de mídia e as marcas de leitura
+/// de cada servidor.
+pub fn server_key(base_url: &str) -> String {
+    let trimmed = base_url
+        .trim()
+        .trim_end_matches('/')
+        .to_lowercase();
+    let naked = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(&trimmed);
+
+    // FNV-1a: o suficiente para separar endereços parecidos sem puxar
+    // dependência nova.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in trimmed.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    let readable: String = naked
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(40)
+        .collect();
+    format!("{}-{hash:016x}", readable.trim_matches('-'))
+}
+
+#[cfg(test)]
+mod chave_do_servidor {
+    use super::server_key;
+
+    #[test]
+    fn enderecos_diferentes_geram_chaves_diferentes() {
+        assert_ne!(server_key("https://um.example"), server_key("https://dois.example"));
+    }
+
+    #[test]
+    fn a_barra_final_e_a_caixa_nao_mudam_a_chave() {
+        assert_eq!(
+            server_key("https://Papo.Example/"),
+            server_key("https://papo.example")
+        );
+    }
+
+    #[test]
+    fn a_chave_serve_de_nome_de_arquivo() {
+        let key = server_key("https://papo.example:8080/base");
+        assert!(key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+}
+
 /// Em que ponto da jornada o usuário está.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -186,6 +249,12 @@ pub struct Store {
     open_notifications: HashMap<String, Vec<String>>,
     pub error: Option<String>,
     pub busy: bool,
+    /// O servidor é fechado e ainda espera a senha do servidor. A tela de
+    /// entrada só mostra esse campo quando o servidor de fato pede.
+    pub locked: bool,
+    /// Aviso do servidor que não é um erro de formulário — hoje, o reuso de
+    /// token que derrubou as outras sessões.
+    pub notice: Option<Notice>,
 }
 
 impl Default for Store {
@@ -209,6 +278,8 @@ impl Default for Store {
             open_notifications: HashMap::new(),
             error: None,
             busy: false,
+            locked: false,
+            notice: None,
         }
     }
 }
@@ -337,6 +408,19 @@ impl Store {
                 self.error = Some(message);
                 self.busy = false;
             }
+            Update::ServerLocked => {
+                self.screen = Screen::Auth;
+                self.locked = true;
+                self.error = None;
+                self.busy = false;
+            }
+            Update::ServerUnlocked => {
+                // A senha do servidor valeu: o campo some e o login segue.
+                self.locked = false;
+                self.error = None;
+                self.busy = false;
+            }
+            Update::ConnectionViolation => self.notice = Some(Notice::ConnectionViolation),
             Update::Server(server) => {
                 self.screen = match &server {
                     Some(_) => Screen::Chat,

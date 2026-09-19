@@ -12,6 +12,8 @@ pub struct AuthForm {
     pub server_url: String,
     pub username: String,
     pub password: String,
+    /// Senha do servidor, pedida só quando o servidor é fechado.
+    pub server_password: String,
     /// Nome do servidor, no primeiro uso da instância.
     pub server_name: String,
 }
@@ -22,6 +24,8 @@ pub enum AuthAction {
     SignIn,
     Register,
     CreateServer,
+    /// Mandar a senha do servidor de um servidor fechado.
+    UnlockServer,
 }
 
 /// Cartão centrado de login/cadastro.
@@ -33,8 +37,22 @@ pub fn sign_in(
     s: &Strings,
 ) -> AuthAction {
     let mut action = AuthAction::None;
+    // Um servidor fechado recusa login e cadastro antes da senha do
+    // servidor. Não adianta pedir usuário e senha ainda: o cartão mostra
+    // só o portão, e volta ao normal assim que ele abre.
+    let locked = store.locked;
+    let unmet = if form.password.is_empty() {
+        Vec::new()
+    } else {
+        password_rules(&form.password, s)
+    };
+    let height = if locked {
+        340.0
+    } else {
+        404.0 + unmet.len() as f32 * 16.0 + if store.notice.is_some() { 40.0 } else { 0.0 }
+    };
 
-    card(ui, t, 400.0, 404.0, |ui| {
+    card(ui, t, 400.0, height, |ui| {
         ui.label(RichText::new("Papo").font(text::title1()).color(t.label));
         ui.add_space(space::XS);
         ui.label(
@@ -44,20 +62,44 @@ pub fn sign_in(
         );
         ui.add_space(space::XXL);
 
-        field(ui, t, s.server, &mut form.server_url, false);
+        field(ui, t, s.server_address, &mut form.server_url, false);
         ui.add_space(space::LG);
+
+        if locked {
+            let submitted = field(ui, t, s.server_password, &mut form.server_password, true);
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(s.server_password_hint)
+                    .font(text::footnote())
+                    .color(t.label_tertiary),
+            );
+            problem(ui, t, store, s);
+
+            ui.add_space(space::XXL);
+            let ready = !form.server_password.is_empty();
+            if primary_button(ui, t, s.unlock_server, ready && !store.busy) || (submitted && ready)
+            {
+                action = AuthAction::UnlockServer;
+            }
+            return;
+        }
+
         field(ui, t, s.username, &mut form.username, false);
         ui.add_space(space::LG);
         let submitted = field(ui, t, s.password, &mut form.password, true);
 
-        if let Some(error) = &store.error {
-            ui.add_space(space::LG);
+        // As regras só aparecem quando a senha digitada ainda não passa;
+        // quem só está entrando numa conta antiga nunca as vê.
+        for rule in &unmet {
+            ui.add_space(space::XXS);
             ui.label(
-                RichText::new(error)
+                RichText::new(format!("· {rule}"))
                     .font(text::footnote())
-                    .color(t.danger),
+                    .color(t.label_tertiary),
             );
         }
+
+        problem(ui, t, store, s);
 
         ui.add_space(space::XXL);
         let ready = !form.username.trim().is_empty() && !form.password.is_empty();
@@ -65,12 +107,68 @@ pub fn sign_in(
             action = AuthAction::SignIn;
         }
         ui.add_space(space::MD);
-        if link_button(ui, t, s.sign_up, ready && !store.busy) {
+        // Cadastrar com senha fraca só voltaria como erro do servidor.
+        let may_register = ready && !store.busy && unmet.is_empty();
+        if link_button(ui, t, s.sign_up, may_register) {
             action = AuthAction::Register;
         }
     });
 
     action
+}
+
+/// Erro do formulário e aviso do servidor, nesta ordem.
+fn problem(ui: &mut egui::Ui, t: &Tokens, store: &Store, s: &Strings) {
+    if let Some(error) = &store.error {
+        ui.add_space(space::LG);
+        ui.label(RichText::new(error).font(text::footnote()).color(t.danger));
+    }
+    if store.notice.is_some() {
+        ui.add_space(space::LG);
+        ui.label(
+            RichText::new(s.connection_violation)
+                .font(text::footnote())
+                .color(t.away),
+        );
+    }
+}
+
+/// Regras de senha que a senha digitada ainda não cumpre. É a mesma política
+/// do backend, repetida aqui só para o aviso sair na hora em vez de voltar
+/// como erro depois do envio.
+fn password_rules(password: &str, s: &Strings) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if password.chars().count() < 8 {
+        missing.push(s.password_rule_length);
+    }
+    if !password.chars().any(char::is_uppercase) {
+        missing.push(s.password_rule_uppercase);
+    }
+    if !password.chars().any(|c| !c.is_alphanumeric()) {
+        missing.push(s.password_rule_special);
+    }
+    missing
+}
+
+#[cfg(test)]
+mod tests {
+    use super::password_rules;
+    use crate::i18n::Lang;
+
+    #[test]
+    fn senha_forte_nao_quebra_regra() {
+        assert!(password_rules("Segredo!1", Lang::PtBr.strings()).is_empty());
+    }
+
+    #[test]
+    fn senha_curta_e_minuscula_quebra_as_tres() {
+        assert_eq!(password_rules("abc", Lang::PtBr.strings()).len(), 3);
+    }
+
+    #[test]
+    fn maiuscula_acentuada_conta_como_maiuscula() {
+        assert!(password_rules("Ácido-forte", Lang::PtBr.strings()).is_empty());
+    }
 }
 
 /// Primeiro uso: a instância ainda não tem servidor.

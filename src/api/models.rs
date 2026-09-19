@@ -313,6 +313,10 @@ pub struct UserList {
 /// Erro no formato RFC 7807 devolvido pelo backend.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Problem {
+    /// URI do tipo do erro; o final identifica o caso
+    /// (`…/errors/server-access-required`, por exemplo).
+    #[serde(rename = "type", default)]
+    pub kind: String,
     pub title: Option<String>,
     pub detail: Option<String>,
     #[serde(default)]
