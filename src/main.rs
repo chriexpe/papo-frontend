@@ -3,18 +3,53 @@
 mod api;
 mod app;
 mod i18n;
+mod media;
 mod platform;
 mod state;
 mod ui;
 
 fn main() -> eframe::Result<()> {
-    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info,papo=debug"));
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("warn,papo=debug"));
 
     // `papo selftest <usuário> <senha>` exercita o cliente REST contra o
     // backend sem abrir janela — útil para conferir o contrato.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("selftest") {
         selftest(args.get(2).cloned(), args.get(3).cloned());
+        return Ok(());
+    }
+
+    // `papo media-test` gera um vídeo e um áudio de teste e os reproduz sem
+    // abrir janela — é como se confere o motor de mídia sem depender do
+    // backend.
+    if args.get(1).map(String::as_str) == Some("media-test") {
+        media_test();
+        return Ok(());
+    }
+
+    // `papo demo` abre a janela com um servidor de mentira: é como se vê a
+    // interface inteira enquanto o backend não responde.
+    if args.get(1).map(String::as_str) == Some("demo") {
+        std::env::set_var("PAPO_DEMO", "1");
+    }
+
+    // `papo pick-test` abre o seletor de arquivos e imprime o que voltou.
+    if args.get(1).map(String::as_str) == Some("pick-test") {
+        println!("abrindo o seletor…");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let picked = runtime.block_on(async {
+            rfd::AsyncFileDialog::new()
+                .set_title("Anexar")
+                .pick_files()
+                .await
+        });
+        println!(
+            "resultado: {:?}",
+            picked.map(|handles| handles
+                .iter()
+                .map(|handle| handle.path().to_path_buf())
+                .collect::<Vec<_>>())
+        );
         return Ok(());
     }
 
@@ -60,6 +95,96 @@ fn window_icon() -> egui::IconData {
         height: image.height(),
         rgba: image.into_raw(),
     }
+}
+
+/// Exercita o GStreamer: gera mídia, abre o player e lê um quadro.
+fn media_test() {
+    use gstreamer as gst;
+
+    if !media::player::init() {
+        println!("gstreamer: indisponível");
+        return;
+    }
+    println!("gstreamer: {}", gst::version_string());
+
+    let dir = std::env::temp_dir().join("papo-media-test");
+    let _ = std::fs::create_dir_all(&dir);
+    let video = dir.join("teste.ogv");
+    let audio = dir.join("teste.ogg");
+
+    // Três segundos de vídeo em Theora/Ogg: é o que dá para gerar sem
+    // depender de codecs que podem não estar instalados.
+    let pipeline = format!(
+        "videotestsrc num-buffers=90 ! video/x-raw,width=640,height=360,framerate=30/1 ! \
+         theoraenc ! oggmux ! filesink location=\"{}\"",
+        video.display()
+    );
+    run_pipeline(&pipeline, "vídeo de teste");
+
+    let pipeline = format!(
+        "audiotestsrc num-buffers=140 wave=sine ! audioconvert ! vorbisenc ! oggmux ! \
+         filesink location=\"{}\"",
+        audio.display()
+    );
+    run_pipeline(&pipeline, "áudio de teste");
+
+    let ctx = egui::Context::default();
+    match media::player::Player::open(&video, true, ctx.clone()) {
+        Some(mut player) => {
+            player.play();
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            let duration = player.duration();
+            let position = player.position();
+            match player.frame(&ctx) {
+                Some(texture) => {
+                    let size = texture.size();
+                    println!(
+                        "vídeo: {}x{} · {position:.1}s de {duration:.1}s",
+                        size[0], size[1]
+                    );
+                }
+                None => println!("vídeo: abriu mas nenhum quadro chegou"),
+            }
+        }
+        None => println!("vídeo: não deu para abrir"),
+    }
+
+    match media::player::waveform(&audio) {
+        Some(peaks) => println!(
+            "forma de onda: {} picos (máximo {:.2})",
+            peaks.len(),
+            peaks.iter().copied().fold(0.0_f32, f32::max)
+        ),
+        None => println!("forma de onda: falhou"),
+    }
+}
+
+fn run_pipeline(description: &str, label: &str) {
+    use gstreamer as gst;
+    use gstreamer::prelude::*;
+
+    let Ok(pipeline) = gst::parse::launch(description) else {
+        println!("{label}: pipeline inválido");
+        return;
+    };
+    if pipeline.set_state(gst::State::Playing).is_err() {
+        println!("{label}: não iniciou");
+        return;
+    }
+    if let Some(bus) = pipeline.bus() {
+        for message in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
+            match message.view() {
+                gst::MessageView::Eos(_) => break,
+                gst::MessageView::Error(error) => {
+                    println!("{label}: {}", error.error());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+    let _ = pipeline.set_state(gst::State::Null);
+    println!("{label}: gerado");
 }
 
 /// Percorre registro, login e carga inicial, imprimindo o resultado.

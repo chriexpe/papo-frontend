@@ -3,19 +3,38 @@
 use egui::Color32;
 
 use crate::i18n::Lang;
+use crate::media::Media;
+use crate::platform::files::{self, Chosen, Dialogs};
 use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
 use crate::platform::activate::Activator;
 use crate::platform::notify::{Notification, Notifier};
 use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
+#[cfg(target_os = "linux")]
+use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net};
 use crate::state::{Screen, Store};
 use crate::ui::auth::{self, AuthAction, AuthForm};
-use crate::ui::shell::{self, UiState};
+use crate::ui::shell::{self, ChatAction, UiState};
 use crate::ui::glass::GlassRenderer;
 use crate::ui::theme::{self, Appearance, ThemePref, Tokens};
+
+/// Para onde vai um anexo salvo.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DownloadMode {
+    /// Direto para uma pasta, sem diálogo.
+    Folder(std::path::PathBuf),
+    /// O diálogo do sistema pergunta a cada anexo.
+    Ask,
+}
+
+impl Default for DownloadMode {
+    fn default() -> Self {
+        Self::Folder(files::downloads_dir())
+    }
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -32,6 +51,20 @@ pub struct Settings {
     pub close_to_tray: bool,
     #[serde(default = "enabled")]
     pub notifications: bool,
+    /// Contador de menções na bandeja e na barra de tarefas.
+    #[serde(default = "enabled")]
+    pub badge: bool,
+    /// A descrição do canal aparece ao abri-lo.
+    #[serde(default = "enabled")]
+    pub topic_reveal: bool,
+    /// Botão de gravar recado ao lado da caixa de texto.
+    #[serde(default = "enabled")]
+    pub record_button: bool,
+    #[serde(default)]
+    pub downloads: DownloadMode,
+    /// Até quando cada canal foi visto; é o que sobrevive ao fechamento.
+    #[serde(default)]
+    pub read_marks: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
 }
 
 fn enabled() -> bool {
@@ -48,6 +81,11 @@ impl Default for Settings {
             show_members: true,
             close_to_tray: true,
             notifications: true,
+            badge: true,
+            topic_reveal: true,
+            record_button: true,
+            downloads: DownloadMode::default(),
+            read_marks: std::collections::HashMap::new(),
         }
     }
 }
@@ -82,6 +120,10 @@ pub struct PapoApp {
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
     notifier: Option<Notifier>,
+    #[cfg(target_os = "linux")]
+    launcher: Option<Launcher>,
+    /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
+    dialogs: Dialogs,
     /// A janela tem foco neste quadro.
     focused: bool,
     /// Sair de verdade, em vez de esconder.
@@ -101,6 +143,8 @@ pub struct PapoApp {
     /// A janela está minimizada (o Wayland não deixa escondê-la de verdade).
     minimized: bool,
     window_attached: bool,
+    /// Servidor de mentira: a rede é ignorada.
+    demo: bool,
 }
 
 impl PapoApp {
@@ -127,19 +171,39 @@ impl PapoApp {
             log::warn!("sem backend glow: o vidro fosco fica desligado");
         }
 
+        let net = Net::spawn(settings.server_url.clone(), cc.egui_ctx.clone());
+        // A mídia usa o mesmo cookie da sessão para baixar anexos.
+        let media = Media::spawn(
+            settings.server_url.clone(),
+            std::sync::Arc::clone(&net.session),
+            cc.egui_ctx.clone(),
+        );
+        let demo = std::env::var("PAPO_DEMO").is_ok();
+        let mut store = Store::default();
+        store.read_marks = settings.read_marks.clone();
+        if demo {
+            crate::state::demo::seed(&mut store);
+        }
+
         Self {
-            store: Store::default(),
+            store,
             ui: UiState {
                 show_members: settings.show_members,
                 translucent: settings.translucency,
+                reveal_topic: settings.topic_reveal,
+                show_record: settings.record_button,
+                media: crate::media::MediaStore::new(media),
                 glass,
                 ..UiState::default()
             },
-            net: Net::spawn(settings.server_url.clone(), cc.egui_ctx.clone()),
+            net,
             #[cfg(target_os = "linux")]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
             notifier: Notifier::spawn(),
+            #[cfg(target_os = "linux")]
+            launcher: Launcher::spawn(),
+            dialogs: Dialogs::default(),
             focused: true,
             quitting: false,
             form: AuthForm {
@@ -161,6 +225,7 @@ impl PapoApp {
             activator: None,
             minimized: false,
             window_attached: false,
+            demo,
         }
     }
 
@@ -269,15 +334,23 @@ impl PapoApp {
             self.hide_window(ctx);
         }
 
+        // Menção vira número; conversa nova sem menção só acende o ícone.
+        let mentions = if self.settings.badge {
+            self.store.mention_total()
+        } else {
+            0
+        };
+        let unread = self.settings.badge && self.store.has_unread();
+
         if let Some(tray) = &self.tray {
-            let unread = self
-                .store
-                .channels
-                .iter()
-                .filter(|channel| channel.unread)
-                .count() as u32;
-            tray.set_unread(unread);
+            tray.set_badge(mentions, unread);
             tray.set_labels(tray_labels(&self.settings));
+        }
+        if let Some(launcher) = &self.launcher {
+            launcher.set(Badge {
+                count: mentions,
+                urgent: unread && mentions == 0,
+            });
         }
     }
 
@@ -351,18 +424,28 @@ impl PapoApp {
 
     /// Ações da conversa: mensagens novas, digitação e carga sob demanda.
     fn pump_chat(&mut self) {
+        if self.demo {
+            return;
+        }
         if let Some(channel_id) = self.store.channel_needing_messages() {
             self.store.mark_loading(&channel_id);
-            self.net.send(Command::LoadMessages { channel_id });
+            self.net.send(Command::LoadMessages {
+                channel_id: channel_id.clone(),
+            });
+            self.net.send(Command::LoadPinned { channel_id });
         }
 
-        if let Some(content) = self.ui.outgoing.take() {
+        // Com a janela à frente, o canal aberto está sendo lido agora.
+        if self.focused && !self.minimized && !self.store.selected_channel.is_empty() {
             let channel_id = self.store.selected_channel.clone();
-            if !channel_id.is_empty() {
-                self.store.push_pending(&channel_id, &content);
-                self.net.send(Command::SendMessage {
-                    channel_id,
-                    content,
+            self.store.mark_read(&channel_id);
+            // O servidor também precisa saber, ou a menção volta no próximo
+            // dispositivo.
+            let ids = self.store.take_open_notifications(&channel_id);
+            if !ids.is_empty() && !self.store.me.is_empty() {
+                self.net.send(Command::MarkNotificationsRead {
+                    user_id: self.store.me.clone(),
+                    ids,
                 });
             }
         }
@@ -378,6 +461,178 @@ impl PapoApp {
                 self.net.send(Command::Typing {
                     channel_id: self.store.selected_channel.clone(),
                 });
+            }
+        }
+    }
+
+    /// Executa o que a conversa pediu.
+    fn handle_chat(&mut self, ctx: &egui::Context, action: ChatAction) {
+        // Na demonstração as ações mexem só no estado local.
+        if self.demo {
+            self.handle_chat_demo(ctx, action);
+            return;
+        }
+        match action {
+            ChatAction::Send {
+                content,
+                reply_to,
+                attachments,
+            } => {
+                let channel_id = self.store.selected_channel.clone();
+                if channel_id.is_empty() {
+                    return;
+                }
+                // Com anexo não há eco otimista: o servidor é quem sabe o que
+                // saiu do upload.
+                if attachments.is_empty() {
+                    self.store
+                        .push_pending(&channel_id, &content, reply_to.clone());
+                }
+                self.net.send(Command::SendMessage {
+                    channel_id,
+                    content,
+                    reply_to,
+                    attachments,
+                });
+            }
+            ChatAction::Edit {
+                message_id,
+                content,
+            } => self.net.send(Command::EditMessage {
+                message_id,
+                content,
+            }),
+            ChatAction::Delete(message_id) => {
+                self.net.send(Command::DeleteMessage { message_id })
+            }
+            ChatAction::React {
+                message_id,
+                emoji,
+                add,
+            } => {
+                let channel_id = self
+                    .store
+                    .message(&message_id)
+                    .map(|message| message.channel_id.clone())
+                    .unwrap_or_else(|| self.store.selected_channel.clone());
+                // A reação aparece na hora; o contador certo vem pelo evento.
+                self.store.toggle_reaction_local(&message_id, &emoji);
+                self.net.send(Command::React {
+                    channel_id,
+                    message_id,
+                    emoji: emoji.request(),
+                    add,
+                });
+            }
+            ChatAction::Pin { message_id, pin } => {
+                let channel_id = self
+                    .store
+                    .message(&message_id)
+                    .map(|message| message.channel_id.clone())
+                    .unwrap_or_else(|| self.store.selected_channel.clone());
+                self.net.send(Command::Pin {
+                    channel_id,
+                    message_id,
+                    pin,
+                });
+            }
+            ChatAction::Download { id, name } => match self.settings.downloads.clone() {
+                DownloadMode::Ask => {
+                    self.dialogs
+                        .save_as(ctx.clone(), id, name, files::downloads_dir())
+                }
+                DownloadMode::Folder(dir) => {
+                    let dir = if dir.is_dir() {
+                        dir
+                    } else {
+                        files::downloads_dir()
+                    };
+                    let dest = files::unique_path(&dir, &name);
+                    self.ui.media.save(&id, &name, dest);
+                }
+            },
+            ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
+            ChatAction::OpenExternally(path) => files::open_path(&path),
+        }
+    }
+
+    /// A demonstração responde sozinha: sem rede, o estado é a verdade.
+    fn handle_chat_demo(&mut self, ctx: &egui::Context, action: ChatAction) {
+        match action {
+            ChatAction::Send { content, reply_to, .. } => {
+                let channel_id = self.store.selected_channel.clone();
+                self.store.push_pending(&channel_id, &content, reply_to);
+                if let Some(message) = self.store.messages.last_mut() {
+                    message.pending = false;
+                }
+            }
+            ChatAction::Edit {
+                message_id,
+                content,
+            } => {
+                if let Some(message) = self
+                    .store
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.content = content;
+                    message.edited = true;
+                }
+            }
+            ChatAction::Delete(message_id) => {
+                self.store.messages.retain(|message| message.id != message_id)
+            }
+            ChatAction::React {
+                message_id, emoji, ..
+            } => {
+                self.store.toggle_reaction_local(&message_id, &emoji);
+            }
+            ChatAction::Pin { message_id, pin } => {
+                if let Some(message) = self
+                    .store
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.pinned = pin;
+                }
+            }
+            ChatAction::Download { id, name } => match self.settings.downloads.clone() {
+                DownloadMode::Ask => {
+                    self.dialogs
+                        .save_as(ctx.clone(), id, name, files::downloads_dir())
+                }
+                DownloadMode::Folder(dir) => {
+                    let dir = if dir.is_dir() { dir } else { files::downloads_dir() };
+                    let dest = files::unique_path(&dir, &name);
+                    self.ui.media.save(&id, &name, dest);
+                }
+            },
+            ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
+            ChatAction::OpenExternally(path) => files::open_path(&path),
+        }
+    }
+
+    /// Respostas dos diálogos do sistema e arquivos soltos na janela.
+    fn pump_files(&mut self, ctx: &egui::Context) {
+        for chosen in self.dialogs.poll() {
+            match chosen {
+                Chosen::Files(uploads) => self.ui.attachments.extend(uploads),
+                Chosen::Folder(path) => self.settings.downloads = DownloadMode::Folder(path),
+                Chosen::SaveAs { id, name, dest } => self.ui.media.save(&id, &name, dest),
+                Chosen::Cancelled => {}
+            }
+        }
+
+        // Arrastar e soltar entra na mesma fila do seletor.
+        let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+        for file in dropped {
+            let path = file.path();
+            if !path.as_os_str().is_empty() {
+                self.ui.attachments.push(files::describe(&path.to_path_buf()));
             }
         }
     }
@@ -441,6 +696,17 @@ impl PapoApp {
             MenuCommand::ToggleNotifications => {
                 self.settings.notifications = !self.settings.notifications;
             }
+            MenuCommand::ToggleBadge => {
+                self.settings.badge = !self.settings.badge;
+            }
+            MenuCommand::ToggleTopicReveal => {
+                self.settings.topic_reveal = !self.settings.topic_reveal;
+                self.ui.reveal_topic = self.settings.topic_reveal;
+            }
+            MenuCommand::ToggleRecordButton => {
+                self.settings.record_button = !self.settings.record_button;
+                self.ui.show_record = self.settings.record_button;
+            }
             MenuCommand::ToggleCloseToTray => {
                 self.settings.close_to_tray = !self.settings.close_to_tray;
             }
@@ -448,8 +714,8 @@ impl PapoApp {
             MenuCommand::Preferences => self.settings_open = true,
             MenuCommand::SwitchLanguage(lang) => self.settings.lang = lang,
             MenuCommand::Quit => self.quit(ctx),
-            MenuCommand::NewChannel | MenuCommand::Search | MenuCommand::MarkAllRead
-            | MenuCommand::About => {}
+            MenuCommand::MarkAllRead => self.store.mark_all_read(),
+            MenuCommand::NewChannel | MenuCommand::Search | MenuCommand::About => {}
         }
     }
 
@@ -461,6 +727,7 @@ impl PapoApp {
         let t = self.tokens;
         let mut open = self.settings_open;
         let mut changed = false;
+        let mut choose_folder = None;
 
         egui::Window::new(s.settings)
             .open(&mut open)
@@ -534,6 +801,76 @@ impl PapoApp {
                         .font(theme::text::footnote())
                         .color(t.label_tertiary),
                 );
+                ui.add_space(theme::space::MD);
+                ui.checkbox(&mut self.settings.badge, s.badge);
+                ui.label(
+                    egui::RichText::new(s.badge_hint)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+
+                ui.add_space(theme::space::XL);
+                ui.label(
+                    egui::RichText::new(s.downloads)
+                        .font(theme::text::caption())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(theme::space::SM);
+                let ask = self.settings.downloads == DownloadMode::Ask;
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(!ask, s.download_folder).clicked() && ask {
+                        self.settings.downloads = DownloadMode::Folder(files::downloads_dir());
+                    }
+                    if ui.selectable_label(ask, s.download_ask).clicked() {
+                        self.settings.downloads = DownloadMode::Ask;
+                    }
+                });
+                if let DownloadMode::Folder(dir) = self.settings.downloads.clone() {
+                    ui.add_space(theme::space::XS);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(crate::ui::attachments::elide(
+                                &dir.display().to_string(),
+                                34,
+                            ))
+                            .font(theme::text::footnote())
+                            .color(t.label_secondary),
+                        );
+                        if ui.button(s.download_choose).clicked() {
+                            choose_folder = Some(dir);
+                        }
+                    });
+                }
+                ui.label(
+                    egui::RichText::new(s.downloads_hint)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+
+                ui.add_space(theme::space::XL);
+                if ui
+                    .checkbox(&mut self.settings.topic_reveal, s.topic_reveal)
+                    .changed()
+                {
+                    self.ui.reveal_topic = self.settings.topic_reveal;
+                }
+                ui.label(
+                    egui::RichText::new(s.topic_reveal_hint)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(theme::space::MD);
+                if ui
+                    .checkbox(&mut self.settings.record_button, s.record_button)
+                    .changed()
+                {
+                    self.ui.show_record = self.settings.record_button;
+                }
+                ui.label(
+                    egui::RichText::new(s.record_button_hint)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
 
                 ui.add_space(theme::space::XL);
                 ui.label(
@@ -555,6 +892,9 @@ impl PapoApp {
             });
 
         self.settings_open = open;
+        if let Some(start) = choose_folder {
+            self.dialogs.pick_folder(ctx.clone(), start);
+        }
         if changed {
             self.retheme(ctx);
         }
@@ -574,6 +914,10 @@ impl eframe::App for PapoApp {
         self.handle_window_lifecycle(&ctx);
 
         while let Some(update) = self.net.try_recv() {
+            // No modo demonstração a rede não manda no estado.
+            if self.demo {
+                continue;
+            }
             #[cfg(target_os = "linux")]
             self.maybe_notify(&update);
             // Reconectou: o que aconteceu durante a queda vem da carga nova.
@@ -610,9 +954,14 @@ impl eframe::App for PapoApp {
             Screen::Chat => {
                 shell::draw(ui, &mut self.store, &mut self.ui, &self.tokens, strings);
                 self.pump_chat();
+                let actions: Vec<_> = self.ui.actions.drain(..).collect();
+                for action in actions {
+                    self.handle_chat(&ctx, action);
+                }
             }
         }
         self.settings_window(&ctx);
+        self.pump_files(&ctx);
 
         let pending: Vec<_> = self.ui.pending.drain(..).collect();
         for command in pending {
@@ -629,6 +978,8 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // As marcas de leitura vivem no estado, mas só o ajuste persiste.
+        self.settings.read_marks = self.store.read_marks.clone();
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
 
@@ -709,6 +1060,17 @@ fn build_menu(settings: &Settings) -> MenuModel {
                     s.menu_close_to_tray,
                     MenuCommand::ToggleCloseToTray,
                     settings.close_to_tray,
+                ),
+                MenuNode::checkbox(s.badge, MenuCommand::ToggleBadge, settings.badge),
+                MenuNode::checkbox(
+                    s.topic_reveal,
+                    MenuCommand::ToggleTopicReveal,
+                    settings.topic_reveal,
+                ),
+                MenuNode::checkbox(
+                    s.record_button,
+                    MenuCommand::ToggleRecordButton,
+                    settings.record_button,
                 ),
                 MenuNode::separator(),
                 MenuNode::submenu(

@@ -28,7 +28,10 @@ pub struct TrayLabels {
 struct PapoTray {
     icons: Vec<Icon>,
     labels: TrayLabels,
-    unread: u32,
+    /// Menções esperando; é o número que o painel mostra.
+    mentions: u32,
+    /// Alguma conversa com coisa nova, mesmo sem menção.
+    unread: bool,
     commands: mpsc::Sender<TrayCommand>,
     repaint: egui::Context,
 }
@@ -45,8 +48,13 @@ impl ksni::Tray for PapoTray {
         "papo".into()
     }
 
+    /// Alguns painéis mostram o título ao lado do ícone: o número vai junto.
     fn title(&self) -> String {
-        "Papo".into()
+        if self.mentions > 0 {
+            format!("Papo ({})", self.mentions)
+        } else {
+            "Papo".into()
+        }
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
@@ -56,8 +64,8 @@ impl ksni::Tray for PapoTray {
     fn tool_tip(&self) -> ToolTip {
         ToolTip {
             title: "Papo".into(),
-            description: if self.unread > 0 {
-                format!("{} · {}", self.labels.tooltip, self.unread)
+            description: if self.mentions > 0 {
+                format!("{} · {}", self.labels.tooltip, self.mentions)
             } else {
                 self.labels.tooltip.clone()
             },
@@ -65,9 +73,9 @@ impl ksni::Tray for PapoTray {
         }
     }
 
-    /// Com mensagens por ler o painel destaca o ícone.
+    /// Com menção ou conversa nova, o painel destaca o ícone.
     fn status(&self) -> Status {
-        if self.unread > 0 {
+        if self.mentions > 0 || self.unread {
             Status::NeedsAttention
         } else {
             Status::Active
@@ -109,7 +117,8 @@ impl Tray {
         let tray = PapoTray {
             icons: load_icons(),
             labels,
-            unread: 0,
+            mentions: 0,
+            unread: false,
             commands: tx,
             repaint,
         };
@@ -132,9 +141,10 @@ impl Tray {
         self.commands.try_recv().ok()
     }
 
-    pub fn set_unread(&self, unread: u32) {
+    pub fn set_badge(&self, mentions: u32, unread: bool) {
         self.handle.update(|tray| {
-            if tray.unread != unread {
+            if tray.mentions != mentions || tray.unread != unread {
+                tray.mentions = mentions;
                 tray.unread = unread;
             }
         });
