@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Papo
+GenericName=Chat
+Comment=Cliente nativo do Papo
+Exec=papo
+Icon=papo
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=papo
+StartupNotify=true
