@@ -58,6 +58,12 @@ wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", default-features = false }
 
+[profile.release]
+# Binário de distribuição: um arquivo só, sem símbolos de depuração.
+lto = "thin"
+codegen-units = 1
+strip = true
+
 [profile.dev]
 opt-level = 1
 

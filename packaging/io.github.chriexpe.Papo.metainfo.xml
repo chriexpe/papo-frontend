@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Metadados AppStream: é o que as lojas (Discover, GNOME Software, Flathub)
+     leem para mostrar nome, descrição e capturas de tela. -->
+<component type="desktop-application">
+  <id>io.github.chriexpe.Papo</id>
+  <launchable type="desktop-id">io.github.chriexpe.Papo.desktop</launchable>
+
+  <name>Papo</name>
+  <summary>Cliente nativo de chat self-hosted</summary>
+  <summary xml:lang="en">Native client for self-hosted chat</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Papo é um chat self-hosted de texto, voz e vídeo. Este é o cliente nativo:
+      um binário só, sem navegador embutido, falando com o servidor por REST e
+      WebSocket.
+    </p>
+    <p xml:lang="en">
+      Papo is a self-hosted text, voice and video chat. This is the native
+      client: a single binary with no embedded browser, talking to the server
+      over REST and WebSocket.
+    </p>
+    <ul>
+      <li>Vários servidores ao mesmo tempo, cada um com a própria conta</li>
+      <li xml:lang="en">Several servers at once, each with its own account</li>
+      <li>Responder, editar, apagar, fixar e reagir com emoji ou figurinha</li>
+      <li xml:lang="en">Reply, edit, delete, pin and react with emoji or stickers</li>
+      <li>Imagem, vídeo e áudio dentro da conversa, com visualizador e download</li>
+      <li xml:lang="en">Images, video and audio inline, with a viewer and downloads</li>
+      <li>Bandeja, notificações e contador de menções na barra de tarefas</li>
+      <li xml:lang="en">Tray, notifications and a mention count on the taskbar</li>
+    </ul>
+  </description>
+
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+
+  <keywords>
+    <keyword>chat</keyword>
+    <keyword>messaging</keyword>
+    <keyword>self-hosted</keyword>
+  </keywords>
+
+  <developer id="io.github.chriexpe">
+    <name>chriexpe</name>
+  </developer>
+
+  <url type="homepage">https://github.com/chriexpe/papo-frontend</url>
+  <url type="bugtracker">https://github.com/chriexpe/papo-frontend/issues</url>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">760</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-19">
+      <description>
+        <p>Primeira versão empacotada.</p>
+        <p xml:lang="en">First packaged release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

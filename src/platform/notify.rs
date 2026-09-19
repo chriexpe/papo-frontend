@@ -107,7 +107,7 @@ async fn show(
     replaces: u32,
 ) -> zbus::Result<u32> {
     let mut hints: std::collections::HashMap<&str, zvariant::Value<'_>> = [
-        ("desktop-entry", zvariant::Value::from("papo")),
+        ("desktop-entry", zvariant::Value::from(crate::APP_ID)),
         // "im.received" faz o Plasma tratar como mensagem recebida.
         ("category", zvariant::Value::from("im.received")),
     ]
@@ -126,7 +126,7 @@ async fn show(
             &(
                 "Papo",
                 replaces,
-                "papo",
+                crate::APP_ID,
                 notification.summary.as_str(),
                 notification.body.as_str(),
                 Vec::<&str>::new(),

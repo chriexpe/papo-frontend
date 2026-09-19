@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=Papo
+GenericName=Chat
+GenericName[en]=Chat
+Comment=Cliente nativo do Papo
+Comment[en]=Native Papo client
+Exec=papo
+Icon=io.github.chriexpe.Papo
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=chat;mensagem;conversa;messaging;
+Keywords[en]=chat;messaging;conversation;
+StartupNotify=true
+X-GNOME-UsesNotifications=true
+StartupWMClass=io.github.chriexpe.Papo

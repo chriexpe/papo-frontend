@@ -83,44 +83,6 @@ Linguagem visual seguindo as HIG da Apple, adaptadas ao desktop:
 - **Movimento.** Respeita o fator de animação do Plasma: em zero, sem transições.
 - **Translucidez** pode ser desligada nos ajustes; as superfícies viram opacas.
 
-## O que aprendemos sobre esta pilha
-
-Anotado porque custou tempo e não está documentado em lugar nenhum:
-
-- **O egui não tem menu nativo.** O menu global é implementado à mão: um serviço
-  `com.canonical.dbusmenu` e o protocolo `org_kde_kwin_appmenu` apontando para ele. No X11 o
-  caminho é outro (propriedades `_KDE_NET_WM_APPMENU_*` e o registrador do KDE).
-- **Desfoque de verdade precisa ser nosso.** O compositor só desfoca o que está *atrás da
-  janela*. Para uma barra embaçar as mensagens que passam por baixo dela, o desfoque tem que
-  acontecer no nosso renderizador: `ui/glass.rs` copia o framebuffer, borra em resolução
-  reduzida e devolve com cantos arredondados. Duas armadilhas: o egui deixa o *scissor*
-  recortado no retângulo da callback (zera as passagens fora da tela) e a cópia lê do
-  `READ_FRAMEBUFFER`, que não é o que o egui tem ligado para desenhar.
-- **O KWin 6.7 não anuncia mais `org_kde_kwin_blur_manager`** para clientes Wayland, mesmo
-  com o efeito ligado. `platform/blur.rs` continua no lugar e se desliga sozinho.
-- **No Wayland a janela não se esconde nem se levanta.** No winit 0.30, `set_visible` não faz
-  nada, `set_minimized(false)` é ignorado e `focus_window` é vazio. Fechar minimiza, e quem
-  traz a janela de volta é um script carregado no KWin (`platform/kwin.rs`), a mesma técnica
-  do kdotool. O xdg-activation sozinho só faz a barra de tarefas piscar.
-- **Emoji colorido não renderiza como fonte** no egui: ele rasteriza glifos em tons de cinza e
-  ignora as camadas do COLR e os bitmaps do CBDT. A saída é não pedir isso à fonte — o
-  `ui/emoji_raster.rs` rasteriza o emoji com o swash a partir da Noto Color Emoji do sistema e
-  entrega uma textura. Reações, seletor e o texto das mensagens desenham imagem, não glifo, que
-  é também o que faz figurinha custom e GIF animado funcionarem pelo mesmo caminho.
-  Os ícones do Phosphor precisam de uma família só deles: a fonte de ícones que o egui já traz
-  ocupa a mesma faixa de uso privado e vence a disputa pelos glifos.
-- **O `rfd` precisa de um runtime tokio de verdade.** Com a feature `tokio`, o zbus embaixo do
-  xdg-desktop-portal exige o reator do tokio, mas o `rfd` bloqueia com o `pollster` — o
-  diálogo morre com "there is no reactor running". Cada diálogo abre numa thread com runtime
-  próprio e usa a API assíncrona (`platform/files.rs`).
-- **Nem todo plugin do GStreamer está instalado.** Aqui faltavam `mp4mux`, `matroskamux`,
-  `level` e `autoaudiosrc`. O player usa `playbin3` (que se vira com o que houver) e a gravação
-  tenta `pipewiresrc` antes de `alsasrc`; o `media-test` gera Theora/Ogg justamente por serem
-  os codificadores que sempre aparecem.
-- **O último lido do canal é só nosso.** O backend tem a coluna e a função
-  `TouchLastReadMessage`, mas nenhum handler a chama: `last_read_message` volta sempre nulo.
-  O não lido é contado no cliente e as marcas ficam nos ajustes.
-
 ## Estado
 
 Funcionando: tela de entrada, conversa, menu global, bandeja, notificações, segundo plano,

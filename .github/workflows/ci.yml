@@ -1,0 +1,41 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev \
+            libfontconfig1-dev pkg-config
+      # `cargo fmt --check` ainda não: o repositório nunca passou pelo rustfmt e
+      # o acerto é um commit à parte, só de formatação.
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+
+  metadata:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validar .desktop e AppStream
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            desktop-file-utils appstream
+          desktop-file-validate packaging/io.github.chriexpe.Papo.desktop
+          appstreamcli validate --no-net \
+            packaging/io.github.chriexpe.Papo.metainfo.xml

@@ -45,7 +45,7 @@ impl PapoTray {
 
 impl ksni::Tray for PapoTray {
     fn id(&self) -> String {
-        "papo".into()
+        crate::APP_ID.into()
     }
 
     /// Alguns painéis mostram o título ao lado do ícone: o número vai junto.

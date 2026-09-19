@@ -108,7 +108,7 @@ impl Activator {
         self.state.token = None;
         let token = manager.get_activation_token(&qh, ());
         token.set_surface(&self.surface);
-        token.set_app_id("papo".to_owned());
+        token.set_app_id(crate::APP_ID.to_owned());
         token.commit();
         let _ = self.conn.flush();
 

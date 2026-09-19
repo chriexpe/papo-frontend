@@ -1,0 +1,73 @@
+# Manifesto Flatpak.
+#
+# O Flatpak é o alvo principal: o runtime já traz GStreamer e os codecs, o
+# seletor de arquivos que já usamos é o xdg-desktop-portal, e o Flathub
+# compila para x86_64 e aarch64 sozinho.
+#
+# As dependências do cargo precisam estar em disco antes da compilação, que
+# roda sem rede. `scripts/flatpak-sources.sh` gera `cargo-sources.json` a
+# partir do Cargo.lock; rode-o sempre que o lock mudar.
+id: io.github.chriexpe.Papo
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: papo
+
+# Codecs que não cabem no runtime base (H.264 e companhia) entram por aqui.
+add-extensions:
+  org.freedesktop.Platform.ffmpeg-full:
+    directory: lib/ffmpeg
+    version: '24.08'
+    add-ld-path: .
+    no-autodownload: false
+    autodelete: false
+
+finish-args:
+  # O cliente conversa com servidores na internet e na rede local.
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Tocar áudio e vídeo, e gravar recado de voz.
+  - --socket=pulseaudio
+  # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=com.canonical.AppMenu.Registrar
+  - --own-name=com.canonical.dbusmenu
+  # Contador de menções na barra de tarefas.
+  - --talk-name=com.canonical.Unity.LauncherEntry
+  - --talk-name=org.freedesktop.Notifications
+  # Restaurar a janela minimizada no Plasma (scripts do KWin).
+  - --talk-name=org.kde.KWin
+  # Ler o tema, a cor de destaque e a fonte do sistema.
+  - --filesystem=xdg-config/kdeglobals:ro
+  - --filesystem=xdg-config/gtk-3.0:ro
+  # Onde os anexos salvos vão parar por padrão; o resto passa pelo portal.
+  - --filesystem=xdg-download
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/papo/cargo
+
+modules:
+  - name: papo
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --verbose
+      - install -Dm755 target/release/papo /app/bin/papo
+      - install -Dm644 packaging/io.github.chriexpe.Papo.desktop
+        /app/share/applications/io.github.chriexpe.Papo.desktop
+      - install -Dm644 packaging/io.github.chriexpe.Papo.metainfo.xml
+        /app/share/metainfo/io.github.chriexpe.Papo.metainfo.xml
+      - install -Dm644 assets/icon.png
+        /app/share/icons/hicolor/256x256/apps/io.github.chriexpe.Papo.png
+      - mkdir -p /app/lib/ffmpeg
+    sources:
+      - type: dir
+        path: ..
+      - cargo-sources.json

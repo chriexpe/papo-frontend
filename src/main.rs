@@ -8,6 +8,13 @@ mod platform;
 mod state;
 mod ui;
 
+/// Identificador do aplicativo na área de trabalho.
+///
+/// É o `app_id` do Wayland, o nome do `.desktop` e o do ícone. O compositor
+/// liga a janela ao lançador por este nome, então os três têm de ser o mesmo
+/// — inclusive dentro do Flatpak, onde o identificador é o do pacote.
+pub const APP_ID: &str = "io.github.chriexpe.Papo";
+
 fn main() -> eframe::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("warn,papo=debug"));
     install_panic_hook();
@@ -71,7 +78,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Papo")
-            .with_app_id("papo")
+            .with_app_id(APP_ID)
             .with_inner_size([1160.0, 740.0])
             .with_min_inner_size([760.0, 480.0])
             .with_icon(window_icon()),

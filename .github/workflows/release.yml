@@ -1,0 +1,85 @@
+name: release
+
+# Uma etiqueta `v*` gera os tarballs. Hoje só Linux: a integração com a área
+# de trabalho (bandeja, menu global, notificações, desfoque) é toda D-Bus e
+# Wayland/X11, então não há o que publicar para Windows ou macOS ainda.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.arch }}
+
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev \
+            libxcursor-dev libxi-dev libxrandr-dev \
+            libfontconfig1-dev pkg-config imagemagick
+
+      - run: cargo build --release --locked
+
+      - name: Montar o tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=dev
+          name="papo-${version}-${{ matrix.arch }}-linux"
+          app=io.github.chriexpe.Papo
+
+          install -Dm755 target/release/papo "$name/bin/papo"
+          install -Dm644 "packaging/$app.desktop" "$name/share/applications/$app.desktop"
+          install -Dm644 "packaging/$app.metainfo.xml" "$name/share/metainfo/$app.metainfo.xml"
+          for size in 16 22 24 32 48 64 128 256; do
+            install -d "$name/share/icons/hicolor/${size}x${size}/apps"
+            magick assets/icon.png -resize "${size}x${size}" \
+              "$name/share/icons/hicolor/${size}x${size}/apps/$app.png"
+          done
+          install -Dm644 LICENSE "$name/LICENSE" 2>/dev/null || true
+          install -Dm755 packaging/install.sh "$name/install.sh"
+
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-${{ matrix.arch }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+          generate_release_notes: true
