@@ -12,9 +12,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
+use super::models::Notification as NotificationItem;
 use super::models::*;
 
 const COOKIE_NAME: &str = "Auth";
+
+/// Arquivo escolhido no seletor, à espera de subir junto com a mensagem.
+#[derive(Debug, Clone)]
+pub struct Upload {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -170,6 +180,57 @@ impl Api {
         Self::parse(response).await
     }
 
+    async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> ApiResult<T> {
+        let response = self.send(Method::PUT, path, Some(body)).await?;
+        Self::parse(response).await
+    }
+
+    /// `DELETE` com corpo opcional — as reações identificam o emoji no corpo.
+    async fn delete<B: Serialize>(&self, path: &str, body: Option<&B>) -> ApiResult<()> {
+        let response = self.send(Method::DELETE, path, body).await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(match status {
+            StatusCode::UNAUTHORIZED => ApiError::Unauthorized,
+            StatusCode::NOT_FOUND => ApiError::NotFound,
+            _ => {
+                let problem: Problem = serde_json::from_str(&body).unwrap_or_default();
+                ApiError::Problem(if problem.status == 0 {
+                    format!("erro {status}")
+                } else {
+                    problem.message()
+                })
+            }
+        })
+    }
+
+    /// Baixa um recurso binário (anexo, miniatura ou mídia) inteiro na
+    /// memória. Devolve também o mime type informado pelo servidor.
+    pub async fn fetch_bytes(&self, path: &str) -> ApiResult<(Vec<u8>, Option<String>)> {
+        let response = self.send::<()>(Method::GET, path, None).await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(match status {
+                StatusCode::UNAUTHORIZED => ApiError::Unauthorized,
+                StatusCode::NOT_FOUND => ApiError::NotFound,
+                _ => ApiError::Problem(format!("erro {status}")),
+            });
+        }
+        let mime = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').next().unwrap_or(value).trim().to_owned());
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok((bytes.to_vec(), mime))
+    }
+
     // -- Autenticação ------------------------------------------------------
 
     pub async fn register(&self, username: &str, password: &str) -> ApiResult<serde_json::Value> {
@@ -245,6 +306,7 @@ impl Api {
         channel_id: &str,
         content: &str,
         reply_to: Option<&str>,
+        attachments: &[Upload],
     ) -> ApiResult<Message> {
         let url = self
             .base
@@ -256,6 +318,16 @@ impl Api {
             .text("content", content.to_owned());
         if let Some(reply_to) = reply_to {
             form = form.text("reply_to", reply_to.to_owned());
+        }
+        for upload in attachments {
+            let bytes = tokio::fs::read(&upload.path)
+                .await
+                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?;
+            let part = reqwest::multipart::Part::bytes(bytes)
+                .file_name(upload.name.clone())
+                .mime_str(&upload.mime)
+                .map_err(|e| ApiError::Network(e.to_string()))?;
+            form = form.part("attachments", part);
         }
 
         let mut request = self.http.post(url).multipart(form);
@@ -270,6 +342,114 @@ impl Api {
             .map_err(|e| ApiError::Network(e.to_string()))?;
         self.session.absorb(&response);
         Self::parse(response).await
+    }
+
+    pub async fn edit_message(&self, message_id: &str, content: &str) -> ApiResult<Message> {
+        self.put(
+            &format!("/messages/{message_id}"),
+            &UpdateMessageRequest {
+                content: content.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_message(&self, message_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/messages/{message_id}"), None)
+            .await
+    }
+
+    // -- Reações -----------------------------------------------------------
+
+    pub async fn add_reaction(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &ReactionRequest,
+    ) -> ApiResult<serde_json::Value> {
+        self.post(
+            &format!("/channels/{channel_id}/messages/{message_id}/reactions"),
+            emoji,
+        )
+        .await
+    }
+
+    pub async fn remove_reaction(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        emoji: &ReactionRequest,
+    ) -> ApiResult<()> {
+        self.delete(
+            &format!("/channels/{channel_id}/messages/{message_id}/reactions"),
+            Some(emoji),
+        )
+        .await
+    }
+
+    /// Emojis custom do servidor, em páginas de 25.
+    pub async fn emojis(&self) -> ApiResult<Vec<Emoji>> {
+        let mut all = Vec::new();
+        let mut page: EmojiList = self.get("/emojis").await?;
+        all.append(&mut page.emojis);
+        // Uma página costuma bastar; o cursor evita perder emojis num
+        // servidor com muitos.
+        let mut guard = 0;
+        while page.has_more && guard < 20 {
+            guard += 1;
+            let Some(last) = all.last() else { break };
+            let path = format!("/emojis?last_id={}", last.id);
+            page = self.get(&path).await?;
+            if page.emojis.is_empty() {
+                break;
+            }
+            all.append(&mut page.emojis);
+        }
+        Ok(all)
+    }
+
+    // -- Fixadas -----------------------------------------------------------
+
+    pub async fn pin_message(&self, channel_id: &str, message_id: &str) -> ApiResult<serde_json::Value> {
+        self.post(
+            &format!("/channels/{channel_id}/messages/{message_id}/pin"),
+            &(),
+        )
+        .await
+    }
+
+    pub async fn unpin_message(&self, channel_id: &str, message_id: &str) -> ApiResult<()> {
+        self.delete::<()>(
+            &format!("/channels/{channel_id}/messages/{message_id}/pin"),
+            None,
+        )
+        .await
+    }
+
+    pub async fn pinned(&self, channel_id: &str) -> ApiResult<PinnedList> {
+        self.get(&format!("/channels/{channel_id}/pinned")).await
+    }
+
+    // -- Notificações ------------------------------------------------------
+
+    /// Notificações do usuário — é daqui que sai a contagem de menções.
+    pub async fn notifications(&self, user_id: &str) -> ApiResult<Vec<NotificationItem>> {
+        let list: NotificationList = self.get(&format!("/users/{user_id}/notifications")).await?;
+        Ok(list.notifications)
+    }
+
+    pub async fn mark_notifications_read(
+        &self,
+        user_id: &str,
+        ids: Vec<String>,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/read_notification"),
+            &MarkNotificationsReadRequest {
+                notification_ids: ids,
+            },
+        )
+        .await
     }
 
     pub async fn users(&self) -> ApiResult<Vec<UserSummary>> {

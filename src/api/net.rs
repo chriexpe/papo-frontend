@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::client::{Api, ApiError, Session};
-use super::models::{Channel, Message, Server, UserSummary, Whoami};
+use super::client::{Api, ApiError, Session, Upload};
+use super::models::{
+    Channel, Emoji, Message, Notification, ReactionRequest, Server, UserSummary, Whoami,
+};
 use super::ws::{self, Connection, Event};
 
 #[derive(Debug, Clone)]
@@ -18,9 +20,43 @@ pub enum Command {
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
-    LoadMessages { channel_id: String },
-    SendMessage { channel_id: String, content: String },
-    Typing { channel_id: String },
+    LoadMessages {
+        channel_id: String,
+    },
+    SendMessage {
+        channel_id: String,
+        content: String,
+        reply_to: Option<String>,
+        attachments: Vec<Upload>,
+    },
+    EditMessage {
+        message_id: String,
+        content: String,
+    },
+    DeleteMessage {
+        message_id: String,
+    },
+    React {
+        channel_id: String,
+        message_id: String,
+        emoji: ReactionRequest,
+        add: bool,
+    },
+    Pin {
+        channel_id: String,
+        message_id: String,
+        pin: bool,
+    },
+    LoadPinned {
+        channel_id: String,
+    },
+    MarkNotificationsRead {
+        user_id: String,
+        ids: Vec<String>,
+    },
+    Typing {
+        channel_id: String,
+    },
     Logout,
 }
 
@@ -37,6 +73,14 @@ pub enum Update {
         messages: Vec<Message>,
     },
     Sent(Box<Message>),
+    Edited(Box<Message>),
+    Deleted(String),
+    Emojis(Vec<Emoji>),
+    Pinned {
+        channel_id: String,
+        ids: Vec<String>,
+    },
+    Notifications(Vec<Notification>),
     Event(Box<Event>),
     Connection(Connection),
     Error(String),
@@ -45,12 +89,17 @@ pub enum Update {
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
+    /// A mídia usa o mesmo cookie para baixar anexos.
+    pub session: Arc<Session>,
 }
 
 impl Net {
     pub fn spawn(base_url: String, repaint: egui::Context) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
+        let session = Arc::new(Session::default());
+        session.set_token(load_token());
+        let worker_session = Arc::clone(&session);
 
         std::thread::Builder::new()
             .name("papo-net".into())
@@ -66,13 +115,20 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(worker(base_url, commands_rx, updates_tx, repaint));
+                runtime.block_on(worker(
+                    base_url,
+                    worker_session,
+                    commands_rx,
+                    updates_tx,
+                    repaint,
+                ));
             })
             .expect("thread de rede");
 
         Self {
             commands: commands_tx,
             updates: updates_rx,
+            session,
         }
     }
 
@@ -95,13 +151,11 @@ fn publish(tx: &sync_mpsc::Sender<Update>, repaint: &egui::Context, update: Upda
 
 async fn worker(
     base_url: String,
+    session: Arc<Session>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     repaint: egui::Context,
 ) {
-    let session = Arc::new(Session::default());
-    session.set_token(load_token());
-
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
         Err(error) => {
@@ -110,6 +164,8 @@ async fn worker(
         }
     };
 
+    // Quem está logado: o Refresh precisa disso para rebuscar as menções.
+    let me: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let (status_tx, mut status_rx) = mpsc::unbounded_channel();
     let (mut outbound_tx, outbound_rx) = mpsc::unbounded_channel();
@@ -119,9 +175,13 @@ async fn worker(
     // Sessão guardada em disco: tenta seguir logado sem pedir senha.
     if session.is_authenticated() {
         match api.whoami().await {
-            Ok(me) => {
-                publish(&updates, &repaint, Update::Session(Some(Box::new(me))));
-                bootstrap(&api, &updates, &repaint).await;
+            Ok(whoami) => {
+                let id = whoami.id.clone();
+                if let Ok(mut slot) = me.lock() {
+                    *slot = Some(id.clone());
+                }
+                publish(&updates, &repaint, Update::Session(Some(Box::new(whoami))));
+                bootstrap(&api, &updates, &repaint, Some(&id)).await;
             }
             Err(_) => {
                 session.set_token(None);
@@ -164,7 +224,7 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                handle(&api, &session, &updates, &repaint, &outbound_tx, command).await;
+                handle(&api, &session, &me, &updates, &repaint, &outbound_tx, command).await;
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
@@ -198,9 +258,11 @@ fn start_socket(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle(
     api: &Api,
     session: &Arc<Session>,
+    me: &Arc<std::sync::Mutex<Option<String>>>,
     updates: &sync_mpsc::Sender<Update>,
     repaint: &egui::Context,
     outbound: &mpsc::UnboundedSender<String>,
@@ -211,9 +273,13 @@ async fn handle(
             Ok(_) => {
                 store_token(session.token());
                 match api.whoami().await {
-                    Ok(me) => {
-                        publish(updates, repaint, Update::Session(Some(Box::new(me))));
-                        bootstrap(api, updates, repaint).await;
+                    Ok(whoami) => {
+                        let id = whoami.id.clone();
+                        if let Ok(mut slot) = me.lock() {
+                            *slot = Some(id.clone());
+                        }
+                        publish(updates, repaint, Update::Session(Some(Box::new(whoami))));
+                        bootstrap(api, updates, repaint, Some(&id)).await;
                     }
                     Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
                 }
@@ -227,6 +293,7 @@ async fn handle(
                     Box::pin(handle(
                         api,
                         session,
+                        me,
                         updates,
                         repaint,
                         outbound,
@@ -238,10 +305,16 @@ async fn handle(
             }
         }
         Command::CreateServer { name } => match api.create_server(&name).await {
-            Ok(_) => bootstrap(api, updates, repaint).await,
+            Ok(_) => {
+                let id = me.lock().ok().and_then(|slot| slot.clone());
+                bootstrap(api, updates, repaint, id.as_deref()).await
+            }
             Err(error) => publish(updates, repaint, Update::Error(error.to_string())),
         },
-        Command::Refresh => bootstrap(api, updates, repaint).await,
+        Command::Refresh => {
+            let id = me.lock().ok().and_then(|slot| slot.clone());
+            bootstrap(api, updates, repaint, id.as_deref()).await
+        }
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
             Ok(list) => publish(
                 updates,
@@ -256,10 +329,72 @@ async fn handle(
         Command::SendMessage {
             channel_id,
             content,
-        } => match api.send_message(&channel_id, &content, None).await {
-            Ok(message) => publish(updates, repaint, Update::Sent(Box::new(message))),
+            reply_to,
+            attachments,
+        } => {
+            match api
+                .send_message(&channel_id, &content, reply_to.as_deref(), &attachments)
+                .await
+            {
+                Ok(message) => publish(updates, repaint, Update::Sent(Box::new(message))),
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::EditMessage {
+            message_id,
+            content,
+        } => match api.edit_message(&message_id, &content).await {
+            Ok(message) => publish(updates, repaint, Update::Edited(Box::new(message))),
             Err(error) => report(updates, repaint, error),
         },
+        Command::DeleteMessage { message_id } => {
+            match api.delete_message(&message_id).await {
+                Ok(()) => publish(updates, repaint, Update::Deleted(message_id)),
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::React {
+            channel_id,
+            message_id,
+            emoji,
+            add,
+        } => {
+            let outcome = if add {
+                api.add_reaction(&channel_id, &message_id, &emoji)
+                    .await
+                    .map(|_| ())
+            } else {
+                api.remove_reaction(&channel_id, &message_id, &emoji).await
+            };
+            if let Err(error) = outcome {
+                report(updates, repaint, error);
+            }
+        }
+        Command::Pin {
+            channel_id,
+            message_id,
+            pin,
+        } => {
+            let outcome = if pin {
+                api.pin_message(&channel_id, &message_id).await.map(|_| ())
+            } else {
+                api.unpin_message(&channel_id, &message_id).await
+            };
+            match outcome {
+                Ok(()) => load_pinned(api, updates, repaint, channel_id).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::LoadPinned { channel_id } => {
+            load_pinned(api, updates, repaint, channel_id).await
+        }
+        Command::MarkNotificationsRead { user_id, ids } => {
+            if !ids.is_empty() {
+                if let Err(error) = api.mark_notifications_read(&user_id, ids).await {
+                    log::warn!("marcar notificações: {error}");
+                }
+            }
+        }
         Command::Typing { channel_id } => {
             let _ = outbound.send(format!(
                 r#"{{"type":"typing","channel_id":"{channel_id}"}}"#
@@ -273,8 +408,37 @@ async fn handle(
     }
 }
 
+async fn load_pinned(
+    api: &Api,
+    updates: &sync_mpsc::Sender<Update>,
+    repaint: &egui::Context,
+    channel_id: String,
+) {
+    match api.pinned(&channel_id).await {
+        Ok(list) => {
+            let ids = list
+                .pinned
+                .into_iter()
+                .filter_map(|pinned| {
+                    pinned
+                        .message_id
+                        .or_else(|| pinned.message.map(|message| message.id))
+                })
+                .collect();
+            publish(updates, repaint, Update::Pinned { channel_id, ids });
+        }
+        Err(ApiError::NotFound) => {}
+        Err(error) => log::warn!("fixadas: {error}"),
+    }
+}
+
 /// Carga inicial depois de autenticar.
-async fn bootstrap(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+async fn bootstrap(
+    api: &Api,
+    updates: &sync_mpsc::Sender<Update>,
+    repaint: &egui::Context,
+    user_id: Option<&str>,
+) {
     match api.server().await {
         Ok(server) => publish(updates, repaint, Update::Server(server.map(Box::new))),
         Err(error) => report(updates, repaint, error),
@@ -288,6 +452,19 @@ async fn bootstrap(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egu
         Ok(users) => publish(updates, repaint, Update::Users(users)),
         Err(ApiError::NotFound) => {}
         Err(error) => report(updates, repaint, error),
+    }
+    match api.emojis().await {
+        Ok(emojis) if !emojis.is_empty() => publish(updates, repaint, Update::Emojis(emojis)),
+        Ok(_) => {}
+        Err(error) => log::warn!("emojis: {error}"),
+    }
+    if let Some(user_id) = user_id {
+        match api.notifications(user_id).await {
+            Ok(notifications) => {
+                publish(updates, repaint, Update::Notifications(notifications))
+            }
+            Err(error) => log::warn!("notificações: {error}"),
+        }
     }
 }
 

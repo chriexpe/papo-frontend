@@ -38,6 +38,16 @@ pub enum Event {
         id: String,
         channel_id: String,
     },
+    MessagePinned {
+        message_id: String,
+        pinned: bool,
+    },
+    /// A moderação assíncrona decidiu sobre uma imagem.
+    AttachmentModeration {
+        message_id: String,
+        attachment_id: String,
+        status: String,
+    },
     Typing {
         channel_id: String,
         user_id: String,
@@ -68,12 +78,14 @@ pub enum Event {
     },
     Reaction {
         message_id: String,
-        emoji: Option<String>,
+        unicode: Option<String>,
+        emoji_id: Option<String>,
         count: i64,
     },
+    /// O evento é unicast e não traz o canal: só o id da mensagem e um
+    /// trecho do conteúdo.
     Notification {
         id: String,
-        channel_id: Option<String>,
         message_id: Option<String>,
         author_id: Option<String>,
         preview: Option<String>,
@@ -265,18 +277,31 @@ fn parse(text: &str) -> Option<Event> {
         }),
         "react_update" => Some(Event::Reaction {
             message_id: string("message_id")?,
-            emoji: string("unicode").or_else(|| string("emoji_id")),
+            unicode: string("unicode"),
+            emoji_id: string("emoji_id"),
             count: value
                 .get("count")
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
         }),
+        "message_pin" => Some(Event::MessagePinned {
+            message_id: string("message_id")?,
+            pinned: value
+                .get("is_pinned")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true),
+        }),
+        "attachment_moderation_update" => Some(Event::AttachmentModeration {
+            message_id: string("message_id")?,
+            attachment_id: string("attachment_id")?,
+            status: string("status").unwrap_or_default(),
+        }),
         "new_notification" => Some(Event::Notification {
             id: string("id").unwrap_or_default(),
-            channel_id: string("channel_id"),
             message_id: string("message_id"),
-            author_id: string("author_id"),
-            preview: string("preview").or_else(|| string("content")),
+            // `user_id` é o autor da mensagem notificada.
+            author_id: string("user_id"),
+            preview: string("message_content"),
         }),
         _ => None,
     }

@@ -41,6 +41,12 @@ directories = "6"
 raw-window-handle = "0.6"
 egui-phosphor = { version = "0.14", features = ["regular"] }
 fontdb = { version = "0.23", default-features = false, features = ["fs"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+base64 = "0.22"
+swash = "0.2"
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+gstreamer-video = "0.24"
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
 
