@@ -139,12 +139,6 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
-    /// A conversa está colada no fim. Sai do lugar quando o usuário rola
-    /// para cima e volta quando ele desce até o fim de novo.
-    pub follow_bottom: bool,
-    /// Altura do conteúdo no quadro anterior; serve de alvo para encostar no
-    /// fim sem passar um infinito ao egui (que vira NaN e derruba o quadro).
-    pub last_content_height: f32,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -175,8 +169,6 @@ impl Default for UiState {
             show_record: true,
             recorder: None,
             error: None,
-            follow_bottom: true,
-            last_content_height: 0.0,
             relayout: false,
         }
     }
@@ -746,32 +738,14 @@ fn conversation(
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
-            // Rolar para cima solta a conversa do fim; chegar ao fim de novo
-            // volta a colar. Sem isso, o conteúdo que carrega depois (uma
-            // imagem, um vídeo) empurra a lista e ela nunca mais encosta.
-            let scrolled_up = ui.input(|input| input.smooth_scroll_delta.y) > 0.5;
-            if scrolled_up {
-                state.follow_bottom = false;
-            }
-
-            let mut area = egui::ScrollArea::vertical()
+            egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .stick_to_bottom(true);
-            if state.follow_bottom {
-                // Um alvo maior que o conteúdo; o egui corta no fim.
-                area = area.vertical_scroll_offset(state.last_content_height + 4096.0);
-            }
-            let output = area.show(ui, |ui| {
-                ui.add_space(top_inset);
-                message_list(ui, store, state, t, s, full);
-                ui.add_space(bottom_inset);
-            });
-
-            state.last_content_height = output.content_size.y;
-            let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
-            if output.state.offset.y >= max_offset - 8.0 {
-                state.follow_bottom = true;
-            }
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add_space(top_inset);
+                    message_list(ui, store, state, t, s, full);
+                    ui.add_space(bottom_inset);
+                });
         });
 
         // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
