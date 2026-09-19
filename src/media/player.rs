@@ -155,10 +155,11 @@ impl Player {
             0.0
         };
         // A posição anda na hora, para o cursor não voltar enquanto a busca
-        // acontece lá atrás.
+        // acontece lá atrás; e o botão já vira pausa, porque buscar toca.
         self.shared
             .position_ns
             .store((seconds * 1e9) as u64, Ordering::Relaxed);
+        self.shared.playing.store(true, Ordering::Relaxed);
         self.send(Command::Seek(seconds));
     }
 
@@ -274,24 +275,39 @@ fn run(
 
     loop {
         match commands.recv_timeout(TICK) {
-            Ok(Command::Play) => {
-                if let Err(error) = pipeline.set_state(gst::State::Playing) {
-                    report(&shared, format!("não tocou: {error}"));
+            Ok(Command::Play) => match pipeline.set_state(gst::State::Playing) {
+                // A troca de estado pode voltar como assíncrona, e enquanto
+                // ela não termina o relógio não anda: o pipeline diz PLAYING
+                // e a posição fica parada. Esperar aqui é de graça.
+                Ok(_) => {
+                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
                 }
-            }
+                Err(error) => report(&shared, format!("não tocou: {error}")),
+            },
             Ok(Command::Pause) => {
                 let _ = pipeline.set_state(gst::State::Paused);
+                let _ = pipeline.state(gst::ClockTime::from_mseconds(300));
             }
             Ok(Command::Seek(seconds)) => {
                 let target = gst::ClockTime::from_nseconds((seconds * 1e9) as u64);
                 // Aqui a busca pode bloquear à vontade: quem espera é esta
-                // thread. O pipeline já prerollou, então ela volta rápido.
+                // thread, não a janela.
                 if pipeline
                     .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, target)
                     .is_err()
                 {
                     log::warn!("busca recusada em {name}");
                 }
+                // A busca com flush desfaz o preroll: é preciso esperar o
+                // pipeline se assentar antes de mandá-lo tocar, senão ele
+                // fica parado para sempre no ponto novo.
+                let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                // Quem arrasta o cursor quer ouvir dali em diante.
+                if pipeline.set_state(gst::State::Playing).is_ok() {
+                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                    shared.playing.store(true, Ordering::Relaxed);
+                }
+                repaint.request_repaint();
             }
             Ok(Command::Muted(muted)) => pipeline.set_property("mute", muted),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -314,6 +330,16 @@ fn run(
                         report(&shared, error.error().to_string());
                         repaint.request_repaint();
                     }
+                    // O sink avisa que a latência mudou e espera que alguém
+                    // recalcule. Quem ignora fica com o relógio parado: o
+                    // pipeline diz PLAYING e a posição não anda.
+                    gst::MessageView::Latency(_) => {
+                        if let Some(bin) = pipeline.downcast_ref::<gst::Bin>() {
+                            if let Err(error) = bin.recalculate_latency() {
+                                log::warn!("latência de {name}: {error}");
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -330,6 +356,10 @@ fn run(
 
 /// Publica posição e duração para a janela ler sem perguntar ao GStreamer.
 fn publish(pipeline: &gst::Element, shared: &Shared) {
+    // Perguntar o estado (sem esperar) é o que fecha uma troca assíncrona
+    // pendente. Sem isso o pipeline anuncia PLAYING, o relógio não anda e a
+    // posição fica congelada — foi exatamente o que aconteceu aqui.
+    let _ = pipeline.state(gst::ClockTime::ZERO);
     if let Some(position) = pipeline.query_position::<gst::ClockTime>() {
         shared.position_ns.store(position.nseconds(), Ordering::Relaxed);
     }
@@ -347,8 +377,18 @@ fn report(shared: &Shared, message: String) {
     }
 }
 
-/// O primeiro sink de áudio que este sistema consegue criar.
+/// O primeiro sink de áudio que este sistema consegue criar. `PAPO_AUDIO_SINK`
+/// força um deles, para quando o padrão do sistema não coopera.
 fn audio_sink() -> Option<gst::Element> {
+    if let Ok(forced) = std::env::var("PAPO_AUDIO_SINK") {
+        match gst::ElementFactory::make(&forced).build() {
+            Ok(sink) => {
+                log::info!("saída de áudio forçada: {forced}");
+                return Some(sink);
+            }
+            Err(error) => log::warn!("saída de áudio {forced} não existe: {error}"),
+        }
+    }
     for name in ["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"] {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
