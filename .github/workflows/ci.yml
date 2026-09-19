@@ -27,6 +27,40 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
 
+  # O `stable` do runner some por baixo dos pés: uma dependência que suba o
+  # mínimo dela passaria batido aqui e só quebraria na máquina de quem
+  # instala. Este job compila exatamente com o rust-version do Cargo.toml.
+  msrv:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          ./scripts/deps.sh --install
+      - run: cargo build --locked
+
+  # Os nomes de pacote em scripts/deps.sh são promessa feita a quem instala.
+  # Este job prova que os do apt existem de verdade, sem baixar nada.
+  deps:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          ./scripts/deps.sh | tail -3 | grep sudo | sed 's/^ *//' \
+            | sed 's/install -y/install -y --dry-run/' | sh
+
   metadata:
     runs-on: ubuntu-24.04
     steps:

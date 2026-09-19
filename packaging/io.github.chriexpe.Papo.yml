@@ -64,8 +64,9 @@ modules:
         /app/share/applications/io.github.chriexpe.Papo.desktop
       - install -Dm644 packaging/io.github.chriexpe.Papo.metainfo.xml
         /app/share/metainfo/io.github.chriexpe.Papo.metainfo.xml
-      - install -Dm644 assets/icon.png
-        /app/share/icons/hicolor/256x256/apps/io.github.chriexpe.Papo.png
+      - for icon in assets/icons/*.png; do size="${icon##*/}"; size="${size%.png}";
+        install -Dm644 "$icon"
+        "/app/share/icons/hicolor/${size}x${size}/apps/io.github.chriexpe.Papo.png"; done
       - mkdir -p /app/lib/ffmpeg
     sources:
       - type: dir

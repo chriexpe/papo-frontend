@@ -2,7 +2,7 @@
 name = "papo"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.95"
 description = "Cliente nativo do Papo — chat self-hosted"
 license = "AGPL-3.0-or-later"
 
@@ -49,6 +49,11 @@ gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
+
+# Não usamos a kstring: ela entra pelo gstreamer. O pino existe porque da
+# 2.0.3 em diante ela exige rustc 1.96, e sem ele o mínimo do projeto sobe
+# de 1.95 (o do egui) para 1.96 sem que nada aqui precise disso.
+kstring = "=2.0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }

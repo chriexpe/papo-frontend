@@ -1,0 +1,19 @@
+Package: papo
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: chriexpe <chrishattge45@gmail.com>
+Homepage: https://github.com/chriexpe/papo-frontend
+Section: net
+Priority: optional
+Depends: libc6, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0,
+ gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav,
+ libxkbcommon0, libwayland-client0, libx11-6, libfontconfig1
+Recommends: gstreamer1.0-pipewire, fonts-noto-color-emoji, xdg-desktop-portal
+Description: Cliente nativo do Papo — chat self-hosted
+ Papo é um chat self-hosted de texto, voz e vídeo. Este é o cliente nativo:
+ um binário só, sem navegador embutido, falando com o servidor por REST e
+ WebSocket.
+ .
+ Vários servidores ao mesmo tempo, cada um com a própria conta; responder,
+ editar, apagar, fixar e reagir; imagem, vídeo e áudio dentro da conversa;
+ bandeja, notificações e contador de menções na barra de tarefas.

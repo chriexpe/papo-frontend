@@ -13,10 +13,11 @@ icons="$data/icons/hicolor"
 install -Dm644 "packaging/$app.desktop" "$apps/$app.desktop"
 install -Dm644 "packaging/$app.metainfo.xml" "$data/metainfo/$app.metainfo.xml"
 
-for size in 16 22 24 32 48 64 128 256; do
-    dir="$icons/${size}x${size}/apps"
-    mkdir -p "$dir"
-    magick assets/icon.png -resize "${size}x${size}" "$dir/$app.png"
+# Os tamanhos vêm prontos em assets/icons: pedir ImageMagick aqui quebrava
+# no Debian e no Ubuntu, que trazem a versão 6 (só `convert`, sem `magick`).
+for icon in assets/icons/*.png; do
+    size="$(basename "$icon" .png)"
+    install -Dm644 "$icon" "$icons/${size}x${size}/apps/$app.png"
 done
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps" || true

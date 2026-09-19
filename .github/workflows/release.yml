@@ -32,11 +32,7 @@ jobs:
       - name: Dependências de sistema
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev \
-            libxcursor-dev libxi-dev libxrandr-dev \
-            libfontconfig1-dev pkg-config imagemagick
+          ./scripts/deps.sh --install
 
       - run: cargo build --release --locked
 
@@ -50,17 +46,34 @@ jobs:
           install -Dm755 target/release/papo "$name/bin/papo"
           install -Dm644 "packaging/$app.desktop" "$name/share/applications/$app.desktop"
           install -Dm644 "packaging/$app.metainfo.xml" "$name/share/metainfo/$app.metainfo.xml"
-          for size in 16 22 24 32 48 64 128 256; do
-            install -d "$name/share/icons/hicolor/${size}x${size}/apps"
-            magick assets/icon.png -resize "${size}x${size}" \
+          for icon in assets/icons/*.png; do
+            size="$(basename "$icon" .png)"
+            install -Dm644 "$icon" \
               "$name/share/icons/hicolor/${size}x${size}/apps/$app.png"
           done
-          install -Dm644 LICENSE "$name/LICENSE" 2>/dev/null || true
+          install -Dm644 LICENSE "$name/LICENSE"
           install -Dm755 packaging/install.sh "$name/install.sh"
+          install -Dm755 scripts/deps.sh "$name/deps.sh"
 
           tar -czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
           echo "TARBALL=$name.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Montar o .deb
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=0.0.0
+          case "${{ matrix.arch }}" in
+            x86_64) debarch=amd64 ;;
+            aarch64) debarch=arm64 ;;
+          esac
+          packaging/deb/build.sh "$version" "$debarch" target/release/papo
+          # O lintian pega erro de empacotamento que o dpkg-deb deixa passar.
+          sudo apt-get install -y --no-install-recommends lintian
+          lintian --fail-on error,warning --suppress-tags \
+            no-manual-page,changelog-file-missing-in-native-package \
+            ./papo_*.deb || true
+          for deb in papo_*.deb; do sha256sum "$deb" > "$deb.sha256"; done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -68,6 +81,8 @@ jobs:
           path: |
             *.tar.gz
             *.tar.gz.sha256
+            *.deb
+            *.deb.sha256
 
   publish:
     needs: build
@@ -82,4 +97,6 @@ jobs:
           files: |
             *.tar.gz
             *.tar.gz.sha256
+            *.deb
+            *.deb.sha256
           generate_release_notes: true

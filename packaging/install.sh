@@ -6,6 +6,19 @@
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 
+# O binário liga o GStreamer dinamicamente: sem ele, instalar não adianta.
+# Melhor dizer isso agora, com o comando pronto, do que deixar a janela
+# falhar ao abrir.
+if command -v ldd >/dev/null 2>&1; then
+    if ldd "$here/bin/papo" 2>/dev/null | grep -q "not found"; then
+        echo "Faltam bibliotecas para o papo rodar:" >&2
+        ldd "$here/bin/papo" | grep "not found" | sed 's/^/  /' >&2
+        echo >&2
+        [ -x "$here/deps.sh" ] && "$here/deps.sh" --runtime >&2
+        exit 1
+    fi
+fi
+
 bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 

@@ -28,8 +28,10 @@ optdepends=(
     'xdg-desktop-portal: seletor de arquivos do sistema'
     'noto-fonts-emoji: emoji colorido'
 )
-makedepends=('rust' 'cargo' 'pkgconf' 'imagemagick')
+makedepends=('rust' 'cargo' 'pkgconf')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Preencha com `makepkg -g` depois de publicar a etiqueta: só aí o tarball
+# do GitHub existe para ter soma.
 sha256sums=('SKIP')
 
 _app_id=io.github.chriexpe.Papo
@@ -38,13 +40,13 @@ build() {
     cd "papo-frontend-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    cargo build --release --frozen --all-features
+    cargo build --release --locked --all-features
 }
 
 check() {
     cd "papo-frontend-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
-    cargo test --release --frozen
+    cargo test --release --locked
 }
 
 package() {
@@ -55,9 +57,11 @@ package() {
     install -Dm644 "packaging/$_app_id.metainfo.xml" \
         "$pkgdir/usr/share/metainfo/$_app_id.metainfo.xml"
 
-    for size in 16 22 24 32 48 64 128 256; do
-        install -d "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"
-        magick assets/icon.png -resize "${size}x${size}" \
+    # Os tamanhos já vêm prontos no repositório; nada de ImageMagick aqui.
+    for icon in assets/icons/*.png; do
+        size="$(basename "$icon" .png)"
+        install -Dm644 "$icon" \
             "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$_app_id.png"
     done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

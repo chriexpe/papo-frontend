@@ -34,17 +34,32 @@ O endereço do servidor é editável na tela de entrada e fica guardado nos ajus
 ## Instalando
 
 ```bash
-cargo install --path .          # o binário em ~/.cargo/bin
+./scripts/deps.sh --install     # pacotes de sistema da sua distribuição
+cargo install --locked --path . # o binário em ~/.cargo/bin
 ./scripts/install-desktop.sh    # .desktop, ícones e metadados no ~/.local/share
 ```
+
+`scripts/deps.sh` conhece apt, dnf e pacman; sem `--install` ele só mostra o
+comando. Os nomes do apt são conferidos no CI a cada push, então não envelhecem
+calados. O binário liga o GStreamer dinamicamente: mesmo quem baixa o tarball
+precisa dos pacotes de execução (`./deps.sh --runtime`).
+
+O `--locked` não é opcional: sem ele o cargo reresolve as dependências para a
+última versão compatível, e alguma delas vai exigir um rustc mais novo que o
+seu. O mínimo é **rustc 1.95** (o do egui), e o CI compila com essa versão
+exata para que ele não suba sem querer.
 
 Empacotado, por ordem de preferência:
 
 | Formato | Arquivo | Para quem |
 | --- | --- | --- |
 | Flatpak | `packaging/io.github.chriexpe.Papo.yml` | qualquer distribuição; o runtime já traz GStreamer e codecs |
-| Arch/AUR | `packaging/PKGBUILD` | Arch e derivados, com integração nativa |
+| `.deb` | `packaging/deb/build.sh` | Debian, Ubuntu, Zorin e derivados; as dependências vêm no pacote |
+| Arch/AUR | `packaging/PKGBUILD` | Arch e derivados |
 | Tarball | gerado pelo workflow `release` | quem só quer descompactar e rodar |
+
+Os quatro saem do mesmo workflow `release` a cada etiqueta `v*`, em x86_64 e
+aarch64.
 
 O Flatpak precisa das dependências do cargo em disco antes de compilar (a
 compilação roda sem rede): rode `./scripts/flatpak-sources.sh` sempre que o
