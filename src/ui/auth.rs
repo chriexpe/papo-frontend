@@ -107,9 +107,9 @@ pub fn sign_in(
             action = AuthAction::SignIn;
         }
         ui.add_space(space::MD);
-        // Cadastrar com senha fraca só voltaria como erro do servidor.
-        let may_register = ready && !store.busy && unmet.is_empty();
-        if link_button(ui, t, s.sign_up, may_register) {
+        // As regras acima já avisam de senha fraca; travar o botão por causa
+        // delas só fazia parecer que criar conta não estava implementado.
+        if link_button(ui, t, s.sign_up, ready && !store.busy) {
             action = AuthAction::Register;
         }
     });
@@ -281,17 +281,23 @@ fn primary_button(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> 
 fn link_button(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> bool {
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0), Sense::click());
+    // Desligado tem que parecer desligado: antes ficava igual ao ligado e
+    // o clique sumia sem explicação.
+    let color = match (enabled, response.hovered()) {
+        (false, _) => t.label_tertiary,
+        (true, true) => t.accent,
+        (true, false) => t.label_secondary,
+    };
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         label,
         text::callout(),
-        if response.hovered() && enabled {
-            t.accent
-        } else {
-            t.label_secondary
-        },
+        color,
     );
+    if enabled && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     enabled && response.clicked()
 }
 

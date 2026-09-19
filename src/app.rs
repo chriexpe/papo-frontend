@@ -653,6 +653,7 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        crate::api::net::forget(&self.workspaces[index].url);
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 
@@ -895,9 +896,20 @@ impl PapoApp {
                     update,
                     crate::api::net::Update::Connection(crate::api::ws::Connection::Online)
                 );
+                // O portão do servidor abriu: entra com o que já está no
+                // formulário, em vez de fazer o usuário clicar de novo.
+                let unlocked = matches!(update, crate::api::net::Update::ServerUnlocked);
                 let ws = &mut self.workspaces[index];
                 if reconnected && ws.store.screen == Screen::Chat {
                     ws.net.send(Command::Refresh);
+                }
+                if unlocked {
+                    let username = ws.form.username.trim().to_owned();
+                    let password = ws.form.password.clone();
+                    if !username.is_empty() && !password.is_empty() {
+                        ws.store.busy = true;
+                        ws.net.send(Command::Login { username, password });
+                    }
                 }
                 ws.store.apply(update);
 

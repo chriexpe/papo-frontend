@@ -273,6 +273,25 @@ async fn worker(
     }
 }
 
+/// Apresenta a senha do servidor já guardada. `Ok(false)` quer dizer que não
+/// há senha guardada; `Err` que a guardada não serve mais e foi descartada.
+async fn unlock_with_saved(api: &Api, base_url: &str) -> Result<bool, ApiError> {
+    let Some(password) = load_server_password(base_url) else {
+        return Ok(false);
+    };
+    match api.login_server(&password).await {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            // A senha do servidor mudou: esquecer é o certo, ou toda entrada
+            // tentaria a senha velha antes de perguntar.
+            if let Some(path) = server_password_path(base_url) {
+                let _ = std::fs::remove_file(path);
+            }
+            Err(error)
+        }
+    }
+}
+
 fn start_socket(
     api: &Api,
     session: &Arc<Session>,
@@ -319,7 +338,27 @@ async fn handle(
                     Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
                 }
             }
-            Err(ApiError::ServerLocked) => publish(updates, repaint, Update::ServerLocked),
+            // Servidor fechado: se a senha dele já é conhecida, o portão
+            // abre sozinho e o login segue — pedi-la de novo a cada entrada
+            // não protege nada, só incomoda.
+            Err(ApiError::ServerLocked) => {
+                match unlock_with_saved(api, base_url).await {
+                    Ok(true) => {
+                        Box::pin(handle(
+                            api,
+                            base_url,
+                            session,
+                            me,
+                            updates,
+                            repaint,
+                            outbound,
+                            Command::Login { username, password },
+                        ))
+                        .await;
+                    }
+                    _ => publish(updates, repaint, Update::ServerLocked),
+                }
+            }
             Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
         },
         Command::Register { username, password } => {
@@ -338,7 +377,24 @@ async fn handle(
                     ))
                     .await;
                 }
-                Err(ApiError::ServerLocked) => publish(updates, repaint, Update::ServerLocked),
+                Err(ApiError::ServerLocked) => {
+                    match unlock_with_saved(api, base_url).await {
+                        Ok(true) => {
+                            Box::pin(handle(
+                                api,
+                                base_url,
+                                session,
+                                me,
+                                updates,
+                                repaint,
+                                outbound,
+                                Command::Register { username, password },
+                            ))
+                            .await;
+                        }
+                        _ => publish(updates, repaint, Update::ServerLocked),
+                    }
+                }
                 Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
             }
         }
@@ -439,7 +495,10 @@ async fn handle(
             ));
         }
         Command::LoginServer { password } => match api.login_server(&password).await {
-            Ok(()) => publish(updates, repaint, Update::ServerUnlocked),
+            Ok(()) => {
+                store_server_password(base_url, &password);
+                publish(updates, repaint, Update::ServerUnlocked);
+            }
             Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
         },
         Command::Logout => {
@@ -530,6 +589,44 @@ fn session_path(base_url: &str) -> Option<std::path::PathBuf> {
     let dir = dirs.data_dir().join("sessions");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir.join(format!("{}.token", crate::state::server_key(base_url))))
+}
+
+/// Apaga o que um servidor deixou em disco. Chamado ao tirá-lo do trilho:
+/// sem isso o token e a senha ficariam para sempre.
+pub fn forget(base_url: &str) {
+    for path in [session_path(base_url), server_password_path(base_url)]
+        .into_iter()
+        .flatten()
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A senha do servidor mora ao lado do token, com a mesma permissão.
+///
+/// O token temporário que ela rende vale meia hora, então guardá-lo não
+/// adiantaria: o que evita pedir a senha em toda entrada é guardar a senha e
+/// reapresentá-la sozinho quando o servidor cobrar.
+fn server_password_path(base_url: &str) -> Option<std::path::PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "papo")?;
+    let dir = dirs.data_dir().join("sessions");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(format!("{}.server", crate::state::server_key(base_url))))
+}
+
+fn load_server_password(base_url: &str) -> Option<String> {
+    let path = server_password_path(base_url)?;
+    let password = std::fs::read_to_string(path).ok()?;
+    (!password.is_empty()).then_some(password)
+}
+
+fn store_server_password(base_url: &str, password: &str) {
+    let Some(path) = server_password_path(base_url) else {
+        return;
+    };
+    if std::fs::write(&path, password).is_ok() {
+        restrict(&path);
+    }
 }
 
 fn load_token(base_url: &str) -> Option<String> {
