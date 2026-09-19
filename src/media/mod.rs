@@ -397,13 +397,17 @@ impl MediaStore {
         }
     }
 
-    /// Consome o que a thread de mídia terminou.
-    pub fn pump(&mut self, ctx: &egui::Context) {
-        let Some(media) = &self.media else { return };
+    /// Consome o que a thread de mídia terminou. Devolve `true` quando algo
+    /// novo entrou — o que costuma mudar a altura da conversa.
+    pub fn pump(&mut self, ctx: &egui::Context) -> bool {
+        let Some(media) = &self.media else {
+            return false;
+        };
         let mut loaded = Vec::new();
         while let Some(item) = media.try_recv() {
             loaded.push(item);
         }
+        let changed = !loaded.is_empty();
         for item in loaded {
             match item {
                 Loaded::Image { key, image } => {
@@ -448,6 +452,7 @@ impl MediaStore {
                 }
             }
         }
+        changed
     }
 
     fn ask(&self, request: Request) {

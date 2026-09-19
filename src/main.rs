@@ -149,6 +149,30 @@ fn media_test() {
         None => println!("vídeo: não deu para abrir"),
     }
 
+    // O mesmo player que toca o recado dentro da mensagem.
+    match media::player::Player::open(&audio, false, ctx.clone()) {
+        Some(mut player) => {
+            let duration = player.duration();
+            player.play();
+            std::thread::sleep(std::time::Duration::from_millis(700));
+            player.update();
+            let running = player.position();
+            // Buscar para perto do fim prova que a linha do tempo responde.
+            player.seek(duration * 0.75);
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            player.update();
+            println!(
+                "áudio: {duration:.1}s · tocou até {running:.2}s · depois do salto {:.2}s{}",
+                player.position(),
+                match player.error.as_deref() {
+                    Some(error) => format!(" · erro: {error}"),
+                    None => String::new(),
+                }
+            );
+        }
+        None => println!("áudio: não deu para abrir"),
+    }
+
     match media::player::waveform(&audio) {
         Some(peaks) => println!(
             "forma de onda: {} picos (máximo {:.2})",

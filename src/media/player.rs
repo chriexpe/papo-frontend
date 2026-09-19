@@ -77,11 +77,24 @@ impl Player {
             pipeline.set_property("video-sink", &fake);
         }
 
+        // O playbin pede `autoaudiosink`, que vem do gst-plugins-good e nem
+        // sempre está instalado. Sem sink não há preroll: o pipeline morre em
+        // silêncio, sem duração e sem poder buscar posição.
+        if let Some(sink) = audio_sink() {
+            pipeline.set_property("audio-sink", &sink);
+        }
+
         // Pausado já decodifica o primeiro quadro: o cartão aparece com a
         // imagem do vídeo em vez de um retângulo vazio.
         if pipeline.set_state(gst::State::Paused).is_err() {
             log::warn!("não deu para preparar {}", path.display());
             return None;
+        }
+        // O preroll é assíncrono; esperar um instante por ele faz a duração
+        // já existir na primeira vez que a linha do tempo for desenhada.
+        let (result, _, _) = pipeline.state(gst::ClockTime::from_mseconds(600));
+        if let Err(error) = result {
+            log::warn!("preroll de {}: {error}", path.display());
         }
 
         Some(Self {
@@ -121,6 +134,11 @@ impl Player {
 
     pub fn is_playing(&self) -> bool {
         self.playing
+    }
+
+    /// Lê o barramento do áudio, que não tem quadro para acordá-lo.
+    pub fn update(&mut self) {
+        self.pump_bus();
     }
 
     pub fn position(&self) -> f64 {
@@ -225,6 +243,18 @@ impl Drop for Player {
     fn drop(&mut self) {
         let _ = self.pipeline.set_state(gst::State::Null);
     }
+}
+
+/// O primeiro sink de áudio que este sistema consegue criar.
+fn audio_sink() -> Option<gst::Element> {
+    for name in ["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"] {
+        if let Ok(sink) = gst::ElementFactory::make(name).build() {
+            log::debug!("saída de áudio: {name}");
+            return Some(sink);
+        }
+    }
+    log::warn!("sem saída de áudio: o som não vai tocar");
+    None
 }
 
 /// `videoconvert ! appsink` empacotado como sink do playbin.

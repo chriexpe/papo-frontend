@@ -34,6 +34,8 @@ const PILL_MARGIN: f32 = 12.0;
 const PILL_RADIUS: f32 = 12.0;
 const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
+/// Folga do realce da linha, igual em cima e embaixo.
+const ROW_PADDING: f32 = 4.0;
 /// Quanto tempo a descrição do canal fica visível antes de recolher.
 const TOPIC_HOLD: f64 = 4.0;
 const TOPIC_SLIDE: f64 = 0.45;
@@ -137,6 +139,16 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
+    /// A conversa está colada no fim. Sai do lugar quando o usuário rola
+    /// para cima e volta quando ele desce até o fim de novo.
+    pub follow_bottom: bool,
+    /// Altura do conteúdo no quadro anterior; serve de alvo para encostar no
+    /// fim sem passar um infinito ao egui (que vira NaN e derruba o quadro).
+    pub last_content_height: f32,
+    /// A lista mudou de altura no quadro anterior. O egui só reencosta a
+    /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
+    /// ele é refeito antes de chegar à tela.
+    pub relayout: bool,
 }
 
 impl Default for UiState {
@@ -163,6 +175,9 @@ impl Default for UiState {
             show_record: true,
             recorder: None,
             error: None,
+            follow_bottom: true,
+            last_content_height: 0.0,
+            relayout: false,
         }
     }
 }
@@ -175,7 +190,10 @@ impl UiState {
 }
 
 pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
-    state.media.pump(ui.ctx());
+    // Mídia que acabou de chegar muda a altura das mensagens.
+    if state.media.pump(ui.ctx()) {
+        state.relayout = true;
+    }
 
     // Trocou de canal: a descrição reaparece e a mídia que estava tocando
     // para, porque ela já saiu da tela.
@@ -187,6 +205,13 @@ pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Token
         state.editing = None;
         state.replying = None;
         state.close_popup();
+    }
+
+    // A altura da lista mudou no quadro anterior (uma reação a mais, por
+    // exemplo): a rolagem ainda está no lugar antigo e a conversa daria um
+    // pulo. Refazer o quadro antes de mostrá-lo resolve na origem.
+    if std::mem::take(&mut state.relayout) {
+        ui.ctx().request_discard("a lista mudou de altura");
     }
 
     channels_sidebar(ui, store, state, t, s);
@@ -721,14 +746,32 @@ fn conversation(
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
-            egui::ScrollArea::vertical()
+            // Rolar para cima solta a conversa do fim; chegar ao fim de novo
+            // volta a colar. Sem isso, o conteúdo que carrega depois (uma
+            // imagem, um vídeo) empurra a lista e ela nunca mais encosta.
+            let scrolled_up = ui.input(|input| input.smooth_scroll_delta.y) > 0.5;
+            if scrolled_up {
+                state.follow_bottom = false;
+            }
+
+            let mut area = egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.add_space(top_inset);
-                    message_list(ui, store, state, t, s, full);
-                    ui.add_space(bottom_inset);
-                });
+                .stick_to_bottom(true);
+            if state.follow_bottom {
+                // Um alvo maior que o conteúdo; o egui corta no fim.
+                area = area.vertical_scroll_offset(state.last_content_height + 4096.0);
+            }
+            let output = area.show(ui, |ui| {
+                ui.add_space(top_inset);
+                message_list(ui, store, state, t, s, full);
+                ui.add_space(bottom_inset);
+            });
+
+            state.last_content_height = output.content_size.y;
+            let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+            if output.state.offset.y >= max_offset - 8.0 {
+                state.follow_bottom = true;
+            }
         });
 
         // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
@@ -921,21 +964,20 @@ fn message_list(
             });
 
         // O realce da linha é pintado depois, quando já sabemos a altura.
+        // O respiro entre grupos fica fora da linha: dentro dela, ele jogaria
+        // o texto para baixo e o realce ficaria torto.
+        if !grouped {
+            ui.add_space(space::LG);
+        }
         let backdrop = ui.painter().add(egui::Shape::Noop);
 
         let author = store.member(&message.author_id);
         let inner = ui.scope(|ui| {
-            if !grouped {
-                ui.add_space(space::LG);
-            }
             ui.horizontal_top(|ui| {
                 ui.add_space(gutter);
                 if grouped {
-                    ui.add_space(avatar_size + space::LG - gutter + gutter - gutter);
-                    ui.allocate_exact_size(
-                        Vec2::new(avatar_size + space::LG - space::LG, 0.0),
-                        Sense::hover(),
-                    );
+                    ui.allocate_exact_size(Vec2::new(avatar_size, 0.0), Sense::hover());
+                    ui.add_space(space::LG);
                 } else {
                     let initials = author.map(|a| a.initials()).unwrap_or_else(|| "?".into());
                     avatar(ui, t, &initials, avatar_size, author.and_then(|a| a.role_color));
@@ -983,7 +1025,7 @@ fn message_list(
             None => interactive && ui.rect_contains_pointer(row),
         };
         if mentions_me {
-            let band = row.expand2(Vec2::new(0.0, 2.0));
+            let band = row.expand2(Vec2::new(0.0, ROW_PADDING));
             let wash = t.mention.gamma_multiply(if hovered { 0.16 } else { 0.10 });
             ui.painter().set(
                 backdrop,
@@ -1003,7 +1045,7 @@ fn message_list(
             ui.painter().set(
                 backdrop,
                 egui::epaint::RectShape::filled(
-                    row.expand2(Vec2::new(0.0, 2.0)),
+                    row.expand2(Vec2::new(0.0, ROW_PADDING)),
                     CornerRadius::same(radius::CARD),
                     t.fill_soft,
                 ),
@@ -1235,6 +1277,7 @@ fn message_body(
             }
         });
         if let Some((emoji, add)) = toggled {
+            state.relayout = true;
             state.actions.push(ChatAction::React {
                 message_id: message.id.clone(),
                 emoji,
@@ -1394,7 +1437,10 @@ fn hover_pill(
     let button = 26.0;
     let width = button * buttons.len() as f32 + space::XS * 2.0;
     let rect = Rect::from_min_size(
-        egui::pos2(row.max.x - width - space::MD, row.min.y - height / 2.0),
+        egui::pos2(
+            row.max.x - width - space::MD,
+            row.min.y - ROW_PADDING - height / 2.0,
+        ),
         Vec2::new(width, height),
     );
 
@@ -1570,6 +1616,7 @@ fn emoji_popup(
             })
             .map(|reaction| reaction.mine)
             .unwrap_or(false);
+        state.relayout = true;
         state.actions.push(ChatAction::React {
             message_id: popup.message_id.clone(),
             emoji,

@@ -274,9 +274,11 @@ fn audio(
         .map(<[f32]>::to_vec)
         .unwrap_or_default();
     let player = media.existing_player(&attachment.id)?;
+    player.update();
     let playing = player.is_playing();
     let position = player.position();
     let duration = player.duration();
+    let failed = player.error.clone();
 
     let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), Sense::click_and_drag());
     ui.painter().rect(
@@ -358,6 +360,10 @@ fn audio(
             let duration = player.duration();
             if duration > 0.0 {
                 player.seek(duration * ratio);
+            } else {
+                // Sem duração ainda: toca para o pipeline prerollar e a
+                // próxima tentativa já acerta o ponto.
+                player.play();
             }
         }
     }
@@ -369,6 +375,9 @@ fn audio(
         text::footnote(),
         t.label_tertiary,
     );
+    if let Some(error) = failed {
+        log::warn!("áudio {}: {error}", attachment.id);
+    }
 
     if playing {
         ui.ctx().request_repaint();
