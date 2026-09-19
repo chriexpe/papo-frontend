@@ -357,7 +357,7 @@ fn stage_player(
     let playing = player.is_playing();
     let position = player.position();
     let duration = player.duration();
-    let aspect = player.aspect.clamp(0.3, 4.0);
+    let aspect = player.aspect().clamp(0.3, 4.0);
 
     let frame_rect = if video {
         let mut size = Vec2::new(stage.width(), stage.width() / aspect);

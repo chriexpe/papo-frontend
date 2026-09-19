@@ -177,7 +177,7 @@ fn video(
         return file_card(ui, t, s, attachment, width);
     };
 
-    let aspect = player.aspect.clamp(0.4, 3.0);
+    let aspect = player.aspect().clamp(0.4, 3.0);
     let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
     let total = Vec2::new(card_width, frame_size.y + CONTROLS_H);
     let (rect, response) = ui.allocate_exact_size(total, Sense::click());
@@ -278,7 +278,7 @@ fn audio(
     let playing = player.is_playing();
     let position = player.position();
     let duration = player.duration();
-    let failed = player.error.clone();
+    let failed = player.error();
 
     let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), Sense::click_and_drag());
     ui.painter().rect(

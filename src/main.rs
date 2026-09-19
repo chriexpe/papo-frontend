@@ -10,6 +10,7 @@ mod ui;
 
 fn main() -> eframe::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("warn,papo=debug"));
+    install_panic_hook();
 
     // `papo selftest <usuário> <senha>` exercita o cliente REST contra o
     // backend sem abrir janela — útil para conferir o contrato.
@@ -84,6 +85,38 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+/// Espera a thread do player publicar a duração.
+fn wait_for_duration(player: &media::player::Player) -> f64 {
+    for _ in 0..60 {
+        let duration = player.duration();
+        if duration > 0.0 {
+            return duration;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    0.0
+}
+
+/// Guarda o pânico em disco antes de a janela sumir: sem isso, a única pista
+/// vai embora junto com o terminal que lançou o programa.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let when = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        log::error!("pânico: {info}");
+        if let Some(dirs) = directories::ProjectDirs::from("", "", "papo") {
+            let dir = dirs.cache_dir();
+            let _ = std::fs::create_dir_all(dir);
+            let _ = std::fs::write(
+                dir.join("ultimo-panico.txt"),
+                format!("{when}\n{info}\n\n{backtrace}\n"),
+            );
+        }
+        previous(info);
+    }));
+}
+
 /// Ícone da janela, o mesmo usado na bandeja.
 fn window_icon() -> egui::IconData {
     let Ok(image) = image::load_from_memory(include_bytes!("../assets/icon.png")) else {
@@ -149,22 +182,26 @@ fn media_test() {
         None => println!("vídeo: não deu para abrir"),
     }
 
-    // O mesmo player que toca o recado dentro da mensagem.
+    // Um player só, passando por tudo: tocar, pausar, buscar parado e voltar
+    // a tocar. Buscar parado era o que congelava a janela.
     match media::player::Player::open(&audio, false, ctx.clone()) {
         Some(mut player) => {
-            let duration = player.duration();
+            let duration = wait_for_duration(&player);
             player.play();
             std::thread::sleep(std::time::Duration::from_millis(700));
-            player.update();
-            let running = player.position();
-            // Buscar para perto do fim prova que a linha do tempo responde.
-            player.seek(duration * 0.75);
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            player.update();
+            let tocando = player.position();
+
+            player.pause();
+            let started = std::time::Instant::now();
+            player.seek(duration * 0.5);
+            let busca = started.elapsed();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+
             println!(
-                "áudio: {duration:.1}s · tocou até {running:.2}s · depois do salto {:.2}s{}",
+                "áudio: {duration:.1}s · tocando {tocando:.2}s · busca parada devolveu em \
+                 {busca:?} → {:.2}s{}",
                 player.position(),
-                match player.error.as_deref() {
+                match player.error().as_deref() {
                     Some(error) => format!(" · erro: {error}"),
                     None => String::new(),
                 }
