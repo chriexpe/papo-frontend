@@ -16,6 +16,9 @@ pub enum MenuCommand {
     ToggleTopicReveal,
     ToggleRecordButton,
     ToggleCloseToTray,
+    /// Fechar a janela: recolhe para a bandeja ou encerra, conforme o ajuste.
+    /// Só a nossa barra de título manda isto; o menu do painel não o mostra.
+    CloseWindow,
     SignOut,
     Preferences,
     SwitchLanguage(crate::i18n::Lang),

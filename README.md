@@ -88,6 +88,7 @@ src/
     player.rs   GStreamer: vídeo em textura, áudio, forma de onda e gravação
   ui/         telas e sistema de design
     rail.rs     trilho de servidores, a coluna de ícones à esquerda de tudo
+    headerbar.rs  barra de título própria, onde não há menu global
     theme.rs    tokens (cor, tipografia, espaço) e o estilo do egui
     glass.rs    desfoque de fundo em OpenGL — o vidro fosco
     shell.rs    janela principal: canais · conversa · membros
@@ -125,6 +126,11 @@ Linguagem visual seguindo as HIG da Apple, adaptadas ao desktop:
   reservados para presença.
 - **Movimento.** Respeita o fator de animação do Plasma: em zero, sem transições.
 - **Translucidez** pode ser desligada nos ajustes; as superfícies viram opacas.
+- **A moldura segue a área de trabalho.** No Plasma o menu vai para o painel e a
+  barra de título é do compositor. Em todo o resto — GNOME à frente, que tirou o
+  menu global na 3.32 — o Papo desenha a própria barra, com o título no meio e o
+  menu num hambúrguer. Sem isso não haveria caminho nenhum para ajustes, idioma
+  ou sair. `PAPO_CHROME=own` e `PAPO_CHROME=system` forçam um dos dois.
 
 ## Estado
 

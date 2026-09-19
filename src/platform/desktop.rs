@@ -179,3 +179,43 @@ pub fn animation_factor() -> Option<f32> {
         None
     }
 }
+
+/// Esta área de trabalho leva o menu do aplicativo para o painel dela?
+///
+/// Só o Plasma leva: o protocolo `org_kde_kwin_appmenu` é dele. O GNOME
+/// tirou o menu global na versão 3.32 e desde então cada aplicativo desenha
+/// o próprio, num botão de hambúrguer dentro da barra de título. Em todo o
+/// resto, um menu entregue por D-Bus simplesmente não aparece em lugar
+/// nenhum — e com ele sumiriam os ajustes, o idioma e o sair.
+pub fn uses_global_menu() -> bool {
+    // Escape para quem discorda da detecção — e é como se confere a barra
+    // de uma área de trabalho sem estar nela.
+    match std::env::var("PAPO_CHROME").as_deref() {
+        Ok("own") => return false,
+        Ok("system") => return true,
+        _ => {}
+    }
+    let Ok(desktops) = std::env::var("XDG_CURRENT_DESKTOP") else {
+        return false;
+    };
+    desktops
+        .split(':')
+        .any(|desktop| desktop.eq_ignore_ascii_case("KDE"))
+}
+
+#[cfg(test)]
+mod menu_global {
+    #[test]
+    fn so_o_plasma_recebe_o_menu() {
+        // A função lê o ambiente; aqui conferimos a regra que ela aplica.
+        let plasma = "KDE";
+        let gnome = "ubuntu:GNOME";
+        let both = "KDE:X-Generic";
+        for (desktops, expected) in [(plasma, true), (gnome, false), (both, true)] {
+            let got = desktops
+                .split(':')
+                .any(|desktop| desktop.eq_ignore_ascii_case("KDE"));
+            assert_eq!(got, expected, "para {desktops}");
+        }
+    }
+}

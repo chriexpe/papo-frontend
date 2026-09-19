@@ -264,6 +264,10 @@ pub struct PapoApp {
     window_attached: bool,
     /// Servidor de mentira: a rede é ignorada.
     demo: bool,
+    /// Nós desenhamos a barra de título, porque esta área de trabalho não
+    /// tem menu global para onde mandar o menu.
+    own_chrome: bool,
+    header: crate::ui::headerbar::HeaderState,
 }
 
 impl PapoApp {
@@ -362,6 +366,8 @@ impl PapoApp {
             minimized: false,
             window_attached: false,
             demo,
+            own_chrome: !desktop::uses_global_menu(),
+            header: crate::ui::headerbar::HeaderState::default(),
         }
     }
 
@@ -925,6 +931,25 @@ impl PapoApp {
         }
     }
 
+    /// Barra de título própria, onde não existe menu global.
+    fn draw_header(&mut self, ui: &mut egui::Ui) {
+        if !self.own_chrome {
+            return;
+        }
+        let model = build_menu(&self.settings);
+        // O nome do servidor na tela é o que a barra tem de mais útil a
+        // dizer; sem sessão, sobra o nome do aplicativo.
+        let title = match &self.ws().store.server {
+            Some(server) if !server.name.is_empty() => {
+                format!("Papo — {}", server.name)
+            }
+            _ => "Papo".to_owned(),
+        };
+        let commands =
+            crate::ui::headerbar::draw(ui, &mut self.header, &model, &title, &self.tokens);
+        self.ui.pending.extend(commands);
+    }
+
     /// Trilho de servidores e o que ele pediu.
     fn draw_rail(&mut self, ui: &mut egui::Ui, s: &'static crate::i18n::Strings, ctx: &egui::Context) {
         let entries: Vec<_> = self
@@ -988,10 +1013,17 @@ impl PapoApp {
         }
         let screen = ctx.viewport_rect();
         let left = crate::ui::rail::RAIL_WIDTH + crate::ui::shell::SIDEBAR_WIDTH;
-        let mut regions = vec![(0, 0, left as i32, screen.height() as i32)];
+        // A nossa barra de título é opaca: o desfoque começa abaixo dela.
+        let top = if self.own_chrome {
+            crate::ui::headerbar::HEADER_HEIGHT as i32
+        } else {
+            0
+        };
+        let height = screen.height() as i32 - top;
+        let mut regions = vec![(0, top, left as i32, height)];
         if self.settings.show_members {
             let width = crate::ui::shell::MEMBERS_WIDTH as i32;
-            regions.push((screen.width() as i32 - width, 0, width, screen.height() as i32));
+            regions.push((screen.width() as i32 - width, top, width, height));
         }
         blur.set_regions(&regions);
     }
@@ -1036,6 +1068,15 @@ impl PapoApp {
             }
             MenuCommand::ToggleCloseToTray => {
                 self.settings.close_to_tray = !self.settings.close_to_tray;
+            }
+            // O X da nossa barra faz o que o X do sistema faria.
+            MenuCommand::CloseWindow => {
+                #[cfg(target_os = "linux")]
+                if self.settings.close_to_tray && self.tray.is_some() {
+                    self.hide_window(ctx);
+                    return;
+                }
+                self.quit(ctx);
             }
             MenuCommand::SignOut => self.ws().net.send(Command::Logout),
             MenuCommand::Preferences => self.settings_open = true,
@@ -1249,6 +1290,7 @@ impl eframe::App for PapoApp {
         self.pump_network();
 
         let strings = self.settings.lang.strings();
+        self.draw_header(ui);
         self.draw_rail(ui, strings, &ctx);
 
         let active = self.active;
@@ -1291,6 +1333,10 @@ impl eframe::App for PapoApp {
         }
         self.settings_window(&ctx);
         self.pump_files(&ctx);
+
+        if self.own_chrome {
+            crate::ui::headerbar::resize_handles(&ctx);
+        }
 
         let pending: Vec<_> = self.ui.pending.drain(..).collect();
         for command in pending {
