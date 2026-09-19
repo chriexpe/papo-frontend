@@ -150,27 +150,6 @@ fn password_rules(password: &str, s: &Strings) -> Vec<&'static str> {
     missing
 }
 
-#[cfg(test)]
-mod tests {
-    use super::password_rules;
-    use crate::i18n::Lang;
-
-    #[test]
-    fn senha_forte_nao_quebra_regra() {
-        assert!(password_rules("Segredo!1", Lang::PtBr.strings()).is_empty());
-    }
-
-    #[test]
-    fn senha_curta_e_minuscula_quebra_as_tres() {
-        assert_eq!(password_rules("abc", Lang::PtBr.strings()).len(), 3);
-    }
-
-    #[test]
-    fn maiuscula_acentuada_conta_como_maiuscula() {
-        assert!(password_rules("Ácido-forte", Lang::PtBr.strings()).is_empty());
-    }
-}
-
 /// Primeiro uso: a instância ainda não tem servidor.
 pub fn create_server(
     ui: &mut egui::Ui,
@@ -314,4 +293,25 @@ fn link_button(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> boo
         },
     );
     enabled && response.clicked()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::password_rules;
+    use crate::i18n::Lang;
+
+    #[test]
+    fn senha_forte_nao_quebra_regra() {
+        assert!(password_rules("Segredo!1", Lang::PtBr.strings()).is_empty());
+    }
+
+    #[test]
+    fn senha_curta_e_minuscula_quebra_as_tres() {
+        assert_eq!(password_rules("abc", Lang::PtBr.strings()).len(), 3);
+    }
+
+    #[test]
+    fn maiuscula_acentuada_conta_como_maiuscula() {
+        assert!(password_rules("Ácido-forte", Lang::PtBr.strings()).is_empty());
+    }
 }

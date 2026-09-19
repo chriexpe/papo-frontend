@@ -505,21 +505,17 @@ pub fn waveform(path: &Path) -> Option<Vec<f32>> {
     }
 
     let mut samples: Vec<f32> = Vec::new();
-    loop {
-        match sink.pull_sample() {
-            Ok(sample) => {
-                let Some(buffer) = sample.buffer() else { continue };
-                let Ok(map) = buffer.map_readable() else { continue };
-                for chunk in map.chunks_exact(2) {
-                    let value = i16::from_le_bytes([chunk[0], chunk[1]]);
-                    samples.push((value as f32 / i16::MAX as f32).abs());
-                }
-                // Uma hora de áudio não precisa virar um vetor de 30 milhões.
-                if samples.len() > 8_000 * 60 * 30 {
-                    break;
-                }
-            }
-            Err(_) => break,
+    // O appsink devolve `Err` no fim do arquivo: é o que encerra a leitura.
+    while let Ok(sample) = sink.pull_sample() {
+        let Some(buffer) = sample.buffer() else { continue };
+        let Ok(map) = buffer.map_readable() else { continue };
+        for chunk in map.chunks_exact(2) {
+            let value = i16::from_le_bytes([chunk[0], chunk[1]]);
+            samples.push((value as f32 / i16::MAX as f32).abs());
+        }
+        // Uma hora de áudio não precisa virar um vetor de 30 milhões.
+        if samples.len() > 8_000 * 60 * 30 {
+            break;
         }
     }
     let _ = pipeline.set_state(gst::State::Null);

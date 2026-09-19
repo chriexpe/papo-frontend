@@ -29,7 +29,34 @@ rede e **gera a mídia de verdade** (imagem, vídeo Theora e áudio Ogg) direto 
 anexos, então imagem, vídeo, áudio, reações e figurinhas passam pelo mesmo caminho que
 passariam vindos do servidor.
 
-O endereço do servidor também é editável na tela de entrada e fica guardado nos ajustes.
+O endereço do servidor é editável na tela de entrada e fica guardado nos ajustes.
+
+## Instalando
+
+```bash
+cargo install --path .          # o binário em ~/.cargo/bin
+./scripts/install-desktop.sh    # .desktop, ícones e metadados no ~/.local/share
+```
+
+Empacotado, por ordem de preferência:
+
+| Formato | Arquivo | Para quem |
+| --- | --- | --- |
+| Flatpak | `packaging/io.github.chriexpe.Papo.yml` | qualquer distribuição; o runtime já traz GStreamer e codecs |
+| Arch/AUR | `packaging/PKGBUILD` | Arch e derivados, com integração nativa |
+| Tarball | gerado pelo workflow `release` | quem só quer descompactar e rodar |
+
+O Flatpak precisa das dependências do cargo em disco antes de compilar (a
+compilação roda sem rede): rode `./scripts/flatpak-sources.sh` sempre que o
+`Cargo.lock` mudar, depois `flatpak-builder build packaging/io.github.chriexpe.Papo.yml`.
+
+O binário liga o GStreamer dinamicamente. Instalado de tarball ou pelo cargo, ele
+depende do GStreamer do sistema (`gst-plugins-base`, `-good`, `-bad` e `gst-libav`);
+no Flatpak isso vem do runtime.
+
+Só Linux por enquanto: bandeja, menu global, notificações, desfoque e restauração
+de janela são todos D-Bus e Wayland/X11. As arquiteturas publicadas são x86_64 e
+aarch64, compiladas cada uma na sua máquina no `release.yml`.
 
 ## Como está organizado
 
@@ -45,6 +72,7 @@ src/
     mod.rs      fila de download, cache em disco e as texturas da interface
     player.rs   GStreamer: vídeo em textura, áudio, forma de onda e gravação
   ui/         telas e sistema de design
+    rail.rs     trilho de servidores, a coluna de ícones à esquerda de tudo
     theme.rs    tokens (cor, tipografia, espaço) e o estilo do egui
     glass.rs    desfoque de fundo em OpenGL — o vidro fosco
     shell.rs    janela principal: canais · conversa · membros
@@ -87,6 +115,11 @@ Linguagem visual seguindo as HIG da Apple, adaptadas ao desktop:
 
 Funcionando: tela de entrada, conversa, menu global, bandeja, notificações, segundo plano,
 vidro fosco, tema e fonte do sistema, pt-BR e inglês.
+
+Vários servidores ao mesmo tempo, no trilho à esquerda: cada um com conta, sessão, canais
+e mídia próprios, todos conectados de uma vez — a menção de um servidor que não está na
+tela ainda acende o contador. A sessão se renova sozinha antes de vencer, e um servidor
+fechado pede a senha do servidor na própria tela de entrada.
 
 Na conversa: responder, editar no lugar, apagar, fixar e reagir (pastilha ao passar o mouse e
 menu de contexto), emoji colorido com busca nos dois idiomas, figurinhas do servidor —

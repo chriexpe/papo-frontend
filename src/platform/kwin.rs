@@ -77,7 +77,6 @@ async fn call<B: serde::Serialize + zvariant::DynamicType>(
             body,
         )
         .await
-        .map(|reply| reply.clone())
 }
 
 fn write_script(app_id: &str) -> Option<PathBuf> {

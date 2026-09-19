@@ -184,32 +184,6 @@ pub fn server_key(base_url: &str) -> String {
     format!("{}-{hash:016x}", readable.trim_matches('-'))
 }
 
-#[cfg(test)]
-mod chave_do_servidor {
-    use super::server_key;
-
-    #[test]
-    fn enderecos_diferentes_geram_chaves_diferentes() {
-        assert_ne!(server_key("https://um.example"), server_key("https://dois.example"));
-    }
-
-    #[test]
-    fn a_barra_final_e_a_caixa_nao_mudam_a_chave() {
-        assert_eq!(
-            server_key("https://Papo.Example/"),
-            server_key("https://papo.example")
-        );
-    }
-
-    #[test]
-    fn a_chave_serve_de_nome_de_arquivo() {
-        let key = server_key("https://papo.example:8080/base");
-        assert!(key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    }
-}
-
 /// Em que ponto da jornada o usuário está.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -875,7 +849,7 @@ impl Store {
 
     fn sort_members(&mut self) {
         self.members
-            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            .sort_by_key(|a| a.name.to_lowercase());
     }
 }
 
@@ -894,7 +868,7 @@ fn convert(message: models::Message, me: &str) -> Message {
         channel_id: message.channel_id,
         author_id: message.author_id,
         content: message.content.unwrap_or_default(),
-        at: DateTime::<Utc>::from(message.created_at).with_timezone(&Local),
+        at: message.created_at.with_timezone(&Local),
         edited: message.edited_at.is_some(),
         reply_to: message.reply_to,
         attachments: message.attachments,
@@ -923,4 +897,30 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<Color32> {
         .max_by_key(|role| role.position)
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
+}
+
+#[cfg(test)]
+mod chave_do_servidor {
+    use super::server_key;
+
+    #[test]
+    fn enderecos_diferentes_geram_chaves_diferentes() {
+        assert_ne!(server_key("https://um.example"), server_key("https://dois.example"));
+    }
+
+    #[test]
+    fn a_barra_final_e_a_caixa_nao_mudam_a_chave() {
+        assert_eq!(
+            server_key("https://Papo.Example/"),
+            server_key("https://papo.example")
+        );
+    }
+
+    #[test]
+    fn a_chave_serve_de_nome_de_arquivo() {
+        let key = server_key("https://papo.example:8080/base");
+        assert!(key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
 }

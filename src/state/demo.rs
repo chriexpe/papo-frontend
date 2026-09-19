@@ -293,7 +293,7 @@ fn blinking_gif() -> Option<Vec<u8>> {
     {
         let mut encoder = GifEncoder::new(std::io::Cursor::new(&mut out));
         encoder.set_repeat(Repeat::Infinite).ok()?;
-        encoder.encode_frames(frames.into_iter()).ok()?;
+        encoder.encode_frames(frames).ok()?;
     }
     Some(out)
 }

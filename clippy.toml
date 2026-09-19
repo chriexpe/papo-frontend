@@ -1,0 +1,4 @@
+# As funções de desenho carregam o contexto da interface (ui, tokens,
+# textos, estado, store) de mão em mão: sete argumentos é pouco para elas,
+# e agrupá-los numa struct só para calar o lint deixaria a chamada pior.
+too-many-arguments-threshold = 9

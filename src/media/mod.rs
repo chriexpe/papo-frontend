@@ -486,7 +486,7 @@ impl MediaStore {
     pub fn emoji(&mut self, id: &str, blob: Option<&str>) -> Option<&Texture> {
         let key = emoji_key(id);
         if !self.textures.contains_key(&key) {
-            let Some(blob) = blob else { return None };
+            let blob = blob?;
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Emoji {
                 id: id.to_owned(),
