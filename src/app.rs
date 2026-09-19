@@ -36,11 +36,38 @@ impl Default for DownloadMode {
     }
 }
 
+/// Um servidor na lista do trilho.
+///
+/// Cada Papo é um servidor só, então vários servidores querem dizer vários
+/// backends: conta, sessão, canais e mídia separados em cada um.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ServerEntry {
+    pub url: String,
+    /// Nome mostrado no trilho. Começa como o endereço e passa a ser o nome
+    /// de verdade assim que o servidor responde.
+    #[serde(default)]
+    pub label: String,
+}
+
+impl ServerEntry {
+    fn new(url: String) -> Self {
+        let label = host_of(&url);
+        Self { url, label }
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    /// Endereço do backend; trocar reabre a conexão.
+    /// Endereço do backend. Virou o primeiro item de `servers`; fica aqui só
+    /// para os ajustes gravados antes do trilho de servidores.
     #[serde(default = "default_server_url")]
     pub server_url: String,
+    /// Servidores do trilho, na ordem em que aparecem.
+    #[serde(default)]
+    pub servers: Vec<ServerEntry>,
+    /// Qual deles está na tela.
+    #[serde(default)]
+    pub active: usize,
     pub lang: Lang,
     pub theme: ThemePref,
     /// Vidro fosco nas barras; desligado usa fundos opacos.
@@ -62,10 +89,22 @@ pub struct Settings {
     pub record_button: bool,
     #[serde(default)]
     pub downloads: DownloadMode,
-    /// Até quando cada canal foi visto; é o que sobrevive ao fechamento.
+    /// Marcas de leitura de quando havia um servidor só; migradas na
+    /// primeira abertura e depois vazias.
     #[serde(default)]
     pub read_marks: std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+    /// Até quando cada canal foi visto, por servidor. É o que sobrevive ao
+    /// fechamento, já que o backend registra `last_read_message` mas nunca o
+    /// escreve.
+    #[serde(default)]
+    pub server_marks: ReadMarks,
 }
+
+/// Marcas de leitura por servidor: chave do servidor → canal → instante.
+pub type ReadMarks = std::collections::HashMap<
+    String,
+    std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
+>;
 
 fn enabled() -> bool {
     true
@@ -75,6 +114,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             server_url: default_server_url(),
+            servers: Vec::new(),
+            active: 0,
             lang: Lang::PtBr,
             theme: ThemePref::System,
             translucency: true,
@@ -86,7 +127,26 @@ impl Default for Settings {
             record_button: true,
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
+            server_marks: ReadMarks::new(),
         }
+    }
+}
+
+impl Settings {
+    /// Garante que a lista de servidores existe e que o ativo aponta para um
+    /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
+    fn normalise(&mut self) {
+        if self.servers.is_empty() {
+            self.servers.push(ServerEntry::new(self.server_url.clone()));
+            // As marcas antigas eram todas do único servidor que existia.
+            if !self.read_marks.is_empty() {
+                let key = crate::state::server_key(&self.server_url);
+                self.server_marks
+                    .insert(key, std::mem::take(&mut self.read_marks));
+            }
+        }
+        self.active = self.active.min(self.servers.len() - 1);
+        self.server_url = self.servers[self.active].url.clone();
     }
 }
 
@@ -108,14 +168,76 @@ impl SystemTheme {
     }
 }
 
+/// Um servidor conectado: rede, estado e o que a interface guarda dele.
+///
+/// Todos ficam ligados ao mesmo tempo — é o que faz a menção de um servidor
+/// que não está na tela ainda acender o contador da bandeja.
+pub struct Workspace {
+    pub url: String,
+    pub label: String,
+    pub net: Net,
+    pub store: Store,
+    pub form: AuthForm,
+    /// O pedaço da interface deste servidor, fora enquanto outro está na tela.
+    pub stash: shell::Stash,
+    /// Instante do último evento de digitação enviado.
+    pub typing_sent: Option<std::time::Instant>,
+}
+
+impl Workspace {
+    fn open(entry: &ServerEntry, marks: &ReadMarks, ctx: &egui::Context) -> Self {
+        let net = Net::spawn(entry.url.clone(), ctx.clone());
+        // A mídia usa o cookie da sessão deste servidor para baixar anexos.
+        let media = Media::spawn(
+            entry.url.clone(),
+            std::sync::Arc::clone(&net.session),
+            ctx.clone(),
+        );
+        let mut store = Store::default();
+        store.read_marks = marks
+            .get(&crate::state::server_key(&entry.url))
+            .cloned()
+            .unwrap_or_default();
+        Self {
+            url: entry.url.clone(),
+            label: entry.label.clone(),
+            net,
+            store,
+            form: AuthForm {
+                server_url: entry.url.clone(),
+                ..AuthForm::default()
+            },
+            stash: shell::Stash::new(crate::media::MediaStore::new(media)),
+            typing_sent: None,
+        }
+    }
+
+    /// Como o trilho vê este servidor.
+    fn entry(&self, settings: &Settings) -> crate::ui::rail::Entry {
+        crate::ui::rail::Entry {
+            label: self.label.clone(),
+            address: self.url.clone(),
+            mentions: if settings.badge {
+                self.store.mention_total()
+            } else {
+                0
+            },
+            unread: settings.badge && self.store.has_unread(),
+            signed_in: self.store.screen == Screen::Chat,
+            online: matches!(self.store.connection, crate::api::ws::Connection::Online),
+        }
+    }
+}
+
 pub struct PapoApp {
-    store: Store,
+    workspaces: Vec<Workspace>,
+    /// Índice do servidor na tela.
+    active: usize,
     ui: UiState,
     settings: Settings,
     system: SystemTheme,
     tokens: Tokens,
     settings_open: bool,
-    net: Net,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
@@ -128,9 +250,6 @@ pub struct PapoApp {
     focused: bool,
     /// Sair de verdade, em vez de esconder.
     quitting: bool,
-    form: AuthForm,
-    /// Instante do último evento de digitação enviado.
-    typing_sent: Option<std::time::Instant>,
     /// Serviço do menu global; `None` fora do Linux ou sem sessão D-Bus.
     #[cfg(target_os = "linux")]
     menu: Option<GlobalMenu>,
@@ -149,10 +268,11 @@ pub struct PapoApp {
 
 impl PapoApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let settings: Settings = cc
+        let mut settings: Settings = cc
             .storage
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
             .unwrap_or_default();
+        settings.normalise();
 
         let system = SystemTheme::read();
         theme::install_fonts(&cc.egui_ctx, desktop::system_ui_font().as_ref());
@@ -171,32 +291,53 @@ impl PapoApp {
             log::warn!("sem backend glow: o vidro fosco fica desligado");
         }
 
-        let net = Net::spawn(settings.server_url.clone(), cc.egui_ctx.clone());
-        // A mídia usa o mesmo cookie da sessão para baixar anexos.
-        let media = Media::spawn(
-            settings.server_url.clone(),
-            std::sync::Arc::clone(&net.session),
-            cc.egui_ctx.clone(),
-        );
+        // Todos os servidores sobem juntos: o que chega num deles enquanto
+        // outro está na tela ainda conta para o contador e a notificação.
+        let mut workspaces: Vec<Workspace> = settings
+            .servers
+            .iter()
+            .map(|entry| Workspace::open(entry, &settings.server_marks, &cc.egui_ctx))
+            .collect();
+        let active = settings.active.min(workspaces.len() - 1);
+
         let demo = std::env::var("PAPO_DEMO").is_ok();
-        let mut store = Store::default();
-        store.read_marks = settings.read_marks.clone();
         if demo {
-            crate::state::demo::seed(&mut store);
+            // A demonstração precisa de mais de um servidor, ou o trilho não
+            // mostra nada do que ele existe para mostrar.
+            for (index, label) in ["Papo", "Casa", "Trabalho"].into_iter().enumerate() {
+                if index >= workspaces.len() {
+                    let entry = ServerEntry {
+                        url: format!("https://{}.example", label.to_lowercase()),
+                        label: label.to_owned(),
+                    };
+                    workspaces.push(Workspace::open(&entry, &settings.server_marks, &cc.egui_ctx));
+                }
+                workspaces[index].label = label.to_owned();
+            }
+            crate::state::demo::seed(&mut workspaces[active].store);
+            // Os outros ficam com conversa por ler, para o marcador e o
+            // contador aparecerem.
+            crate::state::demo::seed(&mut workspaces[1].store);
+            crate::state::demo::seed(&mut workspaces[2].store);
+            workspaces[1].store.read_marks.clear();
+            workspaces[2].store.read_marks.clear();
         }
 
+        // O servidor que está na tela entrega o seu guardado para a interface.
+        let mut ui_state = UiState {
+            show_members: settings.show_members,
+            translucent: settings.translucency,
+            reveal_topic: settings.topic_reveal,
+            show_record: settings.record_button,
+            glass,
+            ..UiState::default()
+        };
+        workspaces[active].stash.swap(&mut ui_state);
+
         Self {
-            store,
-            ui: UiState {
-                show_members: settings.show_members,
-                translucent: settings.translucency,
-                reveal_topic: settings.topic_reveal,
-                show_record: settings.record_button,
-                media: crate::media::MediaStore::new(media),
-                glass,
-                ..UiState::default()
-            },
-            net,
+            workspaces,
+            active,
+            ui: ui_state,
             #[cfg(target_os = "linux")]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
@@ -206,11 +347,6 @@ impl PapoApp {
             dialogs: Dialogs::default(),
             focused: true,
             quitting: false,
-            form: AuthForm {
-                server_url: settings.server_url.clone(),
-                ..AuthForm::default()
-            },
-            typing_sent: None,
             settings,
             system,
             tokens,
@@ -227,6 +363,11 @@ impl PapoApp {
             window_attached: false,
             demo,
         }
+    }
+
+    /// O servidor que está na tela.
+    fn ws(&self) -> &Workspace {
+        &self.workspaces[self.active]
     }
 
     /// Liga a janela ao menu global e ao desfoque do compositor. Só dá para
@@ -299,7 +440,7 @@ impl PapoApp {
             }
             // No Wayland o compositor ignora o pedido de desminimizar; o
             // script do KWin é o que realmente traz a janela de volta.
-            crate::platform::kwin::restore_window("papo");
+            crate::platform::kwin::restore_window(crate::APP_ID);
         }
     }
 
@@ -335,12 +476,18 @@ impl PapoApp {
         }
 
         // Menção vira número; conversa nova sem menção só acende o ícone.
+        // O contador é de todos os servidores, não só do que está na tela —
+        // é justamente para isso que os outros seguem conectados.
         let mentions = if self.settings.badge {
-            self.store.mention_total()
+            self.workspaces
+                .iter()
+                .map(|ws| ws.store.mention_total())
+                .sum()
         } else {
             0
         };
-        let unread = self.settings.badge && self.store.has_unread();
+        let unread = self.settings.badge
+            && self.workspaces.iter().any(|ws| ws.store.has_unread());
 
         if let Some(tray) = &self.tray {
             tray.set_badge(mentions, unread);
@@ -358,7 +505,7 @@ impl PapoApp {
     /// frente. A checagem acontece antes de aplicar a atualização, para ainda
     /// enxergar o estado anterior.
     #[cfg(target_os = "linux")]
-    fn maybe_notify(&self, update: &crate::api::net::Update) {
+    fn maybe_notify(&self, ws: &Workspace, update: &crate::api::net::Update) {
         use crate::api::net::Update;
         use crate::api::ws::Event;
 
@@ -372,19 +519,26 @@ impl PapoApp {
         let Event::Message(message) = &**event else {
             return;
         };
-        if message.author_id == self.store.me {
+        if message.author_id == ws.store.me {
             return;
         }
 
-        let author = self
+        let author = ws
             .store
             .member(&message.author_id)
             .map(|member| member.name.clone())
             .unwrap_or_else(|| message.author_id.clone());
-        let channel = self
+        // Com vários servidores, o canal sozinho não diz de onde veio.
+        let channel = ws
             .store
             .channel(&message.channel_id)
-            .map(|channel| format!("#{}", channel.name))
+            .map(|channel| {
+                if self.workspaces.len() > 1 {
+                    format!("#{} · {}", channel.name, ws.label)
+                } else {
+                    format!("#{}", channel.name)
+                }
+            })
             .unwrap_or_default();
 
         notifier.show(Notification {
@@ -400,26 +554,120 @@ impl PapoApp {
 
     /// Entra ou cria a conta com o que está no formulário.
     fn authenticate(&mut self, register: bool, ctx: &egui::Context) {
-        let username = self.form.username.trim().to_owned();
-        let password = self.form.password.clone();
+        let index = self.active;
+        let username = self.workspaces[index].form.username.trim().to_owned();
+        let password = self.workspaces[index].form.password.clone();
         if username.is_empty() || password.is_empty() {
             return;
         }
 
-        // Trocar de servidor exige uma conexão nova.
-        let url = self.form.server_url.trim().to_owned();
-        if !url.is_empty() && url != self.settings.server_url {
-            self.settings.server_url = url.clone();
-            self.net = Net::spawn(url, ctx.clone());
+        // Mudar o endereço aqui é mudar de servidor: a conexão antiga cai e
+        // o item do trilho passa a apontar para o endereço novo.
+        let url = self.workspaces[index].form.server_url.trim().to_owned();
+        if !url.is_empty() && url != self.workspaces[index].url {
+            self.reopen(index, url, ctx);
         }
 
-        self.store.busy = true;
-        self.store.error = None;
-        self.net.send(if register {
+        let ws = &mut self.workspaces[index];
+        ws.store.busy = true;
+        ws.store.error = None;
+        ws.net.send(if register {
             Command::Register { username, password }
         } else {
             Command::Login { username, password }
         });
+    }
+
+    /// Manda a senha do servidor, para servidores fechados.
+    fn unlock_server(&mut self) {
+        let index = self.active;
+        let password = self.workspaces[index].form.server_password.clone();
+        if password.is_empty() {
+            return;
+        }
+        self.workspaces[index].store.busy = true;
+        self.workspaces[index].store.error = None;
+        self.workspaces[index]
+            .net
+            .send(Command::LoginServer { password });
+    }
+
+    /// Reabre um servidor num endereço novo, jogando fora a conexão antiga.
+    fn reopen(&mut self, index: usize, url: String, ctx: &egui::Context) {
+        let form = self.workspaces[index].form.clone();
+        let entry = ServerEntry::new(url);
+        let mut fresh = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        fresh.form = AuthForm {
+            server_url: entry.url.clone(),
+            ..form
+        };
+        self.settings.servers[index] = entry;
+        // O servidor na tela devolve o guardado para o substituto, ou a
+        // interface ficaria com a mídia de uma conexão que já morreu.
+        if index == self.active {
+            self.workspaces[index].stash.swap(&mut self.ui);
+            fresh.stash.swap(&mut self.ui);
+        }
+        self.workspaces[index] = fresh;
+    }
+
+    /// Passa a mostrar outro servidor. Os dois seguem conectados; o que troca
+    /// é qual deles ocupa a janela.
+    fn activate(&mut self, index: usize, ctx: &egui::Context) {
+        if index == self.active || index >= self.workspaces.len() {
+            return;
+        }
+        // O que estava na tela recolhe o seu; o novo entrega o dele.
+        let previous = self.active;
+        self.workspaces[previous].stash.swap(&mut self.ui);
+        self.workspaces[index].stash.swap(&mut self.ui);
+        self.active = index;
+        self.settings.active = index;
+        self.settings.server_url = self.workspaces[index].url.clone();
+        // A mídia do servidor que saiu para de tocar junto com ele.
+        self.workspaces[previous].stash.media.pause_all();
+        ctx.request_repaint();
+    }
+
+    /// Acrescenta um servidor vazio e já o coloca na tela, esperando o
+    /// endereço.
+    fn add_server(&mut self, ctx: &egui::Context) {
+        let entry = ServerEntry::new(default_server_url());
+        let workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        self.settings.servers.push(entry);
+        self.workspaces.push(workspace);
+        self.activate(self.workspaces.len() - 1, ctx);
+    }
+
+    /// Tira um servidor do trilho. A conta no servidor continua existindo; o
+    /// que sai é a conexão e o que ela guardava aqui.
+    fn remove_server(&mut self, index: usize, ctx: &egui::Context) {
+        // O último não sai: sem nenhum servidor não há para onde ir.
+        if self.workspaces.len() <= 1 || index >= self.workspaces.len() {
+            return;
+        }
+        // Só o servidor que está na tela tem o seu guardado na interface.
+        let was_active = index == self.active;
+        if was_active {
+            self.workspaces[index].stash.swap(&mut self.ui);
+        }
+        let key = crate::state::server_key(&self.workspaces[index].url);
+        self.settings.server_marks.remove(&key);
+        self.workspaces.remove(index);
+        self.settings.servers.remove(index);
+
+        let active = if self.active > index {
+            self.active - 1
+        } else {
+            self.active.min(self.workspaces.len() - 1)
+        };
+        self.active = active;
+        self.settings.active = active;
+        self.settings.server_url = self.workspaces[active].url.clone();
+        if was_active {
+            self.workspaces[active].stash.swap(&mut self.ui);
+        }
+        ctx.request_repaint();
     }
 
     /// Ações da conversa: mensagens novas, digitação e carga sob demanda.
@@ -427,39 +675,45 @@ impl PapoApp {
         if self.demo {
             return;
         }
-        if let Some(channel_id) = self.store.channel_needing_messages() {
-            self.store.mark_loading(&channel_id);
-            self.net.send(Command::LoadMessages {
+        // Só o servidor na tela: carregar mensagem de canal que ninguém está
+        // olhando não ajuda ninguém, e os outros seguem recebendo os eventos.
+        let focused = self.focused && !self.minimized;
+        let typed = self.ui.typed;
+        let ws = &mut self.workspaces[self.active];
+
+        if let Some(channel_id) = ws.store.channel_needing_messages() {
+            ws.store.mark_loading(&channel_id);
+            ws.net.send(Command::LoadMessages {
                 channel_id: channel_id.clone(),
             });
-            self.net.send(Command::LoadPinned { channel_id });
+            ws.net.send(Command::LoadPinned { channel_id });
         }
 
         // Com a janela à frente, o canal aberto está sendo lido agora.
-        if self.focused && !self.minimized && !self.store.selected_channel.is_empty() {
-            let channel_id = self.store.selected_channel.clone();
-            self.store.mark_read(&channel_id);
+        if focused && !ws.store.selected_channel.is_empty() {
+            let channel_id = ws.store.selected_channel.clone();
+            ws.store.mark_read(&channel_id);
             // O servidor também precisa saber, ou a menção volta no próximo
             // dispositivo.
-            let ids = self.store.take_open_notifications(&channel_id);
-            if !ids.is_empty() && !self.store.me.is_empty() {
-                self.net.send(Command::MarkNotificationsRead {
-                    user_id: self.store.me.clone(),
+            let ids = ws.store.take_open_notifications(&channel_id);
+            if !ids.is_empty() && !ws.store.me.is_empty() {
+                ws.net.send(Command::MarkNotificationsRead {
+                    user_id: ws.store.me.clone(),
                     ids,
                 });
             }
         }
 
         // Um evento de digitação a cada três segundos basta para o servidor.
-        if self.ui.typed {
+        if typed {
             let now = std::time::Instant::now();
-            let stale = self
+            let stale = ws
                 .typing_sent
                 .is_none_or(|last| now.duration_since(last).as_secs() >= 3);
-            if stale && !self.store.selected_channel.is_empty() {
-                self.typing_sent = Some(now);
-                self.net.send(Command::Typing {
-                    channel_id: self.store.selected_channel.clone(),
+            if stale && !ws.store.selected_channel.is_empty() {
+                ws.typing_sent = Some(now);
+                ws.net.send(Command::Typing {
+                    channel_id: ws.store.selected_channel.clone(),
                 });
             }
         }
@@ -472,23 +726,24 @@ impl PapoApp {
             self.handle_chat_demo(ctx, action);
             return;
         }
+        let ws = &mut self.workspaces[self.active];
         match action {
             ChatAction::Send {
                 content,
                 reply_to,
                 attachments,
             } => {
-                let channel_id = self.store.selected_channel.clone();
+                let channel_id = ws.store.selected_channel.clone();
                 if channel_id.is_empty() {
                     return;
                 }
                 // Com anexo não há eco otimista: o servidor é quem sabe o que
                 // saiu do upload.
                 if attachments.is_empty() {
-                    self.store
+                    ws.store
                         .push_pending(&channel_id, &content, reply_to.clone());
                 }
-                self.net.send(Command::SendMessage {
+                ws.net.send(Command::SendMessage {
                     channel_id,
                     content,
                     reply_to,
@@ -498,26 +753,26 @@ impl PapoApp {
             ChatAction::Edit {
                 message_id,
                 content,
-            } => self.net.send(Command::EditMessage {
+            } => ws.net.send(Command::EditMessage {
                 message_id,
                 content,
             }),
             ChatAction::Delete(message_id) => {
-                self.net.send(Command::DeleteMessage { message_id })
+                ws.net.send(Command::DeleteMessage { message_id })
             }
             ChatAction::React {
                 message_id,
                 emoji,
                 add,
             } => {
-                let channel_id = self
+                let channel_id = ws
                     .store
                     .message(&message_id)
                     .map(|message| message.channel_id.clone())
-                    .unwrap_or_else(|| self.store.selected_channel.clone());
+                    .unwrap_or_else(|| ws.store.selected_channel.clone());
                 // A reação aparece na hora; o contador certo vem pelo evento.
-                self.store.toggle_reaction_local(&message_id, &emoji);
-                self.net.send(Command::React {
+                ws.store.toggle_reaction_local(&message_id, &emoji);
+                ws.net.send(Command::React {
                     channel_id,
                     message_id,
                     emoji: emoji.request(),
@@ -525,12 +780,12 @@ impl PapoApp {
                 });
             }
             ChatAction::Pin { message_id, pin } => {
-                let channel_id = self
+                let channel_id = ws
                     .store
                     .message(&message_id)
                     .map(|message| message.channel_id.clone())
-                    .unwrap_or_else(|| self.store.selected_channel.clone());
-                self.net.send(Command::Pin {
+                    .unwrap_or_else(|| ws.store.selected_channel.clone());
+                ws.net.send(Command::Pin {
                     channel_id,
                     message_id,
                     pin,
@@ -559,11 +814,12 @@ impl PapoApp {
 
     /// A demonstração responde sozinha: sem rede, o estado é a verdade.
     fn handle_chat_demo(&mut self, ctx: &egui::Context, action: ChatAction) {
+        let ws = &mut self.workspaces[self.active];
         match action {
             ChatAction::Send { content, reply_to, .. } => {
-                let channel_id = self.store.selected_channel.clone();
-                self.store.push_pending(&channel_id, &content, reply_to);
-                if let Some(message) = self.store.messages.last_mut() {
+                let channel_id = ws.store.selected_channel.clone();
+                ws.store.push_pending(&channel_id, &content, reply_to);
+                if let Some(message) = ws.store.messages.last_mut() {
                     message.pending = false;
                 }
             }
@@ -571,7 +827,7 @@ impl PapoApp {
                 message_id,
                 content,
             } => {
-                if let Some(message) = self
+                if let Some(message) = ws
                     .store
                     .messages
                     .iter_mut()
@@ -582,15 +838,15 @@ impl PapoApp {
                 }
             }
             ChatAction::Delete(message_id) => {
-                self.store.messages.retain(|message| message.id != message_id)
+                ws.store.messages.retain(|message| message.id != message_id)
             }
             ChatAction::React {
                 message_id, emoji, ..
             } => {
-                self.store.toggle_reaction_local(&message_id, &emoji);
+                ws.store.toggle_reaction_local(&message_id, &emoji);
             }
             ChatAction::Pin { message_id, pin } => {
-                if let Some(message) = self
+                if let Some(message) = ws
                     .store
                     .messages
                     .iter_mut()
@@ -613,6 +869,64 @@ impl PapoApp {
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
+        }
+    }
+
+    /// Lê o que chegou de cada servidor. Todos são atendidos no mesmo
+    /// quadro: um servidor que não está na tela ainda precisa contar as
+    /// menções e disparar a notificação.
+    fn pump_network(&mut self) {
+        // No modo demonstração a rede não manda no estado.
+        if self.demo {
+            for ws in &self.workspaces {
+                while ws.net.try_recv().is_some() {}
+            }
+            return;
+        }
+
+        for index in 0..self.workspaces.len() {
+            while let Some(update) = self.workspaces[index].net.try_recv() {
+                #[cfg(target_os = "linux")]
+                self.maybe_notify(&self.workspaces[index], &update);
+
+                // Reconectou: o que aconteceu durante a queda vem da carga
+                // nova.
+                let reconnected = matches!(
+                    update,
+                    crate::api::net::Update::Connection(crate::api::ws::Connection::Online)
+                );
+                let ws = &mut self.workspaces[index];
+                if reconnected && ws.store.screen == Screen::Chat {
+                    ws.net.send(Command::Refresh);
+                }
+                ws.store.apply(update);
+
+                // O nome de verdade do servidor substitui o host no trilho
+                // assim que ele chega.
+                if let Some(server) = &ws.store.server {
+                    if !server.name.is_empty() && ws.label != server.name {
+                        ws.label = server.name.clone();
+                        self.settings.servers[index].label = server.name.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Trilho de servidores e o que ele pediu.
+    fn draw_rail(&mut self, ui: &mut egui::Ui, s: &'static crate::i18n::Strings, ctx: &egui::Context) {
+        let entries: Vec<_> = self
+            .workspaces
+            .iter()
+            .map(|ws| ws.entry(&self.settings))
+            .collect();
+        let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) else {
+            return;
+        };
+        match action {
+            crate::ui::rail::RailAction::Select(index) => self.activate(index, ctx),
+            crate::ui::rail::RailAction::Add => self.add_server(ctx),
+            crate::ui::rail::RailAction::Remove(index) => self.remove_server(index, ctx),
         }
     }
 
@@ -661,7 +975,8 @@ impl PapoApp {
             return;
         }
         let screen = ctx.viewport_rect();
-        let mut regions = vec![(0, 0, crate::ui::shell::SIDEBAR_WIDTH as i32, screen.height() as i32)];
+        let left = crate::ui::rail::RAIL_WIDTH + crate::ui::shell::SIDEBAR_WIDTH;
+        let mut regions = vec![(0, 0, left as i32, screen.height() as i32)];
         if self.settings.show_members {
             let width = crate::ui::shell::MEMBERS_WIDTH as i32;
             regions.push((screen.width() as i32 - width, 0, width, screen.height() as i32));
@@ -710,11 +1025,17 @@ impl PapoApp {
             MenuCommand::ToggleCloseToTray => {
                 self.settings.close_to_tray = !self.settings.close_to_tray;
             }
-            MenuCommand::SignOut => self.net.send(Command::Logout),
+            MenuCommand::SignOut => self.ws().net.send(Command::Logout),
             MenuCommand::Preferences => self.settings_open = true,
             MenuCommand::SwitchLanguage(lang) => self.settings.lang = lang,
             MenuCommand::Quit => self.quit(ctx),
-            MenuCommand::MarkAllRead => self.store.mark_all_read(),
+            // Marcar tudo como lido limpa todos os servidores: é o que o
+            // contador da bandeja está somando.
+            MenuCommand::MarkAllRead => {
+                for ws in &mut self.workspaces {
+                    ws.store.mark_all_read();
+                }
+            }
             MenuCommand::NewChannel | MenuCommand::Search | MenuCommand::About => {}
         }
     }
@@ -913,46 +1234,42 @@ impl eframe::App for PapoApp {
         #[cfg(target_os = "linux")]
         self.handle_window_lifecycle(&ctx);
 
-        while let Some(update) = self.net.try_recv() {
-            // No modo demonstração a rede não manda no estado.
-            if self.demo {
-                continue;
-            }
-            #[cfg(target_os = "linux")]
-            self.maybe_notify(&update);
-            // Reconectou: o que aconteceu durante a queda vem da carga nova.
-            if matches!(
-                update,
-                crate::api::net::Update::Connection(crate::api::ws::Connection::Online)
-            ) && self.store.screen == Screen::Chat
-            {
-                self.net.send(Command::Refresh);
-            }
-            self.store.apply(update);
-        }
+        self.pump_network();
 
         let strings = self.settings.lang.strings();
-        match self.store.screen {
+        self.draw_rail(ui, strings, &ctx);
+
+        let active = self.active;
+        match self.workspaces[active].store.screen {
             Screen::Starting => auth::starting(ui, &self.tokens, strings),
             Screen::Auth => {
-                match auth::sign_in(ui, &mut self.form, &self.store, &self.tokens, strings) {
+                let ws = &mut self.workspaces[active];
+                match auth::sign_in(ui, &mut ws.form, &ws.store, &self.tokens, strings) {
                     AuthAction::SignIn => self.authenticate(false, &ctx),
                     AuthAction::Register => self.authenticate(true, &ctx),
+                    AuthAction::UnlockServer => self.unlock_server(),
                     _ => {}
                 }
             }
             Screen::NeedsServer => {
-                if auth::create_server(ui, &mut self.form, &self.store, &self.tokens, strings)
+                let ws = &mut self.workspaces[active];
+                if auth::create_server(ui, &mut ws.form, &ws.store, &self.tokens, strings)
                     == AuthAction::CreateServer
                 {
-                    self.store.busy = true;
-                    self.net.send(Command::CreateServer {
-                        name: self.form.server_name.trim().to_owned(),
+                    ws.store.busy = true;
+                    ws.net.send(Command::CreateServer {
+                        name: ws.form.server_name.trim().to_owned(),
                     });
                 }
             }
             Screen::Chat => {
-                shell::draw(ui, &mut self.store, &mut self.ui, &self.tokens, strings);
+                shell::draw(
+                    ui,
+                    &mut self.workspaces[active].store,
+                    &mut self.ui,
+                    &self.tokens,
+                    strings,
+                );
                 self.pump_chat();
                 let actions: Vec<_> = self.ui.actions.drain(..).collect();
                 for action in actions {
@@ -978,8 +1295,22 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // As marcas de leitura vivem no estado, mas só o ajuste persiste.
-        self.settings.read_marks = self.store.read_marks.clone();
+        // As marcas de leitura vivem no estado de cada servidor; só o ajuste
+        // persiste, e cada servidor guarda as suas sob a própria chave.
+        for ws in &self.workspaces {
+            self.settings
+                .server_marks
+                .insert(crate::state::server_key(&ws.url), ws.store.read_marks.clone());
+        }
+        self.settings.servers = self
+            .workspaces
+            .iter()
+            .map(|ws| ServerEntry {
+                url: ws.url.clone(),
+                label: ws.label.clone(),
+            })
+            .collect();
+        self.settings.active = self.active;
         eframe::set_value(storage, eframe::APP_KEY, &self.settings);
     }
 
@@ -1093,6 +1424,14 @@ fn build_menu(settings: &Settings) -> MenuModel {
             vec![MenuNode::item(s.menu_about, MenuCommand::About)],
         ),
     ])
+}
+
+/// Nome curto de um endereço: só o host, que é o que cabe no trilho.
+fn host_of(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+        .unwrap_or_else(|| url.trim().trim_end_matches('/').to_owned())
 }
 
 fn default_server_url() -> String {

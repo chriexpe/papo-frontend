@@ -131,6 +131,19 @@ pub struct Strings {
     pub tray_quit: &'static str,
     pub tray_tooltip: &'static str,
 
+    // Servidores
+    pub add_server: &'static str,
+    pub remove_server: &'static str,
+    pub remove_server_hint: &'static str,
+    pub server_address: &'static str,
+    pub server_password: &'static str,
+    pub server_password_hint: &'static str,
+    pub unlock_server: &'static str,
+    pub connection_violation: &'static str,
+    pub password_rule_length: &'static str,
+    pub password_rule_uppercase: &'static str,
+    pub password_rule_special: &'static str,
+
     // Sessão
     pub sign_in: &'static str,
     pub sign_up: &'static str,
@@ -237,6 +250,19 @@ pub static PT_BR: Strings = Strings {
     tray_quit: "Sair",
     tray_tooltip: "Conversas",
 
+    add_server: "Adicionar servidor",
+    remove_server: "Remover servidor",
+    remove_server_hint: "A conversa some daqui; a conta no servidor continua.",
+    server_address: "Endereço do servidor",
+    server_password: "Senha do servidor",
+    server_password_hint: "Este servidor é fechado e pede uma senha antes do login.",
+    unlock_server: "Liberar",
+    connection_violation: "Um acesso antigo desta conta reapareceu; por segurança, as outras \
+                           sessões foram encerradas.",
+    password_rule_length: "ao menos 8 caracteres",
+    password_rule_uppercase: "ao menos 1 maiúscula",
+    password_rule_special: "ao menos 1 caractere especial",
+
     sign_in: "Entrar",
     sign_up: "Criar conta",
     username: "Usuário",
@@ -341,6 +367,19 @@ pub static EN: Strings = Strings {
     tray_open: "Open Papo",
     tray_quit: "Quit",
     tray_tooltip: "Conversations",
+
+    add_server: "Add server",
+    remove_server: "Remove server",
+    remove_server_hint: "The conversation leaves this window; your account on the server stays.",
+    server_address: "Server address",
+    server_password: "Server password",
+    server_password_hint: "This server is private and asks for a password before sign-in.",
+    unlock_server: "Unlock",
+    connection_violation: "An old sign-in for this account showed up again; the other sessions \
+                           were ended as a precaution.",
+    password_rule_length: "at least 8 characters",
+    password_rule_uppercase: "at least 1 capital letter",
+    password_rule_special: "at least 1 special character",
 
     sign_in: "Sign in",
     sign_up: "Create account",

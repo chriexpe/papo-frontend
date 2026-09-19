@@ -104,6 +104,53 @@ pub struct Popup {
 }
 
 /// Estado que pertence à interface, não ao servidor.
+/// O pedaço da interface que pertence a um servidor.
+///
+/// Só um servidor aparece na janela por vez, mas todos ficam conectados. Ao
+/// trocar, estes campos trocam de lugar com os da [`UiState`] em vez de serem
+/// zerados: o rascunho por escrever, o anexo já escolhido e a mídia já
+/// baixada continuam esperando quando você volta.
+pub struct Stash {
+    pub media: MediaStore,
+    pub composer: String,
+    pub attachments: Vec<Upload>,
+    pub replying: Option<String>,
+    pub editing: Option<(String, String)>,
+    pub viewer: Option<Viewer>,
+    pub popup: Option<Popup>,
+    pub last_channel: String,
+    pub topic_since: Option<f64>,
+}
+
+impl Stash {
+    pub fn new(media: MediaStore) -> Self {
+        Self {
+            media,
+            composer: String::new(),
+            attachments: Vec::new(),
+            replying: None,
+            editing: None,
+            viewer: None,
+            popup: None,
+            last_channel: String::new(),
+            topic_since: None,
+        }
+    }
+
+    /// Troca este guardado com o que está na tela.
+    pub fn swap(&mut self, ui: &mut UiState) {
+        std::mem::swap(&mut self.media, &mut ui.media);
+        std::mem::swap(&mut self.composer, &mut ui.composer);
+        std::mem::swap(&mut self.attachments, &mut ui.attachments);
+        std::mem::swap(&mut self.replying, &mut ui.replying);
+        std::mem::swap(&mut self.editing, &mut ui.editing);
+        std::mem::swap(&mut self.viewer, &mut ui.viewer);
+        std::mem::swap(&mut self.popup, &mut ui.popup);
+        std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
+        std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
+    }
+}
+
 pub struct UiState {
     pub composer: String,
     pub show_members: bool,

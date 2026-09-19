@@ -3,6 +3,7 @@ pub mod auth;
 pub mod emoji;
 pub mod emoji_raster;
 pub mod glass;
+pub mod rail;
 pub mod shell;
 pub mod theme;
 pub mod viewer;
