@@ -440,10 +440,8 @@ fn video_sink(shared: Arc<Shared>, repaint: egui::Context) -> Option<gst::Elemen
                 for row in 0..height {
                     let start = row * stride;
                     let line = &data[start..start + width * 4];
-                    for pixel in line.chunks_exact(4) {
-                        pixels.push(egui::Color32::from_rgba_premultiplied(
-                            pixel[0], pixel[1], pixel[2], pixel[3],
-                        ));
+                    for [r, g, b, a] in line.as_chunks::<4>().0 {
+                        pixels.push(egui::Color32::from_rgba_premultiplied(*r, *g, *b, *a));
                     }
                 }
 
@@ -509,8 +507,8 @@ pub fn waveform(path: &Path) -> Option<Vec<f32>> {
     while let Ok(sample) = sink.pull_sample() {
         let Some(buffer) = sample.buffer() else { continue };
         let Ok(map) = buffer.map_readable() else { continue };
-        for chunk in map.chunks_exact(2) {
-            let value = i16::from_le_bytes([chunk[0], chunk[1]]);
+        for sample in map.as_chunks::<2>().0 {
+            let value = i16::from_le_bytes(*sample);
             samples.push((value as f32 / i16::MAX as f32).abs());
         }
         // Uma hora de áudio não precisa virar um vetor de 30 milhões.

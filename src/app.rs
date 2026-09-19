@@ -1325,7 +1325,7 @@ impl eframe::App for PapoApp {
                     strings,
                 );
                 self.pump_chat();
-                let actions: Vec<_> = self.ui.actions.drain(..).collect();
+                let actions = std::mem::take(&mut self.ui.actions);
                 for action in actions {
                     self.handle_chat(&ctx, action);
                 }
@@ -1338,7 +1338,7 @@ impl eframe::App for PapoApp {
             crate::ui::headerbar::resize_handles(&ctx);
         }
 
-        let pending: Vec<_> = self.ui.pending.drain(..).collect();
+        let pending = std::mem::take(&mut self.ui.pending);
         for command in pending {
             self.handle(&ctx, command);
         }

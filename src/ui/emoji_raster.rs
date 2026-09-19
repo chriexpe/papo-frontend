@@ -137,10 +137,10 @@ impl EmojiRaster {
         let pixels = match image.content {
             swash::scale::image::Content::Color => image
                 .data
-                .chunks_exact(4)
-                .map(|pixel| {
-                    egui::Color32::from_rgba_unmultiplied(pixel[0], pixel[1], pixel[2], pixel[3])
-                })
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|[r, g, b, a]| egui::Color32::from_rgba_unmultiplied(*r, *g, *b, *a))
                 .collect(),
             // Sem cor na fonte: a máscara vira um emoji branco, que o
             // chamador tinge com a cor do texto.

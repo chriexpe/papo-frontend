@@ -4,6 +4,7 @@
 #   ./scripts/deps.sh            mostra o comando da sua distribuição
 #   ./scripts/deps.sh --install  roda esse comando
 #   ./scripts/deps.sh --runtime  só o que o binário pronto precisa
+#   ./scripts/deps.sh --command  só a linha de comando, para canalizar
 #
 # O binário liga o GStreamer dinamicamente, então mesmo quem baixa o tarball
 # precisa dos pacotes de execução. Quem compila precisa também dos -dev.
@@ -11,11 +12,13 @@ set -eu
 
 install=false
 runtime_only=false
+bare=false
 for arg in "$@"; do
     case "$arg" in
         --install) install=true ;;
         --runtime) runtime_only=true ;;
-        -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --command) bare=true ;;
+        -h|--help) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "opção desconhecida: $arg" >&2; exit 2 ;;
     esac
 done
@@ -69,7 +72,9 @@ fi
 # Tira as quebras de linha da lista.
 packages="$(echo "$packages" | tr -s ' \n' ' ')"
 
-if $install; then
+if $bare; then
+    echo "$manager $packages"
+elif $install; then
     echo "$manager $packages"
     # shellcheck disable=SC2086
     $manager $packages

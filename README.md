@@ -39,6 +39,14 @@ cargo install --locked --path . # o binário em ~/.cargo/bin
 ./scripts/install-desktop.sh    # .desktop, ícones e metadados no ~/.local/share
 ```
 
+Para reproduzir o CI antes de empurrar (o clippy do portão tem versão fixa,
+em `.github/workflows/ci.yml`):
+
+```bash
+cargo +1.98.0 clippy --locked --all-targets -- -D warnings
+cargo +1.95.0 build --locked   # o mínimo declarado no Cargo.toml
+```
+
 `scripts/deps.sh` conhece apt, dnf e pacman; sem `--install` ele só mostra o
 comando. Os nomes do apt são conferidos no CI a cada push, então não envelhecem
 calados. O binário liga o GStreamer dinamicamente: mesmo quem baixa o tarball

@@ -5,31 +5,66 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  # O clippy ganha lints novos a cada versão do Rust. Com `stable` o portão
+  # vira uma bomba-relógio: a cada seis semanas um repositório em que
+  # ninguém mexeu fica vermelho. A versão que barra o merge é fixa e sobe
+  # quando alguém decide subir; o job `clippy-novo` avisa do que vem por aí
+  # sem derrubar nada.
+  CLIPPY_TOOLCHAIN: 1.98.0
+
 jobs:
-  check:
+  test:
     runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          ./scripts/deps.sh --install
+      - run: cargo test --locked
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - name: Dependências de sistema
+        run: |
+          sudo apt-get update
+          ./scripts/deps.sh --install
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+  # Avisa dos lints que a próxima versão do Rust vai cobrar. Falhar aqui não
+  # barra nada: serve para o aviso chegar antes de virar problema.
+  clippy-novo:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-stable
       - name: Dependências de sistema
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev \
-            libxcursor-dev libxi-dev libxrandr-dev \
-            libfontconfig1-dev pkg-config
-      # `cargo fmt --check` ainda não: o repositório nunca passou pelo rustfmt e
-      # o acerto é um commit à parte, só de formatação.
+          ./scripts/deps.sh --install
       - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
 
   # O `stable` do runner some por baixo dos pés: uma dependência que suba o
-  # mínimo dela passaria batido aqui e só quebraria na máquina de quem
-  # instala. Este job compila exatamente com o rust-version do Cargo.toml.
+  # mínimo dela passaria batido e só quebraria na máquina de quem instala.
+  # Este job compila exatamente com o rust-version do Cargo.toml.
   msrv:
     runs-on: ubuntu-24.04
     steps:
@@ -58,7 +93,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: |
           sudo apt-get update
-          ./scripts/deps.sh | tail -3 | grep sudo | sed 's/^ *//' \
+          ./scripts/deps.sh --command \
             | sed 's/install -y/install -y --dry-run/' | sh
 
   metadata:
