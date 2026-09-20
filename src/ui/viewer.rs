@@ -106,7 +106,7 @@ pub fn draw(
 
     // Onde a mídia foi desenhada: clicar fora disso fecha.
     let mut content = Rect::NOTHING;
-    let mut action = match Kind::of(attachment.mime()) {
+    let mut action = match attachment.kind() {
         Kind::Video | Kind::Audio => {
             stage_player(ui, t, s, media, attachment, stage, &mut content)
         }
@@ -349,7 +349,7 @@ fn stage_player(
         return None;
     };
 
-    let video = matches!(Kind::of(attachment.mime()), Kind::Video);
+    let video = matches!(attachment.kind(), Kind::Video);
     let ctx = ui.ctx().clone();
     let player = media.player(&attachment.id, &path, video, &ctx)?;
     let playing = player.is_playing();

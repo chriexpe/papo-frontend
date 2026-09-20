@@ -217,6 +217,11 @@ impl Attachment {
         self.mime_type.as_deref().unwrap_or("application/octet-stream")
     }
 
+    /// O que este anexo é, para a interface escolher como desenhá-lo.
+    pub fn kind(&self) -> Kind {
+        Kind::guess(self.mime(), self.name())
+    }
+
     /// Conteúdo que a moderação marcou como sensível fica embaçado até um
     /// clique.
     pub fn sensitive(&self) -> bool {
@@ -424,6 +429,34 @@ impl Kind {
             _ => Self::Other,
         }
     }
+
+    /// Tipo deduzido da extensão do nome do arquivo.
+    fn of_extension(name: &str) -> Option<Self> {
+        let extension = name.rsplit_once('.')?.1.to_lowercase();
+        let kind = match extension.as_str() {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "avif" | "heic"
+            | "heif" | "svg" | "ico" | "jxl" => Self::Image,
+            "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "ogv" | "wmv" | "flv" | "3gp"
+            | "mpg" | "mpeg" | "ts" | "m2ts" => Self::Video,
+            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "aac" | "wma" | "aif"
+            | "aiff" | "weba" | "mka" => Self::Audio,
+            _ => return None,
+        };
+        Some(kind)
+    }
+
+    /// Mime primeiro; a extensão entra quando ele não diz nada.
+    ///
+    /// O backend deduz o mime sozinho e erra: um `.mp4` volta como
+    /// `application/octet-stream` e um recado de voz como `application/ogg`.
+    /// Os dois caem em `Other` pelo mime e apareceriam como um arquivo
+    /// qualquer, em vez do vídeo e da forma de onda que são.
+    pub fn guess(mime: &str, name: &str) -> Self {
+        match Self::of(mime) {
+            Self::Other => Self::of_extension(name).unwrap_or(Self::Other),
+            known => known,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +509,35 @@ mod tests {
         })
         .unwrap();
         assert_eq!(cleared, r#"{"name":"geral","topic":""}"#);
+    }
+
+    /// O backend deduz o mime sozinho e erra: um `.mp4` volta como
+    /// `application/octet-stream`. Sem a extensão, vídeo e áudio apareciam
+    /// como um arquivo qualquer em vez de tocar na mensagem.
+    #[test]
+    fn extensao_salva_o_mime_generico() {
+        assert_eq!(
+            Kind::guess("application/octet-stream", "fJyQbm324ZLaFRfw.mp4"),
+            Kind::Video
+        );
+        assert_eq!(
+            Kind::guess("application/ogg", "recado-20260919-212338.ogg"),
+            Kind::Audio
+        );
+    }
+
+    /// Mime bom manda: a extensão só entra quando ele não diz nada.
+    #[test]
+    fn mime_conhecido_tem_a_palavra_final() {
+        assert_eq!(Kind::guess("video/mp4", "coisa.bin"), Kind::Video);
+        assert_eq!(Kind::guess("image/png", "sem-extensao"), Kind::Image);
+    }
+
+    /// Nem todo octet-stream é mídia; um arquivo continua arquivo.
+    #[test]
+    fn arquivo_sem_pista_continua_arquivo() {
+        assert_eq!(Kind::guess("application/octet-stream", "notas.pdf"), Kind::Other);
+        assert_eq!(Kind::guess("application/octet-stream", "sem-ponto"), Kind::Other);
     }
 
     /// A busca manda só o que foi preenchido.

@@ -2376,7 +2376,7 @@ fn composer(
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             );
-            let glyph = match crate::api::models::Kind::of(&upload.mime) {
+            let glyph = match crate::api::models::Kind::guess(&upload.mime, &upload.name) {
                 crate::api::models::Kind::Image => icon::IMAGE,
                 crate::api::models::Kind::Video => icon::FILM_STRIP,
                 crate::api::models::Kind::Audio => icon::MICROPHONE,

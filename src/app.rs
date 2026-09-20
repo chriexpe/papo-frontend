@@ -238,6 +238,35 @@ struct ChannelDialog {
     topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     kind: String,
+    /// O foco vai para o nome uma vez, ao abrir. Pedi-lo a cada quadro
+    /// arrancava o cursor de quem tivesse clicado no tópico, e o que se via
+    /// era o campo piscando.
+    focus: bool,
+}
+
+impl ChannelDialog {
+    fn create() -> Self {
+        Self {
+            kind: "text".to_owned(),
+            focus: true,
+            ..Default::default()
+        }
+    }
+
+    fn edit(channel: &crate::state::Channel) -> Self {
+        use crate::state::ChannelKind;
+        Self {
+            id: Some(channel.id.clone()),
+            name: channel.name.clone(),
+            topic: channel.topic.clone().unwrap_or_default(),
+            kind: match channel.kind {
+                ChannelKind::Voice => "voice".to_owned(),
+                ChannelKind::Category => "category".to_owned(),
+                ChannelKind::Text => "text".to_owned(),
+            },
+            focus: true,
+        }
+    }
 }
 
 pub struct PapoApp {
@@ -253,6 +282,8 @@ pub struct PapoApp {
     channel_dialog: Option<ChannelDialog>,
     /// Busca aberta, com o termo digitado.
     search: Option<String>,
+    /// Idem ao diálogo de canal: foco no termo só ao abrir.
+    search_focus: bool,
     about_open: bool,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
@@ -373,6 +404,7 @@ impl PapoApp {
             settings_open: false,
             channel_dialog: None,
             search: None,
+            search_focus: false,
             about_open: false,
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
@@ -838,23 +870,11 @@ impl PapoApp {
                 }
             },
             ChatAction::NewChannel => {
-                self.channel_dialog = Some(ChannelDialog {
-                    kind: "text".to_owned(),
-                    ..Default::default()
-                })
+                self.channel_dialog = Some(ChannelDialog::create())
             }
             ChatAction::EditChannel(id) => {
                 if let Some(channel) = ws.store.channel(&id) {
-                    self.channel_dialog = Some(ChannelDialog {
-                        id: Some(channel.id.clone()),
-                        name: channel.name.clone(),
-                        topic: channel.topic.clone().unwrap_or_default(),
-                        kind: match channel.kind {
-                            crate::state::ChannelKind::Voice => "voice".to_owned(),
-                            crate::state::ChannelKind::Category => "category".to_owned(),
-                            crate::state::ChannelKind::Text => "text".to_owned(),
-                        },
-                    });
+                    self.channel_dialog = Some(ChannelDialog::edit(channel));
                 }
             }
             ChatAction::DeleteChannel(channel_id) => {
@@ -924,23 +944,11 @@ impl PapoApp {
             // mesmo, que é o que deixa a tela de canais trabalhável sem
             // backend.
             ChatAction::NewChannel => {
-                self.channel_dialog = Some(ChannelDialog {
-                    kind: "text".to_owned(),
-                    ..Default::default()
-                })
+                self.channel_dialog = Some(ChannelDialog::create())
             }
             ChatAction::EditChannel(id) => {
                 if let Some(channel) = ws.store.channel(&id) {
-                    self.channel_dialog = Some(ChannelDialog {
-                        id: Some(channel.id.clone()),
-                        name: channel.name.clone(),
-                        topic: channel.topic.clone().unwrap_or_default(),
-                        kind: match channel.kind {
-                            crate::state::ChannelKind::Voice => "voice".to_owned(),
-                            crate::state::ChannelKind::Category => "category".to_owned(),
-                            crate::state::ChannelKind::Text => "text".to_owned(),
-                        },
-                    });
+                    self.channel_dialog = Some(ChannelDialog::edit(channel));
                 }
             }
             ChatAction::DeleteChannel(id) => {
@@ -1171,12 +1179,12 @@ impl PapoApp {
                 }
             }
             MenuCommand::NewChannel => {
-                self.channel_dialog = Some(ChannelDialog {
-                    kind: "text".to_owned(),
-                    ..Default::default()
-                })
+                self.channel_dialog = Some(ChannelDialog::create())
             }
-            MenuCommand::Search => self.search = Some(String::new()),
+            MenuCommand::Search => {
+                self.search = Some(String::new());
+                self.search_focus = true;
+            }
             MenuCommand::About => self.about_open = true,
         }
     }
@@ -1214,7 +1222,10 @@ impl PapoApp {
                         .desired_width(f32::INFINITY)
                         .font(theme::text::body()),
                 );
-                field.request_focus();
+                if self.search_focus {
+                    field.request_focus();
+                    self.search_focus = false;
+                }
                 if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                     run = true;
                 }
@@ -1444,7 +1455,10 @@ impl PapoApp {
                     .desired_width(f32::INFINITY)
                     .font(theme::text::body()),
             );
-            name.request_focus();
+            if dialog.focus {
+                name.request_focus();
+                dialog.focus = false;
+            }
 
             // O tipo é escolhido uma vez. Só texto e categoria: apesar de o
             // openapi.yml listar `voice` no enum, o handler recusa — a

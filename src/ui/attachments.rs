@@ -40,7 +40,7 @@ pub fn draw(
     let mut action = None;
     for (index, attachment) in attachments.iter().enumerate() {
         ui.add_space(space::XS);
-        let outcome = match Kind::of(attachment.mime()) {
+        let outcome = match attachment.kind() {
             Kind::Image => image(ui, t, s, media, message_id, index, attachment, width),
             Kind::Video => video(ui, t, s, media, message_id, index, attachment, width),
             Kind::Audio => audio(ui, t, s, media, attachment, width),
@@ -404,7 +404,7 @@ fn file_card(
         egui::StrokeKind::Inside,
     );
 
-    let glyph = match Kind::of(attachment.mime()) {
+    let glyph = match attachment.kind() {
         Kind::Image => icon::IMAGE,
         Kind::Video => icon::FILM_STRIP,
         Kind::Audio => icon::MUSIC_NOTES,

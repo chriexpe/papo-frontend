@@ -718,6 +718,12 @@ impl Store {
                 kind,
                 topic,
             } => {
+                // Quem criou o canal já o recebeu pela lista relida logo
+                // depois do POST; o evento chega em seguida e duplicaria a
+                // linha. Para os outros clientes ele é a única notícia.
+                if self.channels.iter().any(|channel| channel.id == id) {
+                    return;
+                }
                 let position = self.channels.len() as i32 + 1;
                 self.channels.push(Channel {
                     id,
