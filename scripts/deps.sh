@@ -27,12 +27,18 @@ done
 # O `gstreamer1.0-nice` (libnice) é o ICE do webrtcbin: sem ele a call nem
 # começa a negociar. Ele não vem com o -bad, é pacote à parte nas três
 # distribuições.
+#
+# O `webrtcbin` em si mora no -bad, e é de lá que vem o `gstreamer-webrtc-1.0`
+# que o build procura pelo pkg-config. No Debian e no Fedora os cabeçalhos
+# são um pacote separado do plugin; no Arch vêm juntos, e foi por isso que a
+# falta passou batida aqui e só apareceu na CI.
 apt_runtime="libgstreamer1.0-0 libgstreamer-plugins-base1.0-0
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
     gstreamer1.0-nice gstreamer1.0-pipewire libxkbcommon0 libwayland-client0 libx11-6
     libfontconfig1 fonts-noto-color-emoji xdg-desktop-portal"
 apt_build="build-essential pkg-config libgstreamer1.0-dev
-    libgstreamer-plugins-base1.0-dev libxkbcommon-dev libwayland-dev
+    libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
+    libxkbcommon-dev libwayland-dev
     libx11-dev libxcursor-dev libxi-dev libxrandr-dev libfontconfig1-dev"
 
 dnf_runtime="gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good
@@ -40,7 +46,8 @@ dnf_runtime="gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good
     libxkbcommon libwayland-client
     libX11 fontconfig google-noto-color-emoji-fonts xdg-desktop-portal"
 dnf_build="gcc pkgconf-pkg-config gstreamer1-devel
-    gstreamer1-plugins-base-devel libxkbcommon-devel wayland-devel
+    gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel
+    libxkbcommon-devel wayland-devel
     libX11-devel libXcursor-devel libXi-devel libXrandr-devel
     fontconfig-devel"
 

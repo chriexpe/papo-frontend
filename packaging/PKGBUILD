@@ -16,6 +16,8 @@ depends=(
     'gst-plugins-good'
     'gst-plugins-bad'
     'gst-libav'
+    # O ICE do webrtcbin. Sem ele a call nem começa a negociar.
+    'libnice'
     'libxkbcommon'
     'wayland'
     'libx11'
