@@ -162,7 +162,18 @@ sempre, e gravação de recado de voz pelo microfone.
 Nos contadores: menções somam no ícone da bandeja e na barra de tarefas, não lido acende sem
 número, e tudo isso se desliga nos ajustes.
 
-Pendente: a instância em `papo-backend.onrender.com` responde **500 em `POST /auth/register`**
-(as leituras vão bem; a falha é na transação que insere em `users`/`user_settings`), então o
-caminho depois do login ainda não foi exercitado contra ela. Voz e vídeo (WebRTC) não
-começaram.
+Na administração: canais (criar, renomear, excluir, reordenar e a notificação de cada um),
+cargos com as sete permissões e quem tem cada uma, perfil (apelido, recado, presença, foto,
+senha), servidor (nome, público ou fechado, figurinhas) e o registro de auditoria. As sessões
+abertas da conta aparecem no perfil e dá para encerrar uma ou todas.
+
+Sem tela ainda, mas implementado contra o contrato: banner do perfil, ficha de uma pessoa só,
+ajustes guardados no servidor e prévia de link. Voz e vídeo (WebRTC) não começaram.
+
+Duas divergências entre o `openapi.yml` do backend e o que o servidor faz, descobertas
+testando contra uma instância de verdade:
+
+- `POST /channels` aceita só `text` e `category`; o enum do openapi lista `voice` também.
+- O mime dos anexos é deduzido pelo servidor e erra: `.mp4` volta como
+  `application/octet-stream`. O cliente cai na extensão quando o mime não diz nada, senão
+  vídeo e áudio apareceriam como um arquivo qualquer.
