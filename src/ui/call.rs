@@ -147,6 +147,10 @@ pub fn bar(
     rect: Rect,
     live: bool,
 ) {
+    let back = ui.interact(rect, egui::Id::new("barra-da-call"), Sense::click());
+    if back.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     let painter = ui.painter();
     painter.rect(
         rect,
@@ -155,6 +159,9 @@ pub fn bar(
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
+    if back.hovered() {
+        painter.rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
+    }
 
     let channel = store
         .channel(&store.call.channel_id)
@@ -232,6 +239,10 @@ pub fn bar(
         }
         x -= size + space::XS;
     }
+
+    if back.clicked() {
+        state.actions.push(ChatAction::OpenCall);
+    }
 }
 
 /// A call ocupando a área da conversa (só voz, ou a folha encolhida).
@@ -255,12 +266,18 @@ pub fn dock(
     controls_row(ui, store, state, t, s, controls, false);
 }
 
-/// O canal de voz visto de fora: quem está lá e o convite para entrar.
+/// O canal de voz quando a grade não está aqui: ou você está de fora e é
+/// convidado a entrar, ou a call está noutro lugar da tela — na folha, numa
+/// janela — e o botão a traz de volta.
+///
+/// A diferença importa: oferecer "entrar" a quem já está dentro fazia o
+/// clique sair da própria call e entrar de novo nela.
 pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, CornerRadius::ZERO, t.content_bg);
 
     let channel_id = store.selected_channel.clone();
+    let here = store.call.active() && store.call.channel_id == channel_id;
     let people = store.call.room(&channel_id).len();
     let middle = rect.center();
 
@@ -274,7 +291,9 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
     ui.painter().text(
         egui::pos2(middle.x, middle.y - 8.0),
         egui::Align2::CENTER_CENTER,
-        if people == 0 {
+        if here {
+            format!("{} · {people} {}", s.call_connected, s.call_in_channel)
+        } else if people == 0 {
             s.call_empty_room.to_owned()
         } else {
             format!("{people} {}", s.call_in_channel)
@@ -282,6 +301,12 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
         text::body(),
         t.label_secondary,
     );
+
+    let (label, action) = match (here, store.call.popped_out) {
+        (true, true) => (s.call_popin, ChatAction::PopOutCall(false)),
+        (true, false) => (s.call_expand, ChatAction::OpenCall),
+        (false, _) => (s.call_join, ChatAction::JoinVoice(channel_id)),
+    };
 
     let button = Rect::from_center_size(
         egui::pos2(middle.x, middle.y + 34.0),
@@ -298,7 +323,7 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
     ui.painter().text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        s.call_join,
+        label,
         text::body(),
         t.accent_label,
     );
@@ -306,7 +331,7 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if response.clicked() {
-        state.actions.push(ChatAction::JoinVoice(channel_id));
+        state.actions.push(action);
     }
 }
 
@@ -388,6 +413,12 @@ pub fn pill(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
     );
+    // A pastilha inteira é o caminho de volta — o nome, não só o botão. Os
+    // controles ficam por cima e continuam sendo eles a receber o clique.
+    let back = ui.interact(rect, egui::Id::new("pastilha-da-call"), Sense::click());
+    if back.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     ui.painter().rect(
         rect,
         CornerRadius::same(18),
@@ -395,6 +426,10 @@ pub fn pill(
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
+    if back.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(18), t.fill_soft);
+    }
     let name = store
         .channel(&store.call.channel_id)
         .map(|channel| channel.name.clone())
@@ -420,7 +455,7 @@ pub fn pill(
             s.call_expand,
             false,
             false,
-            ChatAction::CollapseCall(false),
+            ChatAction::OpenCall,
         ),
         (
             if store.call.muted {
@@ -439,6 +474,11 @@ pub fn pill(
             state.actions.push(action);
         }
         x -= 26.0 + space::XXS;
+    }
+
+    // Depois dos botões: um clique neles não conta como clique na pastilha.
+    if back.clicked() {
+        state.actions.push(ChatAction::OpenCall);
     }
 }
 

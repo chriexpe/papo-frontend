@@ -939,6 +939,19 @@ fn mic_chain(factory: &str) -> Option<(Vec<gst::Element>, gst::Element)> {
     let volume = make("volume")?;
     // Entra-se na call em silêncio, como o servidor assume (`muted=true`).
     volume.set_property("mute", true);
+
+    // O medidor de nível, depois do silenciador. Ele não é enfeite: a
+    // extensão de cabeçalho que diz ao servidor quem está falando não mede
+    // nada — ela só copia a medida que este elemento pendura no buffer
+    // (`GstAudioLevelMeta`). Sem ele a extensão ia vazia em todo pacote, e
+    // ninguém nunca aparecia falando. Depois do silenciador de propósito:
+    // mudo mede silêncio, que é o que o servidor precisa acreditar.
+    let level = make("level")?;
+    level.set_property("audio-level-meta", true);
+    level.set_property("post-messages", false);
+    // Uma medida por quadro de Opus; medir menos deixaria o destaque lento.
+    level.set_property("interval", 20_000_000u64);
+
     let encoder = make("opusenc")?;
     encoder.set_property("bitrate", 48_000i32);
     encoder.set_property("inband-fec", true);
@@ -961,6 +974,7 @@ fn mic_chain(factory: &str) -> Option<(Vec<gst::Element>, gst::Element)> {
             resample,
             filter,
             volume.clone(),
+            level,
             encoder,
             payloader,
             cap,

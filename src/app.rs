@@ -1174,6 +1174,14 @@ impl PapoApp {
                 }
             }
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            // Voltar para a call é ir ao canal dela, como o clique que
+            // levou na primeira vez — e abrir a folha se estava encolhida.
+            ChatAction::OpenCall => {
+                if !ws.store.call.channel_id.is_empty() {
+                    ws.store.selected_channel = ws.store.call.channel_id.clone();
+                    ws.store.call.collapsed = false;
+                }
+            }
             ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
             ChatAction::Search(text) => ws.net.send(Command::Search { text }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
@@ -1262,6 +1270,14 @@ impl PapoApp {
             ChatAction::ToggleMute => ws.store.call.muted = !ws.store.call.muted,
             ChatAction::ToggleCamera => ws.store.call.camera = !ws.store.call.camera,
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            // Voltar para a call é ir ao canal dela, como o clique que
+            // levou na primeira vez — e abrir a folha se estava encolhida.
+            ChatAction::OpenCall => {
+                if !ws.store.call.channel_id.is_empty() {
+                    ws.store.selected_channel = ws.store.call.channel_id.clone();
+                    ws.store.call.collapsed = false;
+                }
+            }
             ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
             ChatAction::DeleteChannel(id) => {
                 ws.store.channels.retain(|channel| channel.id != id);

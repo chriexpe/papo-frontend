@@ -124,6 +124,9 @@ pub enum ChatAction {
     ToggleCamera,
     /// Encolhe a folha da call numa pastilha (ou a abre de volta).
     CollapseCall(bool),
+    /// Volta para a call: leva à sala em que já se está, como o clique que
+    /// levou na primeira vez.
+    OpenCall,
     /// Joga a call numa janela só dela (ou a traz de volta).
     PopOutCall(bool),
 }
@@ -556,11 +559,17 @@ fn channels_sidebar(
                                     );
                                     // Um clique entra, como se espera de uma
                                     // sala de voz: ela não é uma tela para
-                                    // visitar, é um lugar onde se está.
-                                    if row.clicked() && !here {
-                                        state
-                                            .actions
-                                            .push(ChatAction::JoinVoice(channel.id.clone()));
+                                    // visitar, é um lugar onde se está. Na
+                                    // sala em que já se está, o mesmo clique
+                                    // leva de volta a ela — era o que faltava
+                                    // para quem saiu para ler outro canal ter
+                                    // caminho de volta.
+                                    if row.clicked() {
+                                        state.actions.push(if here {
+                                            ChatAction::OpenCall
+                                        } else {
+                                            ChatAction::JoinVoice(channel.id.clone())
+                                        });
                                     }
                                     channel_menu(&row, channel, state, s);
                                     crate::ui::call::roster(
