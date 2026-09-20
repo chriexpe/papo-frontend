@@ -32,6 +32,12 @@ const PILL_HEIGHT: f32 = 36.0;
 const PILL_MARGIN: f32 = 12.0;
 /// Raio das pastilhas flutuantes — o mesmo canto do realce interno.
 const PILL_RADIUS: f32 = 12.0;
+/// Largura da pastilha esticada, e teto da parte de baixo dela.
+const PANEL_WIDTH: f32 = 380.0;
+const PANEL_MAX_BODY: f32 = 360.0;
+/// Quanto tempo a mensagem alcançada fica piscando, e quantas piscadas.
+const BLINK_SECONDS: f64 = 1.4;
+const BLINKS: f64 = 2.0;
 const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
@@ -84,6 +90,8 @@ pub enum ChatAction {
     EditChannel(String),
     /// Apaga o canal, depois da confirmação.
     DeleteChannel(String),
+    /// Busca no servidor, a partir da pastilha.
+    Search(String),
     /// `off`, `only_mentions` ou `all` para este canal.
     ChannelNotifications {
         channel_id: String,
@@ -111,6 +119,35 @@ pub enum PopupKind {
     ComposerEmoji,
     /// Só os emojis do servidor, que é o que faz as vezes de figurinha.
     ComposerSticker,
+}
+
+/// Qual lista a pastilha está mostrando quando está aberta.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelKind {
+    Search,
+    Pinned,
+}
+
+/// A pastilha de ações, esticada para mostrar busca ou fixadas. Fecha só
+/// pelo mesmo ícone que a abriu ou pelo X — clicar fora não fecha, porque
+/// ler um resultado costuma passar por clicar na conversa atrás dela.
+#[derive(Clone, Debug)]
+pub struct Panel {
+    pub kind: PanelKind,
+    pub query: String,
+    /// O campo de busca recebe o foco uma vez, ao abrir.
+    pub focus: bool,
+}
+
+/// Mensagem que a janela está tentando alcançar, vinda de um resultado.
+#[derive(Clone, Debug)]
+pub struct Jump {
+    pub message_id: String,
+    /// Instante em que a mensagem foi encontrada; antes disso ela ainda
+    /// pode estar num canal cujas mensagens não chegaram.
+    pub found: Option<f64>,
+    /// Quando a busca começou, para desistir se o canal nunca carregar.
+    pub since: f64,
 }
 
 /// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
@@ -193,6 +230,10 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub popup: Option<Popup>,
+    /// Pastilha de ações esticada em busca ou fixadas.
+    pub panel: Option<Panel>,
+    /// Mensagem a alcançar e piscar, vinda de um resultado.
+    pub jump: Option<Jump>,
     pub emoji_query: String,
     pub emoji_group: usize,
     /// Canal desenhado no quadro anterior, para saber quando ele trocou.
@@ -230,6 +271,8 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             popup: None,
+            panel: None,
+            jump: None,
             emoji_query: String::new(),
             emoji_group: 0,
             last_channel: String::new(),
@@ -254,6 +297,16 @@ pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Token
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
+    }
+
+    // Resultado de um canal que nunca carregou: a busca não pode ficar
+    // pendurada para sempre, ou a próxima mensagem com esse id piscaria do
+    // nada muito depois.
+    if let Some(jump) = &state.jump {
+        let now = ui.input(|input| input.time);
+        if jump.found.is_none() && now - jump.since > 10.0 {
+            state.jump = None;
+        }
     }
 
     // O erro que veio do servidor vira o mesmo aviso passageiro dos erros da
@@ -1012,7 +1065,7 @@ fn conversation(
         // Camada funcional: tudo flutua.
         connection_pill(ui, store, state, t, s, full);
         channel_pill(ui, store, state, t, full);
-        actions_pill(ui, state, t, s, full);
+        actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
     });
 }
@@ -1104,31 +1157,346 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
 }
 
 /// Pastilha de ações do canal, no alto à direita.
-fn actions_pill(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings, area: Rect) {
+///
+/// Fechada, são três ícones. Aberta em busca ou em fixadas, ela mesma
+/// estica para baixo e mostra a lista dentro do mesmo vidro — em vez de uma
+/// janela solta por cima da conversa. Fecha só pelo ícone que a abriu ou
+/// pelo X à esquerda: clicar fora não fecha, porque ler um resultado passa
+/// por clicar na conversa que está atrás.
+fn actions_pill(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+) {
+    let open = state.panel.as_ref().map(|panel| panel.kind);
+    let width = if open.is_some() {
+        PANEL_WIDTH
+    } else {
+        ACTIONS_PILL_WIDTH
+    };
+    // A altura acompanha o conteúdo até um teto; a conversa continua visível
+    // embaixo, que é a vantagem de esticar em vez de abrir janela.
+    let body = match open {
+        None => 0.0,
+        Some(_) => (area.height() - PILL_MARGIN * 2.0 - PILL_HEIGHT).min(PANEL_MAX_BODY),
+    };
     let rect = Rect::from_min_size(
-        egui::pos2(
-            area.max.x - PILL_MARGIN - ACTIONS_PILL_WIDTH,
-            area.min.y + PILL_MARGIN,
-        ),
-        Vec2::new(ACTIONS_PILL_WIDTH, PILL_HEIGHT),
+        egui::pos2(area.max.x - PILL_MARGIN - width, area.min.y + PILL_MARGIN),
+        Vec2::new(width, PILL_HEIGHT + body),
     );
     pill_surface(ui, state, t, rect);
 
+    let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(space::XS, space::XS)))
+            .max_rect(header.shrink2(Vec2::new(space::XS, space::XS)))
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = space::XXS;
-            if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
-                state.pending.push(MenuCommand::Search);
+            // O X mora à esquerda da pastilha esticada.
+            if open.is_some() && icon_button(ui, t, icon::X, s.close).clicked() {
+                state.panel = None;
             }
-            let _ = icon_button(ui, t, icon::PUSH_PIN, s.pinned);
-            if icon_button(ui, t, icon::USERS, s.members).clicked() {
-                state.pending.push(MenuCommand::ToggleMembers);
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = space::XXS;
+                if icon_button(ui, t, icon::USERS, s.members).clicked() {
+                    state.pending.push(MenuCommand::ToggleMembers);
+                }
+                if pill_toggle(ui, t, icon::PUSH_PIN, s.pinned, open == Some(PanelKind::Pinned)) {
+                    toggle_panel(state, PanelKind::Pinned);
+                }
+                if pill_toggle(
+                    ui,
+                    t,
+                    icon::MAGNIFYING_GLASS,
+                    s.search,
+                    open == Some(PanelKind::Search),
+                ) {
+                    toggle_panel(state, PanelKind::Search);
+                }
+            });
         },
     );
+
+    let Some(kind) = open else { return };
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + space::MD, header.max.y),
+            egui::pos2(rect.max.x - space::MD, header.max.y),
+        ],
+        Stroke::new(1.0, t.separator),
+    );
+
+    let body_rect = Rect::from_min_max(
+        egui::pos2(rect.min.x, header.max.y),
+        egui::pos2(rect.max.x, rect.max.y),
+    );
+    ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(body_rect.shrink(space::SM))
+            .layout(Layout::top_down(Align::Min)),
+        |ui| match kind {
+            PanelKind::Search => search_panel(ui, store, state, t, s),
+            PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+        },
+    );
+}
+
+/// Abre a lista pedida, ou fecha se ela já era a que estava aberta.
+pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
+    match &state.panel {
+        Some(panel) if panel.kind == kind => state.panel = None,
+        _ => {
+            state.panel = Some(Panel {
+                kind,
+                query: String::new(),
+                focus: kind == PanelKind::Search,
+            })
+        }
+    }
+}
+
+/// Ícone da pastilha que fica aceso enquanto a sua lista está aberta.
+fn pill_toggle(ui: &mut egui::Ui, t: &Tokens, glyph: &str, tip: &str, active: bool) -> bool {
+    let response = icon_button(ui, t, glyph, tip);
+    if active {
+        ui.painter().rect_filled(
+            response.rect,
+            CornerRadius::same(radius::FIELD),
+            t.accent.gamma_multiply(0.20),
+        );
+        ui.painter().text(
+            response.rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(15.0),
+            t.accent,
+        );
+    }
+    response.clicked()
+}
+
+/// Busca dentro da pastilha: campo em cima, resultados embaixo.
+fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+    let mut run = false;
+    let mut query = state
+        .panel
+        .as_ref()
+        .map(|panel| panel.query.clone())
+        .unwrap_or_default();
+
+    let field = ui.add(
+        egui::TextEdit::singleline(&mut query)
+            .hint_text(s.search_placeholder)
+            .desired_width(f32::INFINITY)
+            .font(text::body()),
+    );
+    if let Some(panel) = state.panel.as_mut() {
+        panel.query = query.clone();
+        if panel.focus {
+            field.request_focus();
+            panel.focus = false;
+        }
+    }
+    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+        run = true;
+    }
+    if run && !query.trim().is_empty() {
+        store.searching = true;
+        state.actions.push(ChatAction::Search(query.trim().to_owned()));
+    }
+
+    ui.add_space(space::XS);
+    if store.searching {
+        ui.label(
+            RichText::new(s.searching)
+                .font(text::footnote())
+                .color(t.label_tertiary),
+        );
+        return;
+    }
+    if store.search_results.is_empty() {
+        // Antes da primeira busca o que falta é a instrução, não o "nada
+        // encontrado": quem acabou de abrir ainda não procurou coisa alguma.
+        let empty_query = state
+            .panel
+            .as_ref()
+            .map(|panel| panel.query.trim().is_empty())
+            .unwrap_or(true);
+        ui.label(
+            RichText::new(if empty_query { s.search_hint } else { s.search_empty })
+                .font(text::footnote())
+                .color(t.label_tertiary),
+        );
+        return;
+    }
+
+    let found: Vec<(String, String, String, String)> = store
+        .search_results
+        .iter()
+        .map(|result| {
+            (
+                result.channel_id.clone(),
+                result.id.clone(),
+                format!(
+                    "#{} · {} · {}",
+                    result.channel_name,
+                    result.author_username,
+                    result
+                        .created_at
+                        .map(|at| at.with_timezone(&Local).format("%d/%m %H:%M").to_string())
+                        .unwrap_or_default()
+                ),
+                result.content.clone(),
+            )
+        })
+        .collect();
+    egui::ScrollArea::vertical()
+        .id_salt("resultados-da-busca")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (channel_id, message_id, header, body) in found {
+                if result_row(ui, t, &header, &body) {
+                    go_to(store, state, ui, &channel_id, &message_id);
+                }
+            }
+        });
+}
+
+/// Fixadas do canal aberto, dentro da mesma pastilha.
+fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+    let channel_id = store.selected_channel.clone();
+    let pinned: Vec<(String, String, String)> = store
+        .messages_in(&channel_id)
+        .filter(|message| message.pinned)
+        .map(|message| {
+            (
+                message.id.clone(),
+                format!(
+                    "{} · {}",
+                    store
+                        .member(&message.author_id)
+                        .map(|member| member.name.clone())
+                        .unwrap_or_else(|| "?".into()),
+                    message.at.format("%d/%m %H:%M")
+                ),
+                message.content.clone(),
+            )
+        })
+        .collect();
+
+    if pinned.is_empty() {
+        ui.label(
+            RichText::new(s.no_pinned)
+                .font(text::footnote())
+                .color(t.label_tertiary),
+        );
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt("lista-de-fixadas")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for (message_id, header, body) in pinned {
+                if result_row(ui, t, &header, &body) {
+                    let channel = channel_id.clone();
+                    go_to(store, state, ui, &channel, &message_id);
+                }
+            }
+        });
+}
+
+/// Uma linha da lista: realce de borda a borda ao passar o mouse.
+fn result_row(ui: &mut egui::Ui, t: &Tokens, header: &str, body: &str) -> bool {
+    let width = ui.available_width();
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let inner = ui.scope(|ui| {
+        ui.set_max_width(width - space::MD * 2.0);
+        ui.add_space(space::XS);
+        ui.horizontal(|ui| {
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(header)
+                    .font(text::caption())
+                    .color(t.label_tertiary),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(body)
+                    .font(text::body())
+                    .color(t.label),
+            );
+        });
+        ui.add_space(space::XS);
+    });
+
+    let row = Rect::from_x_y_ranges(
+        egui::Rangef::new(ui.max_rect().min.x, ui.max_rect().max.x),
+        inner.response.rect.y_range(),
+    );
+    let response = ui.interact(row, ui.id().with(header).with(body), Sense::click());
+    if response.hovered() {
+        ui.painter().set(
+            backdrop,
+            egui::epaint::RectShape::filled(row, CornerRadius::same(radius::CARD), t.fill_soft),
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
+}
+
+/// Intensidade do realce desta mensagem neste quadro, entre 0 e 1.
+///
+/// Na primeira vez que a mensagem procurada aparece, a lista rola até ela e
+/// o relógio começa. Depois disso o valor é `|sen|`, que dá duas piscadas
+/// limpas em [`BLINK_SECONDS`] e volta a zero sem corte.
+fn blink_alpha(state: &mut UiState, message_id: &str, ui: &egui::Ui, row: Rect) -> Option<f32> {
+    let jump = state.jump.as_mut()?;
+    if jump.message_id != message_id {
+        return None;
+    }
+    let now = ui.input(|input| input.time);
+    let started = match jump.found {
+        Some(started) => started,
+        None => {
+            // Só agora a mensagem existe na tela: é aqui que dá para rolar.
+            ui.scroll_to_rect(row, Some(Align::Center));
+            jump.found = Some(now);
+            now
+        }
+    };
+    let elapsed = now - started;
+    if elapsed > BLINK_SECONDS {
+        state.jump = None;
+        return None;
+    }
+    ui.ctx().request_repaint();
+    let phase = (elapsed / BLINK_SECONDS) * BLINKS * std::f64::consts::PI;
+    Some(phase.sin().abs() as f32)
+}
+
+/// Leva a janela até a mensagem: troca de canal se precisar e marca o alvo
+/// para a lista rolar até ele e piscá-lo.
+fn go_to(
+    store: &mut Store,
+    state: &mut UiState,
+    ui: &egui::Ui,
+    channel_id: &str,
+    message_id: &str,
+) {
+    if !channel_id.is_empty() && store.selected_channel != channel_id {
+        store.selected_channel = channel_id.to_owned();
+    }
+    state.jump = Some(Jump {
+        message_id: message_id.to_owned(),
+        found: None,
+        since: ui.input(|input| input.time),
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1634,24 @@ fn message_list(
                     CornerRadius::same(radius::CARD),
                     t.fill_soft,
                 ),
+            );
+        }
+
+        // Mensagem alcançada por um resultado: rola até ela e pisca duas
+        // vezes, de borda a borda. O realce vai por cima do de menção, que
+        // pode estar na mesma linha.
+        if let Some(blink) = blink_alpha(state, &message.id, ui, row) {
+            let band = row.expand2(Vec2::new(0.0, ROW_PADDING));
+            ui.painter().rect_filled(
+                band,
+                CornerRadius::same(radius::CARD),
+                t.accent.gamma_multiply(0.22 * blink),
+            );
+            ui.painter().rect_stroke(
+                band,
+                CornerRadius::same(radius::CARD),
+                Stroke::new(1.5, t.accent.gamma_multiply(blink)),
+                egui::StrokeKind::Inside,
             );
         }
         if hovered {

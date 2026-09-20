@@ -280,10 +280,6 @@ pub struct PapoApp {
     settings_open: bool,
     /// Diálogo de canal aberto: criar (sem id) ou editar (com id).
     channel_dialog: Option<ChannelDialog>,
-    /// Busca aberta, com o termo digitado.
-    search: Option<String>,
-    /// Idem ao diálogo de canal: foco no termo só ao abrir.
-    search_focus: bool,
     about_open: bool,
     roles: crate::ui::roles::RolesState,
     admin: crate::ui::admin::AdminState,
@@ -405,8 +401,6 @@ impl PapoApp {
             tokens,
             settings_open: false,
             channel_dialog: None,
-            search: None,
-            search_focus: false,
             about_open: false,
             roles: Default::default(),
             admin: Default::default(),
@@ -904,6 +898,7 @@ impl PapoApp {
                 ws.net.send(Command::BanUser { user_id, banned })
             }
             ChatAction::ResetUser(user_id) => ws.net.send(Command::ResetUser { user_id }),
+            ChatAction::Search(text) => ws.net.send(Command::Search { text }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -990,7 +985,8 @@ impl PapoApp {
             ChatAction::ChannelNotifications { .. }
             | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
-            | ChatAction::ResetUser(_) => {}
+            | ChatAction::ResetUser(_)
+            | ChatAction::Search(_) => {}
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -1221,9 +1217,9 @@ impl PapoApp {
             MenuCommand::NewChannel => {
                 self.channel_dialog = Some(ChannelDialog::create())
             }
+            // A busca virou parte da pastilha de ações, dentro da conversa.
             MenuCommand::Search => {
-                self.search = Some(String::new());
-                self.search_focus = true;
+                crate::ui::shell::toggle_panel(&mut self.ui, crate::ui::shell::PanelKind::Search)
             }
             MenuCommand::About => self.about_open = true,
             MenuCommand::Roles => {
@@ -1237,132 +1233,7 @@ impl PapoApp {
 
     /// Janela de busca: termo em cima, resultados embaixo. Clicar num
     /// resultado abre o canal dele.
-    fn search_window(&mut self, ctx: &egui::Context) {
-        let Some(mut text) = self.search.clone() else {
-            return;
-        };
-        let s = self.settings.lang.strings();
-        let t = self.tokens;
-        let mut open = true;
-        let mut run = false;
-        let mut jump: Option<String> = None;
-
-        egui::Window::new(s.menu_search)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(460.0)
-            .default_height(420.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(t.elevated_bg)
-                    .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
-                    .inner_margin(egui::Margin::same(theme::space::XL as i8))
-                    .stroke(egui::Stroke::new(1.0, t.separator))
-                    .shadow(ctx.global_style().visuals.window_shadow),
-            )
-            .show(ctx, |ui| {
-                let field = ui.add(
-                    egui::TextEdit::singleline(&mut text)
-                        .hint_text(s.search_placeholder)
-                        .desired_width(f32::INFINITY)
-                        .font(theme::text::body()),
-                );
-                if self.search_focus {
-                    field.request_focus();
-                    self.search_focus = false;
-                }
-                if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                    run = true;
-                }
-                ui.add_space(theme::space::XS);
-                ui.label(
-                    egui::RichText::new(s.search_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::LG);
-
-                let ws = &self.workspaces[self.active];
-                if ws.store.searching {
-                    ui.label(
-                        egui::RichText::new(s.searching)
-                            .font(theme::text::body())
-                            .color(t.label_secondary),
-                    );
-                    return;
-                }
-                if ws.store.search_results.is_empty() {
-                    ui.label(
-                        egui::RichText::new(s.search_empty)
-                            .font(theme::text::body())
-                            .color(t.label_tertiary),
-                    );
-                    return;
-                }
-
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for found in &ws.store.search_results {
-                        let when = found
-                            .created_at
-                            .map(|at| {
-                                at.with_timezone(&chrono::Local)
-                                    .format("%d/%m %H:%M")
-                                    .to_string()
-                            })
-                            .unwrap_or_default();
-                        let header = format!(
-                            "#{} · {} · {when}",
-                            found.channel_name, found.author_username
-                        );
-                        let row = ui
-                            .scope(|ui| {
-                                ui.label(
-                                    egui::RichText::new(header)
-                                        .font(theme::text::caption())
-                                        .color(t.label_tertiary),
-                                );
-                                ui.label(
-                                    egui::RichText::new(&found.content)
-                                        .font(theme::text::body())
-                                        .color(t.label),
-                                );
-                            })
-                            .response
-                            .interact(egui::Sense::click());
-                        if row.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if row.clicked() && !found.channel_id.is_empty() {
-                            jump = Some(found.channel_id.clone());
-                        }
-                        ui.add_space(theme::space::SM);
-                        ui.separator();
-                        ui.add_space(theme::space::SM);
-                    }
-                });
-            });
-
-        if run && !text.trim().is_empty() {
-            let query = text.trim().to_owned();
-            let ws = &mut self.workspaces[self.active];
-            ws.store.searching = true;
-            ws.net.send(Command::Search { text: query });
-        }
-        if let Some(channel_id) = jump {
-            self.workspaces[self.active].store.selected_channel = channel_id;
-            open = false;
-        }
-
-        self.search = open.then_some(text);
-        if !open {
-            let ws = &mut self.workspaces[self.active];
-            ws.store.search_results.clear();
-            ws.store.searching = false;
-        }
-    }
-
-    /// Tela de cargos. Ela só descreve o que quer; a tradução em comandos
+     /// Tela de cargos. Ela só descreve o que quer; a tradução em comandos
     /// de rede é aqui.
     fn roles_window(&mut self, ctx: &egui::Context) {
         use crate::ui::roles::RoleAction;
@@ -1950,7 +1821,6 @@ impl eframe::App for PapoApp {
         }
         self.settings_window(&ctx);
         self.channel_window(&ctx);
-        self.search_window(&ctx);
         self.about_window(&ctx);
         self.roles_window(&ctx);
         self.admin_windows(&ctx);
