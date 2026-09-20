@@ -56,14 +56,25 @@ pub struct Shared {
     preview_seq: AtomicU64,
     /// A conexão WebRTC fechou de verdade (ICE e DTLS prontos).
     live: AtomicBool,
+    /// A câmera está mesmo capturando. É a verdade do dispositivo, não o que
+    /// o botão diz: câmera que não abre, ou que morre no meio, apaga aqui e
+    /// o botão segue.
+    camera: AtomicBool,
     /// Quebrou de um jeito que a call não continua.
     failed: AtomicBool,
     error: Mutex<Option<String>>,
+    /// Aviso que não acaba com a call, para ser mostrado uma vez só.
+    warning: Mutex<Option<String>>,
 }
 
 impl Shared {
     pub fn is_live(&self) -> bool {
         self.live.load(Ordering::Relaxed)
+    }
+
+    /// O aviso que ainda não foi mostrado. Sai da gaveta ao ser lido.
+    pub fn take_warning(&self) -> Option<String> {
+        self.warning.lock().ok().and_then(|mut slot| slot.take())
     }
 
     pub fn failed(&self) -> bool {
@@ -74,12 +85,14 @@ impl Shared {
         self.error.lock().ok().and_then(|slot| slot.clone())
     }
 
-    /// Um aviso que não acaba com a call — o microfone que não abriu, por
-    /// exemplo: dá para participar ouvindo.
+    /// Um aviso que não acaba com a call — o microfone que não abriu, ou a
+    /// câmera que não existe: dá para participar assim mesmo. Fica numa
+    /// gaveta própria, longe do erro fatal, porque quem o lê o tira de lá:
+    /// no erro ele apareceria em todo quadro, ou em nenhum.
     fn warn(&self, message: impl Into<String>) {
         let message = message.into();
         log::warn!("call: {message}");
-        if let Ok(mut slot) = self.error.lock() {
+        if let Ok(mut slot) = self.warning.lock() {
             *slot = Some(message);
         }
     }
@@ -204,6 +217,18 @@ impl Call {
 
     pub fn is_live(&self) -> bool {
         self.shared.is_live()
+    }
+
+    /// A câmera está capturando de verdade? O botão pergunta a ela, não ao
+    /// próprio clique: onde não há webcam — no Flatpak, hoje — ligar não
+    /// liga nada, e o botão tem de voltar sozinho.
+    pub fn camera_on(&self) -> bool {
+        self.shared.camera.load(Ordering::Relaxed)
+    }
+
+    /// Aviso que não acaba com a call, para aparecer uma vez.
+    pub fn take_warning(&self) -> Option<String> {
+        self.shared.take_warning()
     }
 
     pub fn failed(&self) -> bool {

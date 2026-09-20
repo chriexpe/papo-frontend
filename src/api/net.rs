@@ -143,6 +143,8 @@ pub enum Command {
     /// entrada pelo socket, porque sem ICE a oferta não teria como sair.
     JoinVoice {
         channel_id: String,
+        /// Número desta tentativa de entrada, devolvido nas respostas.
+        attempt: u64,
     },
     /// Sinalização crua da call (oferta, resposta, candidato, mudo…), já em
     /// JSON: quem a escreve é a thread da call.
@@ -191,12 +193,14 @@ pub enum Update {
     /// call e esperar o `voice_joined`.
     VoiceReady {
         channel_id: String,
+        attempt: u64,
         servers: Vec<crate::api::models::IceServer>,
     },
     /// A entrada na call não saiu do chão. Sem isto a tela ficava para
     /// sempre em "conectando", porque não há call nenhuma para desistir.
     VoiceFailed {
         channel_id: String,
+        attempt: u64,
         message: String,
     },
     Connection(Connection),
@@ -776,13 +780,17 @@ async fn handle(
                 }
             }
         }
-        Command::JoinVoice { channel_id } => match api.ice_servers().await {
+        Command::JoinVoice {
+            channel_id,
+            attempt,
+        } => match api.ice_servers().await {
             Ok(servers) => {
                 publish(
                     updates,
                     repaint,
                     Update::VoiceReady {
                         channel_id: channel_id.clone(),
+                        attempt,
                         servers,
                     },
                 );
@@ -795,6 +803,7 @@ async fn handle(
                 repaint,
                 Update::VoiceFailed {
                     channel_id,
+                    attempt,
                     message: error.to_string(),
                 },
             ),

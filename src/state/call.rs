@@ -55,6 +55,10 @@ pub struct CallState {
     /// A call foi jogada numa janela só dela.
     pub popped_out: bool,
     pub error: Option<String>,
+    /// Qual tentativa de entrada é a atual. O canal não basta para
+    /// identificar uma: sair e entrar de novo no mesmo canal dá duas, e a
+    /// resposta lenta da primeira chegaria a tempo de derrubar a segunda.
+    pub attempt: u64,
 }
 
 /// Um erro de voz que acaba com a call, ou só um pedido recusado?
@@ -122,8 +126,10 @@ impl CallState {
         }
     }
 
-    /// Entrando numa call nova: limpa o que era da anterior.
-    pub fn joining(&mut self, channel_id: String) {
+    /// Entrando numa call nova: limpa o que era da anterior e devolve o
+    /// número desta tentativa, que volta com as respostas da rede.
+    pub fn joining(&mut self, channel_id: String) -> u64 {
+        self.attempt = self.attempt.wrapping_add(1);
         self.channel_id = channel_id;
         self.phase = Phase::Joining;
         self.speakers.clear();
@@ -132,6 +138,12 @@ impl CallState {
         self.collapsed = false;
         self.popped_out = false;
         self.error = None;
+        self.attempt
+    }
+
+    /// A resposta é desta entrada, ou de uma que já foi abandonada?
+    pub fn current(&self, channel_id: &str, attempt: u64) -> bool {
+        self.active() && self.attempt == attempt && self.channel_id == channel_id
     }
 
     pub fn left(&mut self) {
@@ -221,6 +233,19 @@ mod tests {
         assert!(fatal("voice-room-full", true));
         assert!(!fatal("voice-room-full", false));
         assert!(!fatal("voice-rate-limited", false));
+    }
+
+    /// Entrar, sair e entrar de novo no mesmo canal são duas tentativas: a
+    /// resposta atrasada da primeira não pode mexer na segunda.
+    #[test]
+    fn resposta_de_uma_entrada_abandonada_nao_vale() {
+        let mut call = CallState::default();
+        let first = call.joining("c1".to_owned());
+        call.left();
+        let second = call.joining("c1".to_owned());
+        assert!(!call.current("c1", first));
+        assert!(call.current("c1", second));
+        assert!(!call.current("c2", second));
     }
 
     /// O evento de entrada de alguém é um `voice_state_update` zerado: quem

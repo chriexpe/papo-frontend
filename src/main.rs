@@ -225,6 +225,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                             asked = true;
                             net.send(Command::JoinVoice {
                                 channel_id: item.id.clone(),
+                                attempt: 1,
                             });
                         }
                         None => println!("nenhum canal de voz neste servidor"),
@@ -233,6 +234,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                 Update::VoiceReady {
                     channel_id,
                     servers,
+                    ..
                 } => {
                     println!("ice: {} servidor(es)", servers.len());
                     call = voice::Call::start(
@@ -308,6 +310,9 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                     println!("abrindo o microfone");
                     call.set_muted(false);
                 }
+            }
+            if let Some(warning) = call.take_warning() {
+                println!("aviso: {warning}");
             }
             if let Some(error) = call.error() {
                 println!("call: {error}");

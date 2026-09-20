@@ -217,9 +217,10 @@ Três coisas dependem de mudança no backend, e por ora o cliente contorna:
   de voz numa rota REST — no `GET /channels`, por exemplo.
 - **`track_subscribe` não tem resposta.** O pedido de vídeo é aceito em silêncio, e a
   recusa chega como um `error` sem dizer de qual pedido — o mesmo `voice-not-found` que
-  o servidor usa para outras coisas. O cliente assume que deu certo e se conserta no
-  evento seguinte (a câmera que desligou larga o lugar). Um `track_subscribed` com
-  `publisher_id` e `kind` fecharia o buraco.
+  o servidor usa para outras coisas. O cliente assume que deu certo, e só se conserta
+  quando a lista de quem se quer ver mudar — um pedido recusado por excesso de pedidos
+  deixa o lugar ocupado por ninguém até lá. Um `track_subscribed` com `publisher_id` e
+  `kind` fecharia o buraco.
 
 No Flatpak a call entra com voz, e o vídeo dos outros aparece, mas a **sua** câmera não:
 a captura é `v4l2src`, que exigiria `--device=all` — e `all` é todo dispositivo da

@@ -650,9 +650,10 @@ impl Store {
             Update::VoiceReady { .. } => {}
             Update::VoiceFailed {
                 channel_id,
+                attempt,
                 message,
             } => {
-                if self.call.channel_id == channel_id {
+                if self.call.current(&channel_id, attempt) {
                     self.call.error = Some(message.clone());
                     self.call.left();
                 }

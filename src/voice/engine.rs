@@ -251,9 +251,33 @@ impl Engine {
                     }
                 }
             }
+            // A câmera é um pipeline à parte e pode morrer sozinha depois de
+            // ter começado — o cabo saiu, outro programa tomou o
+            // dispositivo. Sem ler o barramento dela, a call ficaria com a
+            // câmera "ligada" e sem quadro nenhum, sem dizer por quê.
+            self.watch_camera();
         }
         self.camera = None;
         let _ = self.pipeline.set_state(gst::State::Null);
+    }
+
+    /// Lê o barramento da câmera. Erro dela apaga a câmera e vira aviso —
+    /// a call segue.
+    fn watch_camera(&mut self) {
+        let Some(camera) = &self.camera else { return };
+        let Some(bus) = camera.pipeline.bus() else {
+            return;
+        };
+        let mut broke = None;
+        while let Some(message) = bus.pop() {
+            if let gst::MessageView::Error(error) = message.view() {
+                broke = Some(error.error().to_string());
+            }
+        }
+        if let Some(reason) = broke {
+            self.shared.warn(format!("a câmera parou: {reason}"));
+            self.set_camera(false);
+        }
     }
 
     fn handle(&mut self, command: Command) {
@@ -347,8 +371,18 @@ impl Engine {
         };
         let description = gst_webrtc::WebRTCSessionDescription::new(kind, message);
         let inbox = self.inbox.clone();
-        let promise = gst::Promise::with_change_func(move |_reply| {
-            let _ = inbox.send(Command::RemoteApplied(kind == gst_webrtc::WebRTCSDPType::Answer));
+        let shared = Arc::clone(&self.shared);
+        let answer = kind == gst_webrtc::WebRTCSDPType::Answer;
+        let promise = gst::Promise::with_change_func(move |reply| {
+            // A promessa também chega interrompida ou vencida. Seguir para a
+            // próxima oferta nesses casos seria negociar em cima de uma SDP
+            // que nunca entrou.
+            match reply {
+                Ok(_) => {
+                    let _ = inbox.send(Command::RemoteApplied(answer));
+                }
+                Err(error) => shared.fail(format!("a SDP do servidor não entrou: {error:?}")),
+            }
         });
         self.webrtc
             .emit_by_name::<()>("set-remote-description", &[&description, &promise]);
@@ -461,6 +495,7 @@ impl Engine {
             // Solta o dispositivo primeiro: a luz da câmera tem de apagar
             // junto com o clique, não no fim da renegociação.
             self.camera = None;
+            self.shared.camera.store(false, Ordering::Relaxed);
             if let Ok(mut preview) = self.shared.preview.lock() {
                 *preview = None;
             }
@@ -476,6 +511,11 @@ impl Engine {
             return;
         }
 
+        // Liga a bandeira antes de abrir o dispositivo: quem lê isto de
+        // fora precisa ver a mesma ordem que o clique — ligou, e só depois
+        // desligou se não houver câmera. Sem isso, o botão piscava.
+        self.shared.camera.store(true, Ordering::Relaxed);
+
         if self.camera_line.is_none() {
             match self.open_camera_line() {
                 Some((line, src)) => {
@@ -484,19 +524,27 @@ impl Engine {
                 }
                 None => {
                     self.camera_on = false;
+                    self.shared.camera.store(false, Ordering::Relaxed);
                     return;
                 }
             }
         }
         let Some(src) = self.camera_src.clone() else {
             self.camera_on = false;
+            self.shared.camera.store(false, Ordering::Relaxed);
             return;
         };
         match capture(src, Arc::clone(&self.shared), self.repaint.clone()) {
-            Some(camera) => self.camera = Some(camera),
+            Some(camera) => {
+                self.camera = Some(camera);
+                self.shared.camera.store(true, Ordering::Relaxed);
+            }
             None => {
-                self.shared.fail("sem câmera para abrir");
+                // Sem webcam — ou, no Flatpak, sem acesso a ela — a call
+                // continua: era a câmera que não abriu, não a conversa.
+                self.shared.warn("não achei uma câmera para abrir");
                 self.camera_on = false;
+                self.shared.camera.store(false, Ordering::Relaxed);
                 return;
             }
         }

@@ -68,11 +68,13 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
     match update {
         Update::VoiceReady {
             channel_id,
+            attempt,
             servers,
         } => {
-            // Uma entrada que já não é a atual (o usuário desistiu antes de
-            // o ICE voltar) não monta call nenhuma.
-            if ws.store.call.channel_id != *channel_id {
+            // Uma entrada que já não é a atual não monta call nenhuma — o
+            // usuário desistiu antes de o ICE voltar, ou saiu e entrou de
+            // novo no mesmo canal enquanto a primeira resposta vinha.
+            if !ws.store.call.current(channel_id, *attempt) {
                 return;
             }
             ws.call = Call::start(
@@ -151,6 +153,7 @@ fn leave_call(ws: &mut Workspace) {
     ws.call = None;
     ws.call_ready = false;
     ws.watching.clear();
+    ws.camera_seen = false;
     ws.store.call.left();
 }
 
@@ -175,6 +178,20 @@ fn pump_call(ws: &mut Workspace) {
         if ws.store.call.camera {
             call.set_camera(true);
         }
+    }
+
+    // Aviso que não derruba a call (sem microfone, sem câmera): aparece uma
+    // vez, como os outros recados passageiros da tela.
+    if let Some(warning) = call.take_warning() {
+        ws.store.error = Some(warning);
+    }
+    // O botão da câmera segue o dispositivo, não o clique: onde não há
+    // webcam — no Flatpak de hoje, por exemplo — ligar não liga nada, e ele
+    // tem de voltar sozinho. O mesmo vale para a câmera que morre no meio.
+    let camera = call.camera_on();
+    if ws.camera_seen != camera {
+        ws.camera_seen = camera;
+        ws.store.call.camera = camera;
     }
 
     if call.failed() {
@@ -347,6 +364,10 @@ pub struct Workspace {
     /// De quem pedimos vídeo por último, em ordem: o pedido só sai de novo
     /// quando a lista muda.
     watching: Vec<String>,
+    /// O que a thread da call dizia da câmera no quadro anterior. Só a
+    /// mudança vale: comparar com o botão a todo quadro o faria piscar no
+    /// intervalo entre o clique e o dispositivo abrir.
+    camera_seen: bool,
 }
 
 impl Workspace {
@@ -377,6 +398,7 @@ impl Workspace {
             call: None,
             call_ready: false,
             watching: Vec::new(),
+            camera_seen: false,
         }
     }
 
@@ -998,8 +1020,11 @@ impl PapoApp {
             }
             let ws = &mut self.workspaces[self.active];
             ws.store.selected_channel = channel_id.clone();
-            ws.store.call.joining(channel_id.clone());
-            ws.net.send(Command::JoinVoice { channel_id });
+            let attempt = ws.store.call.joining(channel_id.clone());
+            ws.net.send(Command::JoinVoice {
+                channel_id,
+                attempt,
+            });
             return;
         }
         let s = self.settings.lang.strings();
