@@ -122,7 +122,15 @@ impl Tray {
             commands: tx,
             repaint,
         };
-        match tray.spawn() {
+        // O Flatpak não deixa registrar o nome próprio do item
+        // (`StatusNotifierItem-<pid>-<n>`): o curinga do sandbox só alcança
+        // componentes separados por ponto, e ali o que muda vem depois de um
+        // hífen. Sem o nome, o item se registra pelo nome único da conexão —
+        // que é o que o ksni recomenda justamente para sandbox.
+        match tray
+            .disable_dbus_name(crate::platform::in_flatpak())
+            .spawn()
+        {
             Ok(handle) => {
                 log::info!("ícone de bandeja publicado");
                 Some(Self {

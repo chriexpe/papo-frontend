@@ -34,10 +34,9 @@ finish-args:
   # Tocar áudio e vídeo, e gravar recado de voz.
   - --socket=pulseaudio
   # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma. O item
-  # registra um nome próprio (`org.kde.StatusNotifierItem-<pid>-<n>`), que o
-  # ksni cria em tempo de execução e o Flatpak só libera por curinga.
+  # abre mão do nome próprio dentro do sandbox (ver `platform/tray.rs`), então
+  # basta alcançar o watcher.
   - --talk-name=org.kde.StatusNotifierWatcher
-  - --own-name=org.kde.StatusNotifierItem-.*
   - --talk-name=com.canonical.AppMenu.Registrar
   - --own-name=com.canonical.dbusmenu
   # Contador de menções na barra de tarefas.

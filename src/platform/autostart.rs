@@ -11,11 +11,6 @@ use std::path::PathBuf;
 /// reconhecer a entrada como sendo dele.
 const FILE_NAME: &str = "io.github.chriexpe.Papo.desktop";
 
-/// O Papo está rodando empacotado no Flatpak?
-fn in_flatpak() -> bool {
-    std::path::Path::new("/.flatpak-info").exists()
-}
-
 fn config_home() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
         if !dir.is_empty() {
@@ -31,7 +26,7 @@ fn entry_path() -> Option<PathBuf> {
 
 /// O comando que a sessão deve executar.
 fn exec_command() -> String {
-    if in_flatpak() {
+    if super::in_flatpak() {
         format!("flatpak run {}", crate::APP_ID)
     } else {
         // O caminho pode ter espaços; a especificação do `.desktop` pede

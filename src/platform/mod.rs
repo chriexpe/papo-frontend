@@ -3,6 +3,13 @@ pub mod activate;
 #[cfg(target_os = "linux")]
 pub mod appmenu;
 pub mod autostart;
+
+/// O Papo está rodando empacotado no Flatpak? Vale para o que o sandbox
+/// muda: o autostart chama o `flatpak run`, e a bandeja abre mão do nome
+/// próprio no barramento, que o sandbox não deixa registrar.
+pub fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
+}
 #[cfg(target_os = "linux")]
 pub mod blur;
 pub mod desktop;
