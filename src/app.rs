@@ -277,12 +277,10 @@ pub struct PapoApp {
     settings: Settings,
     system: SystemTheme,
     tokens: Tokens,
-    settings_open: bool,
     /// Diálogo de canal aberto: criar (sem id) ou editar (com id).
     channel_dialog: Option<ChannelDialog>,
-    about_open: bool,
     roles: crate::ui::roles::RolesState,
-    admin: crate::ui::admin::AdminState,
+    sheet: crate::ui::settings::SettingsState,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
@@ -399,11 +397,9 @@ impl PapoApp {
             settings,
             system,
             tokens,
-            settings_open: false,
             channel_dialog: None,
-            about_open: false,
             roles: Default::default(),
-            admin: Default::default(),
+            sheet: Default::default(),
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
             #[cfg(target_os = "linux")]
@@ -1204,7 +1200,9 @@ impl PapoApp {
                 self.quit(ctx);
             }
             MenuCommand::SignOut => self.ws().net.send(Command::Logout),
-            MenuCommand::Preferences => self.settings_open = true,
+            MenuCommand::Preferences => self
+                .sheet
+                .toggle(crate::ui::settings::Surface::App),
             MenuCommand::SwitchLanguage(lang) => self.settings.lang = lang,
             MenuCommand::Quit => self.quit(ctx),
             // Marcar tudo como lido limpa todos os servidores: é o que o
@@ -1221,13 +1219,21 @@ impl PapoApp {
             MenuCommand::Search => {
                 crate::ui::shell::toggle_panel(&mut self.ui, crate::ui::shell::PanelKind::Search)
             }
-            MenuCommand::About => self.about_open = true,
-            MenuCommand::Roles => {
-                self.roles.open = true;
-                self.workspaces[self.active].net.send(Command::LoadRoles);
+            // "Sobre" virou uma linha no fim dos ajustes, em vez de uma
+            // janela só para dizer a versão.
+            MenuCommand::About => {
+                self.sheet.toggle(crate::ui::settings::Surface::App);
+                self.sheet.app_pane = crate::ui::settings::AppPane::Sessions;
             }
-            MenuCommand::Profile => self.admin.open_profile(),
-            MenuCommand::ServerSettings => self.admin.open_server(),
+            // Cargos e o resto do servidor moram na folha do servidor.
+            MenuCommand::Roles | MenuCommand::ServerSettings => {
+                self.sheet.toggle(crate::ui::settings::Surface::Server);
+                if self.sheet.open.is_some() {
+                    let ws = &self.workspaces[self.active];
+                    ws.net.send(Command::LoadRoles);
+                    ws.net.send(Command::LoadAuditLogs);
+                }
+            }
         }
     }
 
@@ -1235,157 +1241,9 @@ impl PapoApp {
     /// resultado abre o canal dele.
      /// Tela de cargos. Ela só descreve o que quer; a tradução em comandos
     /// de rede é aqui.
-    fn roles_window(&mut self, ctx: &egui::Context) {
-        use crate::ui::roles::RoleAction;
-
-        let s = self.settings.lang.strings();
-        let t = self.tokens;
-        let actions = {
-            let ws = &self.workspaces[self.active];
-            crate::ui::roles::window(ctx, &mut self.roles, &ws.store, &t, s)
-        };
-        if actions.is_empty() {
-            return;
-        }
-        let ws = &mut self.workspaces[self.active];
-        for action in actions {
-            let command = match action {
-                RoleAction::Create {
-                    name,
-                    color,
-                    permissions,
-                } => Command::CreateRole {
-                    name,
-                    color,
-                    permissions,
-                },
-                RoleAction::Update {
-                    role_id,
-                    name,
-                    color,
-                    permissions,
-                } => Command::UpdateRole {
-                    role_id,
-                    name,
-                    color,
-                    permissions,
-                },
-                RoleAction::Delete(role_id) => Command::DeleteRole { role_id },
-                RoleAction::Assign { user_id, role_id } => {
-                    Command::AssignRole { user_id, role_id }
-                }
-                RoleAction::Unassign { user_id, role_id } => {
-                    Command::UnassignRole { user_id, role_id }
-                }
-            };
-            ws.net.send(command);
-        }
-    }
-
-    /// Perfil e servidor. As duas telas só descrevem o que querem.
-    fn admin_windows(&mut self, ctx: &egui::Context) {
-        use crate::ui::admin::AdminAction;
-
-        let s = self.settings.lang.strings();
-        let t = self.tokens;
-        let mut actions = {
-            let ws = &self.workspaces[self.active];
-            let mut found = crate::ui::admin::profile_window(ctx, &mut self.admin, &ws.store, &t, s);
-            found.extend(crate::ui::admin::server_window(
-                ctx,
-                &mut self.admin,
-                &ws.store,
-                &t,
-                s,
-            ));
-            found
-        };
-        if actions.is_empty() {
-            return;
-        }
-        for action in actions.drain(..) {
-            match action {
-                // Os dois seletores de imagem passam pelo portal do sistema,
-                // que responde noutro quadro.
-                AdminAction::PickAvatar => self.dialogs.pick_image(ctx.clone(), ImagePick::Avatar),
-                AdminAction::PickEmoji(name) => {
-                    self.dialogs.pick_image(ctx.clone(), ImagePick::Emoji(name))
-                }
-                other => {
-                    let command = match other {
-                        AdminAction::SaveProfile(request) => Command::UpdateProfile(request),
-                        AdminAction::SetPresence(status) => Command::SetStatus { status },
-                        AdminAction::ChangePassword(password) => {
-                            Command::ChangePassword { password }
-                        }
-                        AdminAction::LoadDevices => Command::LoadDevices,
-                        AdminAction::DropConnection(connection_id) => {
-                            Command::DropConnection { connection_id }
-                        }
-                        AdminAction::SaveServer(request) => Command::UpdateServer(request),
-                        AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
-                        AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
-                        AdminAction::PickAvatar | AdminAction::PickEmoji(_) => unreachable!(),
-                    };
-                    self.workspaces[self.active].net.send(command);
-                }
-            }
-        }
-    }
-
-    /// Sobre: nome, versão e a que servidor a janela está ligada.
-    fn about_window(&mut self, ctx: &egui::Context) {
-        if !self.about_open {
-            return;
-        }
-        let s = self.settings.lang.strings();
-        let t = self.tokens;
-        let mut open = self.about_open;
-        let address = self.workspaces[self.active].url.clone();
-
-        egui::Window::new(s.menu_about)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(320.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(t.elevated_bg)
-                    .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
-                    .inner_margin(egui::Margin::same(theme::space::XL as i8))
-                    .stroke(egui::Stroke::new(1.0, t.separator))
-                    .shadow(ctx.global_style().visuals.window_shadow),
-            )
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new("Papo")
-                        .font(theme::text::title1())
-                        .color(t.label),
-                );
-                ui.add_space(theme::space::XS);
-                ui.label(
-                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::LG);
-                ui.label(
-                    egui::RichText::new(s.about_body)
-                        .font(theme::text::body())
-                        .color(t.label_secondary),
-                );
-                ui.add_space(theme::space::LG);
-                ui.label(
-                    egui::RichText::new(address)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-            });
-
-        self.about_open = open;
-    }
-
-    /// O mesmo formulário, aplicado ao estado local da demonstração.
+     /// Perfil e servidor. As duas telas só descrevem o que querem.
+     /// Sobre: nome, versão e a que servidor a janela está ligada.
+     /// O mesmo formulário, aplicado ao estado local da demonstração.
     fn submit_channel_demo(&mut self, dialog: &ChannelDialog) {
         use crate::state::{Channel, ChannelKind};
 
@@ -1426,6 +1284,167 @@ impl PapoApp {
                 if kind == ChannelKind::Text {
                     ws.store.selected_channel = id;
                 }
+            }
+        }
+    }
+
+    /// Traduz o que a folha pediu do lado da conta e do servidor.
+    fn handle_admin(&mut self, ctx: &egui::Context, action: crate::ui::admin::AdminAction) {
+        use crate::ui::admin::AdminAction;
+
+        // Os dois seletores de imagem passam pelo portal do sistema, que
+        // responde noutro quadro.
+        let command = match action {
+            AdminAction::PickAvatar => {
+                self.dialogs.pick_image(ctx.clone(), ImagePick::Avatar);
+                return;
+            }
+            AdminAction::PickEmoji(name) => {
+                self.dialogs.pick_image(ctx.clone(), ImagePick::Emoji(name));
+                return;
+            }
+            AdminAction::SaveProfile(request) => Command::UpdateProfile(request),
+            AdminAction::SetPresence(status) => Command::SetStatus { status },
+            AdminAction::ChangePassword(password) => Command::ChangePassword { password },
+            AdminAction::LoadDevices => Command::LoadDevices,
+            AdminAction::DropConnection(connection_id) => Command::DropConnection { connection_id },
+            AdminAction::SaveServer(request) => Command::UpdateServer(request),
+            AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
+            AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
+        };
+        self.workspaces[self.active].net.send(command);
+    }
+
+    fn handle_role(&mut self, action: crate::ui::roles::RoleAction) {
+        use crate::ui::roles::RoleAction;
+
+        let command = match action {
+            RoleAction::Create {
+                name,
+                color,
+                permissions,
+            } => Command::CreateRole {
+                name,
+                color,
+                permissions,
+            },
+            RoleAction::Update {
+                role_id,
+                name,
+                color,
+                permissions,
+            } => Command::UpdateRole {
+                role_id,
+                name,
+                color,
+                permissions,
+            },
+            RoleAction::Delete(role_id) => Command::DeleteRole { role_id },
+            RoleAction::Assign { user_id, role_id } => Command::AssignRole { user_id, role_id },
+            RoleAction::Unassign { user_id, role_id } => Command::UnassignRole { user_id, role_id },
+        };
+        self.workspaces[self.active].net.send(command);
+    }
+
+    /// A folha de ajustes, ancorada na pastilha que a abriu. É a única
+    /// tela de ajustes que existe: conta, aparência, avisos, arquivos,
+    /// idioma e sessões de um lado; servidor, canais, cargos, figurinhas e
+    /// auditoria do outro.
+    fn settings_sheet(&mut self, ctx: &egui::Context) {
+        use crate::ui::settings::{SettingsAction, Surface};
+
+        let Some(surface) = self.sheet.open else {
+            return;
+        };
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let screen = ctx.viewport_rect();
+        // A folha nasce na pastilha: a do servidor em cima, a da conta no pé.
+        let sidebar = crate::ui::rail::RAIL_WIDTH;
+        let anchor = match surface {
+            Surface::Server => egui::Rect::from_min_size(
+                egui::pos2(screen.min.x + sidebar, screen.min.y + 56.0),
+                egui::vec2(crate::ui::shell::SIDEBAR_WIDTH, 1.0),
+            ),
+            Surface::App => egui::Rect::from_min_size(
+                egui::pos2(screen.min.x + sidebar, screen.max.y - 64.0),
+                egui::vec2(crate::ui::shell::SIDEBAR_WIDTH, 1.0),
+            ),
+        };
+
+        let mut ask_download = self.settings.downloads == DownloadMode::Ask;
+        let before = (
+            self.settings.lang,
+            self.settings.theme,
+            self.settings.translucency,
+            self.settings.show_members,
+            self.settings.notifications,
+            self.settings.close_to_tray,
+            self.settings.badge,
+            self.settings.topic_reveal,
+            self.settings.record_button,
+            ask_download,
+        );
+
+        let actions = {
+            let ws = &self.workspaces[self.active];
+            let mut data = crate::ui::settings::Context {
+                store: &ws.store,
+                roles: &mut self.roles,
+                lang: &mut self.settings.lang,
+                theme: &mut self.settings.theme,
+                translucency: &mut self.settings.translucency,
+                notifications: &mut self.settings.notifications,
+                close_to_tray: &mut self.settings.close_to_tray,
+                badge: &mut self.settings.badge,
+                topic_reveal: &mut self.settings.topic_reveal,
+                record_button: &mut self.settings.record_button,
+                ask_download: &mut ask_download,
+                download_dir: match &self.settings.downloads {
+                    DownloadMode::Folder(dir) => Some(dir.display().to_string()),
+                    DownloadMode::Ask => None,
+                },
+            };
+            crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
+        };
+
+        // Um ajuste local mudou: grava e reflete na janela na hora.
+        let after = (
+            self.settings.lang,
+            self.settings.theme,
+            self.settings.translucency,
+            self.settings.show_members,
+            self.settings.notifications,
+            self.settings.close_to_tray,
+            self.settings.badge,
+            self.settings.topic_reveal,
+            self.settings.record_button,
+            ask_download,
+        );
+        if before != after {
+            if ask_download != before.9 {
+                self.settings.downloads = if ask_download {
+                    DownloadMode::Ask
+                } else {
+                    DownloadMode::Folder(files::downloads_dir())
+                };
+            }
+            self.retheme(ctx);
+        }
+
+        for action in actions {
+            match action {
+                SettingsAction::Menu(command) => self.ui.pending.push(command),
+                SettingsAction::PickDownloadFolder => {
+                    let start = match &self.settings.downloads {
+                        DownloadMode::Folder(dir) => dir.clone(),
+                        DownloadMode::Ask => files::downloads_dir(),
+                    };
+                    self.dialogs.pick_folder(ctx.clone(), start);
+                }
+                SettingsAction::Chat(chat) => self.handle_chat(ctx, chat),
+                SettingsAction::Admin(admin) => self.handle_admin(ctx, admin),
+                SettingsAction::Role(role) => self.handle_role(role),
             }
         }
     }
@@ -1581,187 +1600,7 @@ impl PapoApp {
         }
     }
 
-    fn settings_window(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
-        let s = self.settings.lang.strings();
-        let t = self.tokens;
-        let mut open = self.settings_open;
-        let mut changed = false;
-        let mut choose_folder = None;
-
-        egui::Window::new(s.settings)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(360.0)
-            .frame(
-                egui::Frame::new()
-                    .fill(t.elevated_bg)
-                    .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
-                    .inner_margin(egui::Margin::same(theme::space::XL as i8))
-                    .stroke(egui::Stroke::new(1.0, t.separator))
-                    .shadow(ctx.global_style().visuals.window_shadow),
-            )
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(s.appearance)
-                        .font(theme::text::caption())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::SM);
-
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(s.theme).font(theme::text::body()));
-                    ui.add_space(theme::space::MD);
-                    for (pref, label) in [
-                        (ThemePref::System, s.theme_system),
-                        (ThemePref::Light, s.theme_light),
-                        (ThemePref::Dark, s.theme_dark),
-                    ] {
-                        if ui
-                            .selectable_label(self.settings.theme == pref, label)
-                            .clicked()
-                        {
-                            self.settings.theme = pref;
-                            changed = true;
-                        }
-                    }
-                });
-
-                ui.add_space(theme::space::MD);
-                if ui
-                    .checkbox(&mut self.settings.translucency, s.translucency)
-                    .changed()
-                {
-                    changed = true;
-                }
-                ui.label(
-                    egui::RichText::new(s.translucency_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-
-                ui.add_space(theme::space::XL);
-                ui.label(
-                    egui::RichText::new(s.menu_notifications)
-                        .font(theme::text::caption())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::SM);
-                ui.checkbox(&mut self.settings.notifications, s.menu_notifications);
-                ui.label(
-                    egui::RichText::new(s.notifications_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::MD);
-                ui.checkbox(&mut self.settings.close_to_tray, s.menu_close_to_tray);
-                ui.label(
-                    egui::RichText::new(s.close_to_tray_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::MD);
-                ui.checkbox(&mut self.settings.badge, s.badge);
-                ui.label(
-                    egui::RichText::new(s.badge_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-
-                ui.add_space(theme::space::XL);
-                ui.label(
-                    egui::RichText::new(s.downloads)
-                        .font(theme::text::caption())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::SM);
-                let ask = self.settings.downloads == DownloadMode::Ask;
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(!ask, s.download_folder).clicked() && ask {
-                        self.settings.downloads = DownloadMode::Folder(files::downloads_dir());
-                    }
-                    if ui.selectable_label(ask, s.download_ask).clicked() {
-                        self.settings.downloads = DownloadMode::Ask;
-                    }
-                });
-                if let DownloadMode::Folder(dir) = self.settings.downloads.clone() {
-                    ui.add_space(theme::space::XS);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(crate::ui::attachments::elide(
-                                &dir.display().to_string(),
-                                34,
-                            ))
-                            .font(theme::text::footnote())
-                            .color(t.label_secondary),
-                        );
-                        if ui.button(s.download_choose).clicked() {
-                            choose_folder = Some(dir);
-                        }
-                    });
-                }
-                ui.label(
-                    egui::RichText::new(s.downloads_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-
-                ui.add_space(theme::space::XL);
-                if ui
-                    .checkbox(&mut self.settings.topic_reveal, s.topic_reveal)
-                    .changed()
-                {
-                    self.ui.reveal_topic = self.settings.topic_reveal;
-                }
-                ui.label(
-                    egui::RichText::new(s.topic_reveal_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::MD);
-                if ui
-                    .checkbox(&mut self.settings.record_button, s.record_button)
-                    .changed()
-                {
-                    self.ui.show_record = self.settings.record_button;
-                }
-                ui.label(
-                    egui::RichText::new(s.record_button_hint)
-                        .font(theme::text::footnote())
-                        .color(t.label_tertiary),
-                );
-
-                ui.add_space(theme::space::XL);
-                ui.label(
-                    egui::RichText::new(s.language)
-                        .font(theme::text::caption())
-                        .color(t.label_tertiary),
-                );
-                ui.add_space(theme::space::SM);
-                ui.horizontal(|ui| {
-                    for lang in Lang::ALL {
-                        if ui
-                            .selectable_label(self.settings.lang == lang, lang.endonym())
-                            .clicked()
-                        {
-                            self.settings.lang = lang;
-                        }
-                    }
-                });
-            });
-
-        self.settings_open = open;
-        if let Some(start) = choose_folder {
-            self.dialogs.pick_folder(ctx.clone(), start);
-        }
-        if changed {
-            self.retheme(ctx);
-        }
-    }
-}
+ }
 
 impl eframe::App for PapoApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -1819,11 +1658,8 @@ impl eframe::App for PapoApp {
                 }
             }
         }
-        self.settings_window(&ctx);
         self.channel_window(&ctx);
-        self.about_window(&ctx);
-        self.roles_window(&ctx);
-        self.admin_windows(&ctx);
+        self.settings_sheet(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {
@@ -1901,7 +1737,6 @@ fn build_menu(settings: &Settings) -> MenuModel {
                 MenuNode::separator(),
                 MenuNode::item(s.menu_preferences, MenuCommand::Preferences)
                     .accel(&["Control", "comma"]),
-                MenuNode::item(s.menu_profile, MenuCommand::Profile),
                 MenuNode::item(s.menu_roles, MenuCommand::Roles),
                 MenuNode::item(s.menu_server, MenuCommand::ServerSettings),
                 MenuNode::separator(),

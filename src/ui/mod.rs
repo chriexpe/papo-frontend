@@ -7,6 +7,7 @@ pub mod glass;
 pub mod headerbar;
 pub mod rail;
 pub mod roles;
+pub mod settings;
 pub mod shell;
 pub mod theme;
 pub mod viewer;

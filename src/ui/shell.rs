@@ -25,8 +25,12 @@ use super::widgets::{avatar, icon_button, scroll_edge_fade, section_caption, sid
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
-const SIDEBAR_HEADER_HEIGHT: f32 = 56.0;
-const ACCOUNT_PILL_HEIGHT: f32 = 40.0;
+const SIDEBAR_HEADER_HEIGHT: f32 = IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0;
+/// As duas pastilhas de identidade: a do servidor e a da conta.
+const IDENTITY_PILL_HEIGHT: f32 = 46.0;
+/// Respiro das pastilhas contra a coluna — o mesmo nos quatro lados, e não
+/// em dois valores diferentes como estava.
+const PILL_INSET: f32 = space::MD;
 /// Altura das pastilhas flutuantes e respiro entre elas e a borda.
 const PILL_HEIGHT: f32 = 36.0;
 const PILL_MARGIN: f32 = 12.0;
@@ -392,43 +396,38 @@ fn channels_sidebar(
         .show(root, |ui| {
             let full = ui.max_rect();
 
-            // Cabeçalho do servidor.
-            ui.scope_builder(
-                UiBuilder::new().max_rect(Rect::from_min_size(
-                    full.min,
-                    Vec2::new(full.width(), SIDEBAR_HEADER_HEIGHT),
-                )),
-                |ui| {
-                    ui.add_space(space::LG);
-                    ui.horizontal(|ui| {
-                        ui.add_space(space::XL);
-                        ui.vertical(|ui| {
-                            let (name, description) = match &store.server {
-                                Some(server) => {
-                                    (server.name.clone(), server.description.clone())
-                                }
-                                None => ("Papo".to_owned(), None),
-                            };
-                            ui.label(RichText::new(name).font(text::title3()).color(t.label));
-                            if let Some(description) = description {
-                                ui.label(
-                                    RichText::new(description)
-                                        .font(text::footnote())
-                                        .color(t.label_tertiary),
-                                );
-                            }
-                        });
-                        // Criar canal fica no cabeçalho da coluna que lista
-                        // os canais, que é onde se procura por ele.
-                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(space::MD);
-                            if icon_button(ui, t, icon::PLUS, s.new_channel_title).clicked() {
-                                state.actions.push(ChatAction::NewChannel);
-                            }
-                        });
-                    });
-                },
+            // Pastilha do servidor: mesma anatomia da pastilha da conta lá
+            // embaixo — ícone, nome, o que ele é, e a engrenagem do outro
+            // lado. Uma é o servidor, a outra é você.
+            let (name, subtitle) = match &store.server {
+                Some(server) => (
+                    server.name.clone(),
+                    server
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| format!("{} · {}", store.members.len(), s.members)),
+                ),
+                None => ("Papo".to_owned(), String::new()),
+            };
+            let server_pill = Rect::from_min_size(
+                egui::pos2(full.min.x + PILL_INSET, full.min.y + PILL_INSET),
+                Vec2::new(full.width() - PILL_INSET * 2.0, IDENTITY_PILL_HEIGHT),
             );
+            if identity_pill(
+                ui,
+                state,
+                t,
+                server_pill,
+                &initials_of(&name),
+                &name,
+                &subtitle,
+                None,
+                t.accent,
+                "pastilha-do-servidor",
+            ) {
+                state.pending.push(MenuCommand::ServerSettings);
+            }
+
             let header_bottom = full.min.y + SIDEBAR_HEADER_HEIGHT;
             ui.painter().line_segment(
                 [
@@ -502,7 +501,7 @@ fn channels_sidebar(
                                 }
                                 // Espaço para a pastilha da conta não cobrir o
                                 // último canal quando a lista chega ao fim.
-                                ui.add_space(ACCOUNT_PILL_HEIGHT + space::XXL);
+                                ui.add_space(IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0);
                             });
                         });
                     });
@@ -512,7 +511,10 @@ fn channels_sidebar(
         });
 }
 
-/// Pastilha flutuante da conta, no rodapé da barra lateral.
+/// Pastilha da conta, no pé da coluna. Gêmea da pastilha do servidor lá em
+/// cima: as duas têm ícone, nome, uma linha de contexto e a engrenagem na
+/// ponta oposta, e as duas abrem a mesma folha. O que muda é de quem são os
+/// ajustes — seus, embaixo; do servidor, em cima.
 fn account_pill(
     ui: &mut egui::Ui,
     store: &Store,
@@ -531,55 +533,158 @@ fn account_pill(
     if me.name.is_empty() {
         return;
     }
-
-    let label = ui
-        .painter()
-        .layout_no_wrap(me.name.clone(), text::headline(), t.label);
-    let avatar_size = 26.0;
-    let width = space::SM + avatar_size + space::MD + label.size().x + space::LG;
+    let subtitle = if store.my_username.is_empty() {
+        s.presence_online.to_owned()
+    } else {
+        format!("@{}", store.my_username)
+    };
     let rect = Rect::from_min_size(
         egui::pos2(
-            sidebar.min.x + space::LG,
-            sidebar.max.y - ACCOUNT_PILL_HEIGHT - space::LG,
+            sidebar.min.x + PILL_INSET,
+            sidebar.max.y - IDENTITY_PILL_HEIGHT - PILL_INSET,
         ),
-        Vec2::new(width.min(sidebar.width() - space::LG * 2.0), ACCOUNT_PILL_HEIGHT),
+        Vec2::new(sidebar.width() - PILL_INSET * 2.0, IDENTITY_PILL_HEIGHT),
+    );
+    let ctx = ui.ctx().clone();
+    let avatar = state
+        .media
+        .avatar(&me.id, store.avatars.get(&me.id).map(String::as_str))
+        .and_then(|texture| texture.frame(&ctx))
+        .map(|handle| handle.id());
+
+    if identity_pill(
+        ui,
+        state,
+        t,
+        rect,
+        &me.initials(),
+        &me.name,
+        &subtitle,
+        Some((presence_color(t, me.presence), avatar)),
+        me.role_color.unwrap_or(t.accent),
+        "pastilha-da-conta",
+    ) {
+        state.pending.push(MenuCommand::Preferences);
+    }
+}
+
+/// Desenho comum das duas pastilhas. Devolve `true` no clique.
+///
+/// `presence` só existe na pastilha da conta: é o ponto de status e a foto.
+#[allow(clippy::too_many_arguments)]
+fn identity_pill(
+    ui: &mut egui::Ui,
+    state: &UiState,
+    t: &Tokens,
+    rect: Rect,
+    initials: &str,
+    name: &str,
+    subtitle: &str,
+    presence: Option<(Color32, Option<egui::TextureId>)>,
+    tint: Color32,
+    id: &str,
+) -> bool {
+    pill_surface(ui, state, t, rect);
+    let response = ui.interact(rect, Id::new(id), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(PILL_RADIUS as u8), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let avatar_size = 28.0;
+    let avatar_rect = Rect::from_center_size(
+        egui::pos2(rect.min.x + space::SM + avatar_size / 2.0, rect.center().y),
+        Vec2::splat(avatar_size),
+    );
+    match presence.and_then(|(_, texture)| texture) {
+        Some(texture) => {
+            let mut mesh = egui::Mesh::with_texture(texture);
+            mesh.add_rect_with_uv(
+                avatar_rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            ui.painter()
+                .with_clip_rect(avatar_rect)
+                .add(egui::Shape::mesh(mesh));
+        }
+        None => {
+            ui.painter().circle_filled(
+                avatar_rect.center(),
+                avatar_size / 2.0,
+                tint.gamma_multiply(0.30),
+            );
+            ui.painter().text(
+                avatar_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initials,
+                egui::FontId::new(10.0, egui::FontFamily::Name("semibold".into())),
+                tint,
+            );
+        }
+    }
+    if let Some((dot_color, _)) = presence {
+        let dot = avatar_rect.center() + Vec2::splat(avatar_size / 2.0 * 0.72);
+        ui.painter().circle_filled(dot, 5.0, t.glass_opaque);
+        ui.painter().circle_filled(dot, 3.5, dot_color);
+    }
+
+    // A engrenagem mora na ponta oposta ao ícone; o texto vive entre as duas.
+    let gear = Rect::from_center_size(
+        egui::pos2(rect.max.x - space::SM - 14.0, rect.center().y),
+        Vec2::splat(28.0),
+    );
+    let gear_hovered = ui.rect_contains_pointer(gear);
+    if gear_hovered {
+        ui.painter()
+            .rect_filled(gear, CornerRadius::same(radius::FIELD), t.fill_medium);
+    }
+    ui.painter().text(
+        gear.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::GEAR_SIX,
+        text::icon(15.0),
+        if gear_hovered { t.label } else { t.label_secondary },
     );
 
-    pill_surface(ui, state, t, rect);
-    let response = ui.interact(rect, Id::new("account-pill"), Sense::click());
-    if response.hovered() {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(PILL_RADIUS as u8),
-            t.fill_soft,
+    let text_left = avatar_rect.max.x + space::MD;
+    let text_right = gear.min.x - space::XS;
+    let painter = ui.painter().with_clip_rect(Rect::from_x_y_ranges(
+        egui::Rangef::new(text_left, text_right),
+        rect.y_range(),
+    ));
+    let has_subtitle = !subtitle.is_empty();
+    painter.text(
+        egui::pos2(
+            text_left,
+            rect.center().y - if has_subtitle { 7.0 } else { 0.0 },
+        ),
+        egui::Align2::LEFT_CENTER,
+        name,
+        text::headline(),
+        t.label,
+    );
+    if has_subtitle {
+        painter.text(
+            egui::pos2(text_left, rect.center().y + 8.0),
+            egui::Align2::LEFT_CENTER,
+            subtitle,
+            text::footnote(),
+            t.label_tertiary,
         );
     }
 
-    let painter = ui.painter();
-    let avatar_center = egui::pos2(rect.min.x + space::SM + avatar_size / 2.0, rect.center().y);
-    let tint = me.role_color.unwrap_or(t.accent);
-    painter.circle_filled(avatar_center, avatar_size / 2.0, tint.gamma_multiply(0.30));
-    painter.text(
-        avatar_center,
-        egui::Align2::CENTER_CENTER,
-        me.initials(),
-        egui::FontId::new(10.0, egui::FontFamily::Name("semibold".into())),
-        tint,
-    );
-    let dot = avatar_center + Vec2::splat(avatar_size / 2.0 * 0.72);
-    painter.circle_filled(dot, 5.0, t.glass_opaque);
-    painter.circle_filled(dot, 3.5, presence_color(t, me.presence));
+    response.clicked()
+}
 
-    painter.galley(
-        egui::pos2(
-            avatar_center.x + avatar_size / 2.0 + space::MD,
-            rect.center().y - label.size().y / 2.0,
-        ),
-        label,
-        t.label,
-    );
-
-    let _ = s;
+/// Iniciais de um nome, para o ícone de quem não tem imagem.
+fn initials_of(name: &str) -> String {
+    name.split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .collect::<String>()
+        .to_uppercase()
 }
 
 #[allow(clippy::too_many_arguments)]

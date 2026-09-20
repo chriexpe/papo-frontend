@@ -1,0 +1,1318 @@
+//! Ajustes, numa folha só.
+//!
+//! Duas pastilhas gêmeas na coluna da esquerda abrem a mesma folha: a de
+//! baixo é você (conta, aparência, avisos, arquivos, idioma, sessões), a de
+//! cima é o servidor (identidade, canais, cargos, figurinhas, auditoria).
+//!
+//! A folha **não** usa o vidro das pastilhas. O guia do material é explícito:
+//! superfícies grandes ficam mais opacas para o texto continuar legível, e
+//! vidro sobre vidro desmancha a hierarquia que o vidro existe para criar.
+//! Então a pastilha é fosca e a folha é sólida — e é essa diferença que
+//! separa "o controle que flutua" de "a tela onde se trabalha".
+
+use egui::{Align, CornerRadius, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
+
+use crate::i18n::Strings;
+use crate::state::Store;
+
+use super::theme::{radius, space, text, Tokens};
+
+/// Qual das duas pastilhas abriu a folha.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    App,
+    Server,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppPane {
+    Account,
+    Appearance,
+    Alerts,
+    Files,
+    Language,
+    Sessions,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerPane {
+    General,
+    Channels,
+    Roles,
+    Emojis,
+    Audit,
+}
+
+impl AppPane {
+    const ALL: [Self; 6] = [
+        Self::Account,
+        Self::Appearance,
+        Self::Alerts,
+        Self::Files,
+        Self::Language,
+        Self::Sessions,
+    ];
+
+    fn title(self, s: &Strings) -> &'static str {
+        match self {
+            Self::Account => s.pane_account,
+            Self::Appearance => s.appearance,
+            Self::Alerts => s.pane_alerts,
+            Self::Files => s.pane_files,
+            Self::Language => s.language,
+            Self::Sessions => s.sessions,
+        }
+    }
+}
+
+impl ServerPane {
+    const ALL: [Self; 5] = [
+        Self::General,
+        Self::Channels,
+        Self::Roles,
+        Self::Emojis,
+        Self::Audit,
+    ];
+
+    fn title(self, s: &Strings) -> &'static str {
+        match self {
+            Self::General => s.pane_identity,
+            Self::Channels => s.text_channels,
+            Self::Roles => s.roles,
+            Self::Emojis => s.server_emojis,
+            Self::Audit => s.audit_log,
+        }
+    }
+}
+
+/// Estado da folha. O painel aberto é lembrado por superfície: quem ajusta
+/// uma coisa costuma voltar para ajustar a vizinha.
+pub struct SettingsState {
+    pub open: Option<Surface>,
+    pub app_pane: AppPane,
+    pub server_pane: ServerPane,
+    /// Rascunhos dos campos de texto, para não reescrever o estado a cada
+    /// tecla digitada.
+    pub draft: Draft,
+}
+
+impl Default for SettingsState {
+    fn default() -> Self {
+        Self {
+            open: None,
+            app_pane: AppPane::Account,
+            server_pane: ServerPane::General,
+            draft: Draft::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Draft {
+    pub loaded_account: bool,
+    pub nickname: String,
+    pub status_message: String,
+    pub description: String,
+    pub password: String,
+    pub loaded_server: bool,
+    pub server_name: String,
+    pub server_public: bool,
+    pub server_password: String,
+    pub emoji_name: String,
+    pub loaded_audit: bool,
+}
+
+impl SettingsState {
+    /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
+    pub fn toggle(&mut self, surface: Surface) {
+        if self.open == Some(surface) {
+            self.open = None;
+            return;
+        }
+        self.open = Some(surface);
+        match surface {
+            Surface::App => self.draft.loaded_account = false,
+            Surface::Server => {
+                self.draft.loaded_server = false;
+                self.draft.loaded_audit = false;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Primitivas da folha
+//
+// É aqui que a tela deixa de ser uma pilha de caixas de seleção. Uma linha
+// tem rótulo à esquerda, explicação embaixo dele quando precisa, e o controle
+// encostado à direita; linhas vizinhas moram num cartão de cantos redondos
+// separadas por fios que não encostam na borda. É o idioma da tela de ajustes
+// do sistema, e ele carrega hierarquia sem precisar de mais cor.
+// ---------------------------------------------------------------------------
+
+const ROW_HEIGHT: f32 = 38.0;
+const ROW_INSET: f32 = space::LG;
+/// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
+const SWITCH_W: f32 = 38.0;
+const SWITCH_H: f32 = 22.0;
+
+/// Título de seção acima de um cartão.
+fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
+    ui.add_space(space::LG);
+    ui.label(
+        RichText::new(label.to_uppercase())
+            .font(text::caption())
+            .color(t.label_tertiary),
+    );
+    ui.add_space(space::SM);
+}
+
+/// Cartão que agrupa linhas. Desenha o fundo depois de saber a altura, e os
+/// fios entre as linhas ficam recuados das bordas.
+fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let mut rows = Rows {
+        ui,
+        t: *t,
+        separators: Vec::new(),
+        first: true,
+    };
+    contents(&mut rows);
+    let separators = std::mem::take(&mut rows.separators);
+    let ui = rows.ui;
+
+    let rect = ui.min_rect();
+    ui.painter().set(
+        backdrop,
+        egui::epaint::RectShape::filled(rect, CornerRadius::same(radius::CARD), t.fill_soft),
+    );
+    for y in separators {
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.min.x + ROW_INSET, y),
+                egui::pos2(rect.max.x - space::MD, y),
+            ],
+            Stroke::new(1.0, t.separator),
+        );
+    }
+}
+
+/// Construtor de linhas dentro de um cartão.
+pub struct Rows<'u> {
+    ui: &'u mut egui::Ui,
+    t: Tokens,
+    separators: Vec<f32>,
+    first: bool,
+}
+
+impl Rows<'_> {
+    /// Reserva a faixa de uma linha e devolve a área útil dela.
+    fn band(&mut self, height: f32) -> (Rect, Rect) {
+        let width = self.ui.available_width();
+        let (rect, _) = self
+            .ui
+            .allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        if !self.first {
+            self.separators.push(rect.min.y);
+        }
+        self.first = false;
+        let inner = Rect::from_min_max(
+            egui::pos2(rect.min.x + ROW_INSET, rect.min.y),
+            egui::pos2(rect.max.x - space::MD, rect.max.y),
+        );
+        (rect, inner)
+    }
+
+    /// Rótulo à esquerda, controle à direita. O controle recebe a metade
+    /// direita da linha e se alinha ao fim dela.
+    fn row(
+        &mut self,
+        label: &str,
+        hint: Option<&str>,
+        control: impl FnOnce(&mut egui::Ui, &Tokens),
+    ) {
+        let height = if hint.is_some() {
+            ROW_HEIGHT + 16.0
+        } else {
+            ROW_HEIGHT
+        };
+        let (_, inner) = self.band(height);
+        let t = self.t;
+
+        let text_width = inner.width() * 0.52;
+        let label_rect = Rect::from_min_size(
+            egui::pos2(inner.min.x, inner.min.y),
+            Vec2::new(text_width, inner.height()),
+        );
+        self.ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(label_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                ui.vertical(|ui| {
+                    ui.add_space(if hint.is_some() { space::SM } else { 0.0 });
+                    ui.label(RichText::new(label).font(text::body()).color(t.label));
+                    if let Some(hint) = hint {
+                        ui.add_space(1.0);
+                        ui.label(
+                            RichText::new(hint)
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        );
+                    }
+                });
+            },
+        );
+
+        let control_rect = Rect::from_min_max(
+            egui::pos2(inner.min.x + text_width, inner.min.y),
+            inner.max,
+        );
+        self.ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(control_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| control(ui, &t),
+        );
+    }
+
+    /// Linha inteira clicável, para navegar ou disparar uma ação.
+    fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
+        let height = if hint.is_some() {
+            ROW_HEIGHT + 16.0
+        } else {
+            ROW_HEIGHT
+        };
+        let (rect, inner) = self.band(height);
+        let t = self.t;
+        let response = self
+            .ui
+            .interact(rect, self.ui.id().with(label).with(hint), Sense::click());
+        if response.hovered() {
+            self.ui
+                .painter()
+                .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+            self.ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let tint = if danger { t.danger } else { t.accent };
+        let painter = self.ui.painter();
+        match hint {
+            None => painter.text(
+                egui::pos2(inner.min.x, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                text::body(),
+                tint,
+            ),
+            Some(hint) => {
+                painter.text(
+                    egui::pos2(inner.min.x, rect.center().y - 8.0),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    text::body(),
+                    tint,
+                );
+                painter.text(
+                    egui::pos2(inner.min.x, rect.center().y + 9.0),
+                    egui::Align2::LEFT_CENTER,
+                    hint,
+                    text::footnote(),
+                    t.label_tertiary,
+                )
+            }
+        };
+        response.clicked()
+    }
+
+    /// Linha de escolha numa lista: o rótulo fica normal e a marca vai à
+    /// direita. É o idioma de "escolha um", diferente da linha de ação, que
+    /// é colorida porque faz alguma coisa.
+    fn choice(&mut self, label: &str, selected: bool) -> bool {
+        let (rect, inner) = self.band(ROW_HEIGHT);
+        let t = self.t;
+        let response = self
+            .ui
+            .interact(rect, self.ui.id().with("escolha").with(label), Sense::click());
+        if response.hovered() && !selected {
+            self.ui
+                .painter()
+                .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+            self.ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let painter = self.ui.painter();
+        painter.text(
+            egui::pos2(inner.min.x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            text::body(),
+            t.label,
+        );
+        if selected {
+            painter.text(
+                egui::pos2(inner.max.x, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                egui_phosphor::regular::CHECK,
+                text::icon(13.0),
+                t.accent,
+            );
+        }
+        response.clicked()
+    }
+
+    /// Linha com um campo de texto ocupando a direita.
+    fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
+        let mut submitted = false;
+        self.row(label, None, |ui, _| {
+            let response = ui.add(
+                egui::TextEdit::singleline(value)
+                    .char_limit(limit)
+                    .password(secret)
+                    .font(text::body())
+                    .desired_width(ui.available_width()),
+            );
+            submitted =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        });
+        submitted
+    }
+}
+
+/// Interruptor. Num painel de ajustes que aplica na hora, o interruptor diz
+/// a verdade e a caixa de seleção mente: caixa pede um "OK" que não existe.
+fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(SWITCH_W, SWITCH_H), Sense::click());
+    if response.clicked() {
+        *on = !*on;
+    }
+    let track = if *on {
+        t.accent
+    } else {
+        t.fill_medium
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same((SWITCH_H / 2.0) as u8), track);
+    let travel = rect.width() - SWITCH_H;
+    let knob = egui::pos2(
+        rect.min.x + SWITCH_H / 2.0 + if *on { travel } else { 0.0 },
+        rect.center().y,
+    );
+    ui.painter()
+        .circle_filled(knob, SWITCH_H / 2.0 - 3.0, egui::Color32::WHITE);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
+}
+
+/// Controle segmentado: as opções lado a lado, uma acesa.
+fn segmented<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    current: &mut T,
+    options: &[(T, &str)],
+) -> bool {
+    let mut changed = false;
+    let height = 26.0;
+    let widths: Vec<f32> = options
+        .iter()
+        .map(|(_, label)| {
+            ui.painter()
+                .layout_no_wrap((*label).to_owned(), text::callout(), t.label)
+                .size()
+                .x
+                + space::LG
+        })
+        .collect();
+    let total: f32 = widths.iter().sum();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, height), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+
+    let mut x = rect.min.x;
+    for ((value, label), width) in options.iter().zip(widths) {
+        let slot = Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::new(width, height));
+        x += width;
+        let selected = *current == *value;
+        let response = ui.interact(slot, ui.id().with(*label), Sense::click());
+        if selected {
+            ui.painter().rect_filled(
+                slot.shrink(2.0),
+                CornerRadius::same(radius::CONTROL),
+                t.glass_opaque,
+            );
+        }
+        ui.painter().text(
+            slot.center(),
+            egui::Align2::CENTER_CENTER,
+            *label,
+            text::callout(),
+            if selected { t.label } else { t.label_secondary },
+        );
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() && !selected {
+            *current = *value;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Botão à direita de uma linha.
+///
+/// O guia do material é claro sobre o orçamento de cor: colorir o fundo de
+/// vários controles ao mesmo tempo tira o sentido de cada um. Então o
+/// normal é neutro, `Emphasis::Primary` fica para a ação principal do
+/// painel — uma por painel — e `Danger` para o que não tem volta.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Emphasis {
+    Quiet,
+    Primary,
+    Danger,
+}
+
+fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) -> bool {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), text::callout(), t.label);
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(galley.size().x + space::LG, 26.0),
+        Sense::click(),
+    );
+    let (fill, ink) = match emphasis {
+        Emphasis::Quiet => (
+            if response.hovered() {
+                t.fill_medium
+            } else {
+                t.fill_soft
+            },
+            t.label,
+        ),
+        Emphasis::Primary => (
+            if response.hovered() {
+                t.accent.gamma_multiply(0.85)
+            } else {
+                t.accent
+            },
+            t.accent_label,
+        ),
+        Emphasis::Danger => (
+            t.danger
+                .gamma_multiply(if response.hovered() { 0.24 } else { 0.14 }),
+            t.danger,
+        ),
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(radius::CONTROL), fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        text::callout(),
+        ink,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
+}
+
+// ---------------------------------------------------------------------------
+// A folha
+// ---------------------------------------------------------------------------
+
+const SHEET_W: f32 = 620.0;
+const SHEET_H: f32 = 430.0;
+const RAIL_W: f32 = 148.0;
+const HEADER_H: f32 = 52.0;
+
+/// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
+/// são só locais ela mesma já escreveu em `Settings`.
+#[derive(Clone, Debug)]
+pub enum SettingsAction {
+    Admin(super::admin::AdminAction),
+    Role(super::roles::RoleAction),
+    Chat(super::shell::ChatAction),
+    Menu(crate::platform::menu::MenuCommand),
+    /// Abre o seletor de pasta do sistema para os downloads.
+    PickDownloadFolder,
+}
+
+/// Tudo que a folha precisa do resto do programa.
+pub struct Context<'a> {
+    pub store: &'a Store,
+    pub roles: &'a mut super::roles::RolesState,
+    pub lang: &'a mut crate::i18n::Lang,
+    pub theme: &'a mut crate::ui::theme::ThemePref,
+    pub translucency: &'a mut bool,
+    pub notifications: &'a mut bool,
+    pub close_to_tray: &'a mut bool,
+    pub badge: &'a mut bool,
+    pub topic_reveal: &'a mut bool,
+    pub record_button: &'a mut bool,
+    pub ask_download: &'a mut bool,
+    pub download_dir: Option<String>,
+}
+
+/// Desenha a folha, ancorada na pastilha que a abriu.
+pub fn sheet(
+    ctx: &egui::Context,
+    state: &mut SettingsState,
+    data: &mut Context<'_>,
+    anchor: Rect,
+    screen: Rect,
+    t: &Tokens,
+    s: &Strings,
+) -> Vec<SettingsAction> {
+    let mut actions = Vec::new();
+    let Some(surface) = state.open else {
+        return actions;
+    };
+
+    // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
+    let height = SHEET_H.min(screen.height() - space::XL * 2.0);
+    let top = if anchor.center().y > screen.center().y {
+        (anchor.min.y - space::SM - height).max(screen.min.y + space::MD)
+    } else {
+        (anchor.max.y + space::SM).min(screen.max.y - space::MD - height)
+    };
+    let left = anchor
+        .min
+        .x
+        .min(screen.max.x - space::MD - SHEET_W)
+        .max(screen.min.x + space::MD);
+    let rect = Rect::from_min_size(egui::pos2(left, top), Vec2::new(SHEET_W, height));
+
+    egui::Area::new(egui::Id::new("folha-de-ajustes"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .show(ctx, |ui| {
+            // Superfície sólida: a folha é grande e cheia de texto, e é aí
+            // que o vidro atrapalha em vez de ajudar.
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::SHEET + 4),
+                t.elevated_bg,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+            let shadow = ctx.global_style().visuals.window_shadow;
+            ui.painter().set(
+                ui.painter().add(egui::Shape::Noop),
+                shadow.as_shape(rect, radius::SHEET as f32 + 4.0),
+            );
+
+            let title = match surface {
+                Surface::App => state.app_pane.title(s),
+                Surface::Server => state.server_pane.title(s),
+            };
+            header(ui, state, t, s, rect, surface, title);
+            let body = Rect::from_min_max(
+                egui::pos2(rect.min.x, rect.min.y + HEADER_H),
+                rect.max,
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(body.min.x + space::MD, body.min.y),
+                    egui::pos2(body.max.x - space::MD, body.min.y),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let rail_rect =
+                Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
+            rail(ui, state, t, s, rail_rect, surface);
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rail_rect.max.x, body.min.y + space::SM),
+                    egui::pos2(rail_rect.max.x, body.max.y - space::SM),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let pane_rect = Rect::from_min_max(
+                egui::pos2(rail_rect.max.x, body.min.y),
+                body.max,
+            );
+            ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(pane_rect.shrink2(Vec2::new(space::XL, space::SM)))
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("corpo-do-painel")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match surface {
+                            Surface::App => {
+                                app_pane(ui, state, data, t, s, &mut actions);
+                            }
+                            Surface::Server => {
+                                server_pane(ui, state, data, t, s, &mut actions);
+                            }
+                        });
+                },
+            );
+        });
+
+    actions
+}
+
+/// Cabeçalho: quem ou o quê está sendo ajustado, o nome do painel e o X.
+fn header(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    t: &Tokens,
+    s: &Strings,
+    rect: Rect,
+    surface: Surface,
+    title: &str,
+) {
+    let head = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_H));
+    let painter = ui.painter();
+    painter.text(
+        egui::pos2(head.min.x + space::XL, head.center().y),
+        egui::Align2::LEFT_CENTER,
+        match surface {
+            Surface::App => s.settings,
+            Surface::Server => s.server_settings,
+        },
+        text::title3(),
+        t.label,
+    );
+    // O guia pede que o título acompanhe o painel aberto; o nome do painel
+    // vem depois do da folha, em tom secundário.
+    let width = painter
+        .layout_no_wrap(
+            match surface {
+                Surface::App => s.settings.to_owned(),
+                Surface::Server => s.server_settings.to_owned(),
+            },
+            text::title3(),
+            t.label,
+        )
+        .size()
+        .x;
+    painter.text(
+        egui::pos2(head.min.x + space::XL + width + space::MD, head.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        text::body(),
+        t.label_tertiary,
+    );
+
+    let close = Rect::from_center_size(
+        egui::pos2(head.max.x - space::XL, head.center().y),
+        Vec2::splat(28.0),
+    );
+    let response = ui.interact(close, ui.id().with("fechar-ajustes"), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(close, CornerRadius::same(radius::FIELD), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(
+        close.center(),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::X,
+        text::icon(14.0),
+        t.label_secondary,
+    );
+    if response.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        state.open = None;
+    }
+}
+
+/// Coluna dos painéis. Fica sempre visível e sempre marca onde você está.
+fn rail(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    t: &Tokens,
+    s: &Strings,
+    rect: Rect,
+    surface: Surface,
+) {
+    ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
+            .layout(Layout::top_down(Align::Min)),
+        |ui| {
+            let entry = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
+                let (slot, response) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), 30.0),
+                    Sense::click(),
+                );
+                if active {
+                    ui.painter().rect_filled(
+                        slot,
+                        CornerRadius::same(radius::CONTROL),
+                        t.accent.gamma_multiply(0.16),
+                    );
+                } else if response.hovered() {
+                    ui.painter().rect_filled(
+                        slot,
+                        CornerRadius::same(radius::CONTROL),
+                        t.fill_soft,
+                    );
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                ui.painter().text(
+                    egui::pos2(slot.min.x + space::MD, slot.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    if active { text::headline() } else { text::body() },
+                    if active { t.accent } else { t.label_secondary },
+                );
+                ui.add_space(1.0);
+                response.clicked()
+            };
+
+            match surface {
+                Surface::App => {
+                    for pane in AppPane::ALL {
+                        if entry(ui, pane.title(s), state.app_pane == pane) {
+                            state.app_pane = pane;
+                        }
+                    }
+                }
+                Surface::Server => {
+                    for pane in ServerPane::ALL {
+                        if entry(ui, pane.title(s), state.server_pane == pane) {
+                            state.server_pane = pane;
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Painéis do usuário
+// ---------------------------------------------------------------------------
+
+fn app_pane(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    data: &mut Context<'_>,
+    t: &Tokens,
+    s: &Strings,
+    actions: &mut Vec<SettingsAction>,
+) {
+    use super::admin::AdminAction;
+
+    match state.app_pane {
+        AppPane::Account => {
+            if !state.draft.loaded_account {
+                state.draft.loaded_account = true;
+                state.draft.nickname = data.store.my_name.clone();
+                state.draft.password.clear();
+                actions.push(SettingsAction::Admin(AdminAction::LoadDevices));
+            }
+            let draft = &mut state.draft;
+            // O clique sai de dentro do cartão, e `actions` já está
+            // emprestado ali; a bandeira atravessa esse empréstimo.
+            let mut pick_avatar = false;
+
+            section(ui, t, s.profile);
+            group(ui, t, |rows| {
+                rows.field(s.nickname, &mut draft.nickname, 32, false);
+                rows.field(s.status_message, &mut draft.status_message, 64, false);
+                rows.field(s.description, &mut draft.description, 512, false);
+                rows.row(s.avatar, None, |ui, t| {
+                    if row_button(ui, t, s.change_avatar, Emphasis::Quiet) {
+                        pick_avatar = true;
+                    }
+                });
+            });
+            ui.add_space(space::SM);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if row_button(ui, t, s.save, Emphasis::Primary) {
+                    actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
+                        crate::api::models::UpdateUserRequest {
+                            nickname: draft.nickname.trim().to_owned(),
+                            status: draft.status_message.trim().to_owned(),
+                            description: draft.description.trim().to_owned(),
+                            typing: None,
+                        },
+                    ))));
+                }
+            });
+            if pick_avatar {
+                actions.push(SettingsAction::Admin(AdminAction::PickAvatar));
+            }
+
+            section(ui, t, s.presence);
+            group(ui, t, |rows| {
+                let mine = data
+                    .store
+                    .member(&data.store.me)
+                    .map(|member| member.presence);
+                rows.row(s.presence, None, |ui, t| {
+                    let mut chosen = mine.unwrap_or(crate::state::Presence::Online);
+                    if segmented(
+                        ui,
+                        t,
+                        &mut chosen,
+                        &[
+                            (crate::state::Presence::Busy, s.presence_busy),
+                            (crate::state::Presence::Away, s.presence_away),
+                            (crate::state::Presence::Online, s.presence_online),
+                        ],
+                    ) {
+                        actions.push(SettingsAction::Admin(AdminAction::SetPresence(
+                            match chosen {
+                                crate::state::Presence::Busy => Some("busy".to_owned()),
+                                crate::state::Presence::Away => Some("away".to_owned()),
+                                _ => None,
+                            },
+                        )));
+                    }
+                });
+            });
+
+            section(ui, t, s.new_password);
+            group(ui, t, |rows| {
+                let sent = rows.field(s.new_password, &mut draft.password, 64, true);
+                let ready = draft.password.chars().count() >= 8;
+                rows.row(s.change_password, Some(s.password_rule_length), |ui, t| {
+                    if (row_button(ui, t, s.change_password, Emphasis::Primary) || (sent && ready)) && ready {
+                        actions.push(SettingsAction::Admin(AdminAction::ChangePassword(
+                            draft.password.clone(),
+                        )));
+                        draft.password.clear();
+                    }
+                });
+            });
+
+            section(ui, t, s.sign_out);
+            group(ui, t, |rows| {
+                if rows.action(s.sign_out, Some(s.sign_out_hint), true) {
+                    actions.push(SettingsAction::Menu(
+                        crate::platform::menu::MenuCommand::SignOut,
+                    ));
+                }
+            });
+        }
+
+        AppPane::Appearance => {
+            section(ui, t, s.appearance);
+            group(ui, t, |rows| {
+                rows.row(s.theme, None, |ui, t| {
+                    segmented(
+                        ui,
+                        t,
+                        data.theme,
+                        &[
+                            (crate::ui::theme::ThemePref::Dark, s.theme_dark),
+                            (crate::ui::theme::ThemePref::Light, s.theme_light),
+                            (crate::ui::theme::ThemePref::System, s.theme_system),
+                        ],
+                    );
+                });
+                rows.row(s.translucency, Some(s.translucency_hint), |ui, t| {
+                    switch(ui, t, data.translucency);
+                });
+                rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
+                    switch(ui, t, data.topic_reveal);
+                });
+                rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
+                    switch(ui, t, data.record_button);
+                });
+            });
+        }
+
+        AppPane::Alerts => {
+            section(ui, t, s.menu_notifications);
+            group(ui, t, |rows| {
+                rows.row(s.menu_notifications, Some(s.notifications_hint), |ui, t| {
+                    switch(ui, t, data.notifications);
+                });
+                rows.row(s.badge, Some(s.badge_hint), |ui, t| {
+                    switch(ui, t, data.badge);
+                });
+                rows.row(s.menu_close_to_tray, Some(s.close_to_tray_hint), |ui, t| {
+                    switch(ui, t, data.close_to_tray);
+                });
+            });
+        }
+
+        AppPane::Files => {
+            section(ui, t, s.downloads);
+            group(ui, t, |rows| {
+                rows.row(s.downloads, Some(s.downloads_hint), |ui, t| {
+                    segmented(
+                        ui,
+                        t,
+                        data.ask_download,
+                        &[(true, s.download_ask), (false, s.download_folder)],
+                    );
+                });
+                if let Some(dir) = data.download_dir.clone() {
+                    rows.row(s.download_folder, Some(&dir), |ui, t| {
+                        if row_button(ui, t, s.download_choose, Emphasis::Quiet) {
+                            actions.push(SettingsAction::PickDownloadFolder);
+                        }
+                    });
+                }
+            });
+        }
+
+        AppPane::Language => {
+            section(ui, t, s.language);
+            group(ui, t, |rows| {
+                for lang in crate::i18n::Lang::ALL {
+                    if rows.choice(lang.endonym(), *data.lang == lang) {
+                        *data.lang = lang;
+                    }
+                }
+            });
+        }
+
+        AppPane::Sessions => {
+            section(ui, t, s.sessions);
+            group(ui, t, |rows| {
+                if data.store.devices.is_empty() {
+                    rows.row(s.connecting, None, |_, _| {});
+                }
+                for device in &data.store.devices {
+                    let when = device
+                        .created_at
+                        .map(|at| {
+                            at.with_timezone(&chrono::Local)
+                                .format("%d/%m/%Y %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| device.id.clone());
+                    let expires = device
+                        .expires_at
+                        .map(|at| {
+                            at.with_timezone(&chrono::Local)
+                                .format("%d/%m %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    rows.row(&when, Some(&expires), |ui, t| {
+                        if row_button(ui, t, s.drop_session, Emphasis::Danger) {
+                            actions.push(SettingsAction::Admin(AdminAction::DropConnection(
+                                device.id.clone(),
+                            )));
+                        }
+                    });
+                }
+            });
+            if !data.store.devices.is_empty() {
+                ui.add_space(space::SM);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if row_button(ui, t, s.drop_all_sessions, Emphasis::Danger) {
+                        actions.push(SettingsAction::Admin(AdminAction::DropConnection(
+                            "ALL".to_owned(),
+                        )));
+                    }
+                });
+            }
+
+            section(ui, t, s.menu_about);
+            group(ui, t, |rows| {
+                rows.row(s.version, Some(s.about_body), |ui, t| {
+                    ui.label(
+                        RichText::new(env!("CARGO_PKG_VERSION"))
+                            .font(text::body())
+                            .color(t.label_secondary),
+                    );
+                });
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Painéis do servidor
+// ---------------------------------------------------------------------------
+
+fn server_pane(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    data: &mut Context<'_>,
+    t: &Tokens,
+    s: &Strings,
+    actions: &mut Vec<SettingsAction>,
+) {
+    use super::admin::AdminAction;
+    use super::roles::RoleAction;
+    use super::shell::ChatAction;
+
+    match state.server_pane {
+        ServerPane::General => {
+            if !state.draft.loaded_server {
+                state.draft.loaded_server = true;
+                state.draft.server_name = data
+                    .store
+                    .server
+                    .as_ref()
+                    .map(|server| server.name.clone())
+                    .unwrap_or_default();
+                state.draft.server_public = true;
+                state.draft.server_password.clear();
+            }
+            let draft = &mut state.draft;
+
+            section(ui, t, s.pane_identity);
+            group(ui, t, |rows| {
+                rows.field(s.server_name, &mut draft.server_name, 64, false);
+                rows.row(s.server_public, Some(s.server_public_hint), |ui, t| {
+                    switch(ui, t, &mut draft.server_public);
+                });
+                if !draft.server_public {
+                    rows.field(s.server_password, &mut draft.server_password, 64, true);
+                }
+            });
+
+            ui.add_space(space::SM);
+            let ready = !draft.server_name.trim().is_empty()
+                && (draft.server_public || draft.server_password.chars().count() >= 8);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ready && row_button(ui, t, s.save, Emphasis::Primary) {
+                    actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
+                        crate::api::models::UpdateServerRequest {
+                            name: draft.server_name.trim().to_owned(),
+                            public: Some(draft.server_public),
+                            password: (!draft.server_password.is_empty())
+                                .then(|| draft.server_password.clone()),
+                            ..Default::default()
+                        },
+                    ))));
+                }
+            });
+        }
+
+        ServerPane::Channels => {
+            section(ui, t, s.text_channels);
+            let channels = data.store.channels.clone();
+            group(ui, t, |rows| {
+                if channels.is_empty() {
+                    rows.row(s.no_channels_yet, None, |_, _| {});
+                }
+                for (index, channel) in channels.iter().enumerate() {
+                    let kind = match channel.kind {
+                        crate::state::ChannelKind::Voice => s.channel_kind_voice,
+                        crate::state::ChannelKind::Category => s.channel_kind_category,
+                        crate::state::ChannelKind::Text => s.channel_kind_text,
+                    };
+                    rows.row(&channel.name, Some(kind), |ui, t| {
+                        if row_button(ui, t, s.delete, Emphasis::Danger) {
+                            actions.push(SettingsAction::Chat(ChatAction::DeleteChannel(
+                                channel.id.clone(),
+                            )));
+                        }
+                        if row_button(ui, t, s.rename_channel, Emphasis::Quiet) {
+                            actions.push(SettingsAction::Chat(ChatAction::EditChannel(
+                                channel.id.clone(),
+                            )));
+                        }
+                        // Mover só aparece onde faz sentido: o primeiro não
+                        // sobe e o último não desce.
+                        if index + 1 < channels.len() && row_button(ui, t, s.move_down, Emphasis::Quiet) {
+                            actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
+                                channel_id: channel.id.clone(),
+                                old_position: channel.position,
+                                new_position: channel.position + 1,
+                            }));
+                        }
+                        if index > 0 && row_button(ui, t, s.move_up, Emphasis::Quiet) {
+                            actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
+                                channel_id: channel.id.clone(),
+                                old_position: channel.position,
+                                new_position: channel.position - 1,
+                            }));
+                        }
+                    });
+                }
+            });
+            ui.add_space(space::SM);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if row_button(ui, t, s.create_channel, Emphasis::Primary) {
+                    actions.push(SettingsAction::Chat(ChatAction::NewChannel));
+                }
+            });
+        }
+
+        ServerPane::Roles => {
+            let roles = data.store.roles.clone();
+            section(ui, t, s.roles);
+            group(ui, t, |rows| {
+                if roles.is_empty() {
+                    rows.row(s.no_roles, None, |_, _| {});
+                }
+                for role in &roles {
+                    let selected = data
+                        .roles
+                        .draft
+                        .as_ref()
+                        .and_then(|draft| draft.id.as_deref())
+                        == Some(role.id.as_str());
+                    if rows.choice(&role.name, selected) {
+                        data.roles.draft = Some(super::roles::Draft {
+                            id: Some(role.id.clone()),
+                            name: role.name.clone(),
+                            color: role.color.clone().unwrap_or_default(),
+                            permissions: role.permissions,
+                        });
+                    }
+                }
+            });
+            ui.add_space(space::SM);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+                    data.roles.draft = Some(super::roles::Draft::default());
+                }
+            });
+
+            let Some(draft) = data.roles.draft.as_mut() else {
+                return;
+            };
+            section(ui, t, s.role_permissions);
+            group(ui, t, |rows| {
+                rows.field(s.role_name, &mut draft.name, 32, false);
+                rows.row(s.role_color, None, |ui, _| {
+                    let current = crate::api::models::parse_hex_color(&draft.color)
+                        .unwrap_or(egui::Color32::GRAY)
+                        .to_array();
+                    let mut picked = [current[0], current[1], current[2]];
+                    if ui.color_edit_button_srgb(&mut picked).changed() {
+                        draft.color =
+                            format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);
+                    }
+                });
+                for (label, value) in [
+                    (s.perm_send_attachment, &mut draft.permissions.send_attachment),
+                    (s.perm_manage_channels, &mut draft.permissions.manage_channels),
+                    (s.perm_pin_message, &mut draft.permissions.pin_message),
+                    (s.perm_everyone_message, &mut draft.permissions.everyone_message),
+                    (s.perm_ban_members, &mut draft.permissions.ban_members),
+                    (s.perm_manage_roles, &mut draft.permissions.manage_roles),
+                    (s.perm_manage_server, &mut draft.permissions.manage_server),
+                ] {
+                    rows.row(label, None, |ui, t| {
+                        switch(ui, t, value);
+                    });
+                }
+            });
+
+            section(ui, t, s.role_members);
+            if draft.id.is_none() {
+                ui.label(
+                    RichText::new(s.role_members_hint)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
+            }
+            if let Some(role_id) = draft.id.clone() {
+                group(ui, t, |rows| {
+                    for member in &data.store.members {
+                        let has = member.roles.iter().any(|id| id == &role_id);
+                        if rows.choice(&member.name, has) {
+                            actions.push(SettingsAction::Role(if has {
+                                RoleAction::Unassign {
+                                    user_id: member.id.clone(),
+                                    role_id: role_id.clone(),
+                                }
+                            } else {
+                                RoleAction::Assign {
+                                    user_id: member.id.clone(),
+                                    role_id: role_id.clone(),
+                                }
+                            }));
+                        }
+                    }
+                });
+            }
+
+            ui.add_space(space::SM);
+            let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
+                    actions.push(SettingsAction::Role(match draft.id.clone() {
+                        Some(role_id) => RoleAction::Update {
+                            role_id,
+                            name: draft.name.trim().to_owned(),
+                            color,
+                            permissions: draft.permissions,
+                        },
+                        None => RoleAction::Create {
+                            name: draft.name.trim().to_owned(),
+                            color,
+                            permissions: draft.permissions,
+                        },
+                    }));
+                }
+                if let Some(role_id) = draft.id.clone() {
+                    if row_button(ui, t, s.delete_role, Emphasis::Danger) {
+                        actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+                    }
+                }
+            });
+        }
+
+        ServerPane::Emojis => {
+            section(ui, t, s.server_emojis);
+            let draft = &mut state.draft;
+            group(ui, t, |rows| {
+                let sent = rows.field(s.emoji_name, &mut draft.emoji_name, 32, false);
+                let ready = !draft.emoji_name.trim().is_empty();
+                rows.row(s.add_emoji, None, |ui, t| {
+                    if (row_button(ui, t, s.add_emoji, Emphasis::Primary) || (sent && ready)) && ready {
+                        actions.push(SettingsAction::Admin(AdminAction::PickEmoji(
+                            draft.emoji_name.trim().to_owned(),
+                        )));
+                        draft.emoji_name.clear();
+                    }
+                });
+            });
+
+            section(ui, t, s.emoji);
+            group(ui, t, |rows| {
+                for emoji in &data.store.emojis {
+                    rows.row(&format!(":{}:", emoji.name), None, |ui, t| {
+                        if row_button(ui, t, s.delete, Emphasis::Danger) {
+                            actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(
+                                emoji.id.clone(),
+                            )));
+                        }
+                    });
+                }
+            });
+        }
+
+        ServerPane::Audit => {
+            // O registro é pedido ao abrir o painel, não ao abrir a folha:
+            // quem só queria renomear o servidor não precisa esperá-lo.
+            if !state.draft.loaded_audit {
+                state.draft.loaded_audit = true;
+                actions.push(SettingsAction::Admin(AdminAction::LoadAuditLogs));
+            }
+            section(ui, t, s.audit_log);
+            group(ui, t, |rows| {
+                if data.store.audit_logs.is_empty() {
+                    rows.row(s.connecting, None, |_, _| {});
+                }
+                for entry in data.store.audit_logs.iter().take(60) {
+                    let when = entry
+                        .created_at
+                        .map(|at| {
+                            at.with_timezone(&chrono::Local)
+                                .format("%d/%m %H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    rows.row(
+                        &entry.action,
+                        Some(&format!("{when} · {}", entry.actor_username)),
+                        |_, _| {},
+                    );
+                }
+            });
+        }
+    }
+}
