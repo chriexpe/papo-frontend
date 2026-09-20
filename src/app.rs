@@ -51,6 +51,7 @@ pub struct ServerEntry {
 
 impl ServerEntry {
     fn new(url: String) -> Self {
+        let url = normalise_server_url(&url);
         let label = host_of(&url);
         Self { url, label }
     }
@@ -136,6 +137,12 @@ impl Settings {
     /// Garante que a lista de servidores existe e que o ativo aponta para um
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
+        // Endereços gravados antes disto podem estar sem esquema; sem ele o
+        // cliente não abre conexão nenhuma.
+        self.server_url = normalise_server_url(&self.server_url);
+        for entry in &mut self.servers {
+            entry.url = normalise_server_url(&entry.url);
+        }
         if self.servers.is_empty() {
             self.servers.push(ServerEntry::new(self.server_url.clone()));
             // As marcas antigas eram todas do único servidor que existia.
@@ -648,7 +655,15 @@ impl PapoApp {
 
         // Mudar o endereço aqui é mudar de servidor: a conexão antiga cai e
         // o item do trilho passa a apontar para o endereço novo.
-        let url = self.workspaces[index].form.server_url.trim().to_owned();
+        let url = normalise_server_url(&self.workspaces[index].form.server_url);
+        // Um endereço que nem vira URL deixaria a tela presa em "Conectando…"
+        // para sempre: a conexão morre antes de responder, e nada tira o
+        // `busy`. Melhor recusar aqui, com uma palavra.
+        if !url.is_empty() && url::Url::parse(&url).is_err() {
+            let s = self.settings.lang.strings();
+            self.workspaces[index].store.error = Some(s.invalid_server_address.to_owned());
+            return;
+        }
         if !url.is_empty() && url != self.workspaces[index].url {
             self.reopen(index, url, ctx);
         }
@@ -1894,6 +1909,44 @@ fn build_menu(settings: &Settings) -> MenuModel {
     ])
 }
 
+/// Dá um esquema ao endereço quando ele vem sem. `192.168.0.114:8080` vira
+/// `http://…`, que é o que um servidor de casa espera; um domínio público
+/// vira `https://…`. Sem isto o `Url::parse` recusa, a conexão morre no
+/// nascimento e a tela fica presa em "Conectando…".
+fn normalise_server_url(input: &str) -> String {
+    let url = input.trim();
+    if url.is_empty() || url.contains("://") {
+        return url.to_owned();
+    }
+    let host = host_part(url);
+    let scheme = if is_local_host(&host) { "http" } else { "https" };
+    format!("{scheme}://{url}")
+}
+
+/// O host de um endereço sem esquema, para decidir o esquema.
+fn host_part(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest).to_owned();
+    }
+    url.split(['/', ':']).next().unwrap_or(url).to_owned()
+}
+
+/// Endereços que só existem na rede local ou na própria máquina.
+fn is_local_host(host: &str) -> bool {
+    if matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0") {
+        return true;
+    }
+    if host.starts_with("10.") || host.starts_with("192.168.") || host.starts_with("169.254.") {
+        return true;
+    }
+    if let Some(rest) = host.strip_prefix("172.") {
+        if let Some(octet) = rest.split('.').next().and_then(|part| part.parse::<u8>().ok()) {
+            return (16..=31).contains(&octet);
+        }
+    }
+    false
+}
+
 /// Nome curto de um endereço: só o host, que é o que cabe no trilho.
 fn host_of(url: &str) -> String {
     url::Url::parse(url)
@@ -1913,5 +1966,37 @@ fn tray_labels(settings: &Settings) -> TrayLabels {
         open: s.tray_open.to_owned(),
         quit: s.tray_quit.to_owned(),
         tooltip: s.tray_tooltip.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalise_server_url;
+
+    /// Endereço sem esquema é o caso comum de um servidor de casa; ele tem de
+    /// virar uma URL que o `reqwest` aceite, ou a conexão morre em silêncio.
+    #[test]
+    fn endereco_sem_esquema_recebe_um() {
+        assert_eq!(
+            normalise_server_url("192.168.0.114:8080"),
+            "http://192.168.0.114:8080"
+        );
+        assert_eq!(normalise_server_url("localhost:3000"), "http://localhost:3000");
+        assert_eq!(normalise_server_url("10.0.0.5"), "http://10.0.0.5");
+        assert_eq!(normalise_server_url("172.16.1.2:9000"), "http://172.16.1.2:9000");
+        assert_eq!(
+            normalise_server_url("papo.exemplo.com"),
+            "https://papo.exemplo.com"
+        );
+    }
+
+    #[test]
+    fn endereco_com_esquema_fica_como_esta() {
+        assert_eq!(
+            normalise_server_url("https://papo-backend.onrender.com"),
+            "https://papo-backend.onrender.com"
+        );
+        assert_eq!(normalise_server_url("  http://x  "), "http://x");
+        assert_eq!(normalise_server_url(""), "");
     }
 }

@@ -241,6 +241,14 @@ impl Net {
 /// Envia a atualização e acorda a janela: sem isso ela só apareceria na
 /// próxima interação do usuário.
 fn publish(tx: &sync_mpsc::Sender<Update>, repaint: &egui::Context, update: Update) {
+    // O aviso aparece na tela, mas sem uma linha no log uma falha de login
+    // era invisível para quem lê o diário depois.
+    match &update {
+        Update::Error(message) | Update::AuthFailed(message) => {
+            log::warn!("falha de rede ou autenticação: {message}");
+        }
+        _ => {}
+    }
     if tx.send(update).is_ok() {
         repaint.request_repaint();
     }
