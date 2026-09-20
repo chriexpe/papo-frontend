@@ -74,6 +74,16 @@ impl Shared {
         self.error.lock().ok().and_then(|slot| slot.clone())
     }
 
+    /// Um aviso que não acaba com a call — o microfone que não abriu, por
+    /// exemplo: dá para participar ouvindo.
+    fn warn(&self, message: impl Into<String>) {
+        let message = message.into();
+        log::warn!("call: {message}");
+        if let Ok(mut slot) = self.error.lock() {
+            *slot = Some(message);
+        }
+    }
+
     fn fail(&self, message: impl Into<String>) {
         let message = message.into();
         log::warn!("call: {message}");
@@ -90,21 +100,10 @@ pub(crate) enum Command {
     Ready,
     Muted(bool),
     Camera(bool),
-    /// Começa (ou para) de receber a câmera ou a tela de alguém.
-    Watch {
-        publisher: String,
-        kind: Kind,
-        on: bool,
-    },
-    /// Alguém parou de publicar aquele tipo de vídeo — o servidor larga o
-    /// lugar sozinho, e a nossa conta precisa largar junto.
-    Published {
-        publisher: String,
-        kind: Kind,
-        on: bool,
-    },
-    /// Alguém saiu da call.
-    Gone(String),
+    /// De quem queremos ver a câmera. Vai o conjunto inteiro, não a
+    /// diferença: quem decide o que cabe nos seis lugares é a thread da
+    /// call, que é quem sabe quais estão livres.
+    Watching(Vec<String>),
     Answer(String),
     Offer(String),
     Candidate {
@@ -113,6 +112,9 @@ pub(crate) enum Command {
     },
     /// O `webrtcbin` avisou que a sessão mudou e precisa de oferta nova.
     Negotiate,
+    /// A SDP do servidor terminou de ser aplicada (`true` quando era
+    /// resposta à nossa oferta).
+    RemoteApplied(bool),
     Stop,
 }
 
@@ -177,20 +179,10 @@ impl Call {
         self.send(Command::Camera(on));
     }
 
-    pub fn watch(&self, publisher: &str, kind: Kind, on: bool) {
-        self.send(Command::Watch {
-            publisher: publisher.to_owned(),
-            kind,
-            on,
-        });
-    }
-
-    pub fn published(&self, publisher: &str, kind: Kind, on: bool) {
-        self.send(Command::Published {
-            publisher: publisher.to_owned(),
-            kind,
-            on,
-        });
+    /// Quem deve aparecer na grade. Pedir de novo o mesmo conjunto não
+    /// custa nada; o que não couber fica esperando um lugar vagar.
+    pub fn watch(&self, publishers: Vec<String>) {
+        self.send(Command::Watching(publishers));
     }
 
     /// A resposta SDP do servidor à nossa oferta.
@@ -208,10 +200,6 @@ impl Call {
             candidate,
             sdp_mline_index,
         });
-    }
-
-    pub fn gone(&self, publisher: &str) {
-        self.send(Command::Gone(publisher.to_owned()));
     }
 
     pub fn is_live(&self) -> bool {

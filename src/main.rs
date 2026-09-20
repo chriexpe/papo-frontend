@@ -180,15 +180,17 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
 
     let base = std::env::var("PAPO_SERVER")
         .unwrap_or_else(|_| "http://localhost:8080".to_owned());
-    let (Some(username), Some(password)) = (username, password) else {
-        println!("uso: papo voice-test <usuário> <senha> [canal de voz]");
-        return;
-    };
     println!("servidor: {base}");
 
     let ctx = egui::Context::default();
     let net = Net::spawn(base, ctx.clone());
-    net.send(Command::Login { username, password });
+    // Sem credenciais, vale a sessão já guardada em disco — que é o caminho
+    // preferido: senha no argv fica no histórico do shell e aparece para
+    // quem listar os processos.
+    match (username, password) {
+        (Some(username), Some(password)) => net.send(Command::Login { username, password }),
+        _ => println!("sem credenciais: usando a sessão já guardada"),
+    }
 
     let mut call: Option<voice::Call> = None;
     let mut wanted = String::new();

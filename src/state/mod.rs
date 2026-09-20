@@ -648,6 +648,16 @@ impl Store {
             // Quem monta a call com isso é a janela (ela tem a thread de
             // mídia); aqui só sabemos que o pedido de entrada saiu.
             Update::VoiceReady { .. } => {}
+            Update::VoiceFailed {
+                channel_id,
+                message,
+            } => {
+                if self.call.channel_id == channel_id {
+                    self.call.error = Some(message.clone());
+                    self.call.left();
+                }
+                self.error = Some(message);
+            }
             Update::Connection(connection) => self.connection = connection,
             Update::Error(message) => {
                 self.error = Some(message);

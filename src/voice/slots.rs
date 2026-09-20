@@ -77,26 +77,30 @@ impl Slots {
         })
     }
 
-    /// Larga o lugar de uma track (a pessoa desligou a câmera, ou pedimos
-    /// para parar de ver).
-    pub fn release(&mut self, publisher: &str, kind: Kind) {
+    /// Acerta os lugares com quem se quer ver: larga quem saiu da lista,
+    /// senta quem cabe, e devolve as duas listas para quem chama avisar o
+    /// servidor. O que não couber continua em `wanted` e senta sozinho na
+    /// próxima vez que um lugar vagar.
+    pub fn reconcile(&mut self, wanted: &[String], kind: Kind) -> (Vec<String>, Vec<String>) {
+        let mut leaving = Vec::new();
         for place in &mut self.places {
-            if place
-                .as_ref()
-                .is_some_and(|slot| slot.publisher == publisher && slot.kind == kind)
-            {
+            let Some(slot) = place.as_ref() else { continue };
+            if slot.kind == kind && !wanted.contains(&slot.publisher) {
+                leaving.push(slot.publisher.clone());
                 *place = None;
             }
         }
-    }
 
-    /// Larga tudo que era de alguém que saiu da call.
-    pub fn release_peer(&mut self, publisher: &str) {
-        for place in &mut self.places {
-            if place.as_ref().is_some_and(|slot| slot.publisher == publisher) {
-                *place = None;
+        let mut entering = Vec::new();
+        for publisher in wanted {
+            if self.find(publisher, kind).is_some() {
+                continue;
+            }
+            if self.assign(publisher, kind).is_some() {
+                entering.push(publisher.clone());
             }
         }
+        (leaving, entering)
     }
 
     pub fn occupant(&self, index: usize) -> Option<&Occupant> {
@@ -121,21 +125,44 @@ mod tests {
         assert_eq!(slots.assign("clara", Kind::Camera), None);
     }
 
+    /// O sétimo vídeo não se perde: ele fica esperando, e senta no lugar
+    /// que a primeira câmera a desligar deixar. Contar isto do lado de fora
+    /// era o furo — lá não se sabe o que coube.
     #[test]
-    fn quem_sai_devolve_os_lugares() {
+    fn quem_nao_coube_senta_quando_um_lugar_vaga() {
         let mut slots = Slots::new(2);
-        slots.assign("ana", Kind::Camera);
-        slots.assign("ana", Kind::Screen);
-        slots.release_peer("ana");
-        assert_eq!(slots.assign("beto", Kind::Camera), Some(0));
+        let three = ["ana".to_owned(), "beto".to_owned(), "clara".to_owned()];
+        let (leaving, entering) = slots.reconcile(&three, Kind::Camera);
+        assert!(leaving.is_empty());
+        assert_eq!(entering, ["ana", "beto"]);
+        assert!(slots.find("clara", Kind::Camera).is_none());
+
+        // A Ana desligou a câmera: sai da lista, e a Clara ocupa o lugar.
+        let two = ["beto".to_owned(), "clara".to_owned()];
+        let (leaving, entering) = slots.reconcile(&two, Kind::Camera);
+        assert_eq!(leaving, ["ana"]);
+        assert_eq!(entering, ["clara"]);
+        assert!(slots.find("clara", Kind::Camera).is_some());
     }
 
+    /// Pedir de novo a mesma lista não fala com o servidor.
+    #[test]
+    fn lista_repetida_nao_pede_nada() {
+        let mut slots = Slots::new(3);
+        let wanted = ["ana".to_owned()];
+        slots.reconcile(&wanted, Kind::Camera);
+        let (leaving, entering) = slots.reconcile(&wanted, Kind::Camera);
+        assert!(leaving.is_empty() && entering.is_empty());
+    }
+
+    /// Largar a câmera de alguém não mexe na tela que a mesma pessoa
+    /// compartilha: são duas tracks, dois lugares.
     #[test]
     fn desligar_a_camera_libera_so_a_camera() {
         let mut slots = Slots::new(2);
         slots.assign("ana", Kind::Camera);
         slots.assign("ana", Kind::Screen);
-        slots.release("ana", Kind::Camera);
+        slots.reconcile(&[], Kind::Camera);
         assert_eq!(slots.find("ana", Kind::Screen), Some(1));
         assert_eq!(slots.assign("beto", Kind::Camera), Some(0));
     }

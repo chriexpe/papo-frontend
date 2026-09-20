@@ -93,6 +93,13 @@ struct Engine {
     camera_line: Option<gst_webrtc::WebRTCRTPTransceiver>,
     camera_src: Option<gst_app::AppSrc>,
     camera_on: bool,
+    /// De quem a janela quer ver a câmera. Pode ser mais gente do que cabe:
+    /// o que sobra espera um lugar vagar.
+    wanted: Vec<String>,
+    repaint: egui::Context,
+    /// A volta para a própria thread: as promessas do GStreamer respondem
+    /// por aqui, em vez de mexerem no estado de outra thread.
+    inbox: mpsc::Sender<Command>,
     /// Já podemos ofertar (o servidor aceitou a entrada).
     ready: bool,
     /// Uma oferta está no ar e ainda não voltou.
@@ -190,7 +197,7 @@ impl Engine {
             &signals,
             &channel_id,
             video_lines,
-            repaint,
+            repaint.clone(),
         );
 
         if pipeline.set_state(gst::State::Playing).is_err() {
@@ -210,6 +217,9 @@ impl Engine {
             camera_line: None,
             camera_src: None,
             camera_on: false,
+            wanted: Vec::new(),
+            repaint,
+            inbox,
             ready: false,
             negotiating: false,
             pending: false,
@@ -263,29 +273,13 @@ impl Engine {
                 }));
             }
             Command::Camera(on) => self.set_camera(on),
-            Command::Watch {
-                publisher,
-                kind,
-                on,
-            } => self.watch(&publisher, kind, on),
-            Command::Published {
-                publisher,
-                kind,
-                on,
-            } => {
-                // O servidor larga o lugar sozinho quando a câmera do outro
-                // lado desliga; a nossa conta larga junto para o próximo
-                // vídeo cair no mesmo lugar que ele vai escolher.
-                if !on {
-                    self.release(&publisher, kind);
-                }
-            }
-            Command::Gone(publisher) => {
-                self.slots.release_peer(&publisher);
-                self.publish_slots();
+            Command::Watching(publishers) => {
+                self.wanted = publishers;
+                self.reconcile();
             }
             Command::Answer(sdp) => self.set_remote(&sdp, gst_webrtc::WebRTCSDPType::Answer),
             Command::Offer(sdp) => self.set_remote(&sdp, gst_webrtc::WebRTCSDPType::Offer),
+            Command::RemoteApplied(answer) => self.remote_applied(answer),
             Command::Candidate {
                 candidate,
                 sdp_mline_index,
@@ -341,17 +335,29 @@ impl Engine {
             .emit_by_name::<()>("create-offer", &[&None::<gst::Structure>, &promise]);
     }
 
+    /// Aplica a SDP do servidor. O que vem depois — liberar a próxima
+    /// oferta, ou responder à dele — só pode acontecer quando ela estiver
+    /// mesmo aplicada, e quem avisa disso é a promessa: o `webrtcbin` aceita
+    /// a SDP numa thread dele, e seguir na hora era correr com a transição
+    /// anterior ainda em andamento.
     fn set_remote(&mut self, sdp: &str, kind: gst_webrtc::WebRTCSDPType) {
         let Ok(message) = gst_sdp::SDPMessage::parse_buffer(sdp.as_bytes()) else {
             self.shared.fail("a resposta do servidor veio ilegível");
             return;
         };
         let description = gst_webrtc::WebRTCSessionDescription::new(kind, message);
-        self.webrtc.emit_by_name::<()>(
-            "set-remote-description",
-            &[&description, &None::<gst::Promise>],
-        );
-        if kind == gst_webrtc::WebRTCSDPType::Answer {
+        let inbox = self.inbox.clone();
+        let promise = gst::Promise::with_change_func(move |_reply| {
+            let _ = inbox.send(Command::RemoteApplied(kind == gst_webrtc::WebRTCSDPType::Answer));
+        });
+        self.webrtc
+            .emit_by_name::<()>("set-remote-description", &[&description, &promise]);
+    }
+
+    /// A SDP do servidor entrou. `answer` diz se ela era resposta à nossa
+    /// oferta (aí a negociação fechou) ou oferta dele (aí falta responder).
+    fn remote_applied(&mut self, answer: bool) {
+        if answer {
             self.negotiating = false;
             if self.pending {
                 self.pending = false;
@@ -394,41 +400,36 @@ impl Engine {
             .emit_by_name::<()>("create-answer", &[&None::<gst::Structure>, &promise]);
     }
 
-    /// Pede (ou desfaz) o vídeo de alguém. O servidor só manda vídeo com
-    /// pedido explícito — é assim que uma sala de vinte não estoura a banda
-    /// de quem só quer ouvir.
-    fn watch(&mut self, publisher: &str, kind: Kind, on: bool) {
-        if on {
-            if self.slots.find(publisher, kind).is_some() {
-                return;
-            }
-            let Some(_) = self.slots.assign(publisher, kind) else {
-                log::info!("call: sem lugar de vídeo para {publisher}");
-                return;
-            };
-            self.publish_slots();
-            self.signal(serde_json::json!({
-                "type": "track_subscribe",
-                "channel_id": self.channel_id,
-                "publisher_id": publisher,
-                "kind": kind.wire(),
-            }));
-        } else {
-            if self.slots.find(publisher, kind).is_none() {
-                return;
-            }
+    /// Acerta os lugares com o que a janela quer ver: larga quem saiu da
+    /// lista, senta quem entrou, e deixa o excedente esperando.
+    ///
+    /// O servidor só manda vídeo com pedido explícito — é assim que uma sala
+    /// de vinte não estoura a banda de quem só quer ouvir. Rodar isto de
+    /// novo a cada lugar que vaga é o que faz a sétima câmera aparecer
+    /// quando uma das seis primeiras desliga; era o furo de manter a conta
+    /// do lado de fora, onde não se sabe o que coube.
+    fn reconcile(&mut self) {
+        let kind = Kind::Camera;
+        let wanted = std::mem::take(&mut self.wanted);
+        let (leaving, entering) = self.slots.reconcile(&wanted, kind);
+        self.wanted = wanted;
+
+        for publisher in leaving {
             self.signal(serde_json::json!({
                 "type": "track_unsubscribe",
                 "channel_id": self.channel_id,
                 "publisher_id": publisher,
                 "kind": kind.wire(),
             }));
-            self.release(publisher, kind);
         }
-    }
-
-    fn release(&mut self, publisher: &str, kind: Kind) {
-        self.slots.release(publisher, kind);
+        for publisher in entering {
+            self.signal(serde_json::json!({
+                "type": "track_subscribe",
+                "channel_id": self.channel_id,
+                "publisher_id": publisher,
+                "kind": kind.wire(),
+            }));
+        }
         self.publish_slots();
     }
 
@@ -491,7 +492,7 @@ impl Engine {
             self.camera_on = false;
             return;
         };
-        match capture(src, Arc::clone(&self.shared)) {
+        match capture(src, Arc::clone(&self.shared), self.repaint.clone()) {
             Some(camera) => self.camera = Some(camera),
             None => {
                 self.shared.fail("sem câmera para abrir");
@@ -702,8 +703,8 @@ fn microphone(
         log::info!("call: microfone por {factory}");
         return Some(volume);
     }
-    // Dá para participar só ouvindo; avisar é melhor do que desistir.
-    shared.fail("sem microfone: você entra só ouvindo");
+    // Dá para participar só ouvindo: o aviso aparece, a call continua.
+    shared.warn("sem microfone: você entra só ouvindo");
     None
 }
 
@@ -934,7 +935,11 @@ fn show_video(
 
 /// A captura da câmera: um pipeline à parte que entrega o mesmo quadro duas
 /// vezes — cru para o codificador, RGBA para o retrato na tela.
-fn capture(target: gst_app::AppSrc, shared: Arc<Shared>) -> Option<Camera> {
+fn capture(
+    target: gst_app::AppSrc,
+    shared: Arc<Shared>,
+    repaint: egui::Context,
+) -> Option<Camera> {
     let pipeline = gst::Pipeline::new();
     let source = make("v4l2src")?;
     let tee = make("tee")?;
@@ -1027,6 +1032,9 @@ fn capture(target: gst_app::AppSrc, shared: Arc<Shared>) -> Option<Camera> {
                         *slot = Some(frame);
                     }
                     shared.preview_seq.fetch_add(1, Ordering::Relaxed);
+                    // Sem isto o seu próprio retrato congelava numa janela
+                    // parada: ninguém pedia o quadro seguinte.
+                    repaint.request_repaint();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })

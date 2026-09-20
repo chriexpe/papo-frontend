@@ -22,7 +22,7 @@ cargo run -- media-test                   # gera vídeo e áudio e os toca pelo 
 cargo run -- pick-test                    # abre o seletor de arquivos do sistema
 cargo run -- notify-test                  # dispara uma notificação de exemplo
 cargo run -- voice-sdp                    # imprime a oferta SDP da call, sem rede
-cargo run -- voice-test <usuário> <senha> # entra numa call de verdade, sem janela
+cargo run -- voice-test                   # entra numa call de verdade, sem janela
 PAPO_SERVER=http://localhost:8080 cargo run -- selftest
 ```
 
@@ -204,7 +204,7 @@ canal** quando é só voz, **numa folha de vidro** por cima da conversa assim qu
 vídeo (encolhível numa pastilha, para continuar escrevendo), e **em janela própria**
 quando se pede — para jogá-la noutro monitor.
 
-Duas coisas dependem de mudança no backend, e por ora o cliente contorna:
+Três coisas dependem de mudança no backend, e por ora o cliente contorna:
 
 - **Os lugares de vídeo são seis** (`VOICE_VIDEO_SLOTS`), e o servidor não conta ao
   cliente quantos são. A oferta precisa nascer com um número exato de linhas de
@@ -215,6 +215,16 @@ Duas coisas dependem de mudança no backend, e por ora o cliente contorna:
   quem entra; de fora, só chegam as mudanças (`voice_state_update`, `voice_leave`). Uma
   janela aberta depois vê a sala vazia até alguém se mexer. Faltaria a lista de estados
   de voz numa rota REST — no `GET /channels`, por exemplo.
+- **`track_subscribe` não tem resposta.** O pedido de vídeo é aceito em silêncio, e a
+  recusa chega como um `error` sem dizer de qual pedido — o mesmo `voice-not-found` que
+  o servidor usa para outras coisas. O cliente assume que deu certo e se conserta no
+  evento seguinte (a câmera que desligou larga o lugar). Um `track_subscribed` com
+  `publisher_id` e `kind` fecharia o buraco.
+
+No Flatpak a call entra com voz, e o vídeo dos outros aparece, mas a **sua** câmera não:
+a captura é `v4l2src`, que exigiria `--device=all` — e `all` é todo dispositivo da
+máquina, não a webcam. O portal de câmera (um fd do PipeWire só para ela) é o caminho, e
+é o que falta.
 
 Compartilhar tela não entrou nesta leva: o caminho de vídeo é o mesmo da câmera e o
 servidor já trata os dois lados, mas falta a captura pelo portal e o lugar dela na grade.

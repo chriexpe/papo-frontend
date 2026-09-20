@@ -16,7 +16,7 @@ use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net};
 use crate::state::{Phase, Screen, Store};
-use crate::voice::{Call, IceConfig, Kind};
+use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
 use crate::ui::shell::{self, ChatAction, UiState};
 use crate::ui::glass::GlassRenderer;
@@ -125,7 +125,6 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                 ws.call = None;
                 ws.call_ready = false;
                 ws.watching.clear();
-                ws.roster.clear();
             }
         }
         // O socket caiu: o servidor derruba o peer junto com a conexão que
@@ -134,7 +133,6 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
             ws.call = None;
             ws.call_ready = false;
             ws.watching.clear();
-            ws.roster.clear();
             ws.store.call.error = None;
             ws.store.call.left();
         }
@@ -153,7 +151,6 @@ fn leave_call(ws: &mut Workspace) {
     ws.call = None;
     ws.call_ready = false;
     ws.watching.clear();
-    ws.roster.clear();
     ws.store.call.left();
 }
 
@@ -171,8 +168,13 @@ fn pump_call(ws: &mut Workspace) {
     if !ws.call_ready && ws.store.call.phase == Phase::In {
         call.ready();
         ws.call_ready = true;
-        // Entramos mudos, como o servidor assume; o botão já nasce ligado.
+        // O que foi clicado enquanto a call abria vale: entramos mudos, como
+        // o servidor assume, mas quem já tinha ligado a câmera não pode ficar
+        // com o botão aceso e a câmera parada.
         call.set_muted(ws.store.call.muted);
+        if ws.store.call.camera {
+            call.set_camera(true);
+        }
     }
 
     if call.failed() {
@@ -186,10 +188,11 @@ fn pump_call(ws: &mut Workspace) {
     }
 
     // Quem ligou a câmera passa a ser assistido sozinho — a escolha de
-    // desenho. O servidor não manda vídeo sem pedido, e são seis lugares:
-    // o sétimo fica com o retrato, que é o que `watch` decide.
+    // desenho. Daqui sai só a lista de quem se quer ver; quem decide o que
+    // cabe nos seis lugares é a thread da call, que é quem sabe quais estão
+    // livres e reaproveita o que vaga.
     let me = ws.store.me.clone();
-    let wanted: std::collections::HashSet<String> = ws
+    let mut wanted: Vec<String> = ws
         .store
         .call
         .members()
@@ -197,27 +200,11 @@ fn pump_call(ws: &mut Workspace) {
         .filter(|member| member.camera_on && member.user_id != me)
         .map(|member| member.user_id.clone())
         .collect();
-    for publisher in wanted.difference(&ws.watching) {
-        call.watch(publisher, Kind::Camera, true);
+    wanted.sort();
+    if wanted != ws.watching {
+        call.watch(wanted.clone());
+        ws.watching = wanted;
     }
-    for publisher in ws.watching.difference(&wanted) {
-        // Quem desligou a câmera já teve o lugar devolvido no servidor; aqui
-        // é só a nossa conta acompanhando.
-        call.published(publisher, Kind::Camera, false);
-    }
-    ws.watching = wanted;
-
-    let roster: std::collections::HashSet<String> = ws
-        .store
-        .call
-        .members()
-        .iter()
-        .map(|member| member.user_id.clone())
-        .collect();
-    for gone in ws.roster.difference(&roster) {
-        call.gone(gone);
-    }
-    ws.roster = roster;
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -357,10 +344,9 @@ pub struct Workspace {
     pub call: Option<Call>,
     /// Já demos o sinal verde para a oferta sair.
     call_ready: bool,
-    /// De quem estamos recebendo vídeo agora.
-    watching: std::collections::HashSet<String>,
-    /// Quem estava na sala no quadro anterior, para notar quem saiu.
-    roster: std::collections::HashSet<String>,
+    /// De quem pedimos vídeo por último, em ordem: o pedido só sai de novo
+    /// quando a lista muda.
+    watching: Vec<String>,
 }
 
 impl Workspace {
@@ -390,8 +376,7 @@ impl Workspace {
             typing_sent: None,
             call: None,
             call_ready: false,
-            watching: std::collections::HashSet::new(),
-            roster: std::collections::HashSet::new(),
+            watching: Vec::new(),
         }
     }
 
@@ -1003,6 +988,20 @@ impl PapoApp {
             self.handle_chat_demo(ctx, action);
             return;
         }
+        // Entrar numa call mexe em todos os servidores, não só no que está na
+        // tela: o microfone é um só. Sem isto, entrar no servidor A, trocar
+        // para o B e entrar lá deixava os dois mandando a sua voz, cada um
+        // com o seu pipeline — e o trilho não mostra nem qual deles era.
+        if let ChatAction::JoinVoice(channel_id) = action {
+            for ws in &mut self.workspaces {
+                leave_call(ws);
+            }
+            let ws = &mut self.workspaces[self.active];
+            ws.store.selected_channel = channel_id.clone();
+            ws.store.call.joining(channel_id.clone());
+            ws.net.send(Command::JoinVoice { channel_id });
+            return;
+        }
         let s = self.settings.lang.strings();
         let ws = &mut self.workspaces[self.active];
         match action {
@@ -1128,14 +1127,9 @@ impl PapoApp {
                 ws.net.send(Command::BanUser { user_id, banned })
             }
             ChatAction::ResetUser(user_id) => ws.net.send(Command::ResetUser { user_id }),
-            ChatAction::JoinVoice(channel_id) => {
-                // Uma call por vez: o microfone é um, e o servidor também só
-                // deixa uma sala por pessoa.
-                leave_call(ws);
-                ws.store.selected_channel = channel_id.clone();
-                ws.store.call.joining(channel_id.clone());
-                ws.net.send(Command::JoinVoice { channel_id });
-            }
+            // Entrar já foi tratado antes do `match`, porque mexe em todos
+            // os servidores de uma vez.
+            ChatAction::JoinVoice(_) => {}
             ChatAction::LeaveVoice => leave_call(ws),
             ChatAction::ToggleMute => {
                 let muted = !ws.store.call.muted;

@@ -64,9 +64,17 @@ pub struct CallState {
 /// segundo caso deixaria todo mundo mudo por causa de um clique apressado.
 pub fn fatal(code: &str, joining: bool) -> bool {
     match code {
-        // A sala sumiu, a permissão sumiu, ou a sessão de mídia não existe
-        // mais do outro lado: não há call para continuar.
-        "voice-room-closed" | "voice-forbidden" | "voice-not-found" | "voice-invalid-sdp"
+        // A sala sumiu, a permissão sumiu, ou a SDP não serve: não há call
+        // para continuar.
+        //
+        // `voice-not-found` fica de fora de propósito, apesar do nome: o
+        // servidor devolve o mesmo código quando a *outra* pessoa parou de
+        // publicar a câmera entre o nosso pedido e a chegada dele — uma
+        // corrida rotineira. Derrubar a call por causa dela deixaria todo
+        // mundo mudo porque uma câmera desligou no instante errado. Quando é
+        // a nossa sessão que sumiu de verdade, quem avisa é a conexão de
+        // mídia caindo.
+        "voice-room-closed" | "voice-forbidden" | "voice-invalid-sdp"
         | "voice-codec-unsupported" => true,
         // Sala cheia e "já está dentro" só falam da entrada. Depois dela,
         // sala cheia é falta de lugar de vídeo — o vídeo é que não vem.
@@ -208,6 +216,8 @@ mod tests {
     #[test]
     fn so_o_erro_que_acaba_com_a_sala_acaba_com_a_call() {
         assert!(fatal("voice-forbidden", false));
+        // Pedir a câmera de quem acabou de desligá-la é corrida, não fim.
+        assert!(!fatal("voice-not-found", false));
         assert!(fatal("voice-room-full", true));
         assert!(!fatal("voice-room-full", false));
         assert!(!fatal("voice-rate-limited", false));

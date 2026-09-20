@@ -33,10 +33,11 @@ finish-args:
   - --device=dri
   # Tocar áudio e vídeo, gravar recado de voz e falar na call.
   - --socket=pulseaudio
-  # A câmera da call. O caminho certo é o portal de câmera (uma conexão
-  # PipeWire por um fd que o portal entrega), e é para onde isto vai; por
-  # enquanto a captura é `v4l2src`, que precisa do dispositivo.
-  - --device=all
+  # A câmera fica de fora por enquanto — e de propósito. A captura é
+  # `v4l2src`, que precisaria de `--device=all`, e `all` não é "a webcam":
+  # é todo dispositivo da máquina. O caminho certo é o portal de câmera, que
+  # entrega um fd do PipeWire só para a câmera; até ele chegar, no Flatpak a
+  # call entra com voz e sem vídeo próprio (o vídeo dos outros aparece).
   # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma. O item
   # abre mão do nome próprio dentro do sandbox (ver `platform/tray.rs`), então
   # basta alcançar o watcher.

@@ -193,6 +193,12 @@ pub enum Update {
         channel_id: String,
         servers: Vec<crate::api::models::IceServer>,
     },
+    /// A entrada na call não saiu do chão. Sem isto a tela ficava para
+    /// sempre em "conectando", porque não há call nenhuma para desistir.
+    VoiceFailed {
+        channel_id: String,
+        message: String,
+    },
     Connection(Connection),
     Error(String),
 }
@@ -784,7 +790,14 @@ async fn handle(
                     r#"{{"type":"voice_join","channel_id":"{channel_id}"}}"#
                 ));
             }
-            Err(error) => report(updates, repaint, error),
+            Err(error) => publish(
+                updates,
+                repaint,
+                Update::VoiceFailed {
+                    channel_id,
+                    message: error.to_string(),
+                },
+            ),
         },
         Command::VoiceSignal(json) => {
             let _ = outbound.send(json);
