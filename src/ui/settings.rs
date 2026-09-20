@@ -1088,7 +1088,7 @@ fn app_pane(
                 let sent = rows.field(s.new_password, &mut draft.password, 64, true);
                 let ready = draft.password.chars().count() >= 8;
                 rows.row(s.change_password, Some(s.password_rule_length), |ui, t| {
-                    if (row_button(ui, t, s.change_password, Emphasis::Primary) || (sent && ready)) && ready {
+                    if (row_button(ui, t, s.change_password, Emphasis::Primary) || sent) && ready {
                         actions.push(SettingsAction::Admin(AdminAction::ChangePassword(
                             draft.password.clone(),
                         )));

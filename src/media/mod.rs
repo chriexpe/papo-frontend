@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as sync_mpsc;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use tokio::sync::mpsc;
@@ -20,6 +21,26 @@ use crate::api::models::Attachment;
 use crate::ui::emoji_raster::EmojiRaster;
 
 /// Lado maior de uma textura de mensagem; o visualizador pede a versão cheia.
+/// Quantos players ficam vivos ao mesmo tempo. Cada um carrega uma thread,
+/// um decodificador e um contexto de vídeo, e isso não aparece no tamanho do
+/// arquivo: um clipe de meio mega em 1080p custa quase o mesmo que um de
+/// quinze. Guardar pipeline para mídia que ninguém está ouvindo é o
+/// desperdício mais caro que havia aqui.
+const MAX_PLAYERS: usize = 4;
+
+/// Teto do que fica decodificado em textura. O custo é o pixel, não o
+/// arquivo: uma imagem de 1600² ocupa 10 MiB abertos venha ela de 200 KiB
+/// de JPEG ou de 4 MiB de PNG.
+const TEXTURE_BUDGET: usize = 192 * 1024 * 1024;
+
+/// Teto do cache em disco e idade máxima de um arquivo parado. Nada aqui
+/// era apagado antes: a pasta só crescia, para sempre.
+const CACHE_BUDGET: u64 = 512 * 1024 * 1024;
+const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Gravações são do usuário, não mídia baixada, e só saem quando velhas
+/// demais para alguma ainda estar esperando no campo de escrever.
+const RECORDING_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
 const INLINE_MAX: u32 = 1600;
 const FULL_MAX: u32 = 4096;
 
@@ -122,6 +143,10 @@ async fn worker(
         return;
     };
 
+    // O cache em disco não tinha quem o limpasse. Uma varrida na partida,
+    // fora da thread da janela.
+    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+
     while let Some(request) = requests.recv().await {
         let api = api.clone();
         let results = results.clone();
@@ -160,8 +185,8 @@ async fn run(api: &Api, request: Request) -> Loaded {
         }
         Request::File { id, name } => {
             let path = cache_path("files", &id, &name);
-            match cached_fetch(api, &path, &format!("/attachments/{id}")).await {
-                Ok(_) => Loaded::File { id, path },
+            match cached_file(api, &path, &format!("/attachments/{id}")).await {
+                Ok(()) => Loaded::File { id, path },
                 Err(error) => Loaded::Failed {
                     key: file_key(&id),
                     error,
@@ -170,9 +195,11 @@ async fn run(api: &Api, request: Request) -> Loaded {
         }
         Request::Save { id, name, dest } => {
             let source = cache_path("files", &id, &name);
-            match cached_fetch(api, &source, &format!("/attachments/{id}")).await {
-                Ok(bytes) => match tokio::fs::write(&dest, &bytes).await {
-                    Ok(()) => Loaded::Saved { name, path: dest },
+            match cached_file(api, &source, &format!("/attachments/{id}")).await {
+                // `copy` vai em pedaços: salvar um vídeo grande não precisa
+                // dele inteiro na memória.
+                Ok(()) => match tokio::fs::copy(&source, &dest).await {
+                    Ok(_) => Loaded::Saved { name, path: dest },
                     Err(error) => Loaded::Failed {
                         key: file_key(&id),
                         error: error.to_string(),
@@ -221,6 +248,21 @@ async fn cached_fetch(api: &Api, path: &Path, route: &str) -> Result<Vec<u8>, St
     }
     let _ = tokio::fs::write(path, &bytes).await;
     Ok(bytes)
+}
+
+/// Garante o arquivo no cache, baixando direto para o disco quando falta.
+/// Diferente de [`cached_fetch`], nada aqui precisa dos bytes em memória: o
+/// player lê do arquivo, então não há motivo para carregar um vídeo inteiro
+/// só para gravá-lo.
+async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> {
+    if let Ok(meta) = tokio::fs::metadata(path).await {
+        if meta.len() > 0 {
+            return Ok(());
+        }
+    }
+    api.fetch_to_file(route, path)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Decodifica bytes em textura; GIF vira animação.
@@ -307,6 +349,67 @@ pub fn cache_path(bucket: &str, id: &str, name: &str) -> PathBuf {
     cache_root().join(bucket).join(file)
 }
 
+/// Poda o cache em disco: apaga restos de download interrompido, o que está
+/// parado há tempo demais e, se ainda passar do teto, o mais antigo até
+/// caber. Recebe a raiz para poder ser testada fora da pasta do usuário.
+fn sweep_cache(root: &Path) {
+    sweep_cache_with(root, CACHE_BUDGET, CACHE_MAX_AGE, RECORDING_MAX_AGE);
+}
+
+fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_age: Duration) {
+    let now = SystemTime::now();
+    let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+
+    for bucket in ["thumbs", "files"] {
+        let Ok(entries) = std::fs::read_dir(root.join(bucket)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            // Sobra de download interrompido: nunca vai ser completada.
+            if path.extension().is_some_and(|ext| ext == "parcial") {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            let used = meta.accessed().or_else(|_| meta.modified()).unwrap_or(now);
+            if now.duration_since(used).unwrap_or_default() > max_age {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+            kept.push((used, meta.len(), path));
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(root.join("recordings")) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            let used = meta.modified().unwrap_or(now);
+            if now.duration_since(used).unwrap_or_default() > recording_max_age {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    let mut total: u64 = kept.iter().map(|(_, size, _)| *size).sum();
+    if total <= budget {
+        return;
+    }
+    // Do mais antigo para o mais novo, até caber.
+    kept.sort_unstable_by_key(|(used, _, _)| *used);
+    for (_, size, path) in kept {
+        if total <= budget {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
+    }
+}
+
 pub fn thumb_key(id: &str) -> String {
     format!("thumb:{id}")
 }
@@ -369,6 +472,20 @@ pub enum FileState {
     Failed,
 }
 
+/// Quanto um item custa em memória. O mapa guarda um identificador, mas os
+/// pixels seguem alocados enquanto o `TextureHandle` viver.
+fn texture_bytes(texture: &Texture) -> usize {
+    fn one(handle: &TextureHandle) -> usize {
+        let size = handle.size();
+        size[0] * size[1] * 4
+    }
+    match texture {
+        Texture::Ready(handle) => one(handle),
+        Texture::Animated { frames, .. } => frames.iter().map(one).sum(),
+        Texture::Loading | Texture::Failed => 0,
+    }
+}
+
 /// Tudo que a interface precisa saber sobre a mídia já pedida.
 pub struct MediaStore {
     media: Option<Media>,
@@ -376,6 +493,12 @@ pub struct MediaStore {
     files: HashMap<String, FileState>,
     waveforms: HashMap<String, Vec<f32>>,
     players: HashMap<String, player::Player>,
+    /// Última vez que alguém pediu cada chave, para saber quem sai quando o
+    /// teto aperta. Guarda textura e player no mesmo mapa: as chaves de
+    /// textura vêm prefixadas (`thumb:`, `full:`…) e as de player são o id
+    /// cru do anexo, então não se cruzam.
+    used: HashMap<String, u64>,
+    tick: u64,
     /// Anexos cuja moderação marcou como sensível e o usuário revelou.
     revealed: std::collections::HashSet<String>,
     /// Último arquivo salvo, para o aviso flutuante.
@@ -392,6 +515,8 @@ impl MediaStore {
             files: HashMap::new(),
             waveforms: HashMap::new(),
             players: HashMap::new(),
+            used: HashMap::new(),
+            tick: 0,
             revealed: std::collections::HashSet::new(),
             saved: None,
             emoji_raster: EmojiRaster::new(),
@@ -453,7 +578,63 @@ impl MediaStore {
                 }
             }
         }
+        self.evict();
         changed
+    }
+
+    /// Marca a chave como usada agora.
+    fn touch(&mut self, key: &str) {
+        self.tick += 1;
+        self.used.insert(key.to_owned(), self.tick);
+    }
+
+    /// Devolve o que ninguém está olhando. Sem isto os mapas só cresciam:
+    /// todo vídeo, áudio e imagem que passasse pela tela ficava carregado
+    /// até o programa fechar.
+    fn evict(&mut self) {
+        // Players primeiro, que são o item caro. Um que esteja tocando nunca
+        // sai — parar o som no meio por causa de uma conta de memória seria
+        // trocar um defeito por outro pior.
+        if self.players.len() > MAX_PLAYERS {
+            let mut idle: Vec<(u64, String)> = self
+                .players
+                .iter()
+                .filter(|(_, player)| !player.is_playing())
+                .map(|(key, _)| (self.used.get(key).copied().unwrap_or(0), key.clone()))
+                .collect();
+            idle.sort_unstable();
+            let excess = self.players.len().saturating_sub(MAX_PLAYERS);
+            for (_, key) in idle.into_iter().take(excess) {
+                self.players.remove(&key);
+                self.used.remove(&key);
+            }
+        }
+
+        // Texturas, do mais antigo para o mais novo. `Loading` fica: tirar a
+        // marca faria o pedido em voo voltar para um mapa que não o espera
+        // mais, e o download recomeçaria do zero.
+        let mut total: usize = self.textures.values().map(texture_bytes).sum();
+        if total <= TEXTURE_BUDGET {
+            return;
+        }
+        let mut aged: Vec<(u64, String)> = self
+            .textures
+            .iter()
+            .filter(|(_, texture)| !matches!(texture, Texture::Loading))
+            .map(|(key, _)| (self.used.get(key).copied().unwrap_or(0), key.clone()))
+            .collect();
+        aged.sort_unstable();
+        for (_, key) in aged {
+            if total <= TEXTURE_BUDGET {
+                break;
+            }
+            if let Some(texture) = self.textures.remove(&key) {
+                // Soltar o `TextureHandle` é o que devolve a memória da
+                // placa de vídeo; o mapa só guardava o identificador.
+                total = total.saturating_sub(texture_bytes(&texture));
+                self.used.remove(&key);
+            }
+        }
     }
 
     fn ask(&self, request: Request) {
@@ -472,6 +653,7 @@ impl MediaStore {
                 thumb_id: attachment.thumbnail_id.clone(),
             });
         }
+        self.touch(&key);
         self.textures.get(&key)
     }
 
@@ -481,6 +663,7 @@ impl MediaStore {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Full { id: id.to_owned() });
         }
+        self.touch(&key);
         self.textures.get(&key)
     }
 
@@ -494,6 +677,7 @@ impl MediaStore {
                 blob: blob.to_owned(),
             });
         }
+        self.touch(&key);
         self.textures.get(&key)
     }
 
@@ -558,16 +742,45 @@ impl MediaStore {
 
     // -- Players -----------------------------------------------------------
 
-    /// Player do anexo, criado na primeira chamada. Só um toca por vez.
-    pub fn player(&mut self, id: &str, path: &Path, video: bool, ctx: &egui::Context) -> Option<&mut player::Player> {
+    /// Abre o player do anexo, se ainda não houver. Caro: monta thread,
+    /// decodificador e contexto de vídeo. Só quem sabe que o usuário pediu a
+    /// mídia chama isto — desenhar o cartão não é pedir.
+    pub fn start_player(
+        &mut self,
+        id: &str,
+        path: &Path,
+        video: bool,
+        ctx: &egui::Context,
+    ) -> Option<&mut player::Player> {
         if !self.players.contains_key(id) {
             let player = player::Player::open(path, video, ctx.clone())?;
             self.players.insert(id.to_owned(), player);
         }
+        self.touch(id);
         self.players.get_mut(id)
     }
 
+    /// Liga ou desliga o anexo, abrindo o player se for a primeira vez. Um
+    /// player recém-aberto começa parado, então aqui ele já sai tocando: o
+    /// clique que o criou era um pedido de play.
+    pub fn toggle_player(&mut self, id: &str, path: &Path, video: bool, ctx: &egui::Context) {
+        let fresh = !self.players.contains_key(id);
+        let Some(player) = self.start_player(id, path, video, ctx) else {
+            return;
+        };
+        if fresh {
+            player.play();
+        } else {
+            player.toggle();
+        }
+    }
+
+    /// Player já aberto, ou nada. Quem só desenha o cartão usa isto e aceita
+    /// não ter duração nem quadro antes do primeiro play.
     pub fn existing_player(&mut self, id: &str) -> Option<&mut player::Player> {
+        if self.players.contains_key(id) {
+            self.touch(id);
+        }
         self.players.get_mut(id)
     }
 
@@ -585,5 +798,104 @@ impl MediaStore {
         for player in self.players.values_mut() {
             player.pause();
         }
+    }
+}
+
+#[cfg(test)]
+mod limpeza {
+    use super::*;
+
+    fn raiz(nome: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("papo-teste-{nome}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for bucket in ["thumbs", "files", "recordings"] {
+            std::fs::create_dir_all(dir.join(bucket)).unwrap();
+        }
+        dir
+    }
+
+    fn escreve(path: &Path, bytes: usize, idade: Duration) {
+        std::fs::write(path, vec![0u8; bytes]).unwrap();
+        let quando = SystemTime::now() - idade;
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(quando)
+                .set_modified(quando),
+        )
+        .unwrap();
+    }
+
+    const HORA: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn resto_de_download_interrompido_sai() {
+        let raiz = raiz("parcial");
+        let sobra = raiz.join("files/video.mp4.parcial");
+        let bom = raiz.join("files/video.mp4");
+        escreve(&sobra, 10, HORA);
+        escreve(&bom, 10, HORA);
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(!sobra.exists(), "o arquivo parcial devia ter saído");
+        assert!(bom.exists(), "o arquivo inteiro devia ter ficado");
+    }
+
+    #[test]
+    fn o_que_esta_parado_ha_tempo_demais_sai() {
+        let raiz = raiz("idade");
+        let velho = raiz.join("thumbs/velho");
+        let novo = raiz.join("thumbs/novo");
+        escreve(&velho, 10, HORA * 50);
+        escreve(&novo, 10, HORA);
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(!velho.exists());
+        assert!(novo.exists());
+    }
+
+    #[test]
+    fn passando_do_teto_o_mais_antigo_sai_primeiro() {
+        let raiz = raiz("teto");
+        let antigo = raiz.join("files/antigo");
+        let medio = raiz.join("files/medio");
+        let recente = raiz.join("files/recente");
+        escreve(&antigo, 1000, HORA * 3);
+        escreve(&medio, 1000, HORA * 2);
+        escreve(&recente, 1000, HORA);
+
+        // Cabem dois dos três.
+        sweep_cache_with(&raiz, 2000, HORA * 24, HORA * 24);
+
+        assert!(!antigo.exists(), "o mais antigo devia sair primeiro");
+        assert!(medio.exists());
+        assert!(recente.exists());
+    }
+
+    #[test]
+    fn gravacao_recente_do_usuario_nao_e_apagada() {
+        let raiz = raiz("gravacao");
+        let pendente = raiz.join("recordings/audio.ogg");
+        // Bem acima do teto de tamanho: gravação não entra nessa conta, ela
+        // só sai por idade. Uma esperando no campo de escrever não pode
+        // sumir por causa de um vídeo baixado.
+        escreve(&pendente, 5000, HORA);
+
+        sweep_cache_with(&raiz, 0, HORA * 24, HORA * 24);
+
+        assert!(pendente.exists());
+    }
+
+    #[test]
+    fn gravacao_esquecida_ha_semanas_sai() {
+        let raiz = raiz("gravacao-velha");
+        let esquecida = raiz.join("recordings/audio.ogg");
+        escreve(&esquecida, 10, HORA * 50);
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(!esquecida.exists());
     }
 }

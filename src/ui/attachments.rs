@@ -6,6 +6,8 @@
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
 use egui_phosphor::regular as icon;
 
+use std::path::Path;
+
 use crate::api::models::{Attachment, Kind};
 use crate::i18n::Strings;
 use crate::media::{FileState, MediaStore};
@@ -173,11 +175,18 @@ fn video(
     };
 
     let ctx = ui.ctx().clone();
-    let Some(player) = media.player(&attachment.id, &path, true, &ctx) else {
-        return file_card(ui, t, s, attachment, width);
+    // Antes do primeiro play não existe pipeline, e é esse o ponto: rolar a
+    // conversa passava por aqui e montava um decodificador por vídeo. Sem
+    // ele a proporção cai no padrão e o cartão desenha igual.
+    let (aspect, playing, position, duration) = match media.existing_player(&attachment.id) {
+        Some(player) => (
+            player.aspect().clamp(0.4, 3.0),
+            player.is_playing(),
+            player.position(),
+            player.duration(),
+        ),
+        None => (16.0 / 9.0, false, 0.0, 0.0),
     };
-
-    let aspect = player.aspect().clamp(0.4, 3.0);
     let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
     let total = Vec2::new(card_width, frame_size.y + CONTROLS_H);
     let (rect, response) = ui.allocate_exact_size(total, Sense::click());
@@ -185,10 +194,10 @@ fn video(
     let corner = CornerRadius::same(radius::CARD);
 
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
-    let playing = player.is_playing();
-    let position = player.position();
-    let duration = player.duration();
-    if let Some(texture) = player.frame(&ctx) {
+    if let Some(texture) = media
+        .existing_player(&attachment.id)
+        .and_then(|player| player.frame(&ctx))
+    {
         let size = fit(texture.size_vec2(), frame_size);
         let centered = Rect::from_center_size(frame_rect.center(), size);
         ui.painter().image(
@@ -215,9 +224,7 @@ fn video(
 
     let mut action = None;
     if response.clicked() {
-        if let Some(player) = media.existing_player(&attachment.id) {
-            player.toggle();
-        }
+        media.toggle_player(&attachment.id, &path, true, &ctx);
         media.solo(&attachment.id);
     }
 
@@ -225,7 +232,7 @@ fn video(
         egui::pos2(rect.min.x, frame_rect.max.y),
         Vec2::new(card_width, CONTROLS_H),
     );
-    if let Some(command) = transport(ui, t, media, &attachment.id, controls, position, duration, true) {
+    if let Some(command) = transport(ui, t, media, &attachment.id, &path, controls, position, duration, true) {
         match command {
             Transport::Fullscreen => {
                 action = Some(MediaAction::Open {
@@ -266,19 +273,24 @@ fn audio(
     };
 
     let ctx = ui.ctx().clone();
-    if media.player(&attachment.id, &path, false, &ctx).is_none() {
-        return file_card(ui, t, s, attachment, width);
-    }
+    // A forma de onda sai do arquivo, não do player, então o cartão fica
+    // inteiro mesmo sem nada aberto.
     let peaks: Vec<f32> = media
         .waveform(&attachment.id, &path)
         .map(<[f32]>::to_vec)
         .unwrap_or_default();
-    let player = media.existing_player(&attachment.id)?;
-    player.update();
-    let playing = player.is_playing();
-    let position = player.position();
-    let duration = player.duration();
-    let failed = player.error();
+    let (playing, position, duration, failed) = match media.existing_player(&attachment.id) {
+        Some(player) => {
+            player.update();
+            (
+                player.is_playing(),
+                player.position(),
+                player.duration(),
+                player.error(),
+            )
+        }
+        None => (false, 0.0, 0.0, None),
+    };
 
     let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), Sense::click_and_drag());
     ui.painter().rect(
@@ -319,9 +331,7 @@ fn audio(
         t.accent_label,
     );
     if button_response.clicked() && on_button {
-        if let Some(player) = media.existing_player(&attachment.id) {
-            player.toggle();
-        }
+        media.toggle_player(&attachment.id, &path, false, &ctx);
         media.solo(&attachment.id);
     }
 
@@ -356,7 +366,7 @@ fn audio(
         (card.dragged() || card.clicked()) && wave.expand2(Vec2::new(0.0, 10.0)).contains(*pos)
     }) {
         let ratio = ((pos.x - wave.min.x) / wave.width()).clamp(0.0, 1.0) as f64;
-        if let Some(player) = media.existing_player(&attachment.id) {
+        if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
             let duration = player.duration();
             if duration > 0.0 {
                 player.seek(duration * ratio);
@@ -518,6 +528,7 @@ fn transport(
     t: &Tokens,
     media: &mut MediaStore,
     id: &str,
+    path: &Path,
     rect: Rect,
     position: f64,
     duration: f64,
@@ -536,9 +547,8 @@ fn transport(
         .unwrap_or(false);
     let play = Rect::from_center_size(egui::pos2(x + 10.0, mid), Vec2::splat(24.0));
     if control(ui, play, if playing { icon::PAUSE } else { icon::PLAY }, id, "play") {
-        if let Some(player) = media.existing_player(id) {
-            player.toggle();
-        }
+        let ctx = ui.ctx().clone();
+        media.toggle_player(id, path, true, &ctx);
         media.solo(id);
     }
     x = play.max.x + space::SM;

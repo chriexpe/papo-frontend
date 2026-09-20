@@ -399,10 +399,20 @@ fn audio_sink() -> Option<gst::Element> {
     None
 }
 
-/// `videoconvert ! appsink` empacotado como sink do playbin.
+/// Largura máxima do quadro entregue à janela. Acima disso o vídeo é
+/// reduzido: a tela cheia ainda tem resolução de sobra e a memória por
+/// quadro deixa de acompanhar o tamanho do original.
+const MAX_FRAME_W: i32 = 1280;
+
+/// `videoconvert ! videoscale ! appsink` empacotado como sink do playbin.
 fn video_sink(shared: Arc<Shared>, repaint: egui::Context) -> Option<gst::Element> {
+    // A largura entra como intervalo: vídeo menor passa intacto, maior é
+    // reduzido antes de virar quadro. Cada quadro é copiado para a memória e
+    // subido como textura, então 1080p custava 8 MiB por cópia para ser
+    // desenhado numa coluna de mensagem com menos de 500 px de largura.
     let caps = gst::Caps::builder("video/x-raw")
         .field("format", "RGBA")
+        .field("width", gst::IntRange::new(1, MAX_FRAME_W))
         .build();
     let sink = gst_app::AppSink::builder()
         .caps(&caps)
@@ -468,9 +478,10 @@ fn video_sink(shared: Arc<Shared>, repaint: egui::Context) -> Option<gst::Elemen
 
     let bin = gst::Bin::new();
     let convert = gst::ElementFactory::make("videoconvert").build().ok()?;
+    let scale = gst::ElementFactory::make("videoscale").build().ok()?;
     let element = sink.upcast_ref::<gst::Element>().clone();
-    bin.add_many([&convert, &element]).ok()?;
-    gst::Element::link_many([&convert, &element]).ok()?;
+    bin.add_many([&convert, &scale, &element]).ok()?;
+    gst::Element::link_many([&convert, &scale, &element]).ok()?;
     let pad = convert.static_pad("sink")?;
     let ghost = gst::GhostPad::with_target(&pad).ok()?;
     bin.add_pad(&ghost).ok()?;

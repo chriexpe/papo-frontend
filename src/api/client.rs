@@ -4,6 +4,7 @@
 //! nem armazenamento do navegador: guardamos o cookie num pote próprio e o
 //! gravamos em disco para sobreviver ao fechamento da janela.
 
+use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 use reqwest::header::{HeaderValue, ACCEPT, COOKIE};
@@ -16,6 +17,11 @@ use super::models::Notification as NotificationItem;
 use super::models::*;
 
 const COOKIE_NAME: &str = "Auth";
+
+/// Pedaço lido por vez ao mandar um anexo. Grande o bastante para não
+/// picotar a rede, pequeno o bastante para o pico de memória não ter nada a
+/// ver com o tamanho do arquivo.
+const UPLOAD_CHUNK: usize = 64 * 1024;
 
 /// Identificador único por requisição. O backend registra o valor no log e o
 /// devolve no corpo do erro, então um problema relatado pelo usuário dá para
@@ -254,6 +260,45 @@ impl Api {
         Ok((bytes.to_vec(), mime))
     }
 
+    /// Baixa direto para o disco. O anexo não passa inteiro pela memória: um
+    /// vídeo de 100 MB custava 100 MB de RAM só para ser gravado no cache.
+    pub async fn fetch_to_file(&self, path: &str, dest: &Path) -> ApiResult<()> {
+        use futures_util::StreamExt as _;
+        use tokio::io::AsyncWriteExt as _;
+
+        let response = self.send::<()>(Method::GET, path, None).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(problem_error(status, &body));
+        }
+        if let Some(parent) = dest.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        // Grava num temporário e só depois renomeia. Um download interrompido
+        // no meio não pode virar um arquivo de cache truncado, que ninguém
+        // revalida e que devolve mídia quebrada para sempre.
+        let temp = dest.with_extension("parcial");
+        let mut file = tokio::fs::File::create(&temp)
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| ApiError::Network(e.to_string()))?;
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| ApiError::Network(e.to_string()))?;
+        }
+        file.flush()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        drop(file);
+        tokio::fs::rename(&temp, dest)
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))?;
+        Ok(())
+    }
+
     // -- Autenticação ------------------------------------------------------
 
     pub async fn register(&self, username: &str, password: &str) -> ApiResult<serde_json::Value> {
@@ -417,13 +462,37 @@ impl Api {
             form = form.text("reply_to", reply_to.to_owned());
         }
         for upload in attachments {
-            let bytes = tokio::fs::read(&upload.path)
+            // Ler o arquivo inteiro para a memória fazia o pico acompanhar o
+            // tamanho do anexo, um para um. Agora o corpo sai em pedaços,
+            // direto do disco, e mandar um vídeo grande custa o mesmo que
+            // mandar um pequeno.
+            let file = tokio::fs::File::open(&upload.path)
                 .await
                 .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?;
-            let part = reqwest::multipart::Part::bytes(bytes)
-                .file_name(upload.name.clone())
-                .mime_str(&upload.mime)
-                .map_err(|e| ApiError::Network(e.to_string()))?;
+            let length = file
+                .metadata()
+                .await
+                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?
+                .len();
+            let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
+                use tokio::io::AsyncReadExt as _;
+                let mut chunk = vec![0u8; UPLOAD_CHUNK];
+                let read = file.read(&mut chunk).await?;
+                if read == 0 {
+                    return Ok::<_, std::io::Error>(None);
+                }
+                chunk.truncate(read);
+                Ok(Some((chunk, file)))
+            });
+            // Com o tamanho declarado o servidor recebe um multipart comum,
+            // sem codificação em pedaços.
+            let part = reqwest::multipart::Part::stream_with_length(
+                reqwest::Body::wrap_stream(chunks),
+                length,
+            )
+            .file_name(upload.name.clone())
+            .mime_str(&upload.mime)
+            .map_err(|e| ApiError::Network(e.to_string()))?;
             form = form.part("attachments", part);
         }
 

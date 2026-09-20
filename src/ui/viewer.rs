@@ -351,7 +351,7 @@ fn stage_player(
 
     let video = matches!(attachment.kind(), Kind::Video);
     let ctx = ui.ctx().clone();
-    let player = media.player(&attachment.id, &path, video, &ctx)?;
+    let player = media.start_player(&attachment.id, &path, video, &ctx)?;
     let playing = player.is_playing();
     let position = player.position();
     let duration = player.duration();
