@@ -26,24 +26,47 @@ pub fn section_caption(ui: &mut Ui, t: &Tokens, label: &str) {
     ui.add_space(space::XS);
 }
 
-/// Círculo com as iniciais do usuário.
-pub fn avatar(ui: &mut Ui, t: &Tokens, initials: &str, size: f32, tint: Option<Color32>) -> Response {
+/// Avatar do usuário: a foto quando existe, senão as iniciais num círculo.
+///
+/// A foto é recortada pelo retângulo, igual à lista de membros e à pastilha
+/// da conta — as três mostram a mesma imagem do mesmo jeito.
+pub fn avatar(
+    ui: &mut Ui,
+    t: &Tokens,
+    initials: &str,
+    size: f32,
+    tint: Option<Color32>,
+    texture: Option<egui::TextureId>,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    let painter = ui.painter();
     let base = tint.unwrap_or(t.accent);
-    painter.circle_filled(rect.center(), size / 2.0, base.gamma_multiply(0.30));
-    painter.circle_stroke(
-        rect.center(),
-        size / 2.0 - 0.5,
-        Stroke::new(1.0, base.gamma_multiply(0.55)),
-    );
-    painter.text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        initials,
-        FontId::new((size * 0.38).round(), egui::FontFamily::Name("semibold".into())),
-        base,
-    );
+    match texture {
+        Some(texture) => {
+            let mut mesh = egui::Mesh::with_texture(texture);
+            mesh.add_rect_with_uv(
+                rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            ui.painter().with_clip_rect(rect).add(egui::Shape::mesh(mesh));
+        }
+        None => {
+            let painter = ui.painter();
+            painter.circle_filled(rect.center(), size / 2.0, base.gamma_multiply(0.30));
+            painter.circle_stroke(
+                rect.center(),
+                size / 2.0 - 0.5,
+                Stroke::new(1.0, base.gamma_multiply(0.55)),
+            );
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initials,
+                FontId::new((size * 0.38).round(), egui::FontFamily::Name("semibold".into())),
+                base,
+            );
+        }
+    }
     response
 }
 

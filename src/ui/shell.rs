@@ -1656,6 +1656,7 @@ fn message_list(
         return;
     }
 
+    let ctx = ui.ctx().clone();
     let width = area.width();
     let gutter = space::XL;
     let avatar_size = 36.0;
@@ -1704,7 +1705,23 @@ fn message_list(
                     ui.add_space(space::LG);
                 } else {
                     let initials = author.map(|a| a.initials()).unwrap_or_else(|| "?".into());
-                    avatar(ui, t, &initials, avatar_size, author.and_then(|a| a.role_color));
+                    // A mesma foto que a lista de membros e a pastilha da
+                    // conta mostram; sem ela, sobram as iniciais.
+                    let texture = author.and_then(|a| {
+                        state
+                            .media
+                            .avatar(&a.id, store.avatars.get(&a.id).map(String::as_str))
+                            .and_then(|texture| texture.frame(&ctx))
+                            .map(|handle| handle.id())
+                    });
+                    avatar(
+                        ui,
+                        t,
+                        &initials,
+                        avatar_size,
+                        author.and_then(|a| a.role_color),
+                        texture,
+                    );
                     ui.add_space(space::LG);
                 }
                 ui.vertical(|ui| {
