@@ -5,6 +5,7 @@
 //! usuário e só então vira textura ou arquivo para tocar.
 
 pub mod player;
+pub mod prepare;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

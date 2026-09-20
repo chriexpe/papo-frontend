@@ -14,8 +14,14 @@ pub enum AdminAction {
     LoadDevices,
     DropConnection(String),
     SaveServer(Box<UpdateServerRequest>),
-    /// Figurinha nova, com o nome que ela vai ter.
-    PickEmoji(String),
+    /// Abre o seletor para uma figurinha nova. O nome vem depois.
+    PickSticker,
+    /// Sobe a figurinha já escolhida, agora com nome.
+    CreateSticker {
+        name: String,
+        blob: String,
+        format: String,
+    },
     DeleteEmoji(String),
     LoadAuditLogs,
 }

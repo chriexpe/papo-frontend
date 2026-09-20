@@ -144,7 +144,16 @@ Linguagem visual seguindo as HIG da Apple, adaptadas ao desktop:
   oposta. As duas abrem a mesma folha, que é sólida: o guia do material diz que
   superfície grande fica mais opaca, e que vidro sobre vidro desmancha a
   hierarquia. `PAPO_SHEET=app` ou `PAPO_SHEET=servidor` abre a folha já na
-  partida, para trabalhar no desenho dela sem clicar até lá.
+  partida, para trabalhar no desenho dela sem clicar até lá
+  (`PAPO_SHEET=servidor:figurinhas` abre direto num painel).
+- **Figurinha entra pelo arquivo, não pelo nome.** Escolhe-se a imagem, vê-se
+  como vai ficar, e só então se dá o nome. O que passa de 512 px ou 256 KB é
+  reduzido pelo cliente: imagem parada vira WebP sem perdas, GIF animado
+  continua GIF animado, quadro a quadro. O servidor não tem como renomear
+  (`/emojis` só cria e apaga), e a tela diz isso em vez de oferecer um campo
+  que não salvaria.
+- **`:apelido` sugere enquanto se digita.** A lista sobe da caixa de mensagem,
+  seta para cima e para baixo escolhe, Enter ou Tab preenche, Esc dispensa.
 
 ## Estado
 

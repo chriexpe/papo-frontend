@@ -404,12 +404,33 @@ impl PapoApp {
             // clicar até lá a cada recompilação.
             sheet: {
                 let mut sheet = crate::ui::settings::SettingsState::default();
-                match std::env::var("PAPO_SHEET").as_deref() {
-                    Ok("app") => sheet.open = Some(crate::ui::settings::Surface::App),
-                    Ok("servidor") | Ok("server") => {
-                        sheet.open = Some(crate::ui::settings::Surface::Server)
+                // `PAPO_SHEET=servidor:figurinhas` abre direto num painel.
+                if let Ok(value) = std::env::var("PAPO_SHEET") {
+                    let (surface, pane) = value.split_once(':').unwrap_or((value.as_str(), ""));
+                    match surface {
+                        "app" => {
+                            sheet.open = Some(crate::ui::settings::Surface::App);
+                            sheet.app_pane = match pane {
+                                "aparencia" => crate::ui::settings::AppPane::Appearance,
+                                "avisos" => crate::ui::settings::AppPane::Alerts,
+                                "arquivos" => crate::ui::settings::AppPane::Files,
+                                "idioma" => crate::ui::settings::AppPane::Language,
+                                "sessoes" => crate::ui::settings::AppPane::Sessions,
+                                _ => crate::ui::settings::AppPane::Account,
+                            };
+                        }
+                        "servidor" | "server" => {
+                            sheet.open = Some(crate::ui::settings::Surface::Server);
+                            sheet.server_pane = match pane {
+                                "canais" => crate::ui::settings::ServerPane::Channels,
+                                "cargos" => crate::ui::settings::ServerPane::Roles,
+                                "figurinhas" => crate::ui::settings::ServerPane::Emojis,
+                                "auditoria" => crate::ui::settings::ServerPane::Audit,
+                                _ => crate::ui::settings::ServerPane::General,
+                            };
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
                 sheet
             },
@@ -1101,13 +1122,27 @@ impl PapoApp {
                     purpose,
                     blob,
                     format,
-                } => {
-                    let command = match purpose {
-                        ImagePick::Avatar => Command::SetAvatar { blob, format },
-                        ImagePick::Emoji(name) => Command::CreateEmoji { name, blob, format },
-                    };
-                    self.workspaces[self.active].net.send(command);
-                }
+                    shrunk,
+                } => match purpose {
+                    ImagePick::Avatar => {
+                        self.workspaces[self.active]
+                            .net
+                            .send(Command::SetAvatar { blob, format });
+                    }
+                    // A figurinha espera pelo nome: ela aparece no painel com
+                    // um campo ao lado, e só então sobe.
+                    ImagePick::Sticker => {
+                        self.sheet.draft.pending_sticker =
+                            Some(crate::ui::settings::PendingSticker {
+                                blob,
+                                format,
+                                shrunk,
+                                name: String::new(),
+                            });
+                        self.sheet.open = Some(crate::ui::settings::Surface::Server);
+                        self.sheet.server_pane = crate::ui::settings::ServerPane::Emojis;
+                    }
+                },
                 Chosen::Cancelled => {}
             }
         }
@@ -1312,8 +1347,8 @@ impl PapoApp {
                 self.dialogs.pick_image(ctx.clone(), ImagePick::Avatar);
                 return;
             }
-            AdminAction::PickEmoji(name) => {
-                self.dialogs.pick_image(ctx.clone(), ImagePick::Emoji(name));
+            AdminAction::PickSticker => {
+                self.dialogs.pick_image(ctx.clone(), ImagePick::Sticker);
                 return;
             }
             AdminAction::SaveProfile(request) => Command::UpdateProfile(request),
@@ -1322,6 +1357,9 @@ impl PapoApp {
             AdminAction::LoadDevices => Command::LoadDevices,
             AdminAction::DropConnection(connection_id) => Command::DropConnection { connection_id },
             AdminAction::SaveServer(request) => Command::UpdateServer(request),
+            AdminAction::CreateSticker { name, blob, format } => {
+                Command::CreateEmoji { name, blob, format }
+            }
             AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
             AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
         };
@@ -1410,6 +1448,7 @@ impl PapoApp {
             let ws = &self.workspaces[self.active];
             let mut data = crate::ui::settings::Context {
                 store: &ws.store,
+                media: &mut self.ui.media,
                 roles: &mut self.roles,
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,

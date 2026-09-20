@@ -109,6 +109,16 @@ impl Default for SettingsState {
     }
 }
 
+/// Figurinha já escolhida e encolhida, à espera de um nome.
+#[derive(Clone, Debug)]
+pub struct PendingSticker {
+    pub blob: String,
+    pub format: String,
+    /// Precisou ser reduzida para caber no limite do servidor.
+    pub shrunk: bool,
+    pub name: String,
+}
+
 #[derive(Default)]
 pub struct Draft {
     pub loaded_account: bool,
@@ -120,7 +130,7 @@ pub struct Draft {
     pub server_name: String,
     pub server_public: bool,
     pub server_password: String,
-    pub emoji_name: String,
+    pub pending_sticker: Option<PendingSticker>,
     pub loaded_audit: bool,
 }
 
@@ -158,6 +168,11 @@ const ROW_INSET: f32 = space::LG;
 const LABEL_COLUMN: f32 = 150.0;
 /// Largura reservada ao controle, encostado à direita da linha.
 const CONTROL_COLUMN: f32 = 190.0;
+/// Linhas que mostram figurinha: a arte e a altura que ela pede.
+const STICKER_SIDE: f32 = 28.0;
+const STICKER_ROW_H: f32 = 44.0;
+const PREVIEW_SIDE: f32 = 72.0;
+const PREVIEW_H: f32 = 88.0;
 /// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
 const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
@@ -388,6 +403,95 @@ impl Rows<'_> {
         response.clicked()
     }
 
+    /// Linha com a figurinha desenhada à esquerda do rótulo. Uma lista de
+    /// figurinhas sem as figurinhas é uma lista de nomes.
+    fn preview_row(
+        &mut self,
+        label: &str,
+        media: &mut crate::media::MediaStore,
+        id: &str,
+        blob: Option<&str>,
+        control: impl FnOnce(&mut egui::Ui, &Tokens),
+    ) {
+        let (rect, inner) = self.band(STICKER_ROW_H);
+        let t = self.t;
+        let ctx = self.ui.ctx().clone();
+        let texture = media
+            .emoji(id, blob)
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let art = Rect::from_center_size(
+            egui::pos2(inner.min.x + STICKER_SIDE / 2.0, rect.center().y),
+            Vec2::splat(STICKER_SIDE),
+        );
+        draw_sticker(self.ui, &t, art, texture);
+        self.ui.painter().text(
+            egui::pos2(art.max.x + space::MD, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            text::body(),
+            t.label,
+        );
+        let control_rect =
+            Rect::from_min_max(egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y), inner.max);
+        self.ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(control_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| control(ui, &t),
+        );
+    }
+
+    /// Figurinha grande, para conferir antes de dar nome a ela.
+    fn preview(
+        &mut self,
+        label: &str,
+        note: Option<&str>,
+        media: &mut crate::media::MediaStore,
+        id: &str,
+        blob: Option<&str>,
+    ) {
+        let (rect, inner) = self.band(PREVIEW_H);
+        let t = self.t;
+        let ctx = self.ui.ctx().clone();
+        let texture = media
+            .emoji(id, blob)
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let painter = self.ui.painter();
+        let middle = rect.center().y;
+        match note {
+            None => painter.text(
+                egui::pos2(inner.min.x, middle),
+                egui::Align2::LEFT_CENTER,
+                label,
+                text::body(),
+                t.label,
+            ),
+            Some(note) => {
+                painter.text(
+                    egui::pos2(inner.min.x, middle - 9.0),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    text::body(),
+                    t.label,
+                );
+                painter.text(
+                    egui::pos2(inner.min.x, middle + 9.0),
+                    egui::Align2::LEFT_CENTER,
+                    note,
+                    text::footnote(),
+                    t.label_tertiary,
+                )
+            }
+        };
+        let art = Rect::from_center_size(
+            egui::pos2(inner.max.x - PREVIEW_SIDE / 2.0, middle),
+            Vec2::splat(PREVIEW_SIDE),
+        );
+        draw_sticker(self.ui, &t, art, texture);
+    }
+
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
@@ -419,6 +523,25 @@ fn actions_row(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
         Layout::right_to_left(Align::Center),
         contents,
     );
+}
+
+/// Desenha a figurinha, ou o lugar dela enquanto não chega.
+fn draw_sticker(ui: &egui::Ui, t: &Tokens, rect: Rect, texture: Option<egui::TextureId>) {
+    match texture {
+        Some(texture) => {
+            let mut mesh = egui::Mesh::with_texture(texture);
+            mesh.add_rect_with_uv(
+                rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            ui.painter().add(egui::Shape::mesh(mesh));
+        }
+        None => {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+        }
+    }
 }
 
 /// Interruptor. Num painel de ajustes que aplica na hora, o interruptor diz
@@ -589,6 +712,8 @@ pub enum SettingsAction {
 /// Tudo que a folha precisa do resto do programa.
 pub struct Context<'a> {
     pub store: &'a Store,
+    /// As figurinhas viram textura pelo mesmo caminho da conversa.
+    pub media: &'a mut crate::media::MediaStore,
     pub roles: &'a mut super::roles::RolesState,
     pub lang: &'a mut crate::i18n::Lang,
     pub theme: &'a mut crate::ui::theme::ThemePref,
@@ -1315,32 +1440,92 @@ fn server_pane(
         }
 
         ServerPane::Emojis => {
-            section(ui, t, s.server_emojis);
-            let draft = &mut state.draft;
-            group(ui, t, |rows| {
-                let sent = rows.field(s.emoji_name, &mut draft.emoji_name, 32, false);
-                let ready = !draft.emoji_name.trim().is_empty();
-                rows.row(s.add_emoji, None, |ui, t| {
-                    if (row_button(ui, t, s.add_emoji, Emphasis::Primary) || (sent && ready)) && ready {
-                        actions.push(SettingsAction::Admin(AdminAction::PickEmoji(
-                            draft.emoji_name.trim().to_owned(),
-                        )));
-                        draft.emoji_name.clear();
+            // Escolher o arquivo vem primeiro: dá para ver o que se está
+            // nomeando, em vez de nomear no escuro e só então abrir o
+            // seletor.
+            if let Some(pending) = state.draft.pending_sticker.as_mut() {
+                section(ui, t, s.sticker_new);
+                let ready = !pending.name.trim().is_empty();
+                let mut submit = false;
+                let mut discard = false;
+                group(ui, t, |rows| {
+                    rows.preview(
+                        s.sticker_preview,
+                        pending.shrunk.then_some(s.sticker_shrunk),
+                        data.media,
+                        "pendente",
+                        Some(pending.blob.as_str()),
+                    );
+                    submit = rows.field(s.emoji_name, &mut pending.name, 32, false) && ready;
+                });
+                ui.add_space(space::SM);
+                actions_row(ui, |ui| {
+                    if row_button(ui, t, s.save, Emphasis::Primary) && ready {
+                        submit = true;
+                    }
+                    if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                        discard = true;
                     }
                 });
-            });
-
-            section(ui, t, s.emoji);
-            group(ui, t, |rows| {
-                for emoji in &data.store.emojis {
-                    rows.row(&format!(":{}:", emoji.name), None, |ui, t| {
-                        if row_button(ui, t, s.delete, Emphasis::Danger) {
-                            actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(
-                                emoji.id.clone(),
-                            )));
-                        }
-                    });
+                if submit {
+                    actions.push(SettingsAction::Admin(AdminAction::CreateSticker {
+                        name: pending.name.trim().to_owned(),
+                        blob: pending.blob.clone(),
+                        format: pending.format.clone(),
+                    }));
+                    discard = true;
                 }
+                if discard {
+                    state.draft.pending_sticker = None;
+                }
+            } else {
+                section(ui, t, s.sticker_new);
+                group(ui, t, |rows| {
+                    if rows.action(s.add_emoji, Some(s.sticker_hint), false) {
+                        actions.push(SettingsAction::Admin(AdminAction::PickSticker));
+                    }
+                });
+            }
+
+            section(ui, t, s.server_emojis);
+            let stickers: Vec<(String, String, Option<String>)> = data
+                .store
+                .emojis
+                .iter()
+                .map(|emoji| (emoji.id.clone(), emoji.name.clone(), emoji.blob.clone()))
+                .collect();
+            group(ui, t, |rows| {
+                if stickers.is_empty() {
+                    rows.row(s.no_stickers, None, |_, _| {});
+                }
+                for (id, name, blob) in &stickers {
+                    rows.preview_row(
+                        &format!(":{name}:"),
+                        data.media,
+                        id,
+                        blob.as_deref(),
+                        |ui, t| {
+                            if row_button(ui, t, s.delete, Emphasis::Danger) {
+                                actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(
+                                    id.clone(),
+                                )));
+                            }
+                        },
+                    );
+                }
+            });
+            // O backend não tem como renomear: `/emojis` só aceita criar e
+            // apagar. Dizer isso é melhor do que oferecer um campo que não
+            // salvaria, ou apagar e recriar por baixo — o id mudaria e as
+            // reações já feitas com ela iriam junto.
+            ui.add_space(space::SM);
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.label(
+                    RichText::new(s.sticker_rename_note)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
             });
         }
 

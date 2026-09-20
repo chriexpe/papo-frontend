@@ -17,6 +17,8 @@ pub enum Chosen {
         purpose: ImagePick,
         blob: String,
         format: String,
+        /// O arquivo precisou ser reduzido para caber.
+        shrunk: bool,
     },
     Folder(PathBuf),
     /// Destino de um anexo que estava esperando o "salvar como".
@@ -24,12 +26,25 @@ pub enum Chosen {
     Cancelled,
 }
 
-/// Para que serve a imagem que está sendo escolhida.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Para que serve a imagem que está sendo escolhida. Cada uma tem o seu
+/// limite, que é o do endpoint correspondente do backend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImagePick {
     Avatar,
-    /// Figurinha do servidor, com o nome que ela vai ter.
-    Emoji(String),
+    /// Figurinha do servidor. O nome é pedido depois de escolher o arquivo:
+    /// digitar o nome antes de ver a imagem era pedir na ordem errada.
+    Sticker,
+}
+
+impl ImagePick {
+    /// Lado maior e peso máximo. Os números vêm do resumo de cada endpoint:
+    /// avatar aceita 512 px e 2 MB, figurinha 512 px e 256 KB.
+    fn limits(self) -> (u32, usize) {
+        match self {
+            Self::Avatar => (512, 2 * 1024 * 1024),
+            Self::Sticker => (512, 256 * 1024),
+        }
+    }
 }
 
 /// Diálogos abertos, à espera de resposta.
@@ -111,11 +126,14 @@ impl Dialogs {
         });
     }
 
-    /// Imagem para foto de perfil ou figurinha. O backend recebe base64 e
-    /// aceita no máximo 2 MB, então o arquivo é conferido aqui antes de
-    /// subir — a alternativa é um 400 depois da espera.
+    /// Imagem para foto de perfil ou figurinha.
+    ///
+    /// O arquivo é encolhido e convertido aqui, antes de subir: o servidor
+    /// recusa o que passa do limite, e mandar o usuário achar uma imagem
+    /// menor sozinho é empurrar para ele um trabalho que a máquina faz.
     pub fn pick_image(&mut self, repaint: egui::Context, purpose: ImagePick) {
-        self.spawn(repaint, |dialog| async move {
+        let (max_side, max_bytes) = purpose.limits();
+        self.spawn(repaint, move |dialog| async move {
             let Some(handle) = dialog
                 .set_title("Imagem")
                 .add_filter("Imagens", &["png", "jpg", "jpeg", "gif", "webp"])
@@ -124,32 +142,26 @@ impl Dialogs {
             else {
                 return Chosen::Cancelled;
             };
-            let path = handle.path().to_path_buf();
-            let Ok(bytes) = std::fs::read(&path) else {
-                return Chosen::Cancelled;
-            };
-            if bytes.len() > 2 * 1024 * 1024 {
-                log::warn!("imagem de {} bytes: o limite do servidor é 2 MB", bytes.len());
-                return Chosen::Cancelled;
-            }
-            let format = match path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .unwrap_or("")
-                .to_lowercase()
-                .as_str()
-            {
-                "gif" => "GIF",
-                "jpg" => "JPG",
-                "jpeg" => "JPEG",
-                "webp" => "WEBP",
-                _ => "PNG",
-            };
-            use base64::Engine as _;
-            Chosen::Image {
-                purpose,
-                blob: base64::engine::general_purpose::STANDARD.encode(&bytes),
-                format: format.to_owned(),
+            match crate::media::prepare::fit(handle.path(), max_side, max_bytes) {
+                Ok(prepared) => {
+                    log::info!(
+                        "imagem pronta: {}x{} {} · {} KB",
+                        prepared.width,
+                        prepared.height,
+                        prepared.format,
+                        prepared.bytes / 1024
+                    );
+                    Chosen::Image {
+                    purpose,
+                        blob: prepared.blob,
+                        format: prepared.format.to_owned(),
+                        shrunk: prepared.shrunk,
+                    }
+                }
+                Err(error) => {
+                    log::warn!("imagem recusada: {error}");
+                    Chosen::Cancelled
+                }
             }
         });
     }
