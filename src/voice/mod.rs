@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
+pub use engine::check;
 pub use ice::IceConfig;
 pub use slots::Kind;
 

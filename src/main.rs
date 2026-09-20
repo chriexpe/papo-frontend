@@ -97,6 +97,15 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // `papo voice-check` confere as peças da call — plugins, microfone,
+    // alto-falante, câmera e o transporte — e diz o que falta. Dentro do
+    // Flatpak:
+    //   flatpak run --command=papo io.github.chriexpe.Papo voice-check
+    if args.get(1).map(String::as_str) == Some("voice-check") {
+        voice::check();
+        return Ok(());
+    }
+
     // `papo voice-sdp` monta o pipeline da call, imprime a oferta e sai.
     // É a conferência barata do contrato de mídia: quantas linhas `m=`,
     // quais codecs e que extensões vão no cabeçalho — sem servidor nenhum.

@@ -33,6 +33,11 @@ finish-args:
   - --device=dri
   # Tocar áudio e vídeo, gravar recado de voz e falar na call.
   - --socket=pulseaudio
+  # O soquete do PipeWire. `--socket=pulseaudio` entrega só o do PulseAudio,
+  # e a `pipewiresrc` — que é a primeira fonte tentada, dentro e fora do
+  # sandbox — falha ao conectar sem este. A call cai para a `pulsesrc`
+  # sozinha quando ele não está aqui, mas então o caminho é mais longo.
+  - --filesystem=xdg-run/pipewire-0
   # A câmera fica de fora por enquanto — e de propósito. A captura é
   # `v4l2src`, que precisaria de `--device=all`, e `all` não é "a webcam":
   # é todo dispositivo da máquina. O caminho certo é o portal de câmera, que

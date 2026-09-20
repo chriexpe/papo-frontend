@@ -21,7 +21,7 @@
 //! mais linhas do que os lugares que ele abriu.
 
 use std::sync::atomic::Ordering;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 use gstreamer as gst;
 use gstreamer::glib;
@@ -160,8 +160,33 @@ impl Engine {
             return None;
         }
 
-        // O microfone primeiro: ele vira a linha 0 da oferta, e a ordem
-        // aqui é a ordem das linhas lá.
+        let video_lines_slot: Arc<Mutex<Vec<gst_webrtc::WebRTCRTPTransceiver>>> =
+            Arc::new(Mutex::new(Vec::new()));
+
+        connect_signals(
+            &webrtc,
+            &pipeline,
+            &shared,
+            &inbox,
+            &signals,
+            &channel_id,
+            Arc::clone(&video_lines_slot),
+            repaint.clone(),
+        );
+
+        // O transporte sobe primeiro, sozinho. Assim uma falha aqui é uma
+        // falha dele — o ICE que não existe no sandbox, por exemplo — e não
+        // se confunde com a do microfone, que sobe depois e pode faltar sem
+        // acabar com a call.
+        if let Err(error) = pipeline.set_state(gst::State::Playing) {
+            let detail = drain_error(&pipeline).unwrap_or_else(|| error.to_string());
+            shared.fail(format!("a call não entrou no ar: {detail}"));
+            return None;
+        }
+
+        // O microfone é a linha 0 da oferta: a ordem em que os transceptores
+        // nascem é a ordem das linhas lá, e ele nasce antes dos lugares de
+        // recepção mesmo com o pipeline já andando.
         let mic = microphone(&pipeline, &webrtc, &shared);
 
         // Depois os lugares de recepção. A ordem em que entram é a ordem em
@@ -183,26 +208,15 @@ impl Engine {
                 return None;
             }
         }
-        let video_lines = Arc::new(video_lines);
+        // Os lugares só existem agora, e o `pad-added` precisa deles para
+        // saber de quem é o vídeo que chegou. Ele não pode disparar antes da
+        // negociação, que ainda nem começou.
+        if let Ok(mut slot) = video_lines_slot.lock() {
+            *slot = video_lines;
+        }
 
         if let Ok(mut tiles) = shared.tiles.lock() {
             *tiles = (0..VIDEO_SLOTS).map(|_| Tile::default()).collect();
-        }
-
-        connect_signals(
-            &webrtc,
-            &pipeline,
-            &shared,
-            &inbox,
-            &signals,
-            &channel_id,
-            video_lines,
-            repaint.clone(),
-        );
-
-        if pipeline.set_state(gst::State::Playing).is_err() {
-            shared.fail("o pipeline da call não entrou no ar");
-            return None;
         }
 
         Some(Self {
@@ -666,52 +680,282 @@ fn add_receiver(
     line
 }
 
+/// Confere o que a call precisa e diz o que falta, sem rede e sem janela.
+///
+/// Existe por causa do Flatpak: lá dentro o que falta não é sempre um
+/// plugin — pode ser o soquete do PipeWire, ou a câmera que o sandbox não
+/// entrega —, e de fora as duas falhas têm a mesma cara. Aqui cada peça é
+/// testada de verdade, uma por uma.
+pub fn check() {
+    if !crate::media::player::init() {
+        println!("GStreamer não iniciou: a call não tem como existir");
+        return;
+    }
+    println!("GStreamer {}\n", gst::version_string());
+
+    println!("peças:");
+    for (name, purpose) in [
+        ("webrtcbin", "o transporte"),
+        ("nicesrc", "ICE — é o que falta quando a call não entra no ar"),
+        ("dtlssrtpenc", "DTLS"),
+        ("srtpenc", "SRTP"),
+        ("rtpbin", "sessão RTP"),
+        ("opusenc", "sua voz saindo"),
+        ("opusdec", "a voz dos outros chegando"),
+        ("rtpopuspay", "áudio em RTP"),
+        ("rtpopusdepay", "áudio de volta do RTP"),
+        ("rtphdrextclientaudiolevel", "quem está falando"),
+        ("vp8enc", "sua câmera saindo"),
+        ("vp8dec", "a câmera dos outros chegando"),
+        ("rtpvp8pay", "vídeo em RTP"),
+        ("rtpvp8depay", "vídeo de volta do RTP"),
+        ("v4l2src", "a câmera"),
+        ("appsrc", "a ponte da câmera"),
+        ("appsink", "os quadros para a janela"),
+    ] {
+        let found = gst::ElementFactory::find(name).is_some();
+        println!("  [{}] {name:<26} {purpose}", if found { "ok" } else { "--" });
+    }
+
+    println!("\nmicrofone (o primeiro que abrir é o usado):");
+    for factory in ["pipewiresrc", "pulsesrc", "alsasrc"] {
+        report(factory, probe(factory, "audioconvert", "fakesink"));
+    }
+
+    println!("\nalto-falante:");
+    for factory in ["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"] {
+        report(factory, probe("audiotestsrc", "audioconvert", factory));
+    }
+
+    println!("\ncâmera:");
+    report("v4l2src", probe("v4l2src", "videoconvert", "fakesink"));
+
+    println!("\ntransporte:");
+    let transport = match gst::ElementFactory::make("webrtcbin")
+        .property_from_str("bundle-policy", "max-bundle")
+        .build()
+    {
+        Ok(webrtc) => {
+            let pipeline = gst::Pipeline::new();
+            let outcome = match pipeline.add(&webrtc) {
+                Ok(()) => match pipeline.set_state(gst::State::Playing) {
+                    Ok(_) => match pipeline.state(gst::ClockTime::from_mseconds(1500)).0 {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(drain_error(&pipeline)
+                            .unwrap_or_else(|| "não chegou a tocar".to_owned())),
+                    },
+                    Err(error) => {
+                        Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string()))
+                    }
+                },
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = pipeline.set_state(gst::State::Null);
+            outcome
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    report("webrtcbin", transport);
+}
+
+fn report(what: &str, outcome: Result<(), String>) {
+    match outcome {
+        Ok(()) => println!("  [ok] {what}"),
+        Err(reason) => println!("  [--] {what}: {reason}"),
+    }
+}
+
+/// Sobe `fonte ! conversor ! destino` de verdade e diz se ficou de pé.
+///
+/// O conversor no meio não é enfeite: sem nada que diga "isto é áudio", a
+/// `pipewiresrc` não sabe a que se ligar e falha com `target not found` —
+/// uma fonte boa reprovada por um teste mal feito. Aqui a cadeia é a mesma
+/// que a call monta.
+fn probe(source: &str, bridge: &str, sink: &str) -> Result<(), String> {
+    let pipeline = gst::Pipeline::new();
+    let Some(source) = make(source) else {
+        return Err("o elemento não existe".to_owned());
+    };
+    let Some(bridge) = make(bridge) else {
+        return Err("falta o conversor do teste".to_owned());
+    };
+    let Some(sink) = make(sink) else {
+        return Err("o destino não existe".to_owned());
+    };
+    if source.has_property("do-timestamp") {
+        source.set_property("do-timestamp", true);
+    }
+    let elements = [source, bridge, sink];
+    let outcome = if pipeline.add_many(&elements).is_err()
+        || gst::Element::link_many(&elements).is_err()
+    {
+        Err("não deu para montar".to_owned())
+    } else {
+        match pipeline.set_state(gst::State::Playing) {
+            Ok(_) => match pipeline.state(gst::ClockTime::from_mseconds(1500)).0 {
+                // Subir não basta: a fonte pode morrer logo depois, na
+                // thread de fluxo, e é no barramento que isso aparece.
+                Ok(_) => match drain_error(&pipeline) {
+                    Some(reason) => Err(reason),
+                    None => Ok(()),
+                },
+                Err(_) => Err(drain_error(&pipeline).unwrap_or_else(|| "não abriu".to_owned())),
+            },
+            Err(error) => Err(drain_error(&pipeline).unwrap_or_else(|| error.to_string())),
+        }
+    };
+    let _ = pipeline.set_state(gst::State::Null);
+    outcome
+}
+
+/// O que o barramento tem a dizer sobre uma falha.
+///
+/// Sem isto, "não entrou no ar" é tudo que se sabe — e o que costuma faltar
+/// é um plugin, que tem nome. Dentro de um sandbox então, onde o que falta
+/// pode ser o acesso ao dispositivo e não o plugin, a diferença é tudo.
+fn drain_error(pipeline: &gst::Pipeline) -> Option<String> {
+    let bus = pipeline.bus()?;
+    let message = bus.timed_pop_filtered(
+        gst::ClockTime::from_mseconds(250),
+        &[gst::MessageType::Error],
+    )?;
+    let source = message
+        .src()
+        .map(|object| object.path_string().to_string())
+        .unwrap_or_default();
+    match message.view() {
+        gst::MessageView::Error(error) => Some(format!("{} [{source}]", error.error())),
+        _ => None,
+    }
+}
+
 /// Microfone → Opus → a primeira linha da oferta. O silenciador fica antes
 /// do codificador: mudo é o volume em zero, não o pipeline desmontado, para
 /// falar de novo ser instantâneo.
+///
+/// A fonte é escolhida tentando de verdade. Não basta o elemento existir: no
+/// Flatpak a `pipewiresrc` existe e falha ao conectar (o soquete do PipeWire
+/// não está no sandbox), e é só ao subir que isso aparece. Cada tentativa
+/// que falha é desfeita por inteiro — elementos fora do pipeline, pad
+/// devolvido — antes da seguinte.
 fn microphone(
     pipeline: &gst::Pipeline,
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
     for factory in ["pipewiresrc", "pulsesrc", "alsasrc"] {
-        let Some(source) = make(factory) else { continue };
-        if source.has_property("do-timestamp") {
-            source.set_property("do-timestamp", true);
+        let Some((elements, volume)) = mic_chain(factory) else {
+            continue;
+        };
+        if pipeline.add_many(&elements).is_err() {
+            continue;
         }
-        let queue = make("queue")?;
-        queue.set_property("max-size-time", 2_000_000_000u64);
-        let convert = make("audioconvert")?;
-        let resample = make("audioresample")?;
-        let filter = make("capsfilter")?;
-        // Dois canais porque é o que o Opus do navegador oferece e o que o
-        // servidor registrou; um microfone mono é duplicado pelo convert.
-        filter.set_property(
-            "caps",
-            gst::Caps::builder("audio/x-raw")
-                .field("rate", 48_000i32)
-                .field("channels", 2i32)
-                .build(),
-        );
-        let volume = make("volume")?;
-        // Entra-se na call em silêncio, como o servidor assume (`muted=true`).
-        volume.set_property("mute", true);
-        let encoder = make("opusenc")?;
-        encoder.set_property("bitrate", 48_000i32);
-        encoder.set_property("inband-fec", true);
-        encoder.set_property_from_str("audio-type", "voice");
-        let payloader = make("rtpopuspay")?;
-        payloader.set_property("pt", 111u32);
-        // Nível de voz no cabeçalho de cada pacote (RFC 6464): é assim que o
-        // servidor sabe quem está falando sem decodificar nada.
-        if let Some(extension) = audio_level_extension() {
-            payloader.emit_by_name::<()>("add-extension", &[&extension]);
+        if gst::Element::link_many(&elements).is_err() {
+            let _ = pipeline.remove_many(&elements);
+            continue;
         }
-        let cap = make("capsfilter")?;
-        cap.set_property("caps", audio_caps());
+        let Some(pad) = webrtc.request_pad_simple("sink_%u") else {
+            let _ = pipeline.remove_many(&elements);
+            continue;
+        };
+        let linked = elements
+            .last()
+            .and_then(|last| last.static_pad("src"))
+            .is_some_and(|src| src.link(&pad).is_ok());
+        if linked {
+            // Só enviar: uma linha `sendrecv` convidaria o servidor a
+            // devolver áudio de outra pessoa por ela, e a conta dos lugares
+            // deixaria de bater.
+            if let Some(line) =
+                pad.property::<Option<gst_webrtc::WebRTCRTPTransceiver>>("transceiver")
+            {
+                line.set_property_from_str("direction", "sendonly");
+            }
+        }
 
-        let elements = [
-            source.clone(),
+        // O pipeline já está andando: quem entra depois sobe sozinho. É aqui
+        // que a fonte abre o dispositivo, e é aqui que ela falha.
+        let mut opened = linked
+            && elements
+                .iter()
+                .all(|element| element.sync_state_with_parent().is_ok());
+        if opened {
+            opened = elements
+                .first()
+                .is_some_and(|source| source.state(gst::ClockTime::from_mseconds(1500)).0.is_ok());
+        }
+        // E o erro que só aparece depois, na thread de fluxo: a
+        // `pipewiresrc` dentro do Flatpak sobe e morre em seguida
+        // ("target not found"). Sem olhar o barramento, a fonte passaria por
+        // boa e a call ficaria muda — ou, pior, nem subiria.
+        let mut reason = None;
+        if opened {
+            reason = drain_error(pipeline);
+            opened = reason.is_none();
+        }
+        if opened {
+            log::info!("call: microfone por {factory}");
+            return Some(volume);
+        }
+
+        log::warn!(
+            "call: {factory} não abriu ({})",
+            reason
+                .or_else(|| drain_error(pipeline))
+                .unwrap_or_else(|| "sem detalhe".to_owned())
+        );
+        for element in &elements {
+            let _ = element.set_state(gst::State::Null);
+        }
+        let _ = pipeline.remove_many(&elements);
+        webrtc.release_request_pad(&pad);
+    }
+    // Dá para participar só ouvindo: o aviso aparece, a call continua.
+    shared.warn("sem microfone: você entra só ouvindo");
+    None
+}
+
+/// A cadeia do microfone, ainda solta. Devolve os elementos em ordem de
+/// ligação e o silenciador, que é quem o mudo desliga.
+fn mic_chain(factory: &str) -> Option<(Vec<gst::Element>, gst::Element)> {
+    let source = make(factory)?;
+    if source.has_property("do-timestamp") {
+        source.set_property("do-timestamp", true);
+    }
+    let queue = make("queue")?;
+    queue.set_property("max-size-time", 2_000_000_000u64);
+    let convert = make("audioconvert")?;
+    let resample = make("audioresample")?;
+    let filter = make("capsfilter")?;
+    // Dois canais porque é o que o Opus do navegador oferece e o que o
+    // servidor registrou; um microfone mono é duplicado pelo convert.
+    filter.set_property(
+        "caps",
+        gst::Caps::builder("audio/x-raw")
+            .field("rate", 48_000i32)
+            .field("channels", 2i32)
+            .build(),
+    );
+    let volume = make("volume")?;
+    // Entra-se na call em silêncio, como o servidor assume (`muted=true`).
+    volume.set_property("mute", true);
+    let encoder = make("opusenc")?;
+    encoder.set_property("bitrate", 48_000i32);
+    encoder.set_property("inband-fec", true);
+    encoder.set_property_from_str("audio-type", "voice");
+    let payloader = make("rtpopuspay")?;
+    payloader.set_property("pt", 111u32);
+    // Nível de voz no cabeçalho de cada pacote (RFC 6464): é assim que o
+    // servidor sabe quem está falando sem decodificar nada.
+    if let Some(extension) = audio_level_extension() {
+        payloader.emit_by_name::<()>("add-extension", &[&extension]);
+    }
+    let cap = make("capsfilter")?;
+    cap.set_property("caps", audio_caps());
+
+    Some((
+        vec![
+            source,
             queue,
             convert,
             resample,
@@ -720,41 +964,9 @@ fn microphone(
             encoder,
             payloader,
             cap,
-        ];
-        if pipeline.add_many(&elements).is_err() {
-            continue;
-        }
-        if gst::Element::link_many(&elements).is_err() {
-            let _ = pipeline.remove_many(&elements);
-            continue;
-        }
-        let linked = webrtc
-            .request_pad_simple("sink_%u")
-            .zip(elements.last().and_then(|last| last.static_pad("src")))
-            .is_some_and(|(pad, src)| {
-                if src.link(&pad).is_err() {
-                    return false;
-                }
-                // Só enviar: uma linha `sendrecv` convidaria o servidor a
-                // devolver áudio de outra pessoa por ela, e a conta dos
-                // lugares deixaria de bater.
-                if let Some(line) =
-                    pad.property::<Option<gst_webrtc::WebRTCRTPTransceiver>>("transceiver")
-                {
-                    line.set_property_from_str("direction", "sendonly");
-                }
-                true
-            });
-        if !linked {
-            let _ = pipeline.remove_many(&elements);
-            continue;
-        }
-        log::info!("call: microfone por {factory}");
-        return Some(volume);
-    }
-    // Dá para participar só ouvindo: o aviso aparece, a call continua.
-    shared.warn("sem microfone: você entra só ouvindo");
-    None
+        ],
+        volume,
+    ))
 }
 
 fn audio_level_extension() -> Option<gst_rtp::RTPHeaderExtension> {
@@ -778,7 +990,7 @@ fn connect_signals(
     inbox: &mpsc::Sender<Command>,
     signals: &mpsc::Sender<String>,
     channel_id: &str,
-    video_lines: Arc<Vec<gst_webrtc::WebRTCRTPTransceiver>>,
+    video_lines: Arc<Mutex<Vec<gst_webrtc::WebRTCRTPTransceiver>>>,
     repaint: egui::Context,
 ) {
     let out = signals.clone();
@@ -846,9 +1058,10 @@ fn connect_signals(
         match media.as_str() {
             "audio" => play_audio(&bin, pad),
             "video" => {
-                let Some(index) = line
-                    .and_then(|line| video_lines.iter().position(|known| *known == line))
-                else {
+                let known = video_lines.lock().ok();
+                let Some(index) = line.zip(known).and_then(|(line, known)| {
+                    known.iter().position(|slot| *slot == line)
+                }) else {
                     log::warn!("call: chegou vídeo num lugar que não pedimos");
                     return;
                 };
