@@ -457,6 +457,7 @@ fn account_pill(
         name: store.my_name.clone(),
         presence: crate::state::Presence::Online,
         role_color: None,
+        roles: Vec::new(),
     });
     if me.name.is_empty() {
         return;

@@ -118,6 +118,55 @@ pub struct UpdateChannelRequest {
     pub topic: Option<String>,
 }
 
+/// As sete permissões de um cargo, exatamente como o `RolePermissions` do
+/// backend. `send_attachment` é a que libera anexo; `manage_channels`, a que
+/// libera criar canal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RolePermissions {
+    #[serde(default)]
+    pub manage_server: bool,
+    #[serde(default)]
+    pub manage_channels: bool,
+    #[serde(default)]
+    pub manage_roles: bool,
+    #[serde(default)]
+    pub ban_members: bool,
+    #[serde(default)]
+    pub pin_message: bool,
+    #[serde(default)]
+    pub everyone_message: bool,
+    #[serde(default)]
+    pub send_attachment: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Role {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+    #[serde(default)]
+    pub permissions: RolePermissions,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RoleList {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub roles: Vec<Role>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RoleRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    pub permissions: RolePermissions,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AssignRoleRequest {
+    pub role_id: String,
+}
+
 /// Busca (`POST /search`). Pelo menos um campo tem de vir preenchido; hoje a
 /// janela manda só o texto, e os filtros ficam para quando houver tela deles.
 #[derive(Debug, Clone, Serialize)]
@@ -462,6 +511,27 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// As sete permissões vão todas no corpo, inclusive as falsas: o
+    /// `RolePermissions` do backend não tem `omitempty`, e mandar só as
+    /// verdadeiras deixaria as outras no que já estavam.
+    #[test]
+    fn cargo_manda_as_sete_permissoes() {
+        let body = serde_json::to_string(&RoleRequest {
+            name: "membro".to_owned(),
+            color: Some("#FF0000".to_owned()),
+            permissions: RolePermissions {
+                send_attachment: true,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
+        );
+    }
+
 
     /// Os nomes dos campos vêm do `createChannelRequest` do backend
     /// (`name`, `type`, `topic`). Errar um deles só apareceria como um 400

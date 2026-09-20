@@ -67,6 +67,8 @@ pub struct Member {
     pub name: String,
     pub presence: Presence,
     pub role_color: Option<Color32>,
+    /// Ids dos cargos que a pessoa tem; é o que a tela de cargos marca.
+    pub roles: Vec<String>,
 }
 
 impl Member {
@@ -229,6 +231,8 @@ pub struct Store {
     /// Aviso do servidor que não é um erro de formulário — hoje, o reuso de
     /// token que derrubou as outras sessões.
     pub notice: Option<Notice>,
+    /// Cargos do servidor, com as permissões de cada um.
+    pub roles: Vec<models::Role>,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
     /// Uma busca saiu e ainda não voltou.
@@ -258,6 +262,7 @@ impl Default for Store {
             busy: false,
             locked: false,
             notice: None,
+            roles: Vec::new(),
             search_results: Vec::new(),
             searching: false,
         }
@@ -472,6 +477,10 @@ impl Store {
                     }
                 }
             }
+            Update::Roles(roles) => {
+                self.roles = roles;
+                self.busy = false;
+            }
             Update::SearchResults(results) => {
                 self.search_results = results;
                 self.searching = false;
@@ -497,6 +506,7 @@ impl Store {
                             .copied()
                             .unwrap_or(Presence::Offline),
                         role_color: role_color(&user.roles),
+                        roles: user.roles.iter().map(|role| role.id.clone()).collect(),
                         name: user.display_name().to_owned(),
                         id: user.id,
                     })

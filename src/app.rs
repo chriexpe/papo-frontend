@@ -285,6 +285,7 @@ pub struct PapoApp {
     /// Idem ao diálogo de canal: foco no termo só ao abrir.
     search_focus: bool,
     about_open: bool,
+    roles: crate::ui::roles::RolesState,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
@@ -406,6 +407,7 @@ impl PapoApp {
             search: None,
             search_focus: false,
             about_open: false,
+            roles: Default::default(),
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
             #[cfg(target_os = "linux")]
@@ -1186,6 +1188,10 @@ impl PapoApp {
                 self.search_focus = true;
             }
             MenuCommand::About => self.about_open = true,
+            MenuCommand::Roles => {
+                self.roles.open = true;
+                self.workspaces[self.active].net.send(Command::LoadRoles);
+            }
         }
     }
 
@@ -1313,6 +1319,55 @@ impl PapoApp {
             let ws = &mut self.workspaces[self.active];
             ws.store.search_results.clear();
             ws.store.searching = false;
+        }
+    }
+
+    /// Tela de cargos. Ela só descreve o que quer; a tradução em comandos
+    /// de rede é aqui.
+    fn roles_window(&mut self, ctx: &egui::Context) {
+        use crate::ui::roles::RoleAction;
+
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let actions = {
+            let ws = &self.workspaces[self.active];
+            crate::ui::roles::window(ctx, &mut self.roles, &ws.store, &t, s)
+        };
+        if actions.is_empty() {
+            return;
+        }
+        let ws = &mut self.workspaces[self.active];
+        for action in actions {
+            let command = match action {
+                RoleAction::Create {
+                    name,
+                    color,
+                    permissions,
+                } => Command::CreateRole {
+                    name,
+                    color,
+                    permissions,
+                },
+                RoleAction::Update {
+                    role_id,
+                    name,
+                    color,
+                    permissions,
+                } => Command::UpdateRole {
+                    role_id,
+                    name,
+                    color,
+                    permissions,
+                },
+                RoleAction::Delete(role_id) => Command::DeleteRole { role_id },
+                RoleAction::Assign { user_id, role_id } => {
+                    Command::AssignRole { user_id, role_id }
+                }
+                RoleAction::Unassign { user_id, role_id } => {
+                    Command::UnassignRole { user_id, role_id }
+                }
+            };
+            ws.net.send(command);
         }
     }
 
@@ -1806,6 +1861,7 @@ impl eframe::App for PapoApp {
         self.channel_window(&ctx);
         self.search_window(&ctx);
         self.about_window(&ctx);
+        self.roles_window(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {
@@ -1883,6 +1939,7 @@ fn build_menu(settings: &Settings) -> MenuModel {
                 MenuNode::separator(),
                 MenuNode::item(s.menu_preferences, MenuCommand::Preferences)
                     .accel(&["Control", "comma"]),
+                MenuNode::item(s.menu_roles, MenuCommand::Roles),
                 MenuNode::separator(),
                 MenuNode::item(s.sign_out, MenuCommand::SignOut),
                 MenuNode::separator(),

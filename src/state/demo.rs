@@ -415,6 +415,7 @@ fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>)
         name: name.into(),
         presence,
         role_color: color.map(|(r, g, b)| egui::Color32::from_rgb(r, g, b)),
+        roles: Vec::new(),
     }
 }
 

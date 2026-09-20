@@ -5,6 +5,7 @@ pub mod emoji_raster;
 pub mod glass;
 pub mod headerbar;
 pub mod rail;
+pub mod roles;
 pub mod shell;
 pub mod theme;
 pub mod viewer;

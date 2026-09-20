@@ -41,6 +41,29 @@ pub enum Command {
     Search {
         text: String,
     },
+    LoadRoles,
+    CreateRole {
+        name: String,
+        color: Option<String>,
+        permissions: crate::api::models::RolePermissions,
+    },
+    UpdateRole {
+        role_id: String,
+        name: String,
+        color: Option<String>,
+        permissions: crate::api::models::RolePermissions,
+    },
+    DeleteRole {
+        role_id: String,
+    },
+    AssignRole {
+        user_id: String,
+        role_id: String,
+    },
+    UnassignRole {
+        user_id: String,
+        role_id: String,
+    },
     SendMessage {
         channel_id: String,
         content: String,
@@ -94,6 +117,7 @@ pub enum Update {
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
     ChannelCreated(String),
     SearchResults(Vec<crate::api::models::SearchResult>),
+    Roles(Vec<crate::api::models::Role>),
     Users(Vec<UserSummary>),
     Messages {
         channel_id: String,
@@ -467,6 +491,45 @@ async fn handle(
             Ok(found) => publish(updates, repaint, Update::SearchResults(found.results)),
             Err(error) => report(updates, repaint, error),
         },
+        // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
+        // pessoas — por isso as duas listas são relidas juntas.
+        Command::LoadRoles => relist_roles(api, updates, repaint).await,
+        Command::CreateRole {
+            name,
+            color,
+            permissions,
+        } => match api.create_role(&name, color.as_deref(), permissions).await {
+            Ok(_) => relist_roles(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::UpdateRole {
+            role_id,
+            name,
+            color,
+            permissions,
+        } => match api
+            .update_role(&role_id, &name, color.as_deref(), permissions)
+            .await
+        {
+            Ok(_) => relist_roles(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::DeleteRole { role_id } => match api.delete_role(&role_id).await {
+            Ok(()) => relist_roles(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::AssignRole { user_id, role_id } => {
+            match api.assign_role(&user_id, &role_id).await {
+                Ok(_) => relist_roles(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::UnassignRole { user_id, role_id } => {
+            match api.unassign_role(&user_id, &role_id).await {
+                Ok(()) => relist_roles(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
         Command::SendMessage {
             channel_id,
             content,
@@ -601,6 +664,10 @@ async fn bootstrap(
         Err(ApiError::NotFound) => {}
         Err(error) => report(updates, repaint, error),
     }
+    match api.roles().await {
+        Ok(roles) => publish(updates, repaint, Update::Roles(roles)),
+        Err(error) => log::warn!("cargos: {error}"),
+    }
     match api.emojis().await {
         Ok(emojis) if !emojis.is_empty() => publish(updates, repaint, Update::Emojis(emojis)),
         Ok(_) => {}
@@ -613,6 +680,19 @@ async fn bootstrap(
             }
             Err(error) => log::warn!("notificações: {error}"),
         }
+    }
+}
+
+/// Relista cargos e pessoas: um cargo novo muda a cor e as permissões de
+/// quem o tem, e as duas listas precisam concordar.
+async fn relist_roles(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+    match api.roles().await {
+        Ok(roles) => publish(updates, repaint, Update::Roles(roles)),
+        Err(error) => report(updates, repaint, error),
+    }
+    match api.users().await {
+        Ok(users) => publish(updates, repaint, Update::Users(users)),
+        Err(error) => log::warn!("pessoas depois do cargo: {error}"),
     }
 }
 

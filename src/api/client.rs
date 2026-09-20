@@ -476,6 +476,68 @@ impl Api {
         .await
     }
 
+    // -- Cargos ------------------------------------------------------------
+
+    pub async fn roles(&self) -> ApiResult<Vec<Role>> {
+        let list: RoleList = self.get("/roles").await?;
+        Ok(list.roles)
+    }
+
+    /// Cria um cargo. Exige `manage_roles`.
+    pub async fn create_role(
+        &self,
+        name: &str,
+        color: Option<&str>,
+        permissions: RolePermissions,
+    ) -> ApiResult<Role> {
+        self.post(
+            "/roles",
+            &RoleRequest {
+                name: name.to_owned(),
+                color: color.map(str::to_owned),
+                permissions,
+            },
+        )
+        .await
+    }
+
+    pub async fn update_role(
+        &self,
+        role_id: &str,
+        name: &str,
+        color: Option<&str>,
+        permissions: RolePermissions,
+    ) -> ApiResult<Role> {
+        self.put(
+            &format!("/roles/{role_id}"),
+            &RoleRequest {
+                name: name.to_owned(),
+                color: color.map(str::to_owned),
+                permissions,
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_role(&self, role_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/roles/{role_id}"), None).await
+    }
+
+    pub async fn assign_role(&self, user_id: &str, role_id: &str) -> ApiResult<serde_json::Value> {
+        self.post(
+            &format!("/users/{user_id}/roles"),
+            &AssignRoleRequest {
+                role_id: role_id.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn unassign_role(&self, user_id: &str, role_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/users/{user_id}/roles/{role_id}"), None)
+            .await
+    }
+
     // -- Reações -----------------------------------------------------------
 
     pub async fn add_reaction(

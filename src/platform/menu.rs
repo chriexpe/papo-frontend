@@ -7,6 +7,7 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuCommand {
     NewChannel,
+    Roles,
     Search,
     MarkAllRead,
     ToggleMembers,
