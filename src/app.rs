@@ -1441,6 +1441,10 @@ impl PapoApp {
         };
 
         let mut ask_download = self.settings.downloads == DownloadMode::Ask;
+        // O início automático é estado do sistema, não um ajuste guardado: o
+        // que vale é o arquivo em disco, então ele é lido e escrito à parte.
+        let autostart_before = crate::platform::autostart::is_enabled();
+        let mut autostart = autostart_before;
         let before = (
             self.settings.lang,
             self.settings.theme,
@@ -1465,6 +1469,7 @@ impl PapoApp {
                 translucency: &mut self.settings.translucency,
                 notifications: &mut self.settings.notifications,
                 close_to_tray: &mut self.settings.close_to_tray,
+                autostart: &mut autostart,
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
                 record_button: &mut self.settings.record_button,
@@ -1499,6 +1504,12 @@ impl PapoApp {
                 };
             }
             self.retheme(ctx);
+        }
+
+        if autostart != autostart_before {
+            if let Err(error) = crate::platform::autostart::set(autostart) {
+                log::warn!("não deu para ajustar o início automático: {error}");
+            }
         }
 
         for action in actions {

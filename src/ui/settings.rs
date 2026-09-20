@@ -746,6 +746,7 @@ pub struct Context<'a> {
     pub translucency: &'a mut bool,
     pub notifications: &'a mut bool,
     pub close_to_tray: &'a mut bool,
+    pub autostart: &'a mut bool,
     pub badge: &'a mut bool,
     pub topic_reveal: &'a mut bool,
     pub record_button: &'a mut bool,
@@ -1144,6 +1145,9 @@ fn app_pane(
                 });
                 rows.row(s.menu_close_to_tray, Some(s.close_to_tray_hint), |ui, t| {
                     switch(ui, t, data.close_to_tray);
+                });
+                rows.row(s.start_at_login, Some(s.start_at_login_hint), |ui, t| {
+                    switch(ui, t, data.autostart);
                 });
             });
         }

@@ -2,6 +2,7 @@
 pub mod activate;
 #[cfg(target_os = "linux")]
 pub mod appmenu;
+pub mod autostart;
 #[cfg(target_os = "linux")]
 pub mod blur;
 pub mod desktop;
