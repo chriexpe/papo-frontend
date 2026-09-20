@@ -92,6 +92,11 @@ pub enum ChatAction {
     NewChannel,
     /// Abre o diálogo de editar um canal existente.
     EditChannel(String),
+    /// Renomeia sem abrir diálogo: a folha de ajustes edita na própria linha.
+    RenameChannel {
+        channel_id: String,
+        name: String,
+    },
     /// Apaga o canal, depois da confirmação.
     DeleteChannel(String),
     /// Busca no servidor, a partir da pastilha.
@@ -141,6 +146,15 @@ pub struct Panel {
     pub query: String,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
+}
+
+/// Teclas que pertencem à lista de sugestões neste quadro.
+#[derive(Clone, Copy, Debug, Default)]
+struct SuggestKeys {
+    up: bool,
+    down: bool,
+    accept: bool,
+    dismiss: bool,
 }
 
 /// Sugestão de figurinha enquanto se digita `:alguma`.
@@ -251,6 +265,10 @@ pub struct UiState {
     pub jump: Option<Jump>,
     /// Figurinhas sugeridas para o `:alguma` que está sendo digitado.
     pub suggest: Option<Suggest>,
+    /// Esc dispensou a lista: ela não volta até o apelido mudar.
+    pub suggest_muted: bool,
+    /// Onde começava o apelido quando o Esc foi apertado.
+    pub suggest_start: Option<usize>,
     pub emoji_query: String,
     pub emoji_group: usize,
     /// Canal desenhado no quadro anterior, para saber quando ele trocou.
@@ -291,6 +309,8 @@ impl Default for UiState {
             panel: None,
             jump: None,
             suggest: None,
+            suggest_muted: false,
+            suggest_start: None,
             emoji_query: String::new(),
             emoji_group: 0,
             last_channel: String::new(),
@@ -1714,7 +1734,7 @@ fn message_list(
                         ui.add_space(space::XXS);
                     }
                     if let Some(reply_to) = &message.reply_to {
-                        reply_quote(ui, store, t, s, reply_to, text_width);
+                        reply_quote(ui, store, state, t, s, reply_to, text_width);
                     }
                     message_body(ui, store, state, t, s, message, text_width);
                 });
@@ -1801,6 +1821,7 @@ fn message_list(
 fn reply_quote(
     ui: &mut egui::Ui,
     store: &Store,
+    state: &mut UiState,
     t: &Tokens,
     s: &Strings,
     reply_to: &str,
@@ -1822,7 +1843,21 @@ fn reply_quote(
         None => (String::new(), s.reply_missing.to_owned()),
     };
 
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+    // A citação leva à original, como um resultado de busca ou uma fixada.
+    // Ela some do banco quando a original é apagada; aí não há aonde ir.
+    let exists = store.message(reply_to).is_some();
+    let sense = if exists { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
+    if exists && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if exists && response.clicked() {
+        state.jump = Some(Jump {
+            message_id: reply_to.to_owned(),
+            found: None,
+            since: ui.input(|input| input.time),
+        });
+    }
     let painter = ui.painter();
     painter.text(
         egui::pos2(rect.min.x, rect.center().y),
@@ -3167,9 +3202,19 @@ fn composer(
             // As setas e o Enter pertencem à lista de sugestões enquanto ela
             // estiver aberta; sem tirá-los da caixa de texto, a seta moveria
             // o cursor e o Enter mandaria `:parc` como mensagem.
-            let grabbing = state.suggest.is_some();
-            if grabbing {
+            // Com a lista aberta, estas teclas são dela. Elas têm de ser
+            // lidas **no mesmo gesto** em que saem da fila de eventos: ler
+            // depois de tirá-las era perguntar por eventos que eu mesmo
+            // acabara de apagar, e por isso nada respondia.
+            let keys = if state.suggest.is_some() {
                 ui.input_mut(|input| {
+                    let taken = SuggestKeys {
+                        up: input.key_pressed(egui::Key::ArrowUp),
+                        down: input.key_pressed(egui::Key::ArrowDown),
+                        accept: input.key_pressed(egui::Key::Enter)
+                            || input.key_pressed(egui::Key::Tab),
+                        dismiss: input.key_pressed(egui::Key::Escape),
+                    };
                     input.events.retain(|event| {
                         !matches!(
                             event,
@@ -3183,8 +3228,12 @@ fn composer(
                             }
                         )
                     });
-                });
-            }
+                    taken
+                })
+            } else {
+                SuggestKeys::default()
+            };
+
             let response = ui.add(
                 TextEdit::multiline(&mut state.composer)
                     .id(edit_id)
@@ -3199,31 +3248,23 @@ fn composer(
             state.typed = response.changed();
 
             let caret = caret_of(ui.ctx(), edit_id);
-            refresh_suggestions(store, state, response.has_focus(), caret);
+            if keys.dismiss {
+                state.suggest = None;
+                state.suggest_muted = true;
+            } else {
+                refresh_suggestions(store, state, response.has_focus(), caret);
+            }
 
-            let accepted = state.suggest.is_some()
-                && ui.input(|input| {
-                    input.key_pressed(egui::Key::Enter) || input.key_pressed(egui::Key::Tab)
-                });
             if let Some(suggest) = state.suggest.as_mut() {
-                let (up, down, escape) = ui.input(|input| {
-                    (
-                        input.key_pressed(egui::Key::ArrowUp),
-                        input.key_pressed(egui::Key::ArrowDown),
-                        input.key_pressed(egui::Key::Escape),
-                    )
-                });
                 let last = suggest.matches.len().saturating_sub(1);
-                if up {
+                if keys.up {
                     suggest.index = if suggest.index == 0 { last } else { suggest.index - 1 };
                 }
-                if down {
+                if keys.down {
                     suggest.index = if suggest.index >= last { 0 } else { suggest.index + 1 };
                 }
-                if escape {
-                    state.suggest = None;
-                }
             }
+            let accepted = keys.accept && state.suggest.is_some();
             if accepted {
                 accept_suggestion(store, state, ui.ctx(), edit_id, caret);
             }
@@ -3263,8 +3304,18 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
     };
     let Some((start, query)) = typing_shortcode(&state.composer, caret) else {
         state.suggest = None;
+        state.suggest_muted = false;
         return;
     };
+    // Esc dispensou a lista para este apelido; ela só volta quando o que
+    // está sendo digitado mudar de lugar.
+    if state.suggest_muted {
+        if state.suggest_start == Some(start) {
+            return;
+        }
+        state.suggest_muted = false;
+    }
+    state.suggest_start = Some(start);
 
     let needle = query.to_lowercase();
     let matches: Vec<String> = store
@@ -3358,13 +3409,11 @@ fn accept_suggestion(
 }
 
 /// Lista de figurinhas sugeridas, logo acima da caixa de mensagem.
-fn suggestions(
-    ui: &mut egui::Ui,
-    store: &Store,
-    state: &mut UiState,
-    t: &Tokens,
-    line: Rect,
-) {
+///
+/// Mora numa camada própria à frente de tudo. Desenhada solta dentro da
+/// conversa, ela ficava por baixo do que já tinha sido registrado ali e o
+/// clique do mouse nunca chegava nela.
+fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, line: Rect) {
     let Some(suggest) = state.suggest.clone() else {
         return;
     };
@@ -3375,65 +3424,85 @@ fn suggestions(
         egui::pos2(line.min.x, line.min.y - space::SM - height),
         Vec2::new(width, height),
     );
-    pill_surface(ui, state, t, rect);
 
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    for (index, id) in suggest.matches.iter().enumerate() {
-        let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
-            continue;
-        };
-        let slot = Rect::from_min_size(
-            egui::pos2(rect.min.x + space::SM, rect.min.y + space::SM + index as f32 * row),
-            Vec2::new(rect.width() - space::SM * 2.0, row),
-        );
-        let response = ui.interact(slot, Id::new(("sugestao", id)), Sense::click());
-        if index == suggest.index || response.hovered() {
-            ui.painter().rect_filled(
-                slot,
-                CornerRadius::same(radius::CONTROL),
-                if index == suggest.index {
-                    t.accent.gamma_multiply(0.22)
-                } else {
-                    t.fill_soft
-                },
-            );
-        }
-        let art = Rect::from_center_size(
-            egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
-            Vec2::splat(20.0),
-        );
-        let texture = state
-            .media
-            .emoji(&emoji.id, emoji.blob.as_deref())
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|handle| handle.id());
-        if let Some(texture) = texture {
-            let mut mesh = egui::Mesh::with_texture(texture);
-            mesh.add_rect_with_uv(
-                art,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-            ui.painter().add(egui::Shape::mesh(mesh));
-        }
-        ui.painter().text(
-            egui::pos2(art.max.x + space::MD, slot.center().y),
-            egui::Align2::LEFT_CENTER,
-            format!(":{}:", emoji.name),
-            text::body(),
-            if index == suggest.index { t.label } else { t.label_secondary },
-        );
-        if response.clicked() {
-            chosen = Some(index);
-        }
-    }
+    egui::Area::new(Id::new("sugestoes-de-figurinha"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .show(&ctx, |ui| {
+            pill_surface(ui, state, t, rect);
+            for (index, id) in suggest.matches.iter().enumerate() {
+                let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
+                    continue;
+                };
+                let slot = Rect::from_min_size(
+                    egui::pos2(
+                        rect.min.x + space::SM,
+                        rect.min.y + space::SM + index as f32 * row,
+                    ),
+                    Vec2::new(rect.width() - space::SM * 2.0, row),
+                );
+                let response = ui.interact(slot, Id::new(("sugestao", id)), Sense::click());
+                if index == suggest.index || response.hovered() {
+                    ui.painter().rect_filled(
+                        slot,
+                        CornerRadius::same(radius::CONTROL),
+                        if index == suggest.index {
+                            t.accent.gamma_multiply(0.22)
+                        } else {
+                            t.fill_soft
+                        },
+                    );
+                }
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let art = Rect::from_center_size(
+                    egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
+                    Vec2::splat(20.0),
+                );
+                let texture = state
+                    .media
+                    .emoji(&emoji.id, emoji.blob.as_deref())
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                if let Some(texture) = texture {
+                    let mut mesh = egui::Mesh::with_texture(texture);
+                    mesh.add_rect_with_uv(
+                        art,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    ui.painter().add(egui::Shape::mesh(mesh));
+                }
+                ui.painter().text(
+                    egui::pos2(art.max.x + space::MD, slot.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!(":{}:", emoji.name),
+                    text::body(),
+                    if index == suggest.index {
+                        t.label
+                    } else {
+                        t.label_secondary
+                    },
+                );
+                if response.clicked() {
+                    chosen = Some(index);
+                }
+            }
+        });
+
     if let Some(index) = chosen {
         if let Some(suggest) = state.suggest.as_mut() {
             suggest.index = index;
         }
-        let caret = caret_of(&ctx, Id::new("caixa-de-mensagem"));
-        accept_suggestion(store, state, &ctx, Id::new("caixa-de-mensagem"), caret);
+        let edit_id = Id::new("caixa-de-mensagem");
+        let caret = caret_of(&ctx, edit_id);
+        accept_suggestion(store, state, &ctx, edit_id, caret);
+        // O clique tirou o foco da caixa; devolvê-lo é o que deixa
+        // continuar escrevendo sem ter de clicar de novo.
+        ctx.memory_mut(|memory| memory.request_focus(edit_id));
     }
 }
 

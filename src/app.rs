@@ -908,6 +908,15 @@ impl PapoApp {
             ChatAction::DeleteChannel(channel_id) => {
                 ws.net.send(Command::DeleteChannel { channel_id })
             }
+            // Renomear guarda o tópico como está: o contrato trata tópico
+            // ausente como "não mexa".
+            ChatAction::RenameChannel { channel_id, name } => {
+                ws.net.send(Command::UpdateChannel {
+                    channel_id,
+                    name,
+                    topic: None,
+                })
+            }
             ChatAction::ChannelNotifications {
                 channel_id,
                 setting,
@@ -1012,7 +1021,8 @@ impl PapoApp {
                 }
             }
             // Sem rede na demonstração: estas quatro não têm efeito local.
-            ChatAction::ChannelNotifications { .. }
+            ChatAction::RenameChannel { .. }
+            | ChatAction::ChannelNotifications { .. }
             | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
