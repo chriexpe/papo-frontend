@@ -153,7 +153,7 @@ fn leave_call(ws: &mut Workspace) {
     ws.call = None;
     ws.call_ready = false;
     ws.watching.clear();
-    ws.camera_seen = false;
+    ws.camera_revision = 0;
     ws.store.call.left();
 }
 
@@ -188,9 +188,13 @@ fn pump_call(ws: &mut Workspace) {
     // O botão da câmera segue o dispositivo, não o clique: onde não há
     // webcam — no Flatpak de hoje, por exemplo — ligar não liga nada, e ele
     // tem de voltar sozinho. O mesmo vale para a câmera que morre no meio.
-    let camera = call.camera_on();
-    if ws.camera_seen != camera {
-        ws.camera_seen = camera;
+    //
+    // Compara-se a conta de mudanças, não o valor: a tentativa que falha
+    // sobe e desce entre dois quadros, e olhar só o valor perderia a volta
+    // inteira — o botão ficaria aceso com câmera nenhuma.
+    let (revision, camera) = call.camera_state();
+    if ws.camera_revision != revision {
+        ws.camera_revision = revision;
         ws.store.call.camera = camera;
     }
 
@@ -364,10 +368,9 @@ pub struct Workspace {
     /// De quem pedimos vídeo por último, em ordem: o pedido só sai de novo
     /// quando a lista muda.
     watching: Vec<String>,
-    /// O que a thread da call dizia da câmera no quadro anterior. Só a
-    /// mudança vale: comparar com o botão a todo quadro o faria piscar no
-    /// intervalo entre o clique e o dispositivo abrir.
-    camera_seen: bool,
+    /// Quantas mudanças de câmera a thread da call já publicou quando
+    /// olhamos pela última vez.
+    camera_revision: u64,
 }
 
 impl Workspace {
@@ -398,7 +401,7 @@ impl Workspace {
             call: None,
             call_ready: false,
             watching: Vec::new(),
-            camera_seen: false,
+            camera_revision: 0,
         }
     }
 

@@ -56,10 +56,16 @@ pub struct Shared {
     preview_seq: AtomicU64,
     /// A conexão WebRTC fechou de verdade (ICE e DTLS prontos).
     live: AtomicBool,
-    /// A câmera está mesmo capturando. É a verdade do dispositivo, não o que
-    /// o botão diz: câmera que não abre, ou que morre no meio, apaga aqui e
-    /// o botão segue.
+    /// A câmera está mesmo capturando, e quantas vezes isso já mudou.
+    ///
+    /// O contador existe porque a resposta é de outra thread: ligar uma
+    /// câmera que não existe vai de desligada a desligada, passando por
+    /// ligada no meio, e a janela quase nunca olha no instante do meio.
+    /// Amostrar só o booleano perderia essa volta inteira — o botão ficaria
+    /// aceso com câmera nenhuma. Contar as mudanças torna a volta visível
+    /// mesmo quando o valor final é o mesmo do inicial.
     camera: AtomicBool,
+    camera_revision: AtomicU64,
     /// Quebrou de um jeito que a call não continua.
     failed: AtomicBool,
     error: Mutex<Option<String>>,
@@ -68,6 +74,13 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// Publica uma mudança **concluída** da câmera: abriu, não abriu,
+    /// desligou, morreu no meio. Só as concluídas contam.
+    fn set_camera(&self, on: bool) {
+        self.camera.store(on, Ordering::Relaxed);
+        self.camera_revision.fetch_add(1, Ordering::Release);
+    }
+
     pub fn is_live(&self) -> bool {
         self.live.load(Ordering::Relaxed)
     }
@@ -219,11 +232,18 @@ impl Call {
         self.shared.is_live()
     }
 
-    /// A câmera está capturando de verdade? O botão pergunta a ela, não ao
-    /// próprio clique: onde não há webcam — no Flatpak, hoje — ligar não
-    /// liga nada, e o botão tem de voltar sozinho.
-    pub fn camera_on(&self) -> bool {
-        self.shared.camera.load(Ordering::Relaxed)
+    /// O estado da câmera e a conta de quantas vezes ele mudou. O botão
+    /// pergunta a ela, não ao próprio clique: onde não há webcam — no
+    /// Flatpak, hoje — ligar não liga nada, e o botão tem de voltar sozinho.
+    ///
+    /// Quem chama compara a conta, não o valor: é a conta que denuncia a
+    /// tentativa que subiu e desceu entre dois quadros.
+    pub fn camera_state(&self) -> (u64, bool) {
+        // A conta é lida primeiro (Acquire contra o Release da escrita): o
+        // valor que vem depois é o daquela conta, ou de uma mais nova, e
+        // nunca de uma mais velha.
+        let revision = self.shared.camera_revision.load(Ordering::Acquire);
+        (revision, self.shared.camera.load(Ordering::Relaxed))
     }
 
     /// Aviso que não acaba com a call, para aparecer uma vez.
@@ -328,5 +348,37 @@ impl Drop for Call {
         // orçamento do quadro. A thread fecha tudo sozinha ao ver o Stop.
         let _ = self.commands.send(Command::Stop);
         self.thread.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ligar uma câmera que não existe começa e termina desligada, passando
+    /// por ligada no meio — e o meio dura menos que um quadro. Amostrar o
+    /// booleano perderia a volta inteira, e o botão ficaria aceso sem
+    /// câmera nenhuma; a conta de mudanças é o que a denuncia.
+    #[test]
+    fn tentativa_de_camera_que_falha_nao_passa_batida() {
+        let shared = Shared::default();
+        let before = shared.camera_revision.load(Ordering::Acquire);
+
+        shared.set_camera(true);
+        shared.set_camera(false);
+
+        assert_ne!(shared.camera_revision.load(Ordering::Acquire), before);
+        assert!(!shared.camera.load(Ordering::Relaxed));
+    }
+
+    /// Aviso é lido uma vez: quem o tira da gaveta o mostra, e ele não
+    /// volta em todo quadro.
+    #[test]
+    fn aviso_sai_da_gaveta_ao_ser_lido() {
+        let shared = Shared::default();
+        shared.warn("sem microfone");
+        assert_eq!(shared.take_warning().as_deref(), Some("sem microfone"));
+        assert!(shared.take_warning().is_none());
+        assert!(!shared.failed());
     }
 }

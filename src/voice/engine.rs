@@ -270,8 +270,14 @@ impl Engine {
         };
         let mut broke = None;
         while let Some(message) = bus.pop() {
-            if let gst::MessageView::Error(error) = message.view() {
-                broke = Some(error.error().to_string());
+            match message.view() {
+                gst::MessageView::Error(error) => broke = Some(error.error().to_string()),
+                // Dispositivo que some às vezes termina o fluxo em vez de
+                // dar erro; para nós é a mesma notícia.
+                gst::MessageView::Eos(_) => {
+                    broke = Some("a captura terminou".to_owned());
+                }
+                _ => {}
             }
         }
         if let Some(reason) = broke {
@@ -495,7 +501,7 @@ impl Engine {
             // Solta o dispositivo primeiro: a luz da câmera tem de apagar
             // junto com o clique, não no fim da renegociação.
             self.camera = None;
-            self.shared.camera.store(false, Ordering::Relaxed);
+            self.shared.set_camera(false);
             if let Ok(mut preview) = self.shared.preview.lock() {
                 *preview = None;
             }
@@ -511,11 +517,6 @@ impl Engine {
             return;
         }
 
-        // Liga a bandeira antes de abrir o dispositivo: quem lê isto de
-        // fora precisa ver a mesma ordem que o clique — ligou, e só depois
-        // desligou se não houver câmera. Sem isso, o botão piscava.
-        self.shared.camera.store(true, Ordering::Relaxed);
-
         if self.camera_line.is_none() {
             match self.open_camera_line() {
                 Some((line, src)) => {
@@ -524,27 +525,27 @@ impl Engine {
                 }
                 None => {
                     self.camera_on = false;
-                    self.shared.camera.store(false, Ordering::Relaxed);
+                    self.shared.set_camera(false);
                     return;
                 }
             }
         }
         let Some(src) = self.camera_src.clone() else {
             self.camera_on = false;
-            self.shared.camera.store(false, Ordering::Relaxed);
+            self.shared.set_camera(false);
             return;
         };
         match capture(src, Arc::clone(&self.shared), self.repaint.clone()) {
             Some(camera) => {
                 self.camera = Some(camera);
-                self.shared.camera.store(true, Ordering::Relaxed);
+                self.shared.set_camera(true);
             }
             None => {
                 // Sem webcam — ou, no Flatpak, sem acesso a ela — a call
                 // continua: era a câmera que não abriu, não a conversa.
                 self.shared.warn("não achei uma câmera para abrir");
                 self.camera_on = false;
-                self.shared.camera.store(false, Ordering::Relaxed);
+                self.shared.set_camera(false);
                 return;
             }
         }
