@@ -189,9 +189,9 @@ fn pump_call(ws: &mut Workspace) {
     // webcam — no Flatpak de hoje, por exemplo — ligar não liga nada, e ele
     // tem de voltar sozinho. O mesmo vale para a câmera que morre no meio.
     //
-    // Compara-se a conta de mudanças, não o valor: a tentativa que falha
-    // sobe e desce entre dois quadros, e olhar só o valor perderia a volta
-    // inteira — o botão ficaria aceso com câmera nenhuma.
+    // Compara-se a conta de respostas, não o valor: a tentativa que não
+    // acha câmera nenhuma termina onde começou, e olhar só o valor não veria
+    // resposta — o botão ficaria aceso com câmera nenhuma.
     let (revision, camera) = call.camera_state();
     if ws.camera_revision != revision {
         ws.camera_revision = revision;

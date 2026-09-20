@@ -56,14 +56,15 @@ pub struct Shared {
     preview_seq: AtomicU64,
     /// A conexão WebRTC fechou de verdade (ICE e DTLS prontos).
     live: AtomicBool,
-    /// A câmera está mesmo capturando, e quantas vezes isso já mudou.
+    /// A câmera está mesmo capturando, e quantos resultados de tentativa já
+    /// foram publicados.
     ///
-    /// O contador existe porque a resposta é de outra thread: ligar uma
-    /// câmera que não existe vai de desligada a desligada, passando por
-    /// ligada no meio, e a janela quase nunca olha no instante do meio.
-    /// Amostrar só o booleano perderia essa volta inteira — o botão ficaria
-    /// aceso com câmera nenhuma. Contar as mudanças torna a volta visível
-    /// mesmo quando o valor final é o mesmo do inicial.
+    /// O contador existe porque a resposta vem de outra thread e nem toda
+    /// resposta muda o valor: tentar ligar uma câmera que não existe começa
+    /// e termina com `camera == false`. Amostrar só o booleano não veria
+    /// resposta nenhuma, e o botão ficaria aceso com câmera nenhuma. O
+    /// contador publica o resultado da tentativa mesmo quando o valor não
+    /// mudou — por isso ele avança a cada publicação, nunca só nas trocas.
     camera: AtomicBool,
     camera_revision: AtomicU64,
     /// Quebrou de um jeito que a call não continua.
@@ -74,11 +75,22 @@ pub struct Shared {
 }
 
 impl Shared {
-    /// Publica uma mudança **concluída** da câmera: abriu, não abriu,
-    /// desligou, morreu no meio. Só as concluídas contam.
+    /// Publica o resultado **concluído** de uma tentativa de câmera: abriu,
+    /// não abriu, desligou, morreu no meio.
+    ///
+    /// Avança o contador sempre, inclusive quando o valor é o mesmo de
+    /// antes: é justamente a tentativa que fracassa — `false` para `false` —
+    /// que a janela precisa enxergar.
     fn set_camera(&self, on: bool) {
         self.camera.store(on, Ordering::Relaxed);
         self.camera_revision.fetch_add(1, Ordering::Release);
+    }
+
+    /// O par que a janela lê: a conta primeiro (Acquire contra o Release da
+    /// escrita), para o valor que vem depois nunca ser mais velho que ela.
+    fn camera_state(&self) -> (u64, bool) {
+        let revision = self.camera_revision.load(Ordering::Acquire);
+        (revision, self.camera.load(Ordering::Relaxed))
     }
 
     pub fn is_live(&self) -> bool {
@@ -237,13 +249,9 @@ impl Call {
     /// Flatpak, hoje — ligar não liga nada, e o botão tem de voltar sozinho.
     ///
     /// Quem chama compara a conta, não o valor: é a conta que denuncia a
-    /// tentativa que subiu e desceu entre dois quadros.
+    /// tentativa que não abriu câmera nenhuma e por isso não mudou nada.
     pub fn camera_state(&self) -> (u64, bool) {
-        // A conta é lida primeiro (Acquire contra o Release da escrita): o
-        // valor que vem depois é o daquela conta, ou de uma mais nova, e
-        // nunca de uma mais velha.
-        let revision = self.shared.camera_revision.load(Ordering::Acquire);
-        (revision, self.shared.camera.load(Ordering::Relaxed))
+        self.shared.camera_state()
     }
 
     /// Aviso que não acaba com a call, para aparecer uma vez.
@@ -355,20 +363,42 @@ impl Drop for Call {
 mod tests {
     use super::*;
 
-    /// Ligar uma câmera que não existe começa e termina desligada, passando
-    /// por ligada no meio — e o meio dura menos que um quadro. Amostrar o
-    /// booleano perderia a volta inteira, e o botão ficaria aceso sem
-    /// câmera nenhuma; a conta de mudanças é o que a denuncia.
+    /// Uma tentativa de ligar câmera que não existe começa e termina com
+    /// `camera == false`: o resultado precisa ser publicado mesmo sem troca
+    /// de valor, ou a janela não vê resposta nenhuma e o botão fica aceso
+    /// com câmera nenhuma.
+    ///
+    /// É este o formato que importa. Um teste que fosse de `false` a `true`
+    /// e de volta passaria também num contador que só conta trocas — e um
+    /// contador desses traria o problema de volta inteiro.
     #[test]
     fn tentativa_de_camera_que_falha_nao_passa_batida() {
         let shared = Shared::default();
-        let before = shared.camera_revision.load(Ordering::Acquire);
+        let (before, on) = shared.camera_state();
+        assert!(!on);
 
-        shared.set_camera(true);
         shared.set_camera(false);
 
-        assert_ne!(shared.camera_revision.load(Ordering::Acquire), before);
-        assert!(!shared.camera.load(Ordering::Relaxed));
+        let (after, on) = shared.camera_state();
+        assert_ne!(after, before);
+        assert!(!on);
+    }
+
+    /// Desligar depois de ligar também é resposta, e cada uma conta.
+    #[test]
+    fn cada_resposta_da_camera_conta() {
+        let shared = Shared::default();
+        let (before, _) = shared.camera_state();
+
+        shared.set_camera(true);
+        let (opened, on) = shared.camera_state();
+        assert!(on);
+        assert_ne!(opened, before);
+
+        shared.set_camera(false);
+        let (closed, on) = shared.camera_state();
+        assert!(!on);
+        assert_ne!(closed, opened);
     }
 
     /// Aviso é lido uma vez: quem o tira da gaveta o mostra, e ele não
