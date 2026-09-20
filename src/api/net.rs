@@ -25,6 +25,22 @@ pub enum Command {
     LoadMessages {
         channel_id: String,
     },
+    CreateChannel {
+        name: String,
+        kind: String,
+        topic: Option<String>,
+    },
+    UpdateChannel {
+        channel_id: String,
+        name: String,
+        topic: Option<String>,
+    },
+    DeleteChannel {
+        channel_id: String,
+    },
+    Search {
+        text: String,
+    },
     SendMessage {
         channel_id: String,
         content: String,
@@ -75,6 +91,9 @@ pub enum Update {
     ConnectionViolation,
     Server(Option<Box<Server>>),
     Channels(Vec<Channel>),
+    /// Canal recém-criado: a janela o seleciona assim que a lista chega.
+    ChannelCreated(String),
+    SearchResults(Vec<crate::api::models::SearchResult>),
     Users(Vec<UserSummary>),
     Messages {
         channel_id: String,
@@ -420,6 +439,34 @@ async fn handle(
             ),
             Err(error) => report(updates, repaint, error),
         },
+        // As três mexidas em canal terminam iguais: relista os canais, porque
+        // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
+        Command::CreateChannel { name, kind, topic } => {
+            match api.create_channel(&name, &kind, topic.as_deref()).await {
+                Ok(channel) => {
+                    let id = channel.id.clone();
+                    relist_channels(api, updates, repaint).await;
+                    publish(updates, repaint, Update::ChannelCreated(id));
+                }
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::UpdateChannel {
+            channel_id,
+            name,
+            topic,
+        } => match api.update_channel(&channel_id, &name, topic.as_deref()).await {
+            Ok(_) => relist_channels(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::DeleteChannel { channel_id } => match api.delete_channel(&channel_id).await {
+            Ok(()) => relist_channels(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::Search { text } => match api.search(&text).await {
+            Ok(found) => publish(updates, repaint, Update::SearchResults(found.results)),
+            Err(error) => report(updates, repaint, error),
+        },
         Command::SendMessage {
             channel_id,
             content,
@@ -566,6 +613,18 @@ async fn bootstrap(
             }
             Err(error) => log::warn!("notificações: {error}"),
         }
+    }
+}
+
+/// Relista os canais depois de mexer em um deles.
+async fn relist_channels(
+    api: &Api,
+    updates: &sync_mpsc::Sender<Update>,
+    repaint: &egui::Context,
+) {
+    match api.channels().await {
+        Ok(channels) => publish(updates, repaint, Update::Channels(channels)),
+        Err(error) => report(updates, repaint, error),
     }
 }
 

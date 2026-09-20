@@ -229,6 +229,10 @@ pub struct Store {
     /// Aviso do servidor que não é um erro de formulário — hoje, o reuso de
     /// token que derrubou as outras sessões.
     pub notice: Option<Notice>,
+    /// Última resposta da busca, do servidor na tela.
+    pub search_results: Vec<models::SearchResult>,
+    /// Uma busca saiu e ainda não voltou.
+    pub searching: bool,
 }
 
 impl Default for Store {
@@ -254,6 +258,8 @@ impl Default for Store {
             busy: false,
             locked: false,
             notice: None,
+            search_results: Vec::new(),
+            searching: false,
         }
     }
 }
@@ -445,6 +451,17 @@ impl Store {
                     })
                     .collect();
                 self.channels.sort_by_key(|channel| channel.position);
+                // O canal escolhido pode ter sido apagado — daqui ou de outra
+                // janela. Sem isto a conversa ficaria apontando para um id
+                // que não existe mais e o envio cairia no vazio.
+                let gone = !self.selected_channel.is_empty()
+                    && !self
+                        .channels
+                        .iter()
+                        .any(|channel| channel.id == self.selected_channel);
+                if gone {
+                    self.selected_channel.clear();
+                }
                 if self.selected_channel.is_empty() {
                     if let Some(first) = self
                         .channels
@@ -454,6 +471,17 @@ impl Store {
                         self.selected_channel = first.id.clone();
                     }
                 }
+            }
+            Update::SearchResults(results) => {
+                self.search_results = results;
+                self.searching = false;
+            }
+            // Chega depois da lista nova, então o canal já está lá.
+            Update::ChannelCreated(id) => {
+                if self.channels.iter().any(|channel| channel.id == id) {
+                    self.selected_channel = id;
+                }
+                self.busy = false;
             }
             Update::Users(users) => {
                 let presence: HashMap<String, Presence> = self

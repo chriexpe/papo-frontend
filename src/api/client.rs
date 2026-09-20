@@ -352,6 +352,46 @@ impl Api {
         Ok(list.channels)
     }
 
+    /// Cria um canal. Exige a permissão `manage_channels`: sem ela o backend
+    /// responde 403 e o motivo chega no corpo, que é o que a janela mostra.
+    pub async fn create_channel(
+        &self,
+        name: &str,
+        kind: &str,
+        topic: Option<&str>,
+    ) -> ApiResult<Channel> {
+        self.post(
+            "/channels",
+            &CreateChannelRequest {
+                name: name.to_owned(),
+                kind: kind.to_owned(),
+                topic: topic.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn update_channel(
+        &self,
+        channel_id: &str,
+        name: &str,
+        topic: Option<&str>,
+    ) -> ApiResult<Channel> {
+        self.put(
+            &format!("/channels/{channel_id}"),
+            &UpdateChannelRequest {
+                name: name.to_owned(),
+                topic: topic.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_channel(&self, channel_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/channels/{channel_id}"), None)
+            .await
+    }
+
     pub async fn messages(&self, channel_id: &str) -> ApiResult<MessageList> {
         self.get(&format!("/channels/{channel_id}/messages")).await
     }
@@ -419,6 +459,21 @@ impl Api {
     pub async fn delete_message(&self, message_id: &str) -> ApiResult<()> {
         self.delete::<()>(&format!("/messages/{message_id}"), None)
             .await
+    }
+
+    /// Busca mensagens. O backend limita a 100 por chamada e só devolve o
+    /// que o usuário pode ler, então não há o que filtrar deste lado.
+    pub async fn search(&self, text: &str) -> ApiResult<SearchResponse> {
+        self.post(
+            "/search",
+            &SearchRequest {
+                text: Some(text.to_owned()),
+                author: None,
+                order: Some("desc".to_owned()),
+                contains_attachment: None,
+            },
+        )
+        .await
     }
 
     // -- Reações -----------------------------------------------------------

@@ -229,6 +229,17 @@ impl Workspace {
     }
 }
 
+/// Formulário de canal. Sem `id` é criação; com `id`, edição — os dois usam
+/// os mesmos campos, e é só o botão final que muda.
+#[derive(Clone, Debug, Default)]
+struct ChannelDialog {
+    id: Option<String>,
+    name: String,
+    topic: String,
+    /// `text`, `voice` ou `category`, como o contrato espera.
+    kind: String,
+}
+
 pub struct PapoApp {
     workspaces: Vec<Workspace>,
     /// Índice do servidor na tela.
@@ -238,6 +249,11 @@ pub struct PapoApp {
     system: SystemTheme,
     tokens: Tokens,
     settings_open: bool,
+    /// Diálogo de canal aberto: criar (sem id) ou editar (com id).
+    channel_dialog: Option<ChannelDialog>,
+    /// Busca aberta, com o termo digitado.
+    search: Option<String>,
+    about_open: bool,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
@@ -355,6 +371,9 @@ impl PapoApp {
             system,
             tokens,
             settings_open: false,
+            channel_dialog: None,
+            search: None,
+            about_open: false,
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
             #[cfg(target_os = "linux")]
@@ -733,6 +752,7 @@ impl PapoApp {
             self.handle_chat_demo(ctx, action);
             return;
         }
+        let s = self.settings.lang.strings();
         let ws = &mut self.workspaces[self.active];
         match action {
             ChatAction::Send {
@@ -741,7 +761,11 @@ impl PapoApp {
                 attachments,
             } => {
                 let channel_id = ws.store.selected_channel.clone();
+                // Sem canal não há para onde mandar. Engolir a mensagem aqui
+                // fazia o envio parecer quebrado: a caixa esvaziava e nada
+                // acontecia, sem uma palavra de explicação.
                 if channel_id.is_empty() {
+                    ws.store.error = Some(s.no_channel_selected.to_owned());
                     return;
                 }
                 // Com anexo não há eco otimista: o servidor é quem sabe o que
@@ -813,6 +837,29 @@ impl PapoApp {
                     self.ui.media.save(&id, &name, dest);
                 }
             },
+            ChatAction::NewChannel => {
+                self.channel_dialog = Some(ChannelDialog {
+                    kind: "text".to_owned(),
+                    ..Default::default()
+                })
+            }
+            ChatAction::EditChannel(id) => {
+                if let Some(channel) = ws.store.channel(&id) {
+                    self.channel_dialog = Some(ChannelDialog {
+                        id: Some(channel.id.clone()),
+                        name: channel.name.clone(),
+                        topic: channel.topic.clone().unwrap_or_default(),
+                        kind: match channel.kind {
+                            crate::state::ChannelKind::Voice => "voice".to_owned(),
+                            crate::state::ChannelKind::Category => "category".to_owned(),
+                            crate::state::ChannelKind::Text => "text".to_owned(),
+                        },
+                    });
+                }
+            }
+            ChatAction::DeleteChannel(channel_id) => {
+                ws.net.send(Command::DeleteChannel { channel_id })
+            }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -873,6 +920,40 @@ impl PapoApp {
                     self.ui.media.save(&id, &name, dest);
                 }
             },
+            // Na demonstração não há rede: o canal nasce, muda e some aqui
+            // mesmo, que é o que deixa a tela de canais trabalhável sem
+            // backend.
+            ChatAction::NewChannel => {
+                self.channel_dialog = Some(ChannelDialog {
+                    kind: "text".to_owned(),
+                    ..Default::default()
+                })
+            }
+            ChatAction::EditChannel(id) => {
+                if let Some(channel) = ws.store.channel(&id) {
+                    self.channel_dialog = Some(ChannelDialog {
+                        id: Some(channel.id.clone()),
+                        name: channel.name.clone(),
+                        topic: channel.topic.clone().unwrap_or_default(),
+                        kind: match channel.kind {
+                            crate::state::ChannelKind::Voice => "voice".to_owned(),
+                            crate::state::ChannelKind::Category => "category".to_owned(),
+                            crate::state::ChannelKind::Text => "text".to_owned(),
+                        },
+                    });
+                }
+            }
+            ChatAction::DeleteChannel(id) => {
+                ws.store.channels.retain(|channel| channel.id != id);
+                if ws.store.selected_channel == id {
+                    ws.store.selected_channel = ws
+                        .store
+                        .channels
+                        .first()
+                        .map(|channel| channel.id.clone())
+                        .unwrap_or_default();
+                }
+            }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -1089,7 +1170,383 @@ impl PapoApp {
                     ws.store.mark_all_read();
                 }
             }
-            MenuCommand::NewChannel | MenuCommand::Search | MenuCommand::About => {}
+            MenuCommand::NewChannel => {
+                self.channel_dialog = Some(ChannelDialog {
+                    kind: "text".to_owned(),
+                    ..Default::default()
+                })
+            }
+            MenuCommand::Search => self.search = Some(String::new()),
+            MenuCommand::About => self.about_open = true,
+        }
+    }
+
+    /// Janela de busca: termo em cima, resultados embaixo. Clicar num
+    /// resultado abre o canal dele.
+    fn search_window(&mut self, ctx: &egui::Context) {
+        let Some(mut text) = self.search.clone() else {
+            return;
+        };
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let mut open = true;
+        let mut run = false;
+        let mut jump: Option<String> = None;
+
+        egui::Window::new(s.menu_search)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(460.0)
+            .default_height(420.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.elevated_bg)
+                    .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
+                    .inner_margin(egui::Margin::same(theme::space::XL as i8))
+                    .stroke(egui::Stroke::new(1.0, t.separator))
+                    .shadow(ctx.global_style().visuals.window_shadow),
+            )
+            .show(ctx, |ui| {
+                let field = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .hint_text(s.search_placeholder)
+                        .desired_width(f32::INFINITY)
+                        .font(theme::text::body()),
+                );
+                field.request_focus();
+                if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    run = true;
+                }
+                ui.add_space(theme::space::XS);
+                ui.label(
+                    egui::RichText::new(s.search_hint)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(theme::space::LG);
+
+                let ws = &self.workspaces[self.active];
+                if ws.store.searching {
+                    ui.label(
+                        egui::RichText::new(s.searching)
+                            .font(theme::text::body())
+                            .color(t.label_secondary),
+                    );
+                    return;
+                }
+                if ws.store.search_results.is_empty() {
+                    ui.label(
+                        egui::RichText::new(s.search_empty)
+                            .font(theme::text::body())
+                            .color(t.label_tertiary),
+                    );
+                    return;
+                }
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for found in &ws.store.search_results {
+                        let when = found
+                            .created_at
+                            .map(|at| {
+                                at.with_timezone(&chrono::Local)
+                                    .format("%d/%m %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        let header = format!(
+                            "#{} · {} · {when}",
+                            found.channel_name, found.author_username
+                        );
+                        let row = ui
+                            .scope(|ui| {
+                                ui.label(
+                                    egui::RichText::new(header)
+                                        .font(theme::text::caption())
+                                        .color(t.label_tertiary),
+                                );
+                                ui.label(
+                                    egui::RichText::new(&found.content)
+                                        .font(theme::text::body())
+                                        .color(t.label),
+                                );
+                            })
+                            .response
+                            .interact(egui::Sense::click());
+                        if row.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if row.clicked() && !found.channel_id.is_empty() {
+                            jump = Some(found.channel_id.clone());
+                        }
+                        ui.add_space(theme::space::SM);
+                        ui.separator();
+                        ui.add_space(theme::space::SM);
+                    }
+                });
+            });
+
+        if run && !text.trim().is_empty() {
+            let query = text.trim().to_owned();
+            let ws = &mut self.workspaces[self.active];
+            ws.store.searching = true;
+            ws.net.send(Command::Search { text: query });
+        }
+        if let Some(channel_id) = jump {
+            self.workspaces[self.active].store.selected_channel = channel_id;
+            open = false;
+        }
+
+        self.search = open.then_some(text);
+        if !open {
+            let ws = &mut self.workspaces[self.active];
+            ws.store.search_results.clear();
+            ws.store.searching = false;
+        }
+    }
+
+    /// Sobre: nome, versão e a que servidor a janela está ligada.
+    fn about_window(&mut self, ctx: &egui::Context) {
+        if !self.about_open {
+            return;
+        }
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let mut open = self.about_open;
+        let address = self.workspaces[self.active].url.clone();
+
+        egui::Window::new(s.menu_about)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(320.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(t.elevated_bg)
+                    .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
+                    .inner_margin(egui::Margin::same(theme::space::XL as i8))
+                    .stroke(egui::Stroke::new(1.0, t.separator))
+                    .shadow(ctx.global_style().visuals.window_shadow),
+            )
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new("Papo")
+                        .font(theme::text::title1())
+                        .color(t.label),
+                );
+                ui.add_space(theme::space::XS);
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(theme::space::LG);
+                ui.label(
+                    egui::RichText::new(s.about_body)
+                        .font(theme::text::body())
+                        .color(t.label_secondary),
+                );
+                ui.add_space(theme::space::LG);
+                ui.label(
+                    egui::RichText::new(address)
+                        .font(theme::text::footnote())
+                        .color(t.label_tertiary),
+                );
+            });
+
+        self.about_open = open;
+    }
+
+    /// O mesmo formulário, aplicado ao estado local da demonstração.
+    fn submit_channel_demo(&mut self, dialog: &ChannelDialog) {
+        use crate::state::{Channel, ChannelKind};
+
+        let kind = match dialog.kind.as_str() {
+            "voice" => ChannelKind::Voice,
+            "category" => ChannelKind::Category,
+            _ => ChannelKind::Text,
+        };
+        let topic = (dialog.kind != "category" && !dialog.topic.trim().is_empty())
+            .then(|| dialog.topic.trim().to_owned());
+        let name = dialog.name.trim().to_owned();
+        let ws = &mut self.workspaces[self.active];
+
+        match &dialog.id {
+            Some(id) => {
+                if let Some(channel) = ws
+                    .store
+                    .channels
+                    .iter_mut()
+                    .find(|channel| &channel.id == id)
+                {
+                    channel.name = name;
+                    channel.topic = topic;
+                }
+            }
+            None => {
+                let position = ws.store.channels.len() as i32;
+                let id = format!("demo-channel-{position}");
+                ws.store.channels.push(Channel {
+                    id: id.clone(),
+                    name,
+                    kind,
+                    topic,
+                    position,
+                    unread: false,
+                    mentions: 0,
+                });
+                if kind == ChannelKind::Text {
+                    ws.store.selected_channel = id;
+                }
+            }
+        }
+    }
+
+    /// Diálogo de criar/editar canal. Mesma moldura dos ajustes.
+    fn channel_window(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.channel_dialog.clone() else {
+            return;
+        };
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let editing = dialog.id.is_some();
+        let mut open = true;
+        let mut submit = false;
+        let mut cancel = false;
+
+        egui::Window::new(if editing {
+            s.edit_channel_title
+        } else {
+            s.new_channel_title
+        })
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(340.0)
+        .frame(
+            egui::Frame::new()
+                .fill(t.elevated_bg)
+                .corner_radius(egui::CornerRadius::same(theme::radius::SHEET))
+                .inner_margin(egui::Margin::same(theme::space::XL as i8))
+                .stroke(egui::Stroke::new(1.0, t.separator))
+                .shadow(ctx.global_style().visuals.window_shadow),
+        )
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(s.channel_name)
+                    .font(theme::text::caption())
+                    .color(t.label_tertiary),
+            );
+            ui.add_space(theme::space::XS);
+            let name = ui.add(
+                egui::TextEdit::singleline(&mut dialog.name)
+                    .char_limit(32)
+                    .desired_width(f32::INFINITY)
+                    .font(theme::text::body()),
+            );
+            name.request_focus();
+
+            // O tipo é escolhido uma vez. Só texto e categoria: apesar de o
+            // openapi.yml listar `voice` no enum, o handler recusa — a
+            // mensagem de erro dele diz "type deve ser 'text' ou 'category'".
+            ui.add_space(theme::space::LG);
+            ui.label(
+                egui::RichText::new(s.channel_kind)
+                    .font(theme::text::caption())
+                    .color(t.label_tertiary),
+            );
+            ui.add_space(theme::space::XS);
+            if editing {
+                ui.label(
+                    egui::RichText::new(match dialog.kind.as_str() {
+                        "voice" => s.channel_kind_voice,
+                        "category" => s.channel_kind_category,
+                        _ => s.channel_kind_text,
+                    })
+                    .font(theme::text::body())
+                    .color(t.label_secondary),
+                );
+            } else {
+                ui.horizontal(|ui| {
+                    for (value, label) in
+                        [("text", s.channel_kind_text), ("category", s.channel_kind_category)]
+                    {
+                        let selected = dialog.kind == value;
+                        if ui.add(egui::Button::selectable(selected, label)).clicked() {
+                            dialog.kind = value.to_owned();
+                        }
+                    }
+                });
+            }
+
+            // Categoria não tem tópico, e o contrato recusa um se vier.
+            if dialog.kind != "category" {
+                ui.add_space(theme::space::LG);
+                ui.label(
+                    egui::RichText::new(s.channel_topic)
+                        .font(theme::text::caption())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(theme::space::XS);
+                ui.add(
+                    egui::TextEdit::singleline(&mut dialog.topic)
+                        .char_limit(512)
+                        .desired_width(f32::INFINITY)
+                        .font(theme::text::body()),
+                );
+            }
+
+            ui.add_space(theme::space::XL);
+            ui.horizontal(|ui| {
+                let ready = !dialog.name.trim().is_empty();
+                if ui
+                    .add_enabled(
+                        ready,
+                        egui::Button::new(if editing { s.save } else { s.create_channel }),
+                    )
+                    .clicked()
+                {
+                    submit = true;
+                }
+                if ui.button(s.cancel).clicked() {
+                    cancel = true;
+                }
+                // Enter no nome vale pelo botão.
+                if ready
+                    && name.lost_focus()
+                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                {
+                    submit = true;
+                }
+            });
+        });
+
+        if submit && self.demo {
+            self.submit_channel_demo(&dialog);
+        } else if submit {
+            let name = dialog.name.trim().to_owned();
+            // Categoria não aceita tópico; nos outros, vazio limpa o que
+            // havia, e é por isso que ele vai mesmo em branco.
+            let topic = (dialog.kind != "category").then(|| dialog.topic.trim().to_owned());
+            let ws = &mut self.workspaces[self.active];
+            match dialog.id.clone() {
+                Some(channel_id) => ws.net.send(Command::UpdateChannel {
+                    channel_id,
+                    name,
+                    topic,
+                }),
+                None => ws.net.send(Command::CreateChannel {
+                    name,
+                    kind: dialog.kind.clone(),
+                    topic: topic.filter(|topic| !topic.is_empty()),
+                }),
+            }
+        }
+
+        if submit || cancel || !open {
+            self.channel_dialog = None;
+        } else {
+            self.channel_dialog = Some(dialog);
         }
     }
 
@@ -1332,6 +1789,9 @@ impl eframe::App for PapoApp {
             }
         }
         self.settings_window(&ctx);
+        self.channel_window(&ctx);
+        self.search_window(&ctx);
+        self.about_window(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {

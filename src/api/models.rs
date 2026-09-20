@@ -97,6 +97,65 @@ pub struct ChannelLastMessage {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// Criação de canal (`POST /channels`). O `type` do contrato é uma das três
+/// palavras `text`, `voice` ou `category`; o tópico só vale para os dois
+/// primeiros, então vai fora quando está vazio.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateChannelRequest {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+/// Edição de canal (`PUT /channels/{id}`). Tópico ausente não mexe no que
+/// está lá; string vazia limpa — é a distinção que o `Option` guarda.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateChannelRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+/// Busca (`POST /search`). Pelo menos um campo tem de vir preenchido; hoje a
+/// janela manda só o texto, e os filtros ficam para quando houver tela deles.
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_attachment: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchResult {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    pub id: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default)]
+    pub channel_id: String,
+    #[serde(default)]
+    pub channel_name: String,
+    #[serde(default)]
+    pub author_username: String,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchResponse {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub results: Vec<SearchResult>,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChannelList {
     #[serde(default)]
@@ -364,5 +423,71 @@ impl Kind {
             "audio" => Self::Audio,
             _ => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Os nomes dos campos vêm do `createChannelRequest` do backend
+    /// (`name`, `type`, `topic`). Errar um deles só apareceria como um 400
+    /// em tempo de execução, então o teste prende o formato aqui.
+    #[test]
+    fn canal_novo_sai_com_os_campos_do_contrato() {
+        let body = serde_json::to_string(&CreateChannelRequest {
+            name: "geral".to_owned(),
+            kind: "text".to_owned(),
+            topic: Some("conversa".to_owned()),
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            r#"{"name":"geral","type":"text","topic":"conversa"}"#
+        );
+    }
+
+    /// Categoria não aceita tópico: ele sai do corpo em vez de ir vazio.
+    #[test]
+    fn canal_sem_topico_omite_o_campo() {
+        let body = serde_json::to_string(&CreateChannelRequest {
+            name: "avisos".to_owned(),
+            kind: "category".to_owned(),
+            topic: None,
+        })
+        .unwrap();
+        assert_eq!(body, r#"{"name":"avisos","type":"category"}"#);
+    }
+
+    /// Na edição, tópico ausente não mexe no que está lá e string vazia
+    /// limpa — a diferença entre `None` e `Some("")` é o contrato inteiro.
+    #[test]
+    fn editar_canal_distingue_ausente_de_vazio() {
+        let intact = serde_json::to_string(&UpdateChannelRequest {
+            name: "geral".to_owned(),
+            topic: None,
+        })
+        .unwrap();
+        assert_eq!(intact, r#"{"name":"geral"}"#);
+
+        let cleared = serde_json::to_string(&UpdateChannelRequest {
+            name: "geral".to_owned(),
+            topic: Some(String::new()),
+        })
+        .unwrap();
+        assert_eq!(cleared, r#"{"name":"geral","topic":""}"#);
+    }
+
+    /// A busca manda só o que foi preenchido.
+    #[test]
+    fn busca_omite_os_filtros_vazios() {
+        let body = serde_json::to_string(&SearchRequest {
+            text: Some("oi".to_owned()),
+            author: None,
+            order: Some("desc".to_owned()),
+            contains_attachment: None,
+        })
+        .unwrap();
+        assert_eq!(body, r#"{"text":"oi","order":"desc"}"#);
     }
 }

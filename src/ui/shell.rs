@@ -78,6 +78,12 @@ pub enum ChatAction {
     PickGif,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
+    /// Abre o diálogo de criar canal.
+    NewChannel,
+    /// Abre o diálogo de editar um canal existente.
+    EditChannel(String),
+    /// Apaga o canal, depois da confirmação.
+    DeleteChannel(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +240,14 @@ pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Token
         state.relayout = true;
     }
 
+    // O erro que veio do servidor vira o mesmo aviso passageiro dos erros da
+    // interface. Sem isto ele ficava só no `Store`, onde a tela de conversa
+    // nunca o lia: um 403 ao criar canal, ou um envio recusado, sumiam sem
+    // deixar rastro — e o que se via era um botão que não faz nada.
+    if let Some(message) = store.error.take() {
+        state.error = Some((message, ui.input(|input| input.time)));
+    }
+
     // Trocou de canal: a descrição reaparece e a mídia que estava tocando
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
@@ -335,6 +349,14 @@ fn channels_sidebar(
                                 );
                             }
                         });
+                        // Criar canal fica no cabeçalho da coluna que lista
+                        // os canais, que é onde se procura por ele.
+                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_space(space::MD);
+                            if icon_button(ui, t, icon::PLUS, s.new_channel_title).clicked() {
+                                state.actions.push(ChatAction::NewChannel);
+                            }
+                        });
                     });
                 },
             );
@@ -367,7 +389,7 @@ fn channels_sidebar(
                                     .iter()
                                     .filter(|c| c.kind == ChannelKind::Text)
                                 {
-                                    if channel_row(
+                                    let row = channel_row(
                                         ui,
                                         t,
                                         icon::HASH,
@@ -376,9 +398,18 @@ fn channels_sidebar(
                                         channel.unread,
                                         channel.mentions,
                                         SIDEBAR_WIDTH - indent * 2.0,
-                                    ) {
+                                    );
+                                    if row.clicked() {
                                         store.selected_channel = channel.id.clone();
                                     }
+                                    channel_menu(&row, channel, state, s);
+                                }
+                                // Sem canal nenhum a lista fica muda; este é o
+                                // único caminho para o primeiro canal.
+                                if store.channels.is_empty()
+                                    && add_channel_row(ui, t, s, SIDEBAR_WIDTH - indent * 2.0)
+                                {
+                                    state.actions.push(ChatAction::NewChannel);
                                 }
 
                                 section_caption(ui, t, s.voice_channels);
@@ -388,7 +419,7 @@ fn channels_sidebar(
                                     .iter()
                                     .filter(|c| c.kind == ChannelKind::Voice)
                                 {
-                                    channel_row(
+                                    let row = channel_row(
                                         ui,
                                         t,
                                         icon::SPEAKER_HIGH,
@@ -398,6 +429,7 @@ fn channels_sidebar(
                                         0,
                                         SIDEBAR_WIDTH - indent * 2.0,
                                     );
+                                    channel_menu(&row, channel, state, s);
                                 }
                                 // Espaço para a pastilha da conta não cobrir o
                                 // último canal quando a lista chega ao fim.
@@ -490,7 +522,7 @@ fn channel_row(
     unread: bool,
     mentions: u32,
     width: f32,
-) -> bool {
+) -> egui::Response {
     let height = 30.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
 
@@ -551,6 +583,57 @@ fn channel_row(
         );
     }
 
+    response
+}
+
+/// Menu do botão direito de um canal: renomear e excluir.
+fn channel_menu(
+    response: &egui::Response,
+    channel: &crate::state::Channel,
+    state: &mut UiState,
+    s: &Strings,
+) {
+    response.context_menu(|ui| {
+        if ui.button(s.rename_channel).clicked() {
+            state.actions.push(ChatAction::EditChannel(channel.id.clone()));
+            ui.close();
+        }
+        if ui
+            .button(s.delete_channel)
+            .on_hover_text(s.delete_channel_confirm)
+            .clicked()
+        {
+            state
+                .actions
+                .push(ChatAction::DeleteChannel(channel.id.clone()));
+            ui.close();
+        }
+    });
+}
+
+/// Linha «criar canal», no lugar onde estariam os canais.
+fn add_channel_row(ui: &mut egui::Ui, t: &Tokens, s: &Strings, width: f32) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let painter = ui.painter();
+    painter.text(
+        egui::pos2(rect.min.x + space::MD, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        icon::PLUS,
+        text::icon(14.0),
+        t.label_tertiary,
+    );
+    painter.text(
+        egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        s.create_channel,
+        text::body(),
+        t.label_secondary,
+    );
     response.clicked()
 }
 
@@ -949,7 +1032,7 @@ fn message_list(
 ) {
     let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
-        empty_state(ui, t, s);
+        empty_state(ui, store, state, t, s);
         return;
     }
 
@@ -2002,26 +2085,48 @@ fn day_divider(
     ui.add_space(space::XS);
 }
 
-fn empty_state(ui: &mut egui::Ui, t: &Tokens, s: &Strings) {
+/// Conversa vazia. Um servidor sem canal nenhum é um caso diferente de um
+/// canal sem mensagens: ali não há o que dizer até existir um canal, então a
+/// tela oferece a saída em vez de convidar a falar sozinho.
+fn empty_state(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+    let bare = store.channels.is_empty();
     ui.add_space(space::XXXL * 2.0);
     ui.vertical_centered(|ui| {
         ui.label(
-            RichText::new(icon::CHATS_CIRCLE)
-                .font(text::icon(44.0))
-                .color(t.label_tertiary),
+            RichText::new(if bare {
+                icon::HASH
+            } else {
+                icon::CHATS_CIRCLE
+            })
+            .font(text::icon(44.0))
+            .color(t.label_tertiary),
         );
         ui.add_space(space::LG);
         ui.label(
-            RichText::new(s.empty_channel_title)
-                .font(text::title2())
-                .color(t.label),
+            RichText::new(if bare {
+                s.no_channels_title
+            } else {
+                s.empty_channel_title
+            })
+            .font(text::title2())
+            .color(t.label),
         );
         ui.add_space(space::XS);
         ui.label(
-            RichText::new(s.empty_channel_body)
-                .font(text::body())
-                .color(t.label_secondary),
+            RichText::new(if bare {
+                s.no_channels_body
+            } else {
+                s.empty_channel_body
+            })
+            .font(text::body())
+            .color(t.label_secondary),
         );
+        if bare {
+            ui.add_space(space::XL);
+            if ui.button(s.create_channel).clicked() {
+                state.actions.push(ChatAction::NewChannel);
+            }
+        }
     });
 }
 
