@@ -62,12 +62,15 @@ Empacotado, por ordem de preferência:
 | Formato | Arquivo | Para quem |
 | --- | --- | --- |
 | Flatpak | `packaging/io.github.chriexpe.Papo.yml` | qualquer distribuição; o runtime já traz GStreamer e codecs |
+| Bundle Flatpak | `papo-<versão>-<arco>.flatpak` no release | instalar sem Flathub, com `flatpak install --user ./papo-*.flatpak` |
 | `.deb` | `packaging/deb/build.sh` | Debian, Ubuntu, Zorin e derivados; as dependências vêm no pacote |
 | Arch/AUR | `packaging/PKGBUILD` | Arch e derivados |
 | Tarball | gerado pelo workflow `release` | quem só quer descompactar e rodar |
 
-Os quatro saem do mesmo workflow `release` a cada etiqueta `v*`, em x86_64 e
-aarch64.
+Todos saem do mesmo workflow `release` a cada etiqueta `v*`, em x86_64 e
+aarch64. O bundle não é assinado (um `.flatpak` avulso não exige assinatura) e
+não se atualiza sozinho: quem quiser atualizações automáticas usa o Flathub,
+que assina o repositório com a chave dele.
 
 O Flatpak precisa das dependências do cargo em disco antes de compilar (a
 compilação roda sem rede): rode `./scripts/flatpak-sources.sh` sempre que o
@@ -175,7 +178,9 @@ cursor, moderação sensível embaçada até o clique, download para uma pasta f
 sempre, e gravação de recado de voz pelo microfone.
 
 Nos contadores: menções somam no ícone da bandeja e na barra de tarefas, não lido acende sem
-número, e tudo isso se desliga nos ajustes.
+número, e tudo isso se desliga nos ajustes. O Papo também pode ser marcado para iniciar com a
+sessão, por um `.desktop` em `~/.config/autostart` — dentro do Flatpak, pelo mesmo caminho,
+já que o `Exec` de lá fora chama o `flatpak run`.
 
 Na administração: canais (criar, renomear, excluir, reordenar e a notificação de cada um),
 cargos com as sete permissões e quem tem cada uma, perfil (apelido, recado, presença, foto,

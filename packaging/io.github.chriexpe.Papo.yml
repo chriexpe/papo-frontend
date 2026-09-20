@@ -9,7 +9,7 @@
 # partir do Cargo.lock; rode-o sempre que o lock mudar.
 id: io.github.chriexpe.Papo
 runtime: org.freedesktop.Platform
-runtime-version: '24.08'
+runtime-version: '25.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -19,7 +19,7 @@ command: papo
 add-extensions:
   org.freedesktop.Platform.ffmpeg-full:
     directory: lib/ffmpeg
-    version: '24.08'
+    version: '25.08'
     add-ld-path: .
     no-autodownload: false
     autodelete: false
@@ -33,8 +33,11 @@ finish-args:
   - --device=dri
   # Tocar áudio e vídeo, e gravar recado de voz.
   - --socket=pulseaudio
-  # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma.
+  # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma. O item
+  # registra um nome próprio (`org.kde.StatusNotifierItem-<pid>-<n>`), que o
+  # ksni cria em tempo de execução e o Flatpak só libera por curinga.
   - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-.*
   - --talk-name=com.canonical.AppMenu.Registrar
   - --own-name=com.canonical.dbusmenu
   # Contador de menções na barra de tarefas.
@@ -45,6 +48,8 @@ finish-args:
   # Ler o tema, a cor de destaque e a fonte do sistema.
   - --filesystem=xdg-config/kdeglobals:ro
   - --filesystem=xdg-config/gtk-3.0:ro
+  # Iniciar com a sessão: é em ~/.config/autostart que o ambiente procura.
+  - --filesystem=xdg-config/autostart
   # Onde os anexos salvos vão parar por padrão; o resto passa pelo portal.
   - --filesystem=xdg-download
 
@@ -71,4 +76,12 @@ modules:
     sources:
       - type: dir
         path: ..
+        # O repositório inteiro é a fonte; sem isto o `.git`, o `target` e o
+        # resultado da compilação anterior entrariam na cópia.
+        skip:
+          - .git
+          - target
+          - .flatpak-builder
+          - build-dir
+          - repo
       - cargo-sources.json

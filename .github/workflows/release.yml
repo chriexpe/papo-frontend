@@ -84,8 +84,61 @@ jobs:
             *.deb
             *.deb.sha256
 
+  # O bundle Flatpak é o pacote que não depende do GStreamer do sistema: o
+  # runtime do freedesktop já o traz, e a extensão ffmpeg-full traz os codecs.
+  # A compilação roda no flatpak-builder, sem rede, a partir de
+  # packaging/cargo-sources.json.
+  flatpak:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Ferramentas
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder
+
+      - name: Runtime e SDK
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+
+      - name: Fontes do cargo
+        run: ./scripts/flatpak-sources.sh
+
+      - name: Construir o Flatpak
+        run: |
+          # O FUSE dos runners não coopera com o rofiles; sem ele a
+          # compilação corre em disco, que é o que interessa.
+          flatpak-builder --user --disable-rofiles-fuse --force-clean \
+            --state-dir=.flatpak-builder --repo=repo build-dir \
+            packaging/io.github.chriexpe.Papo.yml
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=dev
+          flatpak build-bundle \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
+            repo "papo-${version}-${{ matrix.arch }}.flatpak" \
+            io.github.chriexpe.Papo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-flatpak-${{ matrix.arch }}
+          path: '*.flatpak'
+
   publish:
-    needs: build
+    needs: [build, flatpak]
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -99,4 +152,5 @@ jobs:
             *.tar.gz.sha256
             *.deb
             *.deb.sha256
+            *.flatpak
           generate_release_notes: true

@@ -1,1 +1,7 @@
 /target
+# Gerado por scripts/flatpak-sources.sh; o CI o refaz a cada release.
+/packaging/cargo-sources.json
+# Estado e saída do flatpak-builder local.
+/.flatpak-builder
+/build-dir
+/repo
