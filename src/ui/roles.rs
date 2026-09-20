@@ -52,6 +52,11 @@ pub struct Draft {
 pub struct RolesState {
     pub open: bool,
     pub draft: Option<Draft>,
+    /// Nome do cargo que acabou de ser criado. A resposta do servidor é uma
+    /// lista nova, não o cargo; guardar o nome é como se descobre o id dele
+    /// para já abrir a coluna de quem o tem — sem isso era preciso clicar no
+    /// cargo na lista da esquerda, e parecia que atribuir não funcionava.
+    awaiting: Option<String>,
 }
 
 impl RolesState {
@@ -79,12 +84,21 @@ pub fn window(
     }
     let mut open = state.open;
 
+    // O cargo criado já existe na lista: abre-o, para que atribuir a alguém
+    // seja o passo seguinte e não uma descoberta.
+    if let Some(name) = state.awaiting.clone() {
+        if let Some(role) = store.roles.iter().find(|role| role.name == name) {
+            state.select(role);
+            state.awaiting = None;
+        }
+    }
+
     egui::Window::new(s.roles)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)
-        .default_width(560.0)
-        .default_height(460.0)
+        .default_width(760.0)
+        .default_height(440.0)
         .frame(
             egui::Frame::new()
                 .fill(t.elevated_bg)
@@ -97,7 +111,9 @@ pub fn window(
             ui.horizontal_top(|ui| {
                 list(ui, state, store, t, s);
                 ui.separator();
-                editor(ui, state, store, t, s, &mut actions);
+                editor(ui, state, t, s, &mut actions);
+                ui.separator();
+                assignees(ui, state, store, t, s, &mut actions);
             });
         });
 
@@ -153,7 +169,6 @@ fn list(ui: &mut egui::Ui, state: &mut RolesState, store: &Store, t: &Tokens, s:
 fn editor(
     ui: &mut egui::Ui,
     state: &mut RolesState,
-    store: &Store,
     t: &Tokens,
     s: &Strings,
     actions: &mut Vec<RoleAction>,
@@ -167,6 +182,7 @@ fn editor(
     // O cargo apagado some da tela, mas o rascunho só pode ser descartado
     // depois que o `draft` emprestado acima sair de cena.
     let mut discard = false;
+    let mut pending: Option<String> = None;
 
     ui.vertical(|ui| {
         ui.set_width(320.0);
@@ -220,32 +236,6 @@ fn editor(
                     ui.checkbox(value, label);
                 }
 
-                // Atribuir o cargo só faz sentido depois que ele existe.
-                if let Some(role_id) = draft.id.clone() {
-                    ui.add_space(theme::space::LG);
-                    ui.label(
-                        RichText::new(s.role_members)
-                            .font(theme::text::caption())
-                            .color(t.label_tertiary),
-                    );
-                    ui.add_space(theme::space::XS);
-                    for member in &store.members {
-                        let mut has = member.roles.iter().any(|id| id == &role_id);
-                        if ui.checkbox(&mut has, &member.name).changed() {
-                            actions.push(if has {
-                                RoleAction::Assign {
-                                    user_id: member.id.clone(),
-                                    role_id: role_id.clone(),
-                                }
-                            } else {
-                                RoleAction::Unassign {
-                                    user_id: member.id.clone(),
-                                    role_id: role_id.clone(),
-                                }
-                            });
-                        }
-                    }
-                }
             });
 
         ui.add_space(theme::space::MD);
@@ -263,11 +253,14 @@ fn editor(
                         color,
                         permissions: draft.permissions,
                     },
-                    None => RoleAction::Create {
-                        name: draft.name.trim().to_owned(),
-                        color,
-                        permissions: draft.permissions,
-                    },
+                    None => {
+                        pending = Some(draft.name.trim().to_owned());
+                        RoleAction::Create {
+                            name: draft.name.trim().to_owned(),
+                            color,
+                            permissions: draft.permissions,
+                        }
+                    }
                 });
             }
             if let Some(role_id) = draft.id.clone() {
@@ -282,6 +275,62 @@ fn editor(
     if discard {
         state.draft = None;
     }
+    if pending.is_some() {
+        state.awaiting = pending;
+    }
+}
+
+/// Terceira coluna: quem tem o cargo aberto. Fica ao lado das permissões,
+/// não embaixo delas — enterrada sob sete caixas de seleção, parecia que
+/// atribuir cargo não existia.
+fn assignees(
+    ui: &mut egui::Ui,
+    state: &RolesState,
+    store: &Store,
+    t: &Tokens,
+    s: &Strings,
+    actions: &mut Vec<RoleAction>,
+) {
+    ui.vertical(|ui| {
+        ui.set_width(210.0);
+        ui.label(
+            RichText::new(s.role_members)
+                .font(theme::text::caption())
+                .color(t.label_tertiary),
+        );
+        ui.add_space(theme::space::XS);
+
+        // Só um cargo que já existe pode ser dado a alguém.
+        let Some(role_id) = state.draft.as_ref().and_then(|draft| draft.id.clone()) else {
+            ui.label(
+                RichText::new(s.role_members_hint)
+                    .font(theme::text::footnote())
+                    .color(t.label_tertiary),
+            );
+            return;
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("quem-tem-o-cargo")
+            .max_height(340.0)
+            .show(ui, |ui| {
+                for member in &store.members {
+                    let mut has = member.roles.iter().any(|id| id == &role_id);
+                    if ui.checkbox(&mut has, &member.name).changed() {
+                        actions.push(if has {
+                            RoleAction::Assign {
+                                user_id: member.id.clone(),
+                                role_id: role_id.clone(),
+                            }
+                        } else {
+                            RoleAction::Unassign {
+                                user_id: member.id.clone(),
+                                role_id: role_id.clone(),
+                            }
+                        });
+                    }
+                }
+            });
+    });
 }
 
 /// As sete permissões, com o rótulo de cada uma. Em um só lugar para que

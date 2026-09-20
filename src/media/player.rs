@@ -556,8 +556,21 @@ impl Recorder {
         // A fonte varia com o sistema: PipeWire onde existe, ALSA como
         // reserva. Sem microfone, nada disso abre e a gravação nem começa.
         for source in ["pipewiresrc", "alsasrc"] {
+            // O `queue` logo depois da fonte é o que separa a captura da
+            // codificação: sem ele, converter, resamplear e codificar em
+            // Opus acontece na thread que está lendo o microfone, e cada
+            // atraso do encoder vira amostra perdida — som picotado no
+            // arquivo, não na hora de tocar. O `audiorate` costura os buracos
+            // que mesmo assim apareçam, para o Ogg não sair com o tempo
+            // torto. `do-timestamp` garante carimbo de hora na fonte viva.
+            let live = if source == "pipewiresrc" {
+                "pipewiresrc do-timestamp=true"
+            } else {
+                "alsasrc do-timestamp=true"
+            };
             let description = format!(
-                "{source} ! audioconvert ! audioresample ! \
+                "{live} ! queue max-size-time=2000000000 leaky=no ! \
+                 audioconvert ! audioresample ! audiorate ! \
                  audio/x-raw,channels=1,rate=48000 ! opusenc ! oggmux ! \
                  filesink location=\"{}\"",
                 path.display()

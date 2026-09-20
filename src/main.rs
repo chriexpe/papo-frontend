@@ -41,23 +41,50 @@ fn main() -> eframe::Result<()> {
         std::env::set_var("PAPO_DEMO", "1");
     }
 
-    // `papo pick-test` abre o seletor de arquivos e imprime o que voltou.
+    // `papo pick-test` abre o seletor **duas vezes seguidas**, pelo mesmo
+    // caminho que a janela usa. Duas é o número que importa: com um runtime
+    // por diálogo, a primeira abria e a segunda nunca respondia.
     if args.get(1).map(String::as_str) == Some("pick-test") {
-        println!("abrindo o seletor…");
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let picked = runtime.block_on(async {
-            rfd::AsyncFileDialog::new()
-                .set_title("Anexar")
-                .pick_files()
-                .await
-        });
-        println!(
-            "resultado: {:?}",
-            picked.map(|handles| handles
-                .iter()
-                .map(|handle| handle.path().to_path_buf())
-                .collect::<Vec<_>>())
-        );
+        let ctx = egui::Context::default();
+        let mut dialogs = platform::files::Dialogs::default();
+        for round in 1..=2 {
+            println!("abrindo o seletor ({round} de 2)…");
+            dialogs.pick_files(ctx.clone());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                let answers = dialogs.poll();
+                if let Some(answer) = answers.into_iter().next() {
+                    // Sem `{:?}`: o anexo escolhido pode trazer um blob em
+                    // base64 e o terminal viraria sopa.
+                    let summary = match answer {
+                        platform::files::Chosen::Files(files) => format!(
+                            "{} arquivo(s): {}",
+                            files.len(),
+                            files
+                                .iter()
+                                .map(|file| file.name.clone())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                        platform::files::Chosen::Folder(path) => format!("pasta {}", path.display()),
+                        platform::files::Chosen::Image { format, blob, .. } => {
+                            format!("imagem {format}, {} bytes em base64", blob.len())
+                        }
+                        platform::files::Chosen::SaveAs { dest, .. } => {
+                            format!("salvar em {}", dest.display())
+                        }
+                        platform::files::Chosen::Cancelled => "cancelado".to_owned(),
+                    };
+                    println!("resultado {round}: {summary}");
+                    break;
+                }
+                if std::time::Instant::now() > deadline {
+                    println!("resultado {round}: o seletor não respondeu em 60s");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         return Ok(());
     }
 

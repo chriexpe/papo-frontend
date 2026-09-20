@@ -111,9 +111,6 @@ impl Dialogs {
         });
     }
 
-    /// O diálogo fala com o xdg-desktop-portal por D-Bus, e o zbus embaixo
-    /// dele exige um runtime tokio de verdade — daí o runtime próprio por
-    /// diálogo, numa thread que pode bloquear à vontade.
     /// Imagem para foto de perfil ou figurinha. O backend recebe base64 e
     /// aceita no máximo 2 MB, então o arquivo é conferido aqui antes de
     /// subir — a alternativa é um 400 depois da espera.
@@ -157,29 +154,30 @@ impl Dialogs {
         });
     }
 
+    /// O diálogo fala com o xdg-desktop-portal por D-Bus, e o zbus embaixo
+    /// dele exige um runtime tokio de verdade. O runtime é **um só, vivo
+    /// enquanto o programa estiver de pé**: o zbus guarda a conexão com o
+    /// barramento da sessão num cache global, e essa conexão só continua
+    /// funcionando enquanto o runtime que a criou segue rodando. Com um
+    /// runtime por diálogo, o primeiro seletor abria, o runtime morria junto
+    /// com a resposta e a conexão em cache ficava sem ninguém para bombeá-la
+    /// — do segundo clique em diante o portal não respondia mais nada.
     fn spawn<F, Fut>(&mut self, repaint: egui::Context, build: F)
     where
         F: FnOnce(rfd::AsyncFileDialog) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Chosen>,
     {
+        let Some(handle) = dialog_runtime() else {
+            log::warn!("sem seletor de arquivos: o runtime não subiu");
+            return;
+        };
         let (tx, rx) = mpsc::channel();
+        // A thread existe só para poder bloquear à espera da resposta; quem
+        // conduz o D-Bus é o runtime compartilhado.
         if std::thread::Builder::new()
             .name("papo-dialog".into())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(1)
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        log::warn!("sem seletor de arquivos: {error}");
-                        let _ = tx.send(Chosen::Cancelled);
-                        repaint.request_repaint();
-                        return;
-                    }
-                };
-                let chosen = runtime.block_on(build(rfd::AsyncFileDialog::new()));
+                let chosen = handle.block_on(build(rfd::AsyncFileDialog::new()));
                 let _ = tx.send(chosen);
                 repaint.request_repaint();
             })
@@ -202,6 +200,25 @@ impl Dialogs {
         });
         out
     }
+}
+
+/// O runtime que conduz o D-Bus dos diálogos, criado uma vez e nunca
+/// derrubado. Ver a explicação em `Dialogs::spawn`.
+fn dialog_runtime() -> Option<tokio::runtime::Handle> {
+    static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("papo-portal")
+                .enable_all()
+                .build()
+                .map_err(|error| log::warn!("runtime dos diálogos: {error}"))
+                .ok()
+        })
+        .as_ref()
+        .map(|runtime| runtime.handle().clone())
 }
 
 /// Monta o anexo a partir do caminho, adivinhando o mime pela extensão.
