@@ -139,6 +139,12 @@ Linguagem visual seguindo as HIG da Apple, adaptadas ao desktop:
   menu global na 3.32 — o Papo desenha a própria barra, com o título no meio e o
   menu num hambúrguer. Sem isso não haveria caminho nenhum para ajustes, idioma
   ou sair. `PAPO_CHROME=own` e `PAPO_CHROME=system` forçam um dos dois.
+- **Ajustes numa folha só.** Duas pastilhas gêmeas na coluna da esquerda — o
+  servidor em cima, você embaixo — com a mesma anatomia e a engrenagem na ponta
+  oposta. As duas abrem a mesma folha, que é sólida: o guia do material diz que
+  superfície grande fica mais opaca, e que vidro sobre vidro desmancha a
+  hierarquia. `PAPO_SHEET=app` ou `PAPO_SHEET=servidor` abre a folha já na
+  partida, para trabalhar no desenho dela sem clicar até lá.
 
 ## Estado
 

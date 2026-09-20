@@ -399,7 +399,20 @@ impl PapoApp {
             tokens,
             channel_dialog: None,
             roles: Default::default(),
-            sheet: Default::default(),
+            // `PAPO_SHEET=app|servidor` abre a folha de ajustes já na
+            // partida. Existe para trabalhar no desenho dela sem precisar
+            // clicar até lá a cada recompilação.
+            sheet: {
+                let mut sheet = crate::ui::settings::SettingsState::default();
+                match std::env::var("PAPO_SHEET").as_deref() {
+                    Ok("app") => sheet.open = Some(crate::ui::settings::Surface::App),
+                    Ok("servidor") | Ok("server") => {
+                        sheet.open = Some(crate::ui::settings::Surface::Server)
+                    }
+                    _ => {}
+                }
+                sheet
+            },
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
             #[cfg(target_os = "linux")]
@@ -1359,16 +1372,23 @@ impl PapoApp {
         let s = self.settings.lang.strings();
         let t = self.tokens;
         let screen = ctx.viewport_rect();
-        // A folha nasce na pastilha: a do servidor em cima, a da conta no pé.
-        let sidebar = crate::ui::rail::RAIL_WIDTH;
+        // A folha nasce exatamente na pastilha que a abriu — mesma borda
+        // esquerda, colada na de cima ou na de baixo conforme o caso. Antes
+        // eram números soltos, e a folha saía uns pixels fora da pastilha.
+        use crate::ui::shell::{IDENTITY_PILL_HEIGHT, PILL_INSET, SIDEBAR_WIDTH};
+        let left = screen.min.x + crate::ui::rail::RAIL_WIDTH + PILL_INSET;
+        let width = SIDEBAR_WIDTH - PILL_INSET * 2.0;
         let anchor = match surface {
             Surface::Server => egui::Rect::from_min_size(
-                egui::pos2(screen.min.x + sidebar, screen.min.y + 56.0),
-                egui::vec2(crate::ui::shell::SIDEBAR_WIDTH, 1.0),
+                egui::pos2(left, screen.min.y + PILL_INSET),
+                egui::vec2(width, IDENTITY_PILL_HEIGHT),
             ),
             Surface::App => egui::Rect::from_min_size(
-                egui::pos2(screen.min.x + sidebar, screen.max.y - 64.0),
-                egui::vec2(crate::ui::shell::SIDEBAR_WIDTH, 1.0),
+                egui::pos2(
+                    left,
+                    screen.max.y - IDENTITY_PILL_HEIGHT - PILL_INSET,
+                ),
+                egui::vec2(width, IDENTITY_PILL_HEIGHT),
             ),
         };
 

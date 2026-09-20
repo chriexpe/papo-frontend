@@ -74,13 +74,15 @@ impl ServerPane {
         Self::Audit,
     ];
 
+    /// Nome curto, para a coluna. O título longo continua valendo dentro
+    /// do painel, na legenda da seção.
     fn title(self, s: &Strings) -> &'static str {
         match self {
             Self::General => s.pane_identity,
-            Self::Channels => s.text_channels,
+            Self::Channels => s.pane_channels,
             Self::Roles => s.roles,
-            Self::Emojis => s.server_emojis,
-            Self::Audit => s.audit_log,
+            Self::Emojis => s.pane_emojis,
+            Self::Audit => s.pane_audit,
         }
     }
 }
@@ -152,6 +154,10 @@ impl SettingsState {
 
 const ROW_HEIGHT: f32 = 38.0;
 const ROW_INSET: f32 = space::LG;
+/// Largura da coluna de rótulos.
+const LABEL_COLUMN: f32 = 150.0;
+/// Largura reservada ao controle, encostado à direita da linha.
+const CONTROL_COLUMN: f32 = 190.0;
 /// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
 const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
@@ -159,18 +165,24 @@ const SWITCH_H: f32 = 22.0;
 /// Título de seção acima de um cartão.
 fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
     ui.add_space(space::LG);
-    ui.label(
-        RichText::new(label.to_uppercase())
-            .font(text::caption())
-            .color(t.label_tertiary),
-    );
+    ui.horizontal(|ui| {
+        // Mesmo recuo das linhas: o título tem de nascer na mesma coluna
+        // que os rótulos que ele cobre.
+        ui.add_space(ROW_INSET);
+        ui.label(
+            RichText::new(label.to_uppercase())
+                .font(text::caption())
+                .color(t.label_tertiary),
+        );
+    });
     ui.add_space(space::SM);
 }
 
-/// Cartão que agrupa linhas. Desenha o fundo depois de saber a altura, e os
-/// fios entre as linhas ficam recuados das bordas.
+/// Agrupa linhas. Sem fundo próprio: um bloco mais claro dentro da folha
+/// vira uma segunda janela, e duas superfícies empilhadas foi exatamente o
+/// que ficou pesado. O que separa as linhas é o fio entre elas, que começa
+/// onde o rótulo começa — assim a lista tem estrutura sem ter caixa.
 fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
-    let backdrop = ui.painter().add(egui::Shape::Noop);
     let mut rows = Rows {
         ui,
         t: *t,
@@ -182,15 +194,11 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
     let ui = rows.ui;
 
     let rect = ui.min_rect();
-    ui.painter().set(
-        backdrop,
-        egui::epaint::RectShape::filled(rect, CornerRadius::same(radius::CARD), t.fill_soft),
-    );
     for y in separators {
         ui.painter().line_segment(
             [
                 egui::pos2(rect.min.x + ROW_INSET, y),
-                egui::pos2(rect.max.x - space::MD, y),
+                egui::pos2(rect.max.x, y),
             ],
             Stroke::new(1.0, t.separator),
         );
@@ -231,41 +239,62 @@ impl Rows<'_> {
         hint: Option<&str>,
         control: impl FnOnce(&mut egui::Ui, &Tokens),
     ) {
-        let height = if hint.is_some() {
-            ROW_HEIGHT + 16.0
-        } else {
-            ROW_HEIGHT
+        let t = self.t;
+        // A explicação é medida antes de reservar a faixa: só assim a linha
+        // pode crescer para caber duas ou três linhas de texto em vez de
+        // deixá-las transbordar para dentro da linha de baixo.
+        let full = self.ui.available_width() - ROW_INSET - space::MD;
+        let text_width = LABEL_COLUMN.min(full * 0.45);
+        // O texto de apoio pode passar da coluna do rótulo — o controle fica
+        // à direita, e embaixo dele sobra espaço que ninguém usa.
+        let hint_width = (full - CONTROL_COLUMN).max(text_width);
+        let hint_galley = hint.map(|hint| {
+            self.ui.painter().layout(
+                hint.to_owned(),
+                text::footnote(),
+                t.label_tertiary,
+                hint_width,
+            )
+        });
+        let height = match &hint_galley {
+            None => ROW_HEIGHT,
+            Some(galley) => (ROW_HEIGHT - 8.0 + galley.size().y + space::MD).max(ROW_HEIGHT),
         };
         let (_, inner) = self.band(height);
-        let t = self.t;
 
-        let text_width = inner.width() * 0.52;
-        let label_rect = Rect::from_min_size(
-            egui::pos2(inner.min.x, inner.min.y),
-            Vec2::new(text_width, inner.height()),
-        );
-        self.ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(label_rect)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                ui.vertical(|ui| {
-                    ui.add_space(if hint.is_some() { space::SM } else { 0.0 });
-                    ui.label(RichText::new(label).font(text::body()).color(t.label));
-                    if let Some(hint) = hint {
-                        ui.add_space(1.0);
-                        ui.label(
-                            RichText::new(hint)
-                                .font(text::footnote())
-                                .color(t.label_tertiary),
-                        );
-                    }
-                });
-            },
-        );
+        let painter = self.ui.painter();
+        match hint_galley {
+            None => {
+                painter.text(
+                    egui::pos2(inner.min.x, inner.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    text::body(),
+                    t.label,
+                );
+            }
+            Some(galley) => {
+                // Com apoio, o bloco todo é que fica centrado na faixa.
+                let line = 17.0;
+                let block = line + galley.size().y;
+                let top = inner.center().y - block / 2.0;
+                painter.text(
+                    egui::pos2(inner.min.x, top),
+                    egui::Align2::LEFT_TOP,
+                    label,
+                    text::body(),
+                    t.label,
+                );
+                painter.galley(
+                    egui::pos2(inner.min.x, top + line),
+                    galley,
+                    t.label_tertiary,
+                );
+            }
+        }
 
         let control_rect = Rect::from_min_max(
-            egui::pos2(inner.min.x + text_width, inner.min.y),
+            egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y),
             inner.max,
         );
         self.ui.scope_builder(
@@ -363,18 +392,33 @@ impl Rows<'_> {
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
         self.row(label, None, |ui, _| {
-            let response = ui.add(
+            let width = ui.available_width();
+            let response = ui.add_sized(
+                Vec2::new(width, 26.0),
                 egui::TextEdit::singleline(value)
                     .char_limit(limit)
                     .password(secret)
                     .font(text::body())
-                    .desired_width(ui.available_width()),
+                    .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
             );
             submitted =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         });
         submitted
     }
+}
+
+/// Faixa dos botões de ação, logo abaixo de uma lista.
+///
+/// Precisa de altura própria: um `with_layout` solto herda toda a altura
+/// que sobrou no painel e centra o botão no meio dela — era o que deixava
+/// "Salvar" boiando longe do que ele salva.
+fn actions_row(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    ui.allocate_ui_with_layout(
+        Vec2::new(ui.available_width(), 30.0),
+        Layout::right_to_left(Align::Center),
+        contents,
+    );
 }
 
 /// Interruptor. Num painel de ajustes que aplica na hora, o interruptor diz
@@ -524,8 +568,10 @@ fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) ->
 // ---------------------------------------------------------------------------
 
 const SHEET_W: f32 = 620.0;
-const SHEET_H: f32 = 430.0;
+const SHEET_H: f32 = 440.0;
 const RAIL_W: f32 = 148.0;
+/// Altura de um item da coluna de painéis.
+const RAIL_ENTRY_H: f32 = 32.0;
 const HEADER_H: f32 = 52.0;
 
 /// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
@@ -572,6 +618,10 @@ pub fn sheet(
     };
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
+    // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
+    // painel faz a coluna da esquerda dançar debaixo do ponteiro, e o guia
+    // pede justamente o contrário — uma tela de ajustes estável, para que se
+    // aprenda onde as coisas ficam.
     let height = SHEET_H.min(screen.height() - space::XL * 2.0);
     let top = if anchor.center().y > screen.center().y {
         (anchor.min.y - space::SM - height).max(screen.min.y + space::MD)
@@ -591,17 +641,19 @@ pub fn sheet(
         .show(ctx, |ui| {
             // Superfície sólida: a folha é grande e cheia de texto, e é aí
             // que o vidro atrapalha em vez de ajudar.
+            // A sombra vai embaixo. `add` empilha por cima do que já foi
+            // pintado, então reservar o lugar dela antes do retângulo é o
+            // que a mantém atrás — do jeito anterior ela cobria a folha
+            // inteira com um véu, e era isso que parecia vidro sujo.
+            let shadow = ctx.global_style().visuals.window_shadow;
+            ui.painter()
+                .add(shadow.as_shape(rect, radius::SHEET as f32 + 4.0));
             ui.painter().rect(
                 rect,
                 CornerRadius::same(radius::SHEET + 4),
                 t.elevated_bg,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
-            );
-            let shadow = ctx.global_style().visuals.window_shadow;
-            ui.painter().set(
-                ui.painter().add(egui::Shape::Noop),
-                shadow.as_shape(rect, radius::SHEET as f32 + 4.0),
             );
 
             let title = match surface {
@@ -702,9 +754,14 @@ fn header(
         t.label_tertiary,
     );
 
+    // Margens iguais dos dois lados do canto: com o centro a 16 do bordo,
+    // o botão de 28 encostava a 2 px da direita e ficava a 12 do topo — o
+    // desencontro é que fazia parecer que ele estava abaixo do canto.
+    const CLOSE: f32 = 28.0;
+    let inset = (HEADER_H - CLOSE) / 2.0;
     let close = Rect::from_center_size(
-        egui::pos2(head.max.x - space::XL, head.center().y),
-        Vec2::splat(28.0),
+        egui::pos2(head.max.x - inset - CLOSE / 2.0, head.min.y + inset + CLOSE / 2.0),
+        Vec2::splat(CLOSE),
     );
     let response = ui.interact(close, ui.id().with("fechar-ajustes"), Sense::click());
     if response.hovered() {
@@ -738,9 +795,12 @@ fn rail(
             .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
             .layout(Layout::top_down(Align::Min)),
         |ui| {
+            // O `top_down` põe um respiro entre widgets por conta própria;
+            // com ele, seis painéis passavam da borda de baixo da folha.
+            ui.spacing_mut().item_spacing.y = 0.0;
             let entry = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
                 let (slot, response) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), 30.0),
+                    Vec2::new(ui.available_width(), RAIL_ENTRY_H),
                     Sense::click(),
                 );
                 if active {
@@ -764,7 +824,6 @@ fn rail(
                     if active { text::headline() } else { text::body() },
                     if active { t.accent } else { t.label_secondary },
                 );
-                ui.add_space(1.0);
                 response.clicked()
             };
 
@@ -827,7 +886,7 @@ fn app_pane(
                 });
             });
             ui.add_space(space::SM);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            actions_row(ui, |ui| {
                 if row_button(ui, t, s.save, Emphasis::Primary) {
                     actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
                         crate::api::models::UpdateUserRequest {
@@ -1004,7 +1063,7 @@ fn app_pane(
             });
             if !data.store.devices.is_empty() {
                 ui.add_space(space::SM);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                actions_row(ui, |ui| {
                     if row_button(ui, t, s.drop_all_sessions, Emphasis::Danger) {
                         actions.push(SettingsAction::Admin(AdminAction::DropConnection(
                             "ALL".to_owned(),
@@ -1072,7 +1131,7 @@ fn server_pane(
             ui.add_space(space::SM);
             let ready = !draft.server_name.trim().is_empty()
                 && (draft.server_public || draft.server_password.chars().count() >= 8);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            actions_row(ui, |ui| {
                 if ready && row_button(ui, t, s.save, Emphasis::Primary) {
                     actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
                         crate::api::models::UpdateServerRequest {
@@ -1131,7 +1190,7 @@ fn server_pane(
                 }
             });
             ui.add_space(space::SM);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            actions_row(ui, |ui| {
                 if row_button(ui, t, s.create_channel, Emphasis::Primary) {
                     actions.push(SettingsAction::Chat(ChatAction::NewChannel));
                 }
@@ -1163,7 +1222,7 @@ fn server_pane(
                 }
             });
             ui.add_space(space::SM);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            actions_row(ui, |ui| {
                 if row_button(ui, t, s.new_role, Emphasis::Quiet) {
                     data.roles.draft = Some(super::roles::Draft::default());
                 }
@@ -1231,7 +1290,7 @@ fn server_pane(
 
             ui.add_space(space::SM);
             let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            actions_row(ui, |ui| {
                 if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
                     actions.push(SettingsAction::Role(match draft.id.clone() {
                         Some(role_id) => RoleAction::Update {

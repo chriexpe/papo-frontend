@@ -27,10 +27,10 @@ pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
 const SIDEBAR_HEADER_HEIGHT: f32 = IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0;
 /// As duas pastilhas de identidade: a do servidor e a da conta.
-const IDENTITY_PILL_HEIGHT: f32 = 46.0;
+pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
 /// Respiro das pastilhas contra a coluna — o mesmo nos quatro lados, e não
 /// em dois valores diferentes como estava.
-const PILL_INSET: f32 = space::MD;
+pub const PILL_INSET: f32 = space::MD;
 /// Altura das pastilhas flutuantes e respiro entre elas e a borda.
 const PILL_HEIGHT: f32 = 36.0;
 const PILL_MARGIN: f32 = 12.0;
