@@ -476,6 +476,229 @@ impl Api {
         .await
     }
 
+    // -- Servidor, perfil e conta -----------------------------------------
+
+    /// Edita o servidor. Deixar `public: Some(false)` sem senha é recusado.
+    pub async fn update_server(&self, request: &UpdateServerRequest) -> ApiResult<Server> {
+        self.put("/server", request).await
+    }
+
+    pub async fn update_profile(
+        &self,
+        user_id: &str,
+        request: &UpdateUserRequest,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(&format!("/users/{user_id}"), request).await
+    }
+
+    /// `away`, `busy`, ou `None` para limpar.
+    pub async fn set_status(
+        &self,
+        user_id: &str,
+        status: Option<&str>,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/status"),
+            &UpdateStatusRequest {
+                status: status.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn set_avatar(
+        &self,
+        user_id: &str,
+        avatar: &str,
+        format: &str,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/avatar"),
+            &UpdateAvatarRequest {
+                avatar: avatar.to_owned(),
+                avatar_format: format.to_owned(),
+            },
+        )
+        .await
+    }
+
+    // As cinco daqui até o fim do bloco existem porque o contrato tem, e
+    // conferem contra ele; o que falta é tela. `set_banner` e `media` são o
+    // banner do perfil, `profile` é a ficha de uma pessoa só,
+    // `put_user_settings` guardaria os ajustes no servidor em vez de só em
+    // disco, e `link_preview` é a prévia de link que já vem em `previews`.
+    #[allow(dead_code)]
+    pub async fn set_banner(
+        &self,
+        user_id: &str,
+        banner: &str,
+        format: &str,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/banner"),
+            &UpdateBannerRequest {
+                banner: banner.to_owned(),
+                banner_format: format.to_owned(),
+            },
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn profile(&self, user_id: &str) -> ApiResult<UserProfile> {
+        self.get(&format!("/users/{user_id}/profile")).await
+    }
+
+    /// Perfis em lote: é assim que se busca o avatar de todo mundo sem uma
+    /// requisição por pessoa.
+    pub async fn profiles(&self, user_ids: Vec<String>) -> ApiResult<Vec<UserProfile>> {
+        // O backend recusa mais de 50 de uma vez; um servidor com mais gente
+        // que isso receberia um 400 e ninguém teria foto.
+        let mut all = Vec::with_capacity(user_ids.len());
+        for slice in user_ids.chunks(50) {
+            let list: ProfileBatchResponse = self
+                .post(
+                    "/users/profile_batch",
+                    &ProfileBatchRequest {
+                        ids: slice.to_vec(),
+                    },
+                )
+                .await?;
+            all.extend(list.profiles);
+        }
+        Ok(all)
+    }
+
+    pub async fn change_password(
+        &self,
+        user_id: &str,
+        password: &str,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/password"),
+            &ChangePasswordRequest {
+                password: password.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn ban_user(&self, user_id: &str, banned: bool) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/users/{user_id}/ban"),
+            &BanUserRequest { ban_state: banned },
+        )
+        .await
+    }
+
+    pub async fn reset_user(&self, user_id: &str) -> ApiResult<serde_json::Value> {
+        self.post(&format!("/users/{user_id}/reset"), &()).await
+    }
+
+    /// Ajustes do usuário guardados no servidor, para acompanhá-lo entre
+    /// máquinas. O corpo é o `config` inteiro.
+    #[allow(dead_code)]
+    pub async fn put_user_settings(
+        &self,
+        config: &serde_json::Value,
+    ) -> ApiResult<serde_json::Value> {
+        self.put("/users/settings", config).await
+    }
+
+    // -- Sessões -----------------------------------------------------------
+
+    pub async fn connected_devices(&self) -> ApiResult<Vec<ConnectionInfo>> {
+        let list: ConnectedDevices = self.get("/auth/connected_devices").await?;
+        Ok(list.connections)
+    }
+
+    /// `ALL` derruba todas as conexões da conta.
+    pub async fn drop_connection(&self, connection_id: &str) -> ApiResult<serde_json::Value> {
+        self.post(
+            "/auth/drop_connection",
+            &DropConnectionRequest {
+                connection_id: connection_id.to_owned(),
+            },
+        )
+        .await
+    }
+
+    // -- Canais: ordem, permissões e notificação --------------------------
+
+    pub async fn move_channel(
+        &self,
+        channel_id: &str,
+        old_position: i32,
+        new_position: i32,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/channels/{channel_id}/change_position"),
+            &ChangeChannelPositionRequest {
+                old_position,
+                new_position,
+            },
+        )
+        .await
+    }
+
+    pub async fn set_channel_notifications(
+        &self,
+        channel_id: &str,
+        user_id: &str,
+        setting: &str,
+    ) -> ApiResult<serde_json::Value> {
+        self.post(
+            &format!("/channels/{channel_id}/user/{user_id}/settings"),
+            &ChannelUserSettingRequest {
+                notification_settings: setting.to_owned(),
+            },
+        )
+        .await
+    }
+
+    // -- Emojis do servidor ------------------------------------------------
+
+    pub async fn create_emoji(
+        &self,
+        name: &str,
+        image_blob: &str,
+        format: &str,
+    ) -> ApiResult<serde_json::Value> {
+        self.post(
+            "/emojis",
+            &CreateEmojiRequest {
+                name: name.to_owned(),
+                image_blob: image_blob.to_owned(),
+                format: format.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn delete_emoji(&self, emoji_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/emojis/{emoji_id}"), None).await
+    }
+
+    // -- Mídia por conteúdo ------------------------------------------------
+
+    /// Mídia endereçada pelo sha256 — é como o banner de perfil é servido.
+    #[allow(dead_code)]
+    pub async fn media(&self, sha_hash: &str) -> ApiResult<(Vec<u8>, Option<String>)> {
+        self.fetch_bytes(&format!("/media/{sha_hash}")).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn link_preview(&self, preview_id: &str) -> ApiResult<serde_json::Value> {
+        self.get(&format!("/link-previews/{preview_id}")).await
+    }
+
+    // -- Auditoria ---------------------------------------------------------
+
+    pub async fn audit_logs(&self) -> ApiResult<Vec<AuditLogEntry>> {
+        let list: AuditLogList = self.get("/admin/audit-logs").await?;
+        Ok(list.logs)
+    }
+
     // -- Cargos ------------------------------------------------------------
 
     pub async fn roles(&self) -> ApiResult<Vec<Role>> {

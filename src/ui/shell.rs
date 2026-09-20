@@ -84,6 +84,22 @@ pub enum ChatAction {
     EditChannel(String),
     /// Apaga o canal, depois da confirmação.
     DeleteChannel(String),
+    /// `off`, `only_mentions` ou `all` para este canal.
+    ChannelNotifications {
+        channel_id: String,
+        setting: &'static str,
+    },
+    /// Troca o canal de lugar com o vizinho.
+    MoveChannel {
+        channel_id: String,
+        old_position: i32,
+        new_position: i32,
+    },
+    BanUser {
+        user_id: String,
+        banned: bool,
+    },
+    ResetUser(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,7 +285,7 @@ pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Token
 
     channels_sidebar(ui, store, state, t, s);
     if state.show_members {
-        members_sidebar(ui, store, t, s);
+        members_sidebar(ui, store, state, t, s);
     }
     conversation(ui, store, state, t, s);
     overlays(ui, store, state, t, s);
@@ -595,6 +611,39 @@ fn channel_menu(
     s: &Strings,
 ) {
     response.context_menu(|ui| {
+        ui.label(s.channel_notifications);
+        for (label, setting) in [
+            (s.notify_all, "all"),
+            (s.notify_mentions, "only_mentions"),
+            (s.notify_off, "off"),
+        ] {
+            if ui.button(label).clicked() {
+                state.actions.push(ChatAction::ChannelNotifications {
+                    channel_id: channel.id.clone(),
+                    setting,
+                });
+                ui.close();
+            }
+        }
+        ui.separator();
+        // A posição é trocada com o vizinho; o backend recebe as duas.
+        if ui.button(s.move_up).clicked() {
+            state.actions.push(ChatAction::MoveChannel {
+                channel_id: channel.id.clone(),
+                old_position: channel.position,
+                new_position: channel.position - 1,
+            });
+            ui.close();
+        }
+        if ui.button(s.move_down).clicked() {
+            state.actions.push(ChatAction::MoveChannel {
+                channel_id: channel.id.clone(),
+                old_position: channel.position,
+                new_position: channel.position + 1,
+            });
+            ui.close();
+        }
+        ui.separator();
         if ui.button(s.rename_channel).clicked() {
             state.actions.push(ChatAction::EditChannel(channel.id.clone()));
             ui.close();
@@ -642,7 +691,14 @@ fn add_channel_row(ui: &mut egui::Ui, t: &Tokens, s: &Strings, width: f32) -> bo
 // Coluna direita — membros
 // ---------------------------------------------------------------------------
 
-fn members_sidebar(root: &mut egui::Ui, store: &Store, t: &Tokens, s: &Strings) {
+fn members_sidebar(
+    root: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let ctx = root.ctx().clone();
     egui::Panel::right("members")
         .exact_size(MEMBERS_WIDTH)
         .resizable(false)
@@ -670,7 +726,15 @@ fn members_sidebar(root: &mut egui::Ui, store: &Store, t: &Tokens, s: &Strings) 
                                     &format!("{label} — {}", people.len()),
                                 );
                                 for member in people {
-                                    member_row(
+                                    let avatar = state
+                                        .media
+                                        .avatar(
+                                            &member.id,
+                                            store.avatars.get(&member.id).map(String::as_str),
+                                        )
+                                        .and_then(|texture| texture.frame(&ctx))
+                                        .map(|handle| handle.id());
+                                    let row = member_row(
                                         ui,
                                         t,
                                         &member.initials(),
@@ -679,7 +743,9 @@ fn members_sidebar(root: &mut egui::Ui, store: &Store, t: &Tokens, s: &Strings) 
                                         member.role_color,
                                         presence == Presence::Offline,
                                         MEMBERS_WIDTH - space::LG * 2.0,
+                                        avatar,
                                     );
+                                    member_menu(&row, member, state, s);
                                 }
                             }
                             ui.add_space(space::LG);
@@ -699,7 +765,8 @@ fn member_row(
     role_color: Option<Color32>,
     dimmed: bool,
     width: f32,
-) {
+    avatar: Option<egui::TextureId>,
+) -> egui::Response {
     let height = 32.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if response.hovered() {
@@ -714,14 +781,29 @@ fn member_row(
     );
     let tint = role_color.unwrap_or(t.accent).gamma_multiply(alpha);
     let painter = ui.painter();
-    painter.circle_filled(avatar_rect.center(), 11.0, tint.gamma_multiply(0.30));
-    painter.text(
-        avatar_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        initials,
-        egui::FontId::new(9.0, egui::FontFamily::Name("semibold".into())),
-        tint,
-    );
+    match avatar {
+        // Foto redonda: a malha recorta o círculo, senão sobrariam os
+        // cantos quadrados da textura.
+        Some(texture) => {
+            let mut mesh = egui::Mesh::with_texture(texture);
+            mesh.add_rect_with_uv(
+                avatar_rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE.gamma_multiply(alpha),
+            );
+            painter.with_clip_rect(avatar_rect).add(egui::Shape::mesh(mesh));
+        }
+        None => {
+            painter.circle_filled(avatar_rect.center(), 11.0, tint.gamma_multiply(0.30));
+            painter.text(
+                avatar_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initials,
+                egui::FontId::new(9.0, egui::FontFamily::Name("semibold".into())),
+                tint,
+            );
+        }
+    }
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 4.5, t.glass_opaque);
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 3.0, dot.gamma_multiply(alpha));
     painter.text(
@@ -731,8 +813,38 @@ fn member_row(
         text::body(),
         if dimmed { t.label_tertiary } else { t.label_secondary },
     );
+    response
 }
 
+/// Menu do botão direito de uma pessoa: banir e redefinir a conta. As duas
+/// pedem permissão no servidor; quem não a tem recebe o 403 no aviso.
+fn member_menu(
+    response: &egui::Response,
+    member: &crate::state::Member,
+    state: &mut UiState,
+    s: &Strings,
+) {
+    response.context_menu(|ui| {
+        if ui.button(s.ban_user).clicked() {
+            state.actions.push(ChatAction::BanUser {
+                user_id: member.id.clone(),
+                banned: true,
+            });
+            ui.close();
+        }
+        if ui.button(s.unban_user).clicked() {
+            state.actions.push(ChatAction::BanUser {
+                user_id: member.id.clone(),
+                banned: false,
+            });
+            ui.close();
+        }
+        if ui.button(s.reset_user).clicked() {
+            state.actions.push(ChatAction::ResetUser(member.id.clone()));
+            ui.close();
+        }
+    });
+}
 
 /// Fundo de uma pastilha: vidro fosco, tinta translúcida e fio de contorno.
 fn pill_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {

@@ -11,10 +11,25 @@ use crate::api::client::Upload;
 /// Resultado de um diálogo, entregue quando o usuário decide.
 pub enum Chosen {
     Files(Vec<Upload>),
+    /// Imagem escolhida para foto de perfil ou figurinha, já em base64 e com
+    /// o formato que o backend espera (`PNG`, `GIF`, `JPEG`, `WEBP`).
+    Image {
+        purpose: ImagePick,
+        blob: String,
+        format: String,
+    },
     Folder(PathBuf),
     /// Destino de um anexo que estava esperando o "salvar como".
     SaveAs { id: String, name: String, dest: PathBuf },
     Cancelled,
+}
+
+/// Para que serve a imagem que está sendo escolhida.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImagePick {
+    Avatar,
+    /// Figurinha do servidor, com o nome que ela vai ter.
+    Emoji(String),
 }
 
 /// Diálogos abertos, à espera de resposta.
@@ -99,6 +114,49 @@ impl Dialogs {
     /// O diálogo fala com o xdg-desktop-portal por D-Bus, e o zbus embaixo
     /// dele exige um runtime tokio de verdade — daí o runtime próprio por
     /// diálogo, numa thread que pode bloquear à vontade.
+    /// Imagem para foto de perfil ou figurinha. O backend recebe base64 e
+    /// aceita no máximo 2 MB, então o arquivo é conferido aqui antes de
+    /// subir — a alternativa é um 400 depois da espera.
+    pub fn pick_image(&mut self, repaint: egui::Context, purpose: ImagePick) {
+        self.spawn(repaint, |dialog| async move {
+            let Some(handle) = dialog
+                .set_title("Imagem")
+                .add_filter("Imagens", &["png", "jpg", "jpeg", "gif", "webp"])
+                .pick_file()
+                .await
+            else {
+                return Chosen::Cancelled;
+            };
+            let path = handle.path().to_path_buf();
+            let Ok(bytes) = std::fs::read(&path) else {
+                return Chosen::Cancelled;
+            };
+            if bytes.len() > 2 * 1024 * 1024 {
+                log::warn!("imagem de {} bytes: o limite do servidor é 2 MB", bytes.len());
+                return Chosen::Cancelled;
+            }
+            let format = match path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("")
+                .to_lowercase()
+                .as_str()
+            {
+                "gif" => "GIF",
+                "jpg" => "JPG",
+                "jpeg" => "JPEG",
+                "webp" => "WEBP",
+                _ => "PNG",
+            };
+            use base64::Engine as _;
+            Chosen::Image {
+                purpose,
+                blob: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                format: format.to_owned(),
+            }
+        });
+    }
+
     fn spawn<F, Fut>(&mut self, repaint: egui::Context, build: F)
     where
         F: FnOnce(rfd::AsyncFileDialog) -> Fut + Send + 'static,

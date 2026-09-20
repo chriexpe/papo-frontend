@@ -4,7 +4,7 @@ use egui::Color32;
 
 use crate::i18n::Lang;
 use crate::media::Media;
-use crate::platform::files::{self, Chosen, Dialogs};
+use crate::platform::files::{self, Chosen, Dialogs, ImagePick};
 use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
@@ -286,6 +286,7 @@ pub struct PapoApp {
     search_focus: bool,
     about_open: bool,
     roles: crate::ui::roles::RolesState,
+    admin: crate::ui::admin::AdminState,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
@@ -408,6 +409,7 @@ impl PapoApp {
             search_focus: false,
             about_open: false,
             roles: Default::default(),
+            admin: Default::default(),
             #[cfg(target_os = "linux")]
             menu: GlobalMenu::spawn(cc.egui_ctx.clone()),
             #[cfg(target_os = "linux")]
@@ -882,6 +884,26 @@ impl PapoApp {
             ChatAction::DeleteChannel(channel_id) => {
                 ws.net.send(Command::DeleteChannel { channel_id })
             }
+            ChatAction::ChannelNotifications {
+                channel_id,
+                setting,
+            } => ws.net.send(Command::SetChannelNotifications {
+                channel_id,
+                setting: setting.to_owned(),
+            }),
+            ChatAction::MoveChannel {
+                channel_id,
+                old_position,
+                new_position,
+            } => ws.net.send(Command::MoveChannel {
+                channel_id,
+                old_position,
+                new_position,
+            }),
+            ChatAction::BanUser { user_id, banned } => {
+                ws.net.send(Command::BanUser { user_id, banned })
+            }
+            ChatAction::ResetUser(user_id) => ws.net.send(Command::ResetUser { user_id }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -964,6 +986,11 @@ impl PapoApp {
                         .unwrap_or_default();
                 }
             }
+            // Sem rede na demonstração: estas quatro não têm efeito local.
+            ChatAction::ChannelNotifications { .. }
+            | ChatAction::MoveChannel { .. }
+            | ChatAction::BanUser { .. }
+            | ChatAction::ResetUser(_) => {}
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -1065,6 +1092,17 @@ impl PapoApp {
                 Chosen::Files(uploads) => self.ui.attachments.extend(uploads),
                 Chosen::Folder(path) => self.settings.downloads = DownloadMode::Folder(path),
                 Chosen::SaveAs { id, name, dest } => self.ui.media.save(&id, &name, dest),
+                Chosen::Image {
+                    purpose,
+                    blob,
+                    format,
+                } => {
+                    let command = match purpose {
+                        ImagePick::Avatar => Command::SetAvatar { blob, format },
+                        ImagePick::Emoji(name) => Command::CreateEmoji { name, blob, format },
+                    };
+                    self.workspaces[self.active].net.send(command);
+                }
                 Chosen::Cancelled => {}
             }
         }
@@ -1192,6 +1230,8 @@ impl PapoApp {
                 self.roles.open = true;
                 self.workspaces[self.active].net.send(Command::LoadRoles);
             }
+            MenuCommand::Profile => self.admin.open_profile(),
+            MenuCommand::ServerSettings => self.admin.open_server(),
         }
     }
 
@@ -1368,6 +1408,57 @@ impl PapoApp {
                 }
             };
             ws.net.send(command);
+        }
+    }
+
+    /// Perfil e servidor. As duas telas só descrevem o que querem.
+    fn admin_windows(&mut self, ctx: &egui::Context) {
+        use crate::ui::admin::AdminAction;
+
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let mut actions = {
+            let ws = &self.workspaces[self.active];
+            let mut found = crate::ui::admin::profile_window(ctx, &mut self.admin, &ws.store, &t, s);
+            found.extend(crate::ui::admin::server_window(
+                ctx,
+                &mut self.admin,
+                &ws.store,
+                &t,
+                s,
+            ));
+            found
+        };
+        if actions.is_empty() {
+            return;
+        }
+        for action in actions.drain(..) {
+            match action {
+                // Os dois seletores de imagem passam pelo portal do sistema,
+                // que responde noutro quadro.
+                AdminAction::PickAvatar => self.dialogs.pick_image(ctx.clone(), ImagePick::Avatar),
+                AdminAction::PickEmoji(name) => {
+                    self.dialogs.pick_image(ctx.clone(), ImagePick::Emoji(name))
+                }
+                other => {
+                    let command = match other {
+                        AdminAction::SaveProfile(request) => Command::UpdateProfile(request),
+                        AdminAction::SetPresence(status) => Command::SetStatus { status },
+                        AdminAction::ChangePassword(password) => {
+                            Command::ChangePassword { password }
+                        }
+                        AdminAction::LoadDevices => Command::LoadDevices,
+                        AdminAction::DropConnection(connection_id) => {
+                            Command::DropConnection { connection_id }
+                        }
+                        AdminAction::SaveServer(request) => Command::UpdateServer(request),
+                        AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
+                        AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
+                        AdminAction::PickAvatar | AdminAction::PickEmoji(_) => unreachable!(),
+                    };
+                    self.workspaces[self.active].net.send(command);
+                }
+            }
         }
     }
 
@@ -1862,6 +1953,7 @@ impl eframe::App for PapoApp {
         self.search_window(&ctx);
         self.about_window(&ctx);
         self.roles_window(&ctx);
+        self.admin_windows(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {
@@ -1939,7 +2031,9 @@ fn build_menu(settings: &Settings) -> MenuModel {
                 MenuNode::separator(),
                 MenuNode::item(s.menu_preferences, MenuCommand::Preferences)
                     .accel(&["Control", "comma"]),
+                MenuNode::item(s.menu_profile, MenuCommand::Profile),
                 MenuNode::item(s.menu_roles, MenuCommand::Roles),
+                MenuNode::item(s.menu_server, MenuCommand::ServerSettings),
                 MenuNode::separator(),
                 MenuNode::item(s.sign_out, MenuCommand::SignOut),
                 MenuNode::separator(),

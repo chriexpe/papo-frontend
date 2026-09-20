@@ -118,6 +118,145 @@ pub struct UpdateChannelRequest {
     pub topic: Option<String>,
 }
 
+/// Edição do servidor (`PUT /server`). Ícone e senha só vão quando mudam;
+/// `public: false` sem senha é recusado pelo backend.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateServerRequest {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_blob: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub public: Option<bool>,
+}
+
+/// Perfil próprio (`PUT /users/{id}`). Os três primeiros são obrigatórios no
+/// contrato, mesmo vazios; `typing` ausente não mexe na frase atual.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateUserRequest {
+    pub nickname: String,
+    pub status: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typing: Option<String>,
+}
+
+/// Presença persistida: `away`, `busy` ou nada.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UpdateStatusRequest {
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateAvatarRequest {
+    pub avatar: String,
+    pub avatar_format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateBannerRequest {
+    pub banner: String,
+    pub banner_format: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangePasswordRequest {
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BanUserRequest {
+    pub ban_state: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChangeChannelPositionRequest {
+    pub old_position: i32,
+    pub new_position: i32,
+}
+
+/// `off`, `only_mentions` ou `all`. Sem linha no banco vale `only_mentions`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelUserSettingRequest {
+    pub notification_settings: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DropConnectionRequest {
+    /// Uuid da conexão, ou `ALL` para derrubar todas.
+    pub connection_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConnectionInfo {
+    pub id: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConnectedDevices {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub connections: Vec<ConnectionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateEmojiRequest {
+    pub name: String,
+    pub image_blob: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserProfile {
+    pub id: String,
+    pub username: String,
+    pub nickname: Option<String>,
+    pub avatar_blob: Option<String>,
+    pub avatar_format: Option<String>,
+    pub banner_media: Option<String>,
+    pub description: Option<String>,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<RoleSummary>,
+}
+
+/// O campo é `ids`, não `user_ids`, e o backend aceita no máximo 50 por
+/// chamada.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileBatchRequest {
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProfileBatchResponse {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub profiles: Vec<UserProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogEntry {
+    pub id: String,
+    #[serde(default)]
+    pub actor_username: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub entity_type: String,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditLogList {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub logs: Vec<AuditLogEntry>,
+    #[serde(default)]
+    pub has_more: bool,
+}
+
 /// As sete permissões de um cargo, exatamente como o `RolePermissions` do
 /// backend. `send_attachment` é a que libera anexo; `manage_channels`, a que
 /// libera criar canal.
@@ -608,6 +747,17 @@ mod tests {
     fn arquivo_sem_pista_continua_arquivo() {
         assert_eq!(Kind::guess("application/octet-stream", "notas.pdf"), Kind::Other);
         assert_eq!(Kind::guess("application/octet-stream", "sem-ponto"), Kind::Other);
+    }
+
+    /// O campo é `ids`. Chamei de `user_ids` na primeira versão e o
+    /// servidor respondeu 400 — sem foto de perfil para ninguém, calado.
+    #[test]
+    fn perfis_em_lote_usam_o_campo_ids() {
+        let body = serde_json::to_string(&ProfileBatchRequest {
+            ids: vec!["a".to_owned()],
+        })
+        .unwrap();
+        assert_eq!(body, r#"{"ids":["a"]}"#);
     }
 
     /// A busca manda só o que foi preenchido.

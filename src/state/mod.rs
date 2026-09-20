@@ -233,6 +233,11 @@ pub struct Store {
     pub notice: Option<Notice>,
     /// Cargos do servidor, com as permissões de cada um.
     pub roles: Vec<models::Role>,
+    /// Foto de perfil por pessoa, em base64, como o servidor a entrega.
+    pub avatars: HashMap<String, String>,
+    /// Sessões abertas da conta neste servidor.
+    pub devices: Vec<models::ConnectionInfo>,
+    pub audit_logs: Vec<models::AuditLogEntry>,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
     /// Uma busca saiu e ainda não voltou.
@@ -263,6 +268,9 @@ impl Default for Store {
             locked: false,
             notice: None,
             roles: Vec::new(),
+            avatars: HashMap::new(),
+            devices: Vec::new(),
+            audit_logs: Vec::new(),
             search_results: Vec::new(),
             searching: false,
         }
@@ -481,6 +489,29 @@ impl Store {
                 self.roles = roles;
                 self.busy = false;
             }
+            // A foto chega em base64 junto com o perfil; guardá-la aqui deixa
+            // a lista de pessoas desenhá-la sem pedir de novo.
+            Update::Profiles(profiles) => {
+                for profile in profiles {
+                    match profile.avatar_blob.filter(|blob| !blob.is_empty()) {
+                        Some(blob) => {
+                            self.avatars.insert(profile.id, blob);
+                        }
+                        None => {
+                            self.avatars.remove(&profile.id);
+                        }
+                    }
+                }
+            }
+            Update::Devices(devices) => {
+                self.devices = devices;
+                self.busy = false;
+            }
+            Update::AuditLogs(logs) => {
+                self.audit_logs = logs;
+                self.busy = false;
+            }
+            Update::Done => self.busy = false,
             Update::SearchResults(results) => {
                 self.search_results = results;
                 self.searching = false;

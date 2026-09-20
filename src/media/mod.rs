@@ -496,6 +496,13 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
+    /// Foto de perfil. Chega em base64 junto com o perfil, igual à
+    /// figurinha, então usa o mesmo caminho — só com a chave separada, para
+    /// que um id de pessoa nunca colida com um id de figurinha.
+    pub fn avatar(&mut self, user_id: &str, blob: Option<&str>) -> Option<&Texture> {
+        self.emoji(&format!("avatar:{user_id}"), blob)
+    }
+
     /// Arquivo local do anexo, baixando na primeira vez.
     pub fn file(&mut self, id: &str, name: &str) -> FileState {
         let key = file_key(id);

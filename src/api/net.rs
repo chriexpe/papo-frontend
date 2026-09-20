@@ -64,6 +64,47 @@ pub enum Command {
         user_id: String,
         role_id: String,
     },
+    UpdateServer(Box<crate::api::models::UpdateServerRequest>),
+    UpdateProfile(Box<crate::api::models::UpdateUserRequest>),
+    SetStatus {
+        status: Option<String>,
+    },
+    SetAvatar {
+        blob: String,
+        format: String,
+    },
+    ChangePassword {
+        password: String,
+    },
+    BanUser {
+        user_id: String,
+        banned: bool,
+    },
+    ResetUser {
+        user_id: String,
+    },
+    MoveChannel {
+        channel_id: String,
+        old_position: i32,
+        new_position: i32,
+    },
+    SetChannelNotifications {
+        channel_id: String,
+        setting: String,
+    },
+    LoadDevices,
+    DropConnection {
+        connection_id: String,
+    },
+    CreateEmoji {
+        name: String,
+        blob: String,
+        format: String,
+    },
+    DeleteEmoji {
+        emoji_id: String,
+    },
+    LoadAuditLogs,
     SendMessage {
         channel_id: String,
         content: String,
@@ -118,6 +159,11 @@ pub enum Update {
     ChannelCreated(String),
     SearchResults(Vec<crate::api::models::SearchResult>),
     Roles(Vec<crate::api::models::Role>),
+    Devices(Vec<crate::api::models::ConnectionInfo>),
+    AuditLogs(Vec<crate::api::models::AuditLogEntry>),
+    Profiles(Vec<crate::api::models::UserProfile>),
+    /// Uma operação deu certo e não devolve nada de útil para a tela.
+    Done,
     Users(Vec<UserSummary>),
     Messages {
         channel_id: String,
@@ -494,6 +540,109 @@ async fn handle(
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
         // pessoas — por isso as duas listas são relidas juntas.
         Command::LoadRoles => relist_roles(api, updates, repaint).await,
+        Command::UpdateServer(request) => match api.update_server(&request).await {
+            Ok(server) => publish(updates, repaint, Update::Server(Some(Box::new(server)))),
+            Err(error) => report(updates, repaint, error),
+        },
+        // Perfil e presença mudam o que os outros veem na lista de pessoas,
+        // então ela é relida logo depois.
+        Command::UpdateProfile(request) => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api.update_profile(&user_id, &request).await {
+                Ok(_) => relist_users(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::SetStatus { status } => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api.set_status(&user_id, status.as_deref()).await {
+                Ok(_) => relist_users(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::SetAvatar { blob, format } => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api.set_avatar(&user_id, &blob, &format).await {
+                Ok(_) => relist_users(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::ChangePassword { password } => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api.change_password(&user_id, &password).await {
+                Ok(_) => publish(updates, repaint, Update::Done),
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::BanUser { user_id, banned } => match api.ban_user(&user_id, banned).await {
+            Ok(_) => relist_users(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::ResetUser { user_id } => match api.reset_user(&user_id).await {
+            Ok(_) => relist_users(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::MoveChannel {
+            channel_id,
+            old_position,
+            new_position,
+        } => match api
+            .move_channel(&channel_id, old_position, new_position)
+            .await
+        {
+            Ok(_) => relist_channels(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::SetChannelNotifications {
+            channel_id,
+            setting,
+        } => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api
+                .set_channel_notifications(&channel_id, &user_id, &setting)
+                .await
+            {
+                Ok(_) => publish(updates, repaint, Update::Done),
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::LoadDevices => match api.connected_devices().await {
+            Ok(devices) => publish(updates, repaint, Update::Devices(devices)),
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::DropConnection { connection_id } => {
+            match api.drop_connection(&connection_id).await {
+                Ok(_) => match api.connected_devices().await {
+                    Ok(devices) => publish(updates, repaint, Update::Devices(devices)),
+                    Err(error) => report(updates, repaint, error),
+                },
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::CreateEmoji { name, blob, format } => {
+            match api.create_emoji(&name, &blob, &format).await {
+                Ok(_) => relist_emojis(api, updates, repaint).await,
+                Err(error) => report(updates, repaint, error),
+            }
+        }
+        Command::DeleteEmoji { emoji_id } => match api.delete_emoji(&emoji_id).await {
+            Ok(()) => relist_emojis(api, updates, repaint).await,
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::LoadAuditLogs => match api.audit_logs().await {
+            Ok(logs) => publish(updates, repaint, Update::AuditLogs(logs)),
+            Err(error) => report(updates, repaint, error),
+        },
         Command::CreateRole {
             name,
             color,
@@ -660,7 +809,11 @@ async fn bootstrap(
         Err(error) => report(updates, repaint, error),
     }
     match api.users().await {
-        Ok(users) => publish(updates, repaint, Update::Users(users)),
+        Ok(users) => {
+            let ids = users.iter().map(|user| user.id.clone()).collect();
+            publish(updates, repaint, Update::Users(users));
+            load_profiles(api, updates, repaint, ids).await;
+        }
         Err(ApiError::NotFound) => {}
         Err(error) => report(updates, repaint, error),
     }
@@ -680,6 +833,42 @@ async fn bootstrap(
             }
             Err(error) => log::warn!("notificações: {error}"),
         }
+    }
+}
+
+/// Busca as fotos de perfil de uma vez só. Uma requisição por pessoa seria
+/// uma rajada a cada entrada; o `profile_batch` existe justamente para isso.
+async fn load_profiles(
+    api: &Api,
+    updates: &sync_mpsc::Sender<Update>,
+    repaint: &egui::Context,
+    user_ids: Vec<String>,
+) {
+    if user_ids.is_empty() {
+        return;
+    }
+    match api.profiles(user_ids).await {
+        Ok(profiles) => publish(updates, repaint, Update::Profiles(profiles)),
+        Err(error) => log::warn!("perfis: {error}"),
+    }
+}
+
+/// Relista as pessoas. Perfil, presença e banimento mudam essa lista.
+async fn relist_users(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+    match api.users().await {
+        Ok(users) => {
+            let ids = users.iter().map(|user| user.id.clone()).collect();
+            publish(updates, repaint, Update::Users(users));
+            load_profiles(api, updates, repaint, ids).await;
+        }
+        Err(error) => report(updates, repaint, error),
+    }
+}
+
+async fn relist_emojis(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+    match api.emojis().await {
+        Ok(emojis) => publish(updates, repaint, Update::Emojis(emojis)),
+        Err(error) => report(updates, repaint, error),
     }
 }
 
