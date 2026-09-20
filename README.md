@@ -21,6 +21,8 @@ cargo run -- selftest <usuário> <senha>   # exercita REST: login, whoami, canai
 cargo run -- media-test                   # gera vídeo e áudio e os toca pelo player
 cargo run -- pick-test                    # abre o seletor de arquivos do sistema
 cargo run -- notify-test                  # dispara uma notificação de exemplo
+cargo run -- voice-sdp                    # imprime a oferta SDP da call, sem rede
+cargo run -- voice-test <usuário> <senha> # entra numa call de verdade, sem janela
 PAPO_SERVER=http://localhost:8080 cargo run -- selftest
 ```
 
@@ -97,6 +99,10 @@ src/
   media/      anexos: download, cache, texturas e reprodução
     mod.rs      fila de download, cache em disco e as texturas da interface
     player.rs   GStreamer: vídeo em textura, áudio, forma de onda e gravação
+  voice/      a call: WebRTC pelo webrtcbin, sinalizada pelo mesmo socket
+    engine.rs   o pipeline e a máquina de sinalização, numa thread própria
+    slots.rs    os lugares de vídeo do SFU, espelhados para dar nome ao vídeo
+    ice.rs      STUN e TURN do backend no formato que o webrtcbin aceita
   ui/         telas e sistema de design
     rail.rs     trilho de servidores, a coluna de ícones à esquerda de tudo
     headerbar.rs  barra de título própria, onde não há menu global
@@ -108,6 +114,7 @@ src/
     emoji.rs    seletor, reações e o texto que mistura emoji com palavras
     emoji_raster.rs  emoji colorido tirado da fonte do sistema, via swash
     auth.rs     entrada e primeiro uso da instância
+    call.rs     a call em três formas: no canal, em folha e em janela
   platform/   integração com a área de trabalho (só Linux por enquanto)
     global_menu.rs  serviço com.canonical.dbusmenu
     appmenu.rs      liga o menu à wl_surface (protocolo do Plasma)
@@ -187,13 +194,37 @@ cargos com as sete permissões e quem tem cada uma, perfil (apelido, recado, pre
 senha), servidor (nome, público ou fechado, figurinhas) e o registro de auditoria. As sessões
 abertas da conta aparecem no perfil e dá para encerrar uma ou todas.
 
-Sem tela ainda, mas implementado contra o contrato: banner do perfil, ficha de uma pessoa só,
-ajustes guardados no servidor e prévia de link. Voz e vídeo (WebRTC) não começaram.
+Na call: entrar e sair de um canal de voz, microfone com mudo, quem está falando,
+câmera ligando e desligando, e a câmera dos outros aparecendo sozinha. O transporte é
+WebRTC pelo `webrtcbin`; a sinalização vai pelo mesmo WebSocket do resto. O SFU do
+backend é quem mistura e reenvia — ninguém fala direto com ninguém.
 
-Duas divergências entre o `openapi.yml` do backend e o que o servidor faz, descobertas
+A call aparece de três jeitos, e passa de um para o outro sem cortar o áudio: **no
+canal** quando é só voz, **numa folha de vidro** por cima da conversa assim que aparece
+vídeo (encolhível numa pastilha, para continuar escrevendo), e **em janela própria**
+quando se pede — para jogá-la noutro monitor.
+
+Duas coisas dependem de mudança no backend, e por ora o cliente contorna:
+
+- **Os lugares de vídeo são seis** (`VOICE_VIDEO_SLOTS`), e o servidor não conta ao
+  cliente quantos são. A oferta precisa nascer com um número exato de linhas de
+  recepção, então o cliente assume o padrão do backend (6 de vídeo, 8 de áudio). Se a
+  instância mudar esses números, a conta de quem ocupa qual lugar desanda. Expor os dois
+  valores no `GET /voice/ice-servers` resolveria.
+- **Quem está numa sala de voz só se sabe entrando.** O `voice_joined` é unicast para
+  quem entra; de fora, só chegam as mudanças (`voice_state_update`, `voice_leave`). Uma
+  janela aberta depois vê a sala vazia até alguém se mexer. Faltaria a lista de estados
+  de voz numa rota REST — no `GET /channels`, por exemplo.
+
+Compartilhar tela não entrou nesta leva: o caminho de vídeo é o mesmo da câmera e o
+servidor já trata os dois lados, mas falta a captura pelo portal e o lugar dela na grade.
+
+Sem tela ainda, mas implementado contra o contrato: banner do perfil, ficha de uma pessoa só,
+ajustes guardados no servidor e prévia de link.
+
+Uma divergência entre o `openapi.yml` do backend e o que o servidor faz, descoberta
 testando contra uma instância de verdade:
 
-- `POST /channels` aceita só `text` e `category`; o enum do openapi lista `voice` também.
 - O mime dos anexos é deduzido pelo servidor e erra: `.mp4` volta como
   `application/octet-stream`. O cliente cai na extensão quando o mime não diz nada, senão
   vídeo e áudio apareceriam como um arquivo qualquer.

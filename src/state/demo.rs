@@ -13,6 +13,36 @@ use crate::state::{
     Store,
 };
 
+/// Quem está na call de mentira. O modo demonstração não abre microfone
+/// nenhum: a sala existe só para a grade, a pastilha e a folha terem o que
+/// mostrar enquanto se trabalha no desenho delas.
+///
+/// Todo mundo entra de câmera desligada de propósito — assim a call começa
+/// no canal, e é o botão da câmera que a faz subir para a folha. As três
+/// formas ficam a um clique uma da outra.
+pub fn call_members() -> Vec<crate::api::ws::VoiceMember> {
+    vec![
+        crate::api::ws::VoiceMember {
+            user_id: "u-eu".into(),
+            muted: true,
+            camera_on: false,
+            screen_sharing: false,
+        },
+        crate::api::ws::VoiceMember {
+            user_id: "u-ana".into(),
+            muted: false,
+            camera_on: false,
+            screen_sharing: false,
+        },
+        crate::api::ws::VoiceMember {
+            user_id: "u-bruno".into(),
+            muted: false,
+            camera_on: false,
+            screen_sharing: false,
+        },
+    ]
+}
+
 /// Preenche o store com um servidor de mentira.
 pub fn seed(store: &mut Store) {
     store.screen = Screen::Chat;

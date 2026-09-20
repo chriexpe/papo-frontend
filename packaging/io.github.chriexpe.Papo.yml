@@ -31,8 +31,12 @@ finish-args:
   - --socket=wayland
   - --socket=fallback-x11
   - --device=dri
-  # Tocar áudio e vídeo, e gravar recado de voz.
+  # Tocar áudio e vídeo, gravar recado de voz e falar na call.
   - --socket=pulseaudio
+  # A câmera da call. O caminho certo é o portal de câmera (uma conexão
+  # PipeWire por um fd que o portal entrega), e é para onde isto vai; por
+  # enquanto a captura é `v4l2src`, que precisa do dispositivo.
+  - --device=all
   # Ícone na bandeja (StatusNotifierItem) e o menu global do Plasma. O item
   # abre mão do nome próprio dentro do sandbox (ver `platform/tray.rs`), então
   # basta alcançar o watcher.

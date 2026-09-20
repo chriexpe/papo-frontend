@@ -82,6 +82,50 @@ pub enum Event {
         emoji_id: Option<String>,
         count: i64,
     },
+    /// Entrada aceita na sala de voz: o estado que o recém-chegado precisa
+    /// para desenhar a call antes de qualquer mídia.
+    VoiceJoined {
+        channel_id: String,
+        members: Vec<VoiceMember>,
+        active_speakers: Vec<String>,
+    },
+    /// Resposta SDP do servidor à nossa oferta.
+    VoiceAnswer {
+        channel_id: String,
+        sdp: String,
+    },
+    /// Oferta do servidor (renegociação que parte dele).
+    VoiceOffer {
+        channel_id: String,
+        sdp: String,
+    },
+    VoiceCandidate {
+        channel_id: String,
+        candidate: String,
+        sdp_mid: Option<String>,
+        sdp_mline_index: Option<u32>,
+    },
+    /// Microfone, câmera ou tela de alguém mudaram. Chega para quem está na
+    /// call e para quem só está olhando o canal.
+    VoiceState {
+        channel_id: String,
+        state: VoiceMember,
+    },
+    VoiceLeft {
+        channel_id: String,
+        user_id: String,
+    },
+    /// Quem está falando agora, do mais alto para o mais baixo.
+    ActiveSpeakers {
+        channel_id: String,
+        user_ids: Vec<String>,
+    },
+    /// Erro do servidor. O `code` é o que distingue um erro de voz
+    /// (`voice-room-full`, `voice-forbidden`…) de um aviso qualquer.
+    Failure {
+        message: String,
+        code: Option<String>,
+    },
     /// O evento é unicast e não traz o canal: só o id da mensagem e um
     /// trecho do conteúdo.
     Notification {
@@ -90,6 +134,34 @@ pub enum Event {
         author_id: Option<String>,
         preview: Option<String>,
     },
+}
+
+/// Estado de uma pessoa na call, como o servidor o publica.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct VoiceMember {
+    pub user_id: String,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default)]
+    pub camera_on: bool,
+    #[serde(default)]
+    pub screen_sharing: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct VoiceJoinedPayload {
+    channel_id: String,
+    #[serde(default)]
+    members: Option<Vec<VoiceMember>>,
+    #[serde(default)]
+    active_speakers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActiveSpeakerPayload {
+    channel_id: String,
+    #[serde(default)]
+    user_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +368,50 @@ fn parse(text: &str) -> Option<Event> {
             attachment_id: string("attachment_id")?,
             status: string("status").unwrap_or_default(),
         }),
+        "voice_joined" => {
+            let payload: VoiceJoinedPayload = serde_json::from_str(text).ok()?;
+            Some(Event::VoiceJoined {
+                channel_id: payload.channel_id,
+                members: payload.members.unwrap_or_default(),
+                active_speakers: payload.active_speakers.unwrap_or_default(),
+            })
+        }
+        "voice_answer" => Some(Event::VoiceAnswer {
+            channel_id: string("channel_id")?,
+            sdp: string("sdp")?,
+        }),
+        "voice_offer" => Some(Event::VoiceOffer {
+            channel_id: string("channel_id")?,
+            sdp: string("sdp")?,
+        }),
+        "voice_ice_candidate" => Some(Event::VoiceCandidate {
+            channel_id: string("channel_id")?,
+            candidate: string("candidate")?,
+            sdp_mid: string("sdp_mid"),
+            sdp_mline_index: value
+                .get("sdp_mline_index")
+                .and_then(serde_json::Value::as_u64)
+                .map(|index| index as u32),
+        }),
+        "voice_state_update" => Some(Event::VoiceState {
+            channel_id: string("channel_id")?,
+            state: serde_json::from_str(text).ok()?,
+        }),
+        "voice_leave" => Some(Event::VoiceLeft {
+            channel_id: string("channel_id")?,
+            user_id: string("user_id")?,
+        }),
+        "active_speaker_update" => {
+            let payload: ActiveSpeakerPayload = serde_json::from_str(text).ok()?;
+            Some(Event::ActiveSpeakers {
+                channel_id: payload.channel_id,
+                user_ids: payload.user_ids.unwrap_or_default(),
+            })
+        }
+        "error" => Some(Event::Failure {
+            message: string("message").unwrap_or_default(),
+            code: string("code"),
+        }),
         "new_notification" => Some(Event::Notification {
             id: string("id").unwrap_or_default(),
             message_id: string("message_id"),
@@ -325,6 +441,31 @@ mod tests {
 
     #[test]
     fn ignora_evento_desconhecido() {
-        assert!(parse(r#"{"type":"voice_offer","sdp":"..."}"#).is_none());
+        assert!(parse(r#"{"type":"coisa_nova","sdp":"..."}"#).is_none());
+    }
+
+    /// O `voice_joined` chega com `members: null` quando a sala está vazia;
+    /// sem tolerar isso a entrada na call morria calada.
+    #[test]
+    fn entrada_na_call_aceita_lista_nula() {
+        let event = parse(r#"{"type":"voice_joined","channel_id":"c1","members":null,"active_speakers":null}"#);
+        assert!(matches!(
+            event,
+            Some(Event::VoiceJoined { ref members, .. }) if members.is_empty()
+        ));
+    }
+
+    #[test]
+    fn le_o_candidato_de_ice() {
+        let event = parse(
+            r#"{"type":"voice_ice_candidate","channel_id":"c1","candidate":"candidate:1 1 udp 2130706431 192.168.0.114 50000 typ host","sdp_mid":"0","sdp_mline_index":0}"#,
+        );
+        assert!(matches!(
+            event,
+            Some(Event::VoiceCandidate {
+                sdp_mline_index: Some(0),
+                ..
+            })
+        ));
     }
 }

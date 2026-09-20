@@ -1,6 +1,7 @@
 //! Estado da aplicação, alimentado pelas respostas REST e pelos eventos do
 //! WebSocket.
 
+pub mod call;
 pub mod demo;
 
 use std::collections::{HashMap, HashSet};
@@ -11,6 +12,8 @@ use egui::Color32;
 use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::Update;
 use crate::api::ws::{Connection, Event};
+
+pub use call::{CallState, Phase, Stage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelKind {
@@ -242,6 +245,8 @@ pub struct Store {
     pub search_results: Vec<models::SearchResult>,
     /// Uma busca saiu e ainda não voltou.
     pub searching: bool,
+    /// A call: quem está em cada canal de voz e onde ela aparece na tela.
+    pub call: CallState,
 }
 
 impl Default for Store {
@@ -273,6 +278,7 @@ impl Default for Store {
             audit_logs: Vec::new(),
             search_results: Vec::new(),
             searching: false,
+            call: CallState::default(),
         }
     }
 }
@@ -319,7 +325,15 @@ impl Store {
     /// Canal que ainda precisa ter as mensagens buscadas.
     pub fn channel_needing_messages(&self) -> Option<String> {
         let id = &self.selected_channel;
-        (!id.is_empty() && !self.loaded_channels.contains(id)).then(|| id.clone())
+        if id.is_empty() || self.loaded_channels.contains(id) {
+            return None;
+        }
+        // Canal de voz não tem mensagem: pedir a lista dele seria uma
+        // chamada por entrada na call, para receber nada.
+        if self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice) {
+            return None;
+        }
+        Some(id.clone())
     }
 
     pub fn mark_loading(&mut self, channel_id: &str) {
@@ -631,6 +645,9 @@ impl Store {
                 }
             }
             Update::Event(event) => self.apply_event(*event),
+            // Quem monta a call com isso é a janela (ela tem a thread de
+            // mídia); aqui só sabemos que o pedido de entrada saiu.
+            Update::VoiceReady { .. } => {}
             Update::Connection(connection) => self.connection = connection,
             Update::Error(message) => {
                 self.error = Some(message);
@@ -794,6 +811,47 @@ impl Store {
                 }
             }
             Event::UserJoined { .. } => {}
+            Event::VoiceJoined {
+                channel_id,
+                members,
+                active_speakers,
+            } => self.call.joined(&channel_id, members, active_speakers),
+            Event::VoiceState { channel_id, state } => {
+                self.call.update(&channel_id, state);
+            }
+            Event::VoiceLeft {
+                channel_id,
+                user_id,
+            } => {
+                self.call.remove(&channel_id, &user_id);
+                // Fomos nós: a call acabou, mesmo que tenha sido o servidor
+                // que a encerrou (sala destruída, sessão revogada).
+                if user_id == self.me && channel_id == self.call.channel_id {
+                    self.call.left();
+                }
+            }
+            Event::ActiveSpeakers {
+                channel_id,
+                user_ids,
+            } => {
+                if channel_id == self.call.channel_id {
+                    self.call.speakers = user_ids;
+                }
+            }
+            Event::Failure { message, code } => {
+                let joining = self.call.phase == Phase::Joining;
+                let fatal = code
+                    .as_deref()
+                    .is_some_and(|code| call::fatal(code, joining));
+                if fatal && self.call.active() {
+                    self.call.error = Some(message.clone());
+                    self.error = Some(message.clone());
+                    self.call.left();
+                }
+                log::warn!("evento de erro do servidor: {message}");
+            }
+            // A sinalização é da thread da call, não do estado da tela.
+            Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {}
             Event::Notification { id, message_id, .. } => {
                 // O evento não traz o canal; achamos pela mensagem quando ela
                 // já está em memória. O resto vem da listagem REST.

@@ -139,6 +139,14 @@ pub enum Command {
     Typing {
         channel_id: String,
     },
+    /// Entra na call do canal: busca os servidores ICE e só então pede a
+    /// entrada pelo socket, porque sem ICE a oferta não teria como sair.
+    JoinVoice {
+        channel_id: String,
+    },
+    /// Sinalização crua da call (oferta, resposta, candidato, mudo…), já em
+    /// JSON: quem a escreve é a thread da call.
+    VoiceSignal(String),
     Logout,
 }
 
@@ -179,6 +187,12 @@ pub enum Update {
     },
     Notifications(Vec<Notification>),
     Event(Box<Event>),
+    /// Os servidores ICE chegaram e o `voice_join` já saiu: dá para montar a
+    /// call e esperar o `voice_joined`.
+    VoiceReady {
+        channel_id: String,
+        servers: Vec<crate::api::models::IceServer>,
+    },
     Connection(Connection),
     Error(String),
 }
@@ -755,6 +769,25 @@ async fn handle(
                     log::warn!("marcar notificações: {error}");
                 }
             }
+        }
+        Command::JoinVoice { channel_id } => match api.ice_servers().await {
+            Ok(servers) => {
+                publish(
+                    updates,
+                    repaint,
+                    Update::VoiceReady {
+                        channel_id: channel_id.clone(),
+                        servers,
+                    },
+                );
+                let _ = outbound.send(format!(
+                    r#"{{"type":"voice_join","channel_id":"{channel_id}"}}"#
+                ));
+            }
+            Err(error) => report(updates, repaint, error),
+        },
+        Command::VoiceSignal(json) => {
+            let _ = outbound.send(json);
         }
         Command::Typing { channel_id } => {
             let _ = outbound.send(format!(

@@ -7,6 +7,7 @@ mod media;
 mod platform;
 mod state;
 mod ui;
+mod voice;
 
 /// Identificador do aplicativo na área de trabalho.
 ///
@@ -88,6 +89,22 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // `papo voice-test <usuário> <senha> [canal]` entra de verdade numa call
+    // do servidor em `PAPO_SERVER`, sem janela: é como se confere a
+    // sinalização e o ICE contra uma instância viva.
+    if args.get(1).map(String::as_str) == Some("voice-test") {
+        voice_test(args.get(2).cloned(), args.get(3).cloned(), args.get(4).cloned());
+        return Ok(());
+    }
+
+    // `papo voice-sdp` monta o pipeline da call, imprime a oferta e sai.
+    // É a conferência barata do contrato de mídia: quantas linhas `m=`,
+    // quais codecs e que extensões vão no cabeçalho — sem servidor nenhum.
+    if args.get(1).map(String::as_str) == Some("voice-sdp") {
+        voice_sdp();
+        return Ok(());
+    }
+
     // `papo notify-test` dispara uma notificação de exemplo e sai.
     #[cfg(target_os = "linux")]
     if args.get(1).map(String::as_str) == Some("notify-test") {
@@ -153,6 +170,191 @@ fn install_panic_hook() {
         }
         previous(info);
     }));
+}
+
+/// Entra numa call de verdade e conta o que acontece: entrada, oferta,
+/// resposta, ICE e o estado final da conexão. Sai sozinho em 25 segundos.
+fn voice_test(username: Option<String>, password: Option<String>, channel: Option<String>) {
+    use api::net::{Command, Net, Update};
+    use api::ws::Event;
+
+    let base = std::env::var("PAPO_SERVER")
+        .unwrap_or_else(|_| "http://localhost:8080".to_owned());
+    let (Some(username), Some(password)) = (username, password) else {
+        println!("uso: papo voice-test <usuário> <senha> [canal de voz]");
+        return;
+    };
+    println!("servidor: {base}");
+
+    let ctx = egui::Context::default();
+    let net = Net::spawn(base, ctx.clone());
+    net.send(Command::Login { username, password });
+
+    let mut call: Option<voice::Call> = None;
+    let mut wanted = String::new();
+    let mut asked = false;
+    let mut live = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    let mut unmute = None;
+
+    while std::time::Instant::now() < deadline {
+        while let Some(update) = net.try_recv() {
+            match update {
+                Update::Session(Some(whoami)) => {
+                    println!("entrou como {} ({})", whoami.username, whoami.id);
+                }
+                Update::Session(None) => println!("sem sessão"),
+                Update::AuthFailed(error) => {
+                    println!("entrada recusada: {error}");
+                    return;
+                }
+                Update::Channels(channels) => {
+                    if asked {
+                        continue;
+                    }
+                    let voice_channel = channels.iter().find(|item| {
+                        item.kind == "voice"
+                            && channel.as_ref().is_none_or(|name| item.name == *name)
+                    });
+                    match voice_channel {
+                        Some(item) => {
+                            println!("canal de voz: {} ({})", item.name, item.id);
+                            wanted = item.id.clone();
+                            asked = true;
+                            net.send(Command::JoinVoice {
+                                channel_id: item.id.clone(),
+                            });
+                        }
+                        None => println!("nenhum canal de voz neste servidor"),
+                    }
+                }
+                Update::VoiceReady {
+                    channel_id,
+                    servers,
+                } => {
+                    println!("ice: {} servidor(es)", servers.len());
+                    call = voice::Call::start(
+                        channel_id,
+                        voice::IceConfig::from_servers(&servers),
+                        ctx.clone(),
+                    );
+                    if call.is_none() {
+                        println!("a call não abriu");
+                        return;
+                    }
+                }
+                Update::Event(event) => match *event {
+                    Event::VoiceJoined { members, .. } => {
+                        println!("entrou na sala ({} pessoa(s))", members.len());
+                        if let Some(call) = &call {
+                            call.ready();
+                        }
+                        unmute = Some(std::time::Instant::now() + std::time::Duration::from_secs(3));
+                    }
+                    Event::VoiceAnswer { sdp, .. } => {
+                        println!("resposta do servidor: {} bytes", sdp.len());
+                        if let Some(call) = &call {
+                            call.answer(sdp);
+                        }
+                    }
+                    Event::VoiceCandidate {
+                        candidate,
+                        sdp_mline_index,
+                        ..
+                    } => {
+                        if let Some(call) = &call {
+                            call.candidate(candidate, sdp_mline_index.unwrap_or(0));
+                        }
+                    }
+                    Event::VoiceState { state, .. } => println!(
+                        "estado: {} mudo={} câmera={}",
+                        state.user_id, state.muted, state.camera_on
+                    ),
+                    Event::ActiveSpeakers { user_ids, .. } => {
+                        println!("falando: {user_ids:?}");
+                    }
+                    Event::Failure { message, code } => {
+                        println!("erro do servidor: {message} ({code:?})");
+                    }
+                    _ => {}
+                },
+                Update::Error(error) => println!("rede: {error}"),
+                _ => {}
+            }
+        }
+
+        if let Some(call) = &call {
+            for signal in call.take_signals() {
+                let kind = serde_json::from_str::<serde_json::Value>(&signal)
+                    .ok()
+                    .and_then(|value| {
+                        value.get("type").and_then(serde_json::Value::as_str).map(str::to_owned)
+                    })
+                    .unwrap_or_default();
+                if kind != "voice_ice_candidate" {
+                    println!("→ {kind}");
+                }
+                net.send(Command::VoiceSignal(signal));
+            }
+            if !live && call.is_live() {
+                live = true;
+                println!("conexão de mídia estabelecida");
+            }
+            if let Some(at) = unmute {
+                if std::time::Instant::now() > at {
+                    unmute = None;
+                    println!("abrindo o microfone");
+                    call.set_muted(false);
+                }
+            }
+            if let Some(error) = call.error() {
+                println!("call: {error}");
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    if !wanted.is_empty() {
+        net.send(Command::VoiceSignal(format!(
+            r#"{{"type":"voice_leave","channel_id":"{wanted}"}}"#
+        )));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    println!(
+        "fim: mídia {}",
+        if live { "conectada" } else { "NÃO conectada" }
+    );
+}
+
+/// Imprime a oferta que a call mandaria, sem rede e sem janela.
+fn voice_sdp() {
+    let Some(call) = voice::Call::start(
+        "canal-de-teste".to_owned(),
+        voice::IceConfig::default(),
+        egui::Context::default(),
+    ) else {
+        println!("a call não abriu (falta GStreamer ou o webrtcbin)");
+        return;
+    };
+    call.ready();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        for signal in call.take_signals() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&signal) else {
+                continue;
+            };
+            let kind = value.get("type").and_then(serde_json::Value::as_str);
+            if kind == Some("voice_offer") {
+                let sdp = value.get("sdp").and_then(serde_json::Value::as_str).unwrap_or("");
+                let lines = sdp.lines().filter(|line| line.starts_with("m=")).count();
+                println!("{sdp}");
+                println!("— {lines} linhas de mídia —");
+                return;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    println!("a oferta não saiu em 10s: {:?}", call.error());
 }
 
 /// Ícone da janela, o mesmo usado na bandeja.

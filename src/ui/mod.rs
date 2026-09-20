@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod attachments;
 pub mod auth;
+pub mod call;
 pub mod emoji;
 pub mod emoji_raster;
 pub mod glass;

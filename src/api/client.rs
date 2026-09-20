@@ -392,6 +392,13 @@ impl Api {
 
     // -- Canais, mensagens e pessoas --------------------------------------
 
+    /// Servidores ICE (STUN e, quando o servidor tem TURN, uma credencial
+    /// efêmera só sua). É o primeiro passo de toda entrada em call.
+    pub async fn ice_servers(&self) -> ApiResult<Vec<IceServer>> {
+        let response: IceServersResponse = self.get("/voice/ice-servers").await?;
+        Ok(response.ice_servers)
+    }
+
     pub async fn channels(&self) -> ApiResult<Vec<Channel>> {
         let list: ChannelList = self.get("/channels").await?;
         Ok(list.channels)

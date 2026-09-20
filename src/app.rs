@@ -15,7 +15,8 @@ use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
 use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net};
-use crate::state::{Screen, Store};
+use crate::state::{Phase, Screen, Store};
+use crate::voice::{Call, IceConfig, Kind};
 use crate::ui::auth::{self, AuthAction, AuthForm};
 use crate::ui::shell::{self, ChatAction, UiState};
 use crate::ui::glass::GlassRenderer;
@@ -55,6 +56,168 @@ impl ServerEntry {
         let label = host_of(&url);
         Self { url, label }
     }
+}
+
+/// O que da rede é da call: os servidores ICE, que a fazem nascer, e a
+/// sinalização, que vai direto para a thread dela sem passar pelo estado da
+/// tela.
+fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: &egui::Context) {
+    use crate::api::net::Update;
+    use crate::api::ws::Event;
+
+    match update {
+        Update::VoiceReady {
+            channel_id,
+            servers,
+        } => {
+            // Uma entrada que já não é a atual (o usuário desistiu antes de
+            // o ICE voltar) não monta call nenhuma.
+            if ws.store.call.channel_id != *channel_id {
+                return;
+            }
+            ws.call = Call::start(
+                channel_id.clone(),
+                IceConfig::from_servers(servers),
+                ctx.clone(),
+            );
+            ws.call_ready = false;
+            if ws.call.is_none() {
+                ws.store.call.error = Some("a call não abriu".to_owned());
+                ws.store.call.left();
+            }
+        }
+        Update::Event(event) => {
+            let Some(call) = &ws.call else { return };
+            // O fim da call pode vir do servidor: a sala foi destruída, a
+            // sessão caiu, a permissão sumiu. O estado da tela trata disso
+            // no `Store`; aqui é o pipeline que precisa ser desmontado, ou o
+            // microfone continuaria aberto para ninguém.
+            let mut over = false;
+            match &**event {
+                Event::VoiceAnswer { channel_id, sdp } if *channel_id == call.channel_id => {
+                    call.answer(sdp.clone());
+                }
+                Event::VoiceOffer { channel_id, sdp } if *channel_id == call.channel_id => {
+                    call.offer(sdp.clone());
+                }
+                Event::VoiceCandidate {
+                    channel_id,
+                    candidate,
+                    sdp_mline_index,
+                    ..
+                } if *channel_id == call.channel_id => {
+                    call.candidate(candidate.clone(), sdp_mline_index.unwrap_or(0));
+                }
+                Event::VoiceLeft {
+                    channel_id,
+                    user_id,
+                } if *channel_id == call.channel_id && *user_id == ws.store.me => over = true,
+                Event::Failure { code, .. }
+                    if code.as_deref().is_some_and(|code| {
+                        crate::state::call::fatal(code, ws.store.call.phase == Phase::Joining)
+                    }) =>
+                {
+                    over = true;
+                }
+                _ => {}
+            }
+            if over {
+                ws.call = None;
+                ws.call_ready = false;
+                ws.watching.clear();
+                ws.roster.clear();
+            }
+        }
+        // O socket caiu: o servidor derruba o peer junto com a conexão que
+        // pediu a entrada, então a call já acabou — só não sabíamos.
+        Update::Connection(crate::api::ws::Connection::Offline) if ws.store.call.active() => {
+            ws.call = None;
+            ws.call_ready = false;
+            ws.watching.clear();
+            ws.roster.clear();
+            ws.store.call.error = None;
+            ws.store.call.left();
+        }
+        _ => {}
+    }
+}
+
+/// Sai da call: avisa o servidor, desmonta o pipeline e limpa o retrato.
+fn leave_call(ws: &mut Workspace) {
+    if ws.store.call.active() && !ws.store.call.channel_id.is_empty() {
+        ws.net.send(Command::VoiceSignal(format!(
+            r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
+            ws.store.call.channel_id
+        )));
+    }
+    ws.call = None;
+    ws.call_ready = false;
+    ws.watching.clear();
+    ws.roster.clear();
+    ws.store.call.left();
+}
+
+/// O vaivém da call a cada quadro: o que a thread quer mandar vai para o
+/// socket, e o que mudou na sala vira pedido de vídeo.
+fn pump_call(ws: &mut Workspace) {
+    let Some(call) = &ws.call else { return };
+
+    for signal in call.take_signals() {
+        ws.net.send(Command::VoiceSignal(signal));
+    }
+
+    // A oferta só pode sair depois do `voice_joined`: antes disso o servidor
+    // ainda não tem peer para receber a SDP.
+    if !ws.call_ready && ws.store.call.phase == Phase::In {
+        call.ready();
+        ws.call_ready = true;
+        // Entramos mudos, como o servidor assume; o botão já nasce ligado.
+        call.set_muted(ws.store.call.muted);
+    }
+
+    if call.failed() {
+        let message = call.error();
+        ws.store.call.error = message.clone();
+        // O mesmo aviso passageiro dos outros erros: quem está na tela
+        // precisa saber por que a call sumiu.
+        ws.store.error = message;
+        leave_call(ws);
+        return;
+    }
+
+    // Quem ligou a câmera passa a ser assistido sozinho — a escolha de
+    // desenho. O servidor não manda vídeo sem pedido, e são seis lugares:
+    // o sétimo fica com o retrato, que é o que `watch` decide.
+    let me = ws.store.me.clone();
+    let wanted: std::collections::HashSet<String> = ws
+        .store
+        .call
+        .members()
+        .iter()
+        .filter(|member| member.camera_on && member.user_id != me)
+        .map(|member| member.user_id.clone())
+        .collect();
+    for publisher in wanted.difference(&ws.watching) {
+        call.watch(publisher, Kind::Camera, true);
+    }
+    for publisher in ws.watching.difference(&wanted) {
+        // Quem desligou a câmera já teve o lugar devolvido no servidor; aqui
+        // é só a nossa conta acompanhando.
+        call.published(publisher, Kind::Camera, false);
+    }
+    ws.watching = wanted;
+
+    let roster: std::collections::HashSet<String> = ws
+        .store
+        .call
+        .members()
+        .iter()
+        .map(|member| member.user_id.clone())
+        .collect();
+    for gone in ws.roster.difference(&roster) {
+        call.gone(gone);
+    }
+    ws.roster = roster;
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -189,6 +352,15 @@ pub struct Workspace {
     pub stash: shell::Stash,
     /// Instante do último evento de digitação enviado.
     pub typing_sent: Option<std::time::Instant>,
+    /// A call deste servidor, enquanto durar. Uma por servidor, e a janela
+    /// só deixa uma no ar de cada vez — o microfone é um só.
+    pub call: Option<Call>,
+    /// Já demos o sinal verde para a oferta sair.
+    call_ready: bool,
+    /// De quem estamos recebendo vídeo agora.
+    watching: std::collections::HashSet<String>,
+    /// Quem estava na sala no quadro anterior, para notar quem saiu.
+    roster: std::collections::HashSet<String>,
 }
 
 impl Workspace {
@@ -216,6 +388,10 @@ impl Workspace {
             },
             stash: shell::Stash::new(crate::media::MediaStore::new(media)),
             typing_sent: None,
+            call: None,
+            call_ready: false,
+            watching: std::collections::HashSet::new(),
+            roster: std::collections::HashSet::new(),
         }
     }
 
@@ -952,6 +1128,31 @@ impl PapoApp {
                 ws.net.send(Command::BanUser { user_id, banned })
             }
             ChatAction::ResetUser(user_id) => ws.net.send(Command::ResetUser { user_id }),
+            ChatAction::JoinVoice(channel_id) => {
+                // Uma call por vez: o microfone é um, e o servidor também só
+                // deixa uma sala por pessoa.
+                leave_call(ws);
+                ws.store.selected_channel = channel_id.clone();
+                ws.store.call.joining(channel_id.clone());
+                ws.net.send(Command::JoinVoice { channel_id });
+            }
+            ChatAction::LeaveVoice => leave_call(ws),
+            ChatAction::ToggleMute => {
+                let muted = !ws.store.call.muted;
+                ws.store.call.muted = muted;
+                if let Some(call) = &ws.call {
+                    call.set_muted(muted);
+                }
+            }
+            ChatAction::ToggleCamera => {
+                let on = !ws.store.call.camera;
+                ws.store.call.camera = on;
+                if let Some(call) = &ws.call {
+                    call.set_camera(on);
+                }
+            }
+            ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
             ChatAction::Search(text) => ws.net.send(Command::Search { text }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
@@ -1024,6 +1225,22 @@ impl PapoApp {
                     self.channel_dialog = Some(ChannelDialog::edit(channel));
                 }
             }
+            // A call de mentira não abre microfone nenhum: serve para o
+            // desenho da grade, da pastilha e da folha.
+            ChatAction::JoinVoice(channel_id) => {
+                ws.store.selected_channel = channel_id.clone();
+                ws.store.call.joining(channel_id.clone());
+                ws.store.call.joined(
+                    &channel_id,
+                    crate::state::demo::call_members(),
+                    vec!["u-ana".to_owned()],
+                );
+            }
+            ChatAction::LeaveVoice => ws.store.call.left(),
+            ChatAction::ToggleMute => ws.store.call.muted = !ws.store.call.muted,
+            ChatAction::ToggleCamera => ws.store.call.camera = !ws.store.call.camera,
+            ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
             ChatAction::DeleteChannel(id) => {
                 ws.store.channels.retain(|channel| channel.id != id);
                 if ws.store.selected_channel == id {
@@ -1051,7 +1268,7 @@ impl PapoApp {
     /// Lê o que chegou de cada servidor. Todos são atendidos no mesmo
     /// quadro: um servidor que não está na tela ainda precisa contar as
     /// menções e disparar a notificação.
-    fn pump_network(&mut self) {
+    fn pump_network(&mut self, ctx: &egui::Context) {
         // No modo demonstração a rede não manda no estado.
         if self.demo {
             for ws in &self.workspaces {
@@ -1075,6 +1292,7 @@ impl PapoApp {
                 // formulário, em vez de fazer o usuário clicar de novo.
                 let unlocked = matches!(update, crate::api::net::Update::ServerUnlocked);
                 let ws = &mut self.workspaces[index];
+                route_call_update(ws, &update, ctx);
                 if reconnected && ws.store.screen == Screen::Chat {
                     ws.net.send(Command::Refresh);
                 }
@@ -1097,6 +1315,53 @@ impl PapoApp {
                     }
                 }
             }
+        }
+    }
+
+    /// A call numa janela só dela. É uma viewport de verdade, não um
+    /// diálogo dentro da janela: o pedido era poder jogá-la noutro monitor,
+    /// e para isso ela precisa ser uma janela que o compositor conheça.
+    fn call_window(&mut self, ctx: &egui::Context) {
+        let active = self.active;
+        if !self.workspaces[active].store.call.popped_out {
+            return;
+        }
+        let t = self.tokens;
+        let s = self.settings.lang.strings();
+        let interface = &mut self.ui;
+        let ws = &mut self.workspaces[active];
+        let mut closing = false;
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("papo-call"),
+            egui::ViewportBuilder::default()
+                .with_title(s.call_window_title)
+                .with_app_id(crate::APP_ID)
+                .with_inner_size([760.0, 520.0])
+                .with_min_inner_size([360.0, 280.0]),
+            |ctx, _class| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().fill(t.content_bg))
+                    .show(ctx, |ui| {
+                        crate::ui::call::window(
+                            ui,
+                            &ws.store,
+                            interface,
+                            ws.call.as_mut(),
+                            &t,
+                            s,
+                        );
+                    });
+                if ctx.input(|input| input.viewport().close_requested()) {
+                    closing = true;
+                }
+            },
+        );
+
+        // Fechar a janela traz a call de volta para dentro; ela não morre
+        // junto, como não morreria se você tivesse encolhido a folha.
+        if closing {
+            ws.store.call.popped_out = false;
         }
     }
 
@@ -1591,9 +1856,11 @@ impl PapoApp {
                 dialog.focus = false;
             }
 
-            // O tipo é escolhido uma vez. Só texto e categoria: apesar de o
-            // openapi.yml listar `voice` no enum, o handler recusa — a
-            // mensagem de erro dele diz "type deve ser 'text' ou 'category'".
+            // O tipo é escolhido uma vez. `voice` voltou para a lista: o
+            // backend passou a aceitar os três (`services/channels.go`), e
+            // sem canal de voz não há por onde começar uma call. Servidor
+            // antigo ainda recusa, e a mensagem dele aparece como aviso —
+            // que é melhor do que esconder o tipo de quem tem servidor novo.
             ui.add_space(theme::space::LG);
             ui.label(
                 egui::RichText::new(s.channel_kind)
@@ -1613,9 +1880,11 @@ impl PapoApp {
                 );
             } else {
                 ui.horizontal(|ui| {
-                    for (value, label) in
-                        [("text", s.channel_kind_text), ("category", s.channel_kind_category)]
-                    {
+                    for (value, label) in [
+                        ("text", s.channel_kind_text),
+                        ("voice", s.channel_kind_voice),
+                        ("category", s.channel_kind_category),
+                    ] {
                         let selected = dialog.kind == value;
                         if ui.add(egui::Button::selectable(selected, label)).clicked() {
                             dialog.kind = value.to_owned();
@@ -1709,7 +1978,12 @@ impl eframe::App for PapoApp {
         #[cfg(target_os = "linux")]
         self.handle_window_lifecycle(&ctx);
 
-        self.pump_network();
+        self.pump_network(&ctx);
+        // A call segue viva com outro servidor na tela: o trilho troca a
+        // conversa, não quem está falando.
+        for ws in &mut self.workspaces {
+            pump_call(ws);
+        }
 
         let strings = self.settings.lang.strings();
         self.draw_header(ui);
@@ -1739,13 +2013,16 @@ impl eframe::App for PapoApp {
                 }
             }
             Screen::Chat => {
+                let ws = &mut self.workspaces[active];
                 shell::draw(
                     ui,
-                    &mut self.workspaces[active].store,
+                    &mut ws.store,
                     &mut self.ui,
+                    ws.call.as_mut(),
                     &self.tokens,
                     strings,
                 );
+                self.call_window(&ctx);
                 self.pump_chat();
                 let actions = std::mem::take(&mut self.ui.actions);
                 for action in actions {

@@ -117,6 +117,15 @@ pub enum ChatAction {
         banned: bool,
     },
     ResetUser(String),
+    /// Entra na call do canal de voz.
+    JoinVoice(String),
+    LeaveVoice,
+    ToggleMute,
+    ToggleCamera,
+    /// Encolhe a folha da call numa pastilha (ou a abre de volta).
+    CollapseCall(bool),
+    /// Joga a call numa janela só dela (ou a traz de volta).
+    PopOutCall(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,7 +340,14 @@ impl UiState {
     }
 }
 
-pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+pub fn draw(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    call: Option<&mut crate::voice::Call>,
+    t: &Tokens,
+    s: &Strings,
+) {
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
@@ -374,11 +390,16 @@ pub fn draw(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Token
         ui.ctx().request_discard("a lista mudou de altura");
     }
 
-    channels_sidebar(ui, store, state, t, s);
+    // A call de vídeo mora numa folha por cima da conversa; só voz fica no
+    // próprio canal. Quem decide é o estado, não esta função.
+    let stage = crate::ui::call::stage_of(store);
+    let live = call.as_ref().is_some_and(|call| call.is_live());
+
+    channels_sidebar(ui, store, state, t, s, live);
     if state.show_members {
         members_sidebar(ui, store, state, t, s);
     }
-    conversation(ui, store, state, t, s);
+    conversation(ui, store, state, call, t, s, stage);
     overlays(ui, store, state, t, s);
 }
 
@@ -422,6 +443,7 @@ fn channels_sidebar(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
+    live: bool,
 ) {
     egui::Panel::left("channels")
         .exact_size(SIDEBAR_WIDTH)
@@ -521,26 +543,67 @@ fn channels_sidebar(
                                     .iter()
                                     .filter(|c| c.kind == ChannelKind::Voice)
                                 {
+                                    let here = store.call.channel_id == channel.id;
                                     let row = channel_row(
                                         ui,
                                         t,
                                         icon::SPEAKER_HIGH,
                                         &channel.name,
-                                        false,
+                                        here,
                                         false,
                                         0,
                                         SIDEBAR_WIDTH - indent * 2.0,
                                     );
+                                    // Um clique entra, como se espera de uma
+                                    // sala de voz: ela não é uma tela para
+                                    // visitar, é um lugar onde se está.
+                                    if row.clicked() && !here {
+                                        state
+                                            .actions
+                                            .push(ChatAction::JoinVoice(channel.id.clone()));
+                                    }
                                     channel_menu(&row, channel, state, s);
+                                    crate::ui::call::roster(
+                                        ui,
+                                        store,
+                                        state,
+                                        t,
+                                        s,
+                                        &channel.id,
+                                        SIDEBAR_WIDTH - indent * 2.0,
+                                    );
                                 }
-                                // Espaço para a pastilha da conta não cobrir o
+                                // Espaço para a pastilha da conta (e a barra
+                                // da call, quando existe) não cobrirem o
                                 // último canal quando a lista chega ao fim.
-                                ui.add_space(IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0);
+                                let reserved = if store.call.active() {
+                                    IDENTITY_PILL_HEIGHT + crate::ui::call::BAR_HEIGHT + space::XS
+                                } else {
+                                    IDENTITY_PILL_HEIGHT
+                                };
+                                ui.add_space(reserved + PILL_INSET * 2.0);
                             });
                         });
                     });
             });
 
+            if store.call.active() {
+                let bar = Rect::from_min_size(
+                    egui::pos2(
+                        full.min.x + PILL_INSET,
+                        full.max.y
+                            - IDENTITY_PILL_HEIGHT
+                            - PILL_INSET
+                            - crate::ui::call::BAR_HEIGHT
+                            - space::XS,
+                    ),
+                    Vec2::new(
+                        full.width() - PILL_INSET * 2.0,
+                        crate::ui::call::BAR_HEIGHT,
+                    ),
+                );
+                crate::ui::call::bar(ui, store, state, t, s, bar, live);
+            }
             account_pill(ui, store, state, t, s, full);
         });
 }
@@ -1156,16 +1219,38 @@ fn typing_pill(
 // Centro — conversa
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn conversation(
     root: &mut egui::Ui,
     store: &mut Store,
     state: &mut UiState,
+    mut call: Option<&mut crate::voice::Call>,
     t: &Tokens,
     s: &Strings,
+    stage: Option<crate::state::Stage>,
 ) {
+    use crate::state::Stage;
+
+    let voice = store
+        .channel(&store.selected_channel)
+        .is_some_and(|channel| channel.kind == ChannelKind::Voice);
     let frame = Frame::new().fill(t.content_bg);
     egui::CentralPanel::default().frame(frame).show(root, |ui| {
         let full = ui.max_rect();
+
+        // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
+        // a grade; fora, quem está lá e o caminho para entrar.
+        if voice {
+            if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
+                crate::ui::call::dock(ui, store, state, call.as_deref_mut(), t, s);
+            } else {
+                crate::ui::call::lobby(ui, store, state, t, s);
+            }
+            channel_pill(ui, store, state, t, full);
+            call_layers(ui, store, state, call, t, s, full, stage);
+            return;
+        }
+
         let composer_height = composer_height(state);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
@@ -1206,7 +1291,33 @@ fn conversation(
         channel_pill(ui, store, state, t, full);
         actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
+        call_layers(ui, store, state, call, t, s, full, stage);
     });
+}
+
+/// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
+/// dela encolhida. No canal da própria call, nenhum dos dois — ali a call já
+/// é a tela.
+#[allow(clippy::too_many_arguments)]
+fn call_layers(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    call: Option<&mut crate::voice::Call>,
+    t: &Tokens,
+    s: &Strings,
+    full: Rect,
+    stage: Option<crate::state::Stage>,
+) {
+    use crate::state::Stage;
+
+    match stage {
+        Some(Stage::Sheet) => crate::ui::call::sheet(ui, store, state, call, t, s, full),
+        Some(Stage::Docked) if store.call.channel_id != store.selected_channel => {
+            crate::ui::call::pill(ui, store, state, t, s, full);
+        }
+        _ => {}
+    }
 }
 
 /// Pastilha de identidade do canal, no alto à esquerda.

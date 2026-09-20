@@ -344,6 +344,25 @@ pub struct SearchResponse {
     pub has_more: bool,
 }
 
+/// Um servidor ICE como o backend o entrega (mesmo formato do
+/// `RTCIceServer` do navegador). `urls` vem como lista; `username` e
+/// `credential` só existem no TURN, e são efêmeros.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IceServer {
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IceServersResponse {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub ice_servers: Vec<IceServer>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChannelList {
     #[serde(default)]

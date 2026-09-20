@@ -47,6 +47,14 @@ swash = "0.2"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
+# Voz e vídeo: o webrtcbin faz ICE, DTLS-SRTP e o transporte; a sinalização
+# (oferta, resposta e candidatos) vai pelo mesmo WebSocket do resto.
+gstreamer-webrtc = "0.24"
+gstreamer-sdp = "0.24"
+# `v1_20` abre a API de extensão de cabeçalho RTP (o nível de voz, RFC 6464,
+# é o que diz ao servidor quem está falando). O elemento correspondente
+# também só existe do GStreamer 1.20 em diante.
+gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
 
