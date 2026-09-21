@@ -1519,7 +1519,7 @@ impl PapoApp {
             blur.set_regions(&[]);
             return;
         }
-        let screen = ctx.viewport_rect();
+        let screen = ctx.content_rect();
         let left = crate::ui::rail::RAIL_WIDTH + crate::ui::shell::SIDEBAR_WIDTH;
         // A nossa barra de título é opaca: o desfoque começa abaixo dela.
         let top = if self.own_chrome {
