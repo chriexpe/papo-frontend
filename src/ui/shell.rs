@@ -92,16 +92,25 @@ pub enum ChatAction {
     PickGif,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
-    /// Abre o diálogo de criar canal.
+    /// Abre a criação inline em Ajustes do servidor → Canais.
     NewChannel,
-    /// Abre o diálogo de editar um canal existente.
+    /// Abre a edição inline de um canal existente.
     EditChannel(String),
-    /// Renomeia sem abrir diálogo: a folha de ajustes edita na própria linha.
-    RenameChannel {
+    /// Abre a confirmação inline de exclusão.
+    RequestDeleteChannel(String),
+    /// Cria um canal depois de confirmar o formulário inline.
+    CreateChannel {
+        name: String,
+        kind: String,
+        topic: Option<String>,
+    },
+    /// Salva nome/tópico de um canal depois da edição inline.
+    UpdateChannel {
         channel_id: String,
         name: String,
+        topic: Option<String>,
     },
-    /// Apaga o canal, depois da confirmação.
+    /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
     /// Busca no servidor, a partir da pastilha.
     Search(String),
@@ -1062,7 +1071,7 @@ fn channel_menu(
             ui.close();
         }
         ui.separator();
-        if ui.button(s.rename_channel).clicked() {
+        if ui.button(s.edit).clicked() {
             state.actions.push(ChatAction::EditChannel(channel.id.clone()));
             ui.close();
         }
@@ -1073,7 +1082,7 @@ fn channel_menu(
         {
             state
                 .actions
-                .push(ChatAction::DeleteChannel(channel.id.clone()));
+                .push(ChatAction::RequestDeleteChannel(channel.id.clone()));
             ui.close();
         }
     });

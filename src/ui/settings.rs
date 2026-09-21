@@ -119,6 +119,40 @@ pub struct PendingSticker {
     pub name: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ChannelDraft {
+    pub id: Option<String>,
+    pub name: String,
+    pub topic: String,
+    /// `text`, `voice` ou `category`, como o contrato espera.
+    pub kind: String,
+}
+
+impl ChannelDraft {
+    pub fn create() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            topic: String::new(),
+            kind: "text".to_owned(),
+        }
+    }
+
+    pub fn edit(channel: &crate::state::Channel) -> Self {
+        use crate::state::ChannelKind;
+        Self {
+            id: Some(channel.id.clone()),
+            name: channel.name.clone(),
+            topic: channel.topic.clone().unwrap_or_default(),
+            kind: match channel.kind {
+                ChannelKind::Voice => "voice".to_owned(),
+                ChannelKind::Category => "category".to_owned(),
+                ChannelKind::Text => "text".to_owned(),
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Draft {
     pub loaded_account: bool,
@@ -130,8 +164,8 @@ pub struct Draft {
     pub server_name: String,
     pub server_public: bool,
     pub server_password: String,
-    /// Canal sendo renomeado ali mesmo, com o nome em edição.
-    pub renaming: Option<(String, String)>,
+    /// Criação/edição de canal acontece dentro da própria folha.
+    pub channel: Option<ChannelDraft>,
     /// Canal a apagar: id, nome esperado e o que foi digitado. A confirmação
     /// é por cópia do nome — apagar um canal leva junto tudo que foi dito
     /// nele, e um clique só é barato demais para isso.
@@ -141,6 +175,31 @@ pub struct Draft {
 }
 
 impl SettingsState {
+    pub fn open_new_channel(&mut self) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = Some(ChannelDraft::create());
+        self.draft.deleting = None;
+    }
+
+    pub fn open_edit_channel(&mut self, channel: &crate::state::Channel) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = Some(ChannelDraft::edit(channel));
+        self.draft.deleting = None;
+    }
+
+    pub fn open_delete_channel(&mut self, channel: &crate::state::Channel) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = None;
+        self.draft.deleting = Some((
+            channel.id.clone(),
+            channel.name.clone(),
+            String::new(),
+        ));
+    }
+
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
     pub fn toggle(&mut self, surface: Surface) {
         if self.open == Some(surface) {
@@ -1306,54 +1365,122 @@ fn server_pane(
             section(ui, t, s.text_channels);
             let channels = data.store.channels.clone();
             let draft = &mut state.draft;
-            let mut rename: Option<(String, String)> = None;
-            let mut start_rename: Option<(String, String)> = None;
-            let mut start_delete: Option<(String, String)> = None;
-            let mut cancel = false;
+            let mut close_editor = false;
+            let mut cancel_delete = false;
+            let mut confirmed_delete: Option<String> = None;
+
+            if let Some(editor) = draft.channel.as_mut() {
+                section(
+                    ui,
+                    t,
+                    if editor.id.is_some() {
+                        s.edit_channel_title
+                    } else {
+                        s.create_channel
+                    },
+                );
+                group(ui, t, |rows| {
+                    rows.field(s.channel_name, &mut editor.name, 32, false);
+
+                    rows.row(s.channel_kind, None, |ui, t| {
+                        if editor.id.is_some() {
+                            let kind = match editor.kind.as_str() {
+                                "voice" => s.channel_kind_voice,
+                                "category" => s.channel_kind_category,
+                                _ => s.channel_kind_text,
+                            };
+                            ui.label(
+                                RichText::new(kind)
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                        } else {
+                            for (value, label) in [
+                                ("text", s.channel_kind_text),
+                                ("voice", s.channel_kind_voice),
+                                ("category", s.channel_kind_category),
+                            ] {
+                                let selected = editor.kind == value;
+                                if ui.add(egui::Button::selectable(selected, label)).clicked() {
+                                    editor.kind = value.to_owned();
+                                }
+                            }
+                        }
+                    });
+
+                    if editor.kind != "category" {
+                        rows.field(s.channel_topic, &mut editor.topic, 512, false);
+                    }
+                });
+
+                ui.add_space(space::SM);
+                actions_row(ui, |ui| {
+                    if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                        close_editor = true;
+                    }
+                    let ready = !editor.name.trim().is_empty();
+                    if ready
+                        && row_button(
+                            ui,
+                            t,
+                            if editor.id.is_some() {
+                                s.save
+                            } else {
+                                s.create_channel
+                            },
+                            Emphasis::Primary,
+                        )
+                    {
+                        let name = editor.name.trim().to_owned();
+                        let topic = (editor.kind != "category")
+                            .then(|| editor.topic.trim().to_owned());
+                        match editor.id.clone() {
+                            Some(channel_id) => {
+                                actions.push(SettingsAction::Chat(ChatAction::UpdateChannel {
+                                    channel_id,
+                                    name,
+                                    topic,
+                                }));
+                            }
+                            None => {
+                                actions.push(SettingsAction::Chat(ChatAction::CreateChannel {
+                                    name,
+                                    kind: editor.kind.clone(),
+                                    topic: topic.filter(|topic| !topic.is_empty()),
+                                }));
+                            }
+                        }
+                        close_editor = true;
+                    }
+                });
+                ui.add_space(space::LG);
+            }
 
             group(ui, t, |rows| {
                 if channels.is_empty() {
                     rows.row(s.no_channels_yet, None, |_, _| {});
                 }
                 for (index, channel) in channels.iter().enumerate() {
-                    // Renomear acontece na própria linha: abrir uma janela
-                    // por cima da folha de ajustes é uma camada a mais para
-                    // trocar uma palavra.
-                    if let Some((id, name)) = draft.renaming.as_mut()
-                        && id == &channel.id
-                    {
-                            let sent = rows.field(s.rename, name, 32, false);
-                            rows.row("", None, |ui, t| {
-                                if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                    cancel = true;
-                                }
-                                let ready = !name.trim().is_empty();
-                                if (row_button(ui, t, s.save, Emphasis::Primary) || sent) && ready {
-                                    rename = Some((channel.id.clone(), name.trim().to_owned()));
-                                }
-                            });
-                            continue;
-                    }
                     // Apagar pede o nome digitado: é o que separa "quis" de
                     // "esbarrou".
                     if let Some((id, expected, typed)) = draft.deleting.as_mut()
                         && id == &channel.id
                     {
-                            rows.row(&channel.name, Some(s.delete_type_name), |ui, t| {
-                                if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                    cancel = true;
-                                }
-                            });
-                            let sent = rows.field(s.channel_name, typed, 32, false);
-                            let matches = typed.trim() == expected.as_str();
-                            rows.row("", None, |ui, t| {
-                                if (row_button(ui, t, s.delete_forever, Emphasis::Danger) || sent)
-                                    && matches
-                                {
-                                    start_delete = Some((channel.id.clone(), String::new()));
-                                }
-                            });
-                            continue;
+                        rows.row(&channel.name, Some(s.delete_type_name), |ui, t| {
+                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                                cancel_delete = true;
+                            }
+                        });
+                        let sent = rows.field(s.channel_name, typed, 32, false);
+                        let matches = typed.trim() == expected.as_str();
+                        rows.row("", None, |ui, t| {
+                            if (row_button(ui, t, s.delete_forever, Emphasis::Danger) || sent)
+                                && matches
+                            {
+                                confirmed_delete = Some(channel.id.clone());
+                            }
+                        });
+                        continue;
                     }
 
                     let kind = match channel.kind {
@@ -1363,10 +1490,16 @@ fn server_pane(
                     };
                     rows.row(&channel.name, Some(kind), |ui, t| {
                         if row_button(ui, t, s.delete, Emphasis::Danger) {
-                            start_delete = Some((channel.id.clone(), channel.name.clone()));
+                            draft.channel = None;
+                            draft.deleting = Some((
+                                channel.id.clone(),
+                                channel.name.clone(),
+                                String::new(),
+                            ));
                         }
-                        if row_button(ui, t, s.rename, Emphasis::Quiet) {
-                            start_rename = Some((channel.id.clone(), channel.name.clone()));
+                        if row_button(ui, t, s.edit, Emphasis::Quiet) {
+                            draft.deleting = None;
+                            draft.channel = Some(ChannelDraft::edit(channel));
                         }
                         if index + 1 < channels.len()
                             && row_icon(ui, t, egui_phosphor::regular::ARROW_DOWN, s.move_down)
@@ -1390,36 +1523,22 @@ fn server_pane(
                 }
             });
 
-            if let Some((channel_id, name)) = rename {
-                actions.push(SettingsAction::Chat(ChatAction::RenameChannel {
-                    channel_id,
-                    name,
-                }));
-                draft.renaming = None;
+            if close_editor {
+                draft.channel = None;
             }
-            if let Some((channel_id, expected)) = start_delete {
-                if expected.is_empty() {
-                    // Nome conferido: é para valer.
-                    actions.push(SettingsAction::Chat(ChatAction::DeleteChannel(channel_id)));
-                    draft.deleting = None;
-                } else {
-                    draft.deleting = Some((channel_id, expected, String::new()));
-                    draft.renaming = None;
-                }
-            }
-            if let Some((id, name)) = start_rename {
-                draft.renaming = Some((id, name));
+            if cancel_delete {
                 draft.deleting = None;
             }
-            if cancel {
-                draft.renaming = None;
+            if let Some(channel_id) = confirmed_delete {
+                actions.push(SettingsAction::Chat(ChatAction::DeleteChannel(channel_id)));
                 draft.deleting = None;
             }
 
             ui.add_space(space::SM);
             actions_row(ui, |ui| {
                 if row_button(ui, t, s.create_channel, Emphasis::Primary) {
-                    actions.push(SettingsAction::Chat(ChatAction::NewChannel));
+                    draft.deleting = None;
+                    draft.channel = Some(ChannelDraft::create());
                 }
             });
         }
