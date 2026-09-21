@@ -191,6 +191,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
         .unwrap_or_else(|_| "http://localhost:8080".to_owned());
     println!("servidor: {base}");
 
+    let ctx = egui::Context::default();
     let net = Net::spawn(base, Wake::noop());
     // Sem credenciais, vale a sessão já guardada em disco — que é o caminho
     // preferido: senha no argv fica no histórico do shell e aparece para
