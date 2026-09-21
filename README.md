@@ -66,7 +66,40 @@ quebraria as duas.
 Por enquanto só `arm64-v8a`, e sem voz, vídeo nem seletor de arquivos: o
 GStreamer do Android vem de um SDK próprio e entra depois. Onde falta, o
 lugar continua existindo no código e responde "não dá" — é o mesmo caminho
-que a área de trabalho segue quando o GStreamer não está instalado.
+que a área de trabalho segue quando o GStreamer não está instalado. Os
+substitutos a trocar quando a mídia entrar são três:
+
+```
+src/media/player_android.rs   player, forma de onda e gravação
+src/voice/engine_android.rs   o motor da call
+src/state/demo.rs             encoded_attachment, na demonstração
+```
+
+e as dependências do GStreamer no `Cargo.toml`, hoje presas a
+`cfg(not(target_os = "android"))`.
+
+### Páginas de 16 KB
+
+Do Android 15 em diante as páginas de memória são de 16 KB, e **todas** as
+imagens de sistema do Android 37 são `ps16k`. Um `.so` alinhado em 4 KB não
+carrega nesses aparelhos. O NDK r30 já alinha em 16 KB por padrão — dá para
+conferir no artefato:
+
+```sh
+readelf -lW android/app/src/main/jniLibs/arm64-v8a/libpapo.so | awk '/LOAD/{print $NF}' | sort -u
+# 0x4000 = 16 KB
+$ANDROID_HOME/build-tools/37.0.0/zipalign -c -P 16 -v 4 app-debug.apk | tail -1
+```
+
+Isto vale para **todo** `.so` que entrar no APK, não só o nosso: biblioteca
+de terceiros compilada com alinhamento antigo derruba o aplicativo no
+carregamento. É o primeiro ponto a conferir quando o GStreamer entrar.
+
+### O CI não cobre o Android
+
+O `ci.yml` só compila para Linux. Nada avisa se uma mudança quebrar o alvo
+`aarch64-linux-android` — até alguém rodar `scripts/android.sh`. Um
+`cargo ndk -t arm64-v8a check --lib` no CI resolveria.
 
 ## Instalando
 
