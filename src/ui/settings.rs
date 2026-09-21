@@ -229,8 +229,6 @@ impl SettingsState {
 
 const ROW_HEIGHT: f32 = 38.0;
 const ROW_INSET: f32 = space::LG;
-/// Largura da coluna de rótulos.
-const LABEL_COLUMN: f32 = 150.0;
 /// Largura reservada ao controle, encostado à direita da linha.
 const CONTROL_COLUMN: f32 = 190.0;
 /// Linhas que mostram figurinha: a arte e a altura que ela pede.
@@ -311,8 +309,8 @@ impl Rows<'_> {
         (rect, inner)
     }
 
-    /// Rótulo à esquerda, controle à direita. O controle recebe a metade
-    /// direita da linha e se alinha ao fim dela.
+    /// Rótulo + apoio + controle. Em espaço largo mantém duas colunas;
+    /// quando o próprio painel fica estreito, empilha o controle embaixo.
     fn row(
         &mut self,
         label: &str,
@@ -320,63 +318,74 @@ impl Rows<'_> {
         control: impl FnOnce(&mut egui::Ui, &Tokens),
     ) {
         let t = self.t;
-        // A explicação é medida antes de reservar a faixa: só assim a linha
-        // pode crescer para caber duas ou três linhas de texto em vez de
-        // deixá-las transbordar para dentro da linha de baixo.
-        let full = self.ui.available_width() - ROW_INSET - space::MD;
-        let text_width = LABEL_COLUMN.min(full * 0.45);
-        // O texto de apoio pode passar da coluna do rótulo — o controle fica
-        // à direita, e embaixo dele sobra espaço que ninguém usa.
-        let hint_width = (full - CONTROL_COLUMN).max(text_width);
+        let full = (self.ui.available_width() - ROW_INSET - space::MD).max(120.0);
+        let stacked = full < 430.0;
+        let control_width = if stacked {
+            full
+        } else {
+            CONTROL_COLUMN.min(full * 0.48)
+        };
+        let text_width = if stacked {
+            full
+        } else {
+            (full - control_width - space::LG).max(120.0)
+        };
+
+        let label_galley = self.ui.painter().layout(
+            label.to_owned(),
+            text::body(),
+            t.label,
+            text_width,
+        );
         let hint_galley = hint.map(|hint| {
             self.ui.painter().layout(
                 hint.to_owned(),
                 text::footnote(),
                 t.label_tertiary,
-                hint_width,
+                text_width,
             )
         });
-        let height = match &hint_galley {
-            None => ROW_HEIGHT,
-            Some(galley) => (ROW_HEIGHT - 8.0 + galley.size().y + space::MD).max(ROW_HEIGHT),
+        let text_height = label_galley.size().y
+            + hint_galley
+                .as_ref()
+                .map(|galley| space::XXS + galley.size().y)
+                .unwrap_or(0.0);
+        let height = if stacked {
+            (space::MD + text_height + space::SM + 30.0 + space::MD).max(ROW_HEIGHT)
+        } else {
+            (text_height + space::MD * 2.0).max(ROW_HEIGHT)
         };
         let (_, inner) = self.band(height);
 
-        let painter = self.ui.painter();
-        match hint_galley {
-            None => {
-                painter.text(
-                    egui::pos2(inner.min.x, inner.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    text::body(),
-                    t.label,
-                );
-            }
-            Some(galley) => {
-                // Com apoio, o bloco todo é que fica centrado na faixa.
-                let line = 17.0;
-                let block = line + galley.size().y;
-                let top = inner.center().y - block / 2.0;
-                painter.text(
-                    egui::pos2(inner.min.x, top),
-                    egui::Align2::LEFT_TOP,
-                    label,
-                    text::body(),
-                    t.label,
-                );
-                painter.galley(
-                    egui::pos2(inner.min.x, top + line),
-                    galley,
-                    t.label_tertiary,
-                );
-            }
+        let text_top = if stacked {
+            inner.min.y + space::MD
+        } else {
+            inner.center().y - text_height / 2.0
+        };
+        self.ui.painter().galley(
+            egui::pos2(inner.min.x, text_top),
+            label_galley,
+            t.label,
+        );
+        if let Some(galley) = hint_galley {
+            self.ui.painter().galley(
+                egui::pos2(inner.min.x, text_top + text_height - galley.size().y),
+                galley,
+                t.label_tertiary,
+            );
         }
 
-        let control_rect = Rect::from_min_max(
-            egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y),
-            inner.max,
-        );
+        let control_rect = if stacked {
+            Rect::from_min_max(
+                egui::pos2(inner.min.x, inner.max.y - 30.0 - space::MD),
+                egui::pos2(inner.max.x, inner.max.y - space::MD),
+            )
+        } else {
+            Rect::from_min_max(
+                egui::pos2(inner.max.x - control_width, inner.min.y),
+                inner.max,
+            )
+        };
         self.ui.scope_builder(
             UiBuilder::new()
                 .max_rect(control_rect)
@@ -387,12 +396,25 @@ impl Rows<'_> {
 
     /// Linha inteira clicável, para navegar ou disparar uma ação.
     fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
-        let height = if hint.is_some() {
-            ROW_HEIGHT + 16.0
-        } else {
-            ROW_HEIGHT
-        };
-        let (rect, inner) = self.band(height);
+        let width = (self.ui.available_width() - ROW_INSET - space::MD).max(120.0);
+        let label_galley = self
+            .ui
+            .painter()
+            .layout(label.to_owned(), text::body(), self.t.label, width);
+        let hint_galley = hint.map(|hint| {
+            self.ui.painter().layout(
+                hint.to_owned(),
+                text::footnote(),
+                self.t.label_tertiary,
+                width,
+            )
+        });
+        let block = label_galley.size().y
+            + hint_galley
+                .as_ref()
+                .map(|galley| space::XXS + galley.size().y)
+                .unwrap_or(0.0);
+        let (rect, inner) = self.band((block + space::MD * 2.0).max(ROW_HEIGHT));
         let t = self.t;
         let response = self
             .ui
@@ -404,32 +426,17 @@ impl Rows<'_> {
             self.ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let tint = if danger { t.danger } else { t.accent };
-        let painter = self.ui.painter();
-        match hint {
-            None => painter.text(
-                egui::pos2(inner.min.x, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                text::body(),
-                tint,
-            ),
-            Some(hint) => {
-                painter.text(
-                    egui::pos2(inner.min.x, rect.center().y - 8.0),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    text::body(),
-                    tint,
-                );
-                painter.text(
-                    egui::pos2(inner.min.x, rect.center().y + 9.0),
-                    egui::Align2::LEFT_CENTER,
-                    hint,
-                    text::footnote(),
-                    t.label_tertiary,
-                )
-            }
-        };
+        let top = inner.center().y - block / 2.0;
+        self.ui
+            .painter()
+            .galley(egui::pos2(inner.min.x, top), label_galley, tint);
+        if let Some(galley) = hint_galley {
+            self.ui.painter().galley(
+                egui::pos2(inner.min.x, top + block - galley.size().y),
+                galley,
+                t.label_tertiary,
+            );
+        }
         response.clicked()
     }
 

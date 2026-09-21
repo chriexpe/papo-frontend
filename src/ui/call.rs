@@ -403,27 +403,29 @@ pub fn sheet(
     controls_row(ui, store, state, t, s, controls, true);
 }
 
-/// A pastilha da folha encolhida: a call continua, fora do caminho.
-pub fn pill(
+/// A pastilha compacta da call. No overlay móvel ela também carrega
+/// "trazer de volta" e o seletor 1/2/4.
+fn compact_pill(
     ui: &mut egui::Ui,
     store: &Store,
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
     area: Rect,
-) {
+    floating: bool,
+) -> Rect {
     let button = 26.0;
     let button_gap = space::XXS;
-    let controls_width = button * 3.0 + button_gap * 2.0;
+    // mic + câmera + abrir/trazer + sair; no overlay entra também 1/2/4.
+    let control_count = if floating { 5.0 } else { 4.0 };
+    let controls_width = button * control_count + button_gap * (control_count - 1.0);
     let controls_only = space::MD * 2.0 + controls_width;
 
-    // A faixa de falantes cresce avatar por avatar. O teto acompanha a
-    // largura disponível para nunca invadir as duas pastilhas vizinhas.
     let avatar_size = 22.0;
     let avatar_gap = 4.0;
     let speaker_chrome = space::SM * 2.0 + 1.0;
-    let max_width = (area.width() * 0.50 - space::SM)
-        .clamp(controls_only, 286.0);
+    let max_width = (area.width() * 0.56 - space::SM)
+        .clamp(controls_only, 320.0);
     let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
     let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
         as usize)
@@ -444,16 +446,26 @@ pub fn pill(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
     );
-    let back = ui.interact(rect, egui::Id::new("pastilha-da-call"), Sense::click());
+    let back = ui.interact(rect, egui::Id::new(("pastilha-da-call", floating)), Sense::click());
     if back.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    super::shell::glass_backdrop(ui, state, rect, 18.0);
     ui.painter().rect(
         rect,
         CornerRadius::same(18),
         t.pill_fill(state.translucent),
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
+    );
+    // Um brilho curto no bordo de cima dá à cápsula a mesma leitura de
+    // vidro das outras pastilhas, sem desenhar uma segunda moldura inteira.
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + 18.0, rect.min.y + 0.75),
+            egui::pos2(rect.max.x - 18.0, rect.min.y + 0.75),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
     );
     if back.hovered() {
         ui.painter()
@@ -471,8 +483,6 @@ pub fn pill(
         );
     }
 
-    // A parte esquerda mostra só quem está falando. O número de avatares
-    // visíveis é calculado pela própria largura da pastilha.
     let mut x = rect.min.x + space::SM + avatar_size / 2.0;
     let ctx = ui.ctx().clone();
     for user_id in store.call.speakers.iter().take(max_speakers) {
@@ -485,10 +495,8 @@ pub fn pill(
             .avatar(user_id, store.avatars.get(user_id).map(String::as_str))
             .and_then(|texture| texture.frame(&ctx))
             .map(|handle| handle.id());
-        let avatar_rect = Rect::from_center_size(
-            egui::pos2(x, rect.center().y),
-            Vec2::splat(avatar_size),
-        );
+        let avatar_rect =
+            Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(avatar_size));
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(avatar_rect)
@@ -511,42 +519,112 @@ pub fn pill(
     }
 
     let mut x = rect.max.x - space::MD - button / 2.0;
-    for (glyph, tip, on, danger, action) in [
-        (icon::PHONE_X, s.call_leave, false, true, ChatAction::LeaveVoice),
-        (
-            icon::ARROWS_OUT,
-            s.call_expand,
-            false,
-            false,
-            ChatAction::OpenCall,
-        ),
-        (
-            if store.call.muted {
-                icon::MICROPHONE_SLASH
-            } else {
-                icon::MICROPHONE
-            },
-            s.call_mic,
-            !store.call.muted,
-            false,
-            ChatAction::ToggleMute,
-        ),
-    ] {
+    let hangup = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
+    if round_button(ui, t, hangup, icon::PHONE_X, s.call_leave, false, true) {
+        state.actions.push(ChatAction::LeaveVoice);
+    }
+    x -= button + button_gap;
+
+    let return_or_expand = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
+    if round_button(
+        ui,
+        t,
+        return_or_expand,
+        if floating { icon::ARROW_SQUARE_IN } else { icon::ARROWS_OUT },
+        if floating { s.call_popin } else { s.call_expand },
+        false,
+        false,
+    ) {
+        state.actions.push(if floating {
+            ChatAction::PopOutCall(false)
+        } else {
+            ChatAction::OpenCall
+        });
+    }
+    x -= button + button_gap;
+
+    if floating {
         let spot = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
-        if round_button(ui, t, spot, glyph, tip, on, danger) {
-            state.actions.push(action);
+        let response = ui.interact(spot, egui::Id::new("quantidade-de-videos"), Sense::click());
+        if response.hovered() {
+            ui.painter().circle_filled(spot.center(), button / 2.0, t.fill_soft);
+        }
+        ui.painter().text(
+            spot.center(),
+            egui::Align2::CENTER_CENTER,
+            state.call_video_tiles.to_string(),
+            text::caption(),
+            t.label,
+        );
+        if response.clicked() {
+            state.call_video_tiles = match state.call_video_tiles {
+                1 => 2,
+                2 => 4,
+                _ => 1,
+            };
         }
         x -= button + button_gap;
     }
 
-    if back.clicked() {
+    let camera = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
+    if round_button(
+        ui,
+        t,
+        camera,
+        if store.call.camera {
+            icon::VIDEO_CAMERA
+        } else {
+            icon::VIDEO_CAMERA_SLASH
+        },
+        if store.call.camera {
+            s.call_camera_off
+        } else {
+            s.call_camera
+        },
+        store.call.camera,
+        false,
+    ) {
+        state.actions.push(ChatAction::ToggleCamera);
+    }
+    x -= button + button_gap;
+
+    let mic = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
+    if round_button(
+        ui,
+        t,
+        mic,
+        if store.call.muted {
+            icon::MICROPHONE_SLASH
+        } else {
+            icon::MICROPHONE
+        },
+        s.call_mic,
+        !store.call.muted,
+        false,
+    ) {
+        state.actions.push(ChatAction::ToggleMute);
+    }
+
+    if back.clicked() && !floating {
         state.actions.push(ChatAction::OpenCall);
     }
+    rect
 }
 
-/// No layout compacto, o antigo modo "janela só da call" vira uma
-/// sobreposição fixa no alto: vídeo continua visível enquanto a conversa
-/// pode ser rolada e lida por baixo.
+/// A pastilha da folha encolhida: a call continua, fora do caminho.
+pub fn pill(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+) {
+    compact_pill(ui, store, state, t, s, area, false);
+}
+
+/// No layout compacto, vídeo fica colado logo abaixo da mesma pastilha da
+/// call. Não há cabeçalho intermediário nem espaço morto.
 pub fn floating(
     ui: &mut egui::Ui,
     store: &Store,
@@ -556,35 +634,73 @@ pub fn floating(
     s: &Strings,
     area: Rect,
 ) {
-    let width = (area.width() - space::XXL).clamp(220.0, 420.0);
-    let height = (width / TILE_RATIO + 34.0).min(area.height() * 0.46);
+    let pill = compact_pill(ui, store, state, t, s, area, true);
+    let limit: usize = match state.call_video_tiles {
+        1 => 1,
+        4 => 4,
+        _ => 2,
+    };
+    // O painel desce o suficiente para não encostar nas duas pastilhas
+    // vizinhas. Um pequeno "pescoço" de vidro liga os dois componentes.
+    let width = (area.width() - space::XXL * 2.0).clamp(220.0, 420.0);
+    let columns = if limit == 1 { 1 } else { 2 };
+    let rows = limit.div_ceil(columns);
+    let gap = space::SM;
+    let cell_width = (width - gap * (columns as f32 - 1.0)) / columns as f32;
+    let height = rows as f32 * (cell_width / TILE_RATIO)
+        + gap * (rows as f32 - 1.0)
+        + space::SM * 2.0;
+    let bridge_gap = 18.0;
     let rect = Rect::from_min_size(
-        egui::pos2(area.center().x - width / 2.0, area.min.y + 52.0),
+        egui::pos2(area.center().x - width / 2.0, pill.max.y + bridge_gap),
         Vec2::new(width, height),
     );
 
+    // A conexão abre para fora ao descer: estreita sob a cápsula e mais
+    // larga ao chegar no painel, como uma peça única em vez de um recorte.
+    for (y, bridge_width) in [
+        (pill.max.y + 4.0, 24.0),
+        (pill.max.y + 9.0, 34.0),
+        (pill.max.y + 14.0, 46.0),
+    ] {
+        let bridge = Rect::from_center_size(
+            egui::pos2(pill.center().x, y),
+            Vec2::new(bridge_width, 12.0),
+        );
+        ui.painter().rect(
+            bridge,
+            CornerRadius::same(6),
+            t.pill_fill(state.translucent),
+            Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    super::shell::glass_backdrop(ui, state, rect, radius::SHEET as f32);
     ui.painter().rect(
         rect,
         CornerRadius::same(radius::SHEET),
-        t.elevated_bg.gamma_multiply(0.98),
+        t.pill_fill(state.translucent),
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
-
-    let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 34.0));
-    let close = Rect::from_center_size(
-        egui::pos2(header.max.x - space::LG - 13.0, header.center().y),
-        Vec2::splat(26.0),
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius::SHEET as f32, rect.min.y + 0.75),
+            egui::pos2(rect.max.x - radius::SHEET as f32, rect.min.y + 0.75),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
     );
-    if round_button(ui, t, close, icon::ARROW_SQUARE_IN, s.call_popin, false, false) {
-        state.actions.push(ChatAction::PopOutCall(false));
-    }
-
-    let stage = Rect::from_min_max(
-        egui::pos2(rect.min.x + space::SM, header.max.y),
-        rect.max - Vec2::splat(space::SM),
+    compact_grid(
+        ui,
+        store,
+        state,
+        call,
+        t,
+        s,
+        rect.shrink(space::SM),
+        limit,
     );
-    grid(ui, store, state, call, t, s, stage);
 }
 
 /// O conteúdo da janela só da call.
@@ -610,12 +726,49 @@ fn grid(
     ui: &mut egui::Ui,
     store: &Store,
     state: &mut UiState,
-    mut call: Option<&mut Call>,
+    call: Option<&mut Call>,
     t: &Tokens,
     s: &Strings,
     area: Rect,
 ) {
     let people = faces(store);
+    draw_faces(ui, store, state, call, t, s, area, &people);
+}
+
+fn compact_grid(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    call: Option<&mut Call>,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+    limit: usize,
+) {
+    let mut people = faces(store);
+    people.sort_by_key(|face| {
+        store
+            .call
+            .speakers
+            .iter()
+            .position(|speaker| speaker == &face.id)
+            .unwrap_or(usize::MAX)
+    });
+    people.truncate(limit);
+    draw_faces(ui, store, state, call, t, s, area, &people);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_faces(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    mut call: Option<&mut Call>,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+    people: &[Face],
+) {
     if people.is_empty() {
         ui.painter().text(
             area.center(),
@@ -651,8 +804,6 @@ fn grid(
             area.min.x + column as f32 * (cell.x + gap),
             area.min.y + row as f32 * (cell.y + gap),
         );
-        // O retrato mantém a proporção da câmera dentro da célula, centrado:
-        // a grade fica regular mesmo com uma pessoa só.
         let size = fit(cell, TILE_RATIO);
         let rect = Rect::from_center_size(
             egui::pos2(origin.x + cell.x / 2.0, origin.y + cell.y / 2.0),
@@ -668,8 +819,6 @@ fn grid(
         } else {
             None
         };
-        // Câmera ligada e nenhum lugar livre: o retrato diz por que o vídeo
-        // não aparece, em vez de ficar parecendo uma câmera que travou.
         let crowded = face.camera
             && !face.me
             && call
