@@ -282,10 +282,10 @@ impl Call {
         })?;
         let tile = &mut tiles[index];
         let cached = self.textures.get(&index);
-        if let Some((texture, seq)) = cached {
-            if *seq == tile.seq {
-                return Some(texture.clone());
-            }
+        if let Some((texture, seq)) = cached
+            && *seq == tile.seq
+        {
+            return Some(texture.clone());
         }
         let frame = tile.frame.take()?;
         let seq = tile.seq;
@@ -323,10 +323,10 @@ impl Call {
     /// A sua própria imagem, direto da câmera.
     pub fn preview(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
         let seq = self.shared.preview_seq.load(Ordering::Relaxed);
-        if let Some((texture, stored)) = &self.preview {
-            if *stored == seq {
-                return Some(texture.clone());
-            }
+        if let Some((texture, stored)) = &self.preview
+            && *stored == seq
+        {
+            return Some(texture.clone());
         }
         let frame = self.shared.preview.lock().ok()?.take()?;
         let image = egui::ColorImage {
