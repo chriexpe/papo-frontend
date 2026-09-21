@@ -257,6 +257,29 @@ fn stage_image(
         Sense::click_and_drag(),
     );
 
+    // Pinça de dois dedos. No toque não existe roda do mouse, e sem isto a
+    // imagem não tinha como crescer no celular. O egui entrega o gesto já
+    // pronto como fator — 1.0 quer dizer que ninguém beliscou — e o mesmo
+    // valor chega do Ctrl+roda na área de trabalho, de graça.
+    let pinch = ui.ctx().input(|input| input.zoom_delta());
+    if (pinch - 1.0).abs() > 0.001 {
+        let previous = scale;
+        let next = (previous * pinch).clamp(ZOOM_MIN, ZOOM_MAX);
+        // A âncora é o meio entre os dois dedos: a imagem cresce de onde se
+        // está olhando, não do centro da tela.
+        let anchor = ui
+            .ctx()
+            .input(|input| input.multi_touch().map(|touch| touch.center_pos))
+            .or_else(|| ui.ctx().pointer_latest_pos());
+        if let Some(anchor) = anchor {
+            let centre = stage.center() + viewer.offset;
+            let to_anchor = anchor - centre;
+            viewer.offset -= to_anchor * (next / previous - 1.0);
+        }
+        viewer.zoom = next;
+        viewer.fitted = false;
+    }
+
     // Roda do mouse: zoom em torno do ponteiro.
     let scroll = ui.ctx().input(|input| input.smooth_scroll_delta.y);
     if response.hovered() && scroll.abs() > 0.1 {

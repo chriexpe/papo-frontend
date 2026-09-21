@@ -194,14 +194,28 @@ fn video(
     let corner = CornerRadius::same(radius::CARD);
 
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
-    if let Some(texture) = media
+
+    // Tocando, é o quadro do player; parado, a capa tirada do arquivo. Sem
+    // a capa o cartão era um retângulo preto até alguém dar play.
+    //
+    // Os dois viram `(id, tamanho)` na hora para o empréstimo do `media`
+    // acabar aqui: a capa é pedida logo abaixo, e seria o segundo.
+    let live = media
         .existing_player(&attachment.id)
         .and_then(|player| player.frame(&ctx))
-    {
-        let size = fit(texture.size_vec2(), frame_size);
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let shown = match live {
+        Some(frame) => Some(frame),
+        None => media
+            .poster(&attachment.id, &path)
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|texture| (texture.id(), texture.size_vec2())),
+    };
+    if let Some((texture, natural)) = shown {
+        let size = fit(natural, frame_size);
         let centered = Rect::from_center_size(frame_rect.center(), size);
         ui.painter().image(
-            texture.id(),
+            texture,
             centered,
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             Color32::WHITE,

@@ -703,3 +703,91 @@ impl Drop for Recorder {
         }
     }
 }
+
+/// Um quadro do vídeo para servir de capa, antes de alguém dar play.
+///
+/// Busca um pouco adiante em vez de pegar o primeiro quadro: vídeo costuma
+/// abrir no preto, e uma capa preta não é capa nenhuma — é o que já se via
+/// sem esta função.
+pub fn poster(path: &Path) -> Option<egui::ColorImage> {
+    if !init() {
+        return None;
+    }
+    let uri = gst::glib::filename_to_uri(path, None).ok()?;
+    // A capa é desenhada num cartão estreito; `POSTER_MAX_W` de largura é
+    // folga de sobra e poupa memória por anexo.
+    // `expose-all-streams=false` com `caps=video/x-raw` é o que importa
+    // aqui: sem isso o uridecodebin também decodifica o áudio, que não tem
+    // para onde ir, e o decodificador fica moendo som contra um pad solto
+    // — centenas de "not-linked" por segundo e CPU à toa, só para tirar uma
+    // imagem parada.
+    let description = format!(
+        "uridecodebin uri=\"{uri}\" caps=video/x-raw expose-all-streams=false ! \
+         videoconvert ! videoscale ! \
+         video/x-raw,format=RGBA,pixel-aspect-ratio=1/1,width=[1,{POSTER_MAX_W}] ! \
+         appsink name=capa sync=false max-buffers=1 drop=false"
+    );
+    let pipeline = gst::parse::launch(&description).ok()?;
+    let sink = pipeline
+        .downcast_ref::<gst::Bin>()?
+        .by_name("capa")?
+        .downcast::<gst_app::AppSink>()
+        .ok()?;
+
+    // `Paused` já decodifica o primeiro quadro e é o que dá a duração; não
+    // é preciso tocar nada para tirar uma capa.
+    if pipeline.set_state(gst::State::Paused).is_err() {
+        return None;
+    }
+    let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+
+    if let Some(duration) = pipeline.query_duration::<gst::ClockTime>()
+        && duration > gst::ClockTime::ZERO
+    {
+        // Um terço adiante, no máximo três segundos: longe do preto da
+        // abertura e ainda perto do começo.
+        let at = (duration / 3).min(gst::ClockTime::from_seconds(3));
+        if pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, at)
+            .is_ok()
+        {
+            let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+        }
+    }
+
+    let image = sink.pull_preroll().ok().and_then(|sample| frame_image(&sample));
+    let _ = pipeline.set_state(gst::State::Null);
+    image
+}
+
+/// Largura máxima da capa.
+const POSTER_MAX_W: i32 = 640;
+
+/// Converte um quadro RGBA do GStreamer numa imagem do egui.
+fn frame_image(sample: &gst::Sample) -> Option<egui::ColorImage> {
+    let buffer = sample.buffer()?;
+    let info = gst_video::VideoInfo::from_caps(sample.caps()?).ok()?;
+    let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).ok()?;
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let stride = frame.plane_stride()[0] as usize;
+    let data = frame.plane_data(0).ok()?;
+
+    // O stride raramente bate com a largura: copiamos linha a linha.
+    let mut pixels = Vec::with_capacity(width * height);
+    for row in 0..height {
+        let start = row * stride;
+        let line = data.get(start..start + width * 4)?;
+        for [r, g, b, a] in line.as_chunks::<4>().0 {
+            pixels.push(egui::Color32::from_rgba_premultiplied(*r, *g, *b, *a));
+        }
+    }
+    Some(egui::ColorImage {
+        size: [width, height],
+        pixels,
+        source_size: egui::vec2(width as f32, height as f32),
+    })
+}

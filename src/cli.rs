@@ -14,6 +14,20 @@ pub fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // `papo poster <arquivo>` tira a capa de um vídeo e diz o que saiu. É
+    // como se confere a extração sem passar pela interface.
+    if args.get(1).map(String::as_str) == Some("poster") {
+        let Some(file) = args.get(2) else {
+            println!("uso: papo poster <arquivo>");
+            return Ok(());
+        };
+        match media::player::poster(std::path::Path::new(file)) {
+            Some(image) => println!("capa: {}x{}", image.size[0], image.size[1]),
+            None => println!("capa: não saiu"),
+        }
+        return Ok(());
+    }
+
     // `papo media-test` gera um vídeo e um áudio de teste e os reproduz sem
     // abrir janela — é como se confere o motor de mídia sem depender do
     // backend.

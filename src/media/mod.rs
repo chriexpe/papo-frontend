@@ -59,6 +59,8 @@ pub enum Request {
     Save { id: String, name: String, dest: PathBuf },
     /// Picos do áudio para desenhar a forma de onda.
     Waveform { id: String, path: PathBuf },
+    /// Um quadro do vídeo para servir de capa antes do play.
+    Poster { id: String, path: PathBuf },
     /// Emoji custom do servidor, que chega em base64 junto da listagem.
     Emoji { id: String, blob: String },
 }
@@ -214,13 +216,54 @@ async fn run(api: &Api, request: Request) -> Loaded {
                 },
             }
         }
-        Request::Waveform { id, path } => match player::waveform(&path) {
-            Some(peaks) => Loaded::Waveform { id, peaks },
-            None => Loaded::Failed {
-                key: waveform_key(&id),
-                error: "sem forma de onda".into(),
-            },
-        },
+        // Capa e forma de onda são trabalho **bloqueante**: o GStreamer
+        // decodifica de forma síncrona, e cada uma segura a thread por
+        // segundos. Rodá-las direto aqui prendia as threads do runtime, e
+        // com elas os downloads dos outros anexos. `spawn_blocking` as tira
+        // do caminho.
+        Request::Poster { id, path } => {
+            let key = poster_key(&id);
+            // A capa fica em disco depois de tirada. Decodificar vídeo é
+            // caro, e sem isto cada abertura do aplicativo montava um
+            // decodificador por vídeo da conversa outra vez — que é
+            // justamente o que o cartão de vídeo evita não abrindo player
+            // sozinho.
+            let cached = cache_path("thumbs", &id, "capa.png");
+            if let Ok(bytes) = tokio::fs::read(&cached).await
+                && !bytes.is_empty()
+            {
+                return decode(key, &bytes, INLINE_MAX);
+            }
+            match tokio::task::spawn_blocking(move || {
+                let image = player::poster(&path)?;
+                save_poster(&cached, &image);
+                Some(image)
+            })
+            .await
+            {
+                Ok(Some(image)) => Loaded::Image {
+                    key,
+                    image: Box::new(image),
+                },
+                Ok(None) => Loaded::Failed {
+                    key,
+                    error: "sem capa".into(),
+                },
+                Err(error) => Loaded::Failed {
+                    key,
+                    error: format!("capa: {error}"),
+                },
+            }
+        }
+        Request::Waveform { id, path } => {
+            match tokio::task::spawn_blocking(move || player::waveform(&path)).await {
+                Ok(Some(peaks)) => Loaded::Waveform { id, peaks },
+                _ => Loaded::Failed {
+                    key: waveform_key(&id),
+                    error: "sem forma de onda".into(),
+                },
+            }
+        }
         Request::Emoji { id, blob } => {
             use base64::Engine as _;
             let key = emoji_key(&id);
@@ -420,6 +463,29 @@ pub fn full_key(id: &str) -> String {
 pub fn file_key(id: &str) -> String {
     format!("file:{id}")
 }
+/// Guarda a capa em disco para não decodificar o vídeo de novo amanhã.
+fn save_poster(dest: &Path, image: &ColorImage) {
+    let (width, height) = (image.size[0] as u32, image.size[1] as u32);
+    let bytes: Vec<u8> = image
+        .pixels
+        .iter()
+        .flat_map(|pixel| pixel.to_srgba_unmultiplied())
+        .collect();
+    let Some(buffer) = image::RgbaImage::from_raw(width, height, bytes) else {
+        return;
+    };
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(error) = buffer.save_with_format(dest, image::ImageFormat::Png) {
+        log::warn!("capa não foi guardada: {error}");
+    }
+}
+
+pub fn poster_key(id: &str) -> String {
+    format!("poster:{id}")
+}
+
 pub fn waveform_key(id: &str) -> String {
     format!("wave:{id}")
 }
@@ -652,6 +718,22 @@ impl MediaStore {
             self.ask(Request::Thumb {
                 id: attachment.id.clone(),
                 thumb_id: attachment.thumbnail_id.clone(),
+            });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
+    /// Capa do vídeo: um quadro tirado do arquivo já em cache.
+    ///
+    /// Sem ela o cartão do vídeo é um retângulo preto até alguém dar play.
+    pub fn poster(&mut self, id: &str, path: &Path) -> Option<&Texture> {
+        let key = poster_key(id);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::Poster {
+                id: id.to_owned(),
+                path: path.to_owned(),
             });
         }
         self.touch(&key);
