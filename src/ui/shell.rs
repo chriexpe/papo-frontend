@@ -3021,9 +3021,9 @@ fn dismiss_on_outside_click(ui: &egui::Ui, state: &mut UiState, rect: Rect) {
     }
 }
 
-/// Aviso discreto depois de salvar um anexo.
+/// Avisos transitórios. A superfície mede o conteúdo e só cresce até o
+/// limite confortável; depois disso os rótulos quebram linha.
 fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) {
-    // Erro da interface usa o mesmo lugar, só que sem botão.
     if let Some((message, at)) = state.error.clone() {
         let now = ui.ctx().input(|input| input.time);
         if now - at > TOAST_SECONDS {
@@ -3031,15 +3031,28 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
         } else {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
-            toast_frame(ui, state, t, |ui, rect| {
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("{} {message}", icon::WARNING),
-                    text::body(),
-                    t.danger,
-                );
-            });
+            floating_pill(
+                ui.ctx(),
+                Id::new("toast-error"),
+                t,
+                state.translucent,
+                space::XXXL * 2.0,
+                420.0,
+                |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new(icon::WARNING)
+                                .font(text::icon(14.0))
+                                .color(t.danger),
+                        );
+                        ui.label(
+                            egui::RichText::new(message)
+                                .font(text::body())
+                                .color(t.danger),
+                        );
+                    });
+                },
+            );
             return;
         }
     }
@@ -3053,7 +3066,6 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
             input.smooth_scroll_delta.length_sq() > 0.01,
         )
     });
-    // Sai de cena ao passar o tempo ou assim que o usuário mexe na conversa.
     if now - at > TOAST_SECONDS || scrolled {
         state.media.saved = None;
         return;
@@ -3061,93 +3073,49 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(250));
 
-    let rect = toast_rect(ui);
-
-    toast_surface(ui, state, t, rect);
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::XL, rect.center().y - 9.0),
-        egui::Align2::LEFT_CENTER,
-        format!("{} {}", icon::CHECK_CIRCLE, attachments::elide(&name, 28)),
-        text::body(),
-        t.label,
-    );
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::XL, rect.center().y + 10.0),
-        egui::Align2::LEFT_CENTER,
-        attachments::elide(&path.display().to_string(), 44),
-        text::footnote(),
-        t.label_tertiary,
-    );
-
-    let open = Rect::from_min_size(
-        egui::pos2(rect.max.x - space::XL - 64.0, rect.center().y - 12.0),
-        Vec2::new(64.0, 24.0),
-    );
-    let response = ui.interact(open, Id::new("toast-open"), Sense::click());
-    ui.painter().rect_filled(
-        open,
-        CornerRadius::same(radius::CONTROL),
-        if response.hovered() {
-            t.fill_medium
-        } else {
-            t.fill_soft
+    let mut open_clicked = false;
+    floating_pill(
+        ui.ctx(),
+        Id::new("toast-saved"),
+        t,
+        state.translucent,
+        space::XXXL * 2.0,
+        420.0,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(icon::CHECK_CIRCLE)
+                        .font(text::icon(14.0))
+                        .color(t.label),
+                );
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&name)
+                                .font(text::body())
+                                .color(t.label),
+                        )
+                        .wrap(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(path.display().to_string())
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        )
+                        .wrap(),
+                    );
+                });
+                if ui.button(s.open).clicked() {
+                    open_clicked = true;
+                }
+            });
         },
     );
-    ui.painter().text(
-        open.center(),
-        egui::Align2::CENTER_CENTER,
-        s.open,
-        text::caption(),
-        t.label,
-    );
-    if response.clicked() {
+    if open_clicked {
         state.actions.push(ChatAction::OpenExternally(path));
         state.media.saved = None;
     }
-}
-
-/// Lugar do aviso flutuante: centralizado, acima da caixa de texto.
-fn toast_rect(ui: &egui::Ui) -> Rect {
-    let screen = ui.ctx().content_rect();
-    let width = 320.0_f32.min((screen.width() - space::XL * 2.0).max(220.0));
-    let height = 58.0;
-    Rect::from_min_size(
-        egui::pos2(
-            screen.center().x - width / 2.0,
-            screen.max.y - height - space::XXXL * 2.0,
-        ),
-        Vec2::new(width, height),
-    )
-}
-
-/// Mesmo vidro das pastilhas: o aviso pertence à camada flutuante.
-fn toast_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {
-    glass_backdrop(ui, state, rect, radius::SHEET as f32);
-    ui.painter().rect(
-        rect,
-        CornerRadius::same(radius::SHEET),
-        t.pill_fill(state.translucent),
-        Stroke::new(1.0, t.separator),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().line_segment(
-        [
-            egui::pos2(rect.min.x + radius::SHEET as f32 * 0.6, rect.min.y + 0.5),
-            egui::pos2(rect.max.x - radius::SHEET as f32 * 0.6, rect.min.y + 0.5),
-        ],
-        Stroke::new(1.0, t.glass_highlight),
-    );
-}
-
-fn toast_frame(
-    ui: &mut egui::Ui,
-    state: &UiState,
-    t: &Tokens,
-    build: impl FnOnce(&mut egui::Ui, Rect),
-) {
-    let rect = toast_rect(ui);
-    toast_surface(ui, state, t, rect);
-    build(ui, rect);
 }
 
 // ---------------------------------------------------------------------------
