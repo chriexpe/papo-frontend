@@ -354,6 +354,9 @@ pub struct UiState {
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
     pub relayout: bool,
+    /// Evita descartar vários quadros seguidos quando várias mídias terminam
+    /// quase juntas; egui mostra um PERF WARNING depois de três consecutivos.
+    last_relayout_discard: f64,
 }
 
 impl Default for UiState {
@@ -391,6 +394,7 @@ impl Default for UiState {
             recorder: None,
             error: None,
             relayout: false,
+            last_relayout_discard: f64::NEG_INFINITY,
         }
     }
 }
@@ -452,7 +456,16 @@ pub fn draw(
     // exemplo): a rolagem ainda está no lugar antigo e a conversa daria um
     // pulo. Refazer o quadro antes de mostrá-lo resolve na origem.
     if std::mem::take(&mut state.relayout) {
-        ui.ctx().request_discard("a lista mudou de altura");
+        let now = ui.input(|input| input.time);
+        if now - state.last_relayout_discard >= 0.20 {
+            state.last_relayout_discard = now;
+            ui.ctx().request_discard("a lista mudou de altura");
+        } else {
+            // A correção anterior ainda é recente: mais um discard só cria
+            // uma sequência de quadros invisíveis. O repaint seguinte já
+            // recebe a geometria nova sem disparar o diagnóstico do egui.
+            ui.ctx().request_repaint();
+        }
     }
 
     // A call de vídeo mora numa folha por cima da conversa; só voz fica no
@@ -564,7 +577,7 @@ fn mobile_drawers(
 
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
 /// dela entra borrado, e a tinta translúcida vem por cima.
-fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
+pub(super) fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
     if !state.translucent {
         return;
     }
