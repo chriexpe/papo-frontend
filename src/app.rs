@@ -1748,7 +1748,7 @@ impl PapoApp {
         };
         let s = self.settings.lang.strings();
         let t = self.tokens;
-        let screen = ctx.viewport_rect();
+        let screen = ctx.content_rect();
         // A folha nasce exatamente na pastilha que a abriu — mesma borda
         // esquerda, colada na de cima ou na de baixo conforme o caso. Antes
         // eram números soltos, e a folha saía uns pixels fora da pastilha.
