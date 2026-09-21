@@ -456,14 +456,13 @@ impl Store {
                 if gone {
                     self.selected_channel.clear();
                 }
-                if self.selected_channel.is_empty() {
-                    if let Some(first) = self
+                if self.selected_channel.is_empty()
+                    && let Some(first) = self
                         .channels
                         .iter()
                         .find(|channel| channel.kind == ChannelKind::Text)
-                    {
-                        self.selected_channel = first.id.clone();
-                    }
+                {
+                    self.selected_channel = first.id.clone();
                 }
             }
             Update::Roles(roles) => {
@@ -646,16 +645,16 @@ impl Store {
                     self.upsert(message.clone());
                 }
                 let mention = self.mentions_me(&message);
-                if message.channel_id != self.selected_channel && message.author_id != self.me {
-                    if let Some(channel) = self
+                if message.channel_id != self.selected_channel
+                    && message.author_id != self.me
+                    && let Some(channel) = self
                         .channels
                         .iter_mut()
                         .find(|channel| channel.id == message.channel_id)
-                    {
-                        channel.unread = true;
-                        if mention {
-                            channel.mentions += 1;
-                        }
+                {
+                    channel.unread = true;
+                    if mention {
+                        channel.mentions += 1;
                     }
                 }
                 if let Some(users) = self.typing.get_mut(&message.channel_id) {
@@ -696,14 +695,12 @@ impl Store {
                     .messages
                     .iter_mut()
                     .find(|message| message.id == message_id)
-                {
-                    if let Some(attachment) = message
+                    && let Some(attachment) = message
                         .attachments
                         .iter_mut()
                         .find(|attachment| attachment.id == attachment_id)
-                    {
-                        attachment.moderation_status = Some(status);
-                    }
+                {
+                    attachment.moderation_status = Some(status);
                 }
             }
             Event::Typing {
