@@ -14,6 +14,7 @@ use crate::api::net::Update;
 use crate::api::ws::{Connection, Event};
 
 pub use call::{CallState, Phase, Stage};
+pub use papo_core::server_key;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelKind {
@@ -158,35 +159,6 @@ pub enum Notice {
     /// O backend viu um token de sessão antigo voltar e, por segurança,
     /// derrubou todas as conexões da conta.
     ConnectionViolation,
-}
-
-/// Chave estável e segura para nome de arquivo a partir do endereço de um
-/// servidor. É o que separa o token, o cache de mídia e as marcas de leitura
-/// de cada servidor.
-pub fn server_key(base_url: &str) -> String {
-    let trimmed = base_url
-        .trim()
-        .trim_end_matches('/')
-        .to_lowercase();
-    let naked = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .unwrap_or(&trimmed);
-
-    // FNV-1a: o suficiente para separar endereços parecidos sem puxar
-    // dependência nova.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in trimmed.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-
-    let readable: String = naked
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .take(40)
-        .collect();
-    format!("{}-{hash:016x}", readable.trim_matches('-'))
 }
 
 /// Em que ponto da jornada o usuário está.
@@ -1041,30 +1013,5 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<Color32> {
         .max_by_key(|role| role.position)
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
-}
-
-#[cfg(test)]
-mod chave_do_servidor {
-    use super::server_key;
-
-    #[test]
-    fn enderecos_diferentes_geram_chaves_diferentes() {
-        assert_ne!(server_key("https://um.example"), server_key("https://dois.example"));
-    }
-
-    #[test]
-    fn a_barra_final_e_a_caixa_nao_mudam_a_chave() {
-        assert_eq!(
-            server_key("https://Papo.Example/"),
-            server_key("https://papo.example")
-        );
-    }
-
-    #[test]
-    fn a_chave_serve_de_nome_de_arquivo() {
-        let key = server_key("https://papo.example:8080/base");
-        assert!(key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    }
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b))
 }

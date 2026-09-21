@@ -1461,10 +1461,8 @@ fn server_pane(
             group(ui, t, |rows| {
                 rows.field(s.role_name, &mut draft.name, 32, false);
                 rows.row(s.role_color, None, |ui, _| {
-                    let current = crate::api::models::parse_hex_color(&draft.color)
-                        .unwrap_or(egui::Color32::GRAY)
-                        .to_array();
-                    let mut picked = [current[0], current[1], current[2]];
+                    let mut picked = crate::api::models::parse_hex_color(&draft.color)
+                        .unwrap_or([128, 128, 128]);
                     if ui.color_edit_button_srgb(&mut picked).changed() {
                         draft.color =
                             format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);

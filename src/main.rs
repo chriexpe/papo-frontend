@@ -184,7 +184,7 @@ fn install_panic_hook() {
 /// Entra numa call de verdade e conta o que acontece: entrada, oferta,
 /// resposta, ICE e o estado final da conexão. Sai sozinho em 25 segundos.
 fn voice_test(username: Option<String>, password: Option<String>, channel: Option<String>) {
-    use api::net::{Command, Net, Update};
+    use api::net::{Command, Net, Update, Wake};
     use api::ws::Event;
 
     let base = std::env::var("PAPO_SERVER")
@@ -192,7 +192,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
     println!("servidor: {base}");
 
     let ctx = egui::Context::default();
-    let net = Net::spawn(base, ctx.clone());
+    let net = Net::spawn(base, Wake::noop());
     // Sem credenciais, vale a sessão já guardada em disco — que é o caminho
     // preferido: senha no argv fica no histórico do shell e aparece para
     // quem listar os processos.

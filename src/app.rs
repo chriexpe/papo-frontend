@@ -14,7 +14,7 @@ use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
 #[cfg(target_os = "linux")]
 use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
-use crate::api::net::{Command, Net};
+use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
@@ -375,7 +375,11 @@ pub struct Workspace {
 
 impl Workspace {
     fn open(entry: &ServerEntry, marks: &ReadMarks, ctx: &egui::Context) -> Self {
-        let net = Net::spawn(entry.url.clone(), ctx.clone());
+        let repaint = ctx.clone();
+        let net = Net::spawn(
+            entry.url.clone(),
+            Wake::new(move || repaint.request_repaint()),
+        );
         // A mídia usa o cookie da sessão deste servidor para baixar anexos.
         let media = Media::spawn(
             entry.url.clone(),
