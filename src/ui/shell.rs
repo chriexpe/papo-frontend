@@ -1509,8 +1509,9 @@ fn handle_mobile_gesture(
         )
     });
 
-    if pressed {
-        if let Some(origin) = pos {
+    if pressed
+        && let Some(origin) = pos
+    {
             let message_id = if state.mobile_surface == MobileSurface::Chat {
                 state
                     .message_rows
@@ -1532,13 +1533,12 @@ fn handle_mobile_gesture(
                 message_id,
                 blocked,
             });
-        }
     }
 
-    if let Some(gesture) = state.mobile_gesture.as_mut() {
-        if let Some(pos) = pos {
-            gesture.last = pos;
-        }
+    if let Some(gesture) = state.mobile_gesture.as_mut()
+        && let Some(pos) = pos
+    {
+        gesture.last = pos;
     }
 
     if released || (!down && state.mobile_gesture.is_some() && !pressed) {
@@ -2345,8 +2345,9 @@ fn message_body(
     width: f32,
 ) {
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
-    if let Some((id, buffer)) = &mut state.editing {
-        if id == &message.id {
+    if let Some((id, buffer)) = &mut state.editing
+        && id == &message.id
+    {
             let mut buffer_copy = buffer.clone();
             let response = ui.add(
                 TextEdit::multiline(&mut buffer_copy)
@@ -2373,21 +2374,20 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
-            } else if save {
-                if let Some((id, content)) = state.editing.take() {
-                    let content = content.trim().to_owned();
-                    if content.is_empty() {
-                        state.actions.push(ChatAction::Delete(id));
-                    } else {
-                        state.actions.push(ChatAction::Edit {
-                            message_id: id,
-                            content,
-                        });
-                    }
+            } else if save
+                && let Some((id, content)) = state.editing.take()
+            {
+                let content = content.trim().to_owned();
+                if content.is_empty() {
+                    state.actions.push(ChatAction::Delete(id));
+                } else {
+                    state.actions.push(ChatAction::Edit {
+                        message_id: id,
+                        content,
+                    });
                 }
             }
             return;
-        }
     }
 
     if !message.content.is_empty() {
@@ -2431,8 +2431,8 @@ fn message_body(
         }
     }
 
-    if !message.attachments.is_empty() {
-        if let Some(action) = attachments::draw(
+    if !message.attachments.is_empty()
+        && let Some(action) = attachments::draw(
             ui,
             t,
             s,
@@ -2440,8 +2440,9 @@ fn message_body(
             &message.id,
             &message.attachments,
             width,
-        ) {
-            match action {
+        )
+    {
+        match action {
                 MediaAction::Open { message_id, index } => {
                     state.viewer = Some(Viewer::new(message_id, index));
                     state.media.pause_all();
@@ -2451,7 +2452,6 @@ fn message_body(
                 }
                 MediaAction::Reveal(id) => state.media.reveal(&id),
             }
-        }
     }
 
     if !message.reactions.is_empty() {
@@ -3567,10 +3567,10 @@ fn composer(
             egui::pos2(line.max.x - space::XXL, line.center().y),
             Vec2::splat(HIT_TARGET),
         );
-        if inline_button(ui, t, cancel, icon::TRASH, s.record_cancel, "record-cancel").clicked() {
-            if let Some(recorder) = state.recorder.take() {
-                recorder.cancel();
-            }
+        if inline_button(ui, t, cancel, icon::TRASH, s.record_cancel, "record-cancel").clicked()
+            && let Some(recorder) = state.recorder.take()
+        {
+            recorder.cancel();
         }
         return;
     }
