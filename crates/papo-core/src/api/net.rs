@@ -12,6 +12,7 @@ use super::models::{
     Channel, Emoji, Message, Notification, ReactionRequest, Server, UserSummary, Whoami,
 };
 use super::ws::{self, Connection, Event};
+use crate::storage::{Secret, SecretStore};
 
 /// Acorda a camada de apresentação quando a rede publica uma atualização.
 ///
@@ -233,15 +234,28 @@ pub struct Net {
     updates: sync_mpsc::Receiver<Update>,
     /// A mídia usa o mesmo cookie para baixar anexos.
     pub session: Arc<Session>,
+    storage: Arc<dyn SecretStore>,
+    storage_key: String,
 }
 
 impl Net {
-    pub fn spawn(base_url: String, wake: Wake) -> Self {
+    pub fn spawn(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+    ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
+        let storage_key = crate::server_key(&base_url);
         let session = Arc::new(Session::default());
-        session.set_token(load_token(&base_url));
+        session.set_token(load_secret(
+            storage.as_ref(),
+            &storage_key,
+            Secret::SessionToken,
+        ));
         let worker_session = Arc::clone(&session);
+        let worker_storage = Arc::clone(&storage);
+        let worker_storage_key = storage_key.clone();
 
         std::thread::Builder::new()
             .name("papo-net".into())
@@ -259,6 +273,8 @@ impl Net {
                 };
                 runtime.block_on(worker(
                     base_url,
+                    worker_storage_key,
+                    worker_storage,
                     worker_session,
                     commands_rx,
                     updates_tx,
@@ -271,6 +287,8 @@ impl Net {
             commands: commands_tx,
             updates: updates_rx,
             session,
+            storage,
+            storage_key,
         }
     }
 
@@ -280,6 +298,15 @@ impl Net {
 
     pub fn try_recv(&self) -> Option<Update> {
         self.updates.try_recv().ok()
+    }
+
+    /// Esquece sessão e senha deste servidor no backend de persistência
+    /// escolhido pelo frontend.
+    pub fn forget_credentials(&self) {
+        if let Err(error) = self.storage.forget_server(&self.storage_key) {
+            log::warn!("não foi possível esquecer credenciais: {error}");
+        }
+        self.session.set_token(None);
     }
 }
 
@@ -301,6 +328,8 @@ fn publish(tx: &sync_mpsc::Sender<Update>, wake: &Wake, update: Update) {
 
 async fn worker(
     base_url: String,
+    storage_key: String,
+    storage: Arc<dyn SecretStore>,
     session: Arc<Session>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
@@ -322,7 +351,7 @@ async fn worker(
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
 
-    // Sessão guardada em disco: tenta seguir logado sem pedir senha.
+    // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
     if session.is_authenticated() {
         match api.whoami().await {
             Ok(whoami) => {
@@ -335,7 +364,7 @@ async fn worker(
             }
             Err(_) => {
                 session.set_token(None);
-                store_token(&base_url, None);
+                remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
                 publish(&updates, &wake, Update::Session(None));
             }
         }
@@ -380,7 +409,19 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                handle(&api, &base_url, &session, &me, &updates, &wake, &outbound_tx, command).await;
+                handle(
+                    &api,
+                    &base_url,
+                    &storage_key,
+                    storage.as_ref(),
+                    &session,
+                    &me,
+                    &updates,
+                    &wake,
+                    &outbound_tx,
+                    command,
+                )
+                .await;
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
@@ -395,11 +436,16 @@ async fn worker(
                     continue;
                 }
                 match api.refresh().await {
-                    // O cookie novo já entrou no pote; só falta o disco.
-                    Ok(()) => store_token(&base_url, session.token()),
+                    // O cookie novo já entrou no pote; falta persistir o token girado.
+                    Ok(()) => store_optional_secret(
+                        storage.as_ref(),
+                        &storage_key,
+                        Secret::SessionToken,
+                        session.token(),
+                    ),
                     Err(ApiError::Unauthorized) => {
                         session.set_token(None);
-                        store_token(&base_url, None);
+                        remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
                         publish(&updates, &wake, Update::Session(None));
                     }
                     // Rede fora do ar não encerra a sessão: tenta de novo no
@@ -417,8 +463,12 @@ async fn worker(
 
 /// Apresenta a senha do servidor já guardada. `Ok(false)` quer dizer que não
 /// há senha guardada; `Err` que a guardada não serve mais e foi descartada.
-async fn unlock_with_saved(api: &Api, base_url: &str) -> Result<bool, ApiError> {
-    let Some(password) = load_server_password(base_url) else {
+async fn unlock_with_saved(
+    api: &Api,
+    storage_key: &str,
+    storage: &dyn SecretStore,
+) -> Result<bool, ApiError> {
+    let Some(password) = load_secret(storage, storage_key, Secret::ServerPassword) else {
         return Ok(false);
     };
     match api.login_server(&password).await {
@@ -426,9 +476,7 @@ async fn unlock_with_saved(api: &Api, base_url: &str) -> Result<bool, ApiError> 
         Err(error) => {
             // A senha do servidor mudou: esquecer é o certo, ou toda entrada
             // tentaria a senha velha antes de perguntar.
-            if let Some(path) = server_password_path(base_url) {
-                let _ = std::fs::remove_file(path);
-            }
+            remove_secret(storage, storage_key, Secret::ServerPassword);
             Err(error)
         }
     }
@@ -454,6 +502,8 @@ fn start_socket(
 async fn handle(
     api: &Api,
     base_url: &str,
+    storage_key: &str,
+    storage: &dyn SecretStore,
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
     updates: &sync_mpsc::Sender<Update>,
@@ -464,7 +514,12 @@ async fn handle(
     match command {
         Command::Login { username, password } => match api.login(&username, &password).await {
             Ok(login) => {
-                store_token(base_url, session.token());
+                store_optional_secret(
+                    storage,
+                    storage_key,
+                    Secret::SessionToken,
+                    session.token(),
+                );
                 if login.connection_violation {
                     publish(updates, wake, Update::ConnectionViolation);
                 }
@@ -484,11 +539,13 @@ async fn handle(
             // abre sozinho e o login segue — pedi-la de novo a cada entrada
             // não protege nada, só incomoda.
             Err(ApiError::ServerLocked) => {
-                match unlock_with_saved(api, base_url).await {
+                match unlock_with_saved(api, storage_key, storage).await {
                     Ok(true) => {
                         Box::pin(handle(
                             api,
                             base_url,
+                            storage_key,
+                            storage,
                             session,
                             me,
                             updates,
@@ -510,6 +567,8 @@ async fn handle(
                     Box::pin(handle(
                         api,
                         base_url,
+                        storage_key,
+                        storage,
                         session,
                         me,
                         updates,
@@ -520,11 +579,13 @@ async fn handle(
                     .await;
                 }
                 Err(ApiError::ServerLocked) => {
-                    match unlock_with_saved(api, base_url).await {
+                    match unlock_with_saved(api, storage_key, storage).await {
                         Ok(true) => {
                             Box::pin(handle(
                                 api,
                                 base_url,
+                                storage_key,
+                                storage,
                                 session,
                                 me,
                                 updates,
@@ -839,14 +900,14 @@ async fn handle(
         }
         Command::LoginServer { password } => match api.login_server(&password).await {
             Ok(()) => {
-                store_server_password(base_url, &password);
+                store_secret(storage, storage_key, Secret::ServerPassword, &password);
                 publish(updates, wake, Update::ServerUnlocked);
             }
             Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
         },
         Command::Logout => {
             let _ = api.logout().await;
-            store_token(base_url, None);
+            remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
         }
     }
@@ -990,87 +1051,39 @@ fn report(updates: &sync_mpsc::Sender<Update>, wake: &Wake, error: ApiError) {
 }
 
 // ---------------------------------------------------------------------------
-// Sessão em disco
+// Persistência de credenciais
 // ---------------------------------------------------------------------------
 
-/// Cada servidor guarda o próprio token. Compartilhar um arquivo só seria
-/// pior do que perder a sessão: reusar o token de outro servidor conta como
-/// reuso de token e derruba todas as sessões da conta.
-fn session_path(base_url: &str) -> Option<std::path::PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "papo")?;
-    let dir = dirs.data_dir().join("sessions");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(format!("{}.token", crate::server_key(base_url))))
-}
-
-/// Apaga o que um servidor deixou em disco. Chamado ao tirá-lo do trilho:
-/// sem isso o token e a senha ficariam para sempre.
-pub fn forget(base_url: &str) {
-    for path in [session_path(base_url), server_password_path(base_url)]
-        .into_iter()
-        .flatten()
-    {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-/// A senha do servidor mora ao lado do token, com a mesma permissão.
-///
-/// O token temporário que ela rende vale meia hora, então guardá-lo não
-/// adiantaria: o que evita pedir a senha em toda entrada é guardar a senha e
-/// reapresentá-la sozinho quando o servidor cobrar.
-fn server_password_path(base_url: &str) -> Option<std::path::PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "papo")?;
-    let dir = dirs.data_dir().join("sessions");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(format!("{}.server", crate::server_key(base_url))))
-}
-
-fn load_server_password(base_url: &str) -> Option<String> {
-    let path = server_password_path(base_url)?;
-    let password = std::fs::read_to_string(path).ok()?;
-    (!password.is_empty()).then_some(password)
-}
-
-fn store_server_password(base_url: &str, password: &str) {
-    let Some(path) = server_password_path(base_url) else {
-        return;
-    };
-    if std::fs::write(&path, password).is_ok() {
-        restrict(&path);
-    }
-}
-
-fn load_token(base_url: &str) -> Option<String> {
-    let path = session_path(base_url)?;
-    let token = std::fs::read_to_string(path).ok()?;
-    let token = token.trim();
-    (!token.is_empty()).then(|| token.to_owned())
-}
-
-fn store_token(base_url: &str, token: Option<String>) {
-    let Some(path) = session_path(base_url) else {
-        return;
-    };
-    match token {
-        Some(token) => {
-            if std::fs::write(&path, token).is_ok() {
-                restrict(&path);
-            }
-        }
-        None => {
-            let _ = std::fs::remove_file(&path);
+fn load_secret(storage: &dyn SecretStore, server: &str, secret: Secret) -> Option<String> {
+    match storage.load(server, secret) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("não foi possível carregar {}: {error}", secret.key());
+            None
         }
     }
 }
 
-/// O arquivo guarda um JWT de sessão: só o dono pode ler.
-fn restrict(path: &std::path::Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+fn store_secret(storage: &dyn SecretStore, server: &str, secret: Secret, value: &str) {
+    if let Err(error) = storage.store(server, secret, value) {
+        log::warn!("não foi possível guardar {}: {error}", secret.key());
     }
-    #[cfg(not(unix))]
-    let _ = path;
+}
+
+fn remove_secret(storage: &dyn SecretStore, server: &str, secret: Secret) {
+    if let Err(error) = storage.remove(server, secret) {
+        log::warn!("não foi possível apagar {}: {error}", secret.key());
+    }
+}
+
+fn store_optional_secret(
+    storage: &dyn SecretStore,
+    server: &str,
+    secret: Secret,
+    value: Option<String>,
+) {
+    match value {
+        Some(value) => store_secret(storage, server, secret, &value),
+        None => remove_secret(storage, server, secret),
+    }
 }

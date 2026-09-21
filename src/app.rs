@@ -379,6 +379,7 @@ impl Workspace {
         let net = Net::spawn(
             entry.url.clone(),
             Wake::new(move || repaint.request_repaint()),
+            std::sync::Arc::new(crate::storage::FileSecretStore::new()),
         );
         // A mídia usa o cookie da sessão deste servidor para baixar anexos.
         let media = Media::spawn(
@@ -943,7 +944,7 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
-        crate::api::net::forget(&self.workspaces[index].url);
+        self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 

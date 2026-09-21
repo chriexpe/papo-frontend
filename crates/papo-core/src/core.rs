@@ -1,5 +1,7 @@
 use crate::api::net::{Command, Net, Wake};
 use crate::state::Store;
+use crate::storage::SecretStore;
+use std::sync::Arc;
 
 /// Cliente Papo compartilhado: transporte e estado autoritativo no mesmo dono.
 ///
@@ -10,9 +12,13 @@ pub struct Core {
 }
 
 impl Core {
-    pub fn spawn(base_url: String, wake: Wake) -> Self {
+    pub fn spawn(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+    ) -> Self {
         Self {
-            net: Net::spawn(base_url, wake),
+            net: Net::spawn(base_url, wake, storage),
             state: Store::default(),
         }
     }

@@ -6,6 +6,7 @@ mod i18n;
 mod media;
 mod platform;
 mod state;
+mod storage;
 mod ui;
 mod voice;
 
@@ -192,7 +193,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
     println!("servidor: {base}");
 
     let ctx = egui::Context::default();
-    let net = Net::spawn(base, Wake::noop());
+    let net = Net::spawn(base, Wake::noop(), std::sync::Arc::new(storage::FileSecretStore::new()));
     // Sem credenciais, vale a sessão já guardada em disco — que é o caminho
     // preferido: senha no argv fica no histórico do shell e aparece para
     // quem listar os processos.

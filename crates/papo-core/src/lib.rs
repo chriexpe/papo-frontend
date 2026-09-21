@@ -6,6 +6,7 @@
 pub mod api;
 pub mod core;
 pub mod state;
+pub mod storage;
 
 /// Chave estável e segura para nome de arquivo a partir do endereço de um
 /// servidor. Separa sessão, cache e outras persistências por backend.
