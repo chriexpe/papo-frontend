@@ -495,6 +495,16 @@ fn mobile_drawers(
             let width = (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
                 .min((area.width() - space::XXL).max(SIDEBAR_WIDTH));
             let rect = Rect::from_min_size(area.min, Vec2::new(width, area.height()));
+            let dismiss = root.interact(area, Id::new("mobile-navigation-dismiss"), Sense::click());
+            if dismiss.clicked()
+                && root
+                    .ctx()
+                    .pointer_interact_pos()
+                    .is_some_and(|pos| !rect.contains(pos))
+            {
+                state.mobile_surface = MobileSurface::Chat;
+                return None;
+            }
             let response = egui::Area::new(Id::new("mobile-navigation-drawer"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(rect.min)
@@ -515,6 +525,16 @@ fn mobile_drawers(
                 egui::pos2(area.max.x - width, area.min.y),
                 Vec2::new(width, area.height()),
             );
+            let dismiss = root.interact(area, Id::new("mobile-people-dismiss"), Sense::click());
+            if dismiss.clicked()
+                && root
+                    .ctx()
+                    .pointer_interact_pos()
+                    .is_some_and(|pos| !rect.contains(pos))
+            {
+                state.mobile_surface = MobileSurface::Chat;
+                return None;
+            }
             egui::Area::new(Id::new("mobile-people-drawer"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(rect.min)
@@ -1408,6 +1428,15 @@ fn conversation(
             }
             channel_pill(ui, store, state, t, full);
             call_layers(ui, store, state, call, t, s, full, stage);
+            if state.compact {
+                handle_mobile_gesture(
+                    ui,
+                    state,
+                    full,
+                    PILL_MARGIN * 2.0 + PILL_HEIGHT,
+                    72.0,
+                );
+            }
             return;
         }
 
@@ -1563,6 +1592,9 @@ fn call_layers(
     use crate::state::Stage;
 
     match stage {
+        Some(Stage::Window) if state.compact => {
+            crate::ui::call::floating(ui, store, state, call, t, s, full);
+        }
         Some(Stage::Sheet) => crate::ui::call::sheet(ui, store, state, call, t, s, full),
         Some(Stage::Docked) if store.call.channel_id != store.selected_channel => {
             crate::ui::call::pill(ui, store, state, t, s, full);
