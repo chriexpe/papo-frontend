@@ -11,6 +11,11 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
+/// A janela, para conseguir pedir um quadro quando as bordas mudam. Sem
+/// isto, fechar o teclado deixaria a caixa de escrever lá em cima até algo
+/// não relacionado provocar o próximo quadro.
+static REPAINT: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
 static LEFT: AtomicI32 = AtomicI32::new(0);
 static TOP: AtomicI32 = AtomicI32::new(0);
 static RIGHT: AtomicI32 = AtomicI32::new(0);
@@ -40,6 +45,17 @@ pub extern "C" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetInsets(
     RIGHT.store(right, Ordering::Relaxed);
     BOTTOM.store(bottom, Ordering::Relaxed);
     log::debug!("bordas do sistema: {left} {top} {right} {bottom} (px)");
+    if let Some(ctx) = REPAINT.get() {
+        ctx.request_repaint();
+    }
+}
+
+/// Guarda a janela na primeira vez que ela desenha. É de lá que sai o
+/// pedido de quadro quando o teclado sobe ou desce.
+pub fn install_repaint(ctx: &egui::Context) {
+    if REPAINT.get().is_none() {
+        let _ = REPAINT.set(ctx.clone());
+    }
 }
 
 /// As bordas em pixels físicos, na ordem esquerda, cima, direita, baixo.

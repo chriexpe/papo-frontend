@@ -24,6 +24,8 @@ mod android;
 /// liga a janela ao lançador por este nome, então os três têm de ser o mesmo
 /// — inclusive dentro do Flatpak, onde o identificador é o do pacote.
 ///
-/// No Android o nome que importa é o `applicationId` do Gradle, que é este
-/// mesmo: assim o pacote é um só nos dois lados.
+/// No Android **não** vale este: lá o nome é o `applicationId` do Gradle,
+/// todo em minúsculas (`io.github.chriexpe.papo`). As convenções dos dois
+/// mundos se contradizem — o AppStream capitaliza a última parte, o Android
+/// não — e nenhuma string agrada às duas.
 pub const APP_ID: &str = "io.github.chriexpe.Papo";

@@ -48,13 +48,26 @@ public class PapoActivity extends GameActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             final Insets bars = insets.getInsets(
                     WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
-            left = bars.left;
-            top = bars.top;
-            right = bars.right;
-            bottom = bars.bottom;
+            // O teclado entra na conta para a caixa de escrever subir junto
+            // com ele. É o **maior** dos dois, não a soma: enquanto o
+            // teclado está aberto ele cobre a barra de navegação, e somar
+            // deixaria uma faixa morta do tamanho da barra.
+            //
+            // Tomar o maior também resolve sozinho a dúvida de quem
+            // redimensiona a janela. Se o sistema já a encolheu por causa do
+            // teclado, esta janela não é mais coberta por ele e a medida do
+            // teclado chega zerada — sobra a das barras, e nada é contado
+            // duas vezes.
+            final Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            final Insets room = Insets.max(bars, ime);
+            left = room.left;
+            top = room.top;
+            right = room.right;
+            bottom = room.bottom;
         } else {
-            // Nos aparelhos antigos só existe esta medida, e ela já inclui as
-            // barras do sistema.
+            // Nos aparelhos antigos só existe esta medida, e ela já inclui
+            // as barras do sistema e o teclado — ali o `adjustResize` ainda
+            // encolhe a janela como sempre encolheu.
             left = insets.getSystemWindowInsetLeft();
             top = insets.getSystemWindowInsetTop();
             right = insets.getSystemWindowInsetRight();

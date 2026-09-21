@@ -13,7 +13,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
-APP_ID="io.github.chriexpe.Papo"
+APP_ID="io.github.chriexpe.papo"
 ABI="arm64-v8a"
 # O piso de API do `cargo ndk` tem de bater com o `minSdk` do Gradle.
 MIN_SDK=24

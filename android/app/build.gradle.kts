@@ -10,8 +10,14 @@ android {
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
-        // O mesmo identificador do Flatpak: um aplicativo, um nome.
-        applicationId = "io.github.chriexpe.Papo"
+        // Minúsculo, que é a convenção do Android — e por isso diferente do
+        // `APP_ID` do Flatpak, que capitaliza a última parte pela convenção
+        // do AppStream. As duas não cabem na mesma string.
+        //
+        // Este nome é para sempre: trocá-lo depois de alguém instalar não é
+        // atualização, é outro aplicativo — instalação separada, sessão e
+        // ajustes perdidos.
+        applicationId = "io.github.chriexpe.papo"
         minSdk = 24
         targetSdk = 37
         versionCode = 1

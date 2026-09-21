@@ -1853,6 +1853,7 @@ impl eframe::App for PapoApp {
             return;
         };
         // As bordas vêm em pixels físicos; o `screen_rect` é em pontos.
+        crate::platform::safe_area::install_repaint(ctx);
         let scale = ctx.pixels_per_point().max(0.1);
         let (left, top, right, bottom) = crate::platform::safe_area::insets_px();
         let safe = egui::Rect::from_min_max(
