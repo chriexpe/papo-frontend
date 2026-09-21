@@ -4,6 +4,8 @@
 //! reutilizar o mesmo contrato REST/WebSocket, sessão e runtime assíncrono.
 
 pub mod api;
+pub mod core;
+pub mod state;
 
 /// Chave estável e segura para nome de arquivo a partir do endereço de um
 /// servidor. Separa sessão, cache e outras persistências por backend.
