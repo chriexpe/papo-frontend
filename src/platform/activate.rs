@@ -39,10 +39,9 @@ impl Dispatch<WlRegistry, ()> for State {
             interface,
             version,
         } = event
+            && interface == "xdg_activation_v1"
         {
-            if interface == "xdg_activation_v1" {
-                state.manager = Some(registry.bind(name, version.min(1), qh, ()));
-            }
+            state.manager = Some(registry.bind(name, version.min(1), qh, ()));
         }
     }
 }

@@ -72,12 +72,12 @@ impl EmojiRaster {
         self.looked_up = true;
 
         for path in CANDIDATES {
-            if let Ok(data) = std::fs::read(path) {
-                if FontRef::from_index(&data, 0).is_some() {
-                    log::debug!("emoji colorido: {path}");
-                    self.font = Some((data, 0));
-                    return;
-                }
+            if let Ok(data) = std::fs::read(path)
+                && FontRef::from_index(&data, 0).is_some()
+            {
+                log::debug!("emoji colorido: {path}");
+                self.font = Some((data, 0));
+                return;
             }
         }
 
@@ -94,10 +94,10 @@ impl EmojiRaster {
             return;
         };
         let index = face.index;
-        if let fontdb::Source::File(path) = &face.source {
-            if let Ok(data) = std::fs::read(path) {
-                self.font = Some((data, index));
-            }
+        if let fontdb::Source::File(path) = &face.source
+            && let Ok(data) = std::fs::read(path)
+        {
+            self.font = Some((data, index));
         }
     }
 

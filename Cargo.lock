@@ -2961,7 +2961,6 @@ dependencies = [
  "gstreamer-webrtc",
  "image",
  "ksni",
- "kstring",
  "log",
  "papo-core",
  "raw-window-handle",

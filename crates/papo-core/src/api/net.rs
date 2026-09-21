@@ -856,10 +856,10 @@ async fn handle(
             load_pinned(api, updates, wake, channel_id).await
         }
         Command::MarkNotificationsRead { user_id, ids } => {
-            if !ids.is_empty() {
-                if let Err(error) = api.mark_notifications_read(&user_id, ids).await {
-                    log::warn!("marcar notificações: {error}");
-                }
+            if !ids.is_empty()
+                && let Err(error) = api.mark_notifications_read(&user_id, ids).await
+            {
+                log::warn!("marcar notificações: {error}");
             }
         }
         Command::JoinVoice {

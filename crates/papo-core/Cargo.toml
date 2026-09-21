@@ -1,8 +1,8 @@
 [package]
 name = "papo-core"
 version = "0.2.0"
-edition = "2021"
-rust-version = "1.95"
+edition = "2024"
+rust-version = "1.98"
 description = "Núcleo multiplataforma do cliente Papo"
 license = "AGPL-3.0-or-later"
 publish = false

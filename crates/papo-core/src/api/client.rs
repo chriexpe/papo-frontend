@@ -509,10 +509,10 @@ impl Api {
             .header("X-Request-ID", request_id())
             .header(ACCEPT, "application/problem+json, application/json")
             .multipart(form);
-        if let Some(token) = self.session.token() {
-            if let Ok(value) = HeaderValue::from_str(&format!("{COOKIE_NAME}={token}")) {
-                request = request.header(COOKIE, value);
-            }
+        if let Some(token) = self.session.token()
+            && let Ok(value) = HeaderValue::from_str(&format!("{COOKIE_NAME}={token}"))
+        {
+            request = request.header(COOKIE, value);
         }
         let response = request
             .send()

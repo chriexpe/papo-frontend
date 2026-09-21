@@ -569,14 +569,12 @@ impl PapoApp {
         }
 
         // O servidor que está na tela entrega o seu guardado para a interface.
-        let mut ui_state = UiState {
-            show_members: settings.show_members,
-            translucent: settings.translucency,
-            reveal_topic: settings.topic_reveal,
-            show_record: settings.record_button,
-            glass,
-            ..UiState::default()
-        };
+        let mut ui_state = UiState::default();
+        ui_state.show_members = settings.show_members;
+        ui_state.translucent = settings.translucency;
+        ui_state.reveal_topic = settings.topic_reveal;
+        ui_state.show_record = settings.record_button;
+        ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
         Self {
@@ -1351,11 +1349,12 @@ impl PapoApp {
 
                 // O nome de verdade do servidor substitui o host no trilho
                 // assim que ele chega.
-                if let Some(server) = &ws.store.server {
-                    if !server.name.is_empty() && ws.label != server.name {
-                        ws.label = server.name.clone();
-                        self.settings.servers[index].label = server.name.clone();
-                    }
+                if let Some(server) = &ws.store.server
+                    && !server.name.is_empty()
+                    && ws.label != server.name
+                {
+                    ws.label = server.name.clone();
+                    self.settings.servers[index].label = server.name.clone();
                 }
             }
         }
@@ -1366,7 +1365,9 @@ impl PapoApp {
     /// e para isso ela precisa ser uma janela que o compositor conheça.
     fn call_window(&mut self, ctx: &egui::Context) {
         let active = self.active;
-        if !self.workspaces[active].store.call.popped_out {
+        // No layout compacto "janela só da call" é uma sobreposição dentro
+        // da conversa; criar uma viewport do SO no Android não faria sentido.
+        if self.ui.compact || !self.workspaces[active].store.call.popped_out {
             return;
         }
         let t = self.tokens;
@@ -1434,11 +1435,17 @@ impl PapoApp {
             .iter()
             .map(|ws| ws.entry(&self.settings))
             .collect();
-        let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) else {
-            return;
-        };
+        if let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) {
+            self.handle_rail_action(action, ctx);
+        }
+    }
+
+    fn handle_rail_action(&mut self, action: crate::ui::rail::RailAction, ctx: &egui::Context) {
         match action {
-            crate::ui::rail::RailAction::Select(index) => self.activate(index, ctx),
+            crate::ui::rail::RailAction::Select(index) => {
+                self.activate(index, ctx);
+                self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+            }
             crate::ui::rail::RailAction::Add => self.add_server(ctx),
             crate::ui::rail::RailAction::Remove(index) => self.remove_server(index, ctx),
         }
@@ -1513,7 +1520,7 @@ impl PapoApp {
             blur.set_regions(&[]);
             return;
         }
-        let screen = ctx.viewport_rect();
+        let screen = ctx.content_rect();
         let left = crate::ui::rail::RAIL_WIDTH + crate::ui::shell::SIDEBAR_WIDTH;
         // A nossa barra de título é opaca: o desfoque começa abaixo dela.
         let top = if self.own_chrome {
@@ -1742,7 +1749,7 @@ impl PapoApp {
         };
         let s = self.settings.lang.strings();
         let t = self.tokens;
-        let screen = ctx.viewport_rect();
+        let screen = ctx.content_rect();
         // A folha nasce exatamente na pastilha que a abriu — mesma borda
         // esquerda, colada na de cima ou na de baixo conforme o caso. Antes
         // eram números soltos, e a folha saía uns pixels fora da pastilha.
@@ -1829,10 +1836,10 @@ impl PapoApp {
             self.retheme(ctx);
         }
 
-        if autostart != autostart_before {
-            if let Err(error) = crate::platform::autostart::set(autostart) {
-                log::warn!("não deu para ajustar o início automático: {error}");
-            }
+        if autostart != autostart_before
+            && let Err(error) = crate::platform::autostart::set(autostart)
+        {
+            log::warn!("não deu para ajustar o início automático: {error}");
         }
 
         for action in actions {
@@ -2030,7 +2037,14 @@ impl eframe::App for PapoApp {
 
         let strings = self.settings.lang.strings();
         self.draw_header(ui);
-        self.draw_rail(ui, strings, &ctx);
+
+        let compact_chat = matches!(
+            self.workspaces[self.active].store.screen,
+            Screen::Chat
+        ) && crate::ui::shell::is_compact(ctx.content_rect());
+        if !compact_chat {
+            self.draw_rail(ui, strings, &ctx);
+        }
 
         let active = self.active;
         match self.workspaces[active].store.screen {
@@ -2056,15 +2070,30 @@ impl eframe::App for PapoApp {
                 }
             }
             Screen::Chat => {
-                let ws = &mut self.workspaces[active];
-                shell::draw(
-                    ui,
-                    &mut ws.store,
-                    &mut self.ui,
-                    ws.call.as_mut(),
-                    &self.tokens,
-                    strings,
-                );
+                let mobile_entries = compact_chat.then(|| {
+                    self.workspaces
+                        .iter()
+                        .map(|ws| ws.entry(&self.settings))
+                        .collect::<Vec<_>>()
+                });
+                let rail_action = {
+                    let ws = &mut self.workspaces[active];
+                    shell::draw(
+                        ui,
+                        &mut ws.store,
+                        &mut self.ui,
+                        ws.call.as_mut(),
+                        &self.tokens,
+                        strings,
+                        mobile_entries.as_ref().map(|entries| shell::MobileServers {
+                            entries,
+                            active,
+                        }),
+                    )
+                };
+                if let Some(action) = rail_action {
+                    self.handle_rail_action(action, &ctx);
+                }
                 self.call_window(&ctx);
                 self.pump_chat();
                 let actions = std::mem::take(&mut self.ui.actions);
@@ -2088,10 +2117,10 @@ impl eframe::App for PapoApp {
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
-        if let (Some(gl), Some(glass)) = (gl, &self.ui.glass) {
-            if let Ok(glass) = glass.lock() {
-                glass.destroy(gl);
-            }
+        if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
+            && let Ok(glass) = glass.lock()
+        {
+            glass.destroy(gl);
         }
     }
 
@@ -2259,10 +2288,13 @@ fn is_local_host(host: &str) -> bool {
     if host.starts_with("10.") || host.starts_with("192.168.") || host.starts_with("169.254.") {
         return true;
     }
-    if let Some(rest) = host.strip_prefix("172.") {
-        if let Some(octet) = rest.split('.').next().and_then(|part| part.parse::<u8>().ok()) {
-            return (16..=31).contains(&octet);
-        }
+    if let Some(rest) = host.strip_prefix("172.")
+        && let Some(octet) = rest
+            .split('.')
+            .next()
+            .and_then(|part| part.parse::<u8>().ok())
+    {
+        return (16..=31).contains(&octet);
     }
     false
 }

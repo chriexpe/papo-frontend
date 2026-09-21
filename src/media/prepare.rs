@@ -39,10 +39,10 @@ pub fn fit(path: &Path, max_side: u32, max_bytes: usize) -> Result<Prepared, Str
     let raw = std::fs::read(path).map_err(|error| error.to_string())?;
     let format = image::guess_format(&raw).map_err(|_| "formato não reconhecido".to_owned())?;
 
-    if format == ImageFormat::Gif {
-        if let Some(prepared) = animated_gif(&raw, max_side, max_bytes)? {
-            return Ok(prepared);
-        }
+    if format == ImageFormat::Gif
+        && let Some(prepared) = animated_gif(&raw, max_side, max_bytes)?
+    {
+        return Ok(prepared);
     }
 
     let image = image::load_from_memory(&raw).map_err(|error| error.to_string())?;

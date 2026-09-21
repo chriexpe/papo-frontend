@@ -28,14 +28,14 @@ impl IceConfig {
                     if config.stun.is_none() {
                         config.stun = Some(stun_url(url));
                     }
-                } else if url.starts_with("turn:") || url.starts_with("turns:") {
-                    if let Some(turn) = turn_url(
+                } else if (url.starts_with("turn:") || url.starts_with("turns:"))
+                    && let Some(turn) = turn_url(
                         url,
                         server.username.as_deref(),
                         server.credential.as_deref(),
-                    ) {
-                        config.turn.push(turn);
-                    }
+                    )
+                {
+                    config.turn.push(turn);
                 }
             }
         }

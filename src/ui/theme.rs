@@ -295,8 +295,9 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
     );
 
     // Fonte de interface do sistema na frente da Inter, quando existir.
-    if let Some(system_font) = system_font {
-        if let Some(faces) = load_system_faces(&system_font.family) {
+    if let Some(system_font) = system_font
+        && let Some(faces) = load_system_faces(&system_font.family)
+    {
             for (slot, data) in faces {
                 let name = format!("system-{slot}");
                 fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
@@ -306,8 +307,7 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
                 };
                 fonts.families.entry(family).or_default().insert(0, name);
             }
-            set_body_size(system_font.body_px());
-        }
+        set_body_size(system_font.body_px());
     }
 
     add(

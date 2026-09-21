@@ -1123,10 +1123,10 @@ fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
     for element in &elements {
         let _ = element.sync_state_with_parent();
     }
-    if let Some(sink_pad) = depay.static_pad("sink") {
-        if pad.link(&sink_pad).is_err() {
-            log::warn!("call: o áudio que chegou não encaixou");
-        }
+    if let Some(sink_pad) = depay.static_pad("sink")
+        && pad.link(&sink_pad).is_err()
+    {
+        log::warn!("call: o áudio que chegou não encaixou");
     }
 }
 
@@ -1173,11 +1173,11 @@ fn show_video(
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 if let Some(frame) = to_frame(&sample) {
-                    if let Ok(mut tiles) = shared.tiles.lock() {
-                        if let Some(tile) = tiles.get_mut(index) {
-                            tile.frame = Some(frame);
-                            tile.seq = tile.seq.wrapping_add(1);
-                        }
+                    if let Ok(mut tiles) = shared.tiles.lock()
+                        && let Some(tile) = tiles.get_mut(index)
+                    {
+                        tile.frame = Some(frame);
+                        tile.seq = tile.seq.wrapping_add(1);
                     }
                     repaint.request_repaint();
                 }
@@ -1202,10 +1202,10 @@ fn show_video(
     for element in &elements {
         let _ = element.sync_state_with_parent();
     }
-    if let Some(sink_pad) = depay.static_pad("sink") {
-        if pad.link(&sink_pad).is_err() {
-            log::warn!("call: o vídeo que chegou não encaixou");
-        }
+    if let Some(sink_pad) = depay.static_pad("sink")
+        && pad.link(&sink_pad).is_err()
+    {
+        log::warn!("call: o vídeo que chegou não encaixou");
     }
 }
 

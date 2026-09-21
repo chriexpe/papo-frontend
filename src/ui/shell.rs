@@ -25,6 +25,10 @@ use super::widgets::{avatar, icon_button, scroll_edge_fade, section_caption, sid
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
+/// Abaixo disto a conversa vira a superfície raiz e as laterais viram drawers.
+pub const COMPACT_BREAKPOINT: f32 = 820.0;
+const SWIPE_DISTANCE: f32 = 56.0;
+const SWIPE_AXIS_BIAS: f32 = 1.25;
 const SIDEBAR_HEADER_HEIGHT: f32 = IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0;
 /// As duas pastilhas de identidade: a do servidor e a da conta.
 pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
@@ -149,6 +153,38 @@ pub enum PanelKind {
     Pinned,
 }
 
+/// Superfície que ocupa a frente no layout estreito.
+///
+/// A conversa é a raiz. Navegação e pessoas só cobrem a conversa enquanto
+/// estão abertas; por isso não são páginas independentes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MobileSurface {
+    #[default]
+    Chat,
+    Navigation,
+    People,
+}
+
+/// O shell só precisa saber desenhar o trilho quando ele está dentro do drawer.
+/// A aplicação continua sendo dona da troca/remoção dos workspaces.
+pub struct MobileServers<'a> {
+    pub entries: &'a [super::rail::Entry],
+    pub active: usize,
+}
+
+#[derive(Clone, Debug)]
+struct MobileGesture {
+    origin: egui::Pos2,
+    last: egui::Pos2,
+    message_id: Option<String>,
+    blocked: bool,
+}
+
+/// Retorna se a largura pede a navegação de uma coluna.
+pub fn is_compact(rect: Rect) -> bool {
+    rect.width() < COMPACT_BREAKPOINT
+}
+
 /// A pastilha de ações, esticada para mostrar busca ou fixadas. Fecha só
 /// pelo mesmo ícone que a abriu ou pelo X — clicar fora não fecha, porque
 /// ler um resultado costuma passar por clicar na conversa atrás dela.
@@ -254,6 +290,13 @@ impl Stash {
 pub struct UiState {
     pub composer: String,
     pub show_members: bool,
+    /// Layout estreito ativo neste quadro.
+    pub compact: bool,
+    pub mobile_surface: MobileSurface,
+    mobile_gesture: Option<MobileGesture>,
+    /// Retângulos das mensagens deste quadro, usados para swipe-to-reply sem
+    /// roubar o drag vertical do ScrollArea.
+    message_rows: Vec<(String, Rect)>,
     pub translucent: bool,
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
@@ -307,6 +350,10 @@ impl Default for UiState {
         Self {
             composer: String::new(),
             show_members: true,
+            compact: false,
+            mobile_surface: MobileSurface::Chat,
+            mobile_gesture: None,
+            message_rows: Vec::new(),
             translucent: true,
             pending: Vec::new(),
             glass: None,
@@ -350,7 +397,10 @@ pub fn draw(
     call: Option<&mut crate::voice::Call>,
     t: &Tokens,
     s: &Strings,
-) {
+    mobile_servers: Option<MobileServers<'_>>,
+) -> Option<super::rail::RailAction> {
+    state.message_rows.clear();
+
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
@@ -397,13 +447,107 @@ pub fn draw(
     // próprio canal. Quem decide é o estado, não esta função.
     let stage = crate::ui::call::stage_of(store);
     let live = call.as_ref().is_some_and(|call| call.is_live());
+    let shell_rect = ui.max_rect();
+    state.compact = is_compact(shell_rect);
 
-    channels_sidebar(ui, store, state, t, s, live);
-    if state.show_members {
-        members_sidebar(ui, store, state, t, s);
+    if state.compact {
+        conversation(ui, store, state, call, t, s, stage);
+        let rail_action = mobile_drawers(
+            ui,
+            store,
+            state,
+            t,
+            s,
+            live,
+            mobile_servers,
+            shell_rect,
+        );
+        overlays(ui, store, state, t, s);
+        rail_action
+    } else {
+        state.mobile_surface = MobileSurface::Chat;
+        state.mobile_gesture = None;
+        channels_sidebar(ui, store, state, t, s, live);
+        if state.show_members {
+            members_sidebar(ui, store, state, t, s, false);
+        }
+        conversation(ui, store, state, call, t, s, stage);
+        overlays(ui, store, state, t, s);
+        None
     }
-    conversation(ui, store, state, call, t, s, stage);
-    overlays(ui, store, state, t, s);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mobile_drawers(
+    root: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    live: bool,
+    servers: Option<MobileServers<'_>>,
+    area: Rect,
+) -> Option<super::rail::RailAction> {
+    match state.mobile_surface {
+        MobileSurface::Chat => None,
+        MobileSurface::Navigation => {
+            let servers = servers?;
+            let width = (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
+                .min((area.width() - space::XXL).max(SIDEBAR_WIDTH));
+            let rect = Rect::from_min_size(area.min, Vec2::new(width, area.height()));
+            let dismiss = root.interact(area, Id::new("mobile-navigation-dismiss"), Sense::click());
+            if dismiss.clicked()
+                && root
+                    .ctx()
+                    .pointer_interact_pos()
+                    .is_some_and(|pos| !rect.contains(pos))
+            {
+                state.mobile_surface = MobileSurface::Chat;
+                return None;
+            }
+            let response = egui::Area::new(Id::new("mobile-navigation-drawer"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .default_size(rect.size())
+                .constrain_to(area)
+                .show(root.ctx(), |ui| {
+                    ui.set_min_size(rect.size());
+                    ui.set_max_size(rect.size());
+                    let action = super::rail::draw(ui, servers.entries, servers.active, t, s);
+                    channels_sidebar(ui, store, state, t, s, live);
+                    action
+                });
+            response.inner
+        }
+        MobileSurface::People => {
+            let width = MEMBERS_WIDTH.min((area.width() - space::XXL).max(120.0));
+            let rect = Rect::from_min_size(
+                egui::pos2(area.max.x - width, area.min.y),
+                Vec2::new(width, area.height()),
+            );
+            let dismiss = root.interact(area, Id::new("mobile-people-dismiss"), Sense::click());
+            if dismiss.clicked()
+                && root
+                    .ctx()
+                    .pointer_interact_pos()
+                    .is_some_and(|pos| !rect.contains(pos))
+            {
+                state.mobile_surface = MobileSurface::Chat;
+                return None;
+            }
+            egui::Area::new(Id::new("mobile-people-drawer"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .default_size(rect.size())
+                .constrain_to(area)
+                .show(root.ctx(), |ui| {
+                    ui.set_min_size(rect.size());
+                    ui.set_max_size(rect.size());
+                    members_sidebar(ui, store, state, t, s, true);
+                });
+            None
+        }
+    }
 }
 
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
@@ -528,6 +672,9 @@ fn channels_sidebar(
                                     );
                                     if row.clicked() {
                                         store.selected_channel = channel.id.clone();
+                                        if state.compact {
+                                            state.mobile_surface = MobileSurface::Chat;
+                                        }
                                     }
                                     channel_menu(&row, channel, state, s);
                                 }
@@ -570,6 +717,9 @@ fn channels_sidebar(
                                         } else {
                                             ChatAction::JoinVoice(channel.id.clone())
                                         });
+                                        if state.compact {
+                                            state.mobile_surface = MobileSurface::Chat;
+                                        }
                                     }
                                     channel_menu(&row, channel, state, s);
                                     crate::ui::call::roster(
@@ -965,6 +1115,7 @@ fn members_sidebar(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
+    mobile: bool,
 ) {
     let ctx = root.ctx().clone();
     egui::Panel::right("members")
@@ -972,6 +1123,22 @@ fn members_sidebar(
         .resizable(false)
         .frame(sidebar_frame(t))
         .show(root, |ui| {
+            if mobile {
+                ui.horizontal(|ui| {
+                    ui.add_space(space::LG);
+                    ui.label(
+                        RichText::new(s.members)
+                            .font(text::headline())
+                            .color(t.label),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icon_button(ui, t, icon::X, s.close).clicked() {
+                            state.mobile_surface = MobileSurface::Chat;
+                        }
+                    });
+                });
+                ui.separator();
+            }
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1261,6 +1428,15 @@ fn conversation(
             }
             channel_pill(ui, store, state, t, full);
             call_layers(ui, store, state, call, t, s, full, stage);
+            if state.compact {
+                handle_mobile_gesture(
+                    ui,
+                    state,
+                    full,
+                    PILL_MARGIN * 2.0 + PILL_HEIGHT,
+                    72.0,
+                );
+            }
             return;
         }
 
@@ -1305,7 +1481,98 @@ fn conversation(
         actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
         call_layers(ui, store, state, call, t, s, full, stage);
+
+        if state.compact {
+            handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
+        }
     });
+}
+
+fn horizontal_swipe(delta: Vec2, direction: f32) -> bool {
+    delta.x * direction >= SWIPE_DISTANCE
+        && delta.x.abs() >= delta.y.abs() * SWIPE_AXIS_BIAS
+}
+
+fn handle_mobile_gesture(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    area: Rect,
+    top_inset: f32,
+    bottom_inset: f32,
+) {
+    let (pressed, released, down, pos) = ui.input(|input| {
+        (
+            input.pointer.any_pressed(),
+            input.pointer.any_released(),
+            input.pointer.any_down(),
+            input.pointer.interact_pos(),
+        )
+    });
+
+    if pressed
+        && let Some(origin) = pos
+    {
+            let message_id = if state.mobile_surface == MobileSurface::Chat {
+                state
+                    .message_rows
+                    .iter()
+                    .find(|(_, rect)| rect.contains(origin))
+                    .map(|(id, _)| id.clone())
+            } else {
+                None
+            };
+            let controls = origin.y < area.min.y + top_inset
+                || origin.y > area.max.y - bottom_inset;
+            let blocked = state.popup.is_some()
+                || state.viewer.is_some()
+                || state.panel.is_some()
+                || (state.mobile_surface == MobileSurface::Chat && controls);
+            state.mobile_gesture = Some(MobileGesture {
+                origin,
+                last: origin,
+                message_id,
+                blocked,
+            });
+    }
+
+    if let Some(gesture) = state.mobile_gesture.as_mut()
+        && let Some(pos) = pos
+    {
+        gesture.last = pos;
+    }
+
+    if released || (!down && state.mobile_gesture.is_some() && !pressed) {
+        let Some(gesture) = state.mobile_gesture.take() else {
+            return;
+        };
+        if gesture.blocked {
+            return;
+        }
+        let delta = gesture.last - gesture.origin;
+
+        if state.mobile_surface == MobileSurface::Chat
+            && horizontal_swipe(delta, -1.0)
+            && let Some(message_id) = gesture.message_id
+        {
+            state.replying = Some(message_id);
+            state.close_popup();
+            return;
+        }
+
+        match state.mobile_surface {
+            MobileSurface::Chat if horizontal_swipe(delta, 1.0) => {
+                state.mobile_surface = MobileSurface::Navigation;
+                state.close_popup();
+            }
+            MobileSurface::Navigation if horizontal_swipe(delta, -1.0) => {
+                state.mobile_surface = MobileSurface::Chat;
+            }
+            MobileSurface::People if horizontal_swipe(delta, 1.0) => {
+                state.mobile_surface = MobileSurface::Chat;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
@@ -1325,6 +1592,9 @@ fn call_layers(
     use crate::state::Stage;
 
     match stage {
+        Some(Stage::Window) if state.compact => {
+            crate::ui::call::floating(ui, store, state, call, t, s, full);
+        }
         Some(Stage::Sheet) => crate::ui::call::sheet(ui, store, state, call, t, s, full),
         Some(Stage::Docked) if store.call.channel_id != store.selected_channel => {
             crate::ui::call::pill(ui, store, state, t, s, full);
@@ -1378,7 +1648,8 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
         .unwrap_or(0.0);
-    let limit = area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD;
+    let limit = (area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD)
+        .max(PILL_HEIGHT);
     let width = (base_width + topic_width * reveal).min(limit);
 
     let rect = Rect::from_min_size(
@@ -1436,7 +1707,7 @@ fn actions_pill(
 ) {
     let open = state.panel.as_ref().map(|panel| panel.kind);
     let width = if open.is_some() {
-        PANEL_WIDTH
+        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
     } else {
         ACTIONS_PILL_WIDTH
     };
@@ -1466,7 +1737,11 @@ fn actions_pill(
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
                 if icon_button(ui, t, icon::USERS, s.members).clicked() {
-                    state.pending.push(MenuCommand::ToggleMembers);
+                    if state.compact {
+                        state.mobile_surface = MobileSurface::People;
+                    } else {
+                        state.pending.push(MenuCommand::ToggleMembers);
+                    }
                 }
                 if pill_toggle(ui, t, icon::PUSH_PIN, s.pinned, open == Some(PanelKind::Pinned)) {
                     toggle_panel(state, PanelKind::Pinned);
@@ -1883,6 +2158,38 @@ fn message_list(
         });
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        if state.compact {
+            let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
+            state
+                .message_rows
+                .push((message.id.clone(), touch_rect));
+            if !message.pending {
+                let touch = ui.interact(
+                    touch_rect,
+                    Id::new(("message-touch", &message.id)),
+                    Sense::click(),
+                );
+                if touch.double_clicked() {
+                    let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Emoji,
+                        message_id: message.id.clone(),
+                        anchor: Rect::from_min_size(at, Vec2::ZERO),
+                        at_pointer: true,
+                        opened: ui.input(|input| input.time),
+                    });
+                } else if touch.secondary_clicked() {
+                    let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id: message.id.clone(),
+                        anchor: Rect::from_min_size(at, Vec2::ZERO),
+                        at_pointer: true,
+                        opened: ui.input(|input| input.time),
+                    });
+                }
+            }
+        }
         // Mensagem que cita você fica marcada, com ou sem o ponteiro em cima.
         let mentions_me = store.mentions_me(message);
         let hovered = match &focused_message {
@@ -1935,12 +2242,13 @@ fn message_list(
             );
         }
         if hovered {
-            if focused_message.is_none() {
+            if focused_message.is_none() && !state.compact {
                 hover_pill(ui, state, t, s, message, row, store);
             }
 
-            let secondary =
-                focused_message.is_none() && ui.input(|input| input.pointer.secondary_clicked());
+            let secondary = !state.compact
+                && focused_message.is_none()
+                && ui.input(|input| input.pointer.secondary_clicked());
             if secondary {
                 let at = ui.ctx().pointer_latest_pos().unwrap_or(row.center());
                 state.popup = Some(Popup {
@@ -2037,8 +2345,9 @@ fn message_body(
     width: f32,
 ) {
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
-    if let Some((id, buffer)) = &mut state.editing {
-        if id == &message.id {
+    if let Some((id, buffer)) = &mut state.editing
+        && id == &message.id
+    {
             let mut buffer_copy = buffer.clone();
             let response = ui.add(
                 TextEdit::multiline(&mut buffer_copy)
@@ -2065,21 +2374,20 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
-            } else if save {
-                if let Some((id, content)) = state.editing.take() {
-                    let content = content.trim().to_owned();
-                    if content.is_empty() {
-                        state.actions.push(ChatAction::Delete(id));
-                    } else {
-                        state.actions.push(ChatAction::Edit {
-                            message_id: id,
-                            content,
-                        });
-                    }
+            } else if save
+                && let Some((id, content)) = state.editing.take()
+            {
+                let content = content.trim().to_owned();
+                if content.is_empty() {
+                    state.actions.push(ChatAction::Delete(id));
+                } else {
+                    state.actions.push(ChatAction::Edit {
+                        message_id: id,
+                        content,
+                    });
                 }
             }
             return;
-        }
     }
 
     if !message.content.is_empty() {
@@ -2123,8 +2431,8 @@ fn message_body(
         }
     }
 
-    if !message.attachments.is_empty() {
-        if let Some(action) = attachments::draw(
+    if !message.attachments.is_empty()
+        && let Some(action) = attachments::draw(
             ui,
             t,
             s,
@@ -2132,8 +2440,9 @@ fn message_body(
             &message.id,
             &message.attachments,
             width,
-        ) {
-            match action {
+        )
+    {
+        match action {
                 MediaAction::Open { message_id, index } => {
                     state.viewer = Some(Viewer::new(message_id, index));
                     state.media.pause_all();
@@ -2143,7 +2452,6 @@ fn message_body(
                 }
                 MediaAction::Reveal(id) => state.media.reveal(&id),
             }
-        }
     }
 
     if !message.reactions.is_empty() {
@@ -2413,7 +2721,7 @@ fn hover_pill(
 
 fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
-    let screen = ui.ctx().viewport_rect();
+    let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
     saved_toast(&mut top, state, t, s);
@@ -2452,7 +2760,12 @@ fn emoji_popup(
     popup: &Popup,
 ) {
     let custom_only = popup.kind == PopupKind::ComposerSticker;
-    let size = Vec2::new(316.0, if custom_only { 300.0 } else { 380.0 });
+    let safe = ui.ctx().content_rect();
+    let desired = Vec2::new(316.0, if custom_only { 300.0 } else { 380.0 });
+    let size = Vec2::new(
+        desired.x.min((safe.width() - space::XL).max(220.0)),
+        desired.y.min((safe.height() - space::XL).max(220.0)),
+    );
     let rect = emoji::popup_area(ui, popup.anchor, size);
     let mut chosen = None;
     let mut query = std::mem::take(&mut state.emoji_query);
@@ -2786,8 +3099,8 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
 
 /// Lugar do aviso flutuante: centralizado, acima da caixa de texto.
 fn toast_rect(ui: &egui::Ui) -> Rect {
-    let screen = ui.ctx().viewport_rect();
-    let width = 320.0;
+    let screen = ui.ctx().content_rect();
+    let width = 320.0_f32.min((screen.width() - space::XL * 2.0).max(220.0));
     let height = 58.0;
     Rect::from_min_size(
         egui::pos2(
@@ -3254,10 +3567,10 @@ fn composer(
             egui::pos2(line.max.x - space::XXL, line.center().y),
             Vec2::splat(HIT_TARGET),
         );
-        if inline_button(ui, t, cancel, icon::TRASH, s.record_cancel, "record-cancel").clicked() {
-            if let Some(recorder) = state.recorder.take() {
-                recorder.cancel();
-            }
+        if inline_button(ui, t, cancel, icon::TRASH, s.record_cancel, "record-cancel").clicked()
+            && let Some(recorder) = state.recorder.take()
+        {
+            recorder.cancel();
         }
         return;
     }
@@ -3707,5 +4020,32 @@ mod sugestao {
             typing_shortcode(text, text.chars().count()),
             Some((5, "co".to_owned()))
         );
+    }
+}
+
+
+#[cfg(test)]
+mod mobile_tests {
+    use super::*;
+
+    #[test]
+    fn swipe_horizontal_exige_distancia_e_dominancia() {
+        assert!(horizontal_swipe(Vec2::new(80.0, 12.0), 1.0));
+        assert!(horizontal_swipe(Vec2::new(-80.0, 12.0), -1.0));
+        assert!(!horizontal_swipe(Vec2::new(40.0, 0.0), 1.0));
+        assert!(!horizontal_swipe(Vec2::new(70.0, 70.0), 1.0));
+        assert!(!horizontal_swipe(Vec2::new(-80.0, 10.0), 1.0));
+    }
+
+    #[test]
+    fn breakpoint_preserva_layout_largo() {
+        assert!(is_compact(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(COMPACT_BREAKPOINT - 1.0, 700.0),
+        )));
+        assert!(!is_compact(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(COMPACT_BREAKPOINT, 700.0),
+        )));
     }
 }

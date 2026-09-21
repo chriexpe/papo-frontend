@@ -40,10 +40,10 @@ fn kde_color(sections: &[&str], key: &str) -> Option<Color32> {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if let Some(value) = ini_lookup(&text, sections, key) {
-            if let Some(color) = parse_rgb_triplet(&value) {
-                return Some(color);
-            }
+        if let Some(value) = ini_lookup(&text, sections, key)
+            && let Some(color) = parse_rgb_triplet(&value)
+        {
+            return Some(color);
         }
     }
     None
@@ -73,10 +73,10 @@ fn ini_lookup(text: &str, sections: &[&str], key: &str) -> Option<String> {
         if !sections.iter().any(|s| *s == current) {
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            if k.trim() == key {
-                return Some(v.trim().to_owned());
-            }
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+        {
+            return Some(v.trim().to_owned());
         }
     }
     None
@@ -133,10 +133,10 @@ pub fn system_ui_font() -> Option<SystemFont> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if let Some(value) = ini_lookup(&text, &["General"], "font") {
-                if let Some(font) = parse_qt_font(&value) {
-                    return Some(font);
-                }
+            if let Some(value) = ini_lookup(&text, &["General"], "font")
+                && let Some(font) = parse_qt_font(&value)
+            {
+                return Some(font);
             }
         }
         None
@@ -166,10 +166,10 @@ pub fn animation_factor() -> Option<f32> {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            if let Some(value) = ini_lookup(&text, &["KDE"], "AnimationDurationFactor") {
-                if let Ok(factor) = value.parse::<f32>() {
-                    return Some(factor.clamp(0.0, 4.0));
-                }
+            if let Some(value) = ini_lookup(&text, &["KDE"], "AnimationDurationFactor")
+                && let Ok(factor) = value.parse::<f32>()
+            {
+                return Some(factor.clamp(0.0, 4.0));
             }
         }
         None

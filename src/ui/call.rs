@@ -412,13 +412,38 @@ pub fn pill(
     s: &Strings,
     area: Rect,
 ) {
-    let width = 236.0;
+    let button = 26.0;
+    let button_gap = space::XXS;
+    let controls_width = button * 3.0 + button_gap * 2.0;
+    let controls_only = space::MD * 2.0 + controls_width;
+
+    // A faixa de falantes cresce avatar por avatar. O teto acompanha a
+    // largura disponível para nunca invadir as duas pastilhas vizinhas.
+    let avatar_size = 22.0;
+    let avatar_gap = 4.0;
+    let speaker_chrome = space::SM * 2.0 + 1.0;
+    let max_width = (area.width() * 0.50 - space::SM)
+        .clamp(controls_only, 286.0);
+    let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
+    let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
+        as usize)
+        .min(store.call.speakers.len());
+    let speakers_width = if max_speakers == 0 {
+        0.0
+    } else {
+        avatar_size * max_speakers as f32 + avatar_gap * (max_speakers - 1) as f32
+    };
+    let width = controls_only
+        + if max_speakers == 0 {
+            0.0
+        } else {
+            speaker_chrome + speakers_width
+        };
+
     let rect = Rect::from_min_size(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
     );
-    // A pastilha inteira é o caminho de volta — o nome, não só o botão. Os
-    // controles ficam por cima e continuam sendo eles a receber o clique.
     let back = ui.interact(rect, egui::Id::new("pastilha-da-call"), Sense::click());
     if back.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -434,24 +459,58 @@ pub fn pill(
         ui.painter()
             .rect_filled(rect, CornerRadius::same(18), t.fill_soft);
     }
-    let name = store
-        .channel(&store.call.channel_id)
-        .map(|channel| channel.name.clone())
-        .unwrap_or_default();
-    ui.painter().circle_filled(
-        egui::pos2(rect.min.x + space::LG, rect.center().y),
-        3.5,
-        t.online,
-    );
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::LG + 10.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        format!("{name} · {}", store.call.members().len()),
-        text::caption(),
-        t.label,
-    );
 
-    let mut x = rect.max.x - space::MD - 13.0;
+    let divider_x = rect.max.x - space::MD - controls_width - space::SM;
+    if max_speakers > 0 {
+        ui.painter().line_segment(
+            [
+                egui::pos2(divider_x, rect.min.y + space::MD),
+                egui::pos2(divider_x, rect.max.y - space::MD),
+            ],
+            Stroke::new(1.0, t.separator),
+        );
+    }
+
+    // A parte esquerda mostra só quem está falando. O número de avatares
+    // visíveis é calculado pela própria largura da pastilha.
+    let mut x = rect.min.x + space::SM + avatar_size / 2.0;
+    let ctx = ui.ctx().clone();
+    for user_id in store.call.speakers.iter().take(max_speakers) {
+        let person = store.member(user_id);
+        let initials = person
+            .map(crate::state::Member::initials)
+            .unwrap_or_default();
+        let texture = state
+            .media
+            .avatar(user_id, store.avatars.get(user_id).map(String::as_str))
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let avatar_rect = Rect::from_center_size(
+            egui::pos2(x, rect.center().y),
+            Vec2::splat(avatar_size),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(avatar_rect)
+                .layout(egui::Layout::centered_and_justified(egui::Direction::TopDown)),
+        );
+        let ring = avatar(
+            &mut child,
+            t,
+            &initials,
+            avatar_size,
+            person.and_then(|p| p.role_color.map(rgb)),
+            texture,
+        );
+        child.painter().circle_stroke(
+            ring.rect.center(),
+            ring.rect.width() / 2.0 + 1.5,
+            Stroke::new(1.5, t.online),
+        );
+        x += avatar_size + avatar_gap;
+    }
+
+    let mut x = rect.max.x - space::MD - button / 2.0;
     for (glyph, tip, on, danger, action) in [
         (icon::PHONE_X, s.call_leave, false, true, ChatAction::LeaveVoice),
         (
@@ -473,17 +532,59 @@ pub fn pill(
             ChatAction::ToggleMute,
         ),
     ] {
-        let spot = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(26.0));
+        let spot = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
         if round_button(ui, t, spot, glyph, tip, on, danger) {
             state.actions.push(action);
         }
-        x -= 26.0 + space::XXS;
+        x -= button + button_gap;
     }
 
-    // Depois dos botões: um clique neles não conta como clique na pastilha.
     if back.clicked() {
         state.actions.push(ChatAction::OpenCall);
     }
+}
+
+/// No layout compacto, o antigo modo "janela só da call" vira uma
+/// sobreposição fixa no alto: vídeo continua visível enquanto a conversa
+/// pode ser rolada e lida por baixo.
+pub fn floating(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    call: Option<&mut Call>,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+) {
+    let width = (area.width() - space::XXL).clamp(220.0, 420.0);
+    let height = (width / TILE_RATIO + 34.0).min(area.height() * 0.46);
+    let rect = Rect::from_min_size(
+        egui::pos2(area.center().x - width / 2.0, area.min.y + 52.0),
+        Vec2::new(width, height),
+    );
+
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::SHEET),
+        t.elevated_bg.gamma_multiply(0.98),
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), 34.0));
+    let close = Rect::from_center_size(
+        egui::pos2(header.max.x - space::LG - 13.0, header.center().y),
+        Vec2::splat(26.0),
+    );
+    if round_button(ui, t, close, icon::ARROW_SQUARE_IN, s.call_popin, false, false) {
+        state.actions.push(ChatAction::PopOutCall(false));
+    }
+
+    let stage = Rect::from_min_max(
+        egui::pos2(rect.min.x + space::SM, header.max.y),
+        rect.max - Vec2::splat(space::SM),
+    );
+    grid(ui, store, state, call, t, s, stage);
 }
 
 /// O conteúdo da janela só da call.

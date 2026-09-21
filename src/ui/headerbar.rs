@@ -307,10 +307,10 @@ fn section(ui: &mut egui::Ui, node: &MenuNode, t: &Tokens, commands: &mut Vec<Me
             ui.add_space(space::XS);
         }
         _ => {
-            if let Some(command) = node.command {
-                if entry(ui, node, t) {
-                    commands.push(command);
-                }
+            if let Some(command) = node.command
+                && entry(ui, node, t)
+            {
+                commands.push(command);
             }
         }
     }

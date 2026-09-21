@@ -40,7 +40,11 @@ fn main() -> eframe::Result<()> {
     // `papo demo` abre a janela com um servidor de mentira: é como se vê a
     // interface inteira enquanto o backend não responde.
     if args.get(1).map(String::as_str) == Some("demo") {
-        std::env::set_var("PAPO_DEMO", "1");
+        // SAFETY: ainda estamos no início de `main`, antes de criar as
+        // threads de rede, mídia, tray ou diálogos que poderiam ler o ambiente.
+        unsafe {
+            std::env::set_var("PAPO_DEMO", "1");
+        }
     }
 
     // `papo pick-test` abre o seletor **duas vezes seguidas**, pelo mesmo
@@ -138,7 +142,7 @@ fn main() -> eframe::Result<()> {
             .with_app_id(APP_ID)
             .with_decorations(!own_chrome)
             .with_inner_size([1160.0, 740.0])
-            .with_min_inner_size([760.0, 480.0])
+            .with_min_inner_size([360.0, 480.0])
             .with_icon(window_icon()),
         ..Default::default()
     };
@@ -314,12 +318,12 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                 live = true;
                 println!("conexão de mídia estabelecida");
             }
-            if let Some(at) = unmute {
-                if std::time::Instant::now() > at {
-                    unmute = None;
-                    println!("abrindo o microfone");
-                    call.set_muted(false);
-                }
+            if let Some(at) = unmute
+                && std::time::Instant::now() > at
+            {
+                unmute = None;
+                println!("abrindo o microfone");
+                call.set_muted(false);
             }
             if let Some(warning) = call.take_warning() {
                 println!("aviso: {warning}");

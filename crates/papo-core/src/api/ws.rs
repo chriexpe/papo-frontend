@@ -271,10 +271,10 @@ async fn connect(
                 let message = incoming.map_err(|e| e.to_string())?;
                 match message {
                     WsMessage::Text(text) => {
-                        if let Some(event) = parse(&text) {
-                            if events.send(event).is_err() {
-                                return Ok(());
-                            }
+                        if let Some(event) = parse(&text)
+                            && events.send(event).is_err()
+                        {
+                            return Ok(());
                         }
                     }
                     WsMessage::Ping(payload) => {

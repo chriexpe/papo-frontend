@@ -234,10 +234,10 @@ async fn run(api: &Api, request: Request) -> Loaded {
 
 /// Lê do cache quando já existe; senão busca, grava e devolve.
 async fn cached_fetch(api: &Api, path: &Path, route: &str) -> Result<Vec<u8>, String> {
-    if let Ok(bytes) = tokio::fs::read(path).await {
-        if !bytes.is_empty() {
-            return Ok(bytes);
-        }
+    if let Ok(bytes) = tokio::fs::read(path).await
+        && !bytes.is_empty()
+    {
+        return Ok(bytes);
     }
     let (bytes, _) = api
         .fetch_bytes(route)
@@ -255,10 +255,10 @@ async fn cached_fetch(api: &Api, path: &Path, route: &str) -> Result<Vec<u8>, St
 /// player lê do arquivo, então não há motivo para carregar um vídeo inteiro
 /// só para gravá-lo.
 async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> {
-    if let Ok(meta) = tokio::fs::metadata(path).await {
-        if meta.len() > 0 {
-            return Ok(());
-        }
+    if let Ok(meta) = tokio::fs::metadata(path).await
+        && meta.len() > 0
+    {
+        return Ok(());
     }
     api.fetch_to_file(route, path)
         .await
@@ -267,17 +267,17 @@ async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> 
 
 /// Decodifica bytes em textura; GIF vira animação.
 fn decode(key: String, bytes: &[u8], max: u32) -> Loaded {
-    if bytes.starts_with(b"GIF8") {
-        if let Some(frames) = decode_gif(bytes, max) {
-            if frames.len() > 1 {
-                return Loaded::Animation { key, frames };
-            }
-            if let Some((image, _)) = frames.into_iter().next() {
-                return Loaded::Image {
-                    key,
-                    image: Box::new(image),
-                };
-            }
+    if bytes.starts_with(b"GIF8")
+        && let Some(frames) = decode_gif(bytes, max)
+    {
+        if frames.len() > 1 {
+            return Loaded::Animation { key, frames };
+        }
+        if let Some((image, _)) = frames.into_iter().next() {
+            return Loaded::Image {
+                key,
+                image: Box::new(image),
+            };
         }
     }
 
