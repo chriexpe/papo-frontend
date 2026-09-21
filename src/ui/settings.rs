@@ -119,6 +119,40 @@ pub struct PendingSticker {
     pub name: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ChannelDraft {
+    pub id: Option<String>,
+    pub name: String,
+    pub topic: String,
+    /// `text`, `voice` ou `category`, como o contrato espera.
+    pub kind: String,
+}
+
+impl ChannelDraft {
+    pub fn create() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            topic: String::new(),
+            kind: "text".to_owned(),
+        }
+    }
+
+    pub fn edit(channel: &crate::state::Channel) -> Self {
+        use crate::state::ChannelKind;
+        Self {
+            id: Some(channel.id.clone()),
+            name: channel.name.clone(),
+            topic: channel.topic.clone().unwrap_or_default(),
+            kind: match channel.kind {
+                ChannelKind::Voice => "voice".to_owned(),
+                ChannelKind::Category => "category".to_owned(),
+                ChannelKind::Text => "text".to_owned(),
+            },
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Draft {
     pub loaded_account: bool,
@@ -130,8 +164,8 @@ pub struct Draft {
     pub server_name: String,
     pub server_public: bool,
     pub server_password: String,
-    /// Canal sendo renomeado ali mesmo, com o nome em edição.
-    pub renaming: Option<(String, String)>,
+    /// Criação/edição de canal acontece dentro da própria folha.
+    pub channel: Option<ChannelDraft>,
     /// Canal a apagar: id, nome esperado e o que foi digitado. A confirmação
     /// é por cópia do nome — apagar um canal leva junto tudo que foi dito
     /// nele, e um clique só é barato demais para isso.
@@ -141,6 +175,31 @@ pub struct Draft {
 }
 
 impl SettingsState {
+    pub fn open_new_channel(&mut self) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = Some(ChannelDraft::create());
+        self.draft.deleting = None;
+    }
+
+    pub fn open_edit_channel(&mut self, channel: &crate::state::Channel) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = Some(ChannelDraft::edit(channel));
+        self.draft.deleting = None;
+    }
+
+    pub fn open_delete_channel(&mut self, channel: &crate::state::Channel) {
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Channels;
+        self.draft.channel = None;
+        self.draft.deleting = Some((
+            channel.id.clone(),
+            channel.name.clone(),
+            String::new(),
+        ));
+    }
+
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
     pub fn toggle(&mut self, surface: Surface) {
         if self.open == Some(surface) {
