@@ -13,10 +13,15 @@ pub fn in_flatpak() -> bool {
 #[cfg(target_os = "linux")]
 pub mod blur;
 pub mod desktop;
+/// Onde ficam sessão e cache em cada plataforma.
+pub mod dirs;
 pub mod files;
 #[cfg(target_os = "linux")]
 pub mod global_menu;
 pub mod menu;
+/// Bordas do sistema no Android (barra de status, navegação, recorte).
+#[cfg(target_os = "android")]
+pub mod safe_area;
 #[cfg(target_os = "linux")]
 pub mod kwin;
 #[cfg(target_os = "linux")]

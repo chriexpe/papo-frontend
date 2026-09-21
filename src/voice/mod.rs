@@ -20,6 +20,7 @@
 //! o que está publicado.
 
 pub mod ice;
+#[cfg_attr(target_os = "android", path = "engine_android.rs")]
 mod engine;
 pub mod slots;
 
@@ -82,6 +83,7 @@ impl Shared {
     /// Avança o contador sempre, inclusive quando o valor é o mesmo de
     /// antes: é justamente a tentativa que fracassa — `false` para `false` —
     /// que a janela precisa enxergar.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn set_camera(&self, on: bool) {
         self.camera.store(on, Ordering::Relaxed);
         self.camera_revision.fetch_add(1, Ordering::Release);
@@ -115,6 +117,7 @@ impl Shared {
     /// câmera que não existe: dá para participar assim mesmo. Fica numa
     /// gaveta própria, longe do erro fatal, porque quem o lê o tira de lá:
     /// no erro ele apareceria em todo quadro, ou em nenhum.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn warn(&self, message: impl Into<String>) {
         let message = message.into();
         log::warn!("call: {message}");
@@ -134,6 +137,9 @@ impl Shared {
 }
 
 /// Ordens da janela para a thread da call.
+// Sem a call, no Android, isto fica sem uso — mas continua sendo o
+// contrato da thread de voz, que volta inteiro no PR de mídia.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 pub(crate) enum Command {
     /// O servidor aceitou a entrada: pode montar e mandar a oferta.
     Ready,

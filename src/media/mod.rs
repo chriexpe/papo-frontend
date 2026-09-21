@@ -4,6 +4,7 @@
 //! GStreamer ou ao egui como URL: tudo passa por aqui, é gravado no cache do
 //! usuário e só então vira textura ou arquivo para tocar.
 
+#[cfg_attr(target_os = "android", path = "player_android.rs")]
 pub mod player;
 pub mod prepare;
 
@@ -328,9 +329,7 @@ fn to_color_image(image: image::DynamicImage, max: u32) -> ColorImage {
 // ---------------------------------------------------------------------------
 
 pub fn cache_root() -> PathBuf {
-    directories::ProjectDirs::from("", "", "papo")
-        .map(|dirs| dirs.cache_dir().to_path_buf())
-        .unwrap_or_else(std::env::temp_dir)
+    crate::platform::dirs::cache_dir()
 }
 
 /// `~/.cache/papo/<bucket>/<id>-<nome>`; o nome ajuda o player a adivinhar o

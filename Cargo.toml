@@ -10,14 +10,28 @@ license = "AGPL-3.0-or-later"
 members = ["crates/papo-core"]
 resolver = "2"
 
+# O Android carrega uma biblioteca, não executa um binário: o sistema abre a
+# Activity e ela faz `dlopen` no `.so`, que precisa exportar `android_main`.
+# Por isso o que existe de verdade é a biblioteca — o binário da área de
+# trabalho é uma casca fina por cima dela (`src/main.rs`).
+[lib]
+name = "papo"
+crate-type = ["lib", "cdylib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "papo"
+path = "src/main.rs"
+
 [dependencies]
 papo-core = { path = "crates/papo-core" }
+# As features de janela são por plataforma: Wayland/X11 só no Linux e
+# `android-game-activity` só no Android. Os dois back-ends de Activity do
+# eframe são exclusivos — nunca ligar os dois.
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
     "glow",
     "persistence",
-    "wayland",
-    "x11",
 ] }
 egui = "0.36"
 egui_extras = { version = "0.36", features = ["image", "svg"] }
@@ -41,14 +55,21 @@ url = "2"
 anyhow = "1"
 thiserror = "2"
 log = "0.4"
-env_logger = "0.11"
-directories = "6"
 raw-window-handle = "0.6"
 egui-phosphor = { version = "0.14", features = ["regular"] }
 fontdb = { version = "0.23", default-features = false, features = ["fs"] }
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 base64 = "0.22"
 swash = "0.2"
+
+# ---------------------------------------------------------------------------
+# Área de trabalho
+# ---------------------------------------------------------------------------
+# GStreamer, bandeja, menu global, diálogos do portal e as pastas do XDG só
+# existem aqui. No Android cada um desses tem um substituto em `stub/`.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+env_logger = "0.11"
+directories = "6"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
@@ -60,16 +81,28 @@ gstreamer-sdp = "0.24"
 # é o que diz ao servidor quem está falando). O elemento correspondente
 # também só existe do GStreamer 1.20 em diante.
 gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
-ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
-wayland-protocols = { version = "0.32", features = ["client"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
+ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
+wayland-protocols = { version = "0.32", features = ["client"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 zvariant = "5"
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", default-features = false }
+
+# ---------------------------------------------------------------------------
+# Android
+# ---------------------------------------------------------------------------
+[target.'cfg(target_os = "android")'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["android-game-activity"] }
+# A mesma versão que o winit usa: o `AndroidApp` que chega no `android_main`
+# tem de ser o tipo do winit, não um homônimo de outra versão.
+android-activity = { version = "0.6", features = ["game-activity"] }
+# `println!` não vai a lugar nenhum no Android; o que se lê é o logcat.
+android_logger = "0.15"
 
 [profile.release]
 # Binário de distribuição: um arquivo só, sem símbolos de depuração.

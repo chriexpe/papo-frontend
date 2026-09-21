@@ -9,10 +9,13 @@ use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
 use crate::platform::activate::Activator;
+#[cfg(target_os = "linux")]
 use crate::platform::notify::{Notification, Notifier};
+#[cfg(target_os = "linux")]
 use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
 #[cfg(target_os = "linux")]
 use crate::platform::launcher::{Badge, Launcher};
+#[cfg(target_os = "linux")]
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
@@ -670,6 +673,7 @@ impl PapoApp {
     /// Traz a janela de volta. No Wayland o winit não sabe fazer isso, então
     /// pedimos ao compositor pelo xdg-activation; no X11 os comandos abaixo
     /// bastam.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn show_window(&mut self, ctx: &egui::Context) {
         self.minimized = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -687,6 +691,7 @@ impl PapoApp {
     }
 
     /// Fechar não encerra: a janela recolhe e o Papo segue na bandeja.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn hide_window(&mut self, ctx: &egui::Context) {
         self.minimized = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -1833,6 +1838,31 @@ impl PapoApp {
  }
 
 impl eframe::App for PapoApp {
+    /// Tira da área desenhável as bordas que o sistema ocupa.
+    ///
+    /// É o único ajuste de Android na interface, e de propósito ele entra
+    /// aqui: encolhendo o `screen_rect` antes de o egui ver o quadro, todo o
+    /// resto — painéis, rolagem, folhas — continua o mesmo dos dois lados.
+    /// Nada na interface precisa saber que existe uma barra de status.
+    #[cfg(target_os = "android")]
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let Some(rect) = raw_input.screen_rect else {
+            return;
+        };
+        // As bordas vêm em pixels físicos; o `screen_rect` é em pontos.
+        let scale = ctx.pixels_per_point().max(0.1);
+        let (left, top, right, bottom) = crate::platform::safe_area::insets_px();
+        let safe = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + left / scale, rect.min.y + top / scale),
+            egui::pos2(rect.max.x - right / scale, rect.max.y - bottom / scale),
+        );
+        // Um aparelho que informe bordas maiores que a própria tela não pode
+        // apagar a janela inteira.
+        if safe.width() > 1.0 && safe.height() > 1.0 {
+            raw_input.screen_rect = Some(safe);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.attach_window(frame);

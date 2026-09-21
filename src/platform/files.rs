@@ -39,6 +39,7 @@ pub enum ImagePick {
 impl ImagePick {
     /// Lado maior e peso máximo. Os números vêm do resumo de cada endpoint:
     /// avatar aceita 512 px e 2 MB, figurinha 512 px e 256 KB.
+    #[cfg(not(target_os = "android"))]
     fn limits(self) -> (u32, usize) {
         match self {
             Self::Avatar => (512, 2 * 1024 * 1024),
@@ -53,6 +54,27 @@ pub struct Dialogs {
     pending: Vec<mpsc::Receiver<Chosen>>,
 }
 
+/// O que vale nos dois lados: recolher as respostas que já chegaram.
+impl Dialogs {
+    /// Respostas que chegaram desde o último quadro.
+    pub fn poll(&mut self) -> Vec<Chosen> {
+        let mut out = Vec::new();
+        self.pending.retain(|rx| match rx.try_recv() {
+            Ok(chosen) => {
+                out.push(chosen);
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => false,
+        });
+        out
+    }
+}
+
+// Os diálogos de verdade são os do sistema, entregues pelo
+// xdg-desktop-portal. No Android esse portal não existe: o seletor de lá é
+// uma Intent, e ela é assunto do PR de integração com a plataforma.
+#[cfg(not(target_os = "android"))]
 impl Dialogs {
     /// Anexos para a mensagem.
     pub fn pick_files(&mut self, repaint: egui::Context) {
@@ -199,23 +221,52 @@ impl Dialogs {
         }
     }
 
-    /// Respostas que chegaram desde o último quadro.
-    pub fn poll(&mut self) -> Vec<Chosen> {
-        let mut out = Vec::new();
-        self.pending.retain(|rx| match rx.try_recv() {
-            Ok(chosen) => {
-                out.push(chosen);
-                false
-            }
-            Err(mpsc::TryRecvError::Empty) => true,
-            Err(mpsc::TryRecvError::Disconnected) => false,
-        });
-        out
+}
+
+#[cfg(target_os = "android")]
+impl Dialogs {
+    /// Ainda não há seletor no Android. Responder `Cancelled` na hora é o
+    /// que mantém a interface honesta: quem pediu o diálogo recebe a
+    /// recusa no mesmo quadro em vez de esperar para sempre.
+    fn unavailable(&mut self, repaint: egui::Context) {
+        log::warn!("seletor de arquivos ainda não existe no Android");
+        let (tx, rx) = mpsc::channel();
+        let _ = tx.send(Chosen::Cancelled);
+        self.pending.push(rx);
+        repaint.request_repaint();
+    }
+
+    pub fn pick_files(&mut self, repaint: egui::Context) {
+        self.unavailable(repaint);
+    }
+
+    pub fn pick_animations(&mut self, repaint: egui::Context) {
+        self.unavailable(repaint);
+    }
+
+    pub fn pick_folder(&mut self, repaint: egui::Context, _start: PathBuf) {
+        self.unavailable(repaint);
+    }
+
+    pub fn save_as(
+        &mut self,
+        repaint: egui::Context,
+        _id: String,
+        _name: String,
+        _start: PathBuf,
+    ) {
+        self.unavailable(repaint);
+    }
+
+    pub fn pick_image(&mut self, repaint: egui::Context, _purpose: ImagePick) {
+        self.unavailable(repaint);
     }
 }
 
+
 /// O runtime que conduz o D-Bus dos diálogos, criado uma vez e nunca
 /// derrubado. Ver a explicação em `Dialogs::spawn`.
+#[cfg(not(target_os = "android"))]
 fn dialog_runtime() -> Option<tokio::runtime::Handle> {
     static RUNTIME: std::sync::OnceLock<Option<tokio::runtime::Runtime>> =
         std::sync::OnceLock::new();
@@ -283,10 +334,24 @@ pub fn mime_for(path: &Path) -> String {
 
 /// Pasta de downloads do usuário, com o diretório pessoal como reserva.
 pub fn downloads_dir() -> PathBuf {
-    directories::UserDirs::new()
-        .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
-        .or_else(|| directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
-        .unwrap_or_else(std::env::temp_dir)
+    #[cfg(not(target_os = "android"))]
+    {
+        directories::UserDirs::new()
+            .and_then(|dirs| dirs.download_dir().map(Path::to_path_buf))
+            .or_else(|| directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+            .unwrap_or_else(std::env::temp_dir)
+    }
+    // No Android a pasta pública de downloads exige permissão e passa pelo
+    // MediaStore. Até o PR de plataforma, o destino fica dentro da própria
+    // área do aplicativo, que não precisa pedir nada a ninguém.
+    #[cfg(target_os = "android")]
+    {
+        let dir = crate::platform::dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("downloads");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
 }
 
 /// Nome livre dentro da pasta: `foto.png`, `foto (1).png`, …
@@ -315,5 +380,10 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
 
 /// Entrega o arquivo ao aplicativo padrão do sistema.
 pub fn open_path(path: &Path) {
+    #[cfg(not(target_os = "android"))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    // Abrir um arquivo no Android é uma Intent, e para isso é preciso a
+    // Activity — assunto do PR de integração com a plataforma.
+    #[cfg(target_os = "android")]
+    log::warn!("abrir {} ainda não existe no Android", path.display());
 }
