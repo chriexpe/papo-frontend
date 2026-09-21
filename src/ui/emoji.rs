@@ -653,12 +653,12 @@ pub fn tokenize(text: &str, custom: &[crate::state::CustomEmoji]) -> Vec<Token> 
         let c = chars[index];
 
         // :apelido: de emoji do servidor.
-        if c == ':' {
-            if let Some(end) = chars[index + 1..]
+        if c == ':'
+            && let Some(end) = chars[index + 1..]
                 .iter()
                 .position(|c| *c == ':')
                 .map(|offset| index + 1 + offset)
-            {
+        {
                 let name: String = chars[index + 1..end].iter().collect();
                 let known = custom.iter().find(|emoji| emoji.name == name);
                 if let Some(emoji) = known {
@@ -669,7 +669,6 @@ pub fn tokenize(text: &str, custom: &[crate::state::CustomEmoji]) -> Vec<Token> 
                     index = end + 1;
                     continue;
                 }
-            }
         }
 
         if is_emoji(c) {
