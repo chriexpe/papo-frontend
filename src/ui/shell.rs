@@ -25,6 +25,10 @@ use super::widgets::{avatar, icon_button, scroll_edge_fade, section_caption, sid
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
+/// Abaixo disto a conversa vira a superfície raiz e as laterais viram drawers.
+pub const COMPACT_BREAKPOINT: f32 = 820.0;
+const SWIPE_DISTANCE: f32 = 56.0;
+const SWIPE_AXIS_BIAS: f32 = 1.25;
 const SIDEBAR_HEADER_HEIGHT: f32 = IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0;
 /// As duas pastilhas de identidade: a do servidor e a da conta.
 pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
@@ -149,6 +153,38 @@ pub enum PanelKind {
     Pinned,
 }
 
+/// Superfície que ocupa a frente no layout estreito.
+///
+/// A conversa é a raiz. Navegação e pessoas só cobrem a conversa enquanto
+/// estão abertas; por isso não são páginas independentes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MobileSurface {
+    #[default]
+    Chat,
+    Navigation,
+    People,
+}
+
+/// O shell só precisa saber desenhar o trilho quando ele está dentro do drawer.
+/// A aplicação continua sendo dona da troca/remoção dos workspaces.
+pub struct MobileServers<'a> {
+    pub entries: &'a [super::rail::Entry],
+    pub active: usize,
+}
+
+#[derive(Clone, Debug)]
+struct MobileGesture {
+    origin: egui::Pos2,
+    last: egui::Pos2,
+    message_id: Option<String>,
+    blocked: bool,
+}
+
+/// Retorna se a largura pede a navegação de uma coluna.
+pub fn is_compact(rect: Rect) -> bool {
+    rect.width() < COMPACT_BREAKPOINT
+}
+
 /// A pastilha de ações, esticada para mostrar busca ou fixadas. Fecha só
 /// pelo mesmo ícone que a abriu ou pelo X — clicar fora não fecha, porque
 /// ler um resultado costuma passar por clicar na conversa atrás dela.
@@ -254,6 +290,13 @@ impl Stash {
 pub struct UiState {
     pub composer: String,
     pub show_members: bool,
+    /// Layout estreito ativo neste quadro.
+    pub compact: bool,
+    pub mobile_surface: MobileSurface,
+    mobile_gesture: Option<MobileGesture>,
+    /// Retângulos das mensagens deste quadro, usados para swipe-to-reply sem
+    /// roubar o drag vertical do ScrollArea.
+    message_rows: Vec<(String, Rect)>,
     pub translucent: bool,
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
@@ -307,6 +350,10 @@ impl Default for UiState {
         Self {
             composer: String::new(),
             show_members: true,
+            compact: false,
+            mobile_surface: MobileSurface::Chat,
+            mobile_gesture: None,
+            message_rows: Vec::new(),
             translucent: true,
             pending: Vec::new(),
             glass: None,
@@ -350,7 +397,10 @@ pub fn draw(
     call: Option<&mut crate::voice::Call>,
     t: &Tokens,
     s: &Strings,
-) {
+    mobile_servers: Option<MobileServers<'_>>,
+) -> Option<super::rail::RailAction> {
+    state.message_rows.clear();
+
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
@@ -397,13 +447,89 @@ pub fn draw(
     // próprio canal. Quem decide é o estado, não esta função.
     let stage = crate::ui::call::stage_of(store);
     let live = call.as_ref().is_some_and(|call| call.is_live());
+    let shell_rect = ui.max_rect();
+    state.compact = is_compact(shell_rect);
 
-    channels_sidebar(ui, store, state, t, s, live);
-    if state.show_members {
-        members_sidebar(ui, store, state, t, s);
+    if state.compact {
+        conversation(ui, store, state, call, t, s, stage);
+        let rail_action = mobile_drawers(
+            ui,
+            store,
+            state,
+            t,
+            s,
+            live,
+            mobile_servers,
+            shell_rect,
+        );
+        overlays(ui, store, state, t, s);
+        rail_action
+    } else {
+        state.mobile_surface = MobileSurface::Chat;
+        state.mobile_gesture = None;
+        channels_sidebar(ui, store, state, t, s, live);
+        if state.show_members {
+            members_sidebar(ui, store, state, t, s, false);
+        }
+        conversation(ui, store, state, call, t, s, stage);
+        overlays(ui, store, state, t, s);
+        None
     }
-    conversation(ui, store, state, call, t, s, stage);
-    overlays(ui, store, state, t, s);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mobile_drawers(
+    root: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    live: bool,
+    servers: Option<MobileServers<'_>>,
+    area: Rect,
+) -> Option<super::rail::RailAction> {
+    match state.mobile_surface {
+        MobileSurface::Chat => None,
+        MobileSurface::Navigation => {
+            let Some(servers) = servers else {
+                return None;
+            };
+            let width = (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
+                .min((area.width() - space::XXL).max(SIDEBAR_WIDTH));
+            let rect = Rect::from_min_size(area.min, Vec2::new(width, area.height()));
+            let response = egui::Area::new(Id::new("mobile-navigation-drawer"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .default_size(rect.size())
+                .constrain_to(area)
+                .show(root.ctx(), |ui| {
+                    ui.set_min_size(rect.size());
+                    ui.set_max_size(rect.size());
+                    let action = super::rail::draw(ui, servers.entries, servers.active, t, s);
+                    channels_sidebar(ui, store, state, t, s, live);
+                    action
+                });
+            response.inner
+        }
+        MobileSurface::People => {
+            let width = MEMBERS_WIDTH.min((area.width() - space::XXL).max(120.0));
+            let rect = Rect::from_min_size(
+                egui::pos2(area.max.x - width, area.min.y),
+                Vec2::new(width, area.height()),
+            );
+            egui::Area::new(Id::new("mobile-people-drawer"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(rect.min)
+                .default_size(rect.size())
+                .constrain_to(area)
+                .show(root.ctx(), |ui| {
+                    ui.set_min_size(rect.size());
+                    ui.set_max_size(rect.size());
+                    members_sidebar(ui, store, state, t, s, true);
+                });
+            None
+        }
+    }
 }
 
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
