@@ -968,6 +968,28 @@ impl PapoApp {
 
     /// Executa o que a conversa pediu.
     fn handle_chat(&mut self, ctx: &egui::Context, action: ChatAction) {
+        // Administração de canal é navegação de UI, não mutação. Todos os
+        // pontos de entrada convergem para Ajustes do servidor → Canais.
+        match &action {
+            ChatAction::NewChannel => {
+                self.sheet.open_new_channel();
+                return;
+            }
+            ChatAction::EditChannel(id) => {
+                if let Some(channel) = self.workspaces[self.active].store.channel(id).cloned() {
+                    self.sheet.open_edit_channel(&channel);
+                }
+                return;
+            }
+            ChatAction::RequestDeleteChannel(id) => {
+                if let Some(channel) = self.workspaces[self.active].store.channel(id).cloned() {
+                    self.sheet.open_delete_channel(&channel);
+                }
+                return;
+            }
+            _ => {}
+        }
+
         // Na demonstração as ações mexem só no estado local.
         if self.demo {
             self.handle_chat_demo(ctx, action);
@@ -1075,25 +1097,23 @@ impl PapoApp {
                     self.ui.media.save(&id, &name, dest);
                 }
             },
-            ChatAction::NewChannel => {
-                self.channel_dialog = Some(ChannelDialog::create())
+            ChatAction::NewChannel
+            | ChatAction::EditChannel(_)
+            | ChatAction::RequestDeleteChannel(_) => unreachable!("tratadas antes do match"),
+            ChatAction::CreateChannel { name, kind, topic } => {
+                ws.net.send(Command::CreateChannel { name, kind, topic })
             }
-            ChatAction::EditChannel(id) => {
-                if let Some(channel) = ws.store.channel(&id) {
-                    self.channel_dialog = Some(ChannelDialog::edit(channel));
-                }
-            }
+            ChatAction::UpdateChannel {
+                channel_id,
+                name,
+                topic,
+            } => ws.net.send(Command::UpdateChannel {
+                channel_id,
+                name,
+                topic,
+            }),
             ChatAction::DeleteChannel(channel_id) => {
                 ws.net.send(Command::DeleteChannel { channel_id })
-            }
-            // Renomear guarda o tópico como está: o contrato trata tópico
-            // ausente como "não mexa".
-            ChatAction::RenameChannel { channel_id, name } => {
-                ws.net.send(Command::UpdateChannel {
-                    channel_id,
-                    name,
-                    topic: None,
-                })
             }
             ChatAction::ChannelNotifications {
                 channel_id,
@@ -1557,9 +1577,7 @@ impl PapoApp {
                     ws.store.mark_all_read();
                 }
             }
-            MenuCommand::NewChannel => {
-                self.channel_dialog = Some(ChannelDialog::create())
-            }
+            MenuCommand::NewChannel => self.sheet.open_new_channel(),
             // A busca virou parte da pastilha de ações, dentro da conversa.
             MenuCommand::Search => {
                 crate::ui::shell::toggle_panel(&mut self.ui, crate::ui::shell::PanelKind::Search)
@@ -2059,7 +2077,6 @@ impl eframe::App for PapoApp {
                 }
             }
         }
-        self.channel_window(&ctx);
         self.settings_sheet(&ctx);
         self.pump_files(&ctx);
 
