@@ -30,24 +30,49 @@ list(APPEND CMAKE_MODULE_PATH "${GStreamer_ROOT_DIR}/share/cmake")
 set(GStreamer_JAVA_SRC_DIR "${CMAKE_CURRENT_BINARY_DIR}/java")
 set(GStreamer_ASSETS_DIR   "${CMAKE_CURRENT_BINARY_DIR}/assets")
 
-# O mínimo para provar que o GStreamer sobe e roda um pipeline. Nada de
-# WebRTC, câmera, microfone ou codecs de anexo ainda: cada fase seguinte
-# acrescenta o que precisa, e assim o que quebra é sempre a última coisa
-# adicionada.
+# Só o que é usado de verdade. A lista não vem de teoria sobre formatos:
+# vem dos anexos que o Papo já tem em cache no aparelho — MP4 com H.264 e
+# AAC, e os recados de voz em Ogg/Opus.
 #
-#   coreelements       fakesink, queue, tee
-#   app                appsrc, appsink
-#   playback           decodebin
-#   videotestsrc       o pipeline de vídeo do teste
-#   audiotestsrc       o de áudio
-#   videoconvertscale  videoconvert
-#   audioconvert       audioconvert
+# Ainda não há WebRTC nem câmera: cada fase acrescenta o que usa, e assim o
+# que quebra é sempre a última coisa acrescentada.
 find_package(GStreamerMobile REQUIRED COMPONENTS
-    coreelements
-    app
-    playback
+    # --- o que provou o PR anterior, e a base de tudo ---
+    coreelements       # fakesink, queue, tee
+    app                # appsrc, appsink — o vídeo vira textura por aqui
+    playback           # playbin, decodebin
+    typefindfunctions  # sem isto o decodebin não sabe o que é o arquivo
     videotestsrc
     audiotestsrc
+
+    # --- conversão que o playbin encaixa sozinho ---
     videoconvertscale
     audioconvert
+    audioresample
+    volume
+
+    # --- os recipientes dos anexos de verdade ---
+    isomp4             # os .mp4
+    ogg                # os recados de voz
+
+    # --- os codecs desses anexos ---
+    androidmedia       # H.264 e AAC pelo decodificador do próprio aparelho
+    videoparsersbad    # h264parse, que o decodificador exige antes
+    audioparsers       # aacparse
+    opus               # os recados de voz
+    # Reserva em software para o H.264, e só para ele. No aparelho de teste
+    # o decodificador de vídeo do próprio aparelho recusa o H.264 logo na
+    # primeira tentativa — o OMX da Qualcomm responde "Failed to query
+    # component interface for required system resources" — e o decodebin
+    # percorre os 54 decodificadores, um a um, até desistir. Sem reserva o
+    # vídeo não abre, que era o 0:00/0:00.
+    #
+    # Só o vídeo precisa disso: o áudio do aparelho funciona (o Opus dos
+    # recados decodifica pelo `c2androidopusdecoder`). Por isso `openh264`,
+    # que pesa uns poucos MB, e não o `libav` inteiro, que sozinho dobrava
+    # o tamanho do APK.
+    openh264
+
+    # --- a saída de áudio do Android ---
+    opensles           # openslessink
 )

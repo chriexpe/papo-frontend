@@ -25,6 +25,14 @@ const EXPECTED: &[(&str, &str)] = &[
     ("audioconvert", "conversão de formato de áudio"),
     ("videotestsrc", "vídeo de teste"),
     ("audiotestsrc", "áudio de teste"),
+    // Os anexos que o Papo tem de verdade: .mp4 com H.264/AAC e recados
+    // de voz em Ogg/Opus.
+    ("qtdemux", "abre os .mp4"),
+    ("oggdemux", "abre os recados de voz"),
+    ("h264parse", "o vídeo antes do decodificador"),
+    ("aacparse", "o áudio do .mp4 antes do decodificador"),
+    ("opusdec", "os recados de voz"),
+    ("openslessink", "a saída de áudio do Android"),
 ];
 
 /// Sobe o GStreamer e conta o que encontrou.
@@ -53,6 +61,29 @@ pub fn run() {
     }
     if missing > 0 {
         log::error!("gstreamer: {missing} elemento(s) faltando — confira o CMakeLists");
+    }
+
+    // Os decodificadores do aparelho têm nome próprio de cada aparelho
+    // (`amcviddec-omxqcomvideodecoderavc` e afins), então não dá para
+    // procurá-los pelo nome: conta-se quantos apareceram.
+    let hardware = registry
+        .features(gst::ElementFactory::static_type())
+        .iter()
+        .filter(|feature| feature.name().starts_with("amc"))
+        .count();
+    if hardware > 0 {
+        log::info!("gstreamer: {hardware} decodificador(es) do próprio aparelho");
+    } else {
+        log::warn!("gstreamer: nenhum decodificador do aparelho — o vídeo vai depender de software");
+    }
+
+    // Quem se candidata a decodificar H.264, e com que prioridade. É o que
+    // decide qual o decodebin tenta primeiro.
+    for feature in registry.features(gst::ElementFactory::static_type()).iter() {
+        let name = feature.name();
+        if name.contains("avc") || name.contains("h264") || name.contains("264") {
+            log::info!("  h264: {name} (rank {})", feature.rank());
+        }
     }
 
     probe("videotestsrc num-buffers=5 ! fakesink");

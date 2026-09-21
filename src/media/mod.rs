@@ -7,7 +7,6 @@
 /// Conferência do GStreamer no Android, escrita no logcat na abertura.
 #[cfg(target_os = "android")]
 pub mod gst_check;
-#[cfg_attr(target_os = "android", path = "player_android.rs")]
 pub mod player;
 pub mod prepare;
 

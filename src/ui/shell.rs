@@ -2456,7 +2456,17 @@ fn message_list(
         });
 
         let author = store.member(&message.author_id);
-        let mut builder = UiBuilder::new();
+        // O escopo da linha é o alvo de toque do layout compacto — duplo
+        // toque abre as reações, toque longo abre o menu.
+        //
+        // Registrar o alvo **aqui**, e não depois da linha pronta, é o que
+        // importa: o egui dá o clique ao último widget registrado sobre o
+        // ponto, e um `interact` no fim engolia tudo o que estivesse dentro
+        // da mensagem. Era por isso que tocar no play de um vídeo, no play
+        // de um áudio ou numa imagem não fazia nada além de acender a
+        // linha. Como o escopo entra antes do conteúdo, o conteúdo ganha, e
+        // a linha só recebe o toque que sobra.
+        let mut builder = UiBuilder::new().sense(Sense::click());
         if let Some(layer) = sliding {
             builder = builder.layer_id(layer);
         }
@@ -2535,11 +2545,7 @@ fn message_list(
                 .message_rows
                 .push((message.id.clone(), touch_rect));
             if !message.pending {
-                let touch = ui.interact(
-                    touch_rect,
-                    Id::new(("message-touch", &message.id)),
-                    Sense::click(),
-                );
+                let touch = &inner.response;
                 if touch.double_clicked() {
                     let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
                     state.popup = Some(Popup {

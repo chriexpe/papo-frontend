@@ -27,12 +27,43 @@ pub fn init() -> bool {
     use std::sync::OnceLock;
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| match gst::init() {
-        Ok(()) => true,
+        Ok(()) => {
+            #[cfg(target_os = "android")]
+            demote_omx_video();
+            true
+        }
         Err(error) => {
             log::warn!("GStreamer indisponível: {error}");
             false
         }
     })
+}
+
+/// Tira a preferência dos decodificadores de vídeo do caminho OMX.
+///
+/// O OMX é o caminho antigo do Android — o Codec2 o substituiu na versão 10
+/// — e no aparelho de teste o decodificador de vídeo dele recusa o H.264 na
+/// primeira tentativa, com "Failed to query component interface for required
+/// system resources". O problema é que ele vem com prioridade **acima** de
+/// todos os que funcionam: o decodebin o escolhe, ele falha, e o vídeo não
+/// abre. Era isso o 0:00/0:00 eterno.
+///
+/// Baixando a prioridade dele, a escolha volta para quem funciona: o Codec2
+/// onde houver, e o `openh264` como piso. Só o vídeo é mexido — o áudio do
+/// aparelho decodifica bem, inclusive o Opus dos recados.
+#[cfg(target_os = "android")]
+fn demote_omx_video() {
+    let registry = gst::Registry::get();
+    let mut demoted = 0;
+    for feature in registry.features(gst::ElementFactory::static_type()).iter() {
+        if feature.name().starts_with("amcviddec-omx") && feature.rank() > gst::Rank::MARGINAL {
+            feature.set_rank(gst::Rank::NONE);
+            demoted += 1;
+        }
+    }
+    if demoted > 0 {
+        log::info!("{demoted} decodificador(es) de vídeo OMX despriorizado(s)");
+    }
 }
 
 struct Frame {
@@ -388,7 +419,15 @@ fn audio_sink() -> Option<gst::Element> {
             Err(error) => log::warn!("saída de áudio {forced} não existe: {error}"),
         }
     }
-    for name in ["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"] {
+    // A única diferença de plataforma da reprodução mora aqui. Todo o
+    // resto — o `playbin`, o `appsink` que vira textura, posição, duração,
+    // busca — é o mesmo nos dois lados, e por isso o arquivo é um só.
+    #[cfg(target_os = "android")]
+    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
+    #[cfg(not(target_os = "android"))]
+    const SINKS: &[&str] = &["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"];
+
+    for name in SINKS {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
             return Some(sink);
@@ -559,6 +598,19 @@ impl Recorder {
         if !init() {
             return None;
         }
+        // Gravar ainda não existe no Android: depende da permissão de
+        // microfone, que é assunto do PR de captura. As fontes abaixo são
+        // do Linux e nem existem lá — melhor recusar aqui, com o motivo,
+        // do que falhar procurando uma a uma.
+        #[cfg(target_os = "android")]
+        {
+            let _ = dir;
+            log::warn!("gravar áudio ainda não existe no Android");
+            return None;
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
         let _ = std::fs::create_dir_all(dir);
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("recado-{stamp}.ogg"));
@@ -601,6 +653,7 @@ impl Recorder {
         }
         log::warn!("sem entrada de áudio para gravar");
         None
+        }
     }
 
     pub fn elapsed(&self) -> f64 {
