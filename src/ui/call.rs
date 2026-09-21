@@ -412,7 +412,34 @@ pub fn pill(
     s: &Strings,
     area: Rect,
 ) {
-    let width = 236.0_f32.min((area.width() - space::XXL).max(176.0));
+    let button = 26.0;
+    let button_gap = space::XXS;
+    let controls_width = button * 3.0 + button_gap * 2.0;
+    let controls_only = space::MD * 2.0 + controls_width;
+
+    // A faixa de falantes cresce avatar por avatar. O teto acompanha a
+    // largura disponível para nunca invadir as duas pastilhas vizinhas.
+    let avatar_size = 22.0;
+    let avatar_gap = 4.0;
+    let speaker_chrome = space::SM * 2.0 + 1.0;
+    let max_width = (area.width() * 0.50 - space::SM)
+        .clamp(controls_only, 286.0);
+    let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
+    let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
+        as usize)
+        .min(store.call.speakers.len());
+    let speakers_width = if max_speakers == 0 {
+        0.0
+    } else {
+        avatar_size * max_speakers as f32 + avatar_gap * (max_speakers - 1) as f32
+    };
+    let width = controls_only
+        + if max_speakers == 0 {
+            0.0
+        } else {
+            speaker_chrome + speakers_width
+        };
+
     let rect = Rect::from_min_size(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
@@ -433,29 +460,22 @@ pub fn pill(
             .rect_filled(rect, CornerRadius::same(18), t.fill_soft);
     }
 
-    let button = 26.0;
-    let button_gap = space::XXS;
-    let controls_width = button * 3.0 + button_gap * 2.0;
     let divider_x = rect.max.x - space::MD - controls_width - space::SM;
-    ui.painter().line_segment(
-        [
-            egui::pos2(divider_x, rect.min.y + space::MD),
-            egui::pos2(divider_x, rect.max.y - space::MD),
-        ],
-        Stroke::new(1.0, t.separator),
-    );
+    if max_speakers > 0 {
+        ui.painter().line_segment(
+            [
+                egui::pos2(divider_x, rect.min.y + space::MD),
+                egui::pos2(divider_x, rect.max.y - space::MD),
+            ],
+            Stroke::new(1.0, t.separator),
+        );
+    }
 
-    // A parte esquerda mostra quem está falando. Se ninguém estiver falando,
-    // deixa o espaço quieto em vez de voltar ao rótulo textual antigo.
-    let mut x = rect.min.x + space::LG + 10.0;
-    let avatar_size = 22.0;
-    let avatar_gap = 4.0;
-    let max_x = divider_x - space::SM;
+    // A parte esquerda mostra só quem está falando. O número de avatares
+    // visíveis é calculado pela própria largura da pastilha.
+    let mut x = rect.min.x + space::SM + avatar_size / 2.0;
     let ctx = ui.ctx().clone();
-    for user_id in &store.call.speakers {
-        if x + avatar_size / 2.0 > max_x {
-            break;
-        }
+    for user_id in store.call.speakers.iter().take(max_speakers) {
         let person = store.member(user_id);
         let initials = person
             .map(crate::state::Member::initials)
