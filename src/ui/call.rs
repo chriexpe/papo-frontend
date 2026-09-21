@@ -641,7 +641,7 @@ pub fn floating(
         _ => 2,
     };
     // O painel desce o suficiente para não encostar nas duas pastilhas
-    // vizinhas. Um pequeno "pescoço" de vidro liga os dois componentes.
+    // vizinhas. O espaço entre ele e a cápsula fica limpo, sem ornamentos.
     let width = (area.width() - space::XXL * 2.0).clamp(220.0, 420.0);
     let columns = if limit == 1 { 1 } else { 2 };
     let rows = limit.div_ceil(columns);
@@ -655,26 +655,6 @@ pub fn floating(
         egui::pos2(area.center().x - width / 2.0, pill.max.y + bridge_gap),
         Vec2::new(width, height),
     );
-
-    // A conexão abre para fora ao descer: estreita sob a cápsula e mais
-    // larga ao chegar no painel, como uma peça única em vez de um recorte.
-    for (y, bridge_width) in [
-        (pill.max.y + 4.0, 24.0),
-        (pill.max.y + 9.0, 34.0),
-        (pill.max.y + 14.0, 46.0),
-    ] {
-        let bridge = Rect::from_center_size(
-            egui::pos2(pill.center().x, y),
-            Vec2::new(bridge_width, 12.0),
-        );
-        ui.painter().rect(
-            bridge,
-            CornerRadius::same(6),
-            t.pill_fill(state.translucent),
-            Stroke::new(1.0, t.separator),
-            egui::StrokeKind::Inside,
-        );
-    }
 
     super::shell::glass_backdrop(ui, state, rect, radius::SHEET as f32);
     ui.painter().rect(

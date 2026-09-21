@@ -3483,8 +3483,8 @@ fn composer(
         ui.painter().text(
             notify.center(),
             egui::Align2::CENTER_CENTER,
-            "@",
-            text::callout(),
+            icon::AT,
+            text::icon(13.0),
             if state.reply_notify {
                 t.accent
             } else {
