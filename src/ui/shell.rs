@@ -622,7 +622,7 @@ fn advance_surfaces(ui: &egui::Ui, state: &mut UiState) {
             state.drawer.target = 1.0;
         }
         let mut shown = state.drawer.shown;
-        advance(&mut shown, state.drawer.target, ui);
+        advance(&mut shown, state.drawer.target, 1.0, ui);
         state.drawer.shown = shown;
     }
 
@@ -630,7 +630,7 @@ fn advance_surfaces(ui: &egui::Ui, state: &mut UiState) {
         && !drag.dragging
     {
         let mut shown = drag.shown;
-        advance(&mut shown, 0.0, ui);
+        advance(&mut shown, 0.0, REPLY_TRAVEL * 2.0, ui);
         drag.shown = shown;
         if shown <= 0.0 {
             state.reply_drag = None;
@@ -687,8 +687,12 @@ fn mobile_drawers(
                         .pointer_interact_pos()
                         .is_some_and(|pos| !rect.contains(pos))
                 {
+                    // Fecha, mas segue desenhando a gaveta neste quadro.
+                    // Sair daqui fazia ela faltar um quadro e voltar já
+                    // saindo, e era isso que parecia uma segunda cópia dela.
+                    // Fechar deslizando nunca passou por aqui — por isso só
+                    // o toque fora tinha o defeito.
                     state.mobile_surface = MobileSurface::Chat;
-                    return None;
                 }
             }
             let response = egui::Area::new(Id::new("mobile-navigation-drawer"))
@@ -719,8 +723,12 @@ fn mobile_drawers(
                         .pointer_interact_pos()
                         .is_some_and(|pos| !rect.contains(pos))
                 {
+                    // Fecha, mas segue desenhando a gaveta neste quadro.
+                    // Sair daqui fazia ela faltar um quadro e voltar já
+                    // saindo, e era isso que parecia uma segunda cópia dela.
+                    // Fechar deslizando nunca passou por aqui — por isso só
+                    // o toque fora tinha o defeito.
                     state.mobile_surface = MobileSurface::Chat;
-                    return None;
                 }
             }
             egui::Area::new(Id::new("mobile-people-drawer"))
@@ -1881,7 +1889,11 @@ fn settle_mobile_gesture(state: &mut UiState, gesture: MobileGesture) {
 ///
 /// Quem desligou as animações no sistema recebe o salto direto: o fator zero
 /// vale aqui como vale no resto da interface.
-fn advance(shown: &mut f32, target: f32, ui: &egui::Ui) -> bool {
+/// `span` é o caminho inteiro na unidade de `shown` — 1 para a gaveta, que
+/// anda de 0 a 1, e a distância máxima para a mensagem, que anda em pontos.
+/// Sem ele o passo seria uma fração por quadro tanto faz a unidade, e a
+/// mensagem voltaria a um oitavo de ponto por quadro: parada, na prática.
+fn advance(shown: &mut f32, target: f32, span: f32, ui: &egui::Ui) -> bool {
     if (*shown - target).abs() < f32::EPSILON {
         return false;
     }
@@ -1892,7 +1904,7 @@ fn advance(shown: &mut f32, target: f32, ui: &egui::Ui) -> bool {
     }
     let ctx = ui.ctx();
     let dt = ctx.input(|input| input.stable_dt).min(0.1);
-    let step = dt / time;
+    let step = span * dt / time;
     let remaining = target - *shown;
     if remaining.abs() <= step {
         *shown = target;

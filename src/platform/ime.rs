@@ -11,16 +11,27 @@
 //! `slice::from_raw_parts` sobre o ponteiro do texto sem conferir se ele é
 //! nulo, e ele é nulo enquanto ninguém digitou nada. Ponteiro nulo viola a
 //! pré-condição mesmo com tamanho zero, e o pânico que sai daí não desenrola
-//! — aborta. Era o que derrubava o aplicativo assim que o teclado subia.
+//! — aborta. Por isso o texto vem empurrado pela `PapoActivity`, que recebe
+//! o `stateChanged` do próprio `GameTextInput`.
 //!
-//! Então o texto vem pelo outro lado: a `PapoActivity` recebe o
-//! `stateChanged` do `GameTextInput` e o empurra para cá. Não se olha nada a
-//! cada quadro, a letra chega na hora, e o caminho não passa perto da
-//! função quebrada.
+//! ## Os dois textos
 //!
-//! A conta é por prefixo comum: o que sumiu do fim vira `Backspace`, o que
-//! apareceu vira `Text`. É o bastante para digitar, apagar e para a troca
-//! que o corretor automático faz ao fechar uma palavra.
+//! O buffer do teclado e o campo do egui são textos **diferentes**. O
+//! teclado não sabe o que já estava escrito no campo, e o egui não sabe o
+//! que o teclado guarda. Tudo o que esta ponte faz é olhar o que mudou de um
+//! lado e contar isso ao outro.
+//!
+//! Daí o enchimento: o buffer começa com [`PAD`] espaços, e o cursor atrás
+//! deles. Sem isso, quando o que foi digitado nesta sessão acabasse o
+//! teclado não teria mais o que apagar — pararia de avisar, e segurar o
+//! apagar deixaria de apagar, apesar de ainda haver texto no campo. Com o
+//! enchimento sempre sobra o que comer: cada espaço comido é um `Backspace`
+//! de verdade no campo, e o enchimento é reposto.
+//!
+//! E daí também a desconfiança: um estado que **não** comece pelo nosso
+//! enchimento não veio do nosso buffer. É o campo anterior chegando
+//! atrasado, logo depois de trocar de foco. Confiar nele escrevia o conteúdo
+//! do campo antigo dentro do novo por um instante.
 
 #[cfg(target_os = "android")]
 use std::sync::{Mutex, OnceLock};
@@ -28,7 +39,12 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 #[cfg(target_os = "android")]
-use android_activity::input::TextInputState;
+use android_activity::input::{TextInputState, TextSpan};
+
+/// Quantos espaços ficam à esquerda do que se digita, como reserva para o
+/// apagar. Oito é folga de sobra: o enchimento é reposto a cada vez que o
+/// teclado encosta nele, então nunca se come mais do que um ou dois.
+const PAD: usize = 8;
 
 #[cfg(target_os = "android")]
 static APP: OnceLock<AndroidApp> = OnceLock::new();
@@ -41,8 +57,8 @@ struct Bridge {
     focus: Option<egui::Id>,
     /// O que o teclado mandou e ainda não virou evento.
     incoming: Option<String>,
-    /// O que já virou evento. É o espelho do buffer do teclado, não do campo
-    /// do egui — a diferença entre os dois é o que vira evento.
+    /// O espelho do buffer do teclado — enchimento incluído. Não é o texto
+    /// do campo: é o que o teclado tinha da última vez que olhamos.
     mirror: String,
 }
 
@@ -57,7 +73,7 @@ impl Bridge {
     }
 }
 
-/// Guarda a Activity, que é por onde se zera o teclado ao trocar de campo.
+/// Guarda a Activity, que é por onde se escreve no buffer do teclado.
 #[cfg(target_os = "android")]
 pub fn install(app: AndroidApp) {
     let _ = APP.set(app);
@@ -87,6 +103,27 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetText(
     super::wake::request();
 }
 
+/// Põe o buffer do teclado de volta em "só o enchimento", com o cursor no
+/// fim, e passa a esperar exatamente isso de volta.
+#[cfg(target_os = "android")]
+fn prime(bridge: &mut Bridge) {
+    let text = " ".repeat(PAD);
+    bridge.mirror = text.clone();
+    bridge.incoming = None;
+    if let Some(app) = APP.get() {
+        // Escrever é seguro; é só a leitura do `android-activity` que está
+        // quebrada.
+        app.set_text_input_state(TextInputState {
+            selection: TextSpan {
+                start: PAD,
+                end: PAD,
+            },
+            compose_region: None,
+            text,
+        });
+    }
+}
+
 /// Converte o que o teclado mandou em eventos do egui.
 #[cfg(target_os = "android")]
 pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
@@ -94,17 +131,12 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         return;
     };
 
-    // Trocou de campo (ou perdeu o foco): o buffer do teclado volta a zero,
-    // senão o texto do campo anterior contaria como já digitado aqui.
+    // Trocou de campo (ou perdeu o foco): o buffer volta ao enchimento,
+    // senão o que foi digitado no campo anterior contaria como digitado aqui.
     let focus = ctx.memory(|memory| memory.focused());
     if bridge.focus != focus {
         bridge.focus = focus;
-        bridge.mirror.clear();
-        bridge.incoming = None;
-        if let Some(app) = APP.get() {
-            // Escrever é seguro; é só a leitura que está quebrada.
-            app.set_text_input_state(TextInputState::default());
-        }
+        prime(&mut bridge);
         return;
     }
     if focus.is_none() {
@@ -118,12 +150,40 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         return;
     }
 
-    let common = common_prefix(&bridge.mirror, &current);
-    let removed = bridge.mirror.chars().count() - common;
+    let kept = leading_pad(&current);
+
+    if kept == 0 {
+        // Não começa pelo nosso enchimento: não veio do nosso buffer. É o
+        // campo anterior chegando atrasado. Repor e não inventar edição
+        // nenhuma — era isto que piscava o texto antigo dentro do campo novo.
+        log::debug!("teclado: estado de fora do buffer, ignorado");
+        prime(&mut bridge);
+        return;
+    }
+
+    if kept < PAD {
+        // O apagar passou do que foi digitado e comeu parte do enchimento.
+        // Cada espaço comido é um apagar de verdade no campo — é isto que
+        // faz segurar o apagar continuar apagando.
+        let typed = bridge.mirror.chars().count().saturating_sub(PAD);
+        let removed = typed + (PAD - kept);
+        for _ in 0..removed {
+            push_backspace(raw_input);
+        }
+        log::debug!("teclado: {removed} apagado(s), 0 escrito(s)");
+        prime(&mut bridge);
+        return;
+    }
+
+    // Enchimento inteiro: a diferença está no que veio depois dele.
+    let before: String = bridge.mirror.chars().skip(PAD).collect();
+    let after: String = current.chars().skip(PAD).collect();
+    let common = common_prefix(&before, &after);
+    let removed = before.chars().count() - common;
     for _ in 0..removed {
         push_backspace(raw_input);
     }
-    let inserted: String = current.chars().skip(common).collect();
+    let inserted: String = after.chars().skip(common).collect();
 
     // Só os tamanhos: pelo mesmo caminho passa o campo de senha, e o logcat
     // é lido por qualquer um com o cabo na mão.
@@ -137,6 +197,15 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     }
 
     bridge.mirror = current;
+}
+
+/// Quantos espaços de enchimento sobraram no começo, no máximo [`PAD`].
+///
+/// Passar de [`PAD`] seria o próprio usuário tendo digitado um espaço logo
+/// no começo; esse espaço é dele, não nosso.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn leading_pad(text: &str) -> usize {
+    text.chars().take_while(|c| *c == ' ').count().min(PAD)
 }
 
 /// Quantos caracteres os dois textos têm em comum, do início.
@@ -165,6 +234,24 @@ fn push_backspace(raw_input: &mut egui::RawInput) {
 #[cfg(test)]
 mod tests {
     use super::common_prefix;
+
+    #[test]
+    fn o_enchimento_e_contado_ate_o_limite_e_nao_alem() {
+        use super::{PAD, leading_pad};
+
+        // Buffer intocado: o enchimento inteiro.
+        assert_eq!(leading_pad(&" ".repeat(PAD)), PAD);
+        // Com texto digitado atrás dele, continua inteiro.
+        assert_eq!(leading_pad(&format!("{}ola", " ".repeat(PAD))), PAD);
+        // O apagar comeu um: é um apagar de verdade no campo.
+        assert_eq!(leading_pad(&" ".repeat(PAD - 1)), PAD - 1);
+        // Um espaço digitado pelo usuário é dele, não nosso: a conta para
+        // no limite, senão o espaço sumiria em vez de ser escrito.
+        assert_eq!(leading_pad(&" ".repeat(PAD + 3)), PAD);
+        // Texto que não começa pelo enchimento não veio do nosso buffer.
+        assert_eq!(leading_pad("senha123"), 0);
+        assert_eq!(leading_pad(""), 0);
+    }
 
     #[test]
     fn conta_o_prefixo_em_caracteres_nao_em_bytes() {
