@@ -574,11 +574,10 @@ fn transport(
         },
         id,
         "mute",
-    ) {
-        if let Some(player) = media.existing_player(id) {
-            let muted = player.muted;
-            player.set_muted(!muted);
-        }
+    ) && let Some(player) = media.existing_player(id)
+    {
+        let muted = player.muted;
+        player.set_muted(!muted);
     }
     if control(ui, download, icon::DOWNLOAD_SIMPLE, id, "dl") {
         outcome = Some(Transport::Download);
