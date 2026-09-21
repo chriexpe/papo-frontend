@@ -1525,11 +1525,12 @@ fn handle_mobile_gesture(
 
         if state.mobile_surface == MobileSurface::Chat
             && horizontal_swipe(delta, -1.0)
-            && let Some(message_id) = gesture.message_id
         {
-            state.replying = Some(message_id);
-            state.close_popup();
-            return;
+            if let Some(message_id) = gesture.message_id {
+                state.replying = Some(message_id);
+                state.close_popup();
+                return;
+            }
         }
 
         match state.mobile_surface {
