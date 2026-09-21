@@ -1349,11 +1349,12 @@ impl PapoApp {
 
                 // O nome de verdade do servidor substitui o host no trilho
                 // assim que ele chega.
-                if let Some(server) = &ws.store.server {
-                    if !server.name.is_empty() && ws.label != server.name {
-                        ws.label = server.name.clone();
-                        self.settings.servers[index].label = server.name.clone();
-                    }
+                if let Some(server) = &ws.store.server
+                    && !server.name.is_empty()
+                    && ws.label != server.name
+                {
+                    ws.label = server.name.clone();
+                    self.settings.servers[index].label = server.name.clone();
                 }
             }
         }
@@ -1835,10 +1836,10 @@ impl PapoApp {
             self.retheme(ctx);
         }
 
-        if autostart != autostart_before {
-            if let Err(error) = crate::platform::autostart::set(autostart) {
-                log::warn!("não deu para ajustar o início automático: {error}");
-            }
+        if autostart != autostart_before
+            && let Err(error) = crate::platform::autostart::set(autostart)
+        {
+            log::warn!("não deu para ajustar o início automático: {error}");
         }
 
         for action in actions {
@@ -2116,10 +2117,10 @@ impl eframe::App for PapoApp {
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
-        if let (Some(gl), Some(glass)) = (gl, &self.ui.glass) {
-            if let Ok(glass) = glass.lock() {
-                glass.destroy(gl);
-            }
+        if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
+            && let Ok(glass) = glass.lock()
+        {
+            glass.destroy(gl);
         }
     }
 
@@ -2287,10 +2288,13 @@ fn is_local_host(host: &str) -> bool {
     if host.starts_with("10.") || host.starts_with("192.168.") || host.starts_with("169.254.") {
         return true;
     }
-    if let Some(rest) = host.strip_prefix("172.") {
-        if let Some(octet) = rest.split('.').next().and_then(|part| part.parse::<u8>().ok()) {
-            return (16..=31).contains(&octet);
-        }
+    if let Some(rest) = host.strip_prefix("172.")
+        && let Some(octet) = rest
+            .split('.')
+            .next()
+            .and_then(|part| part.parse::<u8>().ok())
+    {
+        return (16..=31).contains(&octet);
     }
     false
 }
