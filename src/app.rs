@@ -1434,11 +1434,17 @@ impl PapoApp {
             .iter()
             .map(|ws| ws.entry(&self.settings))
             .collect();
-        let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) else {
-            return;
-        };
+        if let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) {
+            self.handle_rail_action(action, ctx);
+        }
+    }
+
+    fn handle_rail_action(&mut self, action: crate::ui::rail::RailAction, ctx: &egui::Context) {
         match action {
-            crate::ui::rail::RailAction::Select(index) => self.activate(index, ctx),
+            crate::ui::rail::RailAction::Select(index) => {
+                self.activate(index, ctx);
+                self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+            }
             crate::ui::rail::RailAction::Add => self.add_server(ctx),
             crate::ui::rail::RailAction::Remove(index) => self.remove_server(index, ctx),
         }
@@ -2030,7 +2036,14 @@ impl eframe::App for PapoApp {
 
         let strings = self.settings.lang.strings();
         self.draw_header(ui);
-        self.draw_rail(ui, strings, &ctx);
+
+        let compact_chat = matches!(
+            self.workspaces[self.active].store.screen,
+            Screen::Chat
+        ) && crate::ui::shell::is_compact(ctx.content_rect());
+        if !compact_chat {
+            self.draw_rail(ui, strings, &ctx);
+        }
 
         let active = self.active;
         match self.workspaces[active].store.screen {
@@ -2056,15 +2069,30 @@ impl eframe::App for PapoApp {
                 }
             }
             Screen::Chat => {
-                let ws = &mut self.workspaces[active];
-                shell::draw(
-                    ui,
-                    &mut ws.store,
-                    &mut self.ui,
-                    ws.call.as_mut(),
-                    &self.tokens,
-                    strings,
-                );
+                let mobile_entries = compact_chat.then(|| {
+                    self.workspaces
+                        .iter()
+                        .map(|ws| ws.entry(&self.settings))
+                        .collect::<Vec<_>>()
+                });
+                let rail_action = {
+                    let ws = &mut self.workspaces[active];
+                    shell::draw(
+                        ui,
+                        &mut ws.store,
+                        &mut self.ui,
+                        ws.call.as_mut(),
+                        &self.tokens,
+                        strings,
+                        mobile_entries.as_ref().map(|entries| shell::MobileServers {
+                            entries,
+                            active,
+                        }),
+                    )
+                };
+                if let Some(action) = rail_action {
+                    self.handle_rail_action(action, &ctx);
+                }
                 self.call_window(&ctx);
                 self.pump_chat();
                 let actions = std::mem::take(&mut self.ui.actions);
