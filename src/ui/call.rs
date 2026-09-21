@@ -416,7 +416,8 @@ fn compact_pill(
 ) -> Rect {
     let button = 26.0;
     let button_gap = space::XXS;
-    let control_count = if floating { 4.0 } else { 3.0 };
+    // mic + câmera + abrir/trazer + sair; no overlay entra também 1/2/4.
+    let control_count = if floating { 5.0 } else { 4.0 };
     let controls_width = button * control_count + button_gap * (control_count - 1.0);
     let controls_only = space::MD * 2.0 + controls_width;
 
@@ -449,12 +450,22 @@ fn compact_pill(
     if back.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    super::shell::glass_backdrop(ui, state, rect, 18.0);
     ui.painter().rect(
         rect,
         CornerRadius::same(18),
         t.pill_fill(state.translucent),
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
+    );
+    // Um brilho curto no bordo de cima dá à cápsula a mesma leitura de
+    // vidro das outras pastilhas, sem desenhar uma segunda moldura inteira.
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + 18.0, rect.min.y + 0.75),
+            egui::pos2(rect.max.x - 18.0, rect.min.y + 0.75),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
     );
     if back.hovered() {
         ui.painter()
@@ -536,7 +547,7 @@ fn compact_pill(
         let spot = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
         let response = ui.interact(spot, egui::Id::new("quantidade-de-videos"), Sense::click());
         if response.hovered() {
-            ui.painter().rect_filled(spot, CornerRadius::same(radius::FIELD), t.fill_soft);
+            ui.painter().circle_filled(spot.center(), button / 2.0, t.fill_soft);
         }
         ui.painter().text(
             spot.center(),
@@ -554,6 +565,28 @@ fn compact_pill(
         }
         x -= button + button_gap;
     }
+
+    let camera = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
+    if round_button(
+        ui,
+        t,
+        camera,
+        if store.call.camera {
+            icon::VIDEO_CAMERA
+        } else {
+            icon::VIDEO_CAMERA_SLASH
+        },
+        if store.call.camera {
+            s.call_camera_off
+        } else {
+            s.call_camera
+        },
+        store.call.camera,
+        false,
+    ) {
+        state.actions.push(ChatAction::ToggleCamera);
+    }
+    x -= button + button_gap;
 
     let mic = Rect::from_center_size(egui::pos2(x, rect.center().y), Vec2::splat(button));
     if round_button(
@@ -607,7 +640,9 @@ pub fn floating(
         4 => 4,
         _ => 2,
     };
-    let width = (area.width() - space::XXL).clamp(220.0, 420.0);
+    // O painel desce o suficiente para não encostar nas duas pastilhas
+    // vizinhas. Um pequeno "pescoço" de vidro liga os dois componentes.
+    let width = (area.width() - space::XXL * 2.0).clamp(220.0, 420.0);
     let columns = if limit == 1 { 1 } else { 2 };
     let rows = limit.div_ceil(columns);
     let gap = space::SM;
@@ -615,21 +650,46 @@ pub fn floating(
     let height = rows as f32 * (cell_width / TILE_RATIO)
         + gap * (rows as f32 - 1.0)
         + space::SM * 2.0;
+    let bridge_gap = 18.0;
     let rect = Rect::from_min_size(
-        egui::pos2(area.center().x - width / 2.0, pill.max.y - 1.0),
+        egui::pos2(area.center().x - width / 2.0, pill.max.y + bridge_gap),
         Vec2::new(width, height),
     );
+
+    // A conexão abre para fora ao descer: estreita sob a cápsula e mais
+    // larga ao chegar no painel, como uma peça única em vez de um recorte.
+    for (y, bridge_width) in [
+        (pill.max.y + 4.0, 24.0),
+        (pill.max.y + 9.0, 34.0),
+        (pill.max.y + 14.0, 46.0),
+    ] {
+        let bridge = Rect::from_center_size(
+            egui::pos2(pill.center().x, y),
+            Vec2::new(bridge_width, 12.0),
+        );
+        ui.painter().rect(
+            bridge,
+            CornerRadius::same(6),
+            t.pill_fill(state.translucent),
+            Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    super::shell::glass_backdrop(ui, state, rect, radius::SHEET as f32);
     ui.painter().rect(
         rect,
-        CornerRadius {
-            nw: 0,
-            ne: 0,
-            sw: radius::SHEET,
-            se: radius::SHEET,
-        },
-        t.elevated_bg.gamma_multiply(0.98),
+        CornerRadius::same(radius::SHEET),
+        t.pill_fill(state.translucent),
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius::SHEET as f32, rect.min.y + 0.75),
+            egui::pos2(rect.max.x - radius::SHEET as f32, rect.min.y + 0.75),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
     );
     compact_grid(
         ui,
