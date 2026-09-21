@@ -811,6 +811,7 @@ pub struct Context<'a> {
     pub theme: &'a mut crate::ui::theme::ThemePref,
     pub translucency: &'a mut bool,
     pub notifications: &'a mut bool,
+    pub reply_notifications: &'a mut bool,
     pub close_to_tray: &'a mut bool,
     pub autostart: &'a mut bool,
     pub badge: &'a mut bool,
@@ -1207,6 +1208,13 @@ fn app_pane(
                 rows.row(s.menu_notifications, Some(s.notifications_hint), |ui, t| {
                     switch(ui, t, data.notifications);
                 });
+                rows.row(
+                    s.reply_notifications_default,
+                    Some(s.reply_notifications_default_hint),
+                    |ui, t| {
+                        switch(ui, t, data.reply_notifications);
+                    },
+                );
                 rows.row(s.badge, Some(s.badge_hint), |ui, t| {
                     switch(ui, t, data.badge);
                 });
