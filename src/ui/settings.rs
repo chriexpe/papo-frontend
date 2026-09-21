@@ -1366,6 +1366,7 @@ fn server_pane(
             let channels = data.store.channels.clone();
             let draft = &mut state.draft;
             let mut close_editor = false;
+            let mut cancel_delete = false;
             let mut confirmed_delete: Option<String> = None;
 
             if let Some(editor) = draft.channel.as_mut() {
@@ -1467,7 +1468,7 @@ fn server_pane(
                     {
                         rows.row(&channel.name, Some(s.delete_type_name), |ui, t| {
                             if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                draft.deleting = None;
+                                cancel_delete = true;
                             }
                         });
                         let sent = rows.field(s.channel_name, typed, 32, false);
@@ -1524,6 +1525,9 @@ fn server_pane(
 
             if close_editor {
                 draft.channel = None;
+            }
+            if cancel_delete {
+                draft.deleting = None;
             }
             if let Some(channel_id) = confirmed_delete {
                 actions.push(SettingsAction::Chat(ChatAction::DeleteChannel(channel_id)));
