@@ -1454,7 +1454,98 @@ fn conversation(
         actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
         call_layers(ui, store, state, call, t, s, full, stage);
+
+        if state.compact {
+            handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
+        }
     });
+}
+
+fn horizontal_swipe(delta: Vec2, direction: f32) -> bool {
+    delta.x * direction >= SWIPE_DISTANCE
+        && delta.x.abs() >= delta.y.abs() * SWIPE_AXIS_BIAS
+}
+
+fn handle_mobile_gesture(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    area: Rect,
+    top_inset: f32,
+    bottom_inset: f32,
+) {
+    let (pressed, released, down, pos) = ui.input(|input| {
+        (
+            input.pointer.any_pressed(),
+            input.pointer.any_released(),
+            input.pointer.any_down(),
+            input.pointer.interact_pos(),
+        )
+    });
+
+    if pressed {
+        if let Some(origin) = pos {
+            let message_id = if state.mobile_surface == MobileSurface::Chat {
+                state
+                    .message_rows
+                    .iter()
+                    .find(|(_, rect)| rect.contains(origin))
+                    .map(|(id, _)| id.clone())
+            } else {
+                None
+            };
+            let controls = origin.y < area.min.y + top_inset
+                || origin.y > area.max.y - bottom_inset;
+            let blocked = state.popup.is_some()
+                || state.viewer.is_some()
+                || state.panel.is_some()
+                || (state.mobile_surface == MobileSurface::Chat && controls);
+            state.mobile_gesture = Some(MobileGesture {
+                origin,
+                last: origin,
+                message_id,
+                blocked,
+            });
+        }
+    }
+
+    if let Some(gesture) = state.mobile_gesture.as_mut() {
+        if let Some(pos) = pos {
+            gesture.last = pos;
+        }
+    }
+
+    if released || (!down && state.mobile_gesture.is_some() && !pressed) {
+        let Some(gesture) = state.mobile_gesture.take() else {
+            return;
+        };
+        if gesture.blocked {
+            return;
+        }
+        let delta = gesture.last - gesture.origin;
+
+        if state.mobile_surface == MobileSurface::Chat
+            && horizontal_swipe(delta, -1.0)
+            && let Some(message_id) = gesture.message_id
+        {
+            state.replying = Some(message_id);
+            state.close_popup();
+            return;
+        }
+
+        match state.mobile_surface {
+            MobileSurface::Chat if horizontal_swipe(delta, 1.0) => {
+                state.mobile_surface = MobileSurface::Navigation;
+                state.close_popup();
+            }
+            MobileSurface::Navigation if horizontal_swipe(delta, -1.0) => {
+                state.mobile_surface = MobileSurface::Chat;
+            }
+            MobileSurface::People if horizontal_swipe(delta, 1.0) => {
+                state.mobile_surface = MobileSurface::Chat;
+            }
+            _ => {}
+        }
+    }
 }
 
 /// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
@@ -2037,6 +2128,38 @@ fn message_list(
         });
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        if state.compact {
+            let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
+            state
+                .message_rows
+                .push((message.id.clone(), touch_rect));
+            if !message.pending {
+                let touch = ui.interact(
+                    touch_rect,
+                    Id::new(("message-touch", &message.id)),
+                    Sense::click(),
+                );
+                if touch.double_clicked() {
+                    let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Emoji,
+                        message_id: message.id.clone(),
+                        anchor: Rect::from_min_size(at, Vec2::ZERO),
+                        at_pointer: true,
+                        opened: ui.input(|input| input.time),
+                    });
+                } else if touch.secondary_clicked() {
+                    let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id: message.id.clone(),
+                        anchor: Rect::from_min_size(at, Vec2::ZERO),
+                        at_pointer: true,
+                        opened: ui.input(|input| input.time),
+                    });
+                }
+            }
+        }
         // Mensagem que cita você fica marcada, com ou sem o ponteiro em cima.
         let mentions_me = store.mentions_me(message);
         let hovered = match &focused_message {
@@ -2089,12 +2212,13 @@ fn message_list(
             );
         }
         if hovered {
-            if focused_message.is_none() {
+            if focused_message.is_none() && !state.compact {
                 hover_pill(ui, state, t, s, message, row, store);
             }
 
-            let secondary =
-                focused_message.is_none() && ui.input(|input| input.pointer.secondary_clicked());
+            let secondary = !state.compact
+                && focused_message.is_none()
+                && ui.input(|input| input.pointer.secondary_clicked());
             if secondary {
                 let at = ui.ctx().pointer_latest_pos().unwrap_or(row.center());
                 state.popup = Some(Popup {
