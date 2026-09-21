@@ -21,7 +21,7 @@ use super::emoji;
 use super::glass::SharedGlass;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
-use super::widgets::{avatar, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
+use super::widgets::{avatar, floating_pill, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
