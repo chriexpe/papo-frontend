@@ -2436,25 +2436,29 @@ fn message_list(
         let backdrop = ui.painter().add(egui::Shape::Noop);
 
         // Puxada para responder: a linha anda para a esquerda junto com o
-        // dedo. Quem anda é só o desenho — o retângulo do toque fica onde
-        // estava, senão a mensagem fugiria do próprio gesto que a move.
+        // dedo. Quem anda é **só o desenho**. O retângulo do toque fica onde
+        // estava — senão a mensagem fugiria do próprio gesto que a move — e
+        // o lugar que ela ocupa na lista também, que é o que importa aqui:
+        // mexer no retângulo do filho mexia na conta do pai, e o empurrão
+        // escorria para todas as mensagens de baixo.
         //
-        // O deslocamento vai no retângulo do filho, e não numa camada à
-        // parte, para a linha continuar sendo cortada pela rolagem e
-        // continuar passando por baixo das pastilhas flutuantes.
+        // Por isso a linha puxada vai para uma camada só dela, e é a camada
+        // que se desloca depois de desenhada. A conta da lista não vê nada
+        // disso. O preço é a linha passar por cima das pastilhas flutuantes
+        // enquanto o dedo a segura, em vez de por baixo.
         let slide = state
             .reply_drag
             .as_ref()
             .filter(|drag| drag.id == message.id)
             .map_or(0.0, |drag| drag.shown);
+        let sliding = (slide > 0.5).then(|| {
+            egui::LayerId::new(egui::Order::Middle, Id::new(("mensagem-puxada", &message.id)))
+        });
 
         let author = store.member(&message.author_id);
         let mut builder = UiBuilder::new();
-        if slide > 0.5 {
-            builder = builder.max_rect(
-                ui.available_rect_before_wrap()
-                    .translate(Vec2::new(-slide, 0.0)),
-            );
+        if let Some(layer) = sliding {
+            builder = builder.layer_id(layer);
         }
         let inner = ui.scope_builder(builder, |ui| {
             ui.horizontal_top(|ui| {
@@ -2516,6 +2520,13 @@ fn message_list(
                 });
             });
         });
+
+        if let Some(layer) = sliding {
+            ui.ctx().transform_layer_shapes(
+                layer,
+                egui::emath::TSTransform::from_translation(Vec2::new(-slide, 0.0)),
+            );
+        }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
         if state.compact {
