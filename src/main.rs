@@ -40,7 +40,11 @@ fn main() -> eframe::Result<()> {
     // `papo demo` abre a janela com um servidor de mentira: é como se vê a
     // interface inteira enquanto o backend não responde.
     if args.get(1).map(String::as_str) == Some("demo") {
-        std::env::set_var("PAPO_DEMO", "1");
+        // SAFETY: ainda estamos no início de `main`, antes de criar as
+        // threads de rede, mídia, tray ou diálogos que poderiam ler o ambiente.
+        unsafe {
+            std::env::set_var("PAPO_DEMO", "1");
+        }
     }
 
     // `papo pick-test` abre o seletor **duas vezes seguidas**, pelo mesmo
