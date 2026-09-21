@@ -1364,7 +1364,9 @@ impl PapoApp {
     /// e para isso ela precisa ser uma janela que o compositor conheça.
     fn call_window(&mut self, ctx: &egui::Context) {
         let active = self.active;
-        if !self.workspaces[active].store.call.popped_out {
+        // No layout compacto "janela só da call" é uma sobreposição dentro
+        // da conversa; criar uma viewport do SO no Android não faria sentido.
+        if self.ui.compact || !self.workspaces[active].store.call.popped_out {
             return;
         }
         let t = self.tokens;
