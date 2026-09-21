@@ -36,10 +36,9 @@ impl Dispatch<WlRegistry, ()> for Globals {
             interface,
             version,
         } = event
+            && interface == "org_kde_kwin_appmenu_manager"
         {
-            if interface == "org_kde_kwin_appmenu_manager" {
-                state.manager = Some(registry.bind(name, version.min(1), qh, ()));
-            }
+            state.manager = Some(registry.bind(name, version.min(1), qh, ()));
         }
     }
 }
