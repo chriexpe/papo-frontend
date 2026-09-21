@@ -66,6 +66,7 @@ pub enum ChatAction {
     Send {
         content: String,
         reply_to: Option<String>,
+        notify_reply: bool,
         attachments: Vec<Upload>,
     },
     Edit {
@@ -260,6 +261,7 @@ pub struct Stash {
     pub composer: String,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
+    pub reply_notify: bool,
     pub editing: Option<(String, String)>,
     pub viewer: Option<Viewer>,
     pub popup: Option<Popup>,
@@ -274,6 +276,7 @@ impl Stash {
             composer: String::new(),
             attachments: Vec::new(),
             replying: None,
+            reply_notify: true,
             editing: None,
             viewer: None,
             popup: None,
@@ -288,6 +291,7 @@ impl Stash {
         std::mem::swap(&mut self.composer, &mut ui.composer);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
+        std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
@@ -320,6 +324,10 @@ pub struct UiState {
     pub attachments: Vec<Upload>,
     /// Mensagem sendo respondida.
     pub replying: Option<String>,
+    /// Estado atual do @ desta resposta.
+    pub reply_notify: bool,
+    /// Valor usado sempre que uma nova resposta começa.
+    pub reply_notify_default: bool,
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
     pub actions: Vec<ChatAction>,
@@ -376,6 +384,8 @@ impl Default for UiState {
             media: MediaStore::new(None),
             attachments: Vec::new(),
             replying: None,
+            reply_notify: true,
+            reply_notify_default: true,
             editing: None,
             actions: Vec::new(),
             viewer: None,
@@ -400,6 +410,11 @@ impl Default for UiState {
 }
 
 impl UiState {
+    fn start_reply(&mut self, message_id: String) {
+        self.replying = Some(message_id);
+        self.reply_notify = self.reply_notify_default;
+    }
+
     fn close_popup(&mut self) {
         self.popup = None;
         self.emoji_query.clear();
@@ -1579,7 +1594,7 @@ fn handle_mobile_gesture(
             && horizontal_swipe(delta, -1.0)
             && let Some(message_id) = gesture.message_id
         {
-            state.replying = Some(message_id);
+            state.start_reply(message_id);
             state.close_popup();
             return;
         }
@@ -2722,7 +2737,7 @@ fn hover_pill(
                         opened,
                     })
                 }
-                icon::ARROW_BEND_UP_LEFT => state.replying = Some(message.id.clone()),
+                icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
                     state.editing = Some((message.id.clone(), message.content.clone()))
                 }
@@ -2972,7 +2987,7 @@ fn context_menu(
                 });
                 return;
             }
-            MessageCommand::Reply => state.replying = Some(message.id.clone()),
+            MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
                 state.editing = Some((message.id.clone(), message.content.clone()))
             }
@@ -3244,6 +3259,7 @@ fn submit(state: &mut UiState) {
     state.actions.push(ChatAction::Send {
         content,
         reply_to: state.replying.take(),
+        notify_reply: state.reply_notify,
         attachments: std::mem::take(&mut state.attachments),
     });
 }
@@ -3430,7 +3446,14 @@ fn composer(
             egui::pos2(band.max.x - space::LG - 8.0, band.center().y),
             Vec2::splat(20.0),
         );
-        let jump_rect = Rect::from_min_max(band.min, egui::pos2(close.min.x - space::SM, band.max.y));
+        let notify = Rect::from_center_size(
+            egui::pos2(close.min.x - space::MD - 10.0, band.center().y),
+            Vec2::splat(20.0),
+        );
+        let jump_rect = Rect::from_min_max(
+            band.min,
+            egui::pos2(notify.min.x - space::SM, band.max.y),
+        );
         let jump = ui.interact(jump_rect, Id::new(("reply-jump", &reply_to)), Sense::click());
         if jump.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -3448,6 +3471,28 @@ fn composer(
                 found: None,
                 since: ui.input(|input| input.time),
             });
+        }
+
+        let notify_response = ui
+            .interact(notify, Id::new("reply-notify"), Sense::click())
+            .on_hover_text(s.reply_notification);
+        if notify_response.hovered() {
+            ui.painter()
+                .circle_filled(notify.center(), 10.0, t.fill_soft);
+        }
+        ui.painter().text(
+            notify.center(),
+            egui::Align2::CENTER_CENTER,
+            "@",
+            text::callout(),
+            if state.reply_notify {
+                t.accent
+            } else {
+                t.label_tertiary
+            },
+        );
+        if notify_response.clicked() {
+            state.reply_notify = !state.reply_notify;
         }
 
         let response = ui.interact(close, Id::new("reply-close"), Sense::click());
