@@ -2691,7 +2691,7 @@ fn hover_pill(
 
 fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
-    let screen = ui.ctx().viewport_rect();
+    let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
     saved_toast(&mut top, state, t, s);
@@ -2730,7 +2730,12 @@ fn emoji_popup(
     popup: &Popup,
 ) {
     let custom_only = popup.kind == PopupKind::ComposerSticker;
-    let size = Vec2::new(316.0, if custom_only { 300.0 } else { 380.0 });
+    let safe = ui.ctx().content_rect();
+    let desired = Vec2::new(316.0, if custom_only { 300.0 } else { 380.0 });
+    let size = Vec2::new(
+        desired.x.min((safe.width() - space::XL).max(220.0)),
+        desired.y.min((safe.height() - space::XL).max(220.0)),
+    );
     let rect = emoji::popup_area(ui, popup.anchor, size);
     let mut chosen = None;
     let mut query = std::mem::take(&mut state.emoji_query);
@@ -3064,8 +3069,8 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
 
 /// Lugar do aviso flutuante: centralizado, acima da caixa de texto.
 fn toast_rect(ui: &egui::Ui) -> Rect {
-    let screen = ui.ctx().viewport_rect();
-    let width = 320.0;
+    let screen = ui.ctx().content_rect();
+    let width = 320.0_f32.min((screen.width() - space::XL * 2.0).max(220.0));
     let height = 58.0;
     Rect::from_min_size(
         egui::pos2(
@@ -3985,5 +3990,32 @@ mod sugestao {
             typing_shortcode(text, text.chars().count()),
             Some((5, "co".to_owned()))
         );
+    }
+}
+
+
+#[cfg(test)]
+mod mobile_tests {
+    use super::*;
+
+    #[test]
+    fn swipe_horizontal_exige_distancia_e_dominancia() {
+        assert!(horizontal_swipe(Vec2::new(80.0, 12.0), 1.0));
+        assert!(horizontal_swipe(Vec2::new(-80.0, 12.0), -1.0));
+        assert!(!horizontal_swipe(Vec2::new(40.0, 0.0), 1.0));
+        assert!(!horizontal_swipe(Vec2::new(70.0, 70.0), 1.0));
+        assert!(!horizontal_swipe(Vec2::new(-80.0, 10.0), 1.0));
+    }
+
+    #[test]
+    fn breakpoint_preserva_layout_largo() {
+        assert!(is_compact(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(COMPACT_BREAKPOINT - 1.0, 700.0),
+        )));
+        assert!(!is_compact(Rect::from_min_size(
+            egui::Pos2::ZERO,
+            Vec2::new(COMPACT_BREAKPOINT, 700.0),
+        )));
     }
 }
