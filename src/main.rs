@@ -318,12 +318,12 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                 live = true;
                 println!("conexão de mídia estabelecida");
             }
-            if let Some(at) = unmute {
-                if std::time::Instant::now() > at {
-                    unmute = None;
-                    println!("abrindo o microfone");
-                    call.set_muted(false);
-                }
+            if let Some(at) = unmute
+                && std::time::Instant::now() > at
+            {
+                unmute = None;
+                println!("abrindo o microfone");
+                call.set_muted(false);
             }
             if let Some(warning) = call.take_warning() {
                 println!("aviso: {warning}");
