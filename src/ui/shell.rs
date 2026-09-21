@@ -654,6 +654,9 @@ fn channels_sidebar(
                                     );
                                     if row.clicked() {
                                         store.selected_channel = channel.id.clone();
+                                        if state.compact {
+                                            state.mobile_surface = MobileSurface::Chat;
+                                        }
                                     }
                                     channel_menu(&row, channel, state, s);
                                 }
@@ -696,6 +699,9 @@ fn channels_sidebar(
                                         } else {
                                             ChatAction::JoinVoice(channel.id.clone())
                                         });
+                                        if state.compact {
+                                            state.mobile_surface = MobileSurface::Chat;
+                                        }
                                     }
                                     channel_menu(&row, channel, state, s);
                                     crate::ui::call::roster(
@@ -1091,6 +1097,7 @@ fn members_sidebar(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
+    mobile: bool,
 ) {
     let ctx = root.ctx().clone();
     egui::Panel::right("members")
@@ -1098,6 +1105,22 @@ fn members_sidebar(
         .resizable(false)
         .frame(sidebar_frame(t))
         .show(root, |ui| {
+            if mobile {
+                ui.horizontal(|ui| {
+                    ui.add_space(space::LG);
+                    ui.label(
+                        RichText::new(s.members)
+                            .font(text::headline())
+                            .color(t.label),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if icon_button(ui, t, icon::X, s.close).clicked() {
+                            state.mobile_surface = MobileSurface::Chat;
+                        }
+                    });
+                });
+                ui.separator();
+            }
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
@@ -1504,7 +1527,8 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
         .unwrap_or(0.0);
-    let limit = area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD;
+    let limit = (area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD)
+        .max(PILL_HEIGHT);
     let width = (base_width + topic_width * reveal).min(limit);
 
     let rect = Rect::from_min_size(
@@ -1562,7 +1586,7 @@ fn actions_pill(
 ) {
     let open = state.panel.as_ref().map(|panel| panel.kind);
     let width = if open.is_some() {
-        PANEL_WIDTH
+        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
     } else {
         ACTIONS_PILL_WIDTH
     };
@@ -1592,7 +1616,11 @@ fn actions_pill(
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
                 if icon_button(ui, t, icon::USERS, s.members).clicked() {
-                    state.pending.push(MenuCommand::ToggleMembers);
+                    if state.compact {
+                        state.mobile_surface = MobileSurface::People;
+                    } else {
+                        state.pending.push(MenuCommand::ToggleMembers);
+                    }
                 }
                 if pill_toggle(ui, t, icon::PUSH_PIN, s.pinned, open == Some(PanelKind::Pinned)) {
                     toggle_panel(state, PanelKind::Pinned);
