@@ -491,9 +491,7 @@ fn mobile_drawers(
     match state.mobile_surface {
         MobileSurface::Chat => None,
         MobileSurface::Navigation => {
-            let Some(servers) = servers else {
-                return None;
-            };
+            let servers = servers?;
             let width = (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
                 .min((area.width() - space::XXL).max(SIDEBAR_WIDTH));
             let rect = Rect::from_min_size(area.min, Vec2::new(width, area.height()));
