@@ -4,6 +4,9 @@
 //! GStreamer ou ao egui como URL: tudo passa por aqui, é gravado no cache do
 //! usuário e só então vira textura ou arquivo para tocar.
 
+/// Conferência do GStreamer no Android, escrita no logcat na abertura.
+#[cfg(target_os = "android")]
+pub mod gst_check;
 #[cfg_attr(target_os = "android", path = "player_android.rs")]
 pub mod player;
 pub mod prepare;

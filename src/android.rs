@@ -38,6 +38,11 @@ fn android_main(app: AndroidApp) {
         log::error!("sem onde gravar: os ajustes não vão sobreviver ao fechamento");
     }
 
+    // O GStreamer já foi iniciado pela Activity, antes de o Rust começar a
+    // andar; aqui só se confere o que ele trouxe. Sai tudo no logcat:
+    //   adb logcat -s papo
+    crate::media::gst_check::run();
+
     let options = eframe::NativeOptions {
         android_app: Some(app),
         persistence_path,

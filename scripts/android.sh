@@ -15,6 +15,8 @@ cd "$(dirname "$0")/.."
 ROOT="$PWD"
 APP_ID="io.github.chriexpe.papo"
 ABI="arm64-v8a"
+# A versão do SDK do GStreamer que casa com a da área de trabalho.
+GST_VERSION="1.28.7"
 # O piso de API do `cargo ndk` tem de bater com o `minSdk` do Gradle.
 MIN_SDK=24
 
@@ -66,8 +68,49 @@ if [ "$DO_LOG_ONLY" = 1 ]; then
     exec "${LOGCAT[@]}"
 fi
 
-# --- Rust ------------------------------------------------------------------
 JNI_LIBS="$ROOT/android/app/src/main/jniLibs"
+
+# --- GStreamer -------------------------------------------------------------
+# O GStreamer do Android vem de um SDK próprio, e vira um `.so` só: núcleo
+# mais os plugins escolhidos no `CMakeLists.txt`, com um registro estático.
+# Lá não existe `gst-plugin-scanner` nem plugin carregado em tempo de
+# execução — o conjunto é decidido na ligação.
+: "${GSTREAMER_ROOT_ANDROID:=$HOME/Android/gst}"
+export GSTREAMER_ROOT_ANDROID
+if [ ! -d "$GSTREAMER_ROOT_ANDROID/arm64" ]; then
+    echo "SDK do GStreamer para Android não encontrado em $GSTREAMER_ROOT_ANDROID/arm64" >&2
+    echo "Baixe o universal de https://gstreamer.freedesktop.org/data/pkg/android/$GST_VERSION/" >&2
+    echo "e extraia ao menos 'arm64' ali." >&2
+    exit 1
+fi
+
+GST_BUILD="$ROOT/android/gstreamer/build"
+echo "==> cmake (libgstreamer_android.so)"
+cmake -S "$ROOT/android/gstreamer" -B "$GST_BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI="$ABI" \
+    -DANDROID_PLATFORM="android-$MIN_SDK" \
+    -DANDROID_STL=c++_shared \
+    -DCMAKE_BUILD_TYPE=Release >/dev/null
+cmake --build "$GST_BUILD" -j"$(nproc)"
+
+mkdir -p "$JNI_LIBS/$ABI"
+cp "$GST_BUILD/libgstreamer_android.so" "$JNI_LIBS/$ABI/"
+# O `.so` do GStreamer pede a libc++ compartilhada, que o NDK entrega.
+cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" \
+    "$JNI_LIBS/$ABI/"
+ls -la "$JNI_LIBS/$ABI/libgstreamer_android.so" | awk '{printf "    libgstreamer_android.so: %.1f MB\n", $5/1048576}'
+
+# O lado Rust liga contra esse `.so`. Dizer isso ao `system-deps` pela
+# variável de ambiente evita montar um `pkg-config` cruzado inteiro só para
+# ele descobrir o mesmo.
+for dep in GSTREAMER_1_0 GLIB_2_0 GOBJECT_2_0 GIO_2_0; do
+    export "SYSTEM_DEPS_${dep}_NO_PKG_CONFIG=1"
+    export "SYSTEM_DEPS_${dep}_LIB=gstreamer_android"
+    export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=$JNI_LIBS/$ABI"
+done
+
+# --- Rust ------------------------------------------------------------------
 CARGO_ARGS=(-t "$ABI" --platform "$MIN_SDK" -o "$JNI_LIBS" build --lib)
 [ "$PROFILE" = release ] && CARGO_ARGS+=(--release)
 

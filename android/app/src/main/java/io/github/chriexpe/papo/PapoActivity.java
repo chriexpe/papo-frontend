@@ -6,8 +6,12 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
 
+import android.util.Log;
+
 import com.google.androidgamesdk.GameActivity;
 import com.google.androidgamesdk.gametextinput.State;
+
+import org.freedesktop.gstreamer.GStreamer;
 
 /**
  * A Activity do Papo.
@@ -47,8 +51,31 @@ public class PapoActivity extends GameActivity {
         nativeSetText(state.text == null ? "" : state.text);
     }
 
+    /**
+     * O GStreamer precisa estar carregado antes do Papo.
+     *
+     * <p>Carregar a biblioteca dispara o `JNI_OnLoad` dela, que é onde os
+     * métodos nativos do {@link GStreamer} são registrados — sem isso, o
+     * `init` abaixo não acharia o método e estouraria.
+     */
+    static {
+        System.loadLibrary("gstreamer_android");
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Antes do `super`, que é quando o GameActivity carrega o libpapo e
+        // o Rust começa a andar: quando o `android_main` chamar `gst_init`,
+        // o ambiente do GStreamer já tem de estar de pé.
+        try {
+            GStreamer.init(this);
+        } catch (Exception error) {
+            // Não é motivo para não abrir: sem GStreamer o Papo ainda é um
+            // chat, só que sem mídia. Quem depende dele já sabe lidar com a
+            // ausência.
+            Log.e("papo", "o GStreamer não iniciou", error);
+        }
+
         super.onCreate(savedInstanceState);
 
         final View root = getWindow().getDecorView();

@@ -12,3 +12,5 @@
 /android/local.properties
 /android/app/build/
 /android/app/src/main/jniLibs/
+/android/gstreamer/build/
+/android/tmp/
