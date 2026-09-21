@@ -635,7 +635,7 @@ pub fn floating(
     area: Rect,
 ) {
     let pill = compact_pill(ui, store, state, t, s, area, true);
-    let limit = match state.call_video_tiles {
+    let limit: usize = match state.call_video_tiles {
         1 => 1,
         4 => 4,
         _ => 2,
@@ -726,7 +726,7 @@ fn grid(
     ui: &mut egui::Ui,
     store: &Store,
     state: &mut UiState,
-    mut call: Option<&mut Call>,
+    call: Option<&mut Call>,
     t: &Tokens,
     s: &Strings,
     area: Rect,
