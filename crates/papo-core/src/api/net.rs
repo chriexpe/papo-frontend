@@ -131,6 +131,7 @@ pub enum Command {
         channel_id: String,
         content: String,
         reply_to: Option<String>,
+        notify_reply: bool,
         attachments: Vec<Upload>,
     },
     EditMessage {
@@ -797,10 +798,17 @@ async fn handle(
             channel_id,
             content,
             reply_to,
+            notify_reply,
             attachments,
         } => {
             match api
-                .send_message(&channel_id, &content, reply_to.as_deref(), &attachments)
+                .send_message(
+                    &channel_id,
+                    &content,
+                    reply_to.as_deref(),
+                    notify_reply,
+                    &attachments,
+                )
                 .await
             {
                 Ok(message) => publish(updates, wake, Update::Sent(Box::new(message))),

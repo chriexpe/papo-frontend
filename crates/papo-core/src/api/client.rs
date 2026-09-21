@@ -455,6 +455,7 @@ impl Api {
         channel_id: &str,
         content: &str,
         reply_to: Option<&str>,
+        notify_reply: bool,
         attachments: &[Upload],
     ) -> ApiResult<Message> {
         let url = self
@@ -466,7 +467,9 @@ impl Api {
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
         if let Some(reply_to) = reply_to {
-            form = form.text("reply_to", reply_to.to_owned());
+            form = form
+                .text("reply_to", reply_to.to_owned())
+                .text("notify_reply", notify_reply.to_string());
         }
         for upload in attachments {
             // Ler o arquivo inteiro para a memória fazia o pico acompanhar o
