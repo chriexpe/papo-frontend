@@ -427,46 +427,6 @@ impl Workspace {
     }
 }
 
-/// Formulário de canal. Sem `id` é criação; com `id`, edição — os dois usam
-/// os mesmos campos, e é só o botão final que muda.
-#[derive(Clone, Debug, Default)]
-struct ChannelDialog {
-    id: Option<String>,
-    name: String,
-    topic: String,
-    /// `text`, `voice` ou `category`, como o contrato espera.
-    kind: String,
-    /// O foco vai para o nome uma vez, ao abrir. Pedi-lo a cada quadro
-    /// arrancava o cursor de quem tivesse clicado no tópico, e o que se via
-    /// era o campo piscando.
-    focus: bool,
-}
-
-impl ChannelDialog {
-    fn create() -> Self {
-        Self {
-            kind: "text".to_owned(),
-            focus: true,
-            ..Default::default()
-        }
-    }
-
-    fn edit(channel: &crate::state::Channel) -> Self {
-        use crate::state::ChannelKind;
-        Self {
-            id: Some(channel.id.clone()),
-            name: channel.name.clone(),
-            topic: channel.topic.clone().unwrap_or_default(),
-            kind: match channel.kind {
-                ChannelKind::Voice => "voice".to_owned(),
-                ChannelKind::Category => "category".to_owned(),
-                ChannelKind::Text => "text".to_owned(),
-            },
-            focus: true,
-        }
-    }
-}
-
 pub struct PapoApp {
     workspaces: Vec<Workspace>,
     /// Índice do servidor na tela.
@@ -475,8 +435,6 @@ pub struct PapoApp {
     settings: Settings,
     system: SystemTheme,
     tokens: Tokens,
-    /// Diálogo de canal aberto: criar (sem id) ou editar (com id).
-    channel_dialog: Option<ChannelDialog>,
     roles: crate::ui::roles::RolesState,
     sheet: crate::ui::settings::SettingsState,
     #[cfg(target_os = "linux")]
@@ -593,7 +551,6 @@ impl PapoApp {
             settings,
             system,
             tokens,
-            channel_dialog: None,
             roles: Default::default(),
             // `PAPO_SHEET=app|servidor` abre a folha de ajustes já na
             // partida. Existe para trabalhar no desenho dela sem precisar
