@@ -24,8 +24,23 @@ fn android_main(app: AndroidApp) {
         None => log::error!("sem pasta privada: a sessão não vai sobreviver ao fechamento"),
     }
 
+    // O teclado precisa da Activity para ser lido.
+    crate::platform::ime::install(app.clone());
+
+    // O eframe procura onde gravar pelas pastas do XDG, que no Android não
+    // existem — sem isto ele desliga a persistência e os ajustes (servidores,
+    // tema, idioma) se perdem a cada fechamento.
+    let persistence_path = crate::platform::dirs::data_dir().map(|dir| {
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("app.ron")
+    });
+    if persistence_path.is_none() {
+        log::error!("sem onde gravar: os ajustes não vão sobreviver ao fechamento");
+    }
+
     let options = eframe::NativeOptions {
         android_app: Some(app),
+        persistence_path,
         ..Default::default()
     };
 

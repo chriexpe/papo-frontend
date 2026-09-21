@@ -19,6 +19,10 @@ pub mod files;
 #[cfg(target_os = "linux")]
 pub mod global_menu;
 pub mod menu;
+/// A ponte entre o teclado do Android e o egui. O módulo compila em toda
+/// parte para o teste da conta de prefixo rodar no CI; o que fala com a
+/// Activity é que é só do Android.
+pub mod ime;
 /// Bordas do sistema no Android (barra de status, navegação, recorte).
 #[cfg(target_os = "android")]
 pub mod safe_area;

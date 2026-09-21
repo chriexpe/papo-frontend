@@ -605,7 +605,10 @@ impl PapoApp {
             minimized: false,
             window_attached: false,
             demo,
-            own_chrome: !desktop::uses_global_menu(),
+            // No Android não há janela para decorar — nem barra nossa com
+            // minimizar/fechar, nem menu global. Os ajustes continuam à mão
+            // pela pastilha da conta, que é por onde o layout compacto abre.
+            own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
         }
     }
@@ -1861,6 +1864,10 @@ impl eframe::App for PapoApp {
         if safe.width() > 1.0 && safe.height() > 1.0 {
             raw_input.screen_rect = Some(safe);
         }
+
+        // O winit sobe o teclado mas não entrega o que se digita nele; quem
+        // faz essa parte é a ponte.
+        crate::platform::ime::pump(ctx, raw_input);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
