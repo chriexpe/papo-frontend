@@ -88,6 +88,47 @@ pub fn icon_button(ui: &mut Ui, t: &Tokens, icon: &str, tooltip: &str) -> Respon
     response.on_hover_text(tooltip)
 }
 
+
+/// Superfície flutuante que mede o próprio conteúdo antes de fechar a
+/// pastilha ao redor dele. Textos podem quebrar linha até `max_width`;
+/// mensagens curtas não herdam uma largura fixa só porque outra é longa.
+pub fn floating_pill(
+    ctx: &egui::Context,
+    id: egui::Id,
+    t: &Tokens,
+    translucent: bool,
+    bottom_margin: f32,
+    max_width: f32,
+    contents: impl FnOnce(&mut Ui),
+) {
+    let safe = ctx.content_rect();
+    let viewport = ctx.viewport_rect();
+    let safe_bottom = (viewport.max.y - safe.max.y).max(0.0);
+    let max_width = max_width
+        .min((safe.width() - space::XL * 2.0).max(180.0))
+        .max(180.0);
+
+    egui::Area::new(id)
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            Vec2::new(0.0, -(safe_bottom + bottom_margin)),
+        )
+        .constrain_to(safe)
+        .show(ctx, |ui| {
+            ui.set_max_width(max_width);
+            Frame::new()
+                .fill(t.pill_fill(translucent))
+                .stroke(Stroke::new(1.0, t.separator))
+                .corner_radius(CornerRadius::same(radius::SHEET))
+                .inner_margin(Margin::symmetric(space::LG as i8, space::MD as i8))
+                .show(ui, |ui| {
+                    ui.set_max_width(max_width - space::LG * 2.0);
+                    contents(ui);
+                });
+        });
+}
+
 /// Desvanecimento do conteúdo onde ele encontra uma barra (scroll edge effect).
 pub fn scroll_edge_fade(ui: &Ui, rect: Rect, color: Color32, from_top: bool) {
     use egui::epaint::{Mesh, Vertex};
