@@ -774,7 +774,8 @@ pub fn sheet(
     // painel faz a coluna da esquerda dançar debaixo do ponteiro, e o guia
     // pede justamente o contrário — uma tela de ajustes estável, para que se
     // aprenda onde as coisas ficam.
-    let height = SHEET_H.min(screen.height() - space::XL * 2.0);
+    let width = SHEET_W.min((screen.width() - space::MD * 2.0).max(280.0));
+    let height = SHEET_H.min((screen.height() - space::MD * 2.0).max(260.0));
     let top = if anchor.center().y > screen.center().y {
         (anchor.min.y - space::SM - height).max(screen.min.y + space::MD)
     } else {
@@ -783,9 +784,9 @@ pub fn sheet(
     let left = anchor
         .min
         .x
-        .min(screen.max.x - space::MD - SHEET_W)
+        .min(screen.max.x - space::MD - width)
         .max(screen.min.x + space::MD);
-    let rect = Rect::from_min_size(egui::pos2(left, top), Vec2::new(SHEET_W, height));
+    let rect = Rect::from_min_size(egui::pos2(left, top), Vec2::new(width, height));
 
     egui::Area::new(egui::Id::new("folha-de-ajustes"))
         .order(egui::Order::Foreground)
