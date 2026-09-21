@@ -103,6 +103,9 @@ eframe = { version = "0.36", default-features = false, features = ["android-game
 android-activity = { version = "0.6", features = ["game-activity"] }
 # `println!` não vai a lugar nenhum no Android; o que se lê é o logcat.
 android_logger = "0.15"
+# O texto do teclado chega da Activity como uma `String` do Java, e ler isso
+# pede o JNI. É a única coisa que falamos com o Java diretamente.
+jni = "0.21"
 
 [profile.release]
 # Binário de distribuição: um arquivo só, sem símbolos de depuração.

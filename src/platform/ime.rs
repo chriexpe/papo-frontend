@@ -2,13 +2,21 @@
 //!
 //! O winit abre e fecha o teclado do Android, mas **não** entrega o que se
 //! digita nele: ele trata dezesseis eventos do `android-activity` e
-//! `TextInputEvent` não é um deles. O resultado é o teclado subir e as
-//! letras não chegarem a lugar nenhum.
+//! `TextInputEvent` não é um deles. O teclado sobe e as letras não chegam a
+//! lugar nenhum.
 //!
-//! Quem guarda o texto é o `GameTextInput`, do lado do GameActivity. Aqui
-//! olhamos esse buffer a cada quadro e transformamos a diferença em eventos
-//! que o egui entende — como se alguém tivesse digitado num teclado comum.
-//! Assim nenhum campo de texto da interface precisou mudar.
+//! Quem guarda o texto é o `GameTextInput`, do lado do GameActivity. Ler
+//! esse buffer pelo `AndroidApp::text_input_state()` **derruba o
+//! aplicativo**: o `android-activity` 0.6.1 monta a fatia com
+//! `slice::from_raw_parts` sobre o ponteiro do texto sem conferir se ele é
+//! nulo, e ele é nulo enquanto ninguém digitou nada. Ponteiro nulo viola a
+//! pré-condição mesmo com tamanho zero, e o pânico que sai daí não desenrola
+//! — aborta. Era o que derrubava o aplicativo assim que o teclado subia.
+//!
+//! Então o texto vem pelo outro lado: a `PapoActivity` recebe o
+//! `stateChanged` do `GameTextInput` e o empurra para cá. Não se olha nada a
+//! cada quadro, a letra chega na hora, e o caminho não passa perto da
+//! função quebrada.
 //!
 //! A conta é por prefixo comum: o que sumiu do fim vira `Backspace`, o que
 //! apareceu vira `Text`. É o bastante para digitar, apagar e para a troca
@@ -22,12 +30,6 @@ use android_activity::AndroidApp;
 #[cfg(target_os = "android")]
 use android_activity::input::TextInputState;
 
-/// De quanto em quanto tempo olhamos o buffer do teclado enquanto há campo
-/// em foco. A 60 Hz o atraso não dá para perceber, e fora do foco não se
-/// pede quadro nenhum — a bateria só paga enquanto se está digitando.
-#[cfg(target_os = "android")]
-const POLL: std::time::Duration = std::time::Duration::from_millis(16);
-
 #[cfg(target_os = "android")]
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 #[cfg(target_os = "android")]
@@ -37,9 +39,10 @@ static BRIDGE: Mutex<Bridge> = Mutex::new(Bridge::new());
 struct Bridge {
     /// Quem tinha o foco no quadro anterior.
     focus: Option<egui::Id>,
-    /// O que o `GameTextInput` tinha da última vez que olhamos. É o espelho
-    /// do buffer do teclado, não do campo do egui — a diferença entre os
-    /// dois é justamente o que vira evento.
+    /// O que o teclado mandou e ainda não virou evento.
+    incoming: Option<String>,
+    /// O que já virou evento. É o espelho do buffer do teclado, não do campo
+    /// do egui — a diferença entre os dois é o que vira evento.
     mirror: String,
 }
 
@@ -48,23 +51,45 @@ impl Bridge {
     const fn new() -> Self {
         Self {
             focus: None,
+            incoming: None,
             mirror: String::new(),
         }
     }
 }
 
-/// Guarda a Activity, que é por onde se fala com o teclado.
+/// Guarda a Activity, que é por onde se zera o teclado ao trocar de campo.
 #[cfg(target_os = "android")]
 pub fn install(app: AndroidApp) {
     let _ = APP.set(app);
 }
 
-/// Converte o que mudou no teclado em eventos do egui.
+/// Recebe o texto do teclado, vindo da `PapoActivity`.
+///
+/// O nome é o que o JNI exige: `Java_` + o pacote e a classe com `_` no
+/// lugar dos pontos + o nome do método. Mudar o pacote da Activity sem mudar
+/// este nome faz o método sumir em tempo de execução.
 #[cfg(target_os = "android")]
-pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-    let Some(app) = APP.get() else {
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetText(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    text: jni::objects::JString,
+) {
+    let Ok(text) = env.get_string(&text) else {
         return;
     };
+    let text: String = text.into();
+    if let Ok(mut bridge) = BRIDGE.lock() {
+        bridge.incoming = Some(text);
+    }
+    // Chegou de uma thread do Java: sem este pedido a letra esperaria um
+    // quadro que viria só por outro motivo.
+    super::wake::request();
+}
+
+/// Converte o que o teclado mandou em eventos do egui.
+#[cfg(target_os = "android")]
+pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     let Ok(mut bridge) = BRIDGE.lock() else {
         return;
     };
@@ -72,39 +97,35 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     // Trocou de campo (ou perdeu o foco): o buffer do teclado volta a zero,
     // senão o texto do campo anterior contaria como já digitado aqui.
     let focus = ctx.memory(|memory| memory.focused());
-
-    // O egui só desenha quando alguém pede, e a chegada de texto não pede
-    // nada: o winit ignora o `TextInputEvent`, então não há evento nenhum
-    // para acordar o laço. Sem isto a letra só aparece no próximo quadro que
-    // acontecesse por outro motivo — um toque, uma animação — e digitar fica
-    // com atraso. Enquanto houver campo em foco, pedimos o quadro seguinte.
-    if focus.is_some() {
-        ctx.request_repaint_after(POLL);
-    }
-
     if bridge.focus != focus {
         bridge.focus = focus;
         bridge.mirror.clear();
-        app.set_text_input_state(TextInputState::default());
+        bridge.incoming = None;
+        if let Some(app) = APP.get() {
+            // Escrever é seguro; é só a leitura que está quebrada.
+            app.set_text_input_state(TextInputState::default());
+        }
         return;
     }
     if focus.is_none() {
         return;
     }
 
-    let current = app.text_input_state();
-    if current.text == bridge.mirror {
+    let Some(current) = bridge.incoming.take() else {
+        return;
+    };
+    if current == bridge.mirror {
         return;
     }
 
-    let common = common_prefix(&bridge.mirror, &current.text);
+    let common = common_prefix(&bridge.mirror, &current);
     let removed = bridge.mirror.chars().count() - common;
     for _ in 0..removed {
         push_backspace(raw_input);
     }
-    let inserted: String = current.text.chars().skip(common).collect();
+    let inserted: String = current.chars().skip(common).collect();
 
-    // Só os tamanhos: pelo campo de senha passa o mesmo caminho, e o logcat
+    // Só os tamanhos: pelo mesmo caminho passa o campo de senha, e o logcat
     // é lido por qualquer um com o cabo na mão.
     log::debug!(
         "teclado: {removed} apagado(s), {} escrito(s)",
@@ -114,7 +135,8 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     if !inserted.is_empty() {
         raw_input.events.push(egui::Event::Text(inserted));
     }
-    bridge.mirror = current.text;
+
+    bridge.mirror = current;
 }
 
 /// Quantos caracteres os dois textos têm em comum, do início.

@@ -7,6 +7,7 @@ import android.view.View;
 import android.view.WindowInsets;
 
 import com.google.androidgamesdk.GameActivity;
+import com.google.androidgamesdk.gametextinput.State;
 
 /**
  * A Activity do Papo.
@@ -26,6 +27,25 @@ public class PapoActivity extends GameActivity {
 
     /** Envia as bordas ao Rust. Implementada em `src/platform/safe_area.rs`. */
     private static native void nativeSetInsets(int left, int top, int right, int bottom);
+
+    /** Envia o texto do teclado ao Rust. Implementada em `src/platform/ime.rs`. */
+    private static native void nativeSetText(String text);
+
+    /**
+     * O teclado mudou o texto.
+     *
+     * <p>É daqui que o texto digitado chega ao Rust. O caminho natural seria
+     * o lado nativo ler o buffer do GameTextInput sozinho, mas a função que
+     * faz isso no `android-activity` 0.6.1 monta uma fatia sobre um ponteiro
+     * nulo enquanto ninguém digitou nada, e aborta o processo assim que o
+     * teclado sobe. Empurrar daqui contorna isso e ainda sai mais barato:
+     * não é preciso olhar nada a cada quadro.
+     */
+    @Override
+    public void stateChanged(State state, boolean dismissed) {
+        super.stateChanged(state, dismissed);
+        nativeSetText(state.text == null ? "" : state.text);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {

@@ -1853,7 +1853,7 @@ impl eframe::App for PapoApp {
             return;
         };
         // As bordas vêm em pixels físicos; o `screen_rect` é em pontos.
-        crate::platform::safe_area::install_repaint(ctx);
+        crate::platform::wake::install(ctx);
         let scale = ctx.pixels_per_point().max(0.1);
         let (left, top, right, bottom) = crate::platform::safe_area::insets_px();
         let safe = egui::Rect::from_min_max(
@@ -1871,9 +1871,34 @@ impl eframe::App for PapoApp {
         crate::platform::ime::pump(ctx, raw_input);
     }
 
+    /// O eframe grava sozinho de trinta em trinta segundos e, fora isso, ao
+    /// encerrar limpo. No Android não existe encerrar limpo: o sistema mata
+    /// o processo quando quiser, e com ele ia embora tudo o que se fez desde
+    /// a última gravação — um servidor recém-adicionado, por exemplo.
+    #[cfg(target_os = "android")]
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(5)
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.attach_window(frame);
+
+        // Indo para segundo plano: gravar agora, porque pode não haver um
+        // depois. Perder o foco é o último aviso que o aplicativo recebe
+        // antes de o sistema poder encerrá-lo sem mais nada.
+        #[cfg(target_os = "android")]
+        {
+            let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
+            if self.focused && !focused {
+                if let Some(storage) = frame.storage_mut() {
+                    eframe::App::save(self, storage);
+                    storage.flush();
+                    log::debug!("ajustes gravados ao sair de cena");
+                }
+            }
+            self.focused = focused;
+        }
         #[cfg(target_os = "linux")]
         {
             self.sync_menu();
