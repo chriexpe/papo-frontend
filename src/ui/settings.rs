@@ -1319,8 +1319,9 @@ fn server_pane(
                     // Renomear acontece na própria linha: abrir uma janela
                     // por cima da folha de ajustes é uma camada a mais para
                     // trocar uma palavra.
-                    if let Some((id, name)) = draft.renaming.as_mut() {
-                        if id == &channel.id {
+                    if let Some((id, name)) = draft.renaming.as_mut()
+                        && id == &channel.id
+                    {
                             let sent = rows.field(s.rename, name, 32, false);
                             rows.row("", None, |ui, t| {
                                 if row_button(ui, t, s.cancel, Emphasis::Quiet) {
@@ -1332,12 +1333,12 @@ fn server_pane(
                                 }
                             });
                             continue;
-                        }
                     }
                     // Apagar pede o nome digitado: é o que separa "quis" de
                     // "esbarrou".
-                    if let Some((id, expected, typed)) = draft.deleting.as_mut() {
-                        if id == &channel.id {
+                    if let Some((id, expected, typed)) = draft.deleting.as_mut()
+                        && id == &channel.id
+                    {
                             rows.row(&channel.name, Some(s.delete_type_name), |ui, t| {
                                 if row_button(ui, t, s.cancel, Emphasis::Quiet) {
                                     cancel = true;
@@ -1353,7 +1354,6 @@ fn server_pane(
                                 }
                             });
                             continue;
-                        }
                     }
 
                     let kind = match channel.kind {
@@ -1531,10 +1531,10 @@ fn server_pane(
                         },
                     }));
                 }
-                if let Some(role_id) = draft.id.clone() {
-                    if row_button(ui, t, s.delete_role, Emphasis::Danger) {
-                        actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
-                    }
+                if let Some(role_id) = draft.id.clone()
+                    && row_button(ui, t, s.delete_role, Emphasis::Danger)
+                {
+                    actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
                 }
             });
         }
