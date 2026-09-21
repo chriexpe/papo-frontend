@@ -12,10 +12,10 @@ use std::path::PathBuf;
 const FILE_NAME: &str = "io.github.chriexpe.Papo.desktop";
 
 fn config_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
+    if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME")
+        && !dir.is_empty()
+    {
+        return Some(PathBuf::from(dir));
     }
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
 }
