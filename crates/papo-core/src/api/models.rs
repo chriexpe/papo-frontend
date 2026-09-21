@@ -604,18 +604,18 @@ impl Problem {
     }
 }
 
-/// Converte `#RRGGBB` em cor do egui.
-pub fn parse_hex_color(hex: &str) -> Option<egui::Color32> {
+/// Converte `#RRGGBB` nos três canais RGB, sem depender da interface.
+pub fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
     let hex = hex.trim_start_matches('#');
     if hex.len() != 6 {
         return None;
     }
     let value = u32::from_str_radix(hex, 16).ok()?;
-    Some(egui::Color32::from_rgb(
+    Some([
         (value >> 16) as u8,
         (value >> 8) as u8,
         value as u8,
-    ))
+    ])
 }
 
 /// Família de mídia derivada do mime type.

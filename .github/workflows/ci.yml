@@ -24,7 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
-      - run: cargo test --locked
+      - run: cargo test --locked --workspace
 
   clippy:
     runs-on: ubuntu-24.04
@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # Avisa dos lints que a próxima versão do Rust vai cobrar. Falhar aqui não
   # barra nada: serve para o aviso chegar antes de virar problema.
@@ -60,7 +60,7 @@ jobs:
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # O `stable` do runner some por baixo dos pés: uma dependência que suba o
   # mínimo dela passaria batido e só quebraria na máquina de quem instala.
@@ -83,7 +83,7 @@ jobs:
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
-      - run: cargo build --locked
+      - run: cargo build --locked --workspace
 
   # Os nomes de pacote em scripts/deps.sh são promessa feita a quem instala.
   # Este job prova que os do apt existem de verdade, sem baixar nada.

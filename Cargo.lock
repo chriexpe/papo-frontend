@@ -2963,6 +2963,7 @@ dependencies = [
  "ksni",
  "kstring",
  "log",
+ "papo-core",
  "raw-window-handle",
  "reqwest",
  "rfd",
@@ -2980,6 +2981,24 @@ dependencies = [
  "x11rb",
  "zbus",
  "zvariant",
+]
+
+[[package]]
+name = "papo-core"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "directories",
+ "futures-util",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
 ]
 
 [[package]]

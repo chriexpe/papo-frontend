@@ -13,6 +13,27 @@ use super::models::{
 };
 use super::ws::{self, Connection, Event};
 
+/// Acorda a camada de apresentação quando a rede publica uma atualização.
+///
+/// O núcleo não sabe se há egui, Flutter, Compose ou nenhuma interface:
+/// cada frontend fornece apenas o gesto necessário para acordar seu loop.
+#[derive(Clone)]
+pub struct Wake(Arc<dyn Fn() + Send + Sync>);
+
+impl Wake {
+    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+
+    pub fn noop() -> Self {
+        Self::new(|| {})
+    }
+
+    fn wake(&self) {
+        (self.0)();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Login { username: String, password: String },
@@ -215,7 +236,7 @@ pub struct Net {
 }
 
 impl Net {
-    pub fn spawn(base_url: String, repaint: egui::Context) -> Self {
+    pub fn spawn(base_url: String, wake: Wake) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
         let session = Arc::new(Session::default());
@@ -241,7 +262,7 @@ impl Net {
                     worker_session,
                     commands_rx,
                     updates_tx,
-                    repaint,
+                    wake,
                 ));
             })
             .expect("thread de rede");
@@ -264,7 +285,7 @@ impl Net {
 
 /// Envia a atualização e acorda a janela: sem isso ela só apareceria na
 /// próxima interação do usuário.
-fn publish(tx: &sync_mpsc::Sender<Update>, repaint: &egui::Context, update: Update) {
+fn publish(tx: &sync_mpsc::Sender<Update>, wake: &Wake, update: Update) {
     // O aviso aparece na tela, mas sem uma linha no log uma falha de login
     // era invisível para quem lê o diário depois.
     match &update {
@@ -274,7 +295,7 @@ fn publish(tx: &sync_mpsc::Sender<Update>, repaint: &egui::Context, update: Upda
         _ => {}
     }
     if tx.send(update).is_ok() {
-        repaint.request_repaint();
+        wake.wake();
     }
 }
 
@@ -283,12 +304,12 @@ async fn worker(
     session: Arc<Session>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
-    repaint: egui::Context,
+    wake: Wake,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
         Err(error) => {
-            publish(&updates, &repaint, Update::Error(error.to_string()));
+            publish(&updates, &wake, Update::Error(error.to_string()));
             return;
         }
     };
@@ -309,17 +330,17 @@ async fn worker(
                 if let Ok(mut slot) = me.lock() {
                     *slot = Some(id.clone());
                 }
-                publish(&updates, &repaint, Update::Session(Some(Box::new(whoami))));
-                bootstrap(&api, &updates, &repaint, Some(&id)).await;
+                publish(&updates, &wake, Update::Session(Some(Box::new(whoami))));
+                bootstrap(&api, &updates, &wake, Some(&id)).await;
             }
             Err(_) => {
                 session.set_token(None);
                 store_token(&base_url, None);
-                publish(&updates, &repaint, Update::Session(None));
+                publish(&updates, &wake, Update::Session(None));
             }
         }
     } else {
-        publish(&updates, &repaint, Update::Session(None));
+        publish(&updates, &wake, Update::Session(None));
     }
     // O token de sessão vale 24 h e a renovação o gira. Seis horas dá quatro
     // chamadas por dia e sobra folga se a máquina dormir um pouco.
@@ -351,7 +372,7 @@ async fn worker(
                 let (tx, rx) = mpsc::unbounded_channel();
                 outbound_tx = tx;
                 outbound_rx = Some(rx);
-                publish(&updates, &repaint, Update::Connection(Connection::Offline));
+                publish(&updates, &wake, Update::Connection(Connection::Offline));
             }
             _ => {}
         }
@@ -359,15 +380,15 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                handle(&api, &base_url, &session, &me, &updates, &repaint, &outbound_tx, command).await;
+                handle(&api, &base_url, &session, &me, &updates, &wake, &outbound_tx, command).await;
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                publish(&updates, &repaint, Update::Event(Box::new(event)));
+                publish(&updates, &wake, Update::Event(Box::new(event)));
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
-                publish(&updates, &repaint, Update::Connection(status));
+                publish(&updates, &wake, Update::Connection(status));
             }
             _ = renewal.tick() => {
                 if !session.is_authenticated() {
@@ -379,7 +400,7 @@ async fn worker(
                     Err(ApiError::Unauthorized) => {
                         session.set_token(None);
                         store_token(&base_url, None);
-                        publish(&updates, &repaint, Update::Session(None));
+                        publish(&updates, &wake, Update::Session(None));
                     }
                     // Rede fora do ar não encerra a sessão: tenta de novo no
                     // próximo tique.
@@ -436,7 +457,7 @@ async fn handle(
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
     updates: &sync_mpsc::Sender<Update>,
-    repaint: &egui::Context,
+    wake: &Wake,
     outbound: &mpsc::UnboundedSender<String>,
     command: Command,
 ) {
@@ -445,7 +466,7 @@ async fn handle(
             Ok(login) => {
                 store_token(base_url, session.token());
                 if login.connection_violation {
-                    publish(updates, repaint, Update::ConnectionViolation);
+                    publish(updates, wake, Update::ConnectionViolation);
                 }
                 match api.whoami().await {
                     Ok(whoami) => {
@@ -453,10 +474,10 @@ async fn handle(
                         if let Ok(mut slot) = me.lock() {
                             *slot = Some(id.clone());
                         }
-                        publish(updates, repaint, Update::Session(Some(Box::new(whoami))));
-                        bootstrap(api, updates, repaint, Some(&id)).await;
+                        publish(updates, wake, Update::Session(Some(Box::new(whoami))));
+                        bootstrap(api, updates, wake, Some(&id)).await;
                     }
-                    Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
+                    Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
                 }
             }
             // Servidor fechado: se a senha dele já é conhecida, o portão
@@ -471,16 +492,16 @@ async fn handle(
                             session,
                             me,
                             updates,
-                            repaint,
+                            wake,
                             outbound,
                             Command::Login { username, password },
                         ))
                         .await;
                     }
-                    _ => publish(updates, repaint, Update::ServerLocked),
+                    _ => publish(updates, wake, Update::ServerLocked),
                 }
             }
-            Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
+            Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
         },
         Command::Register { username, password } => {
             match api.register(&username, &password).await {
@@ -492,7 +513,7 @@ async fn handle(
                         session,
                         me,
                         updates,
-                        repaint,
+                        wake,
                         outbound,
                         Command::Login { username, password },
                     ))
@@ -507,39 +528,39 @@ async fn handle(
                                 session,
                                 me,
                                 updates,
-                                repaint,
+                                wake,
                                 outbound,
                                 Command::Register { username, password },
                             ))
                             .await;
                         }
-                        _ => publish(updates, repaint, Update::ServerLocked),
+                        _ => publish(updates, wake, Update::ServerLocked),
                     }
                 }
-                Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
+                Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
             }
         }
         Command::CreateServer { name } => match api.create_server(&name).await {
             Ok(_) => {
                 let id = me.lock().ok().and_then(|slot| slot.clone());
-                bootstrap(api, updates, repaint, id.as_deref()).await
+                bootstrap(api, updates, wake, id.as_deref()).await
             }
-            Err(error) => publish(updates, repaint, Update::Error(error.to_string())),
+            Err(error) => publish(updates, wake, Update::Error(error.to_string())),
         },
         Command::Refresh => {
             let id = me.lock().ok().and_then(|slot| slot.clone());
-            bootstrap(api, updates, repaint, id.as_deref()).await
+            bootstrap(api, updates, wake, id.as_deref()).await
         }
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
             Ok(list) => publish(
                 updates,
-                repaint,
+                wake,
                 Update::Messages {
                     channel_id,
                     messages: list.messages,
                 },
             ),
-            Err(error) => report(updates, repaint, error),
+            Err(error) => report(updates, wake, error),
         },
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
@@ -547,10 +568,10 @@ async fn handle(
             match api.create_channel(&name, &kind, topic.as_deref()).await {
                 Ok(channel) => {
                     let id = channel.id.clone();
-                    relist_channels(api, updates, repaint).await;
-                    publish(updates, repaint, Update::ChannelCreated(id));
+                    relist_channels(api, updates, wake).await;
+                    publish(updates, wake, Update::ChannelCreated(id));
                 }
-                Err(error) => report(updates, repaint, error),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::UpdateChannel {
@@ -558,23 +579,23 @@ async fn handle(
             name,
             topic,
         } => match api.update_channel(&channel_id, &name, topic.as_deref()).await {
-            Ok(_) => relist_channels(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_channels(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::DeleteChannel { channel_id } => match api.delete_channel(&channel_id).await {
-            Ok(()) => relist_channels(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(()) => relist_channels(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::Search { text } => match api.search(&text).await {
-            Ok(found) => publish(updates, repaint, Update::SearchResults(found.results)),
-            Err(error) => report(updates, repaint, error),
+            Ok(found) => publish(updates, wake, Update::SearchResults(found.results)),
+            Err(error) => report(updates, wake, error),
         },
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
         // pessoas — por isso as duas listas são relidas juntas.
-        Command::LoadRoles => relist_roles(api, updates, repaint).await,
+        Command::LoadRoles => relist_roles(api, updates, wake).await,
         Command::UpdateServer(request) => match api.update_server(&request).await {
-            Ok(server) => publish(updates, repaint, Update::Server(Some(Box::new(server)))),
-            Err(error) => report(updates, repaint, error),
+            Ok(server) => publish(updates, wake, Update::Server(Some(Box::new(server)))),
+            Err(error) => report(updates, wake, error),
         },
         // Perfil e presença mudam o que os outros veem na lista de pessoas,
         // então ela é relida logo depois.
@@ -583,8 +604,8 @@ async fn handle(
                 return;
             };
             match api.update_profile(&user_id, &request).await {
-                Ok(_) => relist_users(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => relist_users(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::SetStatus { status } => {
@@ -592,8 +613,8 @@ async fn handle(
                 return;
             };
             match api.set_status(&user_id, status.as_deref()).await {
-                Ok(_) => relist_users(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => relist_users(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::SetAvatar { blob, format } => {
@@ -601,8 +622,8 @@ async fn handle(
                 return;
             };
             match api.set_avatar(&user_id, &blob, &format).await {
-                Ok(_) => relist_users(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => relist_users(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::ChangePassword { password } => {
@@ -610,17 +631,17 @@ async fn handle(
                 return;
             };
             match api.change_password(&user_id, &password).await {
-                Ok(_) => publish(updates, repaint, Update::Done),
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => publish(updates, wake, Update::Done),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::BanUser { user_id, banned } => match api.ban_user(&user_id, banned).await {
-            Ok(_) => relist_users(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_users(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::ResetUser { user_id } => match api.reset_user(&user_id).await {
-            Ok(_) => relist_users(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_users(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::MoveChannel {
             channel_id,
@@ -630,8 +651,8 @@ async fn handle(
             .move_channel(&channel_id, old_position, new_position)
             .await
         {
-            Ok(_) => relist_channels(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_channels(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::SetChannelNotifications {
             channel_id,
@@ -644,44 +665,44 @@ async fn handle(
                 .set_channel_notifications(&channel_id, &user_id, &setting)
                 .await
             {
-                Ok(_) => publish(updates, repaint, Update::Done),
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => publish(updates, wake, Update::Done),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::LoadDevices => match api.connected_devices().await {
-            Ok(devices) => publish(updates, repaint, Update::Devices(devices)),
-            Err(error) => report(updates, repaint, error),
+            Ok(devices) => publish(updates, wake, Update::Devices(devices)),
+            Err(error) => report(updates, wake, error),
         },
         Command::DropConnection { connection_id } => {
             match api.drop_connection(&connection_id).await {
                 Ok(_) => match api.connected_devices().await {
-                    Ok(devices) => publish(updates, repaint, Update::Devices(devices)),
-                    Err(error) => report(updates, repaint, error),
+                    Ok(devices) => publish(updates, wake, Update::Devices(devices)),
+                    Err(error) => report(updates, wake, error),
                 },
-                Err(error) => report(updates, repaint, error),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::CreateEmoji { name, blob, format } => {
             match api.create_emoji(&name, &blob, &format).await {
-                Ok(_) => relist_emojis(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => relist_emojis(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::DeleteEmoji { emoji_id } => match api.delete_emoji(&emoji_id).await {
-            Ok(()) => relist_emojis(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(()) => relist_emojis(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::LoadAuditLogs => match api.audit_logs().await {
-            Ok(logs) => publish(updates, repaint, Update::AuditLogs(logs)),
-            Err(error) => report(updates, repaint, error),
+            Ok(logs) => publish(updates, wake, Update::AuditLogs(logs)),
+            Err(error) => report(updates, wake, error),
         },
         Command::CreateRole {
             name,
             color,
             permissions,
         } => match api.create_role(&name, color.as_deref(), permissions).await {
-            Ok(_) => relist_roles(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_roles(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::UpdateRole {
             role_id,
@@ -692,23 +713,23 @@ async fn handle(
             .update_role(&role_id, &name, color.as_deref(), permissions)
             .await
         {
-            Ok(_) => relist_roles(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(_) => relist_roles(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::DeleteRole { role_id } => match api.delete_role(&role_id).await {
-            Ok(()) => relist_roles(api, updates, repaint).await,
-            Err(error) => report(updates, repaint, error),
+            Ok(()) => relist_roles(api, updates, wake).await,
+            Err(error) => report(updates, wake, error),
         },
         Command::AssignRole { user_id, role_id } => {
             match api.assign_role(&user_id, &role_id).await {
-                Ok(_) => relist_roles(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(_) => relist_roles(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::UnassignRole { user_id, role_id } => {
             match api.unassign_role(&user_id, &role_id).await {
-                Ok(()) => relist_roles(api, updates, repaint).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(()) => relist_roles(api, updates, wake).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::SendMessage {
@@ -721,21 +742,21 @@ async fn handle(
                 .send_message(&channel_id, &content, reply_to.as_deref(), &attachments)
                 .await
             {
-                Ok(message) => publish(updates, repaint, Update::Sent(Box::new(message))),
-                Err(error) => report(updates, repaint, error),
+                Ok(message) => publish(updates, wake, Update::Sent(Box::new(message))),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::EditMessage {
             message_id,
             content,
         } => match api.edit_message(&message_id, &content).await {
-            Ok(message) => publish(updates, repaint, Update::Edited(Box::new(message))),
-            Err(error) => report(updates, repaint, error),
+            Ok(message) => publish(updates, wake, Update::Edited(Box::new(message))),
+            Err(error) => report(updates, wake, error),
         },
         Command::DeleteMessage { message_id } => {
             match api.delete_message(&message_id).await {
-                Ok(()) => publish(updates, repaint, Update::Deleted(message_id)),
-                Err(error) => report(updates, repaint, error),
+                Ok(()) => publish(updates, wake, Update::Deleted(message_id)),
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::React {
@@ -752,7 +773,7 @@ async fn handle(
                 api.remove_reaction(&channel_id, &message_id, &emoji).await
             };
             if let Err(error) = outcome {
-                report(updates, repaint, error);
+                report(updates, wake, error);
             }
         }
         Command::Pin {
@@ -766,12 +787,12 @@ async fn handle(
                 api.unpin_message(&channel_id, &message_id).await
             };
             match outcome {
-                Ok(()) => load_pinned(api, updates, repaint, channel_id).await,
-                Err(error) => report(updates, repaint, error),
+                Ok(()) => load_pinned(api, updates, wake, channel_id).await,
+                Err(error) => report(updates, wake, error),
             }
         }
         Command::LoadPinned { channel_id } => {
-            load_pinned(api, updates, repaint, channel_id).await
+            load_pinned(api, updates, wake, channel_id).await
         }
         Command::MarkNotificationsRead { user_id, ids } => {
             if !ids.is_empty() {
@@ -787,7 +808,7 @@ async fn handle(
             Ok(servers) => {
                 publish(
                     updates,
-                    repaint,
+                    wake,
                     Update::VoiceReady {
                         channel_id: channel_id.clone(),
                         attempt,
@@ -800,7 +821,7 @@ async fn handle(
             }
             Err(error) => publish(
                 updates,
-                repaint,
+                wake,
                 Update::VoiceFailed {
                     channel_id,
                     attempt,
@@ -819,14 +840,14 @@ async fn handle(
         Command::LoginServer { password } => match api.login_server(&password).await {
             Ok(()) => {
                 store_server_password(base_url, &password);
-                publish(updates, repaint, Update::ServerUnlocked);
+                publish(updates, wake, Update::ServerUnlocked);
             }
-            Err(error) => publish(updates, repaint, Update::AuthFailed(error.to_string())),
+            Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
         },
         Command::Logout => {
             let _ = api.logout().await;
             store_token(base_url, None);
-            publish(updates, repaint, Update::Session(None));
+            publish(updates, wake, Update::Session(None));
         }
     }
 }
@@ -834,7 +855,7 @@ async fn handle(
 async fn load_pinned(
     api: &Api,
     updates: &sync_mpsc::Sender<Update>,
-    repaint: &egui::Context,
+    wake: &Wake,
     channel_id: String,
 ) {
     match api.pinned(&channel_id).await {
@@ -848,7 +869,7 @@ async fn load_pinned(
                         .or_else(|| pinned.message.map(|message| message.id))
                 })
                 .collect();
-            publish(updates, repaint, Update::Pinned { channel_id, ids });
+            publish(updates, wake, Update::Pinned { channel_id, ids });
         }
         Err(ApiError::NotFound) => {}
         Err(error) => log::warn!("fixadas: {error}"),
@@ -859,40 +880,40 @@ async fn load_pinned(
 async fn bootstrap(
     api: &Api,
     updates: &sync_mpsc::Sender<Update>,
-    repaint: &egui::Context,
+    wake: &Wake,
     user_id: Option<&str>,
 ) {
     match api.server().await {
-        Ok(server) => publish(updates, repaint, Update::Server(server.map(Box::new))),
-        Err(error) => report(updates, repaint, error),
+        Ok(server) => publish(updates, wake, Update::Server(server.map(Box::new))),
+        Err(error) => report(updates, wake, error),
     }
     match api.channels().await {
-        Ok(channels) => publish(updates, repaint, Update::Channels(channels)),
+        Ok(channels) => publish(updates, wake, Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
-        Err(error) => report(updates, repaint, error),
+        Err(error) => report(updates, wake, error),
     }
     match api.users().await {
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
-            publish(updates, repaint, Update::Users(users));
-            load_profiles(api, updates, repaint, ids).await;
+            publish(updates, wake, Update::Users(users));
+            load_profiles(api, updates, wake, ids).await;
         }
         Err(ApiError::NotFound) => {}
-        Err(error) => report(updates, repaint, error),
+        Err(error) => report(updates, wake, error),
     }
     match api.roles().await {
-        Ok(roles) => publish(updates, repaint, Update::Roles(roles)),
+        Ok(roles) => publish(updates, wake, Update::Roles(roles)),
         Err(error) => log::warn!("cargos: {error}"),
     }
     match api.emojis().await {
-        Ok(emojis) if !emojis.is_empty() => publish(updates, repaint, Update::Emojis(emojis)),
+        Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
         Err(error) => log::warn!("emojis: {error}"),
     }
     if let Some(user_id) = user_id {
         match api.notifications(user_id).await {
             Ok(notifications) => {
-                publish(updates, repaint, Update::Notifications(notifications))
+                publish(updates, wake, Update::Notifications(notifications))
             }
             Err(error) => log::warn!("notificações: {error}"),
         }
@@ -904,46 +925,46 @@ async fn bootstrap(
 async fn load_profiles(
     api: &Api,
     updates: &sync_mpsc::Sender<Update>,
-    repaint: &egui::Context,
+    wake: &Wake,
     user_ids: Vec<String>,
 ) {
     if user_ids.is_empty() {
         return;
     }
     match api.profiles(user_ids).await {
-        Ok(profiles) => publish(updates, repaint, Update::Profiles(profiles)),
+        Ok(profiles) => publish(updates, wake, Update::Profiles(profiles)),
         Err(error) => log::warn!("perfis: {error}"),
     }
 }
 
 /// Relista as pessoas. Perfil, presença e banimento mudam essa lista.
-async fn relist_users(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+async fn relist_users(api: &Api, updates: &sync_mpsc::Sender<Update>, wake: &Wake) {
     match api.users().await {
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
-            publish(updates, repaint, Update::Users(users));
-            load_profiles(api, updates, repaint, ids).await;
+            publish(updates, wake, Update::Users(users));
+            load_profiles(api, updates, wake, ids).await;
         }
-        Err(error) => report(updates, repaint, error),
+        Err(error) => report(updates, wake, error),
     }
 }
 
-async fn relist_emojis(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+async fn relist_emojis(api: &Api, updates: &sync_mpsc::Sender<Update>, wake: &Wake) {
     match api.emojis().await {
-        Ok(emojis) => publish(updates, repaint, Update::Emojis(emojis)),
-        Err(error) => report(updates, repaint, error),
+        Ok(emojis) => publish(updates, wake, Update::Emojis(emojis)),
+        Err(error) => report(updates, wake, error),
     }
 }
 
 /// Relista cargos e pessoas: um cargo novo muda a cor e as permissões de
 /// quem o tem, e as duas listas precisam concordar.
-async fn relist_roles(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context) {
+async fn relist_roles(api: &Api, updates: &sync_mpsc::Sender<Update>, wake: &Wake) {
     match api.roles().await {
-        Ok(roles) => publish(updates, repaint, Update::Roles(roles)),
-        Err(error) => report(updates, repaint, error),
+        Ok(roles) => publish(updates, wake, Update::Roles(roles)),
+        Err(error) => report(updates, wake, error),
     }
     match api.users().await {
-        Ok(users) => publish(updates, repaint, Update::Users(users)),
+        Ok(users) => publish(updates, wake, Update::Users(users)),
         Err(error) => log::warn!("pessoas depois do cargo: {error}"),
     }
 }
@@ -952,20 +973,20 @@ async fn relist_roles(api: &Api, updates: &sync_mpsc::Sender<Update>, repaint: &
 async fn relist_channels(
     api: &Api,
     updates: &sync_mpsc::Sender<Update>,
-    repaint: &egui::Context,
+    wake: &Wake,
 ) {
     match api.channels().await {
-        Ok(channels) => publish(updates, repaint, Update::Channels(channels)),
-        Err(error) => report(updates, repaint, error),
+        Ok(channels) => publish(updates, wake, Update::Channels(channels)),
+        Err(error) => report(updates, wake, error),
     }
 }
 
-fn report(updates: &sync_mpsc::Sender<Update>, repaint: &egui::Context, error: ApiError) {
+fn report(updates: &sync_mpsc::Sender<Update>, wake: &Wake, error: ApiError) {
     let update = match error {
         ApiError::Unauthorized => Update::Session(None),
         other => Update::Error(other.to_string()),
     };
-    publish(updates, repaint, update);
+    publish(updates, wake, update);
 }
 
 // ---------------------------------------------------------------------------
@@ -979,7 +1000,7 @@ fn session_path(base_url: &str) -> Option<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "papo")?;
     let dir = dirs.data_dir().join("sessions");
     std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(format!("{}.token", crate::state::server_key(base_url))))
+    Some(dir.join(format!("{}.token", crate::server_key(base_url))))
 }
 
 /// Apaga o que um servidor deixou em disco. Chamado ao tirá-lo do trilho:
@@ -1002,7 +1023,7 @@ fn server_password_path(base_url: &str) -> Option<std::path::PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "papo")?;
     let dir = dirs.data_dir().join("sessions");
     std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(format!("{}.server", crate::state::server_key(base_url))))
+    Some(dir.join(format!("{}.server", crate::server_key(base_url))))
 }
 
 fn load_server_password(base_url: &str) -> Option<String> {
