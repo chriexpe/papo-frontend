@@ -42,6 +42,10 @@ struct Face {
     me: bool,
 }
 
+fn rgb([r, g, b]: [u8; 3]) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
 fn faces(store: &Store) -> Vec<Face> {
     store
         .call
@@ -58,7 +62,7 @@ fn faces(store: &Store) -> Vec<Face> {
                     .map(crate::state::Member::initials)
                     .unwrap_or_else(|| name.chars().take(2).collect::<String>().to_uppercase()),
                 name,
-                tint: person.and_then(|person| person.role_color),
+                tint: person.and_then(|person| person.role_color.map(rgb)),
                 muted: member.muted,
                 camera: member.camera_on,
                 speaking: store.call.speaking(&member.user_id),
@@ -103,7 +107,7 @@ pub fn roster(
                 .layout(egui::Layout::left_to_right(egui::Align::Center)),
         );
         let speaking = store.call.speaking(&member.user_id);
-        let ring = avatar(&mut child, t, &initials, 18.0, person.and_then(|p| p.role_color), texture);
+        let ring = avatar(&mut child, t, &initials, 18.0, person.and_then(|p| p.role_color.map(rgb)), texture);
         if speaking {
             child.painter().circle_stroke(
                 ring.rect.center(),

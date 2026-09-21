@@ -621,6 +621,10 @@ fn channels_sidebar(
 /// cima: as duas têm ícone, nome, uma linha de contexto e a engrenagem na
 /// ponta oposta, e as duas abrem a mesma folha. O que muda é de quem são os
 /// ajustes — seus, embaixo; do servidor, em cima.
+fn rgb([r, g, b]: [u8; 3]) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+
 fn account_pill(
     ui: &mut egui::Ui,
     store: &Store,
@@ -667,7 +671,7 @@ fn account_pill(
         &me.name,
         &subtitle,
         Some((presence_color(t, me.presence), avatar)),
-        me.role_color.unwrap_or(t.accent),
+        me.role_color.map(rgb).unwrap_or(t.accent),
         "pastilha-da-conta",
     ) {
         state.pending.push(MenuCommand::Preferences);
@@ -1004,7 +1008,7 @@ fn members_sidebar(
                                         &member.initials(),
                                         &member.name,
                                         presence_color(t, member.presence),
-                                        member.role_color,
+                                        member.role_color.map(rgb),
                                         presence == Presence::Offline,
                                         MEMBERS_WIDTH - space::LG * 2.0,
                                         avatar,
@@ -1839,7 +1843,7 @@ fn message_list(
                         t,
                         &initials,
                         avatar_size,
-                        author.and_then(|a| a.role_color),
+                        author.and_then(|a| a.role_color.map(rgb)),
                         texture,
                     );
                     ui.add_space(space::LG);
@@ -1851,7 +1855,7 @@ fn message_list(
                             ui.label(
                                 RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
                                     .font(text::headline())
-                                    .color(author.and_then(|a| a.role_color).unwrap_or(t.label)),
+                                    .color(author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label)),
                             );
                             ui.add_space(space::XS);
                             ui.label(
