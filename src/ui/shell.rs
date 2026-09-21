@@ -3413,7 +3413,8 @@ fn composer(
 
     let mut cursor = rect.min.y;
 
-    // Faixa de resposta.
+    // Faixa de resposta: o corpo inteiro leva até a mensagem original; o X
+    // continua sendo um alvo separado para cancelar a resposta.
     if let Some(reply_to) = state.replying.clone() {
         let band = Rect::from_min_size(
             egui::pos2(rect.min.x, cursor),
@@ -3424,17 +3425,31 @@ fn composer(
             .and_then(|message| store.member(&message.author_id))
             .map(|member| member.name.clone())
             .unwrap_or_else(|| s.reply_missing.to_owned());
-        ui.painter().text(
-            egui::pos2(band.min.x + space::LG, band.center().y),
-            egui::Align2::LEFT_CENTER,
-            format!("{} {} {name}", icon::ARROW_BEND_UP_LEFT, s.replying_to),
-            text::footnote(),
-            t.label_secondary,
-        );
+
         let close = Rect::from_center_size(
             egui::pos2(band.max.x - space::LG - 8.0, band.center().y),
             Vec2::splat(20.0),
         );
+        let jump_rect = Rect::from_min_max(band.min, egui::pos2(close.min.x - space::SM, band.max.y));
+        let jump = ui.interact(jump_rect, Id::new(("reply-jump", &reply_to)), Sense::click());
+        if jump.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        ui.painter().text(
+            egui::pos2(band.min.x + space::LG, band.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{} {name}", s.replying_to),
+            text::footnote(),
+            if jump.hovered() { t.label } else { t.label_secondary },
+        );
+        if jump.clicked() && store.message(&reply_to).is_some() {
+            state.jump = Some(Jump {
+                message_id: reply_to.clone(),
+                found: None,
+                since: ui.input(|input| input.time),
+            });
+        }
+
         let response = ui.interact(close, Id::new("reply-close"), Sense::click());
         ui.painter().text(
             close.center(),
