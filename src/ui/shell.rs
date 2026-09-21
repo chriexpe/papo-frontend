@@ -302,6 +302,8 @@ pub struct UiState {
     /// Layout estreito ativo neste quadro.
     pub compact: bool,
     pub mobile_surface: MobileSurface,
+    /// Quantos vídeos o overlay compacto tenta manter visíveis (1, 2 ou 4).
+    pub call_video_tiles: usize,
     mobile_gesture: Option<MobileGesture>,
     /// Retângulos das mensagens deste quadro, usados para swipe-to-reply sem
     /// roubar o drag vertical do ScrollArea.
@@ -361,6 +363,7 @@ impl Default for UiState {
             show_members: true,
             compact: false,
             mobile_surface: MobileSurface::Chat,
+            call_video_tiles: 2,
             mobile_gesture: None,
             message_rows: Vec::new(),
             translucent: true,
