@@ -438,7 +438,7 @@ pub static PT_BR: Strings = Strings {
     unpin: "Desafixar",
     delete: "Excluir",
     save_attachment: "Salvar anexo",
-    replying_to: "Respondendo a",
+    replying_to: "Respondendo para",
     reply_missing: "mensagem não disponível",
     edit_hint: "Enter salva · Esc cancela",
 
