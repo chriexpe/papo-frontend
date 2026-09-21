@@ -189,11 +189,12 @@ impl Player {
     /// Textura do quadro mais recente.
     pub fn frame(&mut self, ctx: &egui::Context) -> Option<&egui::TextureHandle> {
         let seq = self.shared.seq.load(Ordering::Relaxed);
-        if seq != self.shown {
-            if let Ok(mut slot) = self.shared.frame.lock() {
-                if let Some(frame) = slot.take() {
-                    self.shown = seq;
-                    let image = egui::ColorImage {
+        if seq != self.shown
+            && let Ok(mut slot) = self.shared.frame.lock()
+            && let Some(frame) = slot.take()
+        {
+            self.shown = seq;
+            let image = egui::ColorImage {
                         size: [frame.width, frame.height],
                         pixels: frame.pixels,
                         source_size: egui::Vec2::new(frame.width as f32, frame.height as f32),
@@ -207,8 +208,6 @@ impl Player {
                                 egui::TextureOptions::LINEAR,
                             ))
                         }
-                    }
-                }
             }
         }
         self.texture.as_ref()
@@ -334,10 +333,10 @@ fn run(
                     // recalcule. Quem ignora fica com o relógio parado: o
                     // pipeline diz PLAYING e a posição não anda.
                     gst::MessageView::Latency(_) => {
-                        if let Some(bin) = pipeline.downcast_ref::<gst::Bin>() {
-                            if let Err(error) = bin.recalculate_latency() {
-                                log::warn!("latência de {name}: {error}");
-                            }
+                        if let Some(bin) = pipeline.downcast_ref::<gst::Bin>()
+                            && let Err(error) = bin.recalculate_latency()
+                        {
+                            log::warn!("latência de {name}: {error}");
                         }
                     }
                     _ => {}
@@ -363,10 +362,10 @@ fn publish(pipeline: &gst::Element, shared: &Shared) {
     if let Some(position) = pipeline.query_position::<gst::ClockTime>() {
         shared.position_ns.store(position.nseconds(), Ordering::Relaxed);
     }
-    if let Some(duration) = pipeline.query_duration::<gst::ClockTime>() {
-        if duration.nseconds() > 0 {
-            shared.duration_ns.store(duration.nseconds(), Ordering::Relaxed);
-        }
+    if let Some(duration) = pipeline.query_duration::<gst::ClockTime>()
+        && duration.nseconds() > 0
+    {
+        shared.duration_ns.store(duration.nseconds(), Ordering::Relaxed);
     }
 }
 
