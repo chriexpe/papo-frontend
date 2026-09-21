@@ -250,6 +250,9 @@ pub struct Settings {
     pub close_to_tray: bool,
     #[serde(default = "enabled")]
     pub notifications: bool,
+    /// O @ das novas respostas começa ligado.
+    #[serde(default = "enabled")]
+    pub reply_notifications: bool,
     /// Contador de menções na bandeja e na barra de tarefas.
     #[serde(default = "enabled")]
     pub badge: bool,
@@ -294,6 +297,7 @@ impl Default for Settings {
             show_members: true,
             close_to_tray: true,
             notifications: true,
+            reply_notifications: true,
             badge: true,
             topic_reveal: true,
             record_button: true,
@@ -1018,6 +1022,7 @@ impl PapoApp {
             ChatAction::Send {
                 content,
                 reply_to,
+                notify_reply,
                 attachments,
             } => {
                 let channel_id = ws.store.selected_channel.clone();
@@ -1038,6 +1043,7 @@ impl PapoApp {
                     channel_id,
                     content,
                     reply_to,
+                    notify_reply,
                     attachments,
                 });
             }
@@ -1742,6 +1748,7 @@ impl PapoApp {
             self.settings.translucency,
             self.settings.show_members,
             self.settings.notifications,
+            self.settings.reply_notifications,
             self.settings.close_to_tray,
             self.settings.badge,
             self.settings.topic_reveal,
@@ -1759,6 +1766,7 @@ impl PapoApp {
                 theme: &mut self.settings.theme,
                 translucency: &mut self.settings.translucency,
                 notifications: &mut self.settings.notifications,
+                reply_notifications: &mut self.settings.reply_notifications,
                 close_to_tray: &mut self.settings.close_to_tray,
                 autostart: &mut autostart,
                 badge: &mut self.settings.badge,
@@ -1780,6 +1788,7 @@ impl PapoApp {
             self.settings.translucency,
             self.settings.show_members,
             self.settings.notifications,
+            self.settings.reply_notifications,
             self.settings.close_to_tray,
             self.settings.badge,
             self.settings.topic_reveal,
@@ -1787,7 +1796,7 @@ impl PapoApp {
             ask_download,
         );
         if before != after {
-            if ask_download != before.9 {
+            if ask_download != before.10 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -1883,6 +1892,7 @@ impl eframe::App for PapoApp {
                         .map(|ws| ws.entry(&self.settings))
                         .collect::<Vec<_>>()
                 });
+                self.ui.reply_notify_default = self.settings.reply_notifications;
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
                     shell::draw(
