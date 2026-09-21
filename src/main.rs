@@ -138,7 +138,7 @@ fn main() -> eframe::Result<()> {
             .with_app_id(APP_ID)
             .with_decorations(!own_chrome)
             .with_inner_size([1160.0, 740.0])
-            .with_min_inner_size([760.0, 480.0])
+            .with_min_inner_size([360.0, 480.0])
             .with_icon(window_icon()),
         ..Default::default()
     };
