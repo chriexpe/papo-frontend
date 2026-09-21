@@ -569,14 +569,12 @@ impl PapoApp {
         }
 
         // O servidor que está na tela entrega o seu guardado para a interface.
-        let mut ui_state = UiState {
-            show_members: settings.show_members,
-            translucent: settings.translucency,
-            reveal_topic: settings.topic_reveal,
-            show_record: settings.record_button,
-            glass,
-            ..UiState::default()
-        };
+        let mut ui_state = UiState::default();
+        ui_state.show_members = settings.show_members;
+        ui_state.translucent = settings.translucency;
+        ui_state.reveal_topic = settings.topic_reveal;
+        ui_state.show_record = settings.record_button;
+        ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
         Self {
