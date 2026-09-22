@@ -303,6 +303,7 @@ fn video(
     action
 }
 
+#[allow(clippy::ptr_arg)]
 fn audio(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -310,7 +311,7 @@ fn audio(
     media: &mut MediaStore,
     attachment: &Attachment,
     width: f32,
-    seek_zones: &mut Vec<Rect>,
+    _seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
     let state = media.file(&attachment.id, attachment.name());
@@ -416,7 +417,7 @@ fn audio(
 
     #[cfg(target_os = "android")]
     {
-        seek_zones.push(wave_hit);
+        _seek_zones.push(wave_hit);
         // No Android a onda NÃO possui Sense::drag: isso deixaria o filho
         // roubar a rolagem vertical do ScrollArea. O toque cru decide o eixo
         // e trava a decisão até o dedo subir.
@@ -598,7 +599,7 @@ enum Transport {
 }
 
 /// Barra de controles do vídeo: play, linha do tempo, som e tela cheia.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn transport(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -609,7 +610,7 @@ fn transport(
     position: f64,
     duration: f64,
     fullscreen: bool,
-    seek_zones: &mut Vec<Rect>,
+    _seek_zones: &mut Vec<Rect>,
 ) -> Option<Transport> {
     let mut outcome = None;
     ui.painter()
@@ -689,7 +690,7 @@ fn transport(
 
         #[cfg(target_os = "android")]
         {
-            seek_zones.push(seek_rect);
+            _seek_zones.push(seek_rect);
             let response = ui.interact(
                 seek_rect,
                 ui.id().with(("seek", id)),
