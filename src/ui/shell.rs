@@ -75,7 +75,10 @@ const TOPIC_SLIDE: f64 = 0.45;
 const COMPOSER_ATTACH_H: f32 = 62.0;
 const COMPOSER_REPLY_H: f32 = 26.0;
 /// Altura da linha onde se digita, sem as faixas de cima.
-const COMPOSER_LINE_H: f32 = 44.0;
+const COMPOSER_LINE_H: f32 = 52.0;
+/// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
+/// quatro linhas. Depois disso a própria área de texto rola internamente.
+const COMPOSER_MAX_ROWS: usize = 4;
 const TOAST_SECONDS: f64 = 6.0;
 
 /// O que a conversa pede para a camada de cima fazer.
@@ -1636,7 +1639,7 @@ fn conversation(
             return;
         }
 
-        let composer_height = composer_height(state);
+        let composer_height = composer_height(ui, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
 
@@ -2758,6 +2761,7 @@ fn message_body(
                 edit_id,
                 &mut buffer_copy,
                 response.has_focus(),
+                crate::platform::ime::Kind::Multiline,
             );
             *buffer = buffer_copy;
 
@@ -3626,9 +3630,42 @@ fn submit(state: &mut UiState) {
     });
 }
 
-fn composer_height(state: &UiState) -> f32 {
-    let lines = state.composer.lines().count().clamp(1, 2) as f32;
-    let mut height = COMPOSER_LINE_H + (lines - 1.0) * 18.0;
+fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+    let recording = state.recorder.is_some();
+    let with_record = state.show_record || recording;
+    let left_count = 1 + usize::from(with_record);
+    let left_width =
+        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
+
+    let composer_width =
+        (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+    let controls_width =
+        space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
+    let text_width = (composer_width - controls_width).max(80.0);
+
+    // Contar '\n' não basta: uma mensagem comprida pode ocupar três linhas
+    // sem conter newline nenhum. O mesmo layouter proporcional usado pelo
+    // TextEdit nos dá o número real de linhas depois do word-wrap.
+    let rows = if state.composer.is_empty() {
+        1
+    } else {
+        ui.painter()
+            .layout(
+                state.composer.clone(),
+                text::message(),
+                Color32::WHITE,
+                text_width,
+            )
+            .rows
+            .len()
+            .clamp(1, COMPOSER_MAX_ROWS)
+    };
+
+    let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+        + ui.spacing().extra_text_line_spacing;
+    let text_block = rows as f32 * line_height + space::SM * 2.0;
+    let mut height = COMPOSER_LINE_H.max(text_block);
+
     if state.replying.is_some() {
         height += COMPOSER_REPLY_H;
     }
@@ -4103,23 +4140,27 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let max_text_h = (line.height() - space::XS * 2.0).max(24.0);
+            let viewport_h = (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
             let response = egui::ScrollArea::vertical()
                 .id_salt("composer-text-scroll")
-                .max_height(max_text_h)
-                .auto_shrink([false, true])
+                .max_height(viewport_h)
+                .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                 .show(ui, |ui| {
-                    ui.add(
-                        TextEdit::multiline(&mut state.composer)
-                            .id(edit_id)
-                            .hint_text(RichText::new(hint).color(t.label_tertiary))
-                            .frame(Frame::NONE)
-                            .font(text::message())
-                            .desired_rows(1)
-                            .desired_width(f32::INFINITY)
-                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
-                    )
+                    ui.set_min_height(viewport_h);
+                    TextEdit::multiline(&mut state.composer)
+                        .id(edit_id)
+                        .hint_text(RichText::new(hint).color(t.label_tertiary))
+                        .frame(Frame::NONE)
+                        .font(text::message())
+                        .desired_rows(1)
+                        .vertical_align(Align::Center)
+                        .min_size(Vec2::new(0.0, viewport_h))
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
+                        .show(ui)
+                        .response
+                        .response
                 })
                 .inner;
             let ime_changed = crate::platform::ime::sync_text_edit(
@@ -4127,6 +4168,7 @@ fn composer(
                 edit_id,
                 &mut state.composer,
                 response.has_focus(),
+                crate::platform::ime::Kind::Multiline,
             );
             state.typed = response.changed() || ime_changed;
 
