@@ -584,6 +584,11 @@ impl Rows<'_> {
                 edit_id,
                 value,
                 response.has_focus(),
+                if secret {
+                    crate::platform::ime::Kind::Password
+                } else {
+                    crate::platform::ime::Kind::Text
+                },
             );
             submitted =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
