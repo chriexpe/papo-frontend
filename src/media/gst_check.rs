@@ -77,15 +77,6 @@ pub fn run() {
         log::warn!("gstreamer: nenhum decodificador do aparelho — o vídeo vai depender de software");
     }
 
-    // Quem se candidata a decodificar H.264, e com que prioridade. É o que
-    // decide qual o decodebin tenta primeiro.
-    for feature in registry.features(gst::ElementFactory::static_type()).iter() {
-        let name = feature.name();
-        if name.contains("avc") || name.contains("h264") || name.contains("264") {
-            log::info!("  h264: {name} (rank {})", feature.rank());
-        }
-    }
-
     probe("videotestsrc num-buffers=5 ! fakesink");
     probe("audiotestsrc num-buffers=5 ! fakesink");
 }

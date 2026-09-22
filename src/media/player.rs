@@ -29,7 +29,7 @@ pub fn init() -> bool {
     *READY.get_or_init(|| match gst::init() {
         Ok(()) => {
             #[cfg(target_os = "android")]
-            demote_omx_video();
+            demote_broken_decoders();
             true
         }
         Err(error) => {
@@ -39,7 +39,7 @@ pub fn init() -> bool {
     })
 }
 
-/// Tira a preferência dos decodificadores de vídeo do caminho OMX.
+/// Tira a preferência dos decodificadores do aparelho que não entregam.
 ///
 /// O OMX é o caminho antigo do Android — o Codec2 o substituiu na versão 10
 /// — e no aparelho de teste o decodificador de vídeo dele recusa o H.264 na
@@ -52,17 +52,26 @@ pub fn init() -> bool {
 /// onde houver, e o `openh264` como piso. Só o vídeo é mexido — o áudio do
 /// aparelho decodifica bem, inclusive o Opus dos recados.
 #[cfg(target_os = "android")]
-fn demote_omx_video() {
+fn demote_broken_decoders() {
     let registry = gst::Registry::get();
     let mut demoted = 0;
     for feature in registry.features(gst::ElementFactory::static_type()).iter() {
-        if feature.name().starts_with("amcviddec-omx") && feature.rank() > gst::Rank::MARGINAL {
+        let name = feature.name();
+        // Vídeo: o caminho OMX, que o Codec2 substituiu na versão 10 do
+        // Android. Áudio: o decodificador de Opus do aparelho, que abre,
+        // não reclama e não entrega quadro nenhum — o som dos recados de
+        // voz nunca chegava ao sink. Nos dois casos o substituto em
+        // software existe e funciona (`c2androidavcdecoder`, `opusdec`), e
+        // o que faltava era só a preferência, que vinha um degrau acima.
+        let broken = name.starts_with("amcviddec-omx")
+            || (name.starts_with("amcauddec-") && name.contains("opus"));
+        if broken && feature.rank() > gst::Rank::MARGINAL {
             feature.set_rank(gst::Rank::NONE);
             demoted += 1;
         }
     }
     if demoted > 0 {
-        log::info!("{demoted} decodificador(es) de vídeo OMX despriorizado(s)");
+        log::info!("{demoted} decodificador(es) do aparelho despriorizado(s)");
     }
 }
 
@@ -310,7 +319,17 @@ fn run(
                 // ela não termina o relógio não anda: o pipeline diz PLAYING
                 // e a posição fica parada. Esperar aqui é de graça.
                 Ok(_) => {
-                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                    let (result, current, pending) =
+                        pipeline.state(gst::ClockTime::from_mseconds(700));
+                    if current != gst::State::Playing {
+                        // Não chegou a tocar dentro do prazo. Quase sempre é
+                        // o sink que não consegue prerolar, e o pipeline fica
+                        // em PAUSED de vez: relógio parado, som nenhum, e
+                        // nada no barramento para denunciar.
+                        log::warn!(
+                            "{name} não chegou a PLAYING: {result:?}, está em                              {current:?}, indo para {pending:?}"
+                        );
+                    }
                 }
                 Err(error) => report(&shared, format!("não tocou: {error}")),
             },
@@ -433,6 +452,11 @@ fn audio_sink() -> Option<gst::Element> {
             return Some(sink);
         }
     }
+    // Aberto: no Android o som sai, mas picotado. Não é o buffer do sink
+    // (dar folga em `buffer-time`/`latency-time` não mudou nada) nem o
+    // formato (converter para 48 kHz estéreo, que é o que o aparelho toca,
+    // também não). O decodificador já é o de software, que é barato para
+    // Opus. Falta medir onde o tempo se perde.
     log::warn!("sem saída de áudio: o som não vai tocar");
     None
 }
