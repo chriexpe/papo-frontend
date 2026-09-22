@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
+import android.graphics.drawable.Icon;
 
 /**
  * Mantém uma call autorizada a usar áudio/câmera quando a Activity sai da
@@ -141,11 +142,11 @@ public final class CallService extends Service {
                 .setOnlyAlertOnce(true)
                 .setContentIntent(open)
                 .addAction(new Notification.Action.Builder(
-                        null,
+                        Icon.createWithResource(this, R.drawable.ic_call_notification),
                         muted ? "Ativar microfone" : "Silenciar",
                         mute).build())
                 .addAction(new Notification.Action.Builder(
-                        null,
+                        Icon.createWithResource(this, R.drawable.ic_call_notification),
                         "Desligar",
                         hangup).build())
                 .build();
