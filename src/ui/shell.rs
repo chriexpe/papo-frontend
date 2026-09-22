@@ -2238,6 +2238,9 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
             run = true;
         }
     });
+    if let Some(panel) = state.panel.as_mut() {
+        panel.query.clone_from(&query);
+    }
     if run && !query.trim().is_empty() {
         store.searching = true;
         state.actions.push(ChatAction::Search(query.trim().to_owned()));
