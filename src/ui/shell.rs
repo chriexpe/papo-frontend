@@ -2302,7 +2302,7 @@ fn message_list(
     let rows = egui::Rangef::new(area.min.x + space::MD, area.max.x - space::MD);
     // Com um popup aberto, só a mensagem dona dele fica em destaque: o resto
     // da lista não deve reagir ao ponteiro que está a caminho do menu.
-    let interactive = state.viewer.is_none();
+    let interactive = state.viewer.is_none() && state.panel.is_none();
     let focused_message = state
         .popup
         .as_ref()
@@ -2396,7 +2396,7 @@ fn message_list(
         });
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
-        if state.compact {
+        if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state
                 .message_rows
@@ -2535,10 +2535,10 @@ fn reply_quote(
     let exists = store.message(reply_to).is_some();
     let sense = if exists { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
-    if exists && response.hovered() {
+    if exists && state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if exists && response.clicked() {
+    if exists && state.panel.is_none() && response.clicked() {
         state.jump = Some(Jump {
             message_id: reply_to.to_owned(),
             found: None,
