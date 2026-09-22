@@ -138,9 +138,12 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                 if tell_server {
                     leave_call(ws);
                 } else {
+                    ws.net.set_event_callback(None);
                     ws.call = None;
                     ws.call_ready = false;
                     ws.watching.clear();
+                    #[cfg(target_os = "android")]
+                    crate::platform::android_call::stop_service();
                 }
             }
         }
@@ -170,6 +173,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
 
 /// Sai da call: avisa o servidor, desmonta o pipeline e limpa o retrato.
 fn leave_call(ws: &mut Workspace) {
+    let had_call = ws.store.call.active() || ws.call.is_some();
     if ws.store.call.active() && !ws.store.call.channel_id.is_empty() {
         ws.net.send(Command::VoiceSignal(format!(
             r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
@@ -183,7 +187,9 @@ fn leave_call(ws: &mut Workspace) {
     ws.camera_revision = 0;
     ws.store.call.left();
     #[cfg(target_os = "android")]
-    crate::platform::android_call::stop_service();
+    if had_call {
+        crate::platform::android_call::stop_service();
+    }
 }
 
 /// O vaivém da call a cada quadro. SDP/ICE já circulam diretamente entre a
@@ -1144,15 +1150,18 @@ impl PapoApp {
                 if permission::ensure(permission::RECORD_AUDIO) == Status::Asking {
                     return;
                 }
+            }
+            for ws in &mut self.workspaces {
+                leave_call(ws);
+            }
+            #[cfg(target_os = "android")]
+            {
                 let title = self.workspaces[self.active]
                     .store
                     .channel(&channel_id)
                     .map(|channel| channel.name.clone())
                     .unwrap_or_else(|| "Papo".to_owned());
                 crate::platform::android_call::start_service(&title);
-            }
-            for ws in &mut self.workspaces {
-                leave_call(ws);
             }
             let ws = &mut self.workspaces[self.active];
             ws.store.selected_channel = channel_id.clone();
