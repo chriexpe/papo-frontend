@@ -355,10 +355,12 @@ fn send_to_android(state: &ImeState) {
     });
 }
 
+#[cfg(any(target_os = "android", test))]
 fn char_to_utf16_index(text: &str, char_index: usize) -> usize {
     text.chars().take(char_index).map(char::len_utf16).sum()
 }
 
+#[cfg(any(target_os = "android", test))]
 fn utf16_to_char_index(text: &str, utf16_index: usize) -> usize {
     let mut units = 0;
     let mut chars = 0;
