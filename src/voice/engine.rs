@@ -1117,8 +1117,10 @@ fn connect_signals(
             // fora desta máquina chega em 127.0.0.1). Mandar assim mesmo só
             // renderia um erro por candidato.
             if is_loopback(&candidate) {
+                log::debug!("call: ignorando ICE loopback: {candidate}");
                 return;
             }
+            log::info!("call: ICE local mline={mline}: {candidate}");
             let _ = out.send(
                 serde_json::json!({
                     "type": "voice_ice_candidate",
@@ -1139,6 +1141,7 @@ fn connect_signals(
     let state = Arc::clone(shared);
     webrtc.connect_notify(Some("connection-state"), move |webrtc, _| {
         let value = webrtc.property::<gst_webrtc::WebRTCPeerConnectionState>("connection-state");
+        log::info!("call: PeerConnection -> {value:?}");
         match value {
             gst_webrtc::WebRTCPeerConnectionState::Connected => {
                 state.live.store(true, Ordering::Relaxed);
@@ -1152,6 +1155,18 @@ fn connect_signals(
             }
             _ => {}
         }
+    });
+
+    webrtc.connect_notify(Some("ice-gathering-state"), move |webrtc, _| {
+        let value =
+            webrtc.property::<gst_webrtc::WebRTCICEGatheringState>("ice-gathering-state");
+        log::info!("call: ICE gathering -> {value:?}");
+    });
+
+    webrtc.connect_notify(Some("ice-connection-state"), move |webrtc, _| {
+        let value =
+            webrtc.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
+        log::info!("call: ICE connection -> {value:?}");
     });
 
     let bin = pipeline.clone();
