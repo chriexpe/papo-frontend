@@ -859,6 +859,25 @@ fn microphone(
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
+    // RECORD_AUDIO é uma permissão de runtime. O join no Android já espera
+    // a resposta antes de montar a call, mas esta guarda mantém o motor
+    // honesto caso ele seja chamado por outro caminho.
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::permission::{self, Status};
+        match permission::ensure(permission::RECORD_AUDIO) {
+            Status::Granted => {}
+            Status::Asking => {
+                shared.warn("esperando a permissão do microfone");
+                return None;
+            }
+            Status::Denied => {
+                shared.warn("sem permissão para usar o microfone: você entra só ouvindo");
+                return None;
+            }
+        }
+    }
+
     // No Android o caminho é um só: o OpenSL ES. Na área de trabalho
     // tenta-se do mais moderno para o mais antigo.
     #[cfg(target_os = "android")]
@@ -1154,7 +1173,15 @@ fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
 }
 
 fn audio_sink() -> Option<gst::Element> {
-    for factory in ["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"] {
+    // A call compartilhava a lista da área de trabalho e, no Android,
+    // acabava dependendo de autoaudiosink por acaso. O player de anexos já
+    // usa o sink nativo diretamente; a call deve fazer o mesmo.
+    #[cfg(target_os = "android")]
+    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
+    #[cfg(not(target_os = "android"))]
+    const SINKS: &[&str] = &["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"];
+
+    for factory in SINKS {
         let Some(sink) = make(factory) else { continue };
         // Um sink que entra com o pipeline já andando não pode segurar a
         // troca de estado esperando o próprio preroll.
