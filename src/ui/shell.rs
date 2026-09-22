@@ -4201,6 +4201,45 @@ fn composer(
         egui::pos2(line.min.x + space::MD, line.min.y + space::XS),
         egui::pos2(emoji_rect.min.x - space::XXS, line.max.y - space::XS),
     );
+
+    #[cfg(target_os = "android")]
+    let android_composer_tap = if state.editing.is_some() {
+        ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| field.contains(position))
+        })
+    } else {
+        false
+    };
+
+    #[cfg(target_os = "android")]
+    if state.editing.is_some() && ui.input(|input| input.pointer.any_pressed()) {
+        // Um toque que chegou ao egui aconteceu fora da EditText da mensagem
+        // (toques dentro dela são consumidos pela própria View Android).
+        // Portanto ele encerra a edição. Se caiu no compositor, o foco é
+        // transferido para ele logo abaixo.
+        state.editing = None;
+        state.edit_focus_pending = false;
+        crate::platform::native_text::dismiss();
+    }
+
+    #[cfg(target_os = "android")]
+    let android_chat_editor_visible = !state.compact
+        || (state.mobile_surface == MobileSurface::Chat
+            && state.drawer.shown <= 0.0
+            && !state.drawer.dragging);
+
+    #[cfg(target_os = "android")]
+    if !android_chat_editor_visible {
+        // A View Android fica acima da superfície do egui. Enquanto uma
+        // gaveta cobre a conversa ela precisa desaparecer de verdade, senão
+        // rouba toques dos controles desenhados por cima.
+        crate::platform::native_text::dismiss();
+    }
+
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(field)
@@ -4244,44 +4283,46 @@ fn composer(
             };
 
             #[cfg(target_os = "android")]
-            let (field_focused, caret) = if state.editing.is_none() {
-                let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
-                let events = crate::platform::native_text::show(
-                    ui.ctx(),
-                    "composer",
-                    &mut state.composer,
-                    native_rect,
-                    &hint,
-                    crate::platform::native_text::Mode::Composer,
-                    COMPOSER_MAX_ROWS,
-                    false,
-                    t.label,
-                    t.label_tertiary,
-                    text::message().size,
-                );
-                state.typed = events.changed;
-                (events.focused, events.caret)
-            } else {
-                // Há um único editor Android. Enquanto uma mensagem está
-                // sendo editada ele pertence àquela mensagem, não ao rascunho.
-                let shown = if state.composer.is_empty() {
-                    hint.as_str()
+            let (field_focused, caret) =
+                if state.editing.is_none() && android_chat_editor_visible {
+                    let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
+                    let events = crate::platform::native_text::show(
+                        ui.ctx(),
+                        "composer",
+                        &mut state.composer,
+                        native_rect,
+                        &hint,
+                        crate::platform::native_text::Mode::Composer,
+                        COMPOSER_MAX_ROWS,
+                        android_composer_tap,
+                        t.label,
+                        t.label_tertiary,
+                        text::message().size,
+                    );
+                    state.typed = events.changed;
+                    (events.focused, events.caret)
                 } else {
-                    state.composer.as_str()
-                };
-                ui.painter().text(
-                    field.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    shown,
-                    text::message(),
-                    if state.composer.is_empty() {
-                        t.label_tertiary
+                    // Durante edição de mensagem ou enquanto uma gaveta cobre
+                    // a conversa, o compositor é só desenho egui. A View
+                    // Android não pode continuar existindo por cima dela.
+                    let shown = if state.composer.is_empty() {
+                        hint.as_str()
                     } else {
-                        t.label
-                    },
-                );
-                (false, None)
-            };
+                        state.composer.as_str()
+                    };
+                    ui.painter().text(
+                        field.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        shown,
+                        text::message(),
+                        if state.composer.is_empty() {
+                            t.label_tertiary
+                        } else {
+                            t.label
+                        },
+                    );
+                    (false, None)
+                };
 
             #[cfg(not(target_os = "android"))]
             let (field_focused, caret) = {

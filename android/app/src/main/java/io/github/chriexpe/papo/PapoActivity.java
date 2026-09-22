@@ -95,6 +95,7 @@ public class PapoActivity extends GameActivity {
     private String nativeEditorKey;
     private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
     private boolean mutatingNativeEditor;
+    private boolean imeWasVisible;
 
     /**
      * O compositor Android é um EditText de verdade, não um TextEdit do egui
@@ -839,6 +840,25 @@ public class PapoActivity extends GameActivity {
         final View root = getWindow().getDecorView();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             publish(insets);
+
+            // Fechar o teclado pelo Back não tira foco de um EditText. Sem
+            // isso o compositor continuava com o cursor piscando e seguia
+            // sendo um alvo Android invisível por cima da UI.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                final boolean imeVisible = insets.isVisible(WindowInsets.Type.ime());
+                if (imeWasVisible && !imeVisible) {
+                    if (nativeEditor != null && nativeEditor.hasFocus()) {
+                        nativeEditor.clearFocus();
+                    }
+                    for (NativeFieldEditText field : nativeFields.values()) {
+                        if (field.hasFocus()) {
+                            field.clearFocus();
+                        }
+                    }
+                }
+                imeWasVisible = imeVisible;
+            }
+
             return view.onApplyWindowInsets(insets);
         });
         root.requestApplyInsets();

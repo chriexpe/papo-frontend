@@ -102,6 +102,29 @@ pub fn end_frame() {
     }
 }
 
+/// Solta imediatamente o editor nativo e seu foco.
+///
+/// Diferente de `end_frame`, isto é usado por interações que mudam o dono do
+/// editor no meio do quadro (fechar o IME, cancelar edição, abrir gaveta).
+/// O texto continua no modelo Rust; só a View Android deixa de interceptar
+/// toque/foco.
+pub fn dismiss() {
+    let hide = if let Ok(mut state) = STATE.lock() {
+        let hide = state.last.is_some();
+        state.seen = false;
+        state.last = None;
+        state.focus = None;
+        state.selection = None;
+        state.submit = None;
+        hide
+    } else {
+        false
+    };
+    if hide {
+        call_hide();
+    }
+}
+
 /// Mostra/sincroniza o editor nativo na área física correspondente ao Rect.
 #[allow(clippy::too_many_arguments)]
 pub fn show(
