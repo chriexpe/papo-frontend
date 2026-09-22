@@ -342,6 +342,7 @@ public class PapoActivity extends GameActivity {
     private final class NativeFieldEditText extends EditText {
         final String key;
         boolean mutating;
+        int imeAction = EditorInfo.IME_ACTION_DONE;
 
         NativeFieldEditText(Context context, String key) {
             super(context);
@@ -389,6 +390,19 @@ public class PapoActivity extends GameActivity {
                 }
                 return false;
             });
+        }
+
+        @Override
+        public android.view.inputmethod.InputConnection onCreateInputConnection(
+                EditorInfo outAttrs) {
+            final android.view.inputmethod.InputConnection connection =
+                    super.onCreateInputConnection(outAttrs);
+            outAttrs.imeOptions &= ~(EditorInfo.IME_MASK_ACTION
+                    | EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+            outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                    | imeAction;
+            return connection;
         }
     }
 
@@ -460,6 +474,7 @@ public class PapoActivity extends GameActivity {
             if (editor.getInputType() != inputType) {
                 editor.setInputType(inputType);
             }
+            editor.imeAction = action;
             editor.setImeOptions(
                     EditorInfo.IME_FLAG_NO_EXTRACT_UI
                             | EditorInfo.IME_FLAG_NO_FULLSCREEN
