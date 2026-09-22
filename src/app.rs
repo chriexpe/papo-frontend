@@ -100,6 +100,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                     ws.net.sender(),
                     channel_id.clone(),
                     ws.store.call.muted,
+                    ws.store.call.camera,
                 );
             } else {
                 ws.store.call.error = Some("a call não abriu".to_owned());
@@ -229,8 +230,6 @@ fn pump_call(ws: &mut Workspace) {
     if ws.camera_revision != revision {
         ws.camera_revision = revision;
         ws.store.call.camera = camera;
-        #[cfg(target_os = "android")]
-        crate::platform::android_call::update_service(ws.store.call.muted, camera);
     }
 
     if call.failed() {
@@ -1308,8 +1307,6 @@ impl PapoApp {
                 if let Some(call) = &ws.call {
                     call.set_muted(muted);
                 }
-                #[cfg(target_os = "android")]
-                crate::platform::android_call::update_service(muted, ws.store.call.camera);
             }
             ChatAction::ToggleCamera => {
                 let on = !ws.store.call.camera;
@@ -2080,6 +2077,11 @@ impl eframe::App for PapoApp {
                             ws.store.call.muted = muted;
                         }
                     }
+                    crate::platform::android_call::UiAction::Camera(camera) => {
+                        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.store.call.active()) {
+                            ws.store.call.camera = camera;
+                        }
+                    }
                     crate::platform::android_call::UiAction::Hangup => {
                         if let Some(index) = self.workspaces.iter().position(|ws| ws.store.call.active()) {
                             leave_call(&mut self.workspaces[index]);
@@ -2091,9 +2093,39 @@ impl eframe::App for PapoApp {
             let call_index = self.workspaces.iter().position(|ws| ws.store.call.active());
             let has_video = call_index
                 .is_some_and(|index| self.workspaces[index].store.call.has_video());
-            crate::platform::android_call::set_presentation(call_index.is_some(), has_video);
+
+            let (muted, camera, members, speaker_name) = if let Some(index) = call_index {
+                let ws = &self.workspaces[index];
+                let speaker_name = ws.store.call.speakers.first().and_then(|id| {
+                    ws.store.member(id).map(|member| member.name.clone())
+                });
+                (
+                    ws.store.call.muted,
+                    ws.store.call.camera,
+                    ws.store.call.members().len(),
+                    speaker_name,
+                )
+            } else {
+                (true, false, 0, None)
+            };
+
+            if call_index.is_some() {
+                crate::platform::android_call::sync_service(
+                    muted,
+                    camera,
+                    members,
+                    speaker_name.as_deref(),
+                );
+            }
+            crate::platform::android_call::set_presentation(
+                call_index.is_some(),
+                has_video,
+                muted,
+                camera,
+            );
 
             if crate::platform::android_call::is_in_pip() {
+                ctx.request_repaint();
                 if let Some(index) = call_index {
                     let strings = self.settings.lang.strings();
                     let ws = &mut self.workspaces[index];
