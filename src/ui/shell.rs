@@ -2169,11 +2169,19 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
+        let search_id = Id::new("busca-mensagens");
         let field = ui.add(
             egui::TextEdit::singleline(&mut query)
+                .id(search_id)
                 .hint_text(s.search_placeholder)
                 .desired_width(field_width)
                 .font(text::body()),
+        );
+        let _ = crate::platform::ime::sync_text_edit(
+            ui.ctx(),
+            search_id,
+            &mut query,
+            field.has_focus(),
         );
         if let Some(panel) = state.panel.as_mut() {
             panel.query = query.clone();
@@ -2735,15 +2743,23 @@ fn message_body(
         && id == &message.id
     {
             let mut buffer_copy = buffer.clone();
+            let edit_id = Id::new(("editar-mensagem", id));
             let response = ui.add(
                 TextEdit::multiline(&mut buffer_copy)
+                    .id(edit_id)
                     .font(text::message())
                     .desired_width(width)
                     .desired_rows(1)
                     .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
-            *buffer = buffer_copy;
             response.request_focus();
+            let _ = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                edit_id,
+                &mut buffer_copy,
+                response.has_focus(),
+            );
+            *buffer = buffer_copy;
 
             let (save, cancel) = ui.input(|input| {
                 (
@@ -3611,7 +3627,7 @@ fn submit(state: &mut UiState) {
 }
 
 fn composer_height(state: &UiState) -> f32 {
-    let lines = state.composer.lines().count().clamp(1, 8) as f32;
+    let lines = state.composer.lines().count().clamp(1, 2) as f32;
     let mut height = COMPOSER_LINE_H + (lines - 1.0) * 18.0;
     if state.replying.is_some() {
         height += COMPOSER_REPLY_H;
@@ -4087,18 +4103,32 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let response = ui.add(
-                TextEdit::multiline(&mut state.composer)
-                    .id(edit_id)
-                    .hint_text(RichText::new(hint).color(t.label_tertiary))
-                    .frame(Frame::NONE)
-                    .font(text::message())
-                    .desired_rows(1)
-                    .vertical_align(Align::Center)
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
+            let max_text_h = (line.height() - space::XS * 2.0).max(24.0);
+            let response = egui::ScrollArea::vertical()
+                .id_salt("composer-text-scroll")
+                .max_height(max_text_h)
+                .auto_shrink([false, true])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(ui, |ui| {
+                    ui.add(
+                        TextEdit::multiline(&mut state.composer)
+                            .id(edit_id)
+                            .hint_text(RichText::new(hint).color(t.label_tertiary))
+                            .frame(Frame::NONE)
+                            .font(text::message())
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY)
+                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
+                    )
+                })
+                .inner;
+            let ime_changed = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                edit_id,
+                &mut state.composer,
+                response.has_focus(),
             );
-            state.typed = response.changed();
+            state.typed = response.changed() || ime_changed;
 
             let caret = caret_of(ui.ctx(), edit_id);
             if keys.dismiss {
