@@ -569,13 +569,21 @@ impl Rows<'_> {
         let mut submitted = false;
         self.row(label, None, |ui, _| {
             let width = ui.available_width();
+            let edit_id = ui.id().with(("settings-field", label));
             let response = ui.add_sized(
                 Vec2::new(width, 26.0),
                 egui::TextEdit::singleline(value)
+                    .id(edit_id)
                     .char_limit(limit)
                     .password(secret)
                     .font(text::body())
                     .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
+            );
+            let _ = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                edit_id,
+                value,
+                response.has_focus(),
             );
             submitted =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
