@@ -1,8 +1,10 @@
 package io.github.chriexpe.papo;
 
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.Color;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.provider.OpenableColumns;
@@ -11,12 +13,19 @@ import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.Selection;
+import android.text.TextWatcher;
 import android.util.Log;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -60,8 +69,253 @@ public class PapoActivity extends GameActivity {
             int composingRegionStart,
             int composingRegionEnd);
 
+    /** Eventos do EditText Android que cobre o compositor/edição de mensagem. */
+    private static native void nativeEditorTextChanged(String key, String text);
+    private static native void nativeEditorSelectionChanged(String key, int start, int end);
+    private static native void nativeEditorSubmit(String key);
+    private static native void nativeEditorFocusChanged(String key, boolean focused);
+
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
+
+    private static final int NATIVE_EDITOR_COMPOSER = 0;
+    private static final int NATIVE_EDITOR_EDIT = 1;
+
+    private FrameLayout nativeEditorLayer;
+    private NativeEditText nativeEditor;
+    private String nativeEditorKey;
+    private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
+    private boolean mutatingNativeEditor;
+
+    /**
+     * O compositor Android é um EditText de verdade, não um TextEdit do egui
+     * alimentado por eventos sintetizados. Isso deixa seleção, composição,
+     * autocomplete, repetição de apagar, cursor pela barra de espaço e scroll
+     * interno inteiramente sob responsabilidade do Android/IME.
+     */
+    private final class NativeEditText extends EditText {
+        NativeEditText(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onSelectionChanged(int start, int end) {
+            super.onSelectionChanged(start, end);
+            if (!mutatingNativeEditor && nativeEditorKey != null) {
+                nativeEditorSelectionChanged(nativeEditorKey, start, end);
+            }
+        }
+
+        @Override
+        public android.view.inputmethod.InputConnection onCreateInputConnection(
+                EditorInfo outAttrs) {
+            final android.view.inputmethod.InputConnection connection =
+                    super.onCreateInputConnection(outAttrs);
+            outAttrs.imeOptions &= ~(EditorInfo.IME_MASK_ACTION
+                    | EditorInfo.IME_FLAG_NO_ENTER_ACTION);
+            outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                    | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                    | (nativeEditorMode == NATIVE_EDITOR_EDIT
+                            ? EditorInfo.IME_ACTION_DONE
+                            : EditorInfo.IME_ACTION_NONE);
+            return connection;
+        }
+    }
+
+    private void ensureNativeEditor() {
+        if (nativeEditor != null) {
+            return;
+        }
+
+        nativeEditorLayer = new FrameLayout(this);
+        nativeEditorLayer.setClipChildren(false);
+        nativeEditorLayer.setClipToPadding(false);
+        nativeEditorLayer.setClickable(false);
+        addContentView(
+                nativeEditorLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
+        nativeEditor = new NativeEditText(this);
+        nativeEditor.setBackground(null);
+        nativeEditor.setBackgroundColor(Color.TRANSPARENT);
+        nativeEditor.setIncludeFontPadding(false);
+        nativeEditor.setPadding(0, 0, 0, 0);
+        nativeEditor.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        nativeEditor.setSingleLine(false);
+        nativeEditor.setHorizontallyScrolling(false);
+        nativeEditor.setSelectAllOnFocus(false);
+        nativeEditor.setSaveEnabled(false);
+        nativeEditor.setVerticalScrollBarEnabled(false);
+        nativeEditor.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        nativeEditor.setInputType(
+                InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_VARIATION_SHORT_MESSAGE
+                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
+
+        nativeEditor.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(
+                    CharSequence text, int start, int count, int after) {}
+
+            @Override
+            public void onTextChanged(
+                    CharSequence text, int start, int before, int count) {}
+
+            @Override
+            public void afterTextChanged(Editable text) {
+                if (!mutatingNativeEditor && nativeEditorKey != null) {
+                    nativeEditorTextChanged(nativeEditorKey, text.toString());
+                }
+            }
+        });
+
+        nativeEditor.setOnFocusChangeListener((view, focused) -> {
+            if (nativeEditorKey != null) {
+                nativeEditorFocusChanged(nativeEditorKey, focused);
+            }
+        });
+
+        nativeEditor.setOnEditorActionListener((view, actionId, event) -> {
+            if (nativeEditorMode != NATIVE_EDITOR_EDIT || nativeEditorKey == null) {
+                return false;
+            }
+            final boolean done = actionId == EditorInfo.IME_ACTION_DONE;
+            final boolean enter = event != null
+                    && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                    && event.getAction() == KeyEvent.ACTION_DOWN
+                    && !event.isShiftPressed();
+            if (done || enter) {
+                nativeEditorSubmit(nativeEditorKey);
+                return true;
+            }
+            return false;
+        });
+
+        nativeEditor.setVisibility(View.GONE);
+        nativeEditorLayer.addView(
+                nativeEditor,
+                new FrameLayout.LayoutParams(1, 1));
+    }
+
+    /**
+     * Posiciona o editor nativo exatamente sobre a área que o egui reservou.
+     * Chamado da thread do render; toda mutação de View é repostada à UI thread.
+     */
+    public void showNativeEditor(
+            String key,
+            String text,
+            String hint,
+            int left,
+            int top,
+            int width,
+            int height,
+            float textSizePx,
+            int textColor,
+            int hintColor,
+            int mode,
+            int maxLines,
+            boolean focus) {
+        runOnUiThread(() -> {
+            ensureNativeEditor();
+
+            final boolean keyChanged = !key.equals(nativeEditorKey);
+            final boolean modeChanged = nativeEditorMode != mode;
+            nativeEditorKey = key;
+            nativeEditorMode = mode;
+
+            nativeEditor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+            nativeEditor.setTextColor(textColor);
+            nativeEditor.setHintTextColor(hintColor);
+            nativeEditor.setHint(hint);
+            nativeEditor.setMinLines(1);
+            nativeEditor.setMaxLines(Math.max(1, maxLines));
+            nativeEditor.setImeOptions(
+                    EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                            | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                            | (mode == NATIVE_EDITOR_EDIT
+                                    ? EditorInfo.IME_ACTION_DONE
+                                    : EditorInfo.IME_ACTION_NONE));
+
+            final FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) nativeEditor.getLayoutParams();
+            params.width = Math.max(1, width);
+            params.height = Math.max(1, height);
+            params.leftMargin = left;
+            params.topMargin = top;
+            nativeEditor.setLayoutParams(params);
+            nativeEditor.setVisibility(View.VISIBLE);
+            nativeEditorLayer.bringToFront();
+            nativeEditor.bringToFront();
+
+            final String current = nativeEditor.getText().toString();
+            if (keyChanged || !current.equals(text)) {
+                final int oldSelection = Math.max(0, nativeEditor.getSelectionEnd());
+                mutatingNativeEditor = true;
+                nativeEditor.setText(text);
+                final int target = keyChanged
+                        ? text.length()
+                        : Math.min(oldSelection, text.length());
+                nativeEditor.setSelection(target);
+                mutatingNativeEditor = false;
+            }
+
+            final InputMethodManager imm =
+                    (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null && (keyChanged || modeChanged) && nativeEditor.hasFocus()) {
+                imm.restartInput(nativeEditor);
+            }
+
+            if (focus) {
+                nativeEditor.post(() -> {
+                    if (!key.equals(nativeEditorKey)) {
+                        return;
+                    }
+                    nativeEditor.requestFocus();
+                    final InputMethodManager keyboard =
+                            (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                    if (keyboard != null) {
+                        keyboard.restartInput(nativeEditor);
+                        keyboard.showSoftInput(nativeEditor, InputMethodManager.SHOW_IMPLICIT);
+                    }
+                });
+            }
+        });
+    }
+
+    /** Move o cursor depois de uma alteração iniciada pelo egui (ex.: :emoji:). */
+    public void setNativeEditorSelection(String key, int selection) {
+        runOnUiThread(() -> {
+            if (nativeEditor == null || !key.equals(nativeEditorKey)) {
+                return;
+            }
+            final int end = Math.max(
+                    0,
+                    Math.min(selection, nativeEditor.getText().length()));
+            nativeEditor.setSelection(end);
+            nativeEditor.requestFocus();
+        });
+    }
+
+    /** Some com a View quando não existe campo nativo neste quadro. */
+    public void hideNativeEditor() {
+        runOnUiThread(() -> {
+            if (nativeEditor == null || nativeEditor.getVisibility() != View.VISIBLE) {
+                return;
+            }
+            final InputMethodManager imm =
+                    (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            nativeEditorKey = null;
+            nativeEditor.clearFocus();
+            if (imm != null) {
+                imm.hideSoftInputFromWindow(nativeEditor.getWindowToken(), 0);
+            }
+            nativeEditor.setVisibility(View.GONE);
+        });
+    }
 
     /**
      * O mesmo GameTextInput do GameActivity, mas observando cada operação no

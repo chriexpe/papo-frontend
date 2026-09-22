@@ -1891,6 +1891,8 @@ impl eframe::App for PapoApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(target_os = "android")]
+        crate::platform::native_text::begin_frame();
         self.attach_window(frame);
 
         // Indo para segundo plano: gravar agora, porque pode não haver um
@@ -2002,6 +2004,9 @@ impl eframe::App for PapoApp {
         for command in pending {
             self.handle(&ctx, command);
         }
+
+        #[cfg(target_os = "android")]
+        crate::platform::native_text::end_frame();
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {

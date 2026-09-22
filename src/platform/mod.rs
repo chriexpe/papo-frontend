@@ -28,10 +28,12 @@ pub mod menu;
 /// Acordar a janela de fora do laço de quadros (Android).
 #[cfg(target_os = "android")]
 pub mod wake;
-/// A ponte entre o teclado do Android e o egui. O módulo compila em toda
-/// parte para o teste da conta de prefixo rodar no CI; o que fala com a
-/// Activity é que é só do Android.
+/// A ponte legada entre o teclado do Android e TextEdit. Continua servindo
+/// campos simples enquanto compositor/edição usam um EditText nativo.
 pub mod ime;
+/// Editor Android de verdade, sobreposto à superfície do egui.
+#[cfg(target_os = "android")]
+pub mod native_text;
 /// Bordas do sistema no Android (barra de status, navegação, recorte).
 #[cfg(target_os = "android")]
 pub mod safe_area;

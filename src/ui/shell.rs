@@ -2756,35 +2756,81 @@ fn message_body(
         && id == &message.id
     {
             let mut buffer_copy = buffer.clone();
-            let edit_id = Id::new(("editar-mensagem", id));
-            let _ =
-                crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut buffer_copy);
-            let response = ui.add(
-                TextEdit::multiline(&mut buffer_copy)
-                    .id(edit_id)
-                    .font(text::message())
-                    .desired_width(width)
-                    .desired_rows(1)
-                    .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
-            );
-            if std::mem::take(&mut state.edit_focus_pending) {
-                response.request_focus();
-            }
-            let _ = crate::platform::ime::sync_text_edit(
-                ui.ctx(),
-                edit_id,
-                &mut buffer_copy,
-                response.has_focus(),
-                crate::platform::ime::Kind::Multiline,
-            );
+
+            #[cfg(target_os = "android")]
+            let save = {
+                // O Android desenha e edita este texto de verdade. O egui só
+                // reserva o lugar e mantém a moldura alinhada com a mensagem.
+                let inner_width = (width - space::MD * 2.0).max(80.0);
+                let rows = ui
+                    .painter()
+                    .layout(
+                        buffer_copy.clone(),
+                        text::message(),
+                        Color32::WHITE,
+                        inner_width,
+                    )
+                    .rows
+                    .len()
+                    .clamp(1, 6);
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+                    + ui.spacing().extra_text_line_spacing;
+                let height = rows as f32 * line_height + space::SM * 2.0;
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_soft,
+                    Stroke::new(1.0, t.separator),
+                    egui::StrokeKind::Inside,
+                );
+
+                let focus = std::mem::take(&mut state.edit_focus_pending);
+                if focus {
+                    ui.scroll_to_rect(rect, Some(Align::Center));
+                }
+                let key = format!("edit:{}", id);
+                let editor_rect = rect.shrink2(Vec2::new(space::MD, space::SM));
+                let events = crate::platform::native_text::show(
+                    ui.ctx(),
+                    &key,
+                    &mut buffer_copy,
+                    editor_rect,
+                    "",
+                    crate::platform::native_text::Mode::Edit,
+                    6,
+                    focus,
+                    t.label,
+                    t.label_tertiary,
+                    text::message().size,
+                );
+                events.submit
+            };
+
+            #[cfg(not(target_os = "android"))]
+            let save = {
+                let edit_id = Id::new(("editar-mensagem", id));
+                let response = ui.add(
+                    TextEdit::multiline(&mut buffer_copy)
+                        .id(edit_id)
+                        .font(text::message())
+                        .desired_width(width)
+                        .desired_rows(1)
+                        .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
+                );
+                if std::mem::take(&mut state.edit_focus_pending) {
+                    response.request_focus();
+                }
+                response.has_focus()
+                    && ui.input(|input| {
+                        input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                    })
+            };
+
             *buffer = buffer_copy;
 
-            let (save, cancel) = ui.input(|input| {
-                (
-                    input.key_pressed(egui::Key::Enter) && !input.modifiers.shift,
-                    input.key_pressed(egui::Key::Escape),
-                )
-            });
+            let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(s.edit_hint)
@@ -4158,47 +4204,90 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let ime_changed =
-                crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
-            let viewport_h =
-                (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
-            let response = egui::ScrollArea::vertical()
-                .id_salt("composer-text-scroll")
-                .max_height(viewport_h)
-                .auto_shrink([false, false])
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(ui, |ui| {
-                    ui.set_min_height(viewport_h);
-                    TextEdit::multiline(&mut state.composer)
-                        .id(edit_id)
-                        .hint_text(RichText::new(hint).color(t.label_tertiary))
-                        .frame(Frame::NONE)
-                        .font(text::message())
-                        .desired_rows(1)
-                        .vertical_align(Align::Center)
-                        .min_size(Vec2::new(0.0, viewport_h))
-                        .desired_width(f32::INFINITY)
-                        .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
-                        .show(ui)
-                        .response
-                        .response
-                })
-                .inner;
-            let _ = crate::platform::ime::sync_text_edit(
-                ui.ctx(),
-                edit_id,
-                &mut state.composer,
-                response.has_focus(),
-                crate::platform::ime::Kind::Multiline,
-            );
-            state.typed = response.changed() || ime_changed;
+            #[cfg(target_os = "android")]
+            let (field_focused, caret) = if state.editing.is_none() {
+                let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
+                let events = crate::platform::native_text::show(
+                    ui.ctx(),
+                    "composer",
+                    &mut state.composer,
+                    native_rect,
+                    &hint,
+                    crate::platform::native_text::Mode::Composer,
+                    COMPOSER_MAX_ROWS,
+                    false,
+                    t.label,
+                    t.label_tertiary,
+                    text::message().size,
+                );
+                state.typed = events.changed;
+                (events.focused, events.caret)
+            } else {
+                // Há um único editor Android. Enquanto uma mensagem está
+                // sendo editada ele pertence àquela mensagem, não ao rascunho.
+                let shown = if state.composer.is_empty() {
+                    hint.as_str()
+                } else {
+                    state.composer.as_str()
+                };
+                ui.painter().text(
+                    field.left_center(),
+                    egui::Align2::LEFT_CENTER,
+                    shown,
+                    text::message(),
+                    if state.composer.is_empty() {
+                        t.label_tertiary
+                    } else {
+                        t.label
+                    },
+                );
+                (false, None)
+            };
 
-            let caret = caret_of(ui.ctx(), edit_id);
+            #[cfg(not(target_os = "android"))]
+            let (field_focused, caret) = {
+                let ime_changed =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
+                let viewport_h =
+                    (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
+                let response = egui::ScrollArea::vertical()
+                    .id_salt("composer-text-scroll")
+                    .max_height(viewport_h)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.set_min_height(viewport_h);
+                        TextEdit::multiline(&mut state.composer)
+                            .id(edit_id)
+                            .hint_text(RichText::new(hint).color(t.label_tertiary))
+                            .frame(Frame::NONE)
+                            .font(text::message())
+                            .desired_rows(1)
+                            .vertical_align(Align::Center)
+                            .min_size(Vec2::new(0.0, viewport_h))
+                            .desired_width(f32::INFINITY)
+                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
+                            .show(ui)
+                            .response
+                            .response
+                    })
+                    .inner;
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &mut state.composer,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Multiline,
+                );
+                state.typed = response.changed() || ime_changed;
+                (response.has_focus(), caret_of(ui.ctx(), edit_id))
+            };
+
             if keys.dismiss {
                 state.suggest = None;
                 state.suggest_muted = true;
             } else {
-                refresh_suggestions(store, state, response.has_focus(), caret);
+                refresh_suggestions(store, state, field_focused, caret);
             }
 
             if let Some(suggest) = state.suggest.as_mut() {
@@ -4217,12 +4306,17 @@ fn composer(
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
             // Enter já foi gasto escolhendo a figurinha.
-            let enter = response.has_focus()
-                && !accepted
-                && state.suggest.is_none()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
-            if enter {
-                submit(state);
+            #[cfg(not(target_os = "android"))]
+            {
+                let enter = field_focused
+                    && !accepted
+                    && state.suggest.is_none()
+                    && ui.input(|input| {
+                        input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                    });
+                if enter {
+                    submit(state);
+                }
             }
         },
     );
@@ -4323,6 +4417,8 @@ fn accept_suggestion(
     id: Id,
     caret: Option<usize>,
 ) {
+    #[cfg(target_os = "android")]
+    let _ = (ctx, id);
     let Some(suggest) = state.suggest.take() else {
         return;
     };
@@ -4346,6 +4442,11 @@ fn accept_suggestion(
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
+
+    #[cfg(target_os = "android")]
+    crate::platform::native_text::set_selection("composer", &state.composer, after);
+
+    #[cfg(not(target_os = "android"))]
     if let Some(mut edit) = egui::TextEdit::load_state(ctx, id) {
         edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
             egui::text::CCursor::new(after),
