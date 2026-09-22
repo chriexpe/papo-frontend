@@ -17,7 +17,7 @@ use egui::{ColorImage, TextureHandle, TextureOptions};
 use tokio::sync::mpsc;
 
 use crate::api::client::{Api, Session};
-use crate::api::models::Attachment;
+use crate::api::models::{Attachment, LinkPreview};
 use crate::ui::emoji_raster::EmojiRaster;
 
 /// Lado maior de uma textura de mensagem; o visualizador pede a versão cheia.
@@ -58,6 +58,12 @@ pub enum Request {
     Waveform { id: String, path: PathBuf },
     /// Emoji custom do servidor, que chega em base64 junto da listagem.
     Emoji { id: String, blob: String },
+    /// Thumbnail de link preview. Em mensagens históricas a listagem traz os
+    /// metadados, mas a imagem fica no endpoint autenticado do preview.
+    Preview {
+        id: String,
+        blob: Option<String>,
+    },
 }
 
 pub enum Loaded {
@@ -227,6 +233,30 @@ async fn run(api: &Api, request: Request) -> Loaded {
                     key,
                     error: error.to_string(),
                 },
+            }
+        }
+        Request::Preview { id, blob } => {
+            use base64::Engine as _;
+            let key = preview_key(&id);
+            let blob = match blob {
+                Some(blob) => Ok(blob),
+                None => api
+                    .link_preview(&id)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|preview| {
+                        preview
+                            .image_data
+                            .ok_or_else(|| "preview sem imagem".to_owned())
+                    }),
+            };
+            match blob.and_then(|blob| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob.as_bytes())
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(bytes) => decode(key, &bytes, INLINE_MAX),
+                Err(error) => Loaded::Failed { key, error },
             }
         }
     }
@@ -424,6 +454,9 @@ pub fn waveform_key(id: &str) -> String {
 }
 pub fn emoji_key(id: &str) -> String {
     format!("emoji:{id}")
+}
+pub fn preview_key(id: &str) -> String {
+    format!("preview:{id}")
 }
 
 // ---------------------------------------------------------------------------
@@ -686,6 +719,29 @@ impl MediaStore {
     /// que um id de pessoa nunca colida com um id de figurinha.
     pub fn avatar(&mut self, user_id: &str, blob: Option<&str>) -> Option<&Texture> {
         self.emoji(&format!("avatar:{user_id}"), blob)
+    }
+
+    /// Imagem de um link preview. Se o evento já trouxe `image_data`, evita
+    /// a ida extra à rede; para mensagens antigas busca GET /link-previews/:id.
+    pub fn preview(&mut self, preview: &LinkPreview) -> Option<&Texture> {
+        let key = preview_key(&preview.id);
+        if !self.textures.contains_key(&key) {
+            // Sem MIME/tamanho e sem blob o backend já disse que não há imagem:
+            // não vale disparar uma requisição que só voltaria vazia.
+            if preview.image_data.is_none()
+                && preview.image_mime_type.is_none()
+                && preview.image_size_bytes.is_none()
+            {
+                return None;
+            }
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::Preview {
+                id: preview.id.clone(),
+                blob: preview.image_data.clone(),
+            });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
     }
 
     /// Arquivo local do anexo, baixando na primeira vez.

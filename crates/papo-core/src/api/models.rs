@@ -439,11 +439,25 @@ impl Attachment {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LinkPreview {
     pub id: String,
+    /// URL normalizada pelo backend.
+    #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub kind: String,
     pub title: Option<String>,
     pub description: Option<String>,
-    pub site_name: Option<String>,
-    /// Imagem embutida em base64 quando o preview chega por evento.
+    /// O contrato atual chama este campo de `provider_name`; o alias mantém
+    /// compatibilidade com servidores antigos que usavam `site_name`.
+    #[serde(default, alias = "site_name")]
+    pub provider_name: Option<String>,
+    /// Hoje o backend só preenche para embeds allowlistados (YouTube no MVP).
+    pub embed_url: Option<String>,
+    pub image_mime_type: Option<String>,
+    pub image_size_bytes: Option<i64>,
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// Só vem em GET /link-previews/:id e em link_preview_update; a listagem
+    /// de mensagens carrega os metadados sem duplicar a imagem em base64.
+    #[serde(default)]
     pub image_data: Option<String>,
 }
 

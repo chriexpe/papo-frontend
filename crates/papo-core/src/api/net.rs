@@ -426,7 +426,24 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                publish(&updates, &wake, Update::Event(Box::new(event)));
+                // new_preview traz só o id porque o crawl termina depois da
+                // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
+                // para a Store receber o mesmo formato das mensagens listadas.
+                if let Event::NewPreview { message_id, preview_id } = event {
+                    match api.link_preview(&preview_id).await {
+                        Ok(preview) => publish(
+                            &updates,
+                            &wake,
+                            Update::Event(Box::new(Event::LinkPreviewUpdated {
+                                message_id,
+                                preview,
+                            })),
+                        ),
+                        Err(error) => log::warn!("preview {preview_id} não carregou: {error}"),
+                    }
+                } else {
+                    publish(&updates, &wake, Update::Event(Box::new(event)));
+                }
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };

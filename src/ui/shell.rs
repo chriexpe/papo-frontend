@@ -2632,6 +2632,10 @@ fn message_body(
             }
     }
 
+    if !message.previews.is_empty() {
+        link_previews(ui, state, t, &message.previews, width);
+    }
+
     if !message.reactions.is_empty() {
         ui.add_space(space::XS);
         let mut toggled = None;
@@ -2740,6 +2744,158 @@ fn rich_body(
             );
         }
     });
+}
+
+
+/// Link previews são cartões nativos: o backend já fez o crawl OpenGraph/oEmbed
+/// e o cliente só apresenta os metadados. A imagem vem sob demanda pelo endpoint
+/// autenticado, evitando base64 duplicado na listagem de mensagens.
+fn link_previews(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    previews: &[crate::api::models::LinkPreview],
+    width: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const IMAGE_MAX_H: f32 = 190.0;
+
+    for preview in previews {
+        let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
+            continue;
+        };
+        ui.add_space(space::SM);
+
+        let card_width = width.min(MAX_W).max(160.0);
+        let backdrop = ui.painter().add(egui::Shape::Noop);
+        let texture = state
+            .media
+            .preview(preview)
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned();
+
+        let inner = ui.scope(|ui| {
+            ui.set_width(card_width);
+
+            if let Some(texture) = &texture {
+                let source = texture.size_vec2();
+                let scale = (card_width / source.x)
+                    .min(IMAGE_MAX_H / source.y)
+                    .min(1.0);
+                let size = Vec2::new(
+                    (source.x * scale).max(1.0),
+                    (source.y * scale).max(1.0),
+                );
+                let (image_rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                if preview.embed_url.is_some() {
+                    ui.painter().circle_filled(
+                        image_rect.center(),
+                        22.0,
+                        Color32::from_black_alpha(170),
+                    );
+                    ui.painter().text(
+                        image_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(18.0),
+                        Color32::WHITE,
+                    );
+                }
+                ui.add_space(space::SM);
+            }
+
+            let provider = preview
+                .provider_name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    url::Url::parse(url)
+                        .ok()
+                        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+                });
+
+            if let Some(provider) = provider {
+                ui.label(
+                    RichText::new(provider)
+                        .font(text::caption())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(space::XXS);
+            }
+
+            if let Some(title) = preview.title.as_deref().filter(|title| !title.is_empty()) {
+                ui.label(
+                    RichText::new(title)
+                        .font(text::headline())
+                        .color(t.label),
+                );
+            }
+
+            if let Some(description) = preview
+                .description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+            {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new(description)
+                        .font(text::body())
+                        .color(t.label_secondary),
+                );
+            }
+
+            if preview.title.as_deref().is_none_or(str::is_empty)
+                && preview.description.as_deref().is_none_or(str::is_empty)
+            {
+                ui.label(
+                    RichText::new(url)
+                        .font(text::footnote())
+                        .color(t.label_secondary),
+                );
+            }
+        });
+
+        let rect = inner
+            .response
+            .rect
+            .expand2(Vec2::new(space::MD, space::SM));
+        let response = ui.interact(
+            rect,
+            Id::new(("link-preview", &preview.id)),
+            Sense::click(),
+        );
+
+        let fill = if response.hovered() {
+            t.fill_medium
+        } else {
+            t.fill_soft
+        };
+        ui.painter().set(
+            backdrop,
+            egui::epaint::RectShape::new(
+                rect,
+                CornerRadius::same(radius::CARD),
+                fill,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        ui.add_space(space::XS);
+    }
 }
 
 fn reaction_chip(

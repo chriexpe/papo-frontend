@@ -133,6 +133,7 @@ pub struct Message {
     pub edited: bool,
     pub reply_to: Option<String>,
     pub attachments: Vec<Attachment>,
+    pub previews: Vec<models::LinkPreview>,
     pub reactions: Vec<Reaction>,
     pub pinned: bool,
     /// Mensagem ainda não confirmada pelo servidor.
@@ -696,6 +697,41 @@ impl Store {
                     message.pinned = pinned;
                 }
             }
+            Event::NewPreview { .. } => {
+                // O worker de rede resolve new_preview para LinkPreviewUpdated
+                // antes de publicar o evento para a Store.
+            }
+            Event::RemovePreview {
+                message_id,
+                preview_id,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.previews.retain(|preview| preview.id != preview_id);
+                }
+            }
+            Event::LinkPreviewUpdated {
+                message_id,
+                preview,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    match message
+                        .previews
+                        .iter_mut()
+                        .find(|existing| existing.id == preview.id)
+                    {
+                        Some(existing) => *existing = preview,
+                        None => message.previews.push(preview),
+                    }
+                }
+            }
             Event::AttachmentModeration {
                 message_id,
                 attachment_id,
@@ -941,6 +977,7 @@ impl Store {
             edited: false,
             reply_to,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: true,
@@ -990,6 +1027,7 @@ fn convert(message: models::Message, me: &str) -> Message {
         edited: message.edited_at.is_some(),
         reply_to: message.reply_to,
         attachments: message.attachments,
+        previews: message.previews,
         reactions: message
             .reactions
             .into_iter()

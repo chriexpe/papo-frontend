@@ -766,8 +766,7 @@ impl Api {
         self.fetch_bytes(&format!("/media/{sha_hash}")).await
     }
 
-    #[allow(dead_code)]
-    pub async fn link_preview(&self, preview_id: &str) -> ApiResult<serde_json::Value> {
+    pub async fn link_preview(&self, preview_id: &str) -> ApiResult<LinkPreview> {
         self.get(&format!("/link-previews/{preview_id}")).await
     }
 
