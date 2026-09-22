@@ -173,6 +173,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
 
 /// Sai da call: avisa o servidor, desmonta o pipeline e limpa o retrato.
 fn leave_call(ws: &mut Workspace) {
+    #[cfg(target_os = "android")]
     let had_call = ws.store.call.active() || ws.call.is_some();
     if ws.store.call.active() && !ws.store.call.channel_id.is_empty() {
         ws.net.send(Command::VoiceSignal(format!(
