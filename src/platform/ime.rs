@@ -46,17 +46,10 @@ struct ImeState {
 struct Bridge {
     /// TextEdit que atualmente e dono do documento do teclado.
     field: Option<egui::Id>,
-    /// Estado mais recente vindo da Activity, ainda nao convertido em eventos.
+    /// Estado completo mais recente vindo do InputConnection.
     incoming: Option<ImeState>,
-    /// Selecao Android para aplicar depois que o TextEdit consumir os eventos.
-    pending_selection: Option<(usize, usize)>,
     /// Ultimo estado em que Android e egui concordavam.
     shadow: Option<ImeState>,
-    /// Impede que o mesmo quadro devolva ao Android o texto antigo antes do
-    /// TextEdit terminar de consumir a substituicao que acabamos de injetar.
-    suppress_outbound_once: bool,
-    /// O callback do IME realmente mudou o texto neste quadro.
-    incoming_text_changed: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -65,20 +58,14 @@ impl Bridge {
         Self {
             field: None,
             incoming: None,
-            pending_selection: None,
             shadow: None,
-            suppress_outbound_once: false,
-            incoming_text_changed: false,
         }
     }
 
     fn clear(&mut self) {
         self.field = None;
         self.incoming = None;
-        self.pending_selection = None;
         self.shadow = None;
-        self.suppress_outbound_once = false;
-        self.incoming_text_changed = false;
     }
 }
 
@@ -87,87 +74,81 @@ pub fn install(app: AndroidApp) {
     let _ = APP.set(app);
 }
 
-/// Converte o State completo do GameTextInput em eventos que o TextEdit sabe
-/// processar. Executa no raw_input_hook, portanto antes da interface do quadro.
+/// Mantem o dono do documento alinhado com o foco do egui.
 ///
-/// A substituicao inteira (Ctrl+A + Text) e proposital: autocorrecao, colar,
-/// composicao e edicao no meio deixam de depender de adivinhar um diff.
+/// O winit ainda descarta o TextEvent do GameTextInput no Android. O callback
+/// Java acorda o loop quando o InputConnection muda, e o estado completo e
+/// aplicado por `prepare_text_edit` antes de o widget editar o buffer.
 #[cfg(target_os = "android")]
 pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    let _ = raw_input;
     let focused = ctx.memory(|memory| memory.focused());
 
-    let (incoming, replace_text) = {
-        let Ok(mut bridge) = BRIDGE.lock() else {
-            return;
-        };
-
-        if bridge.field.is_some() && bridge.field != focused {
-            bridge.clear();
-            return;
-        }
-
-        let Some(incoming) = bridge.incoming.take() else {
-            return;
-        };
-        let Some(field) = bridge.field else {
-            // Ainda nao sabemos qual TextEdit recebeu o foco. sync_text_edit
-            // vai semear o InputConnection assim que o widget aparecer.
-            return;
-        };
-        if focused != Some(field) {
-            return;
-        }
-
-        let replace_text = bridge
-            .shadow
-            .as_ref()
-            .is_none_or(|shadow| shadow.text != incoming.text);
-
-        bridge.pending_selection = Some(incoming.selection);
-        bridge.incoming_text_changed = replace_text;
-        bridge.shadow = Some(incoming.clone());
-        bridge.suppress_outbound_once = true;
-
-        (incoming, replace_text)
+    let Ok(mut bridge) = BRIDGE.lock() else {
+        return;
     };
-
-    if replace_text {
-        let command = egui::Modifiers::COMMAND;
-        for pressed in [true, false] {
-            raw_input.events.push(egui::Event::Key {
-                key: egui::Key::A,
-                physical_key: None,
-                pressed,
-                repeat: false,
-                modifiers: command,
-            });
-        }
-
-        if incoming.text.is_empty() {
-            for pressed in [true, false] {
-                raw_input.events.push(egui::Event::Key {
-                    key: egui::Key::Backspace,
-                    physical_key: None,
-                    pressed,
-                    repeat: false,
-                    modifiers: egui::Modifiers::NONE,
-                });
-            }
-        } else {
-            raw_input.events.push(egui::Event::Text(incoming.text));
-        }
+    if bridge.field.is_some() && bridge.field != focused {
+        bridge.clear();
     }
 }
 
 #[cfg(not(target_os = "android"))]
 pub fn pump(_ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
 
+/// Aplica o documento completo do Android ANTES de o TextEdit rodar.
+///
+/// GameTextInput e um editor de verdade: ele guarda texto, selecao/cursor e
+/// composicao. Transformar esse estado em Ctrl+A + Event::Text perde justamente
+/// as semanticas de editor que Gboard/SwiftKey usam para autocorrecao, arrastar
+/// o cursor pela barra de espaco e apagar selecoes/palavras. Aqui o Android e a
+/// fonte de verdade enquanto o campo esta focado; o TextEdit apenas recebe o
+/// snapshot mais recente e continua podendo editar/tocar o cursor normalmente.
+pub fn prepare_text_edit(ctx: &egui::Context, id: egui::Id, text: &mut String) -> bool {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (ctx, id, text);
+        false
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        if ctx.memory(|memory| memory.focused()) != Some(id) {
+            return false;
+        }
+
+        let incoming = {
+            let Ok(mut bridge) = BRIDGE.lock() else {
+                return false;
+            };
+            if bridge.field != Some(id) {
+                return false;
+            }
+            let Some(incoming) = bridge.incoming.take() else {
+                return false;
+            };
+            bridge.shadow = Some(incoming.clone());
+            incoming
+        };
+
+        let changed = text.as_str() != incoming.text.as_str();
+        if changed {
+            text.clone_from(&incoming.text);
+        }
+
+        // Isto precisa acontecer antes de TextEdit::show: assim o proprio
+        // widget parte do cursor que o IME escolheu, inclusive quando Gboard
+        // move apenas a selecao sem alterar uma unica letra.
+        set_egui_selection(ctx, id, text, incoming.selection);
+        changed
+    }
+}
+
 /// Sincroniza o lado egui DEPOIS que um TextEdit foi desenhado.
 ///
 /// - no primeiro foco, semeia o InputConnection com o texto e cursor reais;
-/// - aplica a selecao/cursor que o IME mandou no quadro;
-/// - se o usuario moveu o cursor tocando no TextEdit, devolve a selecao ao
-///   Android para a proxima tecla entrar exatamente naquele ponto.
+/// - depois do widget, se o usuario moveu o cursor/tocou no TextEdit, devolve
+///   texto + selecao ao Android para a proxima operacao acontecer no ponto
+///   correto.
 pub fn sync_text_edit(
     ctx: &egui::Context,
     id: egui::Id,
@@ -195,9 +176,6 @@ pub fn sync_text_edit(
         if bridge.field != Some(id) {
             bridge.field = Some(id);
             bridge.incoming = None;
-            bridge.pending_selection = None;
-            bridge.suppress_outbound_once = false;
-            bridge.incoming_text_changed = false;
 
             let state = state_from_egui(ctx, id, text, None);
             bridge.shadow = Some(state.clone());
@@ -206,17 +184,6 @@ pub fn sync_text_edit(
             configure_android(kind);
             send_to_android(&state);
             return false;
-        }
-
-        if let Some(selection) = bridge.pending_selection.take() {
-            set_egui_selection(ctx, id, text, selection);
-        }
-
-        let changed_from_ime = std::mem::take(&mut bridge.incoming_text_changed);
-
-        if bridge.suppress_outbound_once {
-            bridge.suppress_outbound_once = false;
-            return changed_from_ime;
         }
 
         let compose = bridge
@@ -238,7 +205,7 @@ pub fn sync_text_edit(
             send_to_android(&state);
         }
 
-        changed_from_ime
+        false
     }
 }
 

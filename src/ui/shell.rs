@@ -2173,6 +2173,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         ui.spacing_mut().item_spacing.x = space::XS;
         let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
         let search_id = Id::new("busca-mensagens");
+        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), search_id, &mut query);
         let field = ui.add(
             egui::TextEdit::singleline(&mut query)
                 .id(search_id)
@@ -2748,6 +2749,8 @@ fn message_body(
     {
             let mut buffer_copy = buffer.clone();
             let edit_id = Id::new(("editar-mensagem", id));
+            let _ =
+                crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut buffer_copy);
             let response = ui.add(
                 TextEdit::multiline(&mut buffer_copy)
                     .id(edit_id)
@@ -4141,7 +4144,10 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let viewport_h = (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
+            let ime_changed =
+                crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
+            let viewport_h =
+                (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
             let response = egui::ScrollArea::vertical()
                 .id_salt("composer-text-scroll")
                 .max_height(viewport_h)
@@ -4164,7 +4170,7 @@ fn composer(
                         .response
                 })
                 .inner;
-            let ime_changed = crate::platform::ime::sync_text_edit(
+            let _ = crate::platform::ime::sync_text_edit(
                 ui.ctx(),
                 edit_id,
                 &mut state.composer,

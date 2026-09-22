@@ -570,6 +570,7 @@ impl Rows<'_> {
         self.row(label, None, |ui, _| {
             let width = ui.available_width();
             let edit_id = ui.id().with(("settings-field", label));
+            let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
             let response = ui.add_sized(
                 Vec2::new(width, 26.0),
                 egui::TextEdit::singleline(value)

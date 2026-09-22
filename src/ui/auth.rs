@@ -242,6 +242,7 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
     );
 
     let edit_id = ui.id().with(("auth-field", label));
+    let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
     let response = ui.put(
         rect.shrink2(Vec2::new(space::MD, space::XXS)),
         TextEdit::singleline(value)
