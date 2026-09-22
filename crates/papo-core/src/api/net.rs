@@ -352,26 +352,28 @@ async fn worker(
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
 
-    // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
+    // Sessão persistida não é descartada porque a rede sumiu. Só 401 prova
+    // que o token deixou de valer; o restante é tentado outra vez.
     if session.is_authenticated() {
-        match api.whoami().await {
-            Ok(whoami) => {
-                let id = whoami.id.clone();
-                if let Ok(mut slot) = me.lock() {
-                    *slot = Some(id.clone());
-                }
-                publish(&updates, &wake, Update::Session(Some(Box::new(whoami))));
-                bootstrap(&api, &updates, &wake, Some(&id)).await;
-            }
-            Err(_) => {
-                session.set_token(None);
-                remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
-                publish(&updates, &wake, Update::Session(None));
-            }
-        }
+        verify_saved_session(
+            &api,
+            &storage_key,
+            storage.as_ref(),
+            &session,
+            &me,
+            &updates,
+            &wake,
+        )
+        .await;
     } else {
         publish(&updates, &wake, Update::Session(None));
     }
+
+    let mut verification =
+        tokio::time::interval(std::time::Duration::from_secs(5));
+    verification.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    verification.tick().await;
+
     // O token de sessão vale 24 h e a renovação o gira. Seis horas dá quatro
     // chamadas por dia e sobra folga se a máquina dormir um pouco.
     let mut renewal = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
@@ -381,7 +383,8 @@ async fn worker(
     loop {
         // O socket acompanha a sessão: abre quando há cookie válido e fecha
         // quando ele some.
-        match (session.is_authenticated(), socket.is_some()) {
+        let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+        match (session.is_authenticated() && verified, socket.is_some()) {
             (true, false) => {
                 if let Some(receiver) = outbound_rx.take() {
                     socket = Some(start_socket(
@@ -432,6 +435,21 @@ async fn worker(
                 let Some(status) = status else { continue };
                 publish(&updates, &wake, Update::Connection(status));
             }
+            _ = verification.tick() => {
+                let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+                if session.is_authenticated() && !verified {
+                    verify_saved_session(
+                        &api,
+                        &storage_key,
+                        storage.as_ref(),
+                        &session,
+                        &me,
+                        &updates,
+                        &wake,
+                    )
+                    .await;
+                }
+            }
             _ = renewal.tick() => {
                 if !session.is_authenticated() {
                     continue;
@@ -446,6 +464,9 @@ async fn worker(
                     ),
                     Err(ApiError::Unauthorized) => {
                         session.set_token(None);
+                        if let Ok(mut slot) = me.lock() {
+                            *slot = None;
+                        }
                         remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
                         publish(&updates, &wake, Update::Session(None));
                     }
@@ -459,6 +480,54 @@ async fn worker(
 
     if let Some(socket) = socket {
         socket.abort();
+    }
+}
+
+/// Confirma uma sessão persistida sem converter indisponibilidade em logout.
+async fn verify_saved_session(
+    api: &Api,
+    storage_key: &str,
+    storage: &dyn SecretStore,
+    session: &Arc<Session>,
+    me: &Arc<std::sync::Mutex<Option<String>>>,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) {
+    let mut result = api.whoami().await;
+
+    if matches!(result, Err(ApiError::ServerLocked)) {
+        match unlock_with_saved(api, storage_key, storage).await {
+            Ok(true) => result = api.whoami().await,
+            Ok(false) | Err(_) => {
+                publish(updates, wake, Update::ServerLocked);
+                return;
+            }
+        }
+    }
+
+    match result {
+        Ok(whoami) => {
+            let id = whoami.id.clone();
+            if let Ok(mut slot) = me.lock() {
+                *slot = Some(id.clone());
+            }
+            publish(updates, wake, Update::Session(Some(Box::new(whoami))));
+            bootstrap(api, updates, wake, Some(&id)).await;
+        }
+        Err(ApiError::Unauthorized) => {
+            session.set_token(None);
+            if let Ok(mut slot) = me.lock() {
+                *slot = None;
+            }
+            remove_secret(storage, storage_key, Secret::SessionToken);
+            publish(updates, wake, Update::Session(None));
+        }
+        Err(ApiError::ServerLocked) => publish(updates, wake, Update::ServerLocked),
+        Err(error) => {
+            log::warn!("sessão guardada ainda não pôde ser verificada: {error}");
+            publish(updates, wake, Update::Connection(Connection::Offline));
+            publish(updates, wake, Update::Error(error.to_string()));
+        }
     }
 }
 
@@ -913,11 +982,28 @@ async fn handle(
             Ok(()) => {
                 store_secret(storage, storage_key, Secret::ServerPassword, &password);
                 publish(updates, wake, Update::ServerUnlocked);
+                let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+                if session.is_authenticated() && !verified {
+                    verify_saved_session(
+                        api,
+                        storage_key,
+                        storage,
+                        session,
+                        me,
+                        updates,
+                        wake,
+                    )
+                    .await;
+                }
             }
             Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
         },
         Command::Logout => {
             let _ = api.logout().await;
+            session.set_token(None);
+            if let Ok(mut slot) = me.lock() {
+                *slot = None;
+            }
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
         }
