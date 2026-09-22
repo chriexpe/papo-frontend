@@ -1763,7 +1763,7 @@ fn actions_pill(
 ) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"));
     let screen = ui.ctx().content_rect();
-    let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
     let open = state.panel.as_ref().map(|panel| panel.kind);
@@ -3542,7 +3542,7 @@ fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     };
     let screen = ui.ctx().content_rect();
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-link-viewer"));
-    let mut top = ui.new_child(
+    let top = ui.new_child(
         UiBuilder::new()
             .layer_id(layer)
             .max_rect(screen)
