@@ -1,5 +1,6 @@
 package io.github.chriexpe.papo;
 
+import android.Manifest;
 import android.content.Context;
 import android.app.PendingIntent;
 import android.app.PictureInPictureParams;
@@ -694,6 +695,16 @@ public class PapoActivity extends GameActivity {
     /** Inicia a execução em primeiro plano da call enquanto a Activity está visível. */
     public void startCallService(String title) {
         runOnUiThread(() -> {
+            // Android 13+ permite o FGS sem esta permissão, mas esconde a
+            // notificação da gaveta. Pedimos aqui, depois da decisão do
+            // microfone, sem bloquear o início da call.
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[] {Manifest.permission.POST_NOTIFICATIONS},
+                        PERMISSION_REQUEST);
+            }
+
             final Intent intent = new Intent(this, CallService.class)
                     .setAction(CallService.ACTION_START)
                     .putExtra(CallService.EXTRA_TITLE, title)
