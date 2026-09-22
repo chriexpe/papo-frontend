@@ -2826,7 +2826,7 @@ fn link_previews(
         };
         ui.add_space(space::SM);
 
-        let card_width = width.min(MAX_W).max(160.0);
+        let card_width = width.clamp(160.0, MAX_W);
         let backdrop = ui.painter().add(egui::Shape::Noop);
         let texture = state
             .media
