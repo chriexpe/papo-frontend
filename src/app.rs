@@ -471,6 +471,9 @@ pub struct PapoApp {
     /// tem menu global para onde mandar o menu.
     own_chrome: bool,
     header: crate::ui::headerbar::HeaderState,
+    /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
+    /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
+    add_server_previous: Option<usize>,
 }
 
 impl PapoApp {
@@ -604,6 +607,7 @@ impl PapoApp {
             demo,
             own_chrome: !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
+            add_server_previous: None,
         }
     }
 
@@ -882,11 +886,51 @@ impl PapoApp {
     /// Acrescenta um servidor vazio e já o coloca na tela, esperando o
     /// endereço.
     fn add_server(&mut self, ctx: &egui::Context) {
+        // O novo servidor é provisório até a autenticação terminar. Se o
+        // usuário clicar fora do cartão, voltamos exatamente para quem estava
+        // ativo e descartamos este workspace.
+        let previous = self.active;
         let entry = ServerEntry::new(default_server_url());
         let workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
         self.settings.servers.push(entry);
         self.workspaces.push(workspace);
         self.activate(self.workspaces.len() - 1, ctx);
+        self.add_server_previous = Some(previous);
+    }
+
+    fn cancel_add_server(&mut self, ctx: &egui::Context) {
+        let Some(previous) = self.add_server_previous.take() else {
+            return;
+        };
+        let index = self.active;
+        if index >= self.workspaces.len() || index == previous {
+            return;
+        }
+
+        // Recolhe o estado visual do rascunho, remove-o e devolve o estado
+        // visual do servidor que estava aberto antes do +.
+        self.workspaces[index].stash.swap(&mut self.ui);
+        let key = crate::state::server_key(&self.workspaces[index].url);
+        self.settings.server_marks.remove(&key);
+        self.workspaces[index].net.forget_credentials();
+        self.workspaces.remove(index);
+        self.settings.servers.remove(index);
+
+        self.active = previous.min(self.workspaces.len() - 1);
+        self.settings.active = self.active;
+        self.settings.server_url = self.workspaces[self.active].url.clone();
+        self.workspaces[self.active].stash.swap(&mut self.ui);
+        ctx.request_repaint();
+    }
+
+    fn clicked_outside_auth_card(ctx: &egui::Context, rect: egui::Rect) -> bool {
+        ctx.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !rect.contains(position))
+        })
     }
 
     /// Tira um servidor do trilho. A conta no servidor continua existindo; o
@@ -1456,6 +1500,7 @@ impl PapoApp {
     fn handle_rail_action(&mut self, action: crate::ui::rail::RailAction, ctx: &egui::Context) {
         match action {
             crate::ui::rail::RailAction::Select(index) => {
+                self.add_server_previous = None;
                 self.activate(index, ctx);
                 self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
             }
@@ -1858,7 +1903,8 @@ impl eframe::App for PapoApp {
             self.workspaces[self.active].store.screen,
             Screen::Chat
         ) && crate::ui::shell::is_compact(ctx.content_rect());
-        if !compact_chat {
+        let add_server_modal = self.add_server_previous.is_some();
+        if !compact_chat && !add_server_modal {
             self.draw_rail(ui, strings, &ctx);
         }
 
@@ -1866,26 +1912,40 @@ impl eframe::App for PapoApp {
         match self.workspaces[active].store.screen {
             Screen::Starting => auth::starting(ui, &self.tokens, strings),
             Screen::Auth => {
-                let ws = &mut self.workspaces[active];
-                match auth::sign_in(ui, &mut ws.form, &ws.store, &self.tokens, strings) {
+                let response = {
+                    let ws = &mut self.workspaces[active];
+                    auth::sign_in(ui, &mut ws.form, &ws.store, &self.tokens, strings)
+                };
+                match response.action {
                     AuthAction::SignIn => self.authenticate(false, &ctx),
                     AuthAction::Register => self.authenticate(true, &ctx),
                     AuthAction::UnlockServer => self.unlock_server(),
                     _ => {}
                 }
+                if add_server_modal && Self::clicked_outside_auth_card(&ctx, response.rect) {
+                    self.cancel_add_server(&ctx);
+                }
             }
             Screen::NeedsServer => {
-                let ws = &mut self.workspaces[active];
-                if auth::create_server(ui, &mut ws.form, &ws.store, &self.tokens, strings)
-                    == AuthAction::CreateServer
-                {
+                let response = {
+                    let ws = &mut self.workspaces[active];
+                    auth::create_server(ui, &mut ws.form, &ws.store, &self.tokens, strings)
+                };
+                if response.action == AuthAction::CreateServer {
+                    let ws = &mut self.workspaces[active];
                     ws.store.busy = true;
                     ws.net.send(Command::CreateServer {
                         name: ws.form.server_name.trim().to_owned(),
                     });
                 }
+                if add_server_modal && Self::clicked_outside_auth_card(&ctx, response.rect) {
+                    self.cancel_add_server(&ctx);
+                }
             }
             Screen::Chat => {
+                // A autenticação terminou; a partir daqui o servidor deixa de
+                // ser provisório e passa a fazer parte do trilho normalmente.
+                self.add_server_previous = None;
                 let mobile_entries = compact_chat.then(|| {
                     self.workspaces
                         .iter()
