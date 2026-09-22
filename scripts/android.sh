@@ -105,7 +105,9 @@ ls -la "$JNI_LIBS/$ABI/libgstreamer_android.so" | awk '{printf "    libgstreamer
 # variável de ambiente evita montar um `pkg-config` cruzado inteiro só para
 # ele descobrir o mesmo.
 for dep in GSTREAMER_1_0 GSTREAMER_APP_1_0 GSTREAMER_VIDEO_1_0 \
-           GSTREAMER_BASE_1_0 GLIB_2_0 GOBJECT_2_0 GIO_2_0; do
+           GSTREAMER_AUDIO_1_0 GSTREAMER_BASE_1_0 \
+           GSTREAMER_WEBRTC_1_0 GSTREAMER_SDP_1_0 GSTREAMER_RTP_1_0 \
+           GLIB_2_0 GOBJECT_2_0 GIO_2_0; do
     export "SYSTEM_DEPS_${dep}_NO_PKG_CONFIG=1"
     export "SYSTEM_DEPS_${dep}_LIB=gstreamer_android"
     export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=$JNI_LIBS/$ABI"

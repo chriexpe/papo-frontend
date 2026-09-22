@@ -33,6 +33,22 @@ const EXPECTED: &[(&str, &str)] = &[
     ("aacparse", "o áudio do .mp4 antes do decodificador"),
     ("opusdec", "os recados de voz"),
     ("openslessink", "a saída de áudio do Android"),
+    // A call. O motor é o mesmo da área de trabalho; aqui só se confere que
+    // as peças dele entraram na ligação.
+    ("webrtcbin", "o transporte da call"),
+    ("nicesrc", "ICE — o que falta quando a call não entra no ar"),
+    ("dtlssrtpenc", "DTLS"),
+    ("srtpenc", "SRTP"),
+    ("rtpbin", "a sessão RTP"),
+    ("opusenc", "sua voz saindo"),
+    ("rtpopuspay", "áudio em RTP"),
+    ("vp8enc", "sua câmera saindo"),
+    ("rtpvp8pay", "vídeo em RTP"),
+    ("rtphdrextclientaudiolevel", "quem está falando"),
+    ("openslessrc", "o microfone"),
+    ("ahcsrc", "a câmera"),
+    ("videorate", "o compasso da câmera"),
+    ("level", "o nível de voz, para saber quem fala"),
 ];
 
 /// Sobe o GStreamer e conta o que encontrou.

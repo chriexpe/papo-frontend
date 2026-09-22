@@ -20,7 +20,6 @@
 //! o que está publicado.
 
 pub mod ice;
-#[cfg_attr(target_os = "android", path = "engine_android.rs")]
 mod engine;
 pub mod slots;
 

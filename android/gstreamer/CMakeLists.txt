@@ -47,10 +47,12 @@ find_package(GStreamerMobile REQUIRED COMPONENTS
 
     # --- conversão que o playbin encaixa sozinho ---
     videoconvertscale
+    videorate          # a câmera da call passa por ele
     audioconvert
     audioresample
     audiorate          # costura os buracos da gravação ao vivo
     volume
+    level              # o nível de voz: quem está falando
 
     # --- os recipientes dos anexos de verdade ---
     isomp4             # os .mp4
@@ -74,6 +76,18 @@ find_package(GStreamerMobile REQUIRED COMPONENTS
     # o tamanho do APK.
     openh264
 
-    # --- a saída de áudio do Android ---
-    opensles           # openslessink
+    # --- a saída e a entrada de áudio do Android ---
+    opensles           # openslessink, e o openslessrc dos recados
+
+    # --- a call ---
+    # O motor já existe e funciona na área de trabalho; aqui é só garantir
+    # que as peças dele estejam ligadas. No Android a lista é fechada na
+    # ligação, e o que falta só aparece em execução como `no element`.
+    webrtc             # webrtcbin, o transporte
+    nice               # ICE
+    dtls               # DTLS
+    srtp               # SRTP
+    rtpmanager         # a sessão RTP
+    rtp                # os pay/depay de Opus e VP8
+    vpx                # vp8enc e vp8dec
 )

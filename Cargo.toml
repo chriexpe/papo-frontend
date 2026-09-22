@@ -103,11 +103,13 @@ eframe = { version = "0.36", default-features = false, features = ["android-game
 android-activity = { version = "0.6", features = ["game-activity"] }
 # `println!` não vai a lugar nenhum no Android; o que se lê é o logcat.
 android_logger = "0.15"
-# O player dos anexos usa as três; webrtc, sdp e rtp entram junto com a
-# call, para o que quebrar ser sempre a última coisa acrescentada.
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 gstreamer-video = "0.24"
+# A call: o mesmo motor da área de trabalho, com as mesmas dependências.
+gstreamer-webrtc = "0.24"
+gstreamer-sdp = "0.24"
+gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 # O texto do teclado chega da Activity como uma `String` do Java, e ler isso
 # pede o JNI. É a única coisa que falamos com o Java diretamente.
 jni = "0.21"

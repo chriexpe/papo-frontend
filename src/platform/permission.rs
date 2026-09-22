@@ -14,6 +14,8 @@ use std::sync::Mutex;
 
 /// Gravar áudio do microfone.
 pub const RECORD_AUDIO: &str = "android.permission.RECORD_AUDIO";
+/// Abrir a câmera.
+pub const CAMERA: &str = "android.permission.CAMERA";
 
 /// Em que pé está uma permissão.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

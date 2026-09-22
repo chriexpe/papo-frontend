@@ -7,6 +7,10 @@
          não na abertura: permissão pedida sem motivo à vista é permissão
          negada. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Câmera da call. Pedida ao ligar a câmera, não antes. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- O aparelho pode não ter câmera e o Papo continua servindo. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- O egui desenha por OpenGL ES 3.0 (o back-end `glow` do eframe). -->
     <uses-feature

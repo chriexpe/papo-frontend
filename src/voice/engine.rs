@@ -843,7 +843,14 @@ fn microphone(
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
-    for factory in ["pipewiresrc", "pulsesrc", "alsasrc"] {
+    // No Android o caminho é um só: o OpenSL ES. Na área de trabalho
+    // tenta-se do mais moderno para o mais antigo.
+    #[cfg(target_os = "android")]
+    const MICS: &[&str] = &["openslessrc"];
+    #[cfg(not(target_os = "android"))]
+    const MICS: &[&str] = &["pipewiresrc", "pulsesrc", "alsasrc"];
+
+    for factory in MICS {
         let Some((elements, volume)) = mic_chain(factory) else {
             continue;
         };
@@ -1216,7 +1223,33 @@ fn capture(
     shared: Arc<Shared>,
     repaint: egui::Context,
 ) -> Option<Camera> {
+    // A permissão da câmera é pedida aqui, no momento em que alguém liga a
+    // câmera. A primeira vez recusa com a caixa na tela; o toque seguinte
+    // já abre.
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::permission::{self, Status};
+        match permission::ensure(permission::CAMERA) {
+            Status::Granted => {}
+            Status::Asking => {
+                shared.warn("esperando a permissão da câmera");
+                return None;
+            }
+            Status::Denied => {
+                shared.warn("sem permissão para abrir a câmera");
+                return None;
+            }
+        }
+    }
+
     let pipeline = gst::Pipeline::new();
+    // A câmera é o único elemento da call que muda de nome por plataforma.
+    // No Android é o `ahcsrc`, do plugin `androidmedia` — que tem um lado
+    // Java: sem as classes dele no APK, este elemento sobe e morre ao abrir
+    // a câmera.
+    #[cfg(target_os = "android")]
+    let source = make("ahcsrc")?;
+    #[cfg(not(target_os = "android"))]
     let source = make("v4l2src")?;
     let tee = make("tee")?;
     let convert = make("videoconvert")?;
