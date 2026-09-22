@@ -979,6 +979,19 @@ pub fn sheet(
             );
         });
 
+    // Ajustes também se comportam como uma folha/popover ancorada na
+    // pastilha que a abriu. Clique fora fecha; a própria pastilha fica de
+    // fora desta regra porque ela já possui o comportamento de toggle.
+    let outside = ctx.input(|input| {
+        input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|position| {
+                !rect.contains(position) && !anchor.contains(position)
+            })
+    });
+    if outside {
+        state.open = None;
+    }
+
     actions
 }
 

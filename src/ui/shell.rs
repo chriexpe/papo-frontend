@@ -2146,6 +2146,20 @@ fn actions_pill(
             PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
         },
     );
+
+    // A pastilha aberta é um popover: tocar/clicar em qualquer lugar fora
+    // dela fecha busca/fixadas. Usar click (release), e não press, evita
+    // matar um gesto de rolagem que começou fora.
+    let outside = ui.input(|input| {
+        input.pointer.any_click()
+            && input
+                .pointer
+                .interact_pos()
+                .is_some_and(|position| !rect.contains(position))
+    });
+    if outside {
+        state.panel = None;
+    }
 }
 
 /// Abre a lista pedida, ou fecha se ela já era a que estava aberta.
