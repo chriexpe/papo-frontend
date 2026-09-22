@@ -374,12 +374,43 @@ pub fn picker(
     }
 
     // Busca
-    let field = egui::TextEdit::singleline(query)
-        .hint_text(s.emoji_search)
-        .desired_width(f32::INFINITY)
-        .vertical_align(Align::Center)
-        .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8));
-    ui.add(field);
+    #[cfg(target_os = "android")]
+    {
+        let width = ui.available_width();
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::hover());
+        ui.painter().rect(
+            rect,
+            CornerRadius::same(radius::FIELD),
+            t.fill_soft,
+            egui::Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        );
+        let field_id = ui.id().with(("emoji-search", custom_only));
+        let key = format!("emoji:{field_id:?}");
+        let _ = crate::platform::native_field::show(
+            ui.ctx(),
+            &key,
+            query,
+            rect.shrink2(Vec2::new(space::MD, space::SM)),
+            s.emoji_search,
+            crate::platform::native_field::Mode::Search,
+            0,
+            false,
+            t.label,
+            t.label_tertiary,
+            text::body().size,
+        );
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let field = egui::TextEdit::singleline(query)
+            .hint_text(s.emoji_search)
+            .desired_width(f32::INFINITY)
+            .vertical_align(Align::Center)
+            .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8));
+        ui.add(field);
+    }
     ui.add_space(space::XS);
 
     let filter = query.trim().to_lowercase();
