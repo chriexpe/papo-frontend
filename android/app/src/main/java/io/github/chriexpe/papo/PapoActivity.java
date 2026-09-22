@@ -1,13 +1,16 @@
 package io.github.chriexpe.papo;
 
 import android.content.Context;
+import android.app.PendingIntent;
 import android.app.PictureInPictureParams;
+import android.app.RemoteAction;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.os.Build;
@@ -728,11 +731,47 @@ public class PapoActivity extends GameActivity {
                 return;
             }
             callPresentation = state;
+
+            if ("off".equals(state) && isInPictureInPictureMode()) {
+                // A call terminou enquanto o usuário estava no Home. Fechar a
+                // Activity faz a bolha desaparecer em vez de deixar um PiP
+                // vazio; abrir o Papo depois cria a Activity normalmente.
+                finish();
+                return;
+            }
+
             final boolean video = "video".equals(state);
+            final List<RemoteAction> actions = new ArrayList<>();
+
+            final PendingIntent mute = PendingIntent.getService(
+                    this,
+                    21,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_TOGGLE_MUTE),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(this, R.drawable.ic_call_notification),
+                    "Microfone",
+                    "Ativar ou silenciar microfone",
+                    mute));
+
+            final PendingIntent hangup = PendingIntent.getService(
+                    this,
+                    22,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_HANGUP),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(this, R.drawable.ic_call_notification),
+                    "Desligar",
+                    "Sair da chamada",
+                    hangup));
+
             final PictureInPictureParams params = new PictureInPictureParams.Builder()
                     .setAspectRatio(new Rational(16, 9))
                     .setAutoEnterEnabled(video)
                     .setSeamlessResizeEnabled(false)
+                    .setActions(actions)
                     .build();
             setPictureInPictureParams(params);
         });
