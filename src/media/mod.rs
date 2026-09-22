@@ -325,7 +325,7 @@ async fn run(api: &Api, embed_client: Option<&reqwest::Client>, request: Request
 
 const EMBED_HTML_MAX: usize = 2 << 20;
 
-fn rich_embed_source(url: &str) -> bool {
+pub fn rich_embed_source(url: &str) -> bool {
     let Ok(url) = url::Url::parse(url) else {
         return false;
     };
