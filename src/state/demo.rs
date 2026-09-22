@@ -442,6 +442,7 @@ fn attachment(id: &str, name: &str, mime: &str, path: &std::path::Path) -> Attac
 fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>) -> Member {
     Member {
         id: id.into(),
+        username: name.to_lowercase().replace(' ', "."),
         name: name.into(),
         presence,
         role_color: color.map(|(r, g, b)| [r, g, b]),
