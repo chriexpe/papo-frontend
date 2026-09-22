@@ -87,7 +87,11 @@ pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     let Ok(mut bridge) = BRIDGE.lock() else {
         return;
     };
-    if bridge.field.is_some() && bridge.field != focused {
+    // Durante a animação/reflow do teclado o egui pode passar um quadro
+    // transitório sem foco. Não trate isso como troca de editor: limpar aqui
+    // fazia o campo ser re-semeado no quadro seguinte e alimentava um ciclo
+    // de abrir/fechar o IME. Só há troca real quando outro widget tem foco.
+    if focused.is_some() && bridge.field.is_some() && bridge.field != focused {
         bridge.clear();
     }
 }

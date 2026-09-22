@@ -340,6 +340,8 @@ pub struct Stash {
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
+    /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
+    pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
     pub popup: Option<Popup>,
     pub last_channel: String,
@@ -355,6 +357,7 @@ impl Stash {
             replying: None,
             reply_notify: true,
             editing: None,
+            edit_focus_pending: false,
             viewer: None,
             popup: None,
             last_channel: String::new(),
@@ -370,6 +373,7 @@ impl Stash {
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
+        std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
@@ -411,6 +415,8 @@ pub struct UiState {
     pub reply_notify_default: bool,
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
+    /// Só o primeiro quadro da edição pede foco ao TextEdit.
+    pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub popup: Option<Popup>,
@@ -470,6 +476,7 @@ impl Default for UiState {
             reply_notify: true,
             reply_notify_default: true,
             editing: None,
+            edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
             popup: None,
@@ -546,6 +553,7 @@ pub fn draw(
         state.media.pause_all();
         state.media.saved = None;
         state.editing = None;
+        state.edit_focus_pending = false;
         state.replying = None;
         state.close_popup();
     }
@@ -2759,7 +2767,9 @@ fn message_body(
                     .desired_rows(1)
                     .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
             );
-            response.request_focus();
+            if std::mem::take(&mut state.edit_focus_pending) {
+                response.request_focus();
+            }
             let _ = crate::platform::ime::sync_text_edit(
                 ui.ctx(),
                 edit_id,
@@ -2784,9 +2794,11 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
             {
+                state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
                 if content.is_empty() {
                     state.actions.push(ChatAction::Delete(id));
@@ -3109,7 +3121,8 @@ fn hover_pill(
                 }
                 icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
-                    state.editing = Some((message.id.clone(), message.content.clone()))
+                    state.editing = Some((message.id.clone(), message.content.clone()));
+                    state.edit_focus_pending = true;
                 }
                 _ => {
                     state.popup = Some(Popup {
@@ -3359,7 +3372,8 @@ fn context_menu(
             }
             MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
-                state.editing = Some((message.id.clone(), message.content.clone()))
+                state.editing = Some((message.id.clone(), message.content.clone()));
+                state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
                 ui.ctx().copy_text(message.content.clone());
