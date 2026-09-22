@@ -242,12 +242,10 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldText
     let (Ok(key), Ok(text)) = (env.get_string(&key), env.get_string(&text)) else {
         return;
     };
-    if let Ok(mut state) = state().lock() {
-        state
-            .fields
-            .entry(String::from(key))
-            .or_default()
-            .incoming = Some(String::from(text));
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.incoming = Some(String::from(text));
     }
     super::wake::request();
 }
@@ -259,8 +257,10 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldSubm
     key: jni::objects::JString,
 ) {
     let Ok(key) = env.get_string(&key) else { return; };
-    if let Ok(mut state) = state().lock() {
-        state.fields.entry(String::from(key)).or_default().submit = true;
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.submit = true;
     }
     super::wake::request();
 }
@@ -273,12 +273,10 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldFocu
     focused: jni::sys::jboolean,
 ) {
     let Ok(key) = env.get_string(&key) else { return; };
-    if let Ok(mut state) = state().lock() {
-        state
-            .fields
-            .entry(String::from(key))
-            .or_default()
-            .focused = focused != 0;
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.focused = focused != 0;
     }
     super::wake::request();
 }

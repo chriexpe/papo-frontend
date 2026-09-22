@@ -445,6 +445,12 @@ public class PapoActivity extends GameActivity {
                 nativeFieldLayer.addView(editor, new FrameLayout.LayoutParams(1, 1));
             }
 
+            // Tudo abaixo é configuração/programmatic sync. Algumas versões
+            // do Android disparam TextWatcher ao trocar inputType,
+            // transformationMethod ou filtros. Esses eventos NÃO são edição do
+            // usuário e jamais podem voltar ao Rust como texto novo.
+            editor.mutating = true;
+
             editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
             editor.setTextColor(textColor);
             editor.setHintTextColor(hintColor);
@@ -491,14 +497,14 @@ public class PapoActivity extends GameActivity {
             nativeFieldLayer.bringToFront();
             editor.bringToFront();
 
-            // Enquanto o usuário digita, Android é a fonte de verdade. Isso
-            // evita devolver um snapshot Rust atrasado para o IME a cada frame.
+            // Enquanto o usuário digita, Android é a fonte de verdade. Fora
+            // disso, Rust repopula a View quando ela nasce ou perde foco.
             if ((created || !editor.hasFocus()) && !editor.getText().toString().equals(text)) {
-                editor.mutating = true;
                 editor.setText(text);
                 editor.setSelection(editor.getText().length());
-                editor.mutating = false;
             }
+
+            editor.mutating = false;
 
             if (focus) {
                 final NativeFieldEditText target = editor;
