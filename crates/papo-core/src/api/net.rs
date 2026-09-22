@@ -353,25 +353,31 @@ async fn worker(
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
 
     // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
+    // Falha de rede não é logout. Só uma resposta de autenticação inválida
+    // pode apagar o token; qualquer outra falha deixa a sessão guardada para
+    // ser verificada de novo quando o servidor voltar.
     if session.is_authenticated() {
-        match api.whoami().await {
-            Ok(whoami) => {
-                let id = whoami.id.clone();
-                if let Ok(mut slot) = me.lock() {
-                    *slot = Some(id.clone());
-                }
-                publish(&updates, &wake, Update::Session(Some(Box::new(whoami))));
-                bootstrap(&api, &updates, &wake, Some(&id)).await;
-            }
-            Err(_) => {
-                session.set_token(None);
-                remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
-                publish(&updates, &wake, Update::Session(None));
-            }
-        }
+        verify_saved_session(
+            &api,
+            &storage_key,
+            storage.as_ref(),
+            &session,
+            &me,
+            &updates,
+            &wake,
+        )
+        .await;
     } else {
         publish(&updates, &wake, Update::Session(None));
     }
+
+    // Enquanto há token mas ainda não conseguimos confirmá-lo, tenta de novo.
+    // Isto cobre abrir o app sem internet, DNS fora, Render dormindo e afins.
+    let mut verification =
+        tokio::time::interval(std::time::Duration::from_secs(5));
+    verification.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    verification.tick().await;
+
     // O token de sessão vale 24 h e a renovação o gira. Seis horas dá quatro
     // chamadas por dia e sobra folga se a máquina dormir um pouco.
     let mut renewal = tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
@@ -381,7 +387,8 @@ async fn worker(
     loop {
         // O socket acompanha a sessão: abre quando há cookie válido e fecha
         // quando ele some.
-        match (session.is_authenticated(), socket.is_some()) {
+        let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+        match (session.is_authenticated() && verified, socket.is_some()) {
             (true, false) => {
                 if let Some(receiver) = outbound_rx.take() {
                     socket = Some(start_socket(
@@ -449,6 +456,21 @@ async fn worker(
                 let Some(status) = status else { continue };
                 publish(&updates, &wake, Update::Connection(status));
             }
+            _ = verification.tick() => {
+                let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+                if session.is_authenticated() && !verified {
+                    verify_saved_session(
+                        &api,
+                        &storage_key,
+                        storage.as_ref(),
+                        &session,
+                        &me,
+                        &updates,
+                        &wake,
+                    )
+                    .await;
+                }
+            }
             _ = renewal.tick() => {
                 if !session.is_authenticated() {
                     continue;
@@ -463,6 +485,9 @@ async fn worker(
                     ),
                     Err(ApiError::Unauthorized) => {
                         session.set_token(None);
+                        if let Ok(mut slot) = me.lock() {
+                            *slot = None;
+                        }
                         remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
                         publish(&updates, &wake, Update::Session(None));
                     }
@@ -476,6 +501,62 @@ async fn worker(
 
     if let Some(socket) = socket {
         socket.abort();
+    }
+}
+
+/// Confirma uma sessão persistida sem transformar indisponibilidade em logout.
+///
+/// Só `Unauthorized` prova que o token deixou de valer. Timeout, DNS, 5xx,
+/// resposta incompleta e servidor temporariamente fora mantêm a credencial e
+/// deixam o próximo tique tentar novamente.
+async fn verify_saved_session(
+    api: &Api,
+    storage_key: &str,
+    storage: &dyn SecretStore,
+    session: &Arc<Session>,
+    me: &Arc<std::sync::Mutex<Option<String>>>,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) {
+    let mut result = api.whoami().await;
+
+    // Servidor fechado é um portão separado da conta. Se já conhecemos a
+    // senha do servidor, abre e repete o whoami sem tocar no token do usuário.
+    if matches!(result, Err(ApiError::ServerLocked)) {
+        match unlock_with_saved(api, storage_key, storage).await {
+            Ok(true) => result = api.whoami().await,
+            Ok(false) | Err(_) => {
+                publish(updates, wake, Update::ServerLocked);
+                return;
+            }
+        }
+    }
+
+    match result {
+        Ok(whoami) => {
+            let id = whoami.id.clone();
+            if let Ok(mut slot) = me.lock() {
+                *slot = Some(id.clone());
+            }
+            publish(updates, wake, Update::Session(Some(Box::new(whoami))));
+            bootstrap(api, updates, wake, Some(&id)).await;
+        }
+        Err(ApiError::Unauthorized) => {
+            session.set_token(None);
+            if let Ok(mut slot) = me.lock() {
+                *slot = None;
+            }
+            remove_secret(storage, storage_key, Secret::SessionToken);
+            publish(updates, wake, Update::Session(None));
+        }
+        Err(ApiError::ServerLocked) => {
+            publish(updates, wake, Update::ServerLocked);
+        }
+        Err(error) => {
+            log::warn!("sessão guardada ainda não pôde ser verificada: {error}");
+            publish(updates, wake, Update::Connection(Connection::Offline));
+            publish(updates, wake, Update::Error(error.to_string()));
+        }
     }
 }
 
@@ -932,11 +1013,32 @@ async fn handle(
             Ok(()) => {
                 store_secret(storage, storage_key, Secret::ServerPassword, &password);
                 publish(updates, wake, Update::ServerUnlocked);
+
+                // Se chegamos ao portão com uma sessão já persistida (caso
+                // típico ao reabrir o app), terminar o unlock deve retomar a
+                // sessão sozinho — não obrigar usuário e senha outra vez.
+                let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+                if session.is_authenticated() && !verified {
+                    verify_saved_session(
+                        api,
+                        storage_key,
+                        storage,
+                        session,
+                        me,
+                        updates,
+                        wake,
+                    )
+                    .await;
+                }
             }
             Err(error) => publish(updates, wake, Update::AuthFailed(error.to_string())),
         },
         Command::Logout => {
             let _ = api.logout().await;
+            session.set_token(None);
+            if let Ok(mut slot) = me.lock() {
+                *slot = None;
+            }
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
         }
