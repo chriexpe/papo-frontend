@@ -11,9 +11,11 @@ import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.text.Selection;
 import android.text.TextWatcher;
+import android.text.method.PasswordTransformationMethod;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -33,7 +35,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.google.androidgamesdk.GameActivity;
 import com.google.androidgamesdk.gametextinput.InputConnection;
@@ -74,6 +78,11 @@ public class PapoActivity extends GameActivity {
     private static native void nativeEditorSelectionChanged(String key, int start, int end);
     private static native void nativeEditorSubmit(String key);
     private static native void nativeEditorFocusChanged(String key, boolean focused);
+
+    /** Eventos de campos nativos comuns. Cada chave possui sua própria View/estado. */
+    private static native void nativeFieldTextChanged(String key, String text);
+    private static native void nativeFieldSubmit(String key);
+    private static native void nativeFieldFocusChanged(String key, boolean focused);
 
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
@@ -314,6 +323,199 @@ public class PapoActivity extends GameActivity {
                 imm.hideSoftInputFromWindow(nativeEditor.getWindowToken(), 0);
             }
             nativeEditor.setVisibility(View.GONE);
+        });
+    }
+
+
+    private static final int NATIVE_FIELD_TEXT = 0;
+    private static final int NATIVE_FIELD_PASSWORD = 1;
+    private static final int NATIVE_FIELD_SEARCH = 2;
+
+    private FrameLayout nativeFieldLayer;
+    private final Map<String, NativeFieldEditText> nativeFields = new HashMap<>();
+
+    /**
+     * Campos Android comuns ficam completamente separados do editor do chat.
+     * Não existe "campo ativo" compartilhado: cada chave possui sua própria
+     * EditText, Editable, seleção, composição e ciclo de foco.
+     */
+    private final class NativeFieldEditText extends EditText {
+        final String key;
+        boolean mutating;
+
+        NativeFieldEditText(Context context, String key) {
+            super(context);
+            this.key = key;
+            setBackground(null);
+            setBackgroundColor(Color.TRANSPARENT);
+            setIncludeFontPadding(false);
+            setPadding(0, 0, 0, 0);
+            setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            setSingleLine(true);
+            setHorizontallyScrolling(true);
+            setSelectAllOnFocus(false);
+            setSaveEnabled(false);
+            setVerticalScrollBarEnabled(false);
+            setOverScrollMode(View.OVER_SCROLL_NEVER);
+
+            addTextChangedListener(new TextWatcher() {
+                @Override
+                public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+
+                @Override
+                public void onTextChanged(CharSequence text, int start, int before, int count) {}
+
+                @Override
+                public void afterTextChanged(Editable text) {
+                    if (!mutating) {
+                        nativeFieldTextChanged(key, text.toString());
+                    }
+                }
+            });
+
+            setOnFocusChangeListener((view, focused) ->
+                    nativeFieldFocusChanged(key, focused));
+
+            setOnEditorActionListener((view, actionId, event) -> {
+                final boolean action = actionId == EditorInfo.IME_ACTION_DONE
+                        || actionId == EditorInfo.IME_ACTION_SEARCH;
+                final boolean enter = event != null
+                        && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                        && event.getAction() == KeyEvent.ACTION_DOWN
+                        && !event.isShiftPressed();
+                if (action || enter) {
+                    nativeFieldSubmit(key);
+                    return true;
+                }
+                return false;
+            });
+        }
+    }
+
+    private void ensureNativeFieldLayer() {
+        if (nativeFieldLayer != null) {
+            return;
+        }
+        nativeFieldLayer = new FrameLayout(this);
+        nativeFieldLayer.setClipChildren(false);
+        nativeFieldLayer.setClipToPadding(false);
+        nativeFieldLayer.setClickable(false);
+        addContentView(
+                nativeFieldLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    public void showNativeField(
+            String key,
+            String text,
+            String hint,
+            int left,
+            int top,
+            int width,
+            int height,
+            float textSizePx,
+            int textColor,
+            int hintColor,
+            int mode,
+            int maxChars,
+            boolean focus) {
+        runOnUiThread(() -> {
+            ensureNativeFieldLayer();
+            NativeFieldEditText editor = nativeFields.get(key);
+            final boolean created = editor == null;
+            if (created) {
+                editor = new NativeFieldEditText(this, key);
+                nativeFields.put(key, editor);
+                nativeFieldLayer.addView(editor, new FrameLayout.LayoutParams(1, 1));
+            }
+
+            editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+            editor.setTextColor(textColor);
+            editor.setHintTextColor(hintColor);
+            editor.setHint(hint);
+            editor.setFilters(maxChars > 0
+                    ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
+                    : new InputFilter[0]);
+
+            final int inputType;
+            final int action;
+            if (mode == NATIVE_FIELD_PASSWORD) {
+                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+                action = EditorInfo.IME_ACTION_DONE;
+                editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
+            } else if (mode == NATIVE_FIELD_SEARCH) {
+                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+                action = EditorInfo.IME_ACTION_SEARCH;
+                editor.setTransformationMethod(null);
+            } else {
+                inputType = InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_VARIATION_NORMAL
+                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                action = EditorInfo.IME_ACTION_DONE;
+                editor.setTransformationMethod(null);
+            }
+            if (editor.getInputType() != inputType) {
+                editor.setInputType(inputType);
+            }
+            editor.setImeOptions(
+                    EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                            | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                            | action);
+
+            final FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) editor.getLayoutParams();
+            params.width = Math.max(1, width);
+            params.height = Math.max(1, height);
+            params.leftMargin = left;
+            params.topMargin = top;
+            editor.setLayoutParams(params);
+            editor.setVisibility(View.VISIBLE);
+            nativeFieldLayer.bringToFront();
+            editor.bringToFront();
+
+            // Enquanto o usuário digita, Android é a fonte de verdade. Isso
+            // evita devolver um snapshot Rust atrasado para o IME a cada frame.
+            if ((created || !editor.hasFocus()) && !editor.getText().toString().equals(text)) {
+                editor.mutating = true;
+                editor.setText(text);
+                editor.setSelection(editor.getText().length());
+                editor.mutating = false;
+            }
+
+            if (focus) {
+                final NativeFieldEditText target = editor;
+                target.post(() -> {
+                    target.requestFocus();
+                    final InputMethodManager keyboard =
+                            (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                    if (keyboard != null) {
+                        keyboard.showSoftInput(target, InputMethodManager.SHOW_IMPLICIT);
+                    }
+                });
+            }
+        });
+    }
+
+    public void hideNativeField(String key) {
+        runOnUiThread(() -> {
+            final NativeFieldEditText editor = nativeFields.remove(key);
+            if (editor == null) {
+                return;
+            }
+            if (editor.hasFocus()) {
+                final InputMethodManager keyboard =
+                        (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (keyboard != null) {
+                    keyboard.hideSoftInputFromWindow(editor.getWindowToken(), 0);
+                }
+            }
+            editor.clearFocus();
+            if (nativeFieldLayer != null) {
+                nativeFieldLayer.removeView(editor);
+            }
         });
     }
 

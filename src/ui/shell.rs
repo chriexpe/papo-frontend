@@ -2180,33 +2180,59 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
-        let search_id = Id::new("busca-mensagens");
-        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), search_id, &mut query);
-        let field = ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .id(search_id)
-                .hint_text(s.search_placeholder)
-                .desired_width(field_width)
-                .font(text::body()),
-        );
-        let _ = crate::platform::ime::sync_text_edit(
-            ui.ctx(),
-            search_id,
-            &mut query,
-            field.has_focus(),
-            crate::platform::ime::Kind::Search,
-        );
-        if let Some(panel) = state.panel.as_mut() {
-            panel.query = query.clone();
-            if panel.focus {
+        #[cfg(target_os = "android")]
+        {
+            let focus = state
+                .panel
+                .as_mut()
+                .map(|panel| std::mem::take(&mut panel.focus))
+                .unwrap_or(false);
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(field_width, 30.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+            let events = crate::platform::native_field::show(
+                ui.ctx(),
+                "search:messages",
+                &mut query,
+                rect.shrink2(Vec2::new(space::MD, space::XXS)),
+                s.search_placeholder,
+                crate::platform::native_field::Mode::Search,
+                0,
+                focus,
+                t.label,
+                t.label_tertiary,
+                text::body().size,
+            );
+            run |= events.submit;
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let search_id = Id::new("busca-mensagens");
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .id(search_id)
+                    .hint_text(s.search_placeholder)
+                    .desired_width(field_width)
+                    .font(text::body()),
+            );
+            if let Some(panel) = state.panel.as_mut()
+                && panel.focus
+            {
                 field.request_focus();
                 panel.focus = false;
             }
-        }
-        if ui.input(|input| input.key_pressed(egui::Key::Enter))
-            && (field.has_focus() || field.lost_focus())
-        {
-            run = true;
+            if ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && (field.has_focus() || field.lost_focus())
+            {
+                run = true;
+            }
         }
         if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
             run = true;

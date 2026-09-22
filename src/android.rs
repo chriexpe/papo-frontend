@@ -28,6 +28,8 @@ fn android_main(app: AndroidApp) {
     crate::platform::ime::install(app.clone());
     // Compositor e edição de mensagem usam um EditText Android de verdade.
     crate::platform::native_text::install(app.clone());
+    // Campos nativos comuns possuem Views e estado independentes do chat.
+    crate::platform::native_field::install(app.clone());
     // A ponte de volta: permissão e seletor de arquivos partem daqui.
     crate::platform::jvm::install(app.clone());
 

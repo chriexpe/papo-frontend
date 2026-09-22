@@ -34,6 +34,9 @@ pub mod ime;
 /// Editor Android de verdade, sobreposto à superfície do egui.
 #[cfg(target_os = "android")]
 pub mod native_text;
+/// Campos Android comuns, cada um com EditText e estado próprios.
+#[cfg(target_os = "android")]
+pub mod native_field;
 /// Bordas do sistema no Android (barra de status, navegação, recorte).
 #[cfg(target_os = "android")]
 pub mod safe_area;
