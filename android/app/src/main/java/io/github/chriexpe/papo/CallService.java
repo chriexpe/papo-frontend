@@ -11,6 +11,9 @@ import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
 import android.os.IBinder;
 import android.graphics.drawable.Icon;
+import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 
 /**
  * Mantém uma call autorizada a usar áudio/câmera quando a Activity sai da
@@ -33,6 +36,8 @@ public final class CallService extends Service {
     private String title = "Papo";
     private boolean muted = true;
     private boolean camera;
+    private AudioManager audioManager;
+    private AudioFocusRequest audioFocus;
 
     private static native void nativeCallAction(String action);
 
@@ -47,6 +52,20 @@ public final class CallService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+
+        audioManager = getSystemService(AudioManager.class);
+        if (audioManager != null) {
+            audioFocus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(new AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build())
+                    .setAcceptsDelayedFocusGain(false)
+                    .build();
+            audioManager.requestAudioFocus(audioFocus);
+            audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+        }
+
         final NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) {
             final NotificationChannel channel = new NotificationChannel(
@@ -150,6 +169,17 @@ public final class CallService extends Service {
                         "Desligar",
                         hangup).build())
                 .build();
+    }
+
+    @Override
+    public void onDestroy() {
+        if (audioManager != null) {
+            if (audioFocus != null) {
+                audioManager.abandonAudioFocusRequest(audioFocus);
+            }
+            audioManager.setMode(AudioManager.MODE_NORMAL);
+        }
+        super.onDestroy();
     }
 
     @Override
