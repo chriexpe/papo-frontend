@@ -712,6 +712,24 @@ pub fn window(
     controls_row(ui, store, state, t, s, controls, true);
 }
 
+/// Conteúdo mínimo usado pelo Picture-in-Picture do Android.
+/// A janela já é minúscula e os controles ficam na notificação da call, então
+/// só a grade de vídeo ocupa a superfície.
+#[cfg(target_os = "android")]
+pub fn pip(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    call: Option<&mut Call>,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, t.content_bg);
+    let people = faces(store);
+    draw_faces(ui, store, state, call, t, s, rect, &people);
+}
+
 /// A grade: uma pessoa por retrato, vídeo quando há, foto quando não há.
 fn grid(
     ui: &mut egui::Ui,
