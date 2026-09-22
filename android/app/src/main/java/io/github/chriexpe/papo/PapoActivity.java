@@ -44,8 +44,13 @@ public class PapoActivity extends GameActivity {
     /** Envia as bordas ao Rust. Implementada em `src/platform/safe_area.rs`. */
     private static native void nativeSetInsets(int left, int top, int right, int bottom);
 
-    /** Envia o texto do teclado ao Rust. Implementada em `src/platform/ime.rs`. */
-    private static native void nativeSetText(String text);
+    /** Envia o documento completo do IME ao Rust. */
+    private static native void nativeSetText(
+            String text,
+            int selectionStart,
+            int selectionEnd,
+            int composingRegionStart,
+            int composingRegionEnd);
 
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
@@ -208,7 +213,12 @@ public class PapoActivity extends GameActivity {
     @Override
     public void stateChanged(State state, boolean dismissed) {
         super.stateChanged(state, dismissed);
-        nativeSetText(state.text == null ? "" : state.text);
+        nativeSetText(
+                state.text == null ? "" : state.text,
+                state.selectionStart,
+                state.selectionEnd,
+                state.composingRegionStart,
+                state.composingRegionEnd);
     }
 
     /**
