@@ -237,6 +237,12 @@ pub struct Jump {
     pub since: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct LinkViewer {
+    pub id: String,
+    pub url: String,
+}
+
 /// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
 #[derive(Clone, Debug)]
 pub struct Popup {
@@ -264,6 +270,7 @@ pub struct Stash {
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
     pub viewer: Option<Viewer>,
+    pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
     pub last_channel: String,
     pub topic_since: Option<f64>,
@@ -279,6 +286,7 @@ impl Stash {
             reply_notify: true,
             editing: None,
             viewer: None,
+            link_viewer: None,
             popup: None,
             last_channel: String::new(),
             topic_since: None,
@@ -294,6 +302,7 @@ impl Stash {
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
+        std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
@@ -389,6 +398,7 @@ impl Default for UiState {
             editing: None,
             actions: Vec::new(),
             viewer: None,
+            link_viewer: None,
             popup: None,
             panel: None,
             jump: None,
@@ -2807,9 +2817,10 @@ fn rich_body(
 }
 
 
-/// Link previews são cartões nativos: o backend já fez o crawl OpenGraph/oEmbed
-/// e o cliente só apresenta os metadados. A imagem vem sob demanda pelo endpoint
-/// autenticado, evitando base64 duplicado na listagem de mensagens.
+/// Link previews são cartões nativos. Para páginas sociais que publicam
+/// metadados de mídia próprios (como vxTwitter e ogInstagram), o cliente
+/// resolve og:video/twitter:player:stream e og:image e transforma o card em
+/// mídia interativa sem precisar de WebView.
 fn link_previews(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -2818,7 +2829,7 @@ fn link_previews(
     width: f32,
 ) {
     const MAX_W: f32 = 420.0;
-    const IMAGE_MAX_H: f32 = 190.0;
+    const IMAGE_MAX_H: f32 = 280.0;
 
     for preview in previews {
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
@@ -2828,16 +2839,155 @@ fn link_previews(
 
         let card_width = width.clamp(160.0, MAX_W);
         let backdrop = ui.painter().add(egui::Shape::Noop);
-        let texture = state
+        let fallback = state
             .media
             .preview(preview)
             .and_then(|texture| texture.frame(ui.ctx()))
             .cloned();
+        let rich = state.media.rich_embed(&preview.id, url);
 
+        let rich_image = match &rich {
+            Some(crate::media::RichEmbedState::Ready {
+                kind: crate::media::RichEmbedKind::Image,
+                url,
+            }) => state
+                .media
+                .remote_image(&preview.id, url)
+                .and_then(|texture| texture.frame(ui.ctx()))
+                .cloned(),
+            _ => None,
+        };
+
+        let remote_video = match &rich {
+            Some(crate::media::RichEmbedState::Ready {
+                kind: crate::media::RichEmbedKind::Video,
+                url,
+            }) => Some(url.clone()),
+            _ => None,
+        };
+        let player_id = format!("link-embed:{}", preview.id);
+        let (video_frame, video_aspect, video_playing, video_position, video_duration) =
+            if remote_video.is_some() {
+                match state.media.existing_player(&player_id) {
+                    Some(player) => {
+                        let aspect = player.aspect().clamp(0.4, 3.0);
+                        let playing = player.is_playing();
+                        let position = player.position();
+                        let duration = player.duration();
+                        let frame = player.frame(ui.ctx()).cloned();
+                        (frame, aspect, playing, position, duration)
+                    }
+                    None => (None, 16.0 / 9.0, false, 0.0, 0.0),
+                }
+            } else {
+                (None, 16.0 / 9.0, false, 0.0, 0.0)
+            };
+
+        let mut media_clicked = false;
         let inner = ui.scope(|ui| {
             ui.set_width(card_width);
 
-            if let Some(texture) = &texture {
+            if let Some(video_url) = remote_video.as_deref() {
+                let aspect = if video_frame.is_some() {
+                    video_aspect
+                } else {
+                    fallback
+                        .as_ref()
+                        .map(|texture| {
+                            let size = texture.size_vec2();
+                            (size.x / size.y).clamp(0.4, 3.0)
+                        })
+                        .unwrap_or(16.0 / 9.0)
+                };
+                let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
+                let controls_h = 30.0;
+                let (media_rect, response) =
+                    ui.allocate_exact_size(Vec2::new(card_width, frame_size.y + controls_h), Sense::click());
+                let frame_rect = Rect::from_min_size(media_rect.min, frame_size);
+                ui.painter().rect_filled(
+                    media_rect,
+                    CornerRadius::same(radius::CARD),
+                    Color32::BLACK,
+                );
+
+                if let Some(texture) = video_frame.as_ref().or(fallback.as_ref()) {
+                    let source = texture.size_vec2();
+                    let scale = (frame_rect.width() / source.x)
+                        .min(frame_rect.height() / source.y);
+                    let size = source * scale;
+                    let centered = Rect::from_center_size(frame_rect.center(), size);
+                    ui.painter().image(
+                        texture.id(),
+                        centered,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+
+                if !video_playing {
+                    ui.painter()
+                        .circle_filled(frame_rect.center(), 28.0, Color32::from_black_alpha(155));
+                    ui.painter().text(
+                        frame_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(22.0),
+                        Color32::WHITE,
+                    );
+                }
+
+                let controls = Rect::from_min_max(
+                    egui::pos2(media_rect.min.x, frame_rect.max.y),
+                    media_rect.max,
+                );
+                ui.painter().rect_filled(
+                    controls,
+                    CornerRadius::ZERO,
+                    Color32::from_black_alpha(190),
+                );
+                let progress = if video_duration > 0.0 {
+                    (video_position / video_duration).clamp(0.0, 1.0) as f32
+                } else {
+                    0.0
+                };
+                let line = Rect::from_min_max(
+                    egui::pos2(controls.min.x + space::MD, controls.center().y - 2.0),
+                    egui::pos2(controls.max.x - 94.0, controls.center().y + 2.0),
+                );
+                ui.painter()
+                    .rect_filled(line, CornerRadius::same(2), Color32::from_white_alpha(45));
+                if line.width() > 0.0 {
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(line.min, Vec2::new(line.width() * progress, line.height())),
+                        CornerRadius::same(2),
+                        t.accent,
+                    );
+                }
+                ui.painter().text(
+                    egui::pos2(controls.max.x - space::MD, controls.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    format!(
+                        "{} / {}",
+                        attachments::clock(video_position),
+                        attachments::clock(video_duration)
+                    ),
+                    text::footnote(),
+                    Color32::from_white_alpha(205),
+                );
+
+                if response.clicked() {
+                    let ctx = ui.ctx().clone();
+                    state
+                        .media
+                        .toggle_remote_player(&player_id, video_url, &ctx);
+                    state.media.solo(&player_id);
+                    media_clicked = true;
+                }
+                if video_playing {
+                    ui.ctx().request_repaint();
+                }
+                ui.add_space(space::SM);
+            } else if let Some(texture) = rich_image.as_ref().or(fallback.as_ref()) {
                 let source = texture.size_vec2();
                 let scale = (card_width / source.x)
                     .min(IMAGE_MAX_H / source.y)
@@ -2846,14 +2996,26 @@ fn link_previews(
                     (source.x * scale).max(1.0),
                     (source.y * scale).max(1.0),
                 );
-                let (image_rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
                 ui.painter().image(
                     texture.id(),
                     image_rect,
                     Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
-                if preview.embed_url.is_some() {
+
+                if let Some(crate::media::RichEmbedState::Ready {
+                    kind: crate::media::RichEmbedKind::Image,
+                    url,
+                }) = &rich
+                    && response.clicked()
+                {
+                    state.link_viewer = Some(LinkViewer {
+                        id: preview.id.clone(),
+                        url: url.clone(),
+                    });
+                    media_clicked = true;
+                } else if preview.embed_url.is_some() {
                     ui.painter().circle_filled(
                         image_rect.center(),
                         22.0,
@@ -2891,11 +3053,7 @@ fn link_previews(
             }
 
             if let Some(title) = preview.title.as_deref().filter(|title| !title.is_empty()) {
-                ui.label(
-                    RichText::new(title)
-                        .font(text::headline())
-                        .color(t.label),
-                );
+                ui.label(RichText::new(title).font(text::headline()).color(t.label));
             }
 
             if let Some(description) = preview
@@ -2922,10 +3080,7 @@ fn link_previews(
             }
         });
 
-        let rect = inner
-            .response
-            .rect
-            .expand2(Vec2::new(space::MD, space::SM));
+        let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
         let response = ui.interact(
             rect,
             Id::new(("link-preview", &preview.id)),
@@ -2951,7 +3106,7 @@ fn link_previews(
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        if response.clicked() {
+        if response.clicked() && !media_clicked {
             ui.ctx().open_url(egui::OpenUrl::new_tab(url));
         }
         ui.add_space(space::XS);
@@ -3129,6 +3284,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
         }
     }
 
+    if state.link_viewer.is_some() {
+        link_image_viewer(ui, state, t);
+    }
+
     if let Some(mut viewer) = state.viewer.take() {
         let attachments = store
             .message(&viewer.message_id)
@@ -3142,6 +3301,79 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             }
             None => state.viewer = Some(viewer),
         }
+    }
+}
+
+fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
+    let Some(viewer) = state.link_viewer.clone() else {
+        return;
+    };
+    let screen = ui.ctx().content_rect();
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-link-viewer"));
+    let mut top = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(screen)
+            .sense(Sense::click()),
+    );
+
+    top.painter()
+        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
+
+    let texture = state
+        .media
+        .remote_image(&viewer.id, &viewer.url)
+        .and_then(|texture| texture.frame(top.ctx()))
+        .cloned();
+
+    let mut content = Rect::NOTHING;
+    if let Some(texture) = texture {
+        let stage = screen.shrink2(Vec2::new(space::XXXL, 64.0));
+        let natural = texture.size_vec2();
+        let scale = (stage.width() / natural.x)
+            .min(stage.height() / natural.y)
+            .min(1.0);
+        let size = natural * scale;
+        content = Rect::from_center_size(stage.center(), size);
+        top.painter().image(
+            texture.id(),
+            content,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        top.painter().text(
+            screen.center(),
+            egui::Align2::CENTER_CENTER,
+            "Carregando imagem…",
+            text::body(),
+            t.label_secondary,
+        );
+        top.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(150));
+    }
+
+    let close_rect = Rect::from_center_size(
+        egui::pos2(screen.max.x - 28.0, screen.min.y + 28.0),
+        Vec2::splat(36.0),
+    );
+    let close = top.interact(close_rect, Id::new("link-viewer-close"), Sense::click());
+    top.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        text::icon(20.0),
+        Color32::WHITE,
+    );
+
+    let backdrop = top.interact(screen, Id::new("link-viewer-backdrop"), Sense::click());
+    let escape = top.input(|input| input.key_pressed(egui::Key::Escape));
+    let outside = backdrop.clicked()
+        && backdrop
+            .interact_pointer_pos()
+            .is_some_and(|position| !content.expand(space::MD).contains(position));
+    if close.clicked() || escape || outside {
+        state.link_viewer = None;
     }
 }
 
