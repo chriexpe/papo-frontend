@@ -614,14 +614,17 @@ async fn handle(
             bootstrap(api, updates, wake, id.as_deref()).await
         }
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
-            Ok(list) => publish(
-                updates,
-                wake,
-                Update::Messages {
-                    channel_id,
-                    messages: list.messages,
-                },
-            ),
+            Ok(list) => {
+                publish(
+                    updates,
+                    wake,
+                    Update::Messages {
+                        channel_id: channel_id.clone(),
+                        messages: list.messages,
+                    },
+                );
+                load_pinned(api, updates, wake, channel_id).await;
+            }
             Err(error) => report(updates, wake, error),
         },
         // As três mexidas em canal terminam iguais: relista os canais, porque
@@ -932,11 +935,7 @@ async fn load_pinned(
             let ids = list
                 .pinned
                 .into_iter()
-                .filter_map(|pinned| {
-                    pinned
-                        .message_id
-                        .or_else(|| pinned.message.map(|message| message.id))
-                })
+                .map(|message| message.id)
                 .collect();
             publish(updates, wake, Update::Pinned { channel_id, ids });
         }
