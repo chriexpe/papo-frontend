@@ -1,13 +1,13 @@
-//! Ponte de edicao de texto entre o egui e o GameTextInput do Android.
+//! Ponte entre egui TextEdit e o GameTextInput do Android.
 //!
-//! O teclado Android edita um documento: texto completo, selecao/cursor e
-//! regiao de composicao. O buffer precisa espelhar o TextEdit focado para que
-//! recursos nativos como Backspace continuo, mover o cursor segurando espaco,
-//! autocorrecao e insercao no meio da frase funcionem.
+//! winit 0.30 ainda ignora InputEvent::TextEvent no backend Android, entao o
+//! estado do InputConnection nao chega ao egui sozinho. A ponte abaixo trata
+//! o GameTextInput como um editor de verdade: texto completo, selecao/cursor e
+//! regiao de composicao.
 //!
-//! O winit/eframe atual sobe o IME, mas nao encaminha esse estado ao egui.
-//! A PapoActivity portanto envia o State por JNI e este modulo sincroniza os
-//! dois lados sem fabricar eventos de tecla.
+//! Importante: o texto vindo do Android e injetado como entrada do TextEdit
+//! ANTES do widget rodar. Nao mutamos o String depois que o TextEdit terminou,
+//! porque isso deixa o estado interno de selecao/undo do egui dessincronizado.
 
 #[cfg(target_os = "android")]
 use std::sync::{Mutex, OnceLock};
@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "android")]
 use android_activity::{
     AndroidApp,
-    input::{TextInputState, TextSpan},
+    input::{ImeOptions, InputType, TextInputAction, TextInputState, TextSpan},
 };
 
 #[cfg(target_os = "android")]
@@ -24,23 +24,39 @@ static APP: OnceLock<AndroidApp> = OnceLock::new();
 #[cfg(target_os = "android")]
 static BRIDGE: Mutex<Bridge> = Mutex::new(Bridge::new());
 
+/// Tipo de campo que o Android deve anunciar ao teclado.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Text,
+    Multiline,
+    Search,
+    Password,
+}
+
 #[cfg(target_os = "android")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ImeState {
     text: String,
-    // Offsets do Android sao unidades UTF-16.
+    // Offsets da API Android sao unidades UTF-16.
     selection: (usize, usize),
     compose: Option<(usize, usize)>,
 }
 
 #[cfg(target_os = "android")]
 struct Bridge {
-    // TextEdit que atualmente e dono do documento do teclado.
+    /// TextEdit que atualmente e dono do documento do teclado.
     field: Option<egui::Id>,
-    // Estado mais recente vindo da Activity, ainda nao aplicado ao egui.
+    /// Estado mais recente vindo da Activity, ainda nao convertido em eventos.
     incoming: Option<ImeState>,
-    // Ultimo estado em que Android e egui estavam sincronizados.
+    /// Selecao Android para aplicar depois que o TextEdit consumir os eventos.
+    pending_selection: Option<(usize, usize)>,
+    /// Ultimo estado em que Android e egui concordavam.
     shadow: Option<ImeState>,
+    /// Impede que o mesmo quadro devolva ao Android o texto antigo antes do
+    /// TextEdit terminar de consumir a substituicao que acabamos de injetar.
+    suppress_outbound_once: bool,
+    /// O callback do IME realmente mudou o texto neste quadro.
+    incoming_text_changed: bool,
 }
 
 #[cfg(target_os = "android")]
@@ -49,14 +65,20 @@ impl Bridge {
         Self {
             field: None,
             incoming: None,
+            pending_selection: None,
             shadow: None,
+            suppress_outbound_once: false,
+            incoming_text_changed: false,
         }
     }
 
     fn clear(&mut self) {
         self.field = None;
         self.incoming = None;
+        self.pending_selection = None;
         self.shadow = None;
+        self.suppress_outbound_once = false;
+        self.incoming_text_changed = false;
     }
 }
 
@@ -65,34 +87,97 @@ pub fn install(app: AndroidApp) {
     let _ = APP.set(app);
 }
 
-// Mantem a assinatura usada pelo raw_input_hook. A edicao propriamente dita
-// acontece depois que cada TextEdit foi desenhado, em sync_text_edit.
+/// Converte o State completo do GameTextInput em eventos que o TextEdit sabe
+/// processar. Executa no raw_input_hook, portanto antes da interface do quadro.
+///
+/// A substituicao inteira (Ctrl+A + Text) e proposital: autocorrecao, colar,
+/// composicao e edicao no meio deixam de depender de adivinhar um diff.
 #[cfg(target_os = "android")]
-pub fn pump(ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
     let focused = ctx.memory(|memory| memory.focused());
-    if let Ok(mut bridge) = BRIDGE.lock()
-        && bridge.field.is_some()
-        && bridge.field != focused
-    {
-        bridge.clear();
+
+    let (incoming, replace_text) = {
+        let Ok(mut bridge) = BRIDGE.lock() else {
+            return;
+        };
+
+        if bridge.field.is_some() && bridge.field != focused {
+            bridge.clear();
+            return;
+        }
+
+        let Some(incoming) = bridge.incoming.take() else {
+            return;
+        };
+        let Some(field) = bridge.field else {
+            // Ainda nao sabemos qual TextEdit recebeu o foco. sync_text_edit
+            // vai semear o InputConnection assim que o widget aparecer.
+            return;
+        };
+        if focused != Some(field) {
+            return;
+        }
+
+        let replace_text = bridge
+            .shadow
+            .as_ref()
+            .is_none_or(|shadow| shadow.text != incoming.text);
+
+        bridge.pending_selection = Some(incoming.selection);
+        bridge.incoming_text_changed = replace_text;
+        bridge.shadow = Some(incoming.clone());
+        bridge.suppress_outbound_once = true;
+
+        (incoming, replace_text)
+    };
+
+    if replace_text {
+        let command = egui::Modifiers::COMMAND;
+        for pressed in [true, false] {
+            raw_input.events.push(egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: command,
+            });
+        }
+
+        if incoming.text.is_empty() {
+            for pressed in [true, false] {
+                raw_input.events.push(egui::Event::Key {
+                    key: egui::Key::Backspace,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        } else {
+            raw_input.events.push(egui::Event::Text(incoming.text));
+        }
     }
 }
 
 #[cfg(not(target_os = "android"))]
 pub fn pump(_ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
 
-/// Sincroniza um TextEdit com o documento mantido pelo IME.
+/// Sincroniza o lado egui DEPOIS que um TextEdit foi desenhado.
 ///
-/// Retorna true se o IME alterou o texto neste quadro.
+/// - no primeiro foco, semeia o InputConnection com o texto e cursor reais;
+/// - aplica a selecao/cursor que o IME mandou no quadro;
+/// - se o usuario moveu o cursor tocando no TextEdit, devolve a selecao ao
+///   Android para a proxima tecla entrar exatamente naquele ponto.
 pub fn sync_text_edit(
     ctx: &egui::Context,
     id: egui::Id,
     text: &mut String,
     response_has_focus: bool,
+    kind: Kind,
 ) -> bool {
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (ctx, id, text, response_has_focus);
+        let _ = (ctx, id, text, response_has_focus, kind);
         false
     }
 
@@ -107,38 +192,33 @@ pub fn sync_text_edit(
             return false;
         };
 
-        // Ao trocar de campo, o teclado recebe o documento REAL inteiro e a
-        // selecao que o toque acabou de escolher no egui.
         if bridge.field != Some(id) {
             bridge.field = Some(id);
             bridge.incoming = None;
+            bridge.pending_selection = None;
+            bridge.suppress_outbound_once = false;
+            bridge.incoming_text_changed = false;
+
             let state = state_from_egui(ctx, id, text, None);
             bridge.shadow = Some(state.clone());
             drop(bridge);
+
+            configure_android(kind);
             send_to_android(&state);
             return false;
         }
 
-        let mut changed = false;
-
-        // Enquanto o IME esta editando, seu State e atomico: texto, cursor e
-        // composicao pertencem ao mesmo instante. Aplicar o pacote inteiro
-        // evita a antiga divergencia em que o teclado achava que o cursor
-        // estava no fim enquanto o egui o mostrava no meio.
-        if let Some(incoming) = bridge.incoming.take() {
-            if bridge.shadow.as_ref() != Some(&incoming) {
-                if *text != incoming.text {
-                    *text = incoming.text.clone();
-                    changed = true;
-                }
-                set_egui_selection(ctx, id, text, incoming.selection);
-                bridge.shadow = Some(incoming);
-            }
+        if let Some(selection) = bridge.pending_selection.take() {
+            set_egui_selection(ctx, id, text, selection);
         }
 
-        // O caminho inverso cobre toque/mouse mudando o cursor, colar,
-        // autocomplete/emoji do Papo e limpar a caixa depois de enviar.
-        // Preservamos a regiao de composicao enquanto o texto nao mudou.
+        let changed_from_ime = std::mem::take(&mut bridge.incoming_text_changed);
+
+        if bridge.suppress_outbound_once {
+            bridge.suppress_outbound_once = false;
+            return changed_from_ime;
+        }
+
         let compose = bridge
             .shadow
             .as_ref()
@@ -157,10 +237,8 @@ pub fn sync_text_edit(
         if let Some(state) = outbound {
             send_to_android(&state);
         }
-        if changed {
-            ctx.request_repaint();
-        }
-        changed
+
+        changed_from_ime
     }
 }
 
@@ -198,6 +276,44 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetText(
     }
 
     super::wake::request();
+}
+
+#[cfg(target_os = "android")]
+fn configure_android(kind: Kind) {
+    let Some(app) = APP.get() else {
+        return;
+    };
+
+    let (input_type, action) = match kind {
+        Kind::Multiline => (
+            InputType::TYPE_CLASS_TEXT
+                | InputType::TYPE_TEXT_VARIATION_SHORT_MESSAGE
+                | InputType::TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType::TYPE_TEXT_FLAG_CAP_SENTENCES
+                | InputType::TYPE_TEXT_FLAG_AUTO_CORRECT,
+            TextInputAction::None,
+        ),
+        Kind::Search => (
+            InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_VARIATION_FILTER,
+            TextInputAction::Search,
+        ),
+        Kind::Password => (
+            InputType::TYPE_CLASS_TEXT
+                | InputType::TYPE_TEXT_VARIATION_PASSWORD
+                | InputType::TYPE_TEXT_FLAG_NO_SUGGESTIONS,
+            TextInputAction::Done,
+        ),
+        Kind::Text => (
+            InputType::TYPE_CLASS_TEXT | InputType::TYPE_TEXT_FLAG_AUTO_CORRECT,
+            TextInputAction::Done,
+        ),
+    };
+
+    app.set_ime_editor_info(
+        input_type,
+        action,
+        ImeOptions::IME_FLAG_NO_FULLSCREEN,
+    );
 }
 
 #[cfg(target_os = "android")]
@@ -269,10 +385,7 @@ fn send_to_android(state: &ImeState) {
 }
 
 fn char_to_utf16_index(text: &str, char_index: usize) -> usize {
-    text.chars()
-        .take(char_index)
-        .map(char::len_utf16)
-        .sum()
+    text.chars().take(char_index).map(char::len_utf16).sum()
 }
 
 fn utf16_to_char_index(text: &str, utf16_index: usize) -> usize {
