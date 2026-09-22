@@ -28,9 +28,6 @@ pub mod menu;
 /// Acordar a janela de fora do laço de quadros (Android).
 #[cfg(target_os = "android")]
 pub mod wake;
-/// A ponte legada entre o teclado do Android e TextEdit. Continua servindo
-/// campos simples enquanto compositor/edição usam um EditText nativo.
-pub mod ime;
 /// Editor Android de verdade, sobreposto à superfície do egui.
 #[cfg(target_os = "android")]
 pub mod native_text;

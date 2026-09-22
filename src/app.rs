@@ -1875,9 +1875,6 @@ impl eframe::App for PapoApp {
             raw_input.screen_rect = Some(safe);
         }
 
-        // O winit sobe o teclado mas não entrega o que se digita nele; quem
-        // faz essa parte é a ponte.
-        crate::platform::ime::pump(ctx, raw_input);
     }
 
     /// O eframe grava sozinho de trinta em trinta segundos e, fora isso, ao

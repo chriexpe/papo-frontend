@@ -241,32 +241,47 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
         egui::StrokeKind::Inside,
     );
 
-    let edit_id = ui.id().with(("auth-field", label));
-    let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
-    let response = ui.put(
-        rect.shrink2(Vec2::new(space::MD, space::XXS)),
-        TextEdit::singleline(value)
-            .id(edit_id)
-            .password(secret)
-            .frame(egui::Frame::NONE)
-            .font(text::body())
-            .vertical_align(Align::Center)
-            .desired_width(f32::INFINITY),
-    );
-    let _ = crate::platform::ime::sync_text_edit(
-        ui.ctx(),
-        edit_id,
-        value,
-        response.has_focus(),
-        if secret {
-            crate::platform::ime::Kind::Password
-        } else {
-            crate::platform::ime::Kind::Text
-        },
-    );
-    ui.advance_cursor_after_rect(rect);
+    #[cfg(target_os = "android")]
+    let submitted = {
+        let key = format!("auth:{label}");
+        crate::platform::native_text::singleline(
+            ui,
+            &key,
+            value,
+            rect.shrink2(Vec2::new(space::MD, space::XXS)),
+            "",
+            if secret {
+                crate::platform::native_text::Mode::Password
+            } else {
+                crate::platform::native_text::Mode::Text
+            },
+            0,
+            false,
+            t.label,
+            t.label_tertiary,
+            text::body(),
+        )
+        .submit
+    };
 
-    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+    #[cfg(not(target_os = "android"))]
+    let submitted = {
+        let edit_id = ui.id().with(("auth-field", label));
+        let response = ui.put(
+            rect.shrink2(Vec2::new(space::MD, space::XXS)),
+            TextEdit::singleline(value)
+                .id(edit_id)
+                .password(secret)
+                .frame(egui::Frame::NONE)
+                .font(text::body())
+                .vertical_align(Align::Center)
+                .desired_width(f32::INFINITY),
+        );
+        response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
+    };
+
+    ui.advance_cursor_after_rect(rect);
+    submitted
 }
 
 fn primary_button(ui: &mut egui::Ui, t: &Tokens, label: &str, enabled: bool) -> bool {
