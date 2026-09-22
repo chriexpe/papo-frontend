@@ -1106,6 +1106,13 @@ fn connect_signals(
         "on-ice-candidate",
         false,
         glib::closure!(move |_webrtc: &gst::Element, mline: u32, candidate: String| {
+            // Algumas implementações sinalizam o fim da coleta com candidato
+            // vazio. Isso não é um ICE candidate e o backend o rejeita como
+            // "evento inválido".
+            if candidate.trim().is_empty() {
+                log::debug!("call: fim da coleta ICE sem candidato");
+                return;
+            }
             // O servidor recusa candidato de loopback (e tem razão: ninguém
             // fora desta máquina chega em 127.0.0.1). Mandar assim mesmo só
             // renderia um erro por candidato.
@@ -1124,15 +1131,11 @@ fn connect_signals(
         }),
     );
 
-    let waiting = inbox.clone();
-    webrtc.connect_closure(
-        "on-negotiation-needed",
-        false,
-        glib::closure!(move |_webrtc: &gst::Element| {
-            let _ = waiting.send(Command::Negotiate);
-        }),
-    );
-
+    // As mudanças locais que exigem SDP são conhecidas pelo motor:
+    // Ready faz a oferta inicial e câmera/screen pedem a própria renegociação.
+    // Não usamos on-negotiation-needed como segunda fonte, porque ele também
+    // dispara para a mesma mudança e transformava cada negociação em duas
+    // ofertas consecutivas (e duplicava ICE/rate-limit junto).
     let state = Arc::clone(shared);
     webrtc.connect_notify(Some("connection-state"), move |webrtc, _| {
         let value = webrtc.property::<gst_webrtc::WebRTCPeerConnectionState>("connection-state");
