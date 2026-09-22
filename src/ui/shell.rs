@@ -2215,6 +2215,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         #[cfg(not(target_os = "android"))]
         {
             let search_id = Id::new("busca-mensagens");
+            let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), search_id, &mut query);
             let field = ui.add(
                 egui::TextEdit::singleline(&mut query)
                     .id(search_id)
@@ -2222,11 +2223,19 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     .desired_width(field_width)
                     .font(text::body()),
             );
-            if let Some(panel) = state.panel.as_mut()
-                && panel.focus
-            {
-                field.request_focus();
-                panel.focus = false;
+            let _ = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                search_id,
+                &mut query,
+                field.has_focus(),
+                crate::platform::ime::Kind::Search,
+            );
+            if let Some(panel) = state.panel.as_mut() {
+                panel.query = query.clone();
+                if panel.focus {
+                    field.request_focus();
+                    panel.focus = false;
+                }
             }
             if ui.input(|input| input.key_pressed(egui::Key::Enter))
                 && (field.has_focus() || field.lost_focus())
@@ -2238,6 +2247,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
             run = true;
         }
     });
+    #[cfg(target_os = "android")]
     if let Some(panel) = state.panel.as_mut() {
         panel.query.clone_from(&query);
     }
