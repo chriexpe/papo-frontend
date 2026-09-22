@@ -57,7 +57,8 @@ const TOPIC_SLIDE: f64 = 0.45;
 const COMPOSER_ATTACH_H: f32 = 62.0;
 const COMPOSER_REPLY_H: f32 = 26.0;
 /// Altura da linha onde se digita, sem as faixas de cima.
-const COMPOSER_LINE_H: f32 = 44.0;
+const COMPOSER_LINE_H: f32 = 52.0;
+const COMPOSER_MAX_ROWS: usize = 4;
 const TOAST_SECONDS: f64 = 6.0;
 
 /// O que a conversa pede para a camada de cima fazer.
@@ -1492,7 +1493,7 @@ fn conversation(
             return;
         }
 
-        let composer_height = composer_height(state);
+        let composer_height = composer_height(ui, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
 
@@ -1762,7 +1763,7 @@ fn actions_pill(
 ) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"));
     let screen = ui.ctx().content_rect();
-    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+    let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
     let open = state.panel.as_ref().map(|panel| panel.kind);
@@ -2706,6 +2707,14 @@ fn message_body(
     if !message.previews.is_empty() {
         link_previews(ui, state, t, &message.previews, width);
     }
+    rich_links_from_message(
+        ui,
+        state,
+        t,
+        &message.content,
+        &message.previews,
+        width,
+    );
 
     if !message.reactions.is_empty() {
         ui.add_space(space::XS);
@@ -3112,6 +3121,228 @@ fn link_previews(
         }
         ui.add_space(space::XS);
     }
+}
+
+
+fn rich_links_from_message(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    content: &str,
+    previews: &[crate::api::models::LinkPreview],
+    width: f32,
+) {
+    use std::hash::{Hash, Hasher};
+
+    let mut seen = std::collections::HashSet::new();
+    for token in content.split_whitespace() {
+        let url = token.trim_matches(|ch: char| {
+            matches!(ch, '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '!' | '?')
+        });
+        if !url.starts_with("https://")
+            || !crate::media::rich_embed_source(url)
+            || previews
+                .iter()
+                .any(|preview| preview.url.as_deref() == Some(url))
+            || !seen.insert(url.to_owned())
+        {
+            continue;
+        }
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hasher);
+        let id = format!("rich-{:016x}", hasher.finish());
+        rich_link_card(ui, state, t, &id, url, width);
+    }
+}
+
+fn rich_link_card(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    url: &str,
+    width: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const IMAGE_MAX_H: f32 = 300.0;
+
+    ui.add_space(space::SM);
+    let card_width = width.clamp(160.0, MAX_W);
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let rich = state.media.rich_embed(id, url);
+
+    let image_url = match &rich {
+        Some(crate::media::RichEmbedState::Ready {
+            kind: crate::media::RichEmbedKind::Image,
+            url,
+        }) => Some(url.clone()),
+        _ => None,
+    };
+    let video_url = match &rich {
+        Some(crate::media::RichEmbedState::Ready {
+            kind: crate::media::RichEmbedKind::Video,
+            url,
+        }) => Some(url.clone()),
+        _ => None,
+    };
+
+    let image = image_url
+        .as_deref()
+        .and_then(|remote| state.media.remote_image(id, remote))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .cloned();
+
+    let player_id = format!("link-embed:{id}");
+    let (frame, aspect, playing, position, duration) = if video_url.is_some() {
+        match state.media.existing_player(&player_id) {
+            Some(player) => {
+                let aspect = player.aspect().clamp(0.4, 3.0);
+                let playing = player.is_playing();
+                let position = player.position();
+                let duration = player.duration();
+                let frame = player.frame(ui.ctx()).cloned();
+                (frame, aspect, playing, position, duration)
+            }
+            None => (None, 16.0 / 9.0, false, 0.0, 0.0),
+        }
+    } else {
+        (None, 16.0 / 9.0, false, 0.0, 0.0)
+    };
+
+    let inner = ui.scope(|ui| {
+        ui.set_width(card_width);
+
+        if let Some(remote) = video_url.as_deref() {
+            let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
+            let controls_h = 30.0;
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::new(card_width, frame_size.y + controls_h),
+                Sense::click(),
+            );
+            let video_rect = Rect::from_min_size(rect.min, frame_size);
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
+
+            if let Some(texture) = frame.as_ref() {
+                let source = texture.size_vec2();
+                let scale = (video_rect.width() / source.x)
+                    .min(video_rect.height() / source.y);
+                let painted = Rect::from_center_size(video_rect.center(), source * scale);
+                ui.painter().image(
+                    texture.id(),
+                    painted,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            if !playing {
+                ui.painter()
+                    .circle_filled(video_rect.center(), 28.0, Color32::from_black_alpha(155));
+                ui.painter().text(
+                    video_rect.center() + Vec2::new(1.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon::PLAY,
+                    text::icon(22.0),
+                    Color32::WHITE,
+                );
+            }
+
+            let controls = Rect::from_min_max(
+                egui::pos2(rect.min.x, video_rect.max.y),
+                rect.max,
+            );
+            ui.painter()
+                .rect_filled(controls, CornerRadius::ZERO, Color32::from_black_alpha(190));
+            ui.painter().text(
+                egui::pos2(controls.max.x - space::MD, controls.center().y),
+                egui::Align2::RIGHT_CENTER,
+                format!(
+                    "{} / {}",
+                    attachments::clock(position),
+                    attachments::clock(duration)
+                ),
+                text::footnote(),
+                Color32::from_white_alpha(205),
+            );
+
+            if response.clicked() {
+                let ctx = ui.ctx().clone();
+                state.media.toggle_remote_player(&player_id, remote, &ctx);
+                state.media.solo(&player_id);
+            }
+            if playing {
+                ui.ctx().request_repaint();
+            }
+        } else if let Some(texture) = image.as_ref() {
+            let source = texture.size_vec2();
+            let scale = (card_width / source.x)
+                .min(IMAGE_MAX_H / source.y)
+                .min(1.0);
+            let size = source * scale;
+            let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+            ui.painter().image(
+                texture.id(),
+                rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            if response.clicked()
+                && let Some(remote) = image_url.as_ref()
+            {
+                state.link_viewer = Some(LinkViewer {
+                    id: id.to_owned(),
+                    url: remote.clone(),
+                });
+            }
+        } else {
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(card_width, 84.0),
+                Sense::hover(),
+            );
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(radius::CARD),
+                t.fill_soft,
+            );
+            let label = match rich {
+                Some(crate::media::RichEmbedState::Failed) => "Não foi possível carregar a mídia",
+                _ => "Carregando mídia…",
+            };
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                text::footnote(),
+                t.label_secondary,
+            );
+        }
+
+        ui.add_space(space::SM);
+        let provider = url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "link".to_owned());
+        ui.label(
+            RichText::new(provider)
+                .font(text::caption())
+                .color(t.label_tertiary),
+        );
+    });
+
+    let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
+    ui.painter().set(
+        backdrop,
+        egui::epaint::RectShape::new(
+            rect,
+            CornerRadius::same(radius::CARD),
+            t.fill_soft,
+            Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    ui.add_space(space::XS);
 }
 
 fn reaction_chip(
@@ -3851,9 +4082,39 @@ fn submit(state: &mut UiState) {
     });
 }
 
-fn composer_height(state: &UiState) -> f32 {
-    let lines = state.composer.lines().count().clamp(1, 8) as f32;
-    let mut height = COMPOSER_LINE_H + (lines - 1.0) * 18.0;
+fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+    let recording = state.recorder.is_some();
+    let with_record = state.show_record || recording;
+    let left_count = 1 + usize::from(with_record);
+    let left_width =
+        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
+    let composer_width =
+        (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+
+    // Reserva dos quatro controles à direita e das margens do campo.
+    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
+    let text_width = (composer_width - controls_width).max(80.0);
+
+    let rows = if state.composer.is_empty() {
+        1
+    } else {
+        ui.painter()
+            .layout(
+                state.composer.clone(),
+                text::message(),
+                Color32::WHITE,
+                text_width,
+            )
+            .rows
+            .len()
+            .clamp(1, COMPOSER_MAX_ROWS)
+    };
+
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+        + ui.spacing().extra_text_line_spacing;
+    let text_h = rows as f32 * row_h + space::SM * 2.0;
+    let mut height = COMPOSER_LINE_H.max(text_h);
+
     if state.replying.is_some() {
         height += COMPOSER_REPLY_H;
     }
@@ -4283,8 +4544,8 @@ fn composer(
 
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
     let field = Rect::from_min_max(
-        egui::pos2(line.min.x + space::MD, line.min.y + space::XS),
-        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y - space::XS),
+        egui::pos2(line.min.x + space::MD, line.min.y),
+        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
     );
     ui.scope_builder(
         UiBuilder::new()
@@ -4328,17 +4589,19 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let response = ui.add(
-                TextEdit::multiline(&mut state.composer)
-                    .id(edit_id)
-                    .hint_text(RichText::new(hint).color(t.label_tertiary))
-                    .frame(Frame::NONE)
-                    .font(text::message())
-                    .desired_rows(1)
-                    .vertical_align(Align::Center)
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::symmetric(space::XS as i8, space::SM as i8)),
-            );
+            let response = TextEdit::multiline(&mut state.composer)
+                .id(edit_id)
+                .hint_text(RichText::new(hint).color(t.label_tertiary))
+                .frame(Frame::NONE)
+                .font(text::message())
+                .desired_rows(1)
+                .vertical_align(Align::Center)
+                .min_size(Vec2::new(field.width(), field.height()))
+                .desired_width(f32::INFINITY)
+                .margin(Margin::symmetric(space::SM as i8, 0))
+                .show(ui)
+                .response
+                .response;
             state.typed = response.changed();
 
             let caret = caret_of(ui.ctx(), edit_id);
