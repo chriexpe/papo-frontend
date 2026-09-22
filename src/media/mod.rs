@@ -234,6 +234,12 @@ async fn run(api: &Api, request: Request) -> Loaded {
             {
                 return decode(key, &bytes, INLINE_MAX);
             }
+            // Uma capa por vez. `spawn_blocking` tira a decodificação das
+            // threads do runtime, mas não limita quantas acontecem juntas:
+            // uma conversa com cinco vídeos à vista montava cinco pipelines
+            // do GStreamer ao mesmo tempo, cada um com seus decodificadores
+            // do aparelho. Capa é enfeite — pode esperar a vez.
+            let _turn = poster_queue().acquire().await;
             match tokio::task::spawn_blocking(move || {
                 let image = player::poster(&path)?;
                 save_poster(&cached, &image);
@@ -463,6 +469,12 @@ pub fn full_key(id: &str) -> String {
 pub fn file_key(id: &str) -> String {
     format!("file:{id}")
 }
+/// A fila das capas: só uma extração de cada vez.
+fn poster_queue() -> &'static tokio::sync::Semaphore {
+    static QUEUE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    QUEUE.get_or_init(|| tokio::sync::Semaphore::new(1))
+}
+
 /// Guarda a capa em disco para não decodificar o vídeo de novo amanhã.
 fn save_poster(dest: &Path, image: &ColorImage) {
     let (width, height) = (image.size[0] as u32, image.size[1] as u32);

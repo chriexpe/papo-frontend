@@ -714,51 +714,94 @@ pub fn poster(path: &Path) -> Option<egui::ColorImage> {
         return None;
     }
     let uri = gst::glib::filename_to_uri(path, None).ok()?;
+    // O `playbin` com a bandeira de só-vídeo é o caminho certo aqui, e é o
+    // mesmo elemento que o player usa. Tentar podar o `uridecodebin` pelas
+    // caps não serve: pedindo `video/x-raw` o ramo de áudio não tem como
+    // chegar lá e o decodebin desiste com "no suitable plugins found" — no
+    // Android, o vídeo nem chega a abrir. Com a bandeira, o áudio nem é
+    // considerado, que era o objetivo: nada de decodificador de som moendo
+    // contra um pad solto só para tirar uma imagem parada.
+    //
     // A capa é desenhada num cartão estreito; `POSTER_MAX_W` de largura é
     // folga de sobra e poupa memória por anexo.
-    // `expose-all-streams=false` com `caps=video/x-raw` é o que importa
-    // aqui: sem isso o uridecodebin também decodifica o áudio, que não tem
-    // para onde ir, e o decodificador fica moendo som contra um pad solto
-    // — centenas de "not-linked" por segundo e CPU à toa, só para tirar uma
-    // imagem parada.
-    let description = format!(
-        "uridecodebin uri=\"{uri}\" caps=video/x-raw expose-all-streams=false ! \
-         videoconvert ! videoscale ! \
-         video/x-raw,format=RGBA,pixel-aspect-ratio=1/1,width=[1,{POSTER_MAX_W}] ! \
-         appsink name=capa sync=false max-buffers=1 drop=false"
-    );
-    let pipeline = gst::parse::launch(&description).ok()?;
-    let sink = pipeline
-        .downcast_ref::<gst::Bin>()?
+    let sink_bin = gst::parse::bin_from_description(
+        &format!(
+            "videoconvert ! videoscale ! \
+             video/x-raw,format=RGBA,pixel-aspect-ratio=1/1,width=[1,{POSTER_MAX_W}] ! \
+             appsink name=capa sync=false max-buffers=1 drop=false"
+        ),
+        true,
+    )
+    .ok()?;
+    let sink = sink_bin
         .by_name("capa")?
         .downcast::<gst_app::AppSink>()
         .ok()?;
+
+    let pipeline = gst::ElementFactory::make("playbin3")
+        .build()
+        .or_else(|_| gst::ElementFactory::make("playbin").build())
+        .ok()?;
+    pipeline.set_property("uri", &uri);
+    pipeline.set_property("video-sink", &sink_bin);
+    // Só o vídeo: sem áudio, sem legenda.
+    pipeline.set_property_from_str("flags", "video");
 
     // `Paused` já decodifica o primeiro quadro e é o que dá a duração; não
     // é preciso tocar nada para tirar uma capa.
     if pipeline.set_state(gst::State::Paused).is_err() {
         return None;
     }
-    let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+    // Esperar a mudança de estado terminar: é nela que o primeiro quadro é
+    // decodificado, e é dela que sai a duração.
+    let _ = pipeline.state(PREROLL_WAIT);
+
+    // Toda espera aqui tem prazo. O `pull_preroll` sem prazo espera para
+    // sempre quando o quadro não vem — arquivo sem vídeo, decodificador que
+    // não assume — e levava a thread junto.
+    let first = sink.try_pull_preroll(PREROLL_WAIT);
+    if first.is_none() {
+        // Sem quadro no prazo: o porquê está no barramento, e sem ler dali
+        // a capa some em silêncio.
+        if let Some(bus) = pipeline.bus() {
+            while let Some(message) = bus.pop() {
+                if let gst::MessageView::Error(error) = message.view() {
+                    log::warn!(
+                        "capa de {}: {} ({:?})",
+                        path.display(),
+                        error.error(),
+                        error.debug()
+                    );
+                }
+            }
+        }
+    }
+    let mut chosen = first;
 
     if let Some(duration) = pipeline.query_duration::<gst::ClockTime>()
         && duration > gst::ClockTime::ZERO
     {
         // Um terço adiante, no máximo três segundos: longe do preto da
-        // abertura e ainda perto do começo.
+        // abertura e ainda perto do começo. É melhoria, não obrigação — se
+        // a busca falhar, ou o quadro de lá não vier, fica o primeiro, que
+        // já é melhor que capa nenhuma.
         let at = (duration / 3).min(gst::ClockTime::from_seconds(3));
         if pipeline
             .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, at)
             .is_ok()
+            && let Some(sample) = sink.try_pull_preroll(PREROLL_WAIT)
         {
-            let _ = pipeline.state(gst::ClockTime::from_seconds(10));
+            chosen = Some(sample);
         }
     }
 
-    let image = sink.pull_preroll().ok().and_then(|sample| frame_image(&sample));
+    let image = chosen.as_ref().and_then(frame_image);
     let _ = pipeline.set_state(gst::State::Null);
     image
 }
+
+/// Prazo de cada espera por um quadro da capa.
+const PREROLL_WAIT: gst::ClockTime = gst::ClockTime::from_seconds(5);
 
 /// Largura máxima da capa.
 const POSTER_MAX_W: i32 = 640;

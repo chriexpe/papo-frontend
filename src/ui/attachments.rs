@@ -176,17 +176,40 @@ fn video(
 
     let ctx = ui.ctx().clone();
     // Antes do primeiro play não existe pipeline, e é esse o ponto: rolar a
-    // conversa passava por aqui e montava um decodificador por vídeo. Sem
-    // ele a proporção cai no padrão e o cartão desenha igual.
-    let (aspect, playing, position, duration) = match media.existing_player(&attachment.id) {
-        Some(player) => (
-            player.aspect().clamp(0.4, 3.0),
-            player.is_playing(),
-            player.position(),
-            player.duration(),
-        ),
-        None => (16.0 / 9.0, false, 0.0, 0.0),
-    };
+    // conversa passava por aqui e montava um decodificador por vídeo.
+    //
+    // Cada consulta ao `media` vira `(id, tamanho)` na hora: são três
+    // empréstimos seguidos do mesmo lugar, e nenhum pode sobreviver ao
+    // próximo.
+    let live = media
+        .existing_player(&attachment.id)
+        .and_then(|player| player.frame(&ctx))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let (player_aspect, playing, position, duration) =
+        match media.existing_player(&attachment.id) {
+            Some(player) => (
+                Some(player.aspect().clamp(0.4, 3.0)),
+                player.is_playing(),
+                player.position(),
+                player.duration(),
+            ),
+            None => (None, false, 0.0, 0.0),
+        };
+    let poster = media
+        .poster(&attachment.id, &path)
+        .and_then(|texture| texture.frame(&ctx))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+
+    // A proporção sai do que existir de mais concreto: o quadro que está
+    // tocando, depois a capa, depois o que o player disse. O 16:9 é só o
+    // chute de enquanto não há nenhum dos três — e era ele que achatava
+    // vídeo em pé, porque a capa chegava depois do cartão já medido.
+    let shown = live.or(poster);
+    let aspect = shown
+        .map(|(_, size)| size.x / size.y.max(1.0))
+        .or(player_aspect)
+        .unwrap_or(16.0 / 9.0)
+        .clamp(0.4, 3.0);
     let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
     let total = Vec2::new(card_width, frame_size.y + CONTROLS_H);
     let (rect, response) = ui.allocate_exact_size(total, Sense::click());
@@ -195,22 +218,7 @@ fn video(
 
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
 
-    // Tocando, é o quadro do player; parado, a capa tirada do arquivo. Sem
-    // a capa o cartão era um retângulo preto até alguém dar play.
-    //
-    // Os dois viram `(id, tamanho)` na hora para o empréstimo do `media`
-    // acabar aqui: a capa é pedida logo abaixo, e seria o segundo.
-    let live = media
-        .existing_player(&attachment.id)
-        .and_then(|player| player.frame(&ctx))
-        .map(|texture| (texture.id(), texture.size_vec2()));
-    let shown = match live {
-        Some(frame) => Some(frame),
-        None => media
-            .poster(&attachment.id, &path)
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|texture| (texture.id(), texture.size_vec2())),
-    };
+    // Tocando, é o quadro do player; parado, a capa tirada do arquivo.
     if let Some((texture, natural)) = shown {
         let size = fit(natural, frame_size);
         let centered = Rect::from_center_size(frame_rect.center(), size);
