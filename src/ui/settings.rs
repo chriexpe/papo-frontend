@@ -606,6 +606,7 @@ impl Rows<'_> {
             #[cfg(not(target_os = "android"))]
             {
                 let edit_id = ui.id().with(("settings-field", label));
+                let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
                 let response = ui.add_sized(
                     Vec2::new(width, 26.0),
                     egui::TextEdit::singleline(value)
@@ -614,6 +615,17 @@ impl Rows<'_> {
                         .password(secret)
                         .font(text::body())
                         .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    value,
+                    response.has_focus(),
+                    if secret {
+                        crate::platform::ime::Kind::Password
+                    } else {
+                        crate::platform::ime::Kind::Text
+                    },
                 );
                 submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
