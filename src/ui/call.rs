@@ -726,7 +726,28 @@ pub fn pip(
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().rect_filled(rect, CornerRadius::ZERO, t.content_bg);
-    let people = faces(store);
+
+    // PiP não é uma miniatura da grade inteira. Ele acompanha quem está
+    // falando; quando ninguém fala, prefere alguém que realmente tenha vídeo.
+    // Assim a janela pequena continua legível e útil numa call com várias
+    // pessoas em vez de virar quatro selos microscópicos.
+    let mut people = faces(store);
+    people.sort_by_key(|face| {
+        let speaker_rank = store
+            .call
+            .speakers
+            .iter()
+            .position(|speaker| speaker == &face.id)
+            .unwrap_or(usize::MAX);
+        let video_rank = if face.camera { 0 } else { 1 };
+        (speaker_rank, video_rank)
+    });
+
+    if !people.iter().any(|face| face.speaking) {
+        people.sort_by_key(|face| if face.camera { 0 } else { 1 });
+    }
+    people.truncate(1);
+
     draw_faces(ui, store, state, call, t, s, rect, &people);
 }
 
