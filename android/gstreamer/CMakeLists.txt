@@ -48,6 +48,8 @@ find_package(GStreamerMobile REQUIRED COMPONENTS
     # --- conversão que o playbin encaixa sozinho ---
     videoconvertscale
     videorate          # a câmera da call passa por ele
+    videofilter        # videoflip: endireita a imagem do sensor
+    videocrop          # aspectratiocrop: corta o meio em vez de deixar tarja
     audioconvert
     audioresample
     audiorate          # costura os buracos da gravação ao vivo

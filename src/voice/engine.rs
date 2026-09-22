@@ -41,7 +41,23 @@ use super::{Command, Frame, Shared, Tile};
 
 /// Tamanho da imagem que sai da câmera. 360p a 30 quadros cabe folgado no
 /// que um SFU de sala pequena aguenta e é o que a grade mostra.
+///
+/// No celular o quadro é em pé, e na proporção do sensor: 3:4, que é o que
+/// a câmera de verdade entrega. Forçar 16:9 aqui significava cortar mais da
+/// metade da altura para caber — o que aparecia era um rosto gigante, sem
+/// ombro nem cabeça.
+///
+/// Os dois lados têm de andar juntos: este mesmo par descreve o `appsrc` da
+/// linha de vídeo, que anuncia o tamanho uma vez por call. Um quadro de
+/// tamanho diferente do anunciado tem o mesmo número de bytes se as medidas
+/// forem trocadas, passa despercebido, e derruba o codificador.
+#[cfg(target_os = "android")]
+const CAMERA_WIDTH: i32 = 480;
+#[cfg(target_os = "android")]
+const CAMERA_HEIGHT: i32 = 640;
+#[cfg(not(target_os = "android"))]
 const CAMERA_WIDTH: i32 = 640;
+#[cfg(not(target_os = "android"))]
 const CAMERA_HEIGHT: i32 = 360;
 
 /// Teto de banda da câmera, em bits por segundo. O controle de congestão do
@@ -1248,7 +1264,15 @@ fn capture(
     // Java: sem as classes dele no APK, este elemento sobe e morre ao abrir
     // a câmera.
     #[cfg(target_os = "android")]
-    let source = make("ahcsrc")?;
+    let source = {
+        let source = make("ahcsrc")?;
+        // A de trás é o padrão do Android; numa call quem interessa é a de
+        // quem está falando. O `device-facing` do `ahcsrc` só informa, não
+        // escolhe — quem escolhe é o índice, e no Android a de trás é
+        // sempre a 0 e a da frente a 1.
+        source.set_property("device", "1");
+        source
+    };
     #[cfg(not(target_os = "android"))]
     let source = make("v4l2src")?;
     let tee = make("tee")?;
@@ -1282,7 +1306,97 @@ fn capture(
         .sync(false)
         .build();
 
-    let main = [
+    // O sensor do celular não está de pé: a imagem sai deitada. Quanto
+    // depende do aparelho, e o `ahcsrc` sabe dizer — `device-orientation` é
+    // o giro em graus entre o sensor e a tela.
+    //
+    // `method=automatic` não serve aqui: ele espera uma etiqueta de
+    // orientação junto dos quadros, e o `ahcsrc` não manda nenhuma. Por
+    // isso o giro é escolhido na mão, a partir do que a câmera informou.
+    #[cfg(target_os = "android")]
+    let main = {
+        let degrees: i32 = if source.has_property("device-orientation") {
+            source.property("device-orientation")
+        } else {
+            0
+        };
+        // Girar o sensor de volta é girar no mesmo sentido em que ele está
+        // montado, não no contrário — foi o engano que deixou a imagem de
+        // cabeça para baixo, que é o erro de 180° entre um e outro.
+        let method = match degrees {
+            90 => "clockwise",
+            180 => "rotate-180",
+            270 => "counterclockwise",
+            _ => "none",
+        };
+        log::info!("call: câmera a {degrees}°, endireitando com {method}");
+        if let Some(pad) = source.static_pad("src") {
+            // Só depois de abrir é que o sensor diz o que sabe fazer; aqui
+            // ainda pode vir vazio, e então o que vale é o log do appsink.
+            if let Some(caps) = pad.current_caps() {
+                log::info!("call: o sensor entrega {caps}");
+            }
+        }
+
+        let flip = make("videoflip")?;
+        flip.set_property_from_str("method", method);
+
+        // O sensor, sozinho, entrega 2176x1080 — quase 2:1, nem 4:3 nem
+        // 16:9. Girado, vira uma tira alta e estreita; encaixá-la no quadro
+        // de destino punha tarja preta dentro do próprio vídeo e deixava o
+        // rosto espremido. O aplicativo de câmera do aparelho não sofre
+        // disso porque **pede** um modo 4:3 à câmera, em vez de aceitar o
+        // que vier.
+        //
+        // Aqui é a mesma coisa: pedido 640x480, que girado dá exatamente o
+        // 480x640 que a linha de vídeo anuncia. Sem sobra, sem corte.
+        let sensor_caps = make("capsfilter")?;
+        sensor_caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("width", CAMERA_HEIGHT)
+                .field("height", CAMERA_WIDTH)
+                .build(),
+        );
+
+        // O quadro continua com o tamanho declarado, e não trocado pela
+        // rotação: quem recebe é o `appsrc` da linha de vídeo, que anuncia
+        // 640x360 de uma vez por call. Mandar 360x640 para lá tem o mesmo
+        // número de bytes e passa despercebido — até o codificador ler as
+        // linhas com a largura errada, andar para fora do plano e derrubar
+        // o aplicativo. Foi o que aconteceu.
+        //
+        // Sem corte nem tarja: o quadro já sai na proporção do destino,
+        // porque o destino é a proporção do sensor.
+        filter.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", "I420")
+                .field("width", CAMERA_WIDTH)
+                .field("height", CAMERA_HEIGHT)
+                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                .field("framerate", gst::Fraction::new(30, 1))
+                .build(),
+        );
+
+        // O `videoflip` vem **depois** do `videoconvert`, não antes: a
+        // câmera entrega no formato dela (NV21 e afins), que o flip não
+        // sabe girar. Ligado direto ao `ahcsrc` ele não negocia, e o
+        // pipeline fica de pé sem nunca entregar quadro — a câmera acende
+        // no aparelho e a tela do Papo fica vazia.
+        vec![
+            source,
+            sensor_caps,
+            convert,
+            flip,
+            scale,
+            rate,
+            filter,
+            tee.clone(),
+        ]
+    };
+    #[cfg(not(target_os = "android"))]
+    let main = vec![
         source,
         convert,
         scale,
@@ -1314,10 +1428,27 @@ fn capture(
     // O quadro cru vai para o `appsrc` da sessão WebRTC. O carimbo de tempo
     // é refeito lá (`do-timestamp`), então ligar a câmera de novo não deixa
     // um buraco de horas no meio da linha do tempo.
+    let sensor = main[0].clone();
     feed.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                // Uma vez só, o que a câmera está realmente entregando. Sem
+                // isto, o tamanho e a proporção do quadro são chute.
+                {
+                    use std::sync::Once;
+                    static DITO: Once = Once::new();
+                    DITO.call_once(|| {
+                        if let Some(caps) = sample.caps() {
+                            log::info!("call: o quadro enviado é {caps}");
+                        }
+                        if let Some(caps) =
+                            sensor.static_pad("src").and_then(|pad| pad.current_caps())
+                        {
+                            log::info!("call: o sensor entrega {caps}");
+                        }
+                    });
+                }
                 let Some(buffer) = sample.buffer_owned() else {
                     return Ok(gst::FlowSuccess::Ok);
                 };
