@@ -2185,6 +2185,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
             search_id,
             &mut query,
             field.has_focus(),
+            crate::platform::ime::Kind::Search,
         );
         if let Some(panel) = state.panel.as_mut() {
             panel.query = query.clone();
