@@ -516,15 +516,12 @@ pub struct MessageList {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PinnedMessage {
-    pub message_id: Option<String>,
-    pub message: Option<Message>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct PinnedList {
+    /// O backend devolve as próprias mensagens completas aqui, não wrappers
+    /// com `message_id`. Manter o tipo igual ao contrato é o que faz os pins
+    /// sobreviverem a reload/reinstalação do cliente.
     #[serde(default, deserialize_with = "nullable_list")]
-    pub pinned: Vec<PinnedMessage>,
+    pub pinned: Vec<Message>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -791,6 +788,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(body, r#"{"ids":["a"]}"#);
+    }
+
+    #[test]
+    fn fixadas_leem_mensagens_diretas_do_backend() {
+        let json = r#"{"pinned":[{"id":"m1","channel_id":"c1","author_id":"u1","content":"oi","created_at":"2026-09-22T12:00:00Z","edited_at":null,"reply_to":null,"attachments":[],"previews":[],"reactions":[],"user_reactions":[]}]}"#;
+        let list: PinnedList = serde_json::from_str(json).unwrap();
+        assert_eq!(list.pinned.len(), 1);
+        assert_eq!(list.pinned[0].id, "m1");
     }
 
     /// A busca manda só o que foi preenchido.
