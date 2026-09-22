@@ -859,25 +859,6 @@ fn microphone(
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
-    // RECORD_AUDIO é uma permissão de runtime. O join no Android já espera
-    // a resposta antes de montar a call, mas esta guarda mantém o motor
-    // honesto caso ele seja chamado por outro caminho.
-    #[cfg(target_os = "android")]
-    {
-        use crate::platform::permission::{self, Status};
-        match permission::ensure(permission::RECORD_AUDIO) {
-            Status::Granted => {}
-            Status::Asking => {
-                shared.warn("esperando a permissão do microfone");
-                return None;
-            }
-            Status::Denied => {
-                shared.warn("sem permissão para usar o microfone: você entra só ouvindo");
-                return None;
-            }
-        }
-    }
-
     // No Android o caminho é um só: o OpenSL ES. Na área de trabalho
     // tenta-se do mais moderno para o mais antigo.
     #[cfg(target_os = "android")]
@@ -1143,32 +1124,106 @@ fn is_loopback(candidate: &str) -> bool {
 /// precisa esperar todas as entradas.
 fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
     let Some(depay) = make("rtpopusdepay") else {
+        drain_receive_pad(pipeline, pad, "sem rtpopusdepay");
         return;
     };
-    let Some(decoder) = make("opusdec") else { return };
+    let Some(decoder) = make("opusdec") else {
+        drain_receive_pad(pipeline, pad, "sem opusdec");
+        return;
+    };
     let Some(convert) = make("audioconvert") else {
+        drain_receive_pad(pipeline, pad, "sem audioconvert");
         return;
     };
     let Some(resample) = make("audioresample") else {
+        drain_receive_pad(pipeline, pad, "sem audioresample");
         return;
     };
-    let Some(queue) = make("queue") else { return };
-    let Some(sink) = audio_sink() else { return };
+    let Some(queue) = make("queue") else {
+        drain_receive_pad(pipeline, pad, "sem queue de áudio");
+        return;
+    };
+    let Some(sink) = audio_sink() else {
+        drain_receive_pad(pipeline, pad, "sem saída de áudio");
+        return;
+    };
     let elements = [depay.clone(), decoder, convert, resample, queue, sink];
     if pipeline.add_many(&elements).is_err() {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "não deu para adicionar a saída de áudio");
         return;
     }
     if gst::Element::link_many(&elements).is_err() {
         log::warn!("call: não deu para ligar o áudio que chegou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de áudio não ligou");
         return;
     }
-    for element in &elements {
-        let _ = element.sync_state_with_parent();
-    }
-    if let Some(sink_pad) = depay.static_pad("sink")
-        && pad.link(&sink_pad).is_err()
-    {
+    let Some(sink_pad) = depay.static_pad("sink") else {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "depayloader de áudio sem sink");
+        return;
+    };
+    // Liga o pad do webrtcbin antes de pôr a branch em PLAYING. Se a mídia
+    // já estiver chegando, deixá-lo solto por um instante basta para o
+    // TransportReceiveBin publicar NOT_LINKED e derrubar a call.
+    if pad.link(&sink_pad).is_err() {
         log::warn!("call: o áudio que chegou não encaixou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "pad de áudio não ligou");
+        return;
+    }
+    if elements
+        .iter()
+        .any(|element| element.sync_state_with_parent().is_err())
+    {
+        log::warn!("call: o áudio que chegou não subiu");
+        let _ = pad.unlink(&sink_pad);
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de áudio não subiu");
+    }
+}
+
+/// Remove uma branch que já foi anexada ao pipeline. O pipeline mantém
+/// referências próprias; deixar o Vec cair não libera elemento nenhum.
+fn drop_dynamic_branch(pipeline: &gst::Pipeline, elements: &[gst::Element]) {
+    for element in elements.iter().rev() {
+        let _ = element.set_state(gst::State::Null);
+        let _ = pipeline.remove(element);
+    }
+}
+
+/// Um pad de recepção do webrtcbin nunca pode ficar solto depois que o SFU
+/// começa a empurrar RTP. Se o decoder ou o sink local falhar, drena a track
+/// num fakesink: a call continua viva e o erro local não vira
+/// TransportReceiveBin/NOT_LINKED.
+fn drain_receive_pad(pipeline: &gst::Pipeline, pad: &gst::Pad, reason: &str) {
+    log::warn!("call: descartando track recebida: {reason}");
+    let Some(sink) = make("fakesink") else {
+        log::error!("call: nem fakesink existe para drenar a track");
+        return;
+    };
+    if sink.has_property("sync") {
+        sink.set_property("sync", false);
+    }
+    if sink.has_property("async") {
+        sink.set_property("async", false);
+    }
+    if pipeline.add(&sink).is_err() {
+        return;
+    }
+    let Some(sink_pad) = sink.static_pad("sink") else {
+        let _ = pipeline.remove(&sink);
+        return;
+    };
+    if pad.link(&sink_pad).is_err() {
+        let _ = pipeline.remove(&sink);
+        return;
+    }
+    if sink.sync_state_with_parent().is_err() {
+        let _ = pad.unlink(&sink_pad);
+        let _ = sink.set_state(gst::State::Null);
+        let _ = pipeline.remove(&sink);
     }
 }
 
@@ -1243,19 +1298,35 @@ fn show_video(
         sink.upcast_ref::<gst::Element>().clone(),
     ];
     if pipeline.add_many(&elements).is_err() {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "não deu para adicionar o vídeo recebido");
         return;
     }
     if gst::Element::link_many(&elements).is_err() {
         log::warn!("call: não deu para ligar o vídeo que chegou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de vídeo não ligou");
         return;
     }
-    for element in &elements {
-        let _ = element.sync_state_with_parent();
-    }
-    if let Some(sink_pad) = depay.static_pad("sink")
-        && pad.link(&sink_pad).is_err()
-    {
+    let Some(sink_pad) = depay.static_pad("sink") else {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "depayloader de vídeo sem sink");
+        return;
+    };
+    if pad.link(&sink_pad).is_err() {
         log::warn!("call: o vídeo que chegou não encaixou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "pad de vídeo não ligou");
+        return;
+    }
+    if elements
+        .iter()
+        .any(|element| element.sync_state_with_parent().is_err())
+    {
+        log::warn!("call: o vídeo que chegou não subiu");
+        let _ = pad.unlink(&sink_pad);
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de vídeo não subiu");
     }
 }
 
