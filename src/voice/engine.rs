@@ -20,7 +20,7 @@
 //! pior — cada volta criaria uma `m=` nova, e o servidor recusa ofertas com
 //! mais linhas do que os lugares que ele abriu.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use gstreamer as gst;
@@ -382,6 +382,17 @@ impl Engine {
                 shared.fail("oferta ilegível");
                 return;
             };
+            let video_lines = text
+                .lines()
+                .filter(|line| line.starts_with("m=video "))
+                .count();
+            let sendonly = text
+                .lines()
+                .filter(|line| *line == "a=sendonly")
+                .count();
+            log::info!(
+                "call: oferta SDP com {video_lines} m=video e {sendonly} linhas sendonly"
+            );
             let _ = signals.send(
                 serde_json::json!({
                     "type": "voice_offer",
@@ -584,6 +595,7 @@ impl Engine {
         }
         // A ordem importa: o servidor lê o estado da câmera para saber que a
         // linha nova é câmera. Se a oferta chegasse antes, ele a recusaria.
+        log::info!("call: câmera pronta localmente; anunciando voice_camera=true");
         self.signal(serde_json::json!({
             "type": "voice_camera",
             "channel_id": self.channel_id,
@@ -621,6 +633,20 @@ impl Engine {
         let payloader = make("rtpvp8pay")?;
         payloader.set_property("pt", 96u32);
         payloader.set_property_from_str("picture-id-mode", "15-bit");
+
+        // Diagnóstico de fronteira: preview local não prova publicação.
+        // Este probe confirma, uma vez por linha de câmera, que VP8 virou RTP
+        // e realmente chegou à entrada do webrtcbin.
+        if let Some(src_pad) = payloader.static_pad("src") {
+            let seen = Arc::new(AtomicBool::new(false));
+            let seen_probe = Arc::clone(&seen);
+            src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+                if !seen_probe.swap(true, Ordering::Relaxed) {
+                    log::info!("call: primeiro pacote RTP da câmera saiu do rtpvp8pay");
+                }
+                gst::PadProbeReturn::Ok
+            });
+        }
         let filter = make("capsfilter")?;
         filter.set_property("caps", video_caps());
 
@@ -1527,6 +1553,8 @@ fn capture(
     // é refeito lá (`do-timestamp`), então ligar a câmera de novo não deixa
     // um buraco de horas no meio da linha do tempo.
     let sensor = main[0].clone();
+    let pushed_once = Arc::new(AtomicBool::new(false));
+    let pushed_once_cb = Arc::clone(&pushed_once);
     feed.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
@@ -1555,7 +1583,17 @@ fn capture(
                     reference.set_pts(None);
                     reference.set_dts(None);
                 }
-                target.push_buffer(buffer).map_err(|_| gst::FlowError::Error)?;
+                match target.push_buffer(buffer) {
+                    Ok(_) => {
+                        if !pushed_once_cb.swap(true, Ordering::Relaxed) {
+                            log::info!("call: primeiro quadro da câmera entrou no appsrc WebRTC");
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("call: quadro da câmera não entrou no appsrc WebRTC: {error:?}");
+                        return Err(gst::FlowError::Error);
+                    }
+                }
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),
