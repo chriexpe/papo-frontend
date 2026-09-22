@@ -20,8 +20,10 @@
 //! pior — cada volta criaria uma `m=` nova, e o servidor recusa ofertas com
 //! mais linhas do que os lugares que ele abriu.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::glib;
@@ -66,7 +68,9 @@ const CAMERA_BITRATE: i32 = 600_000;
 
 /// Espera entre voltas do laço quando não há comando nenhum — é também de
 /// quanto em quanto tempo o barramento do GStreamer é lido.
-const TICK: std::time::Duration = std::time::Duration::from_millis(50);
+const TICK: Duration = Duration::from_millis(50);
+const SUBSCRIBE_RETRY_MIN: Duration = Duration::from_millis(500);
+const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(4);
 
 pub(super) fn spawn(
     channel_id: String,
@@ -94,6 +98,11 @@ pub(super) fn spawn(
         .ok()
 }
 
+struct SubscribeRetry {
+    next: Instant,
+    delay: Duration,
+}
+
 struct Engine {
     channel_id: String,
     pipeline: gst::Pipeline,
@@ -112,6 +121,11 @@ struct Engine {
     /// De quem a janela quer ver a câmera. Pode ser mais gente do que cabe:
     /// o que sobra espera um lugar vagar.
     wanted: Vec<String>,
+    /// Assinaturas de vídeo são otimistas: o backend pode anunciar
+    /// camera_on alguns milissegundos antes de OnTrack registrar a track.
+    /// Enquanto o slot reservado ainda não recebeu quadro, repetimos o
+    /// subscribe com backoff; Subscribe é idempotente para o mesmo publisher.
+    subscribe_retry: HashMap<String, SubscribeRetry>,
     repaint: egui::Context,
     /// A volta para a própria thread: as promessas do GStreamer respondem
     /// por aqui, em vez de mexerem no estado de outra thread.
@@ -248,6 +262,7 @@ impl Engine {
             camera_src: None,
             camera_on: false,
             wanted: Vec::new(),
+            subscribe_retry: HashMap::new(),
             repaint,
             inbox,
             ready: false,
@@ -286,6 +301,7 @@ impl Engine {
             // dispositivo. Sem ler o barramento dela, a call ficaria com a
             // câmera "ligada" e sem quadro nenhum, sem dizer por quê.
             self.watch_camera();
+            self.retry_video_subscriptions();
         }
         self.camera = None;
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -496,6 +512,7 @@ impl Engine {
         self.wanted = wanted;
 
         for publisher in leaving {
+            self.subscribe_retry.remove(&publisher);
             self.signal(serde_json::json!({
                 "type": "track_unsubscribe",
                 "channel_id": self.channel_id,
@@ -510,8 +527,75 @@ impl Engine {
                 "publisher_id": publisher,
                 "kind": kind.wire(),
             }));
+            self.subscribe_retry.insert(
+                publisher,
+                SubscribeRetry {
+                    next: Instant::now() + SUBSCRIBE_RETRY_MIN,
+                    delay: SUBSCRIBE_RETRY_MIN,
+                },
+            );
         }
         self.publish_slots();
+    }
+
+    /// camera_on=true é anunciado pelo backend antes de a nova TrackRemote
+    /// necessariamente existir. O primeiro subscribe pode então receber
+    /// voice-not-found. Como não há ACK de subscribe no protocolo, o primeiro
+    /// quadro recebido é a confirmação. Até lá repetimos o mesmo pedido com
+    /// backoff; o backend reaproveita o slot do mesmo publisher, portanto a
+    /// operação é idempotente.
+    fn retry_video_subscriptions(&mut self) {
+        if self.subscribe_retry.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut confirmed = Vec::new();
+        let mut due = Vec::new();
+
+        for (publisher, retry) in &self.subscribe_retry {
+            if !self.wanted.contains(publisher) {
+                confirmed.push(publisher.clone());
+                continue;
+            }
+
+            let Some(index) = self.slots.find(publisher, Kind::Camera) else {
+                confirmed.push(publisher.clone());
+                continue;
+            };
+
+            let has_frame = self
+                .shared
+                .tiles
+                .lock()
+                .ok()
+                .and_then(|tiles| tiles.get(index).map(|tile| tile.frame.is_some()))
+                .unwrap_or(false);
+
+            if has_frame {
+                confirmed.push(publisher.clone());
+            } else if now >= retry.next {
+                due.push(publisher.clone());
+            }
+        }
+
+        for publisher in confirmed {
+            self.subscribe_retry.remove(&publisher);
+        }
+
+        for publisher in due {
+            log::info!("call: repetindo track_subscribe para câmera de {publisher}");
+            self.signal(serde_json::json!({
+                "type": "track_subscribe",
+                "channel_id": self.channel_id,
+                "publisher_id": publisher,
+                "kind": Kind::Camera.wire(),
+            }));
+            if let Some(retry) = self.subscribe_retry.get_mut(&publisher) {
+                retry.delay = (retry.delay * 2).min(SUBSCRIBE_RETRY_MAX);
+                retry.next = now + retry.delay;
+            }
+        }
     }
 
     /// Reescreve nos lugares quem é o dono de cada um. O quadro que já
