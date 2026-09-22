@@ -650,12 +650,19 @@ impl Engine {
             if let Some(probe_pad) = element.static_pad(pad_name) {
                 let seen = Arc::new(AtomicBool::new(false));
                 let seen_probe = Arc::clone(&seen);
-                probe_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-                    if !seen_probe.swap(true, Ordering::Relaxed) {
-                        log::info!("call: {message}");
-                    }
-                    gst::PadProbeReturn::Ok
-                });
+                // RTP payloaders (incluindo rtpvp8pay) costumam publicar um
+                // GstBufferList por frame, não buffers individuais. Escutar
+                // só BUFFER fazia o diagnóstico dizer "não saiu RTP" mesmo
+                // quando o payloader já tinha empacotado tudo.
+                probe_pad.add_probe(
+                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                    move |_pad, _info| {
+                        if !seen_probe.swap(true, Ordering::Relaxed) {
+                            log::info!("call: {message}");
+                        }
+                        gst::PadProbeReturn::Ok
+                    },
+                );
             }
         }
 
