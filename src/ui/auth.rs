@@ -1,6 +1,6 @@
 //! Telas de entrada: sessão e primeiro uso da instância.
 
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Sense, Stroke, TextEdit, UiBuilder, Vec2};
+use egui::{Align, Align2, CornerRadius, Rect, RichText, Sense, Stroke, TextEdit, Vec2};
 
 use crate::i18n::Strings;
 use crate::state::Store;
@@ -28,6 +28,14 @@ pub enum AuthAction {
     UnlockServer,
 }
 
+/// Resultado de um cartão de autenticação. O retângulo serve para quem abre
+/// o cartão como modal saber se o clique caiu fora dele.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthResponse {
+    pub action: AuthAction,
+    pub rect: Rect,
+}
+
 /// Cartão centrado de login/cadastro.
 pub fn sign_in(
     ui: &mut egui::Ui,
@@ -35,7 +43,7 @@ pub fn sign_in(
     store: &Store,
     t: &Tokens,
     s: &Strings,
-) -> AuthAction {
+) -> AuthResponse {
     let mut action = AuthAction::None;
     // Um servidor fechado recusa login e cadastro antes da senha do
     // servidor. Não adianta pedir usuário e senha ainda: o cartão mostra
@@ -46,13 +54,8 @@ pub fn sign_in(
     } else {
         password_rules(&form.password, s)
     };
-    let height = if locked {
-        340.0
-    } else {
-        404.0 + unmet.len() as f32 * 16.0 + if store.notice.is_some() { 40.0 } else { 0.0 }
-    };
 
-    card(ui, t, 400.0, height, |ui| {
+    let rect = card(ui, t, "auth-sign-in-card", 400.0, |ui| {
         ui.label(RichText::new("Papo").font(text::title1()).color(t.label));
         ui.add_space(space::XS);
         ui.label(
@@ -114,7 +117,7 @@ pub fn sign_in(
         }
     });
 
-    action
+    AuthResponse { action, rect }
 }
 
 /// Erro do formulário e aviso do servidor, nesta ordem.
@@ -157,10 +160,10 @@ pub fn create_server(
     store: &Store,
     t: &Tokens,
     s: &Strings,
-) -> AuthAction {
+) -> AuthResponse {
     let mut action = AuthAction::None;
 
-    card(ui, t, 400.0, 252.0, |ui| {
+    let rect = card(ui, t, "auth-create-server-card", 400.0, |ui| {
         ui.label(
             RichText::new(s.empty_channel_title)
                 .font(text::title2())
@@ -187,7 +190,7 @@ pub fn create_server(
         }
     });
 
-    action
+    AuthResponse { action, rect }
 }
 
 /// Enquanto a sessão guardada é verificada.
@@ -204,22 +207,36 @@ pub fn starting(ui: &mut egui::Ui, t: &Tokens, s: &Strings) {
 
 // ---------------------------------------------------------------------------
 
-fn card(ui: &mut egui::Ui, t: &Tokens, width: f32, height: f32, contents: impl FnOnce(&mut egui::Ui)) {
+fn card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    id: &'static str,
+    width: f32,
+    contents: impl FnOnce(&mut egui::Ui),
+) -> Rect {
     let area = ui.max_rect();
-    let rect = Rect::from_center_size(area.center(), Vec2::new(width, height));
-    ui.painter().rect(
-        rect,
-        CornerRadius::same(radius::SHEET + 4),
-        t.glass_opaque,
-        Stroke::new(1.0, t.separator),
-        egui::StrokeKind::Inside,
-    );
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(rect.shrink(space::XXXL))
-            .layout(Layout::top_down(Align::Min)),
-        contents,
-    );
+    let inner_width = (width - 2.0 * space::XXXL).max(1.0);
+
+    // A altura nasce do conteúdo. Antes ela era estimada à mão e qualquer
+    // linha extra de validação/erro podia escapar pela borda do cartão.
+    egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Foreground)
+        .fixed_pos(area.center())
+        .pivot(Align2::CENTER_CENTER)
+        .constrain_to(area)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(space::XXXL as i8))
+                .corner_radius(CornerRadius::same(radius::SHEET + 4))
+                .fill(t.glass_opaque)
+                .stroke(Stroke::new(1.0, t.separator))
+                .show(ui, |ui| {
+                    ui.set_width(inner_width);
+                    contents(ui);
+                });
+        })
+        .response
+        .rect
 }
 
 /// Campo de texto rotulado. Devolve `true` quando o usuário aperta Enter.
