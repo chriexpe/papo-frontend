@@ -98,6 +98,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
             // no `Store`; aqui é o pipeline que precisa ser desmontado, ou o
             // microfone continuaria aberto para ninguém.
             let mut over = false;
+            let mut tell_server = false;
             match &**event {
                 Event::VoiceAnswer { channel_id, sdp } if *channel_id == call.channel_id => {
                     call.answer(sdp.clone());
@@ -123,13 +124,21 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                     }) =>
                 {
                     over = true;
+                    // Um offer inválido/codec recusado não remove o Peer no
+                    // backend. Se só derrubarmos o pipeline local, a próxima
+                    // entrada recebe voice-already-in-room.
+                    tell_server = ws.store.call.phase == Phase::In;
                 }
                 _ => {}
             }
             if over {
-                ws.call = None;
-                ws.call_ready = false;
-                ws.watching.clear();
+                if tell_server {
+                    leave_call(ws);
+                } else {
+                    ws.call = None;
+                    ws.call_ready = false;
+                    ws.watching.clear();
+                }
             }
         }
         // O socket caiu: o servidor derruba o peer junto com a conexão que
