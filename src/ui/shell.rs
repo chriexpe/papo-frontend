@@ -3,7 +3,7 @@
 //! As barras funcionais (laterais, topo e caixa de mensagem) formam a camada
 //! translúcida; a lista de mensagens é a camada de conteúdo, sempre opaca.
 
-use chrono::{Datelike, Local};
+use chrono::{DateTime, Datelike, Local};
 use egui::{
     Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
     TextEdit, UiBuilder, Vec2,
@@ -1912,22 +1912,20 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         return;
     }
 
-    let found: Vec<(String, String, String, String)> = store
+    let found: Vec<_> = store
         .search_results
         .iter()
         .map(|result| {
+            let member = store.member_by_username(&result.author_username);
             (
                 result.channel_id.clone(),
                 result.id.clone(),
-                format!(
-                    "#{} · {} · {}",
-                    result.channel_name,
-                    result.author_username,
-                    result
-                        .created_at
-                        .map(|at| at.with_timezone(&Local).format("%d/%m %H:%M").to_string())
-                        .unwrap_or_default()
-                ),
+                result.channel_name.clone(),
+                member.map(|member| member.id.clone()),
+                member
+                    .map(|member| member.name.clone())
+                    .unwrap_or_else(|| result.author_username.clone()),
+                result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
             )
         })
@@ -1936,8 +1934,19 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .id_salt("resultados-da-busca")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (channel_id, message_id, header, body) in found {
-                if result_row(ui, t, &header, &body) {
+            for (channel_id, message_id, channel_name, author_id, author_name, at, body) in found {
+                if result_row(
+                    ui,
+                    store,
+                    state,
+                    t,
+                    s,
+                    author_id.as_deref(),
+                    &author_name,
+                    at,
+                    Some(&channel_name),
+                    &body,
+                ) {
                     go_to(store, state, ui, &channel_id, &message_id);
                 }
             }
@@ -1947,21 +1956,29 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
 /// Fixadas do canal aberto, dentro da mesma pastilha.
 fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let channel_id = store.selected_channel.clone();
-    let pinned: Vec<(String, String, String)> = store
+    let pinned: Vec<_> = store
         .messages_in(&channel_id)
         .filter(|message| message.pinned)
         .map(|message| {
+            let body = if !message.content.trim().is_empty() {
+                message.content.clone()
+            } else {
+                message
+                    .attachments
+                    .first()
+                    .and_then(|attachment| attachment.original_file_name.clone())
+                    .map(|name| format!("📎 {name}"))
+                    .unwrap_or_default()
+            };
             (
                 message.id.clone(),
-                format!(
-                    "{} · {}",
-                    store
-                        .member(&message.author_id)
-                        .map(|member| member.name.clone())
-                        .unwrap_or_else(|| "?".into()),
-                    message.at.format("%d/%m %H:%M")
-                ),
-                message.content.clone(),
+                message.author_id.clone(),
+                store
+                    .member(&message.author_id)
+                    .map(|member| member.name.clone())
+                    .unwrap_or_else(|| "?".into()),
+                message.at,
+                body,
             )
         })
         .collect();
@@ -1978,8 +1995,19 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .id_salt("lista-de-fixadas")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, header, body) in pinned {
-                if result_row(ui, t, &header, &body) {
+            for (message_id, author_id, author_name, at, body) in pinned {
+                if result_row(
+                    ui,
+                    store,
+                    state,
+                    t,
+                    s,
+                    Some(&author_id),
+                    &author_name,
+                    Some(at),
+                    None,
+                    &body,
+                ) {
                     let channel = channel_id.clone();
                     go_to(store, state, ui, &channel, &message_id);
                 }
@@ -1987,37 +2015,89 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         });
 }
 
-/// Uma linha da lista: realce de borda a borda ao passar o mouse.
-fn result_row(ui: &mut egui::Ui, t: &Tokens, header: &str, body: &str) -> bool {
-    let width = ui.available_width();
+/// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
+/// o bloco da miniatura em vez de ocupar toda a largura da pastilha.
+fn result_row(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    author_id: Option<&str>,
+    author_name: &str,
+    at: Option<DateTime<Local>>,
+    channel_name: Option<&str>,
+    body: &str,
+) -> bool {
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let inner = ui.scope(|ui| {
-        ui.set_max_width(width - space::MD * 2.0);
-        ui.add_space(space::XS);
-        ui.horizontal(|ui| {
-            ui.add_space(space::SM);
-            ui.label(
-                RichText::new(header)
-                    .font(text::caption())
-                    .color(t.label_tertiary),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.add_space(space::SM);
-            ui.label(
-                RichText::new(body)
-                    .font(text::body())
-                    .color(t.label),
-            );
-        });
-        ui.add_space(space::XS);
+    let avatar_size = 30.0;
+    let max_text_width = (ui.available_width() - avatar_size - space::LG - space::LG).max(80.0);
+    let member = author_id.and_then(|id| store.member(id));
+    let initials = member
+        .map(|member| member.initials())
+        .unwrap_or_else(|| initials_for_name(author_name));
+    let texture = author_id.and_then(|id| {
+        state
+            .media
+            .avatar(id, store.avatars.get(id).map(String::as_str))
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .map(|handle| handle.id())
     });
 
-    let row = Rect::from_x_y_ranges(
-        egui::Rangef::new(ui.max_rect().min.x, ui.max_rect().max.x),
-        inner.response.rect.y_range(),
+    let inner = ui.scope(|ui| {
+        ui.horizontal_top(|ui| {
+            avatar(
+                ui,
+                t,
+                &initials,
+                avatar_size,
+                member.and_then(|member| member.role_color.map(rgb)),
+                texture,
+            );
+            ui.add_space(space::LG);
+            ui.vertical(|ui| {
+                ui.set_max_width(max_text_width);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(author_name)
+                            .font(text::headline())
+                            .color(member.and_then(|member| member.role_color.map(rgb)).unwrap_or(t.label)),
+                    );
+                    if let Some(channel_name) = channel_name.filter(|name| !name.is_empty()) {
+                        ui.add_space(space::XXS);
+                        ui.label(
+                            RichText::new(format!("#{channel_name}"))
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        );
+                    }
+                    if let Some(at) = at {
+                        ui.add_space(space::XXS);
+                        ui.label(
+                            RichText::new(relative_time(at, s))
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        );
+                    }
+                });
+                if !body.trim().is_empty() {
+                    ui.add_space(space::XXS);
+                    ui.label(RichText::new(body).font(text::body()).color(t.label));
+                }
+            });
+        });
+    });
+
+    let row = inner
+        .response
+        .rect
+        .expand2(Vec2::new(space::SM, space::XS));
+    let response = ui.interact(
+        row,
+        ui.id()
+            .with(("message-preview", author_id.unwrap_or(author_name), body)),
+        Sense::click(),
     );
-    let response = ui.interact(row, ui.id().with(header).with(body), Sense::click());
     if response.hovered() {
         ui.painter().set(
             backdrop,
@@ -2025,7 +2105,49 @@ fn result_row(ui: &mut egui::Ui, t: &Tokens, header: &str, body: &str) -> bool {
         );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    ui.add_space(space::SM);
     response.clicked()
+}
+
+fn initials_for_name(name: &str) -> String {
+    let mut words = name.split_whitespace();
+    let Some(first) = words.next() else {
+        return "?".into();
+    };
+    if let Some(second) = words.next() {
+        format!(
+            "{}{}",
+            first.chars().next().unwrap_or('?'),
+            second.chars().next().unwrap_or('?')
+        )
+        .to_uppercase()
+    } else {
+        first.chars().take(2).collect::<String>().to_uppercase()
+    }
+}
+
+fn relative_time(at: DateTime<Local>, s: &Strings) -> String {
+    let seconds = (Local::now() - at).num_seconds().max(0);
+    let (value, singular, plural) = if seconds < 60 {
+        return s.relative_now.to_owned();
+    } else if seconds < 60 * 60 {
+        (seconds / 60, s.time_minute, s.time_minutes)
+    } else if seconds < 24 * 60 * 60 {
+        (seconds / (60 * 60), s.time_hour, s.time_hours)
+    } else if seconds < 7 * 24 * 60 * 60 {
+        (seconds / (24 * 60 * 60), s.time_day, s.time_days)
+    } else if seconds < 30 * 24 * 60 * 60 {
+        (seconds / (7 * 24 * 60 * 60), s.time_week, s.time_weeks)
+    } else if seconds < 365 * 24 * 60 * 60 {
+        (seconds / (30 * 24 * 60 * 60), s.time_month, s.time_months)
+    } else {
+        (seconds / (365 * 24 * 60 * 60), s.time_year, s.time_years)
+    };
+    let unit = if value == 1 { singular } else { plural };
+    format!(
+        "{}{} {}{}",
+        s.relative_ago_prefix, value, unit, s.relative_ago_suffix
+    )
 }
 
 /// Intensidade do realce desta mensagem neste quadro, entre 0 e 1.
