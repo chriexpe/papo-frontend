@@ -1,279 +1,318 @@
-//! A ponte entre o teclado do Android e o egui.
+//! Ponte de edicao de texto entre o egui e o GameTextInput do Android.
 //!
-//! O winit abre e fecha o teclado do Android, mas **não** entrega o que se
-//! digita nele: ele trata dezesseis eventos do `android-activity` e
-//! `TextInputEvent` não é um deles. O teclado sobe e as letras não chegam a
-//! lugar nenhum.
+//! O teclado Android edita um documento: texto completo, selecao/cursor e
+//! regiao de composicao. O buffer precisa espelhar o TextEdit focado para que
+//! recursos nativos como Backspace continuo, mover o cursor segurando espaco,
+//! autocorrecao e insercao no meio da frase funcionem.
 //!
-//! Quem guarda o texto é o `GameTextInput`, do lado do GameActivity. Ler
-//! esse buffer pelo `AndroidApp::text_input_state()` **derruba o
-//! aplicativo**: o `android-activity` 0.6.1 monta a fatia com
-//! `slice::from_raw_parts` sobre o ponteiro do texto sem conferir se ele é
-//! nulo, e ele é nulo enquanto ninguém digitou nada. Ponteiro nulo viola a
-//! pré-condição mesmo com tamanho zero, e o pânico que sai daí não desenrola
-//! — aborta. Por isso o texto vem empurrado pela `PapoActivity`, que recebe
-//! o `stateChanged` do próprio `GameTextInput`.
-//!
-//! ## Os dois textos
-//!
-//! O buffer do teclado e o campo do egui são textos **diferentes**. O
-//! teclado não sabe o que já estava escrito no campo, e o egui não sabe o
-//! que o teclado guarda. Tudo o que esta ponte faz é olhar o que mudou de um
-//! lado e contar isso ao outro.
-//!
-//! Daí o enchimento: o buffer começa com [`PAD`] espaços, e o cursor atrás
-//! deles. Sem isso, quando o que foi digitado nesta sessão acabasse o
-//! teclado não teria mais o que apagar — pararia de avisar, e segurar o
-//! apagar deixaria de apagar, apesar de ainda haver texto no campo. Com o
-//! enchimento sempre sobra o que comer: cada espaço comido é um `Backspace`
-//! de verdade no campo, e o enchimento é reposto.
-//!
-//! E daí também a desconfiança: um estado que **não** comece pelo nosso
-//! enchimento não veio do nosso buffer. É o campo anterior chegando
-//! atrasado, logo depois de trocar de foco. Confiar nele escrevia o conteúdo
-//! do campo antigo dentro do novo por um instante.
+//! O winit/eframe atual sobe o IME, mas nao encaminha esse estado ao egui.
+//! A PapoActivity portanto envia o State por JNI e este modulo sincroniza os
+//! dois lados sem fabricar eventos de tecla.
 
 #[cfg(target_os = "android")]
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_os = "android")]
-use android_activity::AndroidApp;
-#[cfg(target_os = "android")]
-use android_activity::input::{TextInputState, TextSpan};
-
-/// Quantos espaços ficam à esquerda do que se digita, como reserva para o
-/// apagar. Oito é folga de sobra: o enchimento é reposto a cada vez que o
-/// teclado encosta nele, então nunca se come mais do que um ou dois.
-const PAD: usize = 8;
+use android_activity::{
+    AndroidApp,
+    input::{TextInputState, TextSpan},
+};
 
 #[cfg(target_os = "android")]
 static APP: OnceLock<AndroidApp> = OnceLock::new();
+
 #[cfg(target_os = "android")]
 static BRIDGE: Mutex<Bridge> = Mutex::new(Bridge::new());
 
 #[cfg(target_os = "android")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImeState {
+    text: String,
+    // Offsets do Android sao unidades UTF-16.
+    selection: (usize, usize),
+    compose: Option<(usize, usize)>,
+}
+
+#[cfg(target_os = "android")]
 struct Bridge {
-    /// Quem tinha o foco no quadro anterior.
-    focus: Option<egui::Id>,
-    /// O que o teclado mandou e ainda não virou evento.
-    incoming: Option<String>,
-    /// O espelho do buffer do teclado — enchimento incluído. Não é o texto
-    /// do campo: é o que o teclado tinha da última vez que olhamos.
-    mirror: String,
+    // TextEdit que atualmente e dono do documento do teclado.
+    field: Option<egui::Id>,
+    // Estado mais recente vindo da Activity, ainda nao aplicado ao egui.
+    incoming: Option<ImeState>,
+    // Ultimo estado em que Android e egui estavam sincronizados.
+    shadow: Option<ImeState>,
 }
 
 #[cfg(target_os = "android")]
 impl Bridge {
     const fn new() -> Self {
         Self {
-            focus: None,
+            field: None,
             incoming: None,
-            mirror: String::new(),
+            shadow: None,
         }
+    }
+
+    fn clear(&mut self) {
+        self.field = None;
+        self.incoming = None;
+        self.shadow = None;
     }
 }
 
-/// Guarda a Activity, que é por onde se escreve no buffer do teclado.
 #[cfg(target_os = "android")]
 pub fn install(app: AndroidApp) {
     let _ = APP.set(app);
 }
 
-/// Recebe o texto do teclado, vindo da `PapoActivity`.
+// Mantem a assinatura usada pelo raw_input_hook. A edicao propriamente dita
+// acontece depois que cada TextEdit foi desenhado, em sync_text_edit.
+#[cfg(target_os = "android")]
+pub fn pump(ctx: &egui::Context, _raw_input: &mut egui::RawInput) {
+    let focused = ctx.memory(|memory| memory.focused());
+    if let Ok(mut bridge) = BRIDGE.lock()
+        && bridge.field.is_some()
+        && bridge.field != focused
+    {
+        bridge.clear();
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn pump(_ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
+
+/// Sincroniza um TextEdit com o documento mantido pelo IME.
 ///
-/// O nome é o que o JNI exige: `Java_` + o pacote e a classe com `_` no
-/// lugar dos pontos + o nome do método. Mudar o pacote da Activity sem mudar
-/// este nome faz o método sumir em tempo de execução.
+/// Retorna true se o IME alterou o texto neste quadro.
+pub fn sync_text_edit(
+    ctx: &egui::Context,
+    id: egui::Id,
+    text: &mut String,
+    response_has_focus: bool,
+) -> bool {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (ctx, id, text, response_has_focus);
+        false
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let focused = response_has_focus || ctx.memory(|memory| memory.focused()) == Some(id);
+        if !focused {
+            return false;
+        }
+
+        let Ok(mut bridge) = BRIDGE.lock() else {
+            return false;
+        };
+
+        // Ao trocar de campo, o teclado recebe o documento REAL inteiro e a
+        // selecao que o toque acabou de escolher no egui.
+        if bridge.field != Some(id) {
+            bridge.field = Some(id);
+            bridge.incoming = None;
+            let state = state_from_egui(ctx, id, text, None);
+            bridge.shadow = Some(state.clone());
+            drop(bridge);
+            send_to_android(&state);
+            return false;
+        }
+
+        let mut changed = false;
+
+        // Enquanto o IME esta editando, seu State e atomico: texto, cursor e
+        // composicao pertencem ao mesmo instante. Aplicar o pacote inteiro
+        // evita a antiga divergencia em que o teclado achava que o cursor
+        // estava no fim enquanto o egui o mostrava no meio.
+        if let Some(incoming) = bridge.incoming.take() {
+            if bridge.shadow.as_ref() != Some(&incoming) {
+                if *text != incoming.text {
+                    *text = incoming.text.clone();
+                    changed = true;
+                }
+                set_egui_selection(ctx, id, text, incoming.selection);
+                bridge.shadow = Some(incoming);
+            }
+        }
+
+        // O caminho inverso cobre toque/mouse mudando o cursor, colar,
+        // autocomplete/emoji do Papo e limpar a caixa depois de enviar.
+        // Preservamos a regiao de composicao enquanto o texto nao mudou.
+        let compose = bridge
+            .shadow
+            .as_ref()
+            .filter(|shadow| shadow.text == *text)
+            .and_then(|shadow| shadow.compose);
+        let current = state_from_egui(ctx, id, text, compose);
+
+        let outbound = if bridge.shadow.as_ref() != Some(&current) {
+            bridge.shadow = Some(current.clone());
+            Some(current)
+        } else {
+            None
+        };
+        drop(bridge);
+
+        if let Some(state) = outbound {
+            send_to_android(&state);
+        }
+        if changed {
+            ctx.request_repaint();
+        }
+        changed
+    }
+}
+
+/// Estado completo vindo de GameTextInput.Listener.stateChanged.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetText(
     mut env: jni::JNIEnv,
     _class: jni::objects::JClass,
     text: jni::objects::JString,
+    selection_start: jni::sys::jint,
+    selection_end: jni::sys::jint,
+    composing_start: jni::sys::jint,
+    composing_end: jni::sys::jint,
 ) {
     let Ok(text) = env.get_string(&text) else {
         return;
     };
     let text: String = text.into();
+    let max = text.encode_utf16().count();
+    let clamp = |value: jni::sys::jint| (value.max(0) as usize).min(max);
+
+    let compose = if composing_start < 0 || composing_end < 0 {
+        None
+    } else {
+        Some((clamp(composing_start), clamp(composing_end)))
+    };
+
     if let Ok(mut bridge) = BRIDGE.lock() {
-        bridge.incoming = Some(text);
+        bridge.incoming = Some(ImeState {
+            text,
+            selection: (clamp(selection_start), clamp(selection_end)),
+            compose,
+        });
     }
-    // Chegou de uma thread do Java: sem este pedido a letra esperaria um
-    // quadro que viria só por outro motivo.
+
     super::wake::request();
 }
 
-/// Põe o buffer do teclado de volta em "só o enchimento", com o cursor no
-/// fim, e passa a esperar exatamente isso de volta.
 #[cfg(target_os = "android")]
-fn prime(bridge: &mut Bridge) {
-    let text = " ".repeat(PAD);
-    bridge.mirror = text.clone();
-    bridge.incoming = None;
-    if let Some(app) = APP.get() {
-        // Escrever é seguro; é só a leitura do `android-activity` que está
-        // quebrada.
-        app.set_text_input_state(TextInputState {
-            selection: TextSpan {
-                start: PAD,
-                end: PAD,
-            },
-            compose_region: None,
-            text,
-        });
+fn state_from_egui(
+    ctx: &egui::Context,
+    id: egui::Id,
+    text: &str,
+    compose: Option<(usize, usize)>,
+) -> ImeState {
+    let chars = text.chars().count();
+    let (start, end) = egui::TextEdit::load_state(ctx, id)
+        .and_then(|state| state.cursor.char_range())
+        .map(|range| {
+            (
+                range.secondary.index.0.min(chars),
+                range.primary.index.0.min(chars),
+            )
+        })
+        .unwrap_or((chars, chars));
+
+    ImeState {
+        text: text.to_owned(),
+        selection: (
+            char_to_utf16_index(text, start),
+            char_to_utf16_index(text, end),
+        ),
+        compose,
     }
 }
 
-/// Converte o que o teclado mandou em eventos do egui.
 #[cfg(target_os = "android")]
-pub fn pump(ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-    let Ok(mut bridge) = BRIDGE.lock() else {
+fn set_egui_selection(
+    ctx: &egui::Context,
+    id: egui::Id,
+    text: &str,
+    selection: (usize, usize),
+) {
+    let start = utf16_to_char_index(text, selection.0);
+    let end = utf16_to_char_index(text, selection.1);
+
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange {
+                primary: egui::text::CCursor::new(end),
+                secondary: egui::text::CCursor::new(start),
+                h_pos: None,
+            }));
+        state.store(ctx, id);
+    }
+}
+
+#[cfg(target_os = "android")]
+fn send_to_android(state: &ImeState) {
+    let Some(app) = APP.get() else {
         return;
     };
 
-    // Trocou de campo (ou perdeu o foco): o buffer volta ao enchimento,
-    // senão o que foi digitado no campo anterior contaria como digitado aqui.
-    let focus = ctx.memory(|memory| memory.focused());
-    if bridge.focus != focus {
-        bridge.focus = focus;
-        prime(&mut bridge);
-        return;
-    }
-    if focus.is_none() {
-        return;
-    }
+    app.set_text_input_state(TextInputState {
+        text: state.text.clone(),
+        selection: TextSpan {
+            start: state.selection.0,
+            end: state.selection.1,
+        },
+        compose_region: state
+            .compose
+            .map(|(start, end)| TextSpan { start, end }),
+    });
+}
 
-    let Some(current) = bridge.incoming.take() else {
-        return;
-    };
-    if current == bridge.mirror {
-        return;
-    }
+fn char_to_utf16_index(text: &str, char_index: usize) -> usize {
+    text.chars()
+        .take(char_index)
+        .map(char::len_utf16)
+        .sum()
+}
 
-    let kept = leading_pad(&current);
+fn utf16_to_char_index(text: &str, utf16_index: usize) -> usize {
+    let mut units = 0;
+    let mut chars = 0;
 
-    if kept == 0 {
-        // Não começa pelo nosso enchimento: não veio do nosso buffer. É o
-        // campo anterior chegando atrasado. Repor e não inventar edição
-        // nenhuma — era isto que piscava o texto antigo dentro do campo novo.
-        log::debug!("teclado: estado de fora do buffer, ignorado");
-        prime(&mut bridge);
-        return;
-    }
-
-    if kept < PAD {
-        // O apagar passou do que foi digitado e comeu parte do enchimento.
-        // Cada espaço comido é um apagar de verdade no campo — é isto que
-        // faz segurar o apagar continuar apagando.
-        let typed = bridge.mirror.chars().count().saturating_sub(PAD);
-        let removed = typed + (PAD - kept);
-        for _ in 0..removed {
-            push_backspace(raw_input);
+    for ch in text.chars() {
+        let next = units + ch.len_utf16();
+        if next > utf16_index {
+            break;
         }
-        log::debug!("teclado: {removed} apagado(s), 0 escrito(s)");
-        prime(&mut bridge);
-        return;
+        units = next;
+        chars += 1;
     }
-
-    // Enchimento inteiro: a diferença está no que veio depois dele.
-    let before: String = bridge.mirror.chars().skip(PAD).collect();
-    let after: String = current.chars().skip(PAD).collect();
-    let common = common_prefix(&before, &after);
-    let removed = before.chars().count() - common;
-    for _ in 0..removed {
-        push_backspace(raw_input);
-    }
-    let inserted: String = after.chars().skip(common).collect();
-
-    // Só os tamanhos: pelo mesmo caminho passa o campo de senha, e o logcat
-    // é lido por qualquer um com o cabo na mão.
-    log::debug!(
-        "teclado: {removed} apagado(s), {} escrito(s)",
-        inserted.chars().count()
-    );
-
-    if !inserted.is_empty() {
-        raw_input.events.push(egui::Event::Text(inserted));
-    }
-
-    bridge.mirror = current;
-}
-
-/// Quantos espaços de enchimento sobraram no começo, no máximo [`PAD`].
-///
-/// Passar de [`PAD`] seria o próprio usuário tendo digitado um espaço logo
-/// no começo; esse espaço é dele, não nosso.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn leading_pad(text: &str) -> usize {
-    text.chars().take_while(|c| *c == ' ').count().min(PAD)
-}
-
-/// Quantos caracteres os dois textos têm em comum, do início.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-fn common_prefix(before: &str, after: &str) -> usize {
-    before
-        .chars()
-        .zip(after.chars())
-        .take_while(|(a, b)| a == b)
-        .count()
-}
-
-#[cfg(target_os = "android")]
-fn push_backspace(raw_input: &mut egui::RawInput) {
-    for pressed in [true, false] {
-        raw_input.events.push(egui::Event::Key {
-            key: egui::Key::Backspace,
-            physical_key: None,
-            pressed,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        });
-    }
+    chars
 }
 
 #[cfg(test)]
 mod tests {
-    use super::common_prefix;
+    use super::{char_to_utf16_index, utf16_to_char_index};
 
     #[test]
-    fn o_enchimento_e_contado_ate_o_limite_e_nao_alem() {
-        use super::{PAD, leading_pad};
-
-        // Buffer intocado: o enchimento inteiro.
-        assert_eq!(leading_pad(&" ".repeat(PAD)), PAD);
-        // Com texto digitado atrás dele, continua inteiro.
-        assert_eq!(leading_pad(&format!("{}ola", " ".repeat(PAD))), PAD);
-        // O apagar comeu um: é um apagar de verdade no campo.
-        assert_eq!(leading_pad(&" ".repeat(PAD - 1)), PAD - 1);
-        // Um espaço digitado pelo usuário é dele, não nosso: a conta para
-        // no limite, senão o espaço sumiria em vez de ser escrito.
-        assert_eq!(leading_pad(&" ".repeat(PAD + 3)), PAD);
-        // Texto que não começa pelo enchimento não veio do nosso buffer.
-        assert_eq!(leading_pad("senha123"), 0);
-        assert_eq!(leading_pad(""), 0);
+    fn ascii_tem_os_mesmos_indices() {
+        assert_eq!(char_to_utf16_index("papo", 3), 3);
+        assert_eq!(utf16_to_char_index("papo", 3), 3);
     }
 
     #[test]
-    fn conta_o_prefixo_em_caracteres_nao_em_bytes() {
-        assert_eq!(common_prefix("ola", "olar"), 3);
-        assert_eq!(common_prefix("ola", "ol"), 2);
-        assert_eq!(common_prefix("", "a"), 0);
-        assert_eq!(common_prefix("abc", "xyz"), 0);
+    fn emoji_ocupa_duas_unidades_utf16() {
+        let text = "a😀b";
+        assert_eq!(char_to_utf16_index(text, 0), 0);
+        assert_eq!(char_to_utf16_index(text, 1), 1);
+        assert_eq!(char_to_utf16_index(text, 2), 3);
+        assert_eq!(char_to_utf16_index(text, 3), 4);
+        assert_eq!(utf16_to_char_index(text, 3), 2);
+        assert_eq!(utf16_to_char_index(text, 4), 3);
     }
 
     #[test]
-    fn acentos_contam_como_um_caractere_so() {
-        // "ação" tem 4 caracteres em 5 bytes: o "ç" ocupa dois. Contando
-        // bytes daríamos um `Backspace` a mais e a palavra perderia letra.
-        assert_eq!("ação".chars().count(), 4);
-        assert_eq!("ação".len(), 6);
-        assert_eq!(common_prefix("ação", "ação!"), 4);
-    }
-
-    #[test]
-    fn corretor_que_troca_o_meio_da_palavra_apaga_so_o_que_mudou() {
-        // É o que o teclado faz ao fechar a palavra: "acao" vira "ação".
-        // Só o que vem depois do prefixo comum é reescrito.
-        assert_eq!(common_prefix("acao", "ação"), 1);
+    fn offset_no_meio_de_surrogate_prende_antes_do_emoji() {
+        assert_eq!(utf16_to_char_index("a😀b", 2), 1);
     }
 }
