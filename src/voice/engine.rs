@@ -634,32 +634,64 @@ impl Engine {
         payloader.set_property("pt", 96u32);
         payloader.set_property_from_str("picture-id-mode", "15-bit");
 
-        // Diagnóstico de fronteira: preview local não prova publicação.
-        // Este probe confirma, uma vez por linha de câmera, que VP8 virou RTP
-        // e realmente chegou à entrada do webrtcbin.
-        if let Some(src_pad) = payloader.static_pad("src") {
-            let seen = Arc::new(AtomicBool::new(false));
-            let seen_probe = Arc::clone(&seen);
-            src_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
-                if !seen_probe.swap(true, Ordering::Relaxed) {
-                    log::info!("call: primeiro pacote RTP da câmera saiu do rtpvp8pay");
-                }
-                gst::PadProbeReturn::Ok
-            });
+        // Quatro fronteiras, cada uma impressa uma única vez. `push_buffer`
+        // só confirma que o appsrc aceitou o buffer na fila interna; estes
+        // probes dizem até onde a thread de streaming realmente chegou.
+        for (element, pad_name, message) in [
+            (
+                src.upcast_ref::<gst::Element>(),
+                "src",
+                "primeiro quadro saiu do appsrc WebRTC",
+            ),
+            (&encoder, "sink", "primeiro quadro entrou no vp8enc"),
+            (&encoder, "src", "primeiro quadro VP8 saiu do vp8enc"),
+            (&payloader, "src", "primeiro pacote RTP da câmera saiu do rtpvp8pay"),
+        ] {
+            if let Some(probe_pad) = element.static_pad(pad_name) {
+                let seen = Arc::new(AtomicBool::new(false));
+                let seen_probe = Arc::clone(&seen);
+                probe_pad.add_probe(gst::PadProbeType::BUFFER, move |_pad, _info| {
+                    if !seen_probe.swap(true, Ordering::Relaxed) {
+                        log::info!("call: {message}");
+                    }
+                    gst::PadProbeReturn::Ok
+                });
+            }
         }
+
         let filter = make("capsfilter")?;
         filter.set_property("caps", video_caps());
 
-        let elements = [src.upcast_ref::<gst::Element>().clone(), queue, encoder, payloader, filter];
+        let elements = [
+            src.upcast_ref::<gst::Element>().clone(),
+            queue,
+            encoder,
+            payloader,
+            filter,
+        ];
         self.pipeline.add_many(&elements).ok()?;
         gst::Element::link_many(&elements).ok()?;
 
         let pad = self.webrtc.request_pad_simple("sink_%u")?;
         let last = elements.last()?;
         last.static_pad("src")?.link(&pad).ok()?;
+
         for element in &elements {
-            let _ = element.sync_state_with_parent();
+            if let Err(error) = element.sync_state_with_parent() {
+                log::error!(
+                    "call: {} não acompanhou o estado do pipeline da câmera WebRTC: {error}",
+                    element.name()
+                );
+                for branch_element in elements.iter().rev() {
+                    let _ = branch_element.set_state(gst::State::Null);
+                    let _ = self.pipeline.remove(branch_element);
+                }
+                self.webrtc.release_request_pad(&pad);
+                return None;
+            }
         }
+        log::info!("call: branch appsrc→vp8enc→rtpvp8pay acompanhou o pipeline");
+
         let line = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
         // O request-pad dispara on-negotiation-needed imediatamente. Até a
         // captura abrir e voice_camera=true estar a caminho do servidor, esta
