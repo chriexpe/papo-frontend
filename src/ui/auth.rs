@@ -241,14 +241,22 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
         egui::StrokeKind::Inside,
     );
 
+    let edit_id = ui.id().with(("auth-field", label));
     let response = ui.put(
         rect.shrink2(Vec2::new(space::MD, space::XXS)),
         TextEdit::singleline(value)
+            .id(edit_id)
             .password(secret)
             .frame(egui::Frame::NONE)
             .font(text::body())
             .vertical_align(Align::Center)
             .desired_width(f32::INFINITY),
+    );
+    let _ = crate::platform::ime::sync_text_edit(
+        ui.ctx(),
+        edit_id,
+        value,
+        response.has_focus(),
     );
     ui.advance_cursor_after_rect(rect);
 
