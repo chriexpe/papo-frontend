@@ -63,6 +63,9 @@ impl Presence {
 #[derive(Clone, Debug)]
 pub struct Member {
     pub id: String,
+    /// Nome de conta estável; serve para ligar resultados de busca, que hoje
+    /// chegam do backend com `author_username`, ao membro carregado.
+    pub username: String,
     pub name: String,
     pub presence: Presence,
     pub role_color: Option<[u8; 3]>,
@@ -257,6 +260,12 @@ impl Store {
 
     pub fn member(&self, id: &str) -> Option<&Member> {
         self.members.iter().find(|member| member.id == id)
+    }
+
+    pub fn member_by_username(&self, username: &str) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|member| member.username.eq_ignore_ascii_case(username))
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -519,6 +528,7 @@ impl Store {
                         role_color: role_color(&user.roles),
                         roles: user.roles.iter().map(|role| role.id.clone()).collect(),
                         name: user.display_name().to_owned(),
+                        username: user.username,
                         id: user.id,
                     })
                     .collect();
