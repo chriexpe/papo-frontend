@@ -26,6 +26,8 @@ fn android_main(app: AndroidApp) {
 
     // O teclado precisa da Activity para ser lido.
     crate::platform::ime::install(app.clone());
+    // A ponte de volta: permissão e seletor de arquivos partem daqui.
+    crate::platform::jvm::install(app.clone());
 
     // O eframe procura onde gravar pelas pastas do XDG, que no Android não
     // existem — sem isto ele desliga a persistência e os ajustes (servidores,

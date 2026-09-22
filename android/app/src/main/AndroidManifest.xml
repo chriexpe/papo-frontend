@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Gravar recado de voz. Pedida na hora em que alguém toca em gravar,
+         não na abertura: permissão pedida sem motivo à vista é permissão
+         negada. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!-- O egui desenha por OpenGL ES 3.0 (o back-end `glow` do eframe). -->
     <uses-feature

@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+#[cfg(target_os = "android")]
+use std::sync::Mutex;
 
 use crate::api::client::Upload;
 
@@ -223,21 +225,86 @@ impl Dialogs {
 
 }
 
+/// Por onde a resposta do seletor volta.
+///
+/// A escolha acontece noutra Activity e a resposta chega numa thread do
+/// Java, muito depois de `pick_files` ter voltado. O canal fica guardado
+/// aqui até lá; o `poll` do lado da janela não muda em nada.
+#[cfg(target_os = "android")]
+static ANSWER: Mutex<Option<mpsc::Sender<Chosen>>> = Mutex::new(None);
+
+/// Recebe os anexos escolhidos, já copiados para o cache pela Activity.
+///
+/// # Safety
+/// Chamada pelo JNI.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFilesPicked(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    paths: jni::objects::JObjectArray,
+    names: jni::objects::JObjectArray,
+) {
+    let count = env.get_array_length(&paths).unwrap_or(0);
+    let mut files = Vec::new();
+    for index in 0..count {
+        let Ok(path) = env.get_object_array_element(&paths, index) else {
+            continue;
+        };
+        let Ok(name) = env.get_object_array_element(&names, index) else {
+            continue;
+        };
+        let (path, name): (jni::objects::JString, jni::objects::JString) =
+            (path.into(), name.into());
+        let (Ok(path), Ok(name)) = (env.get_string(&path), env.get_string(&name)) else {
+            continue;
+        };
+        let path = PathBuf::from(String::from(path));
+        // O nome vem do provedor, e é o que a pessoa reconhece; o do arquivo
+        // no cache leva um carimbo de tempo na frente para não colidir.
+        let mut upload = describe(&path);
+        upload.name = String::from(name);
+        files.push(upload);
+    }
+
+    log::info!("seletor: {} arquivo(s)", files.len());
+    let answer = if files.is_empty() {
+        Chosen::Cancelled
+    } else {
+        Chosen::Files(files)
+    };
+    if let Ok(mut slot) = ANSWER.lock()
+        && let Some(sender) = slot.take()
+    {
+        let _ = sender.send(answer);
+    }
+    super::wake::request();
+}
+
 #[cfg(target_os = "android")]
 impl Dialogs {
-    /// Ainda não há seletor no Android. Responder `Cancelled` na hora é o
-    /// que mantém a interface honesta: quem pediu o diálogo recebe a
+    /// Os diálogos que ainda não existem no Android. Responder `Cancelled`
+    /// na hora é o que mantém a interface honesta: quem pediu recebe a
     /// recusa no mesmo quadro em vez de esperar para sempre.
     fn unavailable(&mut self, repaint: egui::Context) {
-        log::warn!("seletor de arquivos ainda não existe no Android");
+        log::warn!("este diálogo ainda não existe no Android");
         let (tx, rx) = mpsc::channel();
         let _ = tx.send(Chosen::Cancelled);
         self.pending.push(rx);
         repaint.request_repaint();
     }
 
-    pub fn pick_files(&mut self, repaint: egui::Context) {
-        self.unavailable(repaint);
+    pub fn pick_files(&mut self, _repaint: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut slot) = ANSWER.lock() {
+            // Uma escolha de cada vez: a anterior, se ficou pendurada, some
+            // aqui e o receptor dela morre sozinho no `poll`.
+            *slot = Some(tx);
+        }
+        self.pending.push(rx);
+        if !super::jvm::call_activity("pickFiles", "()V", None) {
+            log::warn!("o seletor de arquivos não abriu");
+        }
     }
 
     pub fn pick_animations(&mut self, repaint: egui::Context) {

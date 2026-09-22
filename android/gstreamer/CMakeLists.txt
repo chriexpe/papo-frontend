@@ -49,6 +49,7 @@ find_package(GStreamerMobile REQUIRED COMPONENTS
     videoconvertscale
     audioconvert
     audioresample
+    audiorate          # costura os buracos da gravação ao vivo
     volume
 
     # --- os recipientes dos anexos de verdade ---

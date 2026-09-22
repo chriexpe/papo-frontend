@@ -1,12 +1,24 @@
 package io.github.chriexpe.papo;
 
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.graphics.Insets;
+import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowInsets;
 
 import android.util.Log;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.google.androidgamesdk.GameActivity;
 import com.google.androidgamesdk.gametextinput.State;
@@ -34,6 +46,154 @@ public class PapoActivity extends GameActivity {
 
     /** Envia o texto do teclado ao Rust. Implementada em `src/platform/ime.rs`. */
     private static native void nativeSetText(String text);
+
+    /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
+    private static native void nativePermissionResult(String permission, boolean granted);
+
+    /**
+     * Pede uma permissão ao usuário. Chamado <b>do Rust</b>.
+     *
+     * <p>É a primeira coisa que anda no sentido contrário: até aqui a
+     * Activity só empurrava (bordas, texto). Gravar e anexar começam do
+     * outro lado, quando alguém toca no botão.
+     *
+     * <p>A resposta sempre volta pelo `nativePermissionResult`, inclusive
+     * quando a permissão já estava dada — assim o lado Rust tem um caminho
+     * só para tratar, em vez de dois.
+     */
+    /**
+     * A permissão já está dada? Chamado <b>do Rust</b>.
+     *
+     * <p>O Android guarda isso entre execuções; o lado Rust, não. Sem esta
+     * pergunta, a primeira vez que alguém toca em gravar depois de abrir o
+     * aplicativo era sempre desperdiçada, esperando uma resposta que já
+     * existia.
+     */
+    public boolean hasPermission(String permission) {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    public void requestPermission(String permission) {
+        runOnUiThread(() -> {
+            if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) {
+                nativePermissionResult(permission, true);
+                return;
+            }
+            requestPermissions(new String[] {permission}, PERMISSION_REQUEST);
+        });
+    }
+
+    private static final int PERMISSION_REQUEST = 1;
+    private static final int PICK_REQUEST = 2;
+
+    /** Entrega os anexos escolhidos ao Rust. Em `src/platform/files.rs`. */
+    private static native void nativeFilesPicked(String[] paths, String[] names);
+
+    /**
+     * Abre o seletor de arquivos do sistema. Chamado <b>do Rust</b>.
+     *
+     * <p>O Android não entrega um caminho: entrega um `content://`, que é
+     * uma porta para o arquivo de outro aplicativo e não sobrevive ao fim da
+     * escolha. Como o Papo envia anexos a partir de um caminho de verdade,
+     * cada escolha é copiada para o nosso cache antes de seguir.
+     */
+    public void pickFiles() {
+        runOnUiThread(() -> {
+            final Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            startActivityForResult(intent, PICK_REQUEST);
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_REQUEST) {
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null) {
+            // Desistiu: o Rust precisa saber, senão o diálogo fica aberto
+            // para sempre do lado dele.
+            nativeFilesPicked(new String[0], new String[0]);
+            return;
+        }
+
+        final List<Uri> chosen = new ArrayList<>();
+        if (data.getClipData() != null) {
+            for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                chosen.add(data.getClipData().getItemAt(i).getUri());
+            }
+        } else if (data.getData() != null) {
+            chosen.add(data.getData());
+        }
+
+        // Copiar pode demorar (o arquivo pode estar na nuvem): fora da
+        // thread da interface, senão a janela congela no meio da escolha.
+        new Thread(() -> copyAll(chosen)).start();
+    }
+
+    private void copyAll(List<Uri> chosen) {
+        final List<String> paths = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        final File dir = new File(getCacheDir(), "anexos");
+        dir.mkdirs();
+
+        for (Uri uri : chosen) {
+            final String name = displayName(uri);
+            final File dest = new File(dir, System.nanoTime() + "-" + name);
+            try (InputStream in = getContentResolver().openInputStream(uri);
+                    OutputStream out = new FileOutputStream(dest)) {
+                if (in == null) {
+                    continue;
+                }
+                final byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+                paths.add(dest.getAbsolutePath());
+                names.add(name);
+            } catch (Exception error) {
+                Log.e("papo", "não deu para copiar o anexo " + uri, error);
+            }
+        }
+
+        nativeFilesPicked(
+                paths.toArray(new String[0]), names.toArray(new String[0]));
+    }
+
+    /** O nome que o usuário reconhece, e não o identificador do provedor. */
+    private String displayName(Uri uri) {
+        try (Cursor cursor =
+                getContentResolver().query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                final int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (column >= 0) {
+                    final String name = cursor.getString(column);
+                    if (name != null && !name.isEmpty()) {
+                        return name;
+                    }
+                }
+            }
+        } catch (Exception error) {
+            Log.w("papo", "sem nome para " + uri, error);
+        }
+        final String fallback = uri.getLastPathSegment();
+        return fallback == null ? "anexo" : fallback;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(
+            int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        for (int i = 0; i < permissions.length; i++) {
+            final boolean granted = i < results.length
+                    && results[i] == PackageManager.PERMISSION_GRANTED;
+            nativePermissionResult(permissions[i], granted);
+        }
+    }
 
     /**
      * O teclado mudou o texto.

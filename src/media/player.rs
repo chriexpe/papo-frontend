@@ -630,26 +630,39 @@ impl Recorder {
         if !init() {
             return None;
         }
-        // Gravar ainda não existe no Android: depende da permissão de
-        // microfone, que é assunto do PR de captura. As fontes abaixo são
-        // do Linux e nem existem lá — melhor recusar aqui, com o motivo,
-        // do que falhar procurando uma a uma.
+        // No Android o microfone depende de permissão, e ela é pedida aqui
+        // — no toque em gravar, que é quando o motivo está à vista. A
+        // primeira vez devolve `None` com a caixa na tela; o toque seguinte
+        // já grava.
         #[cfg(target_os = "android")]
         {
-            let _ = dir;
-            log::warn!("gravar áudio ainda não existe no Android");
-            return None;
+            use crate::platform::permission::{self, Status};
+            match permission::ensure(permission::RECORD_AUDIO) {
+                Status::Granted => {}
+                Status::Asking => {
+                    log::info!("esperando a permissão do microfone");
+                    return None;
+                }
+                Status::Denied => {
+                    log::warn!("sem permissão de microfone: não dá para gravar");
+                    return None;
+                }
+            }
         }
 
-        #[cfg(not(target_os = "android"))]
-        {
         let _ = std::fs::create_dir_all(dir);
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("recado-{stamp}.ogg"));
 
         // A fonte varia com o sistema: PipeWire onde existe, ALSA como
-        // reserva. Sem microfone, nada disso abre e a gravação nem começa.
-        for source in ["pipewiresrc", "alsasrc"] {
+        // reserva, e no Android o OpenSL ES, que é o único caminho. Sem
+        // microfone, nada disso abre e a gravação nem começa.
+        #[cfg(target_os = "android")]
+        const SOURCES: &[&str] = &["openslessrc"];
+        #[cfg(not(target_os = "android"))]
+        const SOURCES: &[&str] = &["pipewiresrc", "alsasrc"];
+
+        for source in SOURCES {
             // O `queue` logo depois da fonte é o que separa a captura da
             // codificação: sem ele, converter, resamplear e codificar em
             // Opus acontece na thread que está lendo o microfone, e cada
@@ -657,11 +670,7 @@ impl Recorder {
             // arquivo, não na hora de tocar. O `audiorate` costura os buracos
             // que mesmo assim apareçam, para o Ogg não sair com o tempo
             // torto. `do-timestamp` garante carimbo de hora na fonte viva.
-            let live = if source == "pipewiresrc" {
-                "pipewiresrc do-timestamp=true"
-            } else {
-                "alsasrc do-timestamp=true"
-            };
+            let live = format!("{source} do-timestamp=true");
             let description = format!(
                 "{live} ! queue max-size-time=2000000000 leaky=no ! \
                  audioconvert ! audioresample ! audiorate ! \
@@ -685,7 +694,6 @@ impl Recorder {
         }
         log::warn!("sem entrada de áudio para gravar");
         None
-        }
     }
 
     pub fn elapsed(&self) -> f64 {

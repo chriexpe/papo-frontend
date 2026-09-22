@@ -18,6 +18,12 @@ pub mod dirs;
 pub mod files;
 #[cfg(target_os = "linux")]
 pub mod global_menu;
+/// Chamar a Activity a partir do Rust (Android).
+#[cfg(target_os = "android")]
+pub mod jvm;
+/// Permissões do Android, pedidas quando fazem falta.
+#[cfg(target_os = "android")]
+pub mod permission;
 pub mod menu;
 /// Acordar a janela de fora do laço de quadros (Android).
 #[cfg(target_os = "android")]
