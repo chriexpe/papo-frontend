@@ -341,6 +341,7 @@ pub struct UiState {
     pub editing: Option<(String, String)>,
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
+    pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
     /// Pastilha de ações esticada em busca ou fixadas.
     pub panel: Option<Panel>,
