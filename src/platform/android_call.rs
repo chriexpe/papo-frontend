@@ -134,16 +134,18 @@ pub extern "system" fn Java_io_github_chriexpe_papo_CallService_nativeCallAction
     let Ok(mut slot) = CONTROL.lock() else {
         return;
     };
-    let Some(control) = slot.as_mut() else {
-        return;
-    };
 
     if action == "hangup" {
-        control.net.send(NetCommand::VoiceSignal(format!(
-            r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
-            control.channel_id
-        )));
-        let _ = control.commands.send(CallCommand::Stop);
+        if let Some(control) = slot.as_mut() {
+            control.net.send(NetCommand::VoiceSignal(format!(
+                r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
+                control.channel_id
+            )));
+            let _ = control.commands.send(CallCommand::Stop);
+        }
+        // Mesmo antes de VoiceReady/Call::start, a Store já está em Joining.
+        // A UI acordada abaixo cancela essa tentativa e manda voice_leave se
+        // o join tiver alcançado o socket no meio da corrida.
         drop(slot);
         push_action(UiAction::Hangup);
         return;
@@ -151,8 +153,12 @@ pub extern "system" fn Java_io_github_chriexpe_papo_CallService_nativeCallAction
 
     if let Some(value) = action.strip_prefix("mute=") {
         let muted = value == "1";
-        control.muted = muted;
-        let _ = control.commands.send(CallCommand::Muted(muted));
+        if let Some(control) = slot.as_mut() {
+            control.muted = muted;
+            let _ = control.commands.send(CallCommand::Muted(muted));
+        }
+        // Antes de a thread da call existir, guardar a escolha na Store basta:
+        // pump_call a reaplica assim que o servidor confirmar a entrada.
         drop(slot);
         push_action(UiAction::Muted(muted));
     }
