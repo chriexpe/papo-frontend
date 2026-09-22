@@ -257,6 +257,7 @@ impl Call {
         })
     }
 
+    #[cfg(target_os = "android")]
     pub(crate) fn command_sender(&self) -> mpsc::Sender<Command> {
         self.commands.clone()
     }
