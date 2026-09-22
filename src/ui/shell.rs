@@ -195,15 +195,15 @@ pub fn is_compact(rect: Rect) -> bool {
     rect.width() < COMPACT_BREAKPOINT
 }
 
-/// A pastilha de ações, esticada para mostrar busca ou fixadas. Fecha só
-/// pelo mesmo ícone que a abriu ou pelo X — clicar fora não fecha, porque
-/// ler um resultado costuma passar por clicar na conversa atrás dela.
+/// A pastilha de ações, esticada para mostrar busca ou fixadas.
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub kind: PanelKind,
     pub query: String,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
+    /// Distingue "ainda não buscou" de uma busca válida com zero resultados.
+    pub searched: bool,
 }
 
 /// Teclas que pertencem à lista de sugestões neste quadro.
@@ -1489,6 +1489,11 @@ fn conversation(
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             egui::ScrollArea::vertical()
+                .scroll_source(if state.panel.is_some() {
+                    egui::containers::scroll_area::ScrollSource::NONE
+                } else {
+                    egui::containers::scroll_area::ScrollSource::ALL
+                })
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
@@ -1733,11 +1738,9 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
 
 /// Pastilha de ações do canal, no alto à direita.
 ///
-/// Fechada, são três ícones. Aberta em busca ou em fixadas, ela mesma
-/// estica para baixo e mostra a lista dentro do mesmo vidro — em vez de uma
-/// janela solta por cima da conversa. Fecha só pelo ícone que a abriu ou
-/// pelo X à esquerda: clicar fora não fecha, porque ler um resultado passa
-/// por clicar na conversa que está atrás.
+/// Fechada, são três ícones. Aberta em busca ou em fixadas, vira uma camada
+/// modal leve: fica acima da conversa, bloqueia a rolagem de trás e fecha ao
+/// clicar fora, pelo X ou pelo mesmo ícone que a abriu.
 fn actions_pill(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -1746,6 +1749,11 @@ fn actions_pill(
     s: &Strings,
     area: Rect,
 ) {
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"));
+    let screen = ui.ctx().content_rect();
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+    let ui = &mut top;
+
     let open = state.panel.as_ref().map(|panel| panel.kind);
     let width = if open.is_some() {
         PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
@@ -1822,6 +1830,34 @@ fn actions_pill(
             PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
         },
     );
+
+    // Quatro zonas cobrem tudo que não é a pastilha. Como vivem na camada
+    // Foreground, o clique não atravessa para mensagens/canais atrás.
+    let outside = [
+        Rect::from_min_max(screen.min, egui::pos2(rect.min.x, screen.max.y)),
+        Rect::from_min_max(
+            egui::pos2(rect.min.x, screen.min.y),
+            egui::pos2(screen.max.x, rect.min.y),
+        ),
+        Rect::from_min_max(
+            egui::pos2(rect.max.x, rect.min.y),
+            egui::pos2(screen.max.x, rect.max.y),
+        ),
+        Rect::from_min_max(
+            egui::pos2(rect.min.x, rect.max.y),
+            screen.max,
+        ),
+    ];
+    let dismiss = outside.into_iter().enumerate().any(|(index, zone)| {
+        zone.width() > 0.0
+            && zone.height() > 0.0
+            && ui
+                .interact(zone, Id::new(("actions-panel-dismiss", index)), Sense::click())
+                .clicked()
+    });
+    if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        state.panel = None;
+    }
 }
 
 /// Abre a lista pedida, ou fecha se ela já era a que estava aberta.
@@ -1833,6 +1869,7 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 kind,
                 query: String::new(),
                 focus: kind == PanelKind::Search,
+                searched: false,
             })
         }
     }
@@ -1867,23 +1904,39 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .map(|panel| panel.query.clone())
         .unwrap_or_default();
 
-    let field = ui.add(
-        egui::TextEdit::singleline(&mut query)
-            .hint_text(s.search_placeholder)
-            .desired_width(f32::INFINITY)
-            .font(text::body()),
-    );
-    if let Some(panel) = state.panel.as_mut() {
-        panel.query = query.clone();
-        if panel.focus {
-            field.request_focus();
-            panel.focus = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .hint_text(s.search_placeholder)
+                .desired_width(field_width)
+                .font(text::body()),
+        );
+        if let Some(panel) = state.panel.as_mut() {
+            panel.query = query.clone();
+            if panel.focus {
+                field.request_focus();
+                panel.focus = false;
+            }
         }
-    }
-    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-        run = true;
-    }
+
+        // Desktop costuma entregar Enter; alguns IMEs Android não entregam
+        // esse evento de forma confiável, então há também um botão explícito.
+        if ui.input(|input| input.key_pressed(egui::Key::Enter))
+            && (field.has_focus() || field.lost_focus())
+        {
+            run = true;
+        }
+        if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
+            run = true;
+        }
+    });
+
     if run && !query.trim().is_empty() {
+        if let Some(panel) = state.panel.as_mut() {
+            panel.searched = true;
+        }
         store.searching = true;
         state.actions.push(ChatAction::Search(query.trim().to_owned()));
     }
@@ -1900,13 +1953,12 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
     if store.search_results.is_empty() {
         // Antes da primeira busca o que falta é a instrução, não o "nada
         // encontrado": quem acabou de abrir ainda não procurou coisa alguma.
-        let empty_query = state
+        let searched = state
             .panel
             .as_ref()
-            .map(|panel| panel.query.trim().is_empty())
-            .unwrap_or(true);
+            .is_some_and(|panel| panel.searched);
         ui.label(
-            RichText::new(if empty_query { s.search_hint } else { s.search_empty })
+            RichText::new(if searched { s.search_empty } else { s.search_hint })
                 .font(text::footnote())
                 .color(t.label_tertiary),
         );
@@ -1943,6 +1995,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     t,
                     s,
                     ResultPreview {
+                        message_id: &message_id,
                         author_id: author_id.as_deref(),
                         author_name: &author_name,
                         at,
@@ -2006,6 +2059,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     t,
                     s,
                     ResultPreview {
+                        message_id: &message_id,
                         author_id: Some(&author_id),
                         author_name: &author_name,
                         at: Some(at),
@@ -2021,6 +2075,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
 }
 
 struct ResultPreview<'a> {
+    message_id: &'a str,
     author_id: Option<&'a str>,
     author_name: &'a str,
     at: Option<DateTime<Local>>,
@@ -2039,6 +2094,7 @@ fn result_row(
     preview: ResultPreview<'_>,
 ) -> bool {
     let ResultPreview {
+        message_id,
         author_id,
         author_name,
         at,
@@ -2047,7 +2103,9 @@ fn result_row(
     } = preview;
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
-    let max_text_width = (ui.available_width() - avatar_size - space::LG - space::LG).max(80.0);
+    let row_width = ui.available_width();
+    let max_text_width =
+        (row_width - space::SM * 2.0 - avatar_size - space::MD).max(80.0);
     let member = author_id.and_then(|id| store.member(id));
     let initials = member
         .map(|member| member.initials())
@@ -2061,7 +2119,11 @@ fn result_row(
     });
 
     let inner = ui.scope(|ui| {
-        ui.horizontal_top(|ui| {
+        ui.set_min_width(row_width);
+        ui.set_max_width(row_width);
+        ui.add_space(space::XS);
+        ui.horizontal(|ui| {
+            ui.add_space(space::SM);
             avatar(
                 ui,
                 t,
@@ -2070,7 +2132,7 @@ fn result_row(
                 member.and_then(|member| member.role_color.map(rgb)),
                 texture,
             );
-            ui.add_space(space::LG);
+            ui.add_space(space::MD);
             ui.vertical(|ui| {
                 ui.set_max_width(max_text_width);
                 ui.horizontal_wrapped(|ui| {
@@ -2101,17 +2163,15 @@ fn result_row(
                     ui.label(RichText::new(body).font(text::body()).color(t.label));
                 }
             });
+            ui.add_space(space::SM);
         });
+        ui.add_space(space::XS);
     });
 
-    let row = inner
-        .response
-        .rect
-        .expand2(Vec2::new(space::SM, space::XS));
+    let row = inner.response.rect;
     let response = ui.interact(
         row,
-        ui.id()
-            .with(("message-preview", author_id.unwrap_or(author_name), body)),
+        ui.id().with(("message-preview", message_id)),
         Sense::click(),
     );
     if response.hovered() {
@@ -2121,7 +2181,7 @@ fn result_row(
         );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.add_space(space::SM);
+    ui.add_space(space::XXS);
     response.clicked()
 }
 
@@ -2242,7 +2302,7 @@ fn message_list(
     let rows = egui::Rangef::new(area.min.x + space::MD, area.max.x - space::MD);
     // Com um popup aberto, só a mensagem dona dele fica em destaque: o resto
     // da lista não deve reagir ao ponteiro que está a caminho do menu.
-    let interactive = state.viewer.is_none();
+    let interactive = state.viewer.is_none() && state.panel.is_none();
     let focused_message = state
         .popup
         .as_ref()
@@ -2336,7 +2396,7 @@ fn message_list(
         });
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
-        if state.compact {
+        if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state
                 .message_rows
@@ -2475,10 +2535,10 @@ fn reply_quote(
     let exists = store.message(reply_to).is_some();
     let sense = if exists { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
-    if exists && response.hovered() {
+    if exists && state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if exists && response.clicked() {
+    if exists && state.panel.is_none() && response.clicked() {
         state.jump = Some(Jump {
             message_id: reply_to.to_owned(),
             found: None,
@@ -2632,6 +2692,10 @@ fn message_body(
             }
     }
 
+    if !message.previews.is_empty() {
+        link_previews(ui, state, t, &message.previews, width);
+    }
+
     if !message.reactions.is_empty() {
         ui.add_space(space::XS);
         let mut toggled = None;
@@ -2740,6 +2804,158 @@ fn rich_body(
             );
         }
     });
+}
+
+
+/// Link previews são cartões nativos: o backend já fez o crawl OpenGraph/oEmbed
+/// e o cliente só apresenta os metadados. A imagem vem sob demanda pelo endpoint
+/// autenticado, evitando base64 duplicado na listagem de mensagens.
+fn link_previews(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    previews: &[crate::api::models::LinkPreview],
+    width: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const IMAGE_MAX_H: f32 = 190.0;
+
+    for preview in previews {
+        let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
+            continue;
+        };
+        ui.add_space(space::SM);
+
+        let card_width = width.clamp(160.0, MAX_W);
+        let backdrop = ui.painter().add(egui::Shape::Noop);
+        let texture = state
+            .media
+            .preview(preview)
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned();
+
+        let inner = ui.scope(|ui| {
+            ui.set_width(card_width);
+
+            if let Some(texture) = &texture {
+                let source = texture.size_vec2();
+                let scale = (card_width / source.x)
+                    .min(IMAGE_MAX_H / source.y)
+                    .min(1.0);
+                let size = Vec2::new(
+                    (source.x * scale).max(1.0),
+                    (source.y * scale).max(1.0),
+                );
+                let (image_rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                if preview.embed_url.is_some() {
+                    ui.painter().circle_filled(
+                        image_rect.center(),
+                        22.0,
+                        Color32::from_black_alpha(170),
+                    );
+                    ui.painter().text(
+                        image_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(18.0),
+                        Color32::WHITE,
+                    );
+                }
+                ui.add_space(space::SM);
+            }
+
+            let provider = preview
+                .provider_name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    url::Url::parse(url)
+                        .ok()
+                        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+                });
+
+            if let Some(provider) = provider {
+                ui.label(
+                    RichText::new(provider)
+                        .font(text::caption())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(space::XXS);
+            }
+
+            if let Some(title) = preview.title.as_deref().filter(|title| !title.is_empty()) {
+                ui.label(
+                    RichText::new(title)
+                        .font(text::headline())
+                        .color(t.label),
+                );
+            }
+
+            if let Some(description) = preview
+                .description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+            {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new(description)
+                        .font(text::body())
+                        .color(t.label_secondary),
+                );
+            }
+
+            if preview.title.as_deref().is_none_or(str::is_empty)
+                && preview.description.as_deref().is_none_or(str::is_empty)
+            {
+                ui.label(
+                    RichText::new(url)
+                        .font(text::footnote())
+                        .color(t.label_secondary),
+                );
+            }
+        });
+
+        let rect = inner
+            .response
+            .rect
+            .expand2(Vec2::new(space::MD, space::SM));
+        let response = ui.interact(
+            rect,
+            Id::new(("link-preview", &preview.id)),
+            Sense::click(),
+        );
+
+        let fill = if response.hovered() {
+            t.fill_medium
+        } else {
+            t.fill_soft
+        };
+        ui.painter().set(
+            backdrop,
+            egui::epaint::RectShape::new(
+                rect,
+                CornerRadius::same(radius::CARD),
+                fill,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        ui.add_space(space::XS);
+    }
 }
 
 fn reaction_chip(

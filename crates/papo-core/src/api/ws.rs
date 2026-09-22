@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::client::{Api, Session};
-use super::models::Message;
+use super::models::{LinkPreview, Message};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -41,6 +41,18 @@ pub enum Event {
     MessagePinned {
         message_id: String,
         pinned: bool,
+    },
+    NewPreview {
+        message_id: String,
+        preview_id: String,
+    },
+    RemovePreview {
+        message_id: String,
+        preview_id: String,
+    },
+    LinkPreviewUpdated {
+        message_id: String,
+        preview: LinkPreview,
     },
     /// A moderação assíncrona decidiu sobre uma imagem.
     AttachmentModeration {
@@ -362,6 +374,18 @@ fn parse(text: &str) -> Option<Event> {
                 .get("is_pinned")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
+        }),
+        "new_preview" => Some(Event::NewPreview {
+            message_id: string("message_id")?,
+            preview_id: string("preview_id")?,
+        }),
+        "remove_preview" => Some(Event::RemovePreview {
+            message_id: string("message_id")?,
+            preview_id: string("preview_id")?,
+        }),
+        "link_preview_update" => Some(Event::LinkPreviewUpdated {
+            message_id: string("message_id")?,
+            preview: serde_json::from_value(value.get("preview")?.clone()).ok()?,
         }),
         "attachment_moderation_update" => Some(Event::AttachmentModeration {
             message_id: string("message_id")?,

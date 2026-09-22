@@ -426,7 +426,24 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                publish(&updates, &wake, Update::Event(Box::new(event)));
+                // new_preview traz só o id porque o crawl termina depois da
+                // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
+                // para a Store receber o mesmo formato das mensagens listadas.
+                if let Event::NewPreview { message_id, preview_id } = event {
+                    match api.link_preview(&preview_id).await {
+                        Ok(preview) => publish(
+                            &updates,
+                            &wake,
+                            Update::Event(Box::new(Event::LinkPreviewUpdated {
+                                message_id,
+                                preview,
+                            })),
+                        ),
+                        Err(error) => log::warn!("preview {preview_id} não carregou: {error}"),
+                    }
+                } else {
+                    publish(&updates, &wake, Update::Event(Box::new(event)));
+                }
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
@@ -614,14 +631,19 @@ async fn handle(
             bootstrap(api, updates, wake, id.as_deref()).await
         }
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
-            Ok(list) => publish(
-                updates,
-                wake,
-                Update::Messages {
-                    channel_id,
-                    messages: list.messages,
-                },
-            ),
+            Ok(list) => {
+                publish(
+                    updates,
+                    wake,
+                    Update::Messages {
+                        channel_id: channel_id.clone(),
+                        messages: list.messages,
+                    },
+                );
+                // A listagem comum de mensagens não carrega o estado de pin.
+                // Reaplica a fonte persistida no banco logo depois.
+                load_pinned(api, updates, wake, channel_id).await;
+            }
             Err(error) => report(updates, wake, error),
         },
         // As três mexidas em canal terminam iguais: relista os canais, porque
@@ -932,11 +954,7 @@ async fn load_pinned(
             let ids = list
                 .pinned
                 .into_iter()
-                .filter_map(|pinned| {
-                    pinned
-                        .message_id
-                        .or_else(|| pinned.message.map(|message| message.id))
-                })
+                .map(|message| message.id)
                 .collect();
             publish(updates, wake, Update::Pinned { channel_id, ids });
         }
