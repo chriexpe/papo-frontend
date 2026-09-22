@@ -13,6 +13,7 @@ use crate::voice::Command as CallCommand;
 #[derive(Debug, Clone, Copy)]
 pub enum UiAction {
     Muted(bool),
+    Camera(bool),
     Hangup,
 }
 
@@ -21,18 +22,22 @@ struct Control {
     net: NetSender,
     channel_id: String,
     muted: bool,
+    camera: bool,
 }
 
 static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 static ACTIONS: Mutex<Vec<UiAction>> = Mutex::new(Vec::new());
 static IN_PIP: AtomicBool = AtomicBool::new(false);
 static FOREGROUND: AtomicBool = AtomicBool::new(true);
+static LAST_SERVICE_STATE: Mutex<Option<String>> = Mutex::new(None);
+static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
     net: NetSender,
     channel_id: String,
     muted: bool,
+    camera: bool,
 ) {
     if let Ok(mut slot) = CONTROL.lock() {
         *slot = Some(Control {
@@ -40,6 +45,7 @@ pub fn bind(
             net,
             channel_id,
             muted,
+            camera,
         });
     }
 }
@@ -60,40 +66,93 @@ pub fn start_service(title: &str) {
 
 pub fn stop_service() {
     let _ = super::jvm::call_activity("stopCallService", "()V", None);
+    if let Ok(mut state) = LAST_SERVICE_STATE.lock() {
+        *state = None;
+    }
+    if let Ok(mut state) = LAST_PRESENTATION.lock() {
+        *state = None;
+    }
     clear();
 }
 
-pub fn update_service(muted: bool, camera: bool) {
-    let state = format!(
-        "muted={};camera={}",
-        if muted { 1 } else { 0 },
-        if camera { 1 } else { 0 }
-    );
-    let _ = super::jvm::call_activity(
-        "updateCallService",
-        "(Ljava/lang/String;)V",
-        Some(&state),
-    );
+/// Mantém a notificação nativa em sincronia com a pastilha da call sem fazer
+/// JNI em todo frame. O nome do speaker vai em JSON para não depender de
+/// separadores que também podem existir num nome de usuário.
+pub fn sync_service(
+    muted: bool,
+    camera: bool,
+    members: usize,
+    speaker: Option<&str>,
+) {
+    let state = serde_json::json!({
+        "muted": muted,
+        "camera": camera,
+        "members": members,
+        "speaker": speaker.unwrap_or(""),
+    })
+    .to_string();
+
+    let changed = LAST_SERVICE_STATE
+        .lock()
+        .map(|mut last| {
+            if last.as_deref() == Some(state.as_str()) {
+                false
+            } else {
+                *last = Some(state.clone());
+                true
+            }
+        })
+        .unwrap_or(true);
+
+    if changed {
+        let _ = super::jvm::call_activity(
+            "updateCallService",
+            "(Ljava/lang/String;)V",
+            Some(&state),
+        );
+    }
+
     if let Ok(mut slot) = CONTROL.lock()
         && let Some(control) = slot.as_mut()
     {
         control.muted = muted;
+        control.camera = camera;
     }
 }
 
-pub fn set_presentation(active: bool, video: bool) {
-    let state = if !active {
-        "off"
-    } else if video {
-        "video"
-    } else {
-        "voice"
-    };
-    let _ = super::jvm::call_activity(
-        "setCallPresentation",
-        "(Ljava/lang/String;)V",
-        Some(state),
+pub fn set_presentation(active: bool, video: bool, muted: bool, camera: bool) {
+    let state = format!(
+        "{};muted={};camera={}",
+        if !active {
+            "off"
+        } else if video {
+            "video"
+        } else {
+            "voice"
+        },
+        if muted { 1 } else { 0 },
+        if camera { 1 } else { 0 },
     );
+
+    let changed = LAST_PRESENTATION
+        .lock()
+        .map(|mut last| {
+            if last.as_deref() == Some(state.as_str()) {
+                false
+            } else {
+                *last = Some(state.clone());
+                true
+            }
+        })
+        .unwrap_or(true);
+
+    if changed {
+        let _ = super::jvm::call_activity(
+            "setCallPresentation",
+            "(Ljava/lang/String;)V",
+            Some(&state),
+        );
+    }
 }
 
 pub fn is_in_pip() -> bool {
@@ -161,6 +220,17 @@ pub extern "system" fn Java_io_github_chriexpe_papo_CallService_nativeCallAction
         // pump_call a reaplica assim que o servidor confirmar a entrada.
         drop(slot);
         push_action(UiAction::Muted(muted));
+        return;
+    }
+
+    if let Some(value) = action.strip_prefix("camera=") {
+        let camera = value == "1";
+        if let Some(control) = slot.as_mut() {
+            control.camera = camera;
+            let _ = control.commands.send(CallCommand::Camera(camera));
+        }
+        drop(slot);
+        push_action(UiAction::Camera(camera));
     }
 }
 
