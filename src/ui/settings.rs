@@ -567,56 +567,32 @@ impl Rows<'_> {
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
-        self.row(label, None, |ui, t| {
+        self.row(label, None, |ui, _| {
             let width = ui.available_width();
-
-            #[cfg(target_os = "android")]
-            {
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
-                ui.painter().rect(
-                    rect,
-                    CornerRadius::same(radius::FIELD),
-                    t.fill_soft,
-                    Stroke::new(1.0, t.separator),
-                    egui::StrokeKind::Inside,
-                );
-                let key = format!("settings:{label}");
-                submitted = crate::platform::native_text::singleline(
-                    ui,
-                    &key,
-                    value,
-                    rect.shrink2(Vec2::new(space::MD, space::XS)),
-                    "",
-                    if secret {
-                        crate::platform::native_text::Mode::Password
-                    } else {
-                        crate::platform::native_text::Mode::Text
-                    },
-                    limit,
-                    false,
-                    t.label,
-                    t.label_tertiary,
-                    text::body(),
-                )
-                .submit;
-            }
-
-            #[cfg(not(target_os = "android"))]
-            {
-                let edit_id = ui.id().with(("settings-field", label));
-                let response = ui.add_sized(
-                    Vec2::new(width, 26.0),
-                    egui::TextEdit::singleline(value)
-                        .id(edit_id)
-                        .char_limit(limit)
-                        .password(secret)
-                        .font(text::body())
-                        .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
-                );
-                submitted =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            }
+            let edit_id = ui.id().with(("settings-field", label));
+            let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
+            let response = ui.add_sized(
+                Vec2::new(width, 26.0),
+                egui::TextEdit::singleline(value)
+                    .id(edit_id)
+                    .char_limit(limit)
+                    .password(secret)
+                    .font(text::body())
+                    .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
+            );
+            let _ = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                edit_id,
+                value,
+                response.has_focus(),
+                if secret {
+                    crate::platform::ime::Kind::Password
+                } else {
+                    crate::platform::ime::Kind::Text
+                },
+            );
+            submitted =
+                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
         });
         submitted
     }

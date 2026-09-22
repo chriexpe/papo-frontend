@@ -24,7 +24,9 @@ fn android_main(app: AndroidApp) {
         None => log::error!("sem pasta privada: a sessão não vai sobreviver ao fechamento"),
     }
 
-    // Todo texto interativo no Android usa uma EditText nativa de verdade.
+    // Campos egui que ainda usam GameTextInput.
+    crate::platform::ime::install(app.clone());
+    // Compositor e edição de mensagem usam um EditText Android de verdade.
     crate::platform::native_text::install(app.clone());
     // A ponte de volta: permissão e seletor de arquivos partem daqui.
     crate::platform::jvm::install(app.clone());

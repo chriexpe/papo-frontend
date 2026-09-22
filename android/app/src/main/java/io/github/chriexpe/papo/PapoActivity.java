@@ -11,8 +11,8 @@ import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
-import android.text.InputFilter;
 import android.text.InputType;
+import android.text.Selection;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.util.TypedValue;
@@ -21,6 +21,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
@@ -30,10 +31,14 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 
 import com.google.androidgamesdk.GameActivity;
+import com.google.androidgamesdk.gametextinput.InputConnection;
+import com.google.androidgamesdk.gametextinput.Settings;
+import com.google.androidgamesdk.gametextinput.State;
 
 import org.freedesktop.gstreamer.GStreamer;
 
@@ -56,6 +61,14 @@ public class PapoActivity extends GameActivity {
     /** Envia as bordas ao Rust. Implementada em `src/platform/safe_area.rs`. */
     private static native void nativeSetInsets(int left, int top, int right, int bottom);
 
+    /** Envia o documento completo do IME ao Rust. */
+    private static native void nativeSetText(
+            String text,
+            int selectionStart,
+            int selectionEnd,
+            int composingRegionStart,
+            int composingRegionEnd);
+
     /** Eventos do EditText Android que cobre o compositor/edição de mensagem. */
     private static native void nativeEditorTextChanged(String key, String text);
     private static native void nativeEditorSelectionChanged(String key, int start, int end);
@@ -67,28 +80,12 @@ public class PapoActivity extends GameActivity {
 
     private static final int NATIVE_EDITOR_COMPOSER = 0;
     private static final int NATIVE_EDITOR_EDIT = 1;
-    private static final int NATIVE_EDITOR_TEXT = 2;
-    private static final int NATIVE_EDITOR_PASSWORD = 3;
-    private static final int NATIVE_EDITOR_SEARCH = 4;
 
     private FrameLayout nativeEditorLayer;
     private NativeEditText nativeEditor;
     private String nativeEditorKey;
     private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
     private boolean mutatingNativeEditor;
-
-    private int nativeEditorImeAction() {
-        switch (nativeEditorMode) {
-            case NATIVE_EDITOR_EDIT:
-            case NATIVE_EDITOR_TEXT:
-            case NATIVE_EDITOR_PASSWORD:
-                return EditorInfo.IME_ACTION_DONE;
-            case NATIVE_EDITOR_SEARCH:
-                return EditorInfo.IME_ACTION_SEARCH;
-            default:
-                return EditorInfo.IME_ACTION_NONE;
-        }
-    }
 
     /**
      * O compositor Android é um EditText de verdade, não um TextEdit do egui
@@ -118,7 +115,9 @@ public class PapoActivity extends GameActivity {
                     | EditorInfo.IME_FLAG_NO_ENTER_ACTION);
             outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_EXTRACT_UI
                     | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                    | nativeEditorImeAction();
+                    | (nativeEditorMode == NATIVE_EDITOR_EDIT
+                            ? EditorInfo.IME_ACTION_DONE
+                            : EditorInfo.IME_ACTION_NONE);
             return connection;
         }
     }
@@ -181,15 +180,15 @@ public class PapoActivity extends GameActivity {
         });
 
         nativeEditor.setOnEditorActionListener((view, actionId, event) -> {
-            if (nativeEditorKey == null || nativeEditorMode == NATIVE_EDITOR_COMPOSER) {
+            if (nativeEditorMode != NATIVE_EDITOR_EDIT || nativeEditorKey == null) {
                 return false;
             }
-            final boolean action = actionId == nativeEditorImeAction();
+            final boolean done = actionId == EditorInfo.IME_ACTION_DONE;
             final boolean enter = event != null
                     && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
                     && event.getAction() == KeyEvent.ACTION_DOWN
                     && !event.isShiftPressed();
-            if (action || enter) {
+            if (done || enter) {
                 nativeEditorSubmit(nativeEditorKey);
                 return true;
             }
@@ -219,7 +218,6 @@ public class PapoActivity extends GameActivity {
             int hintColor,
             int mode,
             int maxLines,
-            int maxChars,
             boolean focus) {
         runOnUiThread(() -> {
             ensureNativeEditor();
@@ -233,44 +231,14 @@ public class PapoActivity extends GameActivity {
             nativeEditor.setTextColor(textColor);
             nativeEditor.setHintTextColor(hintColor);
             nativeEditor.setHint(hint);
-
-            final boolean singleLine = mode == NATIVE_EDITOR_TEXT
-                    || mode == NATIVE_EDITOR_PASSWORD
-                    || mode == NATIVE_EDITOR_SEARCH;
-            nativeEditor.setSingleLine(singleLine);
-            nativeEditor.setHorizontallyScrolling(singleLine);
             nativeEditor.setMinLines(1);
-            nativeEditor.setMaxLines(singleLine ? 1 : Math.max(1, maxLines));
-            nativeEditor.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-
-            if (mode == NATIVE_EDITOR_PASSWORD) {
-                nativeEditor.setInputType(
-                        InputType.TYPE_CLASS_TEXT
-                                | InputType.TYPE_TEXT_VARIATION_PASSWORD
-                                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            } else if (mode == NATIVE_EDITOR_SEARCH) {
-                nativeEditor.setInputType(
-                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_FILTER);
-            } else if (singleLine) {
-                nativeEditor.setInputType(
-                        InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
-            } else {
-                nativeEditor.setInputType(
-                        InputType.TYPE_CLASS_TEXT
-                                | InputType.TYPE_TEXT_VARIATION_SHORT_MESSAGE
-                                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                                | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
-            }
-
-            nativeEditor.setFilters(
-                    maxChars > 0
-                            ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
-                            : new InputFilter[0]);
+            nativeEditor.setMaxLines(Math.max(1, maxLines));
             nativeEditor.setImeOptions(
                     EditorInfo.IME_FLAG_NO_EXTRACT_UI
                             | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                            | nativeEditorImeAction());
+                            | (mode == NATIVE_EDITOR_EDIT
+                                    ? EditorInfo.IME_ACTION_DONE
+                                    : EditorInfo.IME_ACTION_NONE));
 
             final FrameLayout.LayoutParams params =
                     (FrameLayout.LayoutParams) nativeEditor.getLayoutParams();
@@ -347,6 +315,112 @@ public class PapoActivity extends GameActivity {
             }
             nativeEditor.setVisibility(View.GONE);
         });
+    }
+
+    /**
+     * O mesmo GameTextInput do GameActivity, mas observando cada operação no
+     * ponto em que o teclado realmente a executa.
+     *
+     * <p>Alguns IMEs agrupam movimentos de seleção e repetição de apagar antes
+     * de o Listener de alto nível publicar o State. Para um editor desenhado
+     * pelo egui isso é tarde demais: a barra de espaço parece "teleportar" o
+     * cursor e apagar segurado pode parecer um único toque. Aqui cada mutação
+     * publica imediatamente o Editable completo, sem inventar KeyEvents no Rust.
+     */
+    private final class TrackingInputConnection extends InputConnection {
+        TrackingInputConnection(View target, Settings settings) {
+            super(PapoActivity.this, target, settings);
+            setListener(PapoActivity.this);
+        }
+
+        private void publishEditorState() {
+            final Editable editable = getEditable();
+            if (editable == null) {
+                return;
+            }
+            nativeSetText(
+                    editable.toString(),
+                    Selection.getSelectionStart(editable),
+                    Selection.getSelectionEnd(editable),
+                    BaseInputConnection.getComposingSpanStart(editable),
+                    BaseInputConnection.getComposingSpanEnd(editable));
+        }
+
+        private boolean publish(boolean result) {
+            publishEditorState();
+            return result;
+        }
+
+        @Override
+        public boolean setSelection(int start, int end) {
+            return publish(super.setSelection(start, end));
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+            return publish(super.deleteSurroundingText(beforeLength, afterLength));
+        }
+
+        @Override
+        public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+            return publish(super.deleteSurroundingTextInCodePoints(beforeLength, afterLength));
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            return publish(super.setComposingText(text, newCursorPosition));
+        }
+
+        @Override
+        public boolean setComposingRegion(int start, int end) {
+            return publish(super.setComposingRegion(start, end));
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            return publish(super.finishComposingText());
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            return publish(super.commitText(text, newCursorPosition));
+        }
+
+        @Override
+        public boolean sendKeyEvent(KeyEvent event) {
+            return publish(super.sendKeyEvent(event));
+        }
+
+        @Override
+        public boolean endBatchEdit() {
+            return publish(super.endBatchEdit());
+        }
+    }
+
+    /**
+     * GameActivity 4.4.0 cria uma conexão concreta dentro do SurfaceView e
+     * entrega exatamente essa instância tanto ao Android quanto ao lado nativo.
+     * O campo é package-private, então substituímos uma única vez por reflexão
+     * antes de GameActivity registrar a conexão no C/Rust.
+     */
+    @Override
+    protected InputEnabledSurfaceView createSurfaceView() {
+        final InputEnabledSurfaceView view = new InputEnabledSurfaceView(this);
+        final EditorInfo editorInfo = getImeEditorInfo();
+        final TrackingInputConnection connection = new TrackingInputConnection(
+                view,
+                new Settings(
+                        editorInfo,
+                        editorInfo.inputType == InputType.TYPE_NULL));
+        try {
+            final Field field =
+                    InputEnabledSurfaceView.class.getDeclaredField("mInputConnection");
+            field.setAccessible(true);
+            field.set(view, connection);
+        } catch (ReflectiveOperationException error) {
+            Log.e("papo-ime", "não deu para instalar a conexão de texto rastreada", error);
+        }
+        return view;
     }
 
     /**
@@ -492,6 +566,24 @@ public class PapoActivity extends GameActivity {
                     && results[i] == PackageManager.PERMISSION_GRANTED;
             nativePermissionResult(permissions[i], granted);
         }
+    }
+
+    /**
+     * Fallback/espelho do Listener do GameTextInput.
+     *
+     * <p>As operações interativas já são publicadas diretamente pela
+     * TrackingInputConnection; este callback continua cobrindo qualquer
+     * mudança que a biblioteca produza por outro caminho.
+     */
+    @Override
+    public void stateChanged(State state, boolean dismissed) {
+        super.stateChanged(state, dismissed);
+        nativeSetText(
+                state.text == null ? "" : state.text,
+                state.selectionStart,
+                state.selectionEnd,
+                state.composingRegionStart,
+                state.composingRegionEnd);
     }
 
     /**
