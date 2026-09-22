@@ -257,6 +257,11 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
         edit_id,
         value,
         response.has_focus(),
+        if secret {
+            crate::platform::ime::Kind::Password
+        } else {
+            crate::platform::ime::Kind::Text
+        },
     );
     ui.advance_cursor_after_rect(rect);
 
