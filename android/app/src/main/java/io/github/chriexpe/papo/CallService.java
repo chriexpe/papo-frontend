@@ -5,6 +5,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.Person;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -24,11 +25,14 @@ public final class CallService extends Service {
     public static final String ACTION_START = "io.github.chriexpe.papo.call.START";
     public static final String ACTION_UPDATE = "io.github.chriexpe.papo.call.UPDATE";
     public static final String ACTION_TOGGLE_MUTE = "io.github.chriexpe.papo.call.TOGGLE_MUTE";
+    public static final String ACTION_TOGGLE_CAMERA = "io.github.chriexpe.papo.call.TOGGLE_CAMERA";
     public static final String ACTION_HANGUP = "io.github.chriexpe.papo.call.HANGUP";
 
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_MUTED = "muted";
     public static final String EXTRA_CAMERA = "camera";
+    public static final String EXTRA_MEMBERS = "members";
+    public static final String EXTRA_SPEAKER = "speaker";
 
     private static final String CHANNEL_ID = "calls";
     private static final int NOTIFICATION_ID = 7301;
@@ -36,6 +40,8 @@ public final class CallService extends Service {
     private String title = "Papo";
     private boolean muted = true;
     private boolean camera;
+    private int members;
+    private String speaker = "";
     private AudioManager audioManager;
     private AudioFocusRequest audioFocus;
 
@@ -100,6 +106,13 @@ public final class CallService extends Service {
             return START_NOT_STICKY;
         }
 
+        if (ACTION_TOGGLE_CAMERA.equals(action)) {
+            camera = !camera;
+            nativeCallAction(camera ? "camera=1" : "camera=0");
+            publish();
+            return START_NOT_STICKY;
+        }
+
         if (intent.hasExtra(EXTRA_TITLE)) {
             title = intent.getStringExtra(EXTRA_TITLE);
             if (title == null || title.isBlank()) {
@@ -111,6 +124,13 @@ public final class CallService extends Service {
         }
         if (intent.hasExtra(EXTRA_CAMERA)) {
             camera = intent.getBooleanExtra(EXTRA_CAMERA, false);
+        }
+        if (intent.hasExtra(EXTRA_MEMBERS)) {
+            members = intent.getIntExtra(EXTRA_MEMBERS, 0);
+        }
+        if (intent.hasExtra(EXTRA_SPEAKER)) {
+            final String value = intent.getStringExtra(EXTRA_SPEAKER);
+            speaker = value == null ? "" : value;
         }
 
         publish();
@@ -146,28 +166,55 @@ public final class CallService extends Service {
                 new Intent(this, CallService.class).setAction(ACTION_TOGGLE_MUTE),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
-        final PendingIntent hangup = PendingIntent.getService(
+        final PendingIntent cameraAction = PendingIntent.getService(
                 this,
                 12,
+                new Intent(this, CallService.class).setAction(ACTION_TOGGLE_CAMERA),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        final PendingIntent hangup = PendingIntent.getService(
+                this,
+                13,
                 new Intent(this, CallService.class).setAction(ACTION_HANGUP),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        final String detail;
+        if (!speaker.isBlank()) {
+            detail = speaker + " está falando";
+        } else if (members > 0) {
+            detail = members + (members == 1 ? " participante" : " participantes");
+        } else {
+            detail = camera ? "Chamada de vídeo em andamento" : "Chamada de voz em andamento";
+        }
+
+        final Person person = new Person.Builder()
+                .setName(title)
+                .setImportant(true)
+                .build();
+
+        final Notification.CallStyle style = Notification.CallStyle.forOngoingCall(person, hangup);
 
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_call_notification)
                 .setContentTitle(title)
-                .setContentText(camera ? "Chamada de vídeo em andamento" : "Chamada de voz em andamento")
+                .setContentText(detail)
                 .setCategory(Notification.CATEGORY_CALL)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setContentIntent(open)
+                .setStyle(style)
                 .addAction(new Notification.Action.Builder(
-                        Icon.createWithResource(this, R.drawable.ic_call_notification),
+                        Icon.createWithResource(
+                                this,
+                                muted ? R.drawable.ic_mic_off_notification : R.drawable.ic_mic_notification),
                         muted ? "Ativar microfone" : "Silenciar",
                         mute).build())
                 .addAction(new Notification.Action.Builder(
-                        Icon.createWithResource(this, R.drawable.ic_call_notification),
-                        "Desligar",
-                        hangup).build())
+                        Icon.createWithResource(
+                                this,
+                                camera ? R.drawable.ic_camera_off_notification : R.drawable.ic_camera_notification),
+                        camera ? "Desligar câmera" : "Ligar câmera",
+                        cameraAction).build())
                 .build();
     }
 
