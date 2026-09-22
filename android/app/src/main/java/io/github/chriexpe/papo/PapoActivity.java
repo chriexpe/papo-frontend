@@ -1,8 +1,10 @@
 package io.github.chriexpe.papo;
 
 import android.content.Context;
+import android.app.PictureInPictureParams;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
@@ -17,6 +19,7 @@ import android.text.Selection;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 import android.util.Log;
+import android.util.Rational;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -65,6 +68,10 @@ public class PapoActivity extends GameActivity {
     /** Envia as bordas ao Rust. Implementada em `src/platform/safe_area.rs`. */
     private static native void nativeSetInsets(int left, int top, int right, int bottom);
 
+    /** Ciclo de vida/PiP da call. Implementados em `src/platform/android_call.rs`. */
+    private static native void nativeSetPictureInPictureMode(boolean enabled);
+    private static native void nativeLifecycleChanged(boolean foreground);
+
     /** Envia o documento completo do IME ao Rust. */
     private static native void nativeSetText(
             String text,
@@ -96,6 +103,7 @@ public class PapoActivity extends GameActivity {
     private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
     private boolean mutatingNativeEditor;
     private boolean imeWasVisible;
+    private String callPresentation = "off";
 
     /**
      * O compositor Android é um EditText de verdade, não um TextEdit do egui
@@ -680,6 +688,56 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /** Inicia a execução em primeiro plano da call enquanto a Activity está visível. */
+    public void startCallService(String title) {
+        runOnUiThread(() -> {
+            final Intent intent = new Intent(this, CallService.class)
+                    .setAction(CallService.ACTION_START)
+                    .putExtra(CallService.EXTRA_TITLE, title)
+                    .putExtra(CallService.EXTRA_MUTED, true)
+                    .putExtra(CallService.EXTRA_CAMERA, false);
+            startForegroundService(intent);
+        });
+    }
+
+    /** Atualiza os tipos/controles do foreground service. */
+    public void updateCallService(String state) {
+        runOnUiThread(() -> {
+            boolean muted = state.contains("muted=1");
+            boolean camera = state.contains("camera=1");
+            final Intent intent = new Intent(this, CallService.class)
+                    .setAction(CallService.ACTION_UPDATE)
+                    .putExtra(CallService.EXTRA_MUTED, muted)
+                    .putExtra(CallService.EXTRA_CAMERA, camera);
+            startService(intent);
+        });
+    }
+
+    /** Encerra o foreground service quando a call termina. */
+    public void stopCallService() {
+        runOnUiThread(() -> stopService(new Intent(this, CallService.class)));
+    }
+
+    /**
+     * Mantém os parâmetros do PiP sincronizados com o estado da call.
+     * Android 12+ faz a transição automática ao gesto Home quando há vídeo.
+     */
+    public void setCallPresentation(String state) {
+        runOnUiThread(() -> {
+            if (state.equals(callPresentation)) {
+                return;
+            }
+            callPresentation = state;
+            final boolean video = "video".equals(state);
+            final PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9))
+                    .setAutoEnterEnabled(video)
+                    .setSeamlessResizeEnabled(false)
+                    .build();
+            setPictureInPictureParams(params);
+        });
+    }
+
     private static final int PERMISSION_REQUEST = 1;
     private static final int PICK_REQUEST = 2;
 
@@ -862,6 +920,26 @@ public class PapoActivity extends GameActivity {
             return view.onApplyWindowInsets(insets);
         });
         root.requestApplyInsets();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        nativeLifecycleChanged(true);
+    }
+
+    @Override
+    protected void onStop() {
+        nativeLifecycleChanged(false);
+        super.onStop();
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(
+            boolean isInPictureInPictureMode,
+            Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        nativeSetPictureInPictureMode(isInPictureInPictureMode);
     }
 
     private void publish(WindowInsets insets) {
