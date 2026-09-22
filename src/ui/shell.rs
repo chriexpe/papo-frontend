@@ -1942,11 +1942,13 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     state,
                     t,
                     s,
-                    author_id.as_deref(),
-                    &author_name,
-                    at,
-                    Some(&channel_name),
-                    &body,
+                    ResultPreview {
+                        author_id: author_id.as_deref(),
+                        author_name: &author_name,
+                        at,
+                        channel_name: Some(&channel_name),
+                        body: &body,
+                    },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
                 }
@@ -2003,17 +2005,27 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     state,
                     t,
                     s,
-                    Some(&author_id),
-                    &author_name,
-                    Some(at),
-                    None,
-                    &body,
+                    ResultPreview {
+                        author_id: Some(&author_id),
+                        author_name: &author_name,
+                        at: Some(at),
+                        channel_name: None,
+                        body: &body,
+                    },
                 ) {
                     let channel = channel_id.clone();
                     go_to(store, state, ui, &channel, &message_id);
                 }
             }
         });
+}
+
+struct ResultPreview<'a> {
+    author_id: Option<&'a str>,
+    author_name: &'a str,
+    at: Option<DateTime<Local>>,
+    channel_name: Option<&'a str>,
+    body: &'a str,
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -2024,12 +2036,15 @@ fn result_row(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    author_id: Option<&str>,
-    author_name: &str,
-    at: Option<DateTime<Local>>,
-    channel_name: Option<&str>,
-    body: &str,
+    preview: ResultPreview<'_>,
 ) -> bool {
+    let ResultPreview {
+        author_id,
+        author_name,
+        at,
+        channel_name,
+        body,
+    } = preview;
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
     let max_text_width = (ui.available_width() - avatar_size - space::LG - space::LG).max(80.0);
