@@ -446,17 +446,25 @@ fn audio_sink() -> Option<gst::Element> {
     #[cfg(not(target_os = "android"))]
     const SINKS: &[&str] = &["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"];
 
+    // ABERTO: no Android o som sai, mas picotado. Três tentativas foram
+    // feitas no aparelho e nenhuma mudou nada — nenhuma ficou no código:
+    //
+    //   1. folga no buffer do sink (`buffer-time`, `latency-time`);
+    //   2. entregar 48 kHz em estéreo, que é o que o aparelho toca, em vez
+    //      do mono dos recados;
+    //   3. uma `queue` entre a decodificação e o sink — que foi o que
+    //      resolveu o picote da **gravação** na área de trabalho (f1c08eb).
+    //
+    // O decodificador já é o de software, e Opus é barato: não é custo de
+    // decodificação. O próximo passo não é tentar outra peça no pipeline, é
+    // medir onde o tempo se perde — a thread de mídia também extrai capas e
+    // formas de onda, e essas sim são caras.
     for name in SINKS {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
             return Some(sink);
         }
     }
-    // Aberto: no Android o som sai, mas picotado. Não é o buffer do sink
-    // (dar folga em `buffer-time`/`latency-time` não mudou nada) nem o
-    // formato (converter para 48 kHz estéreo, que é o que o aparelho toca,
-    // também não). O decodificador já é o de software, que é barato para
-    // Opus. Falta medir onde o tempo se perde.
     log::warn!("sem saída de áudio: o som não vai tocar");
     None
 }
