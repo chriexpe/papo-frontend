@@ -502,15 +502,9 @@ pub struct MessageList {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PinnedMessage {
-    pub message_id: Option<String>,
-    pub message: Option<Message>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct PinnedList {
     #[serde(default, deserialize_with = "nullable_list")]
-    pub pinned: Vec<PinnedMessage>,
+    pub pinned: Vec<Message>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
