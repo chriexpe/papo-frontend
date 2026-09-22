@@ -44,6 +44,8 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+
+import org.json.JSONObject;
 import java.util.Map;
 
 import com.google.androidgamesdk.GameActivity;
@@ -717,13 +719,18 @@ public class PapoActivity extends GameActivity {
     /** Atualiza os tipos/controles do foreground service. */
     public void updateCallService(String state) {
         runOnUiThread(() -> {
-            boolean muted = state.contains("muted=1");
-            boolean camera = state.contains("camera=1");
-            final Intent intent = new Intent(this, CallService.class)
-                    .setAction(CallService.ACTION_UPDATE)
-                    .putExtra(CallService.EXTRA_MUTED, muted)
-                    .putExtra(CallService.EXTRA_CAMERA, camera);
-            startService(intent);
+            try {
+                final JSONObject json = new JSONObject(state);
+                final Intent intent = new Intent(this, CallService.class)
+                        .setAction(CallService.ACTION_UPDATE)
+                        .putExtra(CallService.EXTRA_MUTED, json.optBoolean("muted", true))
+                        .putExtra(CallService.EXTRA_CAMERA, json.optBoolean("camera", false))
+                        .putExtra(CallService.EXTRA_MEMBERS, json.optInt("members", 0))
+                        .putExtra(CallService.EXTRA_SPEAKER, json.optString("speaker", ""));
+                startService(intent);
+            } catch (Exception error) {
+                Log.e("papo-call", "estado inválido do serviço da call", error);
+            }
         });
     }
 
@@ -751,7 +758,9 @@ public class PapoActivity extends GameActivity {
                 return;
             }
 
-            final boolean video = "video".equals(state);
+            final boolean video = state.startsWith("video");
+            final boolean muted = state.contains("muted=1");
+            final boolean camera = state.contains("camera=1");
             final List<RemoteAction> actions = new ArrayList<>();
 
             final PendingIntent mute = PendingIntent.getService(
@@ -761,19 +770,35 @@ public class PapoActivity extends GameActivity {
                             .setAction(CallService.ACTION_TOGGLE_MUTE),
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             actions.add(new RemoteAction(
-                    Icon.createWithResource(this, R.drawable.ic_call_notification),
-                    "Microfone",
-                    "Ativar ou silenciar microfone",
+                    Icon.createWithResource(
+                            this,
+                            muted ? R.drawable.ic_mic_off_notification : R.drawable.ic_mic_notification),
+                    muted ? "Ativar microfone" : "Silenciar",
+                    "Alternar microfone",
                     mute));
+
+            final PendingIntent cameraAction = PendingIntent.getService(
+                    this,
+                    22,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_TOGGLE_CAMERA),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(
+                            this,
+                            camera ? R.drawable.ic_camera_off_notification : R.drawable.ic_camera_notification),
+                    camera ? "Desligar câmera" : "Ligar câmera",
+                    "Alternar câmera",
+                    cameraAction));
 
             final PendingIntent hangup = PendingIntent.getService(
                     this,
-                    22,
+                    23,
                     new Intent(this, CallService.class)
                             .setAction(CallService.ACTION_HANGUP),
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             actions.add(new RemoteAction(
-                    Icon.createWithResource(this, R.drawable.ic_call_notification),
+                    Icon.createWithResource(this, R.drawable.ic_hangup_notification),
                     "Desligar",
                     "Sair da chamada",
                     hangup));
