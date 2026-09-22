@@ -825,6 +825,7 @@ fn account_pill(
 ) {
     let me = store.member(&store.me).cloned().unwrap_or(crate::state::Member {
         id: store.me.clone(),
+        username: store.my_username.clone(),
         name: store.my_name.clone(),
         presence: crate::state::Presence::Online,
         role_color: None,
