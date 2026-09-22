@@ -399,7 +399,16 @@ fn image_attachment() -> Option<Attachment> {
     Some(attachment("a-imagem", "paleta.png", "image/png", &path))
 }
 
+/// Os anexos gerados do modo demonstração saem de um pipeline do GStreamer,
+/// que no Android ainda não existe. Sem eles a demonstração continua de pé:
+/// só não tem vídeo nem áudio para abrir.
+#[cfg(target_os = "android")]
+fn encoded_attachment(_id: &str, _name: &str, _mime: &str, _chain: &str) -> Option<Attachment> {
+    None
+}
+
 /// Roda um pipeline do GStreamer até o fim e devolve o anexo correspondente.
+#[cfg(not(target_os = "android"))]
 fn encoded_attachment(id: &str, name: &str, mime: &str, chain: &str) -> Option<Attachment> {
     use gstreamer as gst;
     use gstreamer::prelude::*;

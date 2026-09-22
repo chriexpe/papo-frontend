@@ -27,8 +27,26 @@ pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
 /// Abaixo disto a conversa vira a superfície raiz e as laterais viram drawers.
 pub const COMPACT_BREAKPOINT: f32 = 820.0;
-const SWIPE_DISTANCE: f32 = 56.0;
+/// Um arrasto só vira gesto depois de andar isto, em pontos. Antes disso
+/// ainda pode ser um toque, e roubar o movimento cedo demais faria a rolagem
+/// engasgar a cada encostada.
+const SWIPE_SLOP: f32 = 6.0;
+/// O quanto o movimento precisa ser mais horizontal que vertical para ser
+/// nosso. Sem isto, rolar a conversa arrastaria a gaveta junto.
 const SWIPE_AXIS_BIAS: f32 = 1.25;
+/// Quanto da gaveta precisa estar à mostra, ao soltar o dedo, para ela
+/// terminar de abrir. Abaixo disso ela volta.
+///
+/// É uma fração da largura da gaveta, não uma distância fixa: assim a de
+/// navegação e a de pessoas, que têm larguras diferentes, pedem o mesmo
+/// gesto proporcional.
+const DRAWER_COMMIT: f32 = 0.4;
+/// Velocidade a partir da qual um piparote decide sozinho, em pontos por
+/// segundo, mesmo que o dedo não tenha andado o bastante.
+const FLICK_SPEED: f32 = 450.0;
+/// Quanto a mensagem acompanha o dedo coladinha antes de começar a resistir
+/// — e também a distância que dispara a resposta.
+const REPLY_TRAVEL: f32 = 72.0;
 const SIDEBAR_HEADER_HEIGHT: f32 = IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0;
 /// As duas pastilhas de identidade: a do servidor e a da conta.
 pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
@@ -58,6 +76,8 @@ const COMPOSER_ATTACH_H: f32 = 62.0;
 const COMPOSER_REPLY_H: f32 = 26.0;
 /// Altura da linha onde se digita, sem as faixas de cima.
 const COMPOSER_LINE_H: f32 = 52.0;
+/// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
+/// quatro linhas. Depois disso a própria área de texto rola internamente.
 const COMPOSER_MAX_ROWS: usize = 4;
 const TOAST_SECONDS: f64 = 6.0;
 
@@ -187,8 +207,64 @@ pub struct MobileServers<'a> {
 struct MobileGesture {
     origin: egui::Pos2,
     last: egui::Pos2,
+    /// Quando `last` foi visto, para tirar a velocidade do piparote.
+    last_time: f64,
+    /// Velocidade horizontal recente, em pontos por segundo. Vai sendo
+    /// suavizada para um tranco isolado não decidir o gesto sozinho.
+    velocity: f32,
     message_id: Option<String>,
     blocked: bool,
+    /// O que este arrasto resolveu ser. Decide-se uma vez, no primeiro
+    /// movimento que passa da folga, e não muda mais: a meio caminho o dedo
+    /// não deve trocar de gesto por acidente.
+    intent: Option<Intent>,
+}
+
+/// O que um arrasto virou.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Intent {
+    /// Mostra ou esconde esta gaveta.
+    Drawer(MobileSurface),
+    /// Puxa esta mensagem para responder.
+    Reply(String),
+    /// Vertical: o movimento é da rolagem, não nosso.
+    Scroll,
+}
+
+/// A gaveta que aparece na tela e o quanto dela aparece.
+///
+/// Enquanto o dedo está na tela é ele quem manda em `shown`; ao soltar, o
+/// valor corre sozinho até `target` (0 ou 1). `surface` continua valendo
+/// durante a saída, que é o que deixa a gaveta terminar de sair depois de
+/// `mobile_surface` já ter voltado a ser a conversa.
+#[derive(Clone, Debug)]
+struct Drawer {
+    surface: MobileSurface,
+    /// De 0 (fora da tela) a 1 (inteira à mostra).
+    shown: f32,
+    target: f32,
+    dragging: bool,
+}
+
+impl Default for Drawer {
+    fn default() -> Self {
+        Self {
+            surface: MobileSurface::Chat,
+            shown: 0.0,
+            target: 0.0,
+            dragging: false,
+        }
+    }
+}
+
+/// A mensagem sendo puxada para responder.
+#[derive(Clone, Debug, Default)]
+struct ReplyDrag {
+    id: String,
+    /// Quanto ela já andou para a esquerda, em pontos, depois da resistência.
+    shown: f32,
+    /// O dedo ainda está segurando.
+    dragging: bool,
 }
 
 /// Retorna se a largura pede a navegação de uma coluna.
@@ -270,6 +346,8 @@ pub struct Stash {
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
+    /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
+    pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
@@ -286,6 +364,7 @@ impl Stash {
             replying: None,
             reply_notify: true,
             editing: None,
+            edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
             popup: None,
@@ -302,6 +381,7 @@ impl Stash {
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
+        std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
@@ -319,9 +399,16 @@ pub struct UiState {
     /// Quantos vídeos o overlay compacto tenta manter visíveis (1, 2 ou 4).
     pub call_video_tiles: usize,
     mobile_gesture: Option<MobileGesture>,
+    /// Quanto da gaveta está à mostra neste quadro.
+    drawer: Drawer,
+    /// A mensagem que está sendo puxada para responder, se houver.
+    reply_drag: Option<ReplyDrag>,
     /// Retângulos das mensagens deste quadro, usados para swipe-to-reply sem
     /// roubar o drag vertical do ScrollArea.
     message_rows: Vec<(String, Rect)>,
+    /// Zonas de timeline/waveform que, no Android, arbitram o próprio gesto:
+    /// horizontal = scrub; vertical = rolagem. O swipe da mensagem não entra.
+    media_seek_zones: Vec<Rect>,
     pub translucent: bool,
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
@@ -340,6 +427,8 @@ pub struct UiState {
     pub reply_notify_default: bool,
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
+    /// Só o primeiro quadro da edição pede foco ao TextEdit.
+    pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
@@ -387,7 +476,10 @@ impl Default for UiState {
             mobile_surface: MobileSurface::Chat,
             call_video_tiles: 2,
             mobile_gesture: None,
+            drawer: Drawer::default(),
+            reply_drag: None,
             message_rows: Vec::new(),
+            media_seek_zones: Vec::new(),
             translucent: true,
             pending: Vec::new(),
             glass: None,
@@ -398,6 +490,7 @@ impl Default for UiState {
             reply_notify: true,
             reply_notify_default: true,
             editing: None,
+            edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
@@ -443,6 +536,7 @@ pub fn draw(
     mobile_servers: Option<MobileServers<'_>>,
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
+    state.media_seek_zones.clear();
 
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
@@ -475,6 +569,7 @@ pub fn draw(
         state.media.pause_all();
         state.media.saved = None;
         state.editing = None;
+        state.edit_focus_pending = false;
         state.replying = None;
         state.close_popup();
     }
@@ -519,6 +614,10 @@ pub fn draw(
     } else {
         state.mobile_surface = MobileSurface::Chat;
         state.mobile_gesture = None;
+        // A janela alargou no meio de um gesto: as gavetas não existem mais
+        // aqui, e um arrasto pela metade não pode sobrar guardado.
+        state.drawer = Drawer::default();
+        state.reply_drag = None;
         channels_sidebar(ui, store, state, t, s, live);
         if state.show_members {
             members_sidebar(ui, store, state, t, s, false);
@@ -526,6 +625,43 @@ pub fn draw(
         conversation(ui, store, state, call, t, s, stage);
         overlays(ui, store, state, t, s);
         None
+    }
+}
+
+/// Leva a gaveta e a mensagem puxada até onde elas deviam estar.
+///
+/// Enquanto o dedo está na tela quem manda é ele, e aqui não se mexe em
+/// nada. Solto o dedo, os dois correm sozinhos — e é também por aqui que a
+/// gaveta aberta por um toque (no botão de pessoas, por exemplo) entra
+/// deslizando em vez de aparecer de uma vez.
+fn advance_surfaces(ui: &egui::Ui, state: &mut UiState) {
+    if !state.drawer.dragging {
+        let wanted = state.mobile_surface;
+        if wanted == MobileSurface::Chat {
+            state.drawer.target = 0.0;
+        } else {
+            if state.drawer.surface != wanted {
+                // Trocou de gaveta sem passar pela conversa: a nova entra
+                // do zero, senão ela apareceria já pela metade.
+                state.drawer.surface = wanted;
+                state.drawer.shown = 0.0;
+            }
+            state.drawer.target = 1.0;
+        }
+        let mut shown = state.drawer.shown;
+        advance(&mut shown, state.drawer.target, 1.0, ui);
+        state.drawer.shown = shown;
+    }
+
+    if let Some(drag) = state.reply_drag.as_mut()
+        && !drag.dragging
+    {
+        let mut shown = drag.shown;
+        advance(&mut shown, 0.0, REPLY_TRAVEL * 2.0, ui);
+        drag.shown = shown;
+        if shown <= 0.0 {
+            state.reply_drag = None;
+        }
     }
 }
 
@@ -540,28 +676,57 @@ fn mobile_drawers(
     servers: Option<MobileServers<'_>>,
     area: Rect,
 ) -> Option<super::rail::RailAction> {
-    match state.mobile_surface {
+    advance_surfaces(&*root, state);
+
+    // Fora da tela e ninguém segurando: não há gaveta nenhuma para desenhar.
+    if state.drawer.shown <= 0.0 && !state.drawer.dragging {
+        return None;
+    }
+    let surface = state.drawer.surface;
+    let width = drawer_width(surface, area);
+    if width <= 0.0 {
+        return None;
+    }
+    let shown = state.drawer.shown.clamp(0.0, 1.0);
+    // Só o que já está à mostra fica dentro da tela; o resto espera do lado
+    // de fora. É isto que faz a gaveta acompanhar o dedo.
+    let hidden = width * (1.0 - shown);
+
+    // Enquanto ela não está inteira à mostra, o toque fora dela ainda é do
+    // arrasto: fechar no meio do caminho tiraria a gaveta da mão de quem a
+    // está puxando.
+    let settled = shown >= 1.0;
+
+    match surface {
         MobileSurface::Chat => None,
         MobileSurface::Navigation => {
             let servers = servers?;
-            let width = (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
-                .min((area.width() - space::XXL).max(SIDEBAR_WIDTH));
-            let rect = Rect::from_min_size(area.min, Vec2::new(width, area.height()));
-            let dismiss = root.interact(area, Id::new("mobile-navigation-dismiss"), Sense::click());
-            if dismiss.clicked()
-                && root
-                    .ctx()
-                    .pointer_interact_pos()
-                    .is_some_and(|pos| !rect.contains(pos))
-            {
-                state.mobile_surface = MobileSurface::Chat;
-                return None;
+            let rect = Rect::from_min_size(
+                egui::pos2(area.min.x - hidden, area.min.y),
+                Vec2::new(width, area.height()),
+            );
+            if settled {
+                let dismiss =
+                    root.interact(area, Id::new("mobile-navigation-dismiss"), Sense::click());
+                if dismiss.clicked()
+                    && root
+                        .ctx()
+                        .pointer_interact_pos()
+                        .is_some_and(|pos| !rect.contains(pos))
+                {
+                    // Fecha, mas segue desenhando a gaveta neste quadro.
+                    // Sair daqui fazia ela faltar um quadro e voltar já
+                    // saindo, e era isso que parecia uma segunda cópia dela.
+                    // Fechar deslizando nunca passou por aqui — por isso só
+                    // o toque fora tinha o defeito.
+                    state.mobile_surface = MobileSurface::Chat;
+                }
             }
             let response = egui::Area::new(Id::new("mobile-navigation-drawer"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(rect.min)
                 .default_size(rect.size())
-                .constrain_to(area)
+                .constrain_to(area.expand2(Vec2::new(width, 0.0)))
                 .show(root.ctx(), |ui| {
                     ui.set_min_size(rect.size());
                     ui.set_max_size(rect.size());
@@ -572,26 +737,32 @@ fn mobile_drawers(
             response.inner
         }
         MobileSurface::People => {
-            let width = MEMBERS_WIDTH.min((area.width() - space::XXL).max(120.0));
             let rect = Rect::from_min_size(
-                egui::pos2(area.max.x - width, area.min.y),
+                egui::pos2(area.max.x - width + hidden, area.min.y),
                 Vec2::new(width, area.height()),
             );
-            let dismiss = root.interact(area, Id::new("mobile-people-dismiss"), Sense::click());
-            if dismiss.clicked()
-                && root
-                    .ctx()
-                    .pointer_interact_pos()
-                    .is_some_and(|pos| !rect.contains(pos))
-            {
-                state.mobile_surface = MobileSurface::Chat;
-                return None;
+            if settled {
+                let dismiss =
+                    root.interact(area, Id::new("mobile-people-dismiss"), Sense::click());
+                if dismiss.clicked()
+                    && root
+                        .ctx()
+                        .pointer_interact_pos()
+                        .is_some_and(|pos| !rect.contains(pos))
+                {
+                    // Fecha, mas segue desenhando a gaveta neste quadro.
+                    // Sair daqui fazia ela faltar um quadro e voltar já
+                    // saindo, e era isso que parecia uma segunda cópia dela.
+                    // Fechar deslizando nunca passou por aqui — por isso só
+                    // o toque fora tinha o defeito.
+                    state.mobile_surface = MobileSurface::Chat;
+                }
             }
             egui::Area::new(Id::new("mobile-people-drawer"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(rect.min)
                 .default_size(rect.size())
-                .constrain_to(area)
+                .constrain_to(area.expand2(Vec2::new(width, 0.0)))
                 .show(root.ctx(), |ui| {
                     ui.set_min_size(rect.size());
                     ui.set_max_size(rect.size());
@@ -1546,9 +1717,73 @@ fn conversation(
     });
 }
 
-fn horizontal_swipe(delta: Vec2, direction: f32) -> bool {
-    delta.x * direction >= SWIPE_DISTANCE
-        && delta.x.abs() >= delta.y.abs() * SWIPE_AXIS_BIAS
+/// Largura que a gaveta ocupa. A mesma conta de `mobile_drawers`: o gesto
+/// precisa saber de quanto é o caminho inteiro para dizer que fração dele já
+/// foi andada.
+fn drawer_width(surface: MobileSurface, area: Rect) -> f32 {
+    match surface {
+        MobileSurface::Chat => 0.0,
+        MobileSurface::Navigation => (super::rail::RAIL_WIDTH + SIDEBAR_WIDTH)
+            .min((area.width() - space::XXL).max(SIDEBAR_WIDTH)),
+        MobileSurface::People => MEMBERS_WIDTH.min((area.width() - space::XXL).max(120.0)),
+    }
+}
+
+/// De que lado a gaveta entra: a navegação vem da esquerda, as pessoas vêm
+/// da direita. Serve para a mesma conta valer para as duas — basta trocar o
+/// sinal do que o dedo andou.
+fn open_sign(surface: MobileSurface) -> f32 {
+    match surface {
+        MobileSurface::People => -1.0,
+        _ => 1.0,
+    }
+}
+
+/// O elástico: até `full` a coisa anda colada ao dedo; depois anda cada vez
+/// menos e nunca chega ao dobro. É a resistência que avisa o polegar de que
+/// já foi longe o bastante, sem precisar de nada escrito na tela.
+fn rubber_band(raw: f32, full: f32) -> f32 {
+    if raw <= 0.0 {
+        return 0.0;
+    }
+    if raw <= full {
+        return raw;
+    }
+    let over = raw - full;
+    full + over / (1.0 + over / full)
+}
+
+/// Ao soltar o dedo: a gaveta termina de abrir ou volta para onde estava.
+///
+/// Um piparote decide sozinho, para os dois lados — quem joga a gaveta com
+/// força espera que ela vá, mesmo que o dedo tenha andado pouco. Sem
+/// piparote, vale o quanto dela já está à mostra.
+fn commits(shown: f32, opening_velocity: f32) -> bool {
+    if opening_velocity >= FLICK_SPEED {
+        return true;
+    }
+    if opening_velocity <= -FLICK_SPEED {
+        return false;
+    }
+    shown >= DRAWER_COMMIT
+}
+
+/// O que este arrasto vai ser, decidido uma vez só.
+fn decide_intent(delta: Vec2, surface: MobileSurface, message: &Option<String>) -> Intent {
+    // Mais vertical que horizontal: o movimento é da rolagem.
+    if delta.x.abs() < delta.y.abs() * SWIPE_AXIS_BIAS {
+        return Intent::Scroll;
+    }
+    match (surface, delta.x > 0.0) {
+        (MobileSurface::Chat, true) => Intent::Drawer(MobileSurface::Navigation),
+        (MobileSurface::Chat, false) => match message {
+            Some(id) => Intent::Reply(id.clone()),
+            None => Intent::Scroll,
+        },
+        (MobileSurface::Navigation, false) => Intent::Drawer(MobileSurface::Navigation),
+        (MobileSurface::People, true) => Intent::Drawer(MobileSurface::People),
+        _ => Intent::Scroll,
+    }
 }
 
 fn handle_mobile_gesture(
@@ -1558,79 +1793,168 @@ fn handle_mobile_gesture(
     top_inset: f32,
     bottom_inset: f32,
 ) {
-    let (pressed, released, down, pos) = ui.input(|input| {
+    let (pressed, released, down, pos, time) = ui.input(|input| {
         (
             input.pointer.any_pressed(),
             input.pointer.any_released(),
             input.pointer.any_down(),
             input.pointer.interact_pos(),
+            input.time,
         )
     });
 
     if pressed
         && let Some(origin) = pos
     {
-            let message_id = if state.mobile_surface == MobileSurface::Chat {
-                state
-                    .message_rows
-                    .iter()
-                    .find(|(_, rect)| rect.contains(origin))
-                    .map(|(id, _)| id.clone())
-            } else {
-                None
-            };
-            let controls = origin.y < area.min.y + top_inset
-                || origin.y > area.max.y - bottom_inset;
-            let blocked = state.popup.is_some()
-                || state.viewer.is_some()
-                || state.panel.is_some()
-                || (state.mobile_surface == MobileSurface::Chat && controls);
-            state.mobile_gesture = Some(MobileGesture {
-                origin,
-                last: origin,
-                message_id,
-                blocked,
-            });
-    }
-
-    if let Some(gesture) = state.mobile_gesture.as_mut()
-        && let Some(pos) = pos
-    {
-        gesture.last = pos;
-    }
-
-    if released || (!down && state.mobile_gesture.is_some() && !pressed) {
-        let Some(gesture) = state.mobile_gesture.take() else {
-            return;
+        let message_id = if state.mobile_surface == MobileSurface::Chat {
+            state
+                .message_rows
+                .iter()
+                .find(|(_, rect)| rect.contains(origin))
+                .map(|(id, _)| id.clone())
+        } else {
+            None
         };
-        if gesture.blocked {
-            return;
-        }
-        let delta = gesture.last - gesture.origin;
+        let controls = origin.y < area.min.y + top_inset || origin.y > area.max.y - bottom_inset;
+        #[cfg(target_os = "android")]
+        let media_seek = state
+            .media_seek_zones
+            .iter()
+            .any(|rect| rect.contains(origin));
+        #[cfg(not(target_os = "android"))]
+        let media_seek = false;
 
-        if state.mobile_surface == MobileSurface::Chat
-            && horizontal_swipe(delta, -1.0)
-            && let Some(message_id) = gesture.message_id
-        {
-            state.start_reply(message_id);
-            state.close_popup();
-            return;
+        let blocked = state.popup.is_some()
+            || state.viewer.is_some()
+            || state.panel.is_some()
+            || media_seek
+            || (state.mobile_surface == MobileSurface::Chat && controls);
+        state.mobile_gesture = Some(MobileGesture {
+            origin,
+            last: origin,
+            last_time: time,
+            velocity: 0.0,
+            message_id,
+            blocked,
+            intent: None,
+        });
+    }
+
+    // Tirar o gesto do estado enquanto se mexe nele evita brigar com o
+    // empréstimo do resto do `state`, que também muda aqui.
+    let mut gesture = state.mobile_gesture.take();
+
+    if let Some(active) = gesture.as_mut()
+        && let Some(pos) = pos
+        && !active.blocked
+    {
+        let elapsed = (time - active.last_time) as f32;
+        if elapsed > 0.0 {
+            // Média que esquece depressa: um tranco isolado no meio do
+            // arrasto não decide o gesto sozinho.
+            let instant = (pos.x - active.last.x) / elapsed;
+            active.velocity = active.velocity * 0.7 + instant * 0.3;
+        }
+        active.last = pos;
+        active.last_time = time;
+
+        let delta = pos - active.origin;
+        if active.intent.is_none() && delta.length() >= SWIPE_SLOP {
+            active.intent = Some(decide_intent(delta, state.mobile_surface, &active.message_id));
         }
 
-        match state.mobile_surface {
-            MobileSurface::Chat if horizontal_swipe(delta, 1.0) => {
-                state.mobile_surface = MobileSurface::Navigation;
-                state.close_popup();
+        match &active.intent {
+            Some(Intent::Drawer(surface)) => {
+                let surface = *surface;
+                let width = drawer_width(surface, area).max(1.0);
+                // Se a gaveta já estava aberta, o dedo parte de 1 e a
+                // fecha; se não, parte de 0 e a abre.
+                let base = if state.mobile_surface == surface { 1.0 } else { 0.0 };
+                state.drawer.surface = surface;
+                state.drawer.shown =
+                    (base + delta.x * open_sign(surface) / width).clamp(0.0, 1.0);
+                state.drawer.dragging = true;
             }
-            MobileSurface::Navigation if horizontal_swipe(delta, -1.0) => {
-                state.mobile_surface = MobileSurface::Chat;
-            }
-            MobileSurface::People if horizontal_swipe(delta, 1.0) => {
-                state.mobile_surface = MobileSurface::Chat;
+            Some(Intent::Reply(id)) => {
+                state.reply_drag = Some(ReplyDrag {
+                    id: id.clone(),
+                    shown: rubber_band(-delta.x, REPLY_TRAVEL),
+                    dragging: true,
+                });
             }
             _ => {}
         }
     }
+
+    if (released || (!down && gesture.is_some() && !pressed))
+        && let Some(finished) = gesture.take()
+    {
+        settle_mobile_gesture(state, finished);
+    }
+
+    state.mobile_gesture = gesture;
+}
+
+/// O dedo saiu da tela: decidir o que fica.
+fn settle_mobile_gesture(state: &mut UiState, gesture: MobileGesture) {
+    state.drawer.dragging = false;
+    if let Some(drag) = state.reply_drag.as_mut() {
+        // Solta sempre volta: a mensagem não fica torta esperando resposta.
+        drag.dragging = false;
+    }
+
+    let Some(intent) = gesture.intent else {
+        return;
+    };
+    match intent {
+        Intent::Scroll => {}
+        Intent::Drawer(surface) => {
+            let opening_velocity = gesture.velocity * open_sign(surface);
+            let open = commits(state.drawer.shown, opening_velocity);
+            state.drawer.target = if open { 1.0 } else { 0.0 };
+            state.mobile_surface = if open { surface } else { MobileSurface::Chat };
+        }
+        Intent::Reply(id) => {
+            let far_enough = state
+                .reply_drag
+                .as_ref()
+                .is_some_and(|drag| drag.shown >= REPLY_TRAVEL);
+            if far_enough {
+                state.start_reply(id);
+                state.close_popup();
+            }
+        }
+    }
+}
+
+/// Leva `shown` até `target` no tempo de animação da casa.
+///
+/// Quem desligou as animações no sistema recebe o salto direto: o fator zero
+/// vale aqui como vale no resto da interface.
+/// `span` é o caminho inteiro na unidade de `shown` — 1 para a gaveta, que
+/// anda de 0 a 1, e a distância máxima para a mensagem, que anda em pontos.
+/// Sem ele o passo seria uma fração por quadro tanto faz a unidade, e a
+/// mensagem voltaria a um oitavo de ponto por quadro: parada, na prática.
+fn advance(shown: &mut f32, target: f32, span: f32, ui: &egui::Ui) -> bool {
+    if (*shown - target).abs() < f32::EPSILON {
+        return false;
+    }
+    let time = ui.style().animation_time;
+    if time <= 0.0 {
+        *shown = target;
+        return false;
+    }
+    let ctx = ui.ctx();
+    let dt = ctx.input(|input| input.stable_dt).min(0.1);
+    let step = span * dt / time;
+    let remaining = target - *shown;
+    if remaining.abs() <= step {
+        *shown = target;
+        return false;
+    }
+    *shown += step * remaining.signum();
+    ctx.request_repaint();
+    true
 }
 
 /// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
@@ -1919,32 +2243,77 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
         let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
-        let field = ui.add(
-            egui::TextEdit::singleline(&mut query)
-                .hint_text(s.search_placeholder)
-                .desired_width(field_width)
-                .font(text::body()),
-        );
-        if let Some(panel) = state.panel.as_mut() {
-            panel.query = query.clone();
-            if panel.focus {
-                field.request_focus();
-                panel.focus = false;
-            }
+        #[cfg(target_os = "android")]
+        {
+            let focus = state
+                .panel
+                .as_mut()
+                .map(|panel| std::mem::take(&mut panel.focus))
+                .unwrap_or(false);
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(field_width, 30.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+            let events = crate::platform::native_field::show(
+                ui.ctx(),
+                "search:messages",
+                &mut query,
+                rect.shrink2(Vec2::new(space::MD, space::XXS)),
+                s.search_placeholder,
+                crate::platform::native_field::Mode::Search,
+                0,
+                focus,
+                t.label,
+                t.label_tertiary,
+                text::body().size,
+            );
+            run |= events.submit;
         }
 
-        // Desktop costuma entregar Enter; alguns IMEs Android não entregam
-        // esse evento de forma confiável, então há também um botão explícito.
-        if ui.input(|input| input.key_pressed(egui::Key::Enter))
-            && (field.has_focus() || field.lost_focus())
+        #[cfg(not(target_os = "android"))]
         {
-            run = true;
+            let search_id = Id::new("busca-mensagens");
+            let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), search_id, &mut query);
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .id(search_id)
+                    .hint_text(s.search_placeholder)
+                    .desired_width(field_width)
+                    .font(text::body()),
+            );
+            let _ = crate::platform::ime::sync_text_edit(
+                ui.ctx(),
+                search_id,
+                &mut query,
+                field.has_focus(),
+                crate::platform::ime::Kind::Search,
+            );
+            if let Some(panel) = state.panel.as_mut() {
+                panel.query = query.clone();
+                if panel.focus {
+                    field.request_focus();
+                    panel.focus = false;
+                }
+            }
+            if ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && (field.has_focus() || field.lost_focus())
+            {
+                run = true;
+            }
         }
         if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
             run = true;
         }
     });
-
+    #[cfg(target_os = "android")]
+    if let Some(panel) = state.panel.as_mut() {
+        panel.query.clone_from(&query);
+    }
     if run && !query.trim().is_empty() {
         if let Some(panel) = state.panel.as_mut() {
             panel.searched = true;
@@ -2345,8 +2714,42 @@ fn message_list(
         }
         let backdrop = ui.painter().add(egui::Shape::Noop);
 
+        // Puxada para responder: a linha anda para a esquerda junto com o
+        // dedo. Quem anda é **só o desenho**. O retângulo do toque fica onde
+        // estava — senão a mensagem fugiria do próprio gesto que a move — e
+        // o lugar que ela ocupa na lista também, que é o que importa aqui:
+        // mexer no retângulo do filho mexia na conta do pai, e o empurrão
+        // escorria para todas as mensagens de baixo.
+        //
+        // Por isso a linha puxada vai para uma camada só dela, e é a camada
+        // que se desloca depois de desenhada. A conta da lista não vê nada
+        // disso. O preço é a linha passar por cima das pastilhas flutuantes
+        // enquanto o dedo a segura, em vez de por baixo.
+        let slide = state
+            .reply_drag
+            .as_ref()
+            .filter(|drag| drag.id == message.id)
+            .map_or(0.0, |drag| drag.shown);
+        let sliding = (slide > 0.5).then(|| {
+            egui::LayerId::new(egui::Order::Middle, Id::new(("mensagem-puxada", &message.id)))
+        });
+
         let author = store.member(&message.author_id);
-        let inner = ui.scope(|ui| {
+        // O escopo da linha é o alvo de toque do layout compacto — duplo
+        // toque abre as reações, toque longo abre o menu.
+        //
+        // Registrar o alvo **aqui**, e não depois da linha pronta, é o que
+        // importa: o egui dá o clique ao último widget registrado sobre o
+        // ponto, e um `interact` no fim engolia tudo o que estivesse dentro
+        // da mensagem. Era por isso que tocar no play de um vídeo, no play
+        // de um áudio ou numa imagem não fazia nada além de acender a
+        // linha. Como o escopo entra antes do conteúdo, o conteúdo ganha, e
+        // a linha só recebe o toque que sobra.
+        let mut builder = UiBuilder::new().sense(Sense::click());
+        if let Some(layer) = sliding {
+            builder = builder.layer_id(layer);
+        }
+        let inner = ui.scope_builder(builder, |ui| {
             ui.horizontal_top(|ui| {
                 ui.add_space(gutter);
                 if grouped {
@@ -2407,6 +2810,13 @@ fn message_list(
             });
         });
 
+        if let Some(layer) = sliding {
+            ui.ctx().transform_layer_shapes(
+                layer,
+                egui::emath::TSTransform::from_translation(Vec2::new(-slide, 0.0)),
+            );
+        }
+
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
@@ -2414,11 +2824,7 @@ fn message_list(
                 .message_rows
                 .push((message.id.clone(), touch_rect));
             if !message.pending {
-                let touch = ui.interact(
-                    touch_rect,
-                    Id::new(("message-touch", &message.id)),
-                    Sense::click(),
-                );
+                let touch = &inner.response;
                 if touch.double_clicked() {
                     let at = ui.ctx().pointer_interact_pos().unwrap_or(row.center());
                     state.popup = Some(Popup {
@@ -2599,22 +3005,81 @@ fn message_body(
         && id == &message.id
     {
             let mut buffer_copy = buffer.clone();
-            let response = ui.add(
-                TextEdit::multiline(&mut buffer_copy)
-                    .font(text::message())
-                    .desired_width(width)
-                    .desired_rows(1)
-                    .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
-            );
-            *buffer = buffer_copy;
-            response.request_focus();
 
-            let (save, cancel) = ui.input(|input| {
-                (
-                    input.key_pressed(egui::Key::Enter) && !input.modifiers.shift,
-                    input.key_pressed(egui::Key::Escape),
-                )
-            });
+            #[cfg(target_os = "android")]
+            let save = {
+                // O Android desenha e edita este texto de verdade. O egui só
+                // reserva o lugar e mantém a moldura alinhada com a mensagem.
+                let inner_width = (width - space::MD * 2.0).max(80.0);
+                let rows = ui
+                    .painter()
+                    .layout(
+                        buffer_copy.clone(),
+                        text::message(),
+                        Color32::WHITE,
+                        inner_width,
+                    )
+                    .rows
+                    .len()
+                    .clamp(1, 6);
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+                    + ui.spacing().extra_text_line_spacing;
+                let height = rows as f32 * line_height + space::SM * 2.0;
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_soft,
+                    Stroke::new(1.0, t.separator),
+                    egui::StrokeKind::Inside,
+                );
+
+                let focus = std::mem::take(&mut state.edit_focus_pending);
+                if focus {
+                    ui.scroll_to_rect(rect, Some(Align::Center));
+                }
+                let key = format!("edit:{}", id);
+                let editor_rect = rect.shrink2(Vec2::new(space::MD, space::SM));
+                let events = crate::platform::native_text::show(
+                    ui.ctx(),
+                    &key,
+                    &mut buffer_copy,
+                    editor_rect,
+                    "",
+                    crate::platform::native_text::Mode::Edit,
+                    6,
+                    focus,
+                    t.label,
+                    t.label_tertiary,
+                    text::message().size,
+                );
+                events.submit
+            };
+
+            #[cfg(not(target_os = "android"))]
+            let save = {
+                let edit_id = Id::new(("editar-mensagem", id));
+                let response = ui.add(
+                    TextEdit::multiline(&mut buffer_copy)
+                        .id(edit_id)
+                        .font(text::message())
+                        .desired_width(width)
+                        .desired_rows(1)
+                        .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
+                );
+                if std::mem::take(&mut state.edit_focus_pending) {
+                    response.request_focus();
+                }
+                response.has_focus()
+                    && ui.input(|input| {
+                        input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                    })
+            };
+
+            *buffer = buffer_copy;
+
+            let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(s.edit_hint)
@@ -2624,9 +3089,11 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
             {
+                state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
                 if content.is_empty() {
                     state.actions.push(ChatAction::Delete(id));
@@ -2690,6 +3157,7 @@ fn message_body(
             &message.id,
             &message.attachments,
             width,
+            &mut state.media_seek_zones,
         )
     {
         match action {
@@ -3480,7 +3948,8 @@ fn hover_pill(
                 }
                 icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
-                    state.editing = Some((message.id.clone(), message.content.clone()))
+                    state.editing = Some((message.id.clone(), message.content.clone()));
+                    state.edit_focus_pending = true;
                 }
                 _ => {
                     state.popup = Some(Popup {
@@ -3807,7 +4276,8 @@ fn context_menu(
             }
             MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
-                state.editing = Some((message.id.clone(), message.content.clone()))
+                state.editing = Some((message.id.clone(), message.content.clone()));
+                state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
                 ui.ctx().copy_text(message.content.clone());
@@ -4547,6 +5017,45 @@ fn composer(
         egui::pos2(line.min.x + space::MD, line.min.y),
         egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
     );
+
+    #[cfg(target_os = "android")]
+    let android_composer_tap = if state.editing.is_some() {
+        ui.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| field.contains(position))
+        })
+    } else {
+        false
+    };
+
+    #[cfg(target_os = "android")]
+    if state.editing.is_some() && ui.input(|input| input.pointer.any_pressed()) {
+        // Um toque que chegou ao egui aconteceu fora da EditText da mensagem
+        // (toques dentro dela são consumidos pela própria View Android).
+        // Portanto ele encerra a edição. Se caiu no compositor, o foco é
+        // transferido para ele logo abaixo.
+        state.editing = None;
+        state.edit_focus_pending = false;
+        crate::platform::native_text::dismiss();
+    }
+
+    #[cfg(target_os = "android")]
+    let android_chat_editor_visible = !state.compact
+        || (state.mobile_surface == MobileSurface::Chat
+            && state.drawer.shown <= 0.0
+            && !state.drawer.dragging);
+
+    #[cfg(target_os = "android")]
+    if !android_chat_editor_visible {
+        // A View Android fica acima da superfície do egui. Enquanto uma
+        // gaveta cobre a conversa ela precisa desaparecer de verdade, senão
+        // rouba toques dos controles desenhados por cima.
+        crate::platform::native_text::dismiss();
+    }
+
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(field)
@@ -4589,27 +5098,92 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            let response = TextEdit::multiline(&mut state.composer)
-                .id(edit_id)
-                .hint_text(RichText::new(hint).color(t.label_tertiary))
-                .frame(Frame::NONE)
-                .font(text::message())
-                .desired_rows(1)
-                .vertical_align(Align::Center)
-                .min_size(Vec2::new(field.width(), field.height()))
-                .desired_width(f32::INFINITY)
-                .margin(Margin::symmetric(space::SM as i8, 0))
-                .show(ui)
-                .response
-                .response;
-            state.typed = response.changed();
+            #[cfg(target_os = "android")]
+            let (field_focused, caret) =
+                if state.editing.is_none() && android_chat_editor_visible {
+                    let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
+                    let events = crate::platform::native_text::show(
+                        ui.ctx(),
+                        "composer",
+                        &mut state.composer,
+                        native_rect,
+                        &hint,
+                        crate::platform::native_text::Mode::Composer,
+                        COMPOSER_MAX_ROWS,
+                        android_composer_tap,
+                        t.label,
+                        t.label_tertiary,
+                        text::message().size,
+                    );
+                    state.typed = events.changed;
+                    (events.focused, events.caret)
+                } else {
+                    // Durante edição de mensagem ou enquanto uma gaveta cobre
+                    // a conversa, o compositor é só desenho egui. A View
+                    // Android não pode continuar existindo por cima dela.
+                    let shown = if state.composer.is_empty() {
+                        hint.as_str()
+                    } else {
+                        state.composer.as_str()
+                    };
+                    ui.painter().text(
+                        field.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        shown,
+                        text::message(),
+                        if state.composer.is_empty() {
+                            t.label_tertiary
+                        } else {
+                            t.label
+                        },
+                    );
+                    (false, None)
+                };
 
-            let caret = caret_of(ui.ctx(), edit_id);
+            #[cfg(not(target_os = "android"))]
+            let (field_focused, caret) = {
+                let ime_changed =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
+                let viewport_h =
+                    (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
+                let response = egui::ScrollArea::vertical()
+                    .id_salt("composer-text-scroll")
+                    .max_height(viewport_h)
+                    .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .show(ui, |ui| {
+                        ui.set_min_height(viewport_h);
+                        TextEdit::multiline(&mut state.composer)
+                            .id(edit_id)
+                            .hint_text(RichText::new(hint).color(t.label_tertiary))
+                            .frame(Frame::NONE)
+                            .font(text::message())
+                            .desired_rows(1)
+                            .vertical_align(Align::Center)
+                            .min_size(Vec2::new(0.0, viewport_h))
+                            .desired_width(f32::INFINITY)
+                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
+                            .show(ui)
+                            .response
+                            .response
+                    })
+                    .inner;
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &mut state.composer,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Multiline,
+                );
+                state.typed = response.changed() || ime_changed;
+                (response.has_focus(), caret_of(ui.ctx(), edit_id))
+            };
+
             if keys.dismiss {
                 state.suggest = None;
                 state.suggest_muted = true;
             } else {
-                refresh_suggestions(store, state, response.has_focus(), caret);
+                refresh_suggestions(store, state, field_focused, caret);
             }
 
             if let Some(suggest) = state.suggest.as_mut() {
@@ -4628,12 +5202,17 @@ fn composer(
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
             // Enter já foi gasto escolhendo a figurinha.
-            let enter = response.has_focus()
-                && !accepted
-                && state.suggest.is_none()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter) && !input.modifiers.shift);
-            if enter {
-                submit(state);
+            #[cfg(not(target_os = "android"))]
+            {
+                let enter = field_focused
+                    && !accepted
+                    && state.suggest.is_none()
+                    && ui.input(|input| {
+                        input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                    });
+                if enter {
+                    submit(state);
+                }
             }
         },
     );
@@ -4734,6 +5313,8 @@ fn accept_suggestion(
     id: Id,
     caret: Option<usize>,
 ) {
+    #[cfg(target_os = "android")]
+    let _ = (ctx, id);
     let Some(suggest) = state.suggest.take() else {
         return;
     };
@@ -4757,6 +5338,11 @@ fn accept_suggestion(
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
+
+    #[cfg(target_os = "android")]
+    crate::platform::native_text::set_selection("composer", &state.composer, after);
+
+    #[cfg(not(target_os = "android"))]
     if let Some(mut edit) = egui::TextEdit::load_state(ctx, id) {
         edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
             egui::text::CCursor::new(after),
@@ -4932,12 +5518,62 @@ mod mobile_tests {
     use super::*;
 
     #[test]
-    fn swipe_horizontal_exige_distancia_e_dominancia() {
-        assert!(horizontal_swipe(Vec2::new(80.0, 12.0), 1.0));
-        assert!(horizontal_swipe(Vec2::new(-80.0, 12.0), -1.0));
-        assert!(!horizontal_swipe(Vec2::new(40.0, 0.0), 1.0));
-        assert!(!horizontal_swipe(Vec2::new(70.0, 70.0), 1.0));
-        assert!(!horizontal_swipe(Vec2::new(-80.0, 10.0), 1.0));
+    fn arrasto_vertical_e_da_rolagem_nao_da_gaveta() {
+        // Mais vertical que horizontal: o movimento não é nosso, mesmo
+        // sendo longo. Sem isto, rolar a conversa abriria a gaveta.
+        assert_eq!(
+            decide_intent(Vec2::new(40.0, 70.0), MobileSurface::Chat, &None),
+            Intent::Scroll
+        );
+        // Horizontal para a direita, na conversa: abre a navegação.
+        assert_eq!(
+            decide_intent(Vec2::new(40.0, 5.0), MobileSurface::Chat, &None),
+            Intent::Drawer(MobileSurface::Navigation)
+        );
+        // Para a esquerda em cima de uma mensagem: responder. Fora dela,
+        // não há o que puxar.
+        assert_eq!(
+            decide_intent(Vec2::new(-40.0, 5.0), MobileSurface::Chat, &Some("m-1".into())),
+            Intent::Reply("m-1".into())
+        );
+        assert_eq!(
+            decide_intent(Vec2::new(-40.0, 5.0), MobileSurface::Chat, &None),
+            Intent::Scroll
+        );
+        // Com a gaveta aberta, o caminho de volta é o inverso de cada uma.
+        assert_eq!(
+            decide_intent(Vec2::new(-40.0, 5.0), MobileSurface::Navigation, &None),
+            Intent::Drawer(MobileSurface::Navigation)
+        );
+        assert_eq!(
+            decide_intent(Vec2::new(40.0, 5.0), MobileSurface::People, &None),
+            Intent::Drawer(MobileSurface::People)
+        );
+    }
+
+    #[test]
+    fn o_piparote_decide_mesmo_com_a_gaveta_quase_fechada() {
+        // Mal saiu do lugar, mas saiu voando: abre.
+        assert!(commits(0.05, FLICK_SPEED + 1.0));
+        // Quase toda à mostra e jogada de volta: fecha.
+        assert!(!commits(0.95, -FLICK_SPEED - 1.0));
+        // Sem piparote, vale o quanto dela está à mostra.
+        assert!(!commits(DRAWER_COMMIT - 0.01, 0.0));
+        assert!(commits(DRAWER_COMMIT, 0.0));
+    }
+
+    #[test]
+    fn o_elastico_segura_a_mensagem_perto_do_dedo() {
+        // Até o limite a mensagem anda colada ao dedo.
+        assert_eq!(rubber_band(0.0, 72.0), 0.0);
+        assert_eq!(rubber_band(72.0, 72.0), 72.0);
+        // Puxar para o outro lado não a move.
+        assert_eq!(rubber_band(-30.0, 72.0), 0.0);
+        // Depois dele ela resiste, e por mais que se puxe nunca chega ao
+        // dobro — é o que a impede de sair sozinha pela borda.
+        let longe = rubber_band(1000.0, 72.0);
+        assert!(longe > 72.0 && longe < 144.0, "andou {longe}");
+        assert!(rubber_band(144.0, 72.0) < 120.0);
     }
 
     #[test]

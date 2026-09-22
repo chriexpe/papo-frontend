@@ -33,6 +33,74 @@ passariam vindos do servidor.
 
 O endereço do servidor é editável na tela de entrada e fica guardado nos ajustes.
 
+## Android
+
+O Papo no Android é o **mesmo** aplicativo: a interface compacta do egui, sem
+nada reinventado para o celular. O que muda é a embalagem — uma Activity de
+`GameActivity` carrega o `libpapo.so` e chama `android_main`.
+
+Precisa de: SDK do Android, NDK r30 e o alvo `aarch64-linux-android` do Rust.
+
+```sh
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install \
+    'platforms;android-37.2' 'build-tools;37.0.0' 'ndk;30.0.16248370'
+```
+
+Depois, tudo passa por um script só:
+
+```sh
+scripts/android.sh            # compila o .so e monta o APK
+scripts/android.sh --run      # instala no aparelho, abre e cola no logcat
+scripts/android.sh --log      # só o logcat
+scripts/android.sh --release  # perfil de release
+```
+
+O Gradle **não** compila o Rust: quem faz isso é o `cargo ndk`, que deixa o
+`libpapo.so` pronto em `android/app/src/main/jniLibs`; o Gradle só empacota.
+E não há `externalNativeBuild` nem prefab de propósito — o `android-activity`
+traz a própria camada de cola nativa, e a do GameActivity por cima dela
+quebraria as duas.
+
+Por enquanto só `arm64-v8a`, e sem voz, vídeo nem seletor de arquivos: o
+GStreamer do Android vem de um SDK próprio e entra depois. Onde falta, o
+lugar continua existindo no código e responde "não dá" — é o mesmo caminho
+que a área de trabalho segue quando o GStreamer não está instalado. Os
+substitutos a trocar quando a mídia entrar são três:
+
+```
+src/media/player_android.rs   player, forma de onda e gravação
+src/voice/engine_android.rs   o motor da call
+src/state/demo.rs             encoded_attachment, na demonstração
+```
+
+e as dependências do GStreamer no `Cargo.toml`, hoje presas a
+`cfg(not(target_os = "android"))`.
+
+### Páginas de 16 KB
+
+Do Android 15 em diante as páginas de memória são de 16 KB, e **todas** as
+imagens de sistema do Android 37 são `ps16k`. Um `.so` alinhado em 4 KB não
+carrega nesses aparelhos. O NDK r30 já alinha em 16 KB por padrão — dá para
+conferir no artefato:
+
+```sh
+readelf -lW android/app/src/main/jniLibs/arm64-v8a/libpapo.so | awk '/LOAD/{print $NF}' | sort -u
+# 0x4000 = 16 KB
+$ANDROID_HOME/build-tools/37.0.0/zipalign -c -P 16 -v 4 app-debug.apk | tail -1
+```
+
+Isto vale para **todo** `.so` que entrar no APK, não só o nosso: biblioteca
+de terceiros compilada com alinhamento antigo derruba o aplicativo no
+carregamento. É o primeiro ponto a conferir quando o GStreamer entrar.
+
+### O CI não cobre o Android
+
+O `ci.yml` só compila para Linux. Nada avisa se uma mudança quebrar o alvo
+`aarch64-linux-android` — até alguém rodar `scripts/android.sh`. Um
+`cargo ndk -t arm64-v8a check --lib` no CI resolveria.
+
 ## Instalando
 
 ```bash
@@ -115,7 +183,11 @@ src/
     emoji_raster.rs  emoji colorido tirado da fonte do sistema, via swash
     auth.rs     entrada e primeiro uso da instância
     call.rs     a call em três formas: no canal, em folha e em janela
-  platform/   integração com a área de trabalho (só Linux por enquanto)
+  lib.rs      a aplicação; é o que o Android carrega
+  main.rs     o executável da área de trabalho, uma casca fina sobre a lib
+  cli.rs      os comandos de linha (selftest, media-test, voice-check, …)
+  android.rs  o `android_main`: a porta de entrada do Android
+  platform/   integração com o sistema
     global_menu.rs  serviço com.canonical.dbusmenu
     appmenu.rs      liga o menu à wl_surface (protocolo do Plasma)
     tray.rs         ícone na bandeja (StatusNotifierItem, via ksni)
@@ -126,6 +198,10 @@ src/
     desktop.rs      cor de destaque, tema claro/escuro e fonte, lidos do sistema
     launcher.rs     contador na barra de tarefas (com.canonical.Unity.LauncherEntry)
     files.rs        seletor de arquivos e pasta de downloads, pelo xdg-desktop-portal
+    dirs.rs         onde ficam sessão e cache em cada plataforma
+    safe_area.rs    bordas do sistema no Android, medidas pela Activity
+android/      o projeto Gradle: manifesto, tema, ícone e a Activity
+  app/src/main/java/…/PapoActivity.java   subclasse mínima do GameActivity
 ```
 
 A interface é imediata: nenhuma chamada de rede acontece dentro de um quadro. Tudo passa

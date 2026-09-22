@@ -1,0 +1,7 @@
+# O Gradle e o cargo-ndk geram tudo isto; nada aqui entra no repositório.
+.gradle/
+build/
+local.properties
+app/build/
+app/src/main/jniLibs/
+.cxx/

@@ -9,10 +9,13 @@ use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
 use crate::platform::activate::Activator;
+#[cfg(target_os = "linux")]
 use crate::platform::notify::{Notification, Notifier};
+#[cfg(target_os = "linux")]
 use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
 #[cfg(target_os = "linux")]
 use crate::platform::launcher::{Badge, Launcher};
+#[cfg(target_os = "linux")]
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
@@ -100,6 +103,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
             // no `Store`; aqui é o pipeline que precisa ser desmontado, ou o
             // microfone continuaria aberto para ninguém.
             let mut over = false;
+            let mut tell_server = false;
             match &**event {
                 Event::VoiceAnswer { channel_id, sdp } if *channel_id == call.channel_id => {
                     call.answer(sdp.clone());
@@ -125,13 +129,21 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                     }) =>
                 {
                     over = true;
+                    // Um offer inválido/codec recusado não remove o Peer no
+                    // backend. Se só derrubarmos o pipeline local, a próxima
+                    // entrada recebe voice-already-in-room.
+                    tell_server = ws.store.call.phase == Phase::In;
                 }
                 _ => {}
             }
             if over {
-                ws.call = None;
-                ws.call_ready = false;
-                ws.watching.clear();
+                if tell_server {
+                    leave_call(ws);
+                } else {
+                    ws.call = None;
+                    ws.call_ready = false;
+                    ws.watching.clear();
+                }
             }
         }
         // O socket caiu: o servidor derruba o peer junto com a conexão que
@@ -317,8 +329,6 @@ impl Settings {
     /// Garante que a lista de servidores existe e que o ativo aponta para um
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
-        // Endereços gravados antes disto podem estar sem esquema; sem ele o
-        // cliente não abre conexão nenhuma.
         self.server_url = normalise_server_url(&self.server_url);
 
         // Um servidor é identificado pelo endereço normalizado. Versões
@@ -526,6 +536,13 @@ impl PapoApp {
         );
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        #[cfg(target_os = "android")]
+        cc.egui_ctx.options_mut(|options| {
+            // 0.8 s (egui default) feels sluggish for a phone context menu.
+            // Android's conventional long-press timing is around half a second.
+            options.input_options.max_click_duration = 0.5;
+        });
+
         let glass = cc.gl.as_ref().and_then(|gl| GlassRenderer::new(gl));
         if glass.is_none() {
             log::warn!("sem backend glow: o vidro fosco fica desligado");
@@ -635,7 +652,10 @@ impl PapoApp {
             minimized: false,
             window_attached: false,
             demo,
-            own_chrome: !desktop::uses_global_menu(),
+            // No Android não há janela para decorar — nem barra nossa com
+            // minimizar/fechar, nem menu global. Os ajustes continuam à mão
+            // pela pastilha da conta, que é por onde o layout compacto abre.
+            own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
             add_server_previous: None,
         }
@@ -704,6 +724,7 @@ impl PapoApp {
     /// Traz a janela de volta. No Wayland o winit não sabe fazer isso, então
     /// pedimos ao compositor pelo xdg-activation; no X11 os comandos abaixo
     /// bastam.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn show_window(&mut self, ctx: &egui::Context) {
         self.minimized = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -721,6 +742,7 @@ impl PapoApp {
     }
 
     /// Fechar não encerra: a janela recolhe e o Papo segue na bandeja.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     fn hide_window(&mut self, ctx: &egui::Context) {
         self.minimized = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
@@ -937,8 +959,7 @@ impl PapoApp {
         ctx.request_repaint();
     }
 
-    /// Acrescenta um servidor vazio e já o coloca na tela, esperando o
-    /// endereço.
+    /// Abre "Adicionar servidor" como rascunho cancelável.
     fn add_server(&mut self, ctx: &egui::Context) {
         // O novo servidor é provisório até a autenticação terminar. Se o
         // usuário clicar fora do cartão, voltamos exatamente para quem estava
@@ -1936,9 +1957,69 @@ impl PapoApp {
  }
 
 impl eframe::App for PapoApp {
+    /// Tira da área desenhável as bordas que o sistema ocupa.
+    ///
+    /// É o único ajuste de Android na interface, e de propósito ele entra
+    /// aqui: encolhendo o `screen_rect` antes de o egui ver o quadro, todo o
+    /// resto — painéis, rolagem, folhas — continua o mesmo dos dois lados.
+    /// Nada na interface precisa saber que existe uma barra de status.
+    #[cfg(target_os = "android")]
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        let Some(rect) = raw_input.screen_rect else {
+            return;
+        };
+        // As bordas vêm em pixels físicos; o `screen_rect` é em pontos.
+        crate::platform::wake::install(ctx);
+        let scale = ctx.pixels_per_point().max(0.1);
+        let (left, top, right, bottom) = crate::platform::safe_area::insets_px();
+        let safe = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + left / scale, rect.min.y + top / scale),
+            egui::pos2(rect.max.x - right / scale, rect.max.y - bottom / scale),
+        );
+        // Um aparelho que informe bordas maiores que a própria tela não pode
+        // apagar a janela inteira.
+        if safe.width() > 1.0 && safe.height() > 1.0 {
+            raw_input.screen_rect = Some(safe);
+        }
+
+        // O winit sobe o teclado mas não entrega o que se digita nele; quem
+        // faz essa parte é a ponte.
+        crate::platform::ime::pump(ctx, raw_input);
+    }
+
+    /// O eframe grava sozinho de trinta em trinta segundos e, fora isso, ao
+    /// encerrar limpo. No Android não existe encerrar limpo: o sistema mata
+    /// o processo quando quiser, e com ele ia embora tudo o que se fez desde
+    /// a última gravação — um servidor recém-adicionado, por exemplo.
+    #[cfg(target_os = "android")]
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(5)
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(target_os = "android")]
+        {
+            crate::platform::native_text::begin_frame();
+            crate::platform::native_field::begin_frame();
+        }
         self.attach_window(frame);
+
+        // Indo para segundo plano: gravar agora, porque pode não haver um
+        // depois. Perder o foco é o último aviso que o aplicativo recebe
+        // antes de o sistema poder encerrá-lo sem mais nada.
+        #[cfg(target_os = "android")]
+        {
+            let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
+            if self.focused && !focused {
+                if let Some(storage) = frame.storage_mut() {
+                    eframe::App::save(self, storage);
+                    storage.flush();
+                    log::debug!("ajustes gravados ao sair de cena");
+                }
+            }
+            self.focused = focused;
+        }
         #[cfg(target_os = "linux")]
         {
             self.sync_menu();
@@ -2047,6 +2128,12 @@ impl eframe::App for PapoApp {
         let pending = std::mem::take(&mut self.ui.pending);
         for command in pending {
             self.handle(&ctx, command);
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            crate::platform::native_field::end_frame();
+            crate::platform::native_text::end_frame();
         }
     }
 

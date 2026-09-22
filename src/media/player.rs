@@ -27,12 +27,52 @@ pub fn init() -> bool {
     use std::sync::OnceLock;
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| match gst::init() {
-        Ok(()) => true,
+        Ok(()) => {
+            #[cfg(target_os = "android")]
+            demote_broken_decoders();
+            true
+        }
         Err(error) => {
             log::warn!("GStreamer indisponível: {error}");
             false
         }
     })
+}
+
+/// Tira a preferência dos decodificadores do aparelho que não entregam.
+///
+/// O OMX é o caminho antigo do Android — o Codec2 o substituiu na versão 10
+/// — e no aparelho de teste o decodificador de vídeo dele recusa o H.264 na
+/// primeira tentativa, com "Failed to query component interface for required
+/// system resources". O problema é que ele vem com prioridade **acima** de
+/// todos os que funcionam: o decodebin o escolhe, ele falha, e o vídeo não
+/// abre. Era isso o 0:00/0:00 eterno.
+///
+/// Baixando a prioridade dele, a escolha volta para quem funciona: o Codec2
+/// onde houver, e o `openh264` como piso. Só o vídeo é mexido — o áudio do
+/// aparelho decodifica bem, inclusive o Opus dos recados.
+#[cfg(target_os = "android")]
+fn demote_broken_decoders() {
+    let registry = gst::Registry::get();
+    let mut demoted = 0;
+    for feature in registry.features(gst::ElementFactory::static_type()).iter() {
+        let name = feature.name();
+        // Vídeo: o caminho OMX, que o Codec2 substituiu na versão 10 do
+        // Android. Áudio: o decodificador de Opus do aparelho, que abre,
+        // não reclama e não entrega quadro nenhum — o som dos recados de
+        // voz nunca chegava ao sink. Nos dois casos o substituto em
+        // software existe e funciona (`c2androidavcdecoder`, `opusdec`), e
+        // o que faltava era só a preferência, que vinha um degrau acima.
+        let broken = name.starts_with("amcviddec-omx")
+            || (name.starts_with("amcauddec-") && name.contains("opus"));
+        if broken && feature.rank() > gst::Rank::MARGINAL {
+            feature.set_rank(gst::Rank::NONE);
+            demoted += 1;
+        }
+    }
+    if demoted > 0 {
+        log::info!("{demoted} decodificador(es) do aparelho despriorizado(s)");
+    }
 }
 
 struct Frame {
@@ -305,7 +345,17 @@ fn run(
                 // ela não termina o relógio não anda: o pipeline diz PLAYING
                 // e a posição fica parada. Esperar aqui é de graça.
                 Ok(_) => {
-                    let _ = pipeline.state(gst::ClockTime::from_mseconds(700));
+                    let (result, current, pending) =
+                        pipeline.state(gst::ClockTime::from_mseconds(700));
+                    if current != gst::State::Playing {
+                        // Não chegou a tocar dentro do prazo. Quase sempre é
+                        // o sink que não consegue prerolar, e o pipeline fica
+                        // em PAUSED de vez: relógio parado, som nenhum, e
+                        // nada no barramento para denunciar.
+                        log::warn!(
+                            "{name} não chegou a PLAYING: {result:?}, está em                              {current:?}, indo para {pending:?}"
+                        );
+                    }
                 }
                 Err(error) => report(&shared, format!("não tocou: {error}")),
             },
@@ -414,7 +464,28 @@ fn audio_sink() -> Option<gst::Element> {
             Err(error) => log::warn!("saída de áudio {forced} não existe: {error}"),
         }
     }
-    for name in ["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"] {
+    // A única diferença de plataforma da reprodução mora aqui. Todo o
+    // resto — o `playbin`, o `appsink` que vira textura, posição, duração,
+    // busca — é o mesmo nos dois lados, e por isso o arquivo é um só.
+    #[cfg(target_os = "android")]
+    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
+    #[cfg(not(target_os = "android"))]
+    const SINKS: &[&str] = &["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"];
+
+    // ABERTO: no Android o som sai, mas picotado. Três tentativas foram
+    // feitas no aparelho e nenhuma mudou nada — nenhuma ficou no código:
+    //
+    //   1. folga no buffer do sink (`buffer-time`, `latency-time`);
+    //   2. entregar 48 kHz em estéreo, que é o que o aparelho toca, em vez
+    //      do mono dos recados;
+    //   3. uma `queue` entre a decodificação e o sink — que foi o que
+    //      resolveu o picote da **gravação** na área de trabalho (f1c08eb).
+    //
+    // O decodificador já é o de software, e Opus é barato: não é custo de
+    // decodificação. O próximo passo não é tentar outra peça no pipeline, é
+    // medir onde o tempo se perde — a thread de mídia também extrai capas e
+    // formas de onda, e essas sim são caras.
+    for name in SINKS {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
             return Some(sink);
@@ -585,13 +656,39 @@ impl Recorder {
         if !init() {
             return None;
         }
+        // No Android o microfone depende de permissão, e ela é pedida aqui
+        // — no toque em gravar, que é quando o motivo está à vista. A
+        // primeira vez devolve `None` com a caixa na tela; o toque seguinte
+        // já grava.
+        #[cfg(target_os = "android")]
+        {
+            use crate::platform::permission::{self, Status};
+            match permission::ensure(permission::RECORD_AUDIO) {
+                Status::Granted => {}
+                Status::Asking => {
+                    log::info!("esperando a permissão do microfone");
+                    return None;
+                }
+                Status::Denied => {
+                    log::warn!("sem permissão de microfone: não dá para gravar");
+                    return None;
+                }
+            }
+        }
+
         let _ = std::fs::create_dir_all(dir);
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
         let path = dir.join(format!("recado-{stamp}.ogg"));
 
         // A fonte varia com o sistema: PipeWire onde existe, ALSA como
-        // reserva. Sem microfone, nada disso abre e a gravação nem começa.
-        for source in ["pipewiresrc", "alsasrc"] {
+        // reserva, e no Android o OpenSL ES, que é o único caminho. Sem
+        // microfone, nada disso abre e a gravação nem começa.
+        #[cfg(target_os = "android")]
+        const SOURCES: &[&str] = &["openslessrc"];
+        #[cfg(not(target_os = "android"))]
+        const SOURCES: &[&str] = &["pipewiresrc", "alsasrc"];
+
+        for source in SOURCES {
             // O `queue` logo depois da fonte é o que separa a captura da
             // codificação: sem ele, converter, resamplear e codificar em
             // Opus acontece na thread que está lendo o microfone, e cada
@@ -599,11 +696,7 @@ impl Recorder {
             // arquivo, não na hora de tocar. O `audiorate` costura os buracos
             // que mesmo assim apareçam, para o Ogg não sair com o tempo
             // torto. `do-timestamp` garante carimbo de hora na fonte viva.
-            let live = if source == "pipewiresrc" {
-                "pipewiresrc do-timestamp=true"
-            } else {
-                "alsasrc do-timestamp=true"
-            };
+            let live = format!("{source} do-timestamp=true");
             let description = format!(
                 "{live} ! queue max-size-time=2000000000 leaky=no ! \
                  audioconvert ! audioresample ! audiorate ! \
@@ -675,4 +768,135 @@ impl Drop for Recorder {
             let _ = self.pipeline.set_state(gst::State::Null);
         }
     }
+}
+
+/// Um quadro do vídeo para servir de capa, antes de alguém dar play.
+///
+/// Busca um pouco adiante em vez de pegar o primeiro quadro: vídeo costuma
+/// abrir no preto, e uma capa preta não é capa nenhuma — é o que já se via
+/// sem esta função.
+pub fn poster(path: &Path) -> Option<egui::ColorImage> {
+    if !init() {
+        return None;
+    }
+    let uri = gst::glib::filename_to_uri(path, None).ok()?;
+    // O `playbin` com a bandeira de só-vídeo é o caminho certo aqui, e é o
+    // mesmo elemento que o player usa. Tentar podar o `uridecodebin` pelas
+    // caps não serve: pedindo `video/x-raw` o ramo de áudio não tem como
+    // chegar lá e o decodebin desiste com "no suitable plugins found" — no
+    // Android, o vídeo nem chega a abrir. Com a bandeira, o áudio nem é
+    // considerado, que era o objetivo: nada de decodificador de som moendo
+    // contra um pad solto só para tirar uma imagem parada.
+    //
+    // A capa é desenhada num cartão estreito; `POSTER_MAX_W` de largura é
+    // folga de sobra e poupa memória por anexo.
+    let sink_bin = gst::parse::bin_from_description(
+        &format!(
+            "videoconvert ! videoscale ! \
+             video/x-raw,format=RGBA,pixel-aspect-ratio=1/1,width=[1,{POSTER_MAX_W}] ! \
+             appsink name=capa sync=false max-buffers=1 drop=false"
+        ),
+        true,
+    )
+    .ok()?;
+    let sink = sink_bin
+        .by_name("capa")?
+        .downcast::<gst_app::AppSink>()
+        .ok()?;
+
+    let pipeline = gst::ElementFactory::make("playbin3")
+        .build()
+        .or_else(|_| gst::ElementFactory::make("playbin").build())
+        .ok()?;
+    pipeline.set_property("uri", &uri);
+    pipeline.set_property("video-sink", &sink_bin);
+    // Só o vídeo: sem áudio, sem legenda.
+    pipeline.set_property_from_str("flags", "video");
+
+    // `Paused` já decodifica o primeiro quadro e é o que dá a duração; não
+    // é preciso tocar nada para tirar uma capa.
+    if pipeline.set_state(gst::State::Paused).is_err() {
+        return None;
+    }
+    // Esperar a mudança de estado terminar: é nela que o primeiro quadro é
+    // decodificado, e é dela que sai a duração.
+    let _ = pipeline.state(PREROLL_WAIT);
+
+    // Toda espera aqui tem prazo. O `pull_preroll` sem prazo espera para
+    // sempre quando o quadro não vem — arquivo sem vídeo, decodificador que
+    // não assume — e levava a thread junto.
+    let first = sink.try_pull_preroll(PREROLL_WAIT);
+    if first.is_none() {
+        // Sem quadro no prazo: o porquê está no barramento, e sem ler dali
+        // a capa some em silêncio.
+        if let Some(bus) = pipeline.bus() {
+            while let Some(message) = bus.pop() {
+                if let gst::MessageView::Error(error) = message.view() {
+                    log::warn!(
+                        "capa de {}: {} ({:?})",
+                        path.display(),
+                        error.error(),
+                        error.debug()
+                    );
+                }
+            }
+        }
+    }
+    let mut chosen = first;
+
+    if let Some(duration) = pipeline.query_duration::<gst::ClockTime>()
+        && duration > gst::ClockTime::ZERO
+    {
+        // Um terço adiante, no máximo três segundos: longe do preto da
+        // abertura e ainda perto do começo. É melhoria, não obrigação — se
+        // a busca falhar, ou o quadro de lá não vier, fica o primeiro, que
+        // já é melhor que capa nenhuma.
+        let at = (duration / 3).min(gst::ClockTime::from_seconds(3));
+        if pipeline
+            .seek_simple(gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT, at)
+            .is_ok()
+            && let Some(sample) = sink.try_pull_preroll(PREROLL_WAIT)
+        {
+            chosen = Some(sample);
+        }
+    }
+
+    let image = chosen.as_ref().and_then(frame_image);
+    let _ = pipeline.set_state(gst::State::Null);
+    image
+}
+
+/// Prazo de cada espera por um quadro da capa.
+const PREROLL_WAIT: gst::ClockTime = gst::ClockTime::from_seconds(5);
+
+/// Largura máxima da capa.
+const POSTER_MAX_W: i32 = 640;
+
+/// Converte um quadro RGBA do GStreamer numa imagem do egui.
+fn frame_image(sample: &gst::Sample) -> Option<egui::ColorImage> {
+    let buffer = sample.buffer()?;
+    let info = gst_video::VideoInfo::from_caps(sample.caps()?).ok()?;
+    let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).ok()?;
+    let width = frame.width() as usize;
+    let height = frame.height() as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let stride = frame.plane_stride()[0] as usize;
+    let data = frame.plane_data(0).ok()?;
+
+    // O stride raramente bate com a largura: copiamos linha a linha.
+    let mut pixels = Vec::with_capacity(width * height);
+    for row in 0..height {
+        let start = row * stride;
+        let line = data.get(start..start + width * 4)?;
+        for [r, g, b, a] in line.as_chunks::<4>().0 {
+            pixels.push(egui::Color32::from_rgba_premultiplied(*r, *g, *b, *a));
+        }
+    }
+    Some(egui::ColorImage {
+        size: [width, height],
+        pixels,
+        source_size: egui::vec2(width as f32, height as f32),
+    })
 }

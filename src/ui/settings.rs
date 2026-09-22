@@ -567,18 +567,69 @@ impl Rows<'_> {
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
-        self.row(label, None, |ui, _| {
+        self.row(label, None, |ui, _t| {
             let width = ui.available_width();
-            let response = ui.add_sized(
-                Vec2::new(width, 26.0),
-                egui::TextEdit::singleline(value)
-                    .char_limit(limit)
-                    .password(secret)
-                    .font(text::body())
-                    .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
-            );
-            submitted =
-                response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+
+            #[cfg(target_os = "android")]
+            {
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(radius::FIELD),
+                    _t.fill_soft,
+                    Stroke::new(1.0, _t.separator),
+                    egui::StrokeKind::Inside,
+                );
+                let edit_id = ui.id().with(("settings-field", label));
+                let key = format!("settings:{edit_id:?}");
+                submitted = crate::platform::native_field::show(
+                    ui.ctx(),
+                    &key,
+                    value,
+                    rect.shrink2(Vec2::new(space::MD, space::XS)),
+                    "",
+                    if secret {
+                        crate::platform::native_field::Mode::Password
+                    } else {
+                        crate::platform::native_field::Mode::Text
+                    },
+                    limit,
+                    false,
+                    _t.label,
+                    _t.label_tertiary,
+                    text::body().size,
+                )
+                .submit;
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let edit_id = ui.id().with(("settings-field", label));
+                let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
+                let response = ui.add_sized(
+                    Vec2::new(width, 26.0),
+                    egui::TextEdit::singleline(value)
+                        .id(edit_id)
+                        .char_limit(limit)
+                        .password(secret)
+                        .font(text::body())
+                        .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    value,
+                    response.has_focus(),
+                    if secret {
+                        crate::platform::ime::Kind::Password
+                    } else {
+                        crate::platform::ime::Kind::Text
+                    },
+                );
+                submitted =
+                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            }
         });
         submitted
     }
@@ -927,6 +978,19 @@ pub fn sheet(
                 },
             );
         });
+
+    // Ajustes também se comportam como uma folha/popover ancorada na
+    // pastilha que a abriu. Clique fora fecha; a própria pastilha fica de
+    // fora desta regra porque ela já possui o comportamento de toggle.
+    let outside = ctx.input(|input| {
+        input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|position| {
+                !rect.contains(position) && !anchor.contains(position)
+            })
+    });
+    if outside {
+        state.open = None;
+    }
 
     actions
 }

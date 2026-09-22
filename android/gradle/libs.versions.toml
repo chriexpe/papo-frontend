@@ -1,0 +1,15 @@
+[versions]
+agp = "9.4.1"
+# A versão é a que o `android-activity` exige: o Rust fala com o código
+# nativo deste AAR, então as duas pontas têm de ser a mesma.
+gamesActivity = "4.4.0"
+# O GameActivity descende de AppCompatActivity, mas não arrasta o appcompat
+# junto: sem esta dependência o tema não existe e o APK nem liga.
+appcompat = "1.8.0"
+
+[libraries]
+games-activity = { group = "androidx.games", name = "games-activity", version.ref = "gamesActivity" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

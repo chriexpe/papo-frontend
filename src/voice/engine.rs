@@ -20,8 +20,10 @@
 //! pior — cada volta criaria uma `m=` nova, e o servidor recusa ofertas com
 //! mais linhas do que os lugares que ele abriu.
 
-use std::sync::atomic::Ordering;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use gstreamer as gst;
 use gstreamer::glib;
@@ -41,7 +43,23 @@ use super::{Command, Frame, Shared, Tile};
 
 /// Tamanho da imagem que sai da câmera. 360p a 30 quadros cabe folgado no
 /// que um SFU de sala pequena aguenta e é o que a grade mostra.
+///
+/// No celular o quadro é em pé, e na proporção do sensor: 3:4, que é o que
+/// a câmera de verdade entrega. Forçar 16:9 aqui significava cortar mais da
+/// metade da altura para caber — o que aparecia era um rosto gigante, sem
+/// ombro nem cabeça.
+///
+/// Os dois lados têm de andar juntos: este mesmo par descreve o `appsrc` da
+/// linha de vídeo, que anuncia o tamanho uma vez por call. Um quadro de
+/// tamanho diferente do anunciado tem o mesmo número de bytes se as medidas
+/// forem trocadas, passa despercebido, e derruba o codificador.
+#[cfg(target_os = "android")]
+const CAMERA_WIDTH: i32 = 480;
+#[cfg(target_os = "android")]
+const CAMERA_HEIGHT: i32 = 640;
+#[cfg(not(target_os = "android"))]
 const CAMERA_WIDTH: i32 = 640;
+#[cfg(not(target_os = "android"))]
 const CAMERA_HEIGHT: i32 = 360;
 
 /// Teto de banda da câmera, em bits por segundo. O controle de congestão do
@@ -50,7 +68,9 @@ const CAMERA_BITRATE: i32 = 600_000;
 
 /// Espera entre voltas do laço quando não há comando nenhum — é também de
 /// quanto em quanto tempo o barramento do GStreamer é lido.
-const TICK: std::time::Duration = std::time::Duration::from_millis(50);
+const TICK: Duration = Duration::from_millis(50);
+const SUBSCRIBE_RETRY_MIN: Duration = Duration::from_millis(500);
+const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(4);
 
 pub(super) fn spawn(
     channel_id: String,
@@ -78,6 +98,11 @@ pub(super) fn spawn(
         .ok()
 }
 
+struct SubscribeRetry {
+    next: Instant,
+    delay: Duration,
+}
+
 struct Engine {
     channel_id: String,
     pipeline: gst::Pipeline,
@@ -96,6 +121,11 @@ struct Engine {
     /// De quem a janela quer ver a câmera. Pode ser mais gente do que cabe:
     /// o que sobra espera um lugar vagar.
     wanted: Vec<String>,
+    /// Assinaturas de vídeo são otimistas: o backend pode anunciar
+    /// camera_on alguns milissegundos antes de OnTrack registrar a track.
+    /// Enquanto o slot reservado ainda não recebeu quadro, repetimos o
+    /// subscribe com backoff; Subscribe é idempotente para o mesmo publisher.
+    subscribe_retry: HashMap<String, SubscribeRetry>,
     repaint: egui::Context,
     /// A volta para a própria thread: as promessas do GStreamer respondem
     /// por aqui, em vez de mexerem no estado de outra thread.
@@ -232,6 +262,7 @@ impl Engine {
             camera_src: None,
             camera_on: false,
             wanted: Vec::new(),
+            subscribe_retry: HashMap::new(),
             repaint,
             inbox,
             ready: false,
@@ -270,6 +301,7 @@ impl Engine {
             // dispositivo. Sem ler o barramento dela, a call ficaria com a
             // câmera "ligada" e sem quadro nenhum, sem dizer por quê.
             self.watch_camera();
+            self.retry_video_subscriptions();
         }
         self.camera = None;
         let _ = self.pipeline.set_state(gst::State::Null);
@@ -366,6 +398,17 @@ impl Engine {
                 shared.fail("oferta ilegível");
                 return;
             };
+            let video_lines = text
+                .lines()
+                .filter(|line| line.starts_with("m=video "))
+                .count();
+            let sendonly = text
+                .lines()
+                .filter(|line| *line == "a=sendonly")
+                .count();
+            log::info!(
+                "call: oferta SDP com {video_lines} m=video e {sendonly} linhas sendonly"
+            );
             let _ = signals.send(
                 serde_json::json!({
                     "type": "voice_offer",
@@ -469,6 +512,7 @@ impl Engine {
         self.wanted = wanted;
 
         for publisher in leaving {
+            self.subscribe_retry.remove(&publisher);
             self.signal(serde_json::json!({
                 "type": "track_unsubscribe",
                 "channel_id": self.channel_id,
@@ -483,8 +527,75 @@ impl Engine {
                 "publisher_id": publisher,
                 "kind": kind.wire(),
             }));
+            self.subscribe_retry.insert(
+                publisher,
+                SubscribeRetry {
+                    next: Instant::now() + SUBSCRIBE_RETRY_MIN,
+                    delay: SUBSCRIBE_RETRY_MIN,
+                },
+            );
         }
         self.publish_slots();
+    }
+
+    /// camera_on=true é anunciado pelo backend antes de a nova TrackRemote
+    /// necessariamente existir. O primeiro subscribe pode então receber
+    /// voice-not-found. Como não há ACK de subscribe no protocolo, o primeiro
+    /// quadro recebido é a confirmação. Até lá repetimos o mesmo pedido com
+    /// backoff; o backend reaproveita o slot do mesmo publisher, portanto a
+    /// operação é idempotente.
+    fn retry_video_subscriptions(&mut self) {
+        if self.subscribe_retry.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut confirmed = Vec::new();
+        let mut due = Vec::new();
+
+        for (publisher, retry) in &self.subscribe_retry {
+            if !self.wanted.contains(publisher) {
+                confirmed.push(publisher.clone());
+                continue;
+            }
+
+            let Some(index) = self.slots.find(publisher, Kind::Camera) else {
+                confirmed.push(publisher.clone());
+                continue;
+            };
+
+            let has_frame = self
+                .shared
+                .tiles
+                .lock()
+                .ok()
+                .and_then(|tiles| tiles.get(index).map(|tile| tile.frame.is_some()))
+                .unwrap_or(false);
+
+            if has_frame {
+                confirmed.push(publisher.clone());
+            } else if now >= retry.next {
+                due.push(publisher.clone());
+            }
+        }
+
+        for publisher in confirmed {
+            self.subscribe_retry.remove(&publisher);
+        }
+
+        for publisher in due {
+            log::info!("call: repetindo track_subscribe para câmera de {publisher}");
+            self.signal(serde_json::json!({
+                "type": "track_subscribe",
+                "channel_id": self.channel_id,
+                "publisher_id": publisher,
+                "kind": Kind::Camera.wire(),
+            }));
+            if let Some(retry) = self.subscribe_retry.get_mut(&publisher) {
+                retry.delay = (retry.delay * 2).min(SUBSCRIBE_RETRY_MAX);
+                retry.next = now + retry.delay;
+            }
+        }
     }
 
     /// Reescreve nos lugares quem é o dono de cada um. O quadro que já
@@ -568,6 +679,7 @@ impl Engine {
         }
         // A ordem importa: o servidor lê o estado da câmera para saber que a
         // linha nova é câmera. Se a oferta chegasse antes, ele a recusaria.
+        log::info!("call: câmera pronta localmente; anunciando voice_camera=true");
         self.signal(serde_json::json!({
             "type": "voice_camera",
             "channel_id": self.channel_id,
@@ -605,20 +717,78 @@ impl Engine {
         let payloader = make("rtpvp8pay")?;
         payloader.set_property("pt", 96u32);
         payloader.set_property_from_str("picture-id-mode", "15-bit");
+
+        // Quatro fronteiras, cada uma impressa uma única vez. `push_buffer`
+        // só confirma que o appsrc aceitou o buffer na fila interna; estes
+        // probes dizem até onde a thread de streaming realmente chegou.
+        for (element, pad_name, message) in [
+            (
+                src.upcast_ref::<gst::Element>(),
+                "src",
+                "primeiro quadro saiu do appsrc WebRTC",
+            ),
+            (&encoder, "sink", "primeiro quadro entrou no vp8enc"),
+            (&encoder, "src", "primeiro quadro VP8 saiu do vp8enc"),
+            (&payloader, "src", "primeiro pacote RTP da câmera saiu do rtpvp8pay"),
+        ] {
+            if let Some(probe_pad) = element.static_pad(pad_name) {
+                let seen = Arc::new(AtomicBool::new(false));
+                let seen_probe = Arc::clone(&seen);
+                // RTP payloaders (incluindo rtpvp8pay) costumam publicar um
+                // GstBufferList por frame, não buffers individuais. Escutar
+                // só BUFFER fazia o diagnóstico dizer "não saiu RTP" mesmo
+                // quando o payloader já tinha empacotado tudo.
+                probe_pad.add_probe(
+                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                    move |_pad, _info| {
+                        if !seen_probe.swap(true, Ordering::Relaxed) {
+                            log::info!("call: {message}");
+                        }
+                        gst::PadProbeReturn::Ok
+                    },
+                );
+            }
+        }
+
         let filter = make("capsfilter")?;
         filter.set_property("caps", video_caps());
 
-        let elements = [src.upcast_ref::<gst::Element>().clone(), queue, encoder, payloader, filter];
+        let elements = [
+            src.upcast_ref::<gst::Element>().clone(),
+            queue,
+            encoder,
+            payloader,
+            filter,
+        ];
         self.pipeline.add_many(&elements).ok()?;
         gst::Element::link_many(&elements).ok()?;
 
         let pad = self.webrtc.request_pad_simple("sink_%u")?;
         let last = elements.last()?;
         last.static_pad("src")?.link(&pad).ok()?;
+
         for element in &elements {
-            let _ = element.sync_state_with_parent();
+            if let Err(error) = element.sync_state_with_parent() {
+                log::error!(
+                    "call: {} não acompanhou o estado do pipeline da câmera WebRTC: {error}",
+                    element.name()
+                );
+                for branch_element in elements.iter().rev() {
+                    let _ = branch_element.set_state(gst::State::Null);
+                    let _ = self.pipeline.remove(branch_element);
+                }
+                self.webrtc.release_request_pad(&pad);
+                return None;
+            }
         }
+        log::info!("call: branch appsrc→vp8enc→rtpvp8pay acompanhou o pipeline");
+
         let line = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+        // O request-pad dispara on-negotiation-needed imediatamente. Até a
+        // captura abrir e voice_camera=true estar a caminho do servidor, esta
+        // m-line NÃO pode publicar: o backend rejeita vídeo ativo quando
+        // cameraOn ainda é false.
+        line.set_property_from_str("direction", "inactive");
         Some((line, src))
     }
 
@@ -843,7 +1013,14 @@ fn microphone(
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
-    for factory in ["pipewiresrc", "pulsesrc", "alsasrc"] {
+    // No Android o caminho é um só: o OpenSL ES. Na área de trabalho
+    // tenta-se do mais moderno para o mais antigo.
+    #[cfg(target_os = "android")]
+    const MICS: &[&str] = &["openslessrc"];
+    #[cfg(not(target_os = "android"))]
+    const MICS: &[&str] = &["pipewiresrc", "pulsesrc", "alsasrc"];
+
+    for factory in MICS {
         let Some((elements, volume)) = mic_chain(factory) else {
             continue;
         };
@@ -1001,7 +1178,7 @@ fn connect_signals(
     webrtc: &gst::Element,
     pipeline: &gst::Pipeline,
     shared: &Arc<Shared>,
-    inbox: &mpsc::Sender<Command>,
+    _inbox: &mpsc::Sender<Command>,
     signals: &mpsc::Sender<String>,
     channel_id: &str,
     video_lines: Arc<Mutex<Vec<gst_webrtc::WebRTCRTPTransceiver>>>,
@@ -1013,12 +1190,21 @@ fn connect_signals(
         "on-ice-candidate",
         false,
         glib::closure!(move |_webrtc: &gst::Element, mline: u32, candidate: String| {
+            // Algumas implementações sinalizam o fim da coleta com candidato
+            // vazio. Isso não é um ICE candidate e o backend o rejeita como
+            // "evento inválido".
+            if candidate.trim().is_empty() {
+                log::debug!("call: fim da coleta ICE sem candidato");
+                return;
+            }
             // O servidor recusa candidato de loopback (e tem razão: ninguém
             // fora desta máquina chega em 127.0.0.1). Mandar assim mesmo só
             // renderia um erro por candidato.
             if is_loopback(&candidate) {
+                log::debug!("call: ignorando ICE loopback: {candidate}");
                 return;
             }
+            log::info!("call: ICE local mline={mline}: {candidate}");
             let _ = out.send(
                 serde_json::json!({
                     "type": "voice_ice_candidate",
@@ -1031,18 +1217,15 @@ fn connect_signals(
         }),
     );
 
-    let waiting = inbox.clone();
-    webrtc.connect_closure(
-        "on-negotiation-needed",
-        false,
-        glib::closure!(move |_webrtc: &gst::Element| {
-            let _ = waiting.send(Command::Negotiate);
-        }),
-    );
-
+    // As mudanças locais que exigem SDP são conhecidas pelo motor:
+    // Ready faz a oferta inicial e câmera/screen pedem a própria renegociação.
+    // Não usamos on-negotiation-needed como segunda fonte, porque ele também
+    // dispara para a mesma mudança e transformava cada negociação em duas
+    // ofertas consecutivas (e duplicava ICE/rate-limit junto).
     let state = Arc::clone(shared);
     webrtc.connect_notify(Some("connection-state"), move |webrtc, _| {
         let value = webrtc.property::<gst_webrtc::WebRTCPeerConnectionState>("connection-state");
+        log::info!("call: PeerConnection -> {value:?}");
         match value {
             gst_webrtc::WebRTCPeerConnectionState::Connected => {
                 state.live.store(true, Ordering::Relaxed);
@@ -1056,6 +1239,18 @@ fn connect_signals(
             }
             _ => {}
         }
+    });
+
+    webrtc.connect_notify(Some("ice-gathering-state"), move |webrtc, _| {
+        let value =
+            webrtc.property::<gst_webrtc::WebRTCICEGatheringState>("ice-gathering-state");
+        log::info!("call: ICE gathering -> {value:?}");
+    });
+
+    webrtc.connect_notify(Some("ice-connection-state"), move |webrtc, _| {
+        let value =
+            webrtc.property::<gst_webrtc::WebRTCICEConnectionState>("ice-connection-state");
+        log::info!("call: ICE connection -> {value:?}");
     });
 
     let bin = pipeline.clone();
@@ -1101,37 +1296,119 @@ fn is_loopback(candidate: &str) -> bool {
 /// precisa esperar todas as entradas.
 fn play_audio(pipeline: &gst::Pipeline, pad: &gst::Pad) {
     let Some(depay) = make("rtpopusdepay") else {
+        drain_receive_pad(pipeline, pad, "sem rtpopusdepay");
         return;
     };
-    let Some(decoder) = make("opusdec") else { return };
+    let Some(decoder) = make("opusdec") else {
+        drain_receive_pad(pipeline, pad, "sem opusdec");
+        return;
+    };
     let Some(convert) = make("audioconvert") else {
+        drain_receive_pad(pipeline, pad, "sem audioconvert");
         return;
     };
     let Some(resample) = make("audioresample") else {
+        drain_receive_pad(pipeline, pad, "sem audioresample");
         return;
     };
-    let Some(queue) = make("queue") else { return };
-    let Some(sink) = audio_sink() else { return };
+    let Some(queue) = make("queue") else {
+        drain_receive_pad(pipeline, pad, "sem queue de áudio");
+        return;
+    };
+    let Some(sink) = audio_sink() else {
+        drain_receive_pad(pipeline, pad, "sem saída de áudio");
+        return;
+    };
     let elements = [depay.clone(), decoder, convert, resample, queue, sink];
     if pipeline.add_many(&elements).is_err() {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "não deu para adicionar a saída de áudio");
         return;
     }
     if gst::Element::link_many(&elements).is_err() {
         log::warn!("call: não deu para ligar o áudio que chegou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de áudio não ligou");
         return;
     }
-    for element in &elements {
-        let _ = element.sync_state_with_parent();
-    }
-    if let Some(sink_pad) = depay.static_pad("sink")
-        && pad.link(&sink_pad).is_err()
-    {
+    let Some(sink_pad) = depay.static_pad("sink") else {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "depayloader de áudio sem sink");
+        return;
+    };
+    // Liga o pad do webrtcbin antes de pôr a branch em PLAYING. Se a mídia
+    // já estiver chegando, deixá-lo solto por um instante basta para o
+    // TransportReceiveBin publicar NOT_LINKED e derrubar a call.
+    if pad.link(&sink_pad).is_err() {
         log::warn!("call: o áudio que chegou não encaixou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "pad de áudio não ligou");
+        return;
+    }
+    if elements
+        .iter()
+        .any(|element| element.sync_state_with_parent().is_err())
+    {
+        log::warn!("call: o áudio que chegou não subiu");
+        let _ = pad.unlink(&sink_pad);
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de áudio não subiu");
+    }
+}
+
+/// Remove uma branch que já foi anexada ao pipeline. O pipeline mantém
+/// referências próprias; deixar o Vec cair não libera elemento nenhum.
+fn drop_dynamic_branch(pipeline: &gst::Pipeline, elements: &[gst::Element]) {
+    for element in elements.iter().rev() {
+        let _ = element.set_state(gst::State::Null);
+        let _ = pipeline.remove(element);
+    }
+}
+
+/// Um pad de recepção do webrtcbin nunca pode ficar solto depois que o SFU
+/// começa a empurrar RTP. Se o decoder ou o sink local falhar, drena a track
+/// num fakesink: a call continua viva e o erro local não vira
+/// TransportReceiveBin/NOT_LINKED.
+fn drain_receive_pad(pipeline: &gst::Pipeline, pad: &gst::Pad, reason: &str) {
+    log::warn!("call: descartando track recebida: {reason}");
+    let Some(sink) = make("fakesink") else {
+        log::error!("call: nem fakesink existe para drenar a track");
+        return;
+    };
+    if sink.has_property("sync") {
+        sink.set_property("sync", false);
+    }
+    if sink.has_property("async") {
+        sink.set_property("async", false);
+    }
+    if pipeline.add(&sink).is_err() {
+        return;
+    }
+    let Some(sink_pad) = sink.static_pad("sink") else {
+        let _ = pipeline.remove(&sink);
+        return;
+    };
+    if pad.link(&sink_pad).is_err() {
+        let _ = pipeline.remove(&sink);
+        return;
+    }
+    if sink.sync_state_with_parent().is_err() {
+        let _ = pad.unlink(&sink_pad);
+        let _ = sink.set_state(gst::State::Null);
+        let _ = pipeline.remove(&sink);
     }
 }
 
 fn audio_sink() -> Option<gst::Element> {
-    for factory in ["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"] {
+    // A call compartilhava a lista da área de trabalho e, no Android,
+    // acabava dependendo de autoaudiosink por acaso. O player de anexos já
+    // usa o sink nativo diretamente; a call deve fazer o mesmo.
+    #[cfg(target_os = "android")]
+    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
+    #[cfg(not(target_os = "android"))]
+    const SINKS: &[&str] = &["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"];
+
+    for factory in SINKS {
         let Some(sink) = make(factory) else { continue };
         // Um sink que entra com o pipeline já andando não pode segurar a
         // troca de estado esperando o próprio preroll.
@@ -1193,19 +1470,35 @@ fn show_video(
         sink.upcast_ref::<gst::Element>().clone(),
     ];
     if pipeline.add_many(&elements).is_err() {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "não deu para adicionar o vídeo recebido");
         return;
     }
     if gst::Element::link_many(&elements).is_err() {
         log::warn!("call: não deu para ligar o vídeo que chegou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de vídeo não ligou");
         return;
     }
-    for element in &elements {
-        let _ = element.sync_state_with_parent();
-    }
-    if let Some(sink_pad) = depay.static_pad("sink")
-        && pad.link(&sink_pad).is_err()
-    {
+    let Some(sink_pad) = depay.static_pad("sink") else {
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "depayloader de vídeo sem sink");
+        return;
+    };
+    if pad.link(&sink_pad).is_err() {
         log::warn!("call: o vídeo que chegou não encaixou");
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "pad de vídeo não ligou");
+        return;
+    }
+    if elements
+        .iter()
+        .any(|element| element.sync_state_with_parent().is_err())
+    {
+        log::warn!("call: o vídeo que chegou não subiu");
+        let _ = pad.unlink(&sink_pad);
+        drop_dynamic_branch(pipeline, &elements);
+        drain_receive_pad(pipeline, pad, "branch de vídeo não subiu");
     }
 }
 
@@ -1216,7 +1509,41 @@ fn capture(
     shared: Arc<Shared>,
     repaint: egui::Context,
 ) -> Option<Camera> {
+    // A permissão da câmera é pedida aqui, no momento em que alguém liga a
+    // câmera. A primeira vez recusa com a caixa na tela; o toque seguinte
+    // já abre.
+    #[cfg(target_os = "android")]
+    {
+        use crate::platform::permission::{self, Status};
+        match permission::ensure(permission::CAMERA) {
+            Status::Granted => {}
+            Status::Asking => {
+                shared.warn("esperando a permissão da câmera");
+                return None;
+            }
+            Status::Denied => {
+                shared.warn("sem permissão para abrir a câmera");
+                return None;
+            }
+        }
+    }
+
     let pipeline = gst::Pipeline::new();
+    // A câmera é o único elemento da call que muda de nome por plataforma.
+    // No Android é o `ahcsrc`, do plugin `androidmedia` — que tem um lado
+    // Java: sem as classes dele no APK, este elemento sobe e morre ao abrir
+    // a câmera.
+    #[cfg(target_os = "android")]
+    let source = {
+        let source = make("ahcsrc")?;
+        // A de trás é o padrão do Android; numa call quem interessa é a de
+        // quem está falando. O `device-facing` do `ahcsrc` só informa, não
+        // escolhe — quem escolhe é o índice, e no Android a de trás é
+        // sempre a 0 e a da frente a 1.
+        source.set_property("device", "1");
+        source
+    };
+    #[cfg(not(target_os = "android"))]
     let source = make("v4l2src")?;
     let tee = make("tee")?;
     let convert = make("videoconvert")?;
@@ -1249,7 +1576,97 @@ fn capture(
         .sync(false)
         .build();
 
-    let main = [
+    // O sensor do celular não está de pé: a imagem sai deitada. Quanto
+    // depende do aparelho, e o `ahcsrc` sabe dizer — `device-orientation` é
+    // o giro em graus entre o sensor e a tela.
+    //
+    // `method=automatic` não serve aqui: ele espera uma etiqueta de
+    // orientação junto dos quadros, e o `ahcsrc` não manda nenhuma. Por
+    // isso o giro é escolhido na mão, a partir do que a câmera informou.
+    #[cfg(target_os = "android")]
+    let main = {
+        let degrees: i32 = if source.has_property("device-orientation") {
+            source.property("device-orientation")
+        } else {
+            0
+        };
+        // Girar o sensor de volta é girar no mesmo sentido em que ele está
+        // montado, não no contrário — foi o engano que deixou a imagem de
+        // cabeça para baixo, que é o erro de 180° entre um e outro.
+        let method = match degrees {
+            90 => "clockwise",
+            180 => "rotate-180",
+            270 => "counterclockwise",
+            _ => "none",
+        };
+        log::info!("call: câmera a {degrees}°, endireitando com {method}");
+        if let Some(pad) = source.static_pad("src") {
+            // Só depois de abrir é que o sensor diz o que sabe fazer; aqui
+            // ainda pode vir vazio, e então o que vale é o log do appsink.
+            if let Some(caps) = pad.current_caps() {
+                log::info!("call: o sensor entrega {caps}");
+            }
+        }
+
+        let flip = make("videoflip")?;
+        flip.set_property_from_str("method", method);
+
+        // O sensor, sozinho, entrega 2176x1080 — quase 2:1, nem 4:3 nem
+        // 16:9. Girado, vira uma tira alta e estreita; encaixá-la no quadro
+        // de destino punha tarja preta dentro do próprio vídeo e deixava o
+        // rosto espremido. O aplicativo de câmera do aparelho não sofre
+        // disso porque **pede** um modo 4:3 à câmera, em vez de aceitar o
+        // que vier.
+        //
+        // Aqui é a mesma coisa: pedido 640x480, que girado dá exatamente o
+        // 480x640 que a linha de vídeo anuncia. Sem sobra, sem corte.
+        let sensor_caps = make("capsfilter")?;
+        sensor_caps.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("width", CAMERA_HEIGHT)
+                .field("height", CAMERA_WIDTH)
+                .build(),
+        );
+
+        // O quadro continua com o tamanho declarado, e não trocado pela
+        // rotação: quem recebe é o `appsrc` da linha de vídeo, que anuncia
+        // 640x360 de uma vez por call. Mandar 360x640 para lá tem o mesmo
+        // número de bytes e passa despercebido — até o codificador ler as
+        // linhas com a largura errada, andar para fora do plano e derrubar
+        // o aplicativo. Foi o que aconteceu.
+        //
+        // Sem corte nem tarja: o quadro já sai na proporção do destino,
+        // porque o destino é a proporção do sensor.
+        filter.set_property(
+            "caps",
+            gst::Caps::builder("video/x-raw")
+                .field("format", "I420")
+                .field("width", CAMERA_WIDTH)
+                .field("height", CAMERA_HEIGHT)
+                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+                .field("framerate", gst::Fraction::new(30, 1))
+                .build(),
+        );
+
+        // O `videoflip` vem **depois** do `videoconvert`, não antes: a
+        // câmera entrega no formato dela (NV21 e afins), que o flip não
+        // sabe girar. Ligado direto ao `ahcsrc` ele não negocia, e o
+        // pipeline fica de pé sem nunca entregar quadro — a câmera acende
+        // no aparelho e a tela do Papo fica vazia.
+        vec![
+            source,
+            sensor_caps,
+            convert,
+            flip,
+            scale,
+            rate,
+            filter,
+            tee.clone(),
+        ]
+    };
+    #[cfg(not(target_os = "android"))]
+    let main = vec![
         source,
         convert,
         scale,
@@ -1281,10 +1698,29 @@ fn capture(
     // O quadro cru vai para o `appsrc` da sessão WebRTC. O carimbo de tempo
     // é refeito lá (`do-timestamp`), então ligar a câmera de novo não deixa
     // um buraco de horas no meio da linha do tempo.
+    let sensor = main[0].clone();
+    let pushed_once = Arc::new(AtomicBool::new(false));
+    let pushed_once_cb = Arc::clone(&pushed_once);
     feed.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
+                // Uma vez só, o que a câmera está realmente entregando. Sem
+                // isto, o tamanho e a proporção do quadro são chute.
+                {
+                    use std::sync::Once;
+                    static DITO: Once = Once::new();
+                    DITO.call_once(|| {
+                        if let Some(caps) = sample.caps() {
+                            log::info!("call: o quadro enviado é {caps}");
+                        }
+                        if let Some(caps) =
+                            sensor.static_pad("src").and_then(|pad| pad.current_caps())
+                        {
+                            log::info!("call: o sensor entrega {caps}");
+                        }
+                    });
+                }
                 let Some(buffer) = sample.buffer_owned() else {
                     return Ok(gst::FlowSuccess::Ok);
                 };
@@ -1293,7 +1729,17 @@ fn capture(
                     reference.set_pts(None);
                     reference.set_dts(None);
                 }
-                target.push_buffer(buffer).map_err(|_| gst::FlowError::Error)?;
+                match target.push_buffer(buffer) {
+                    Ok(_) => {
+                        if !pushed_once_cb.swap(true, Ordering::Relaxed) {
+                            log::info!("call: primeiro quadro da câmera entrou no appsrc WebRTC");
+                        }
+                    }
+                    Err(error) => {
+                        log::error!("call: quadro da câmera não entrou no appsrc WebRTC: {error:?}");
+                        return Err(gst::FlowError::Error);
+                    }
+                }
                 Ok(gst::FlowSuccess::Ok)
             })
             .build(),

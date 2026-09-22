@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- O GameActivity descende de AppCompatActivity, então o tema tem de
+         ser um AppCompat — com outro, a Activity nem chega a abrir.
+         A janela inteira é desenhada pelo egui: o tema só responde pelas
+         barras do sistema e pela cor que aparece antes do primeiro quadro. -->
+    <style name="Theme.Papo" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

@@ -13,8 +13,7 @@ pub struct FileSecretStore {
 impl FileSecretStore {
     pub fn new() -> Self {
         Self {
-            root: directories::ProjectDirs::from("", "", "papo")
-                .map(|dirs| dirs.data_dir().join("sessions")),
+            root: crate::platform::dirs::data_dir().map(|dir| dir.join("sessions")),
         }
     }
 

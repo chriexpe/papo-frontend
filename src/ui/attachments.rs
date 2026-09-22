@@ -38,14 +38,25 @@ pub fn draw(
     message_id: &str,
     attachments: &[Attachment],
     width: f32,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let mut action = None;
     for (index, attachment) in attachments.iter().enumerate() {
         ui.add_space(space::XS);
         let outcome = match attachment.kind() {
             Kind::Image => image(ui, t, s, media, message_id, index, attachment, width),
-            Kind::Video => video(ui, t, s, media, message_id, index, attachment, width),
-            Kind::Audio => audio(ui, t, s, media, attachment, width),
+            Kind::Video => video(
+                ui,
+                t,
+                s,
+                media,
+                message_id,
+                index,
+                attachment,
+                width,
+                seek_zones,
+            ),
+            Kind::Audio => audio(ui, t, s, media, attachment, width, seek_zones),
             Kind::Other => file_card(ui, t, s, attachment, width),
         };
         action = action.or(outcome);
@@ -167,6 +178,7 @@ fn video(
     index: usize,
     attachment: &Attachment,
     width: f32,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
     let state = media.file(&attachment.id, attachment.name());
@@ -176,17 +188,40 @@ fn video(
 
     let ctx = ui.ctx().clone();
     // Antes do primeiro play não existe pipeline, e é esse o ponto: rolar a
-    // conversa passava por aqui e montava um decodificador por vídeo. Sem
-    // ele a proporção cai no padrão e o cartão desenha igual.
-    let (aspect, playing, position, duration) = match media.existing_player(&attachment.id) {
-        Some(player) => (
-            player.aspect().clamp(0.4, 3.0),
-            player.is_playing(),
-            player.position(),
-            player.duration(),
-        ),
-        None => (16.0 / 9.0, false, 0.0, 0.0),
-    };
+    // conversa passava por aqui e montava um decodificador por vídeo.
+    //
+    // Cada consulta ao `media` vira `(id, tamanho)` na hora: são três
+    // empréstimos seguidos do mesmo lugar, e nenhum pode sobreviver ao
+    // próximo.
+    let live = media
+        .existing_player(&attachment.id)
+        .and_then(|player| player.frame(&ctx))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let (player_aspect, playing, position, duration) =
+        match media.existing_player(&attachment.id) {
+            Some(player) => (
+                Some(player.aspect().clamp(0.4, 3.0)),
+                player.is_playing(),
+                player.position(),
+                player.duration(),
+            ),
+            None => (None, false, 0.0, 0.0),
+        };
+    let poster = media
+        .poster(&attachment.id, &path)
+        .and_then(|texture| texture.frame(&ctx))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+
+    // A proporção sai do que existir de mais concreto: o quadro que está
+    // tocando, depois a capa, depois o que o player disse. O 16:9 é só o
+    // chute de enquanto não há nenhum dos três — e era ele que achatava
+    // vídeo em pé, porque a capa chegava depois do cartão já medido.
+    let shown = live.or(poster);
+    let aspect = shown
+        .map(|(_, size)| size.x / size.y.max(1.0))
+        .or(player_aspect)
+        .unwrap_or(16.0 / 9.0)
+        .clamp(0.4, 3.0);
     let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
     let total = Vec2::new(card_width, frame_size.y + CONTROLS_H);
     let (rect, response) = ui.allocate_exact_size(total, Sense::click());
@@ -194,14 +229,13 @@ fn video(
     let corner = CornerRadius::same(radius::CARD);
 
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
-    if let Some(texture) = media
-        .existing_player(&attachment.id)
-        .and_then(|player| player.frame(&ctx))
-    {
-        let size = fit(texture.size_vec2(), frame_size);
+
+    // Tocando, é o quadro do player; parado, a capa tirada do arquivo.
+    if let Some((texture, natural)) = shown {
+        let size = fit(natural, frame_size);
         let centered = Rect::from_center_size(frame_rect.center(), size);
         ui.painter().image(
-            texture.id(),
+            texture,
             centered,
             Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             Color32::WHITE,
@@ -232,7 +266,18 @@ fn video(
         egui::pos2(rect.min.x, frame_rect.max.y),
         Vec2::new(card_width, CONTROLS_H),
     );
-    if let Some(command) = transport(ui, t, media, &attachment.id, &path, controls, position, duration, true) {
+    if let Some(command) = transport(
+        ui,
+        t,
+        media,
+        &attachment.id,
+        &path,
+        controls,
+        position,
+        duration,
+        true,
+        seek_zones,
+    ) {
         match command {
             Transport::Fullscreen => {
                 action = Some(MediaAction::Open {
@@ -258,6 +303,7 @@ fn video(
     action
 }
 
+#[allow(clippy::ptr_arg)]
 fn audio(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -265,6 +311,7 @@ fn audio(
     media: &mut MediaStore,
     attachment: &Attachment,
     width: f32,
+    _seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
     let state = media.file(&attachment.id, attachment.name());
@@ -292,7 +339,11 @@ fn audio(
         None => (false, 0.0, 0.0, None),
     };
 
-    let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), Sense::click_and_drag());
+    #[cfg(target_os = "android")]
+    let audio_sense = Sense::click();
+    #[cfg(not(target_os = "android"))]
+    let audio_sense = Sense::click_and_drag();
+    let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), audio_sense);
     ui.painter().rect(
         rect,
         CornerRadius::same(radius::CARD),
@@ -354,16 +405,42 @@ fn audio(
     }
 
     // Clicar ou arrastar em cima da onda pula para o ponto.
+    let wave_hit = wave.expand2(Vec2::new(0.0, 10.0));
     let over_wave = ui
         .ctx()
         .pointer_latest_pos()
-        .map(|pos| wave.expand2(Vec2::new(0.0, 8.0)).contains(pos))
+        .map(|pos| wave_hit.contains(pos))
         .unwrap_or(false);
     if over_wave {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+
+    #[cfg(target_os = "android")]
+    {
+        _seek_zones.push(wave_hit);
+        // No Android a onda NÃO possui Sense::drag: isso deixaria o filho
+        // roubar a rolagem vertical do ScrollArea. O toque cru decide o eixo
+        // e trava a decisão até o dedo subir.
+        let response = ui.interact(
+            wave_hit,
+            ui.id().with(("audio-seek", &attachment.id)),
+            Sense::click(),
+        );
+        if let Some(ratio) = android_seek_ratio(ui, &response, wave) {
+            if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
+                let duration = player.duration();
+                if duration > 0.0 {
+                    player.seek(duration * ratio);
+                } else {
+                    player.play();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     if let Some(pos) = pointer.filter(|pos| {
-        (card.dragged() || card.clicked()) && wave.expand2(Vec2::new(0.0, 10.0)).contains(*pos)
+        (card.dragged() || card.clicked()) && wave_hit.contains(*pos)
     }) {
         let ratio = ((pos.x - wave.min.x) / wave.width()).clamp(0.0, 1.0) as f64;
         if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
@@ -522,7 +599,7 @@ enum Transport {
 }
 
 /// Barra de controles do vídeo: play, linha do tempo, som e tela cheia.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::ptr_arg)]
 fn transport(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -533,6 +610,7 @@ fn transport(
     position: f64,
     duration: f64,
     fullscreen: bool,
+    _seek_zones: &mut Vec<Rect>,
 ) -> Option<Transport> {
     let mut outcome = None;
     ui.painter()
@@ -608,19 +686,40 @@ fn transport(
         ui.painter()
             .circle_filled(egui::pos2(played.max.x, mid), 5.0, Color32::WHITE);
 
-        let response = ui.interact(
-            line.expand2(Vec2::new(0.0, 8.0)),
-            ui.id().with(("seek", id)),
-            Sense::click_and_drag(),
-        );
-        if let Some(pointer) = response
-            .interact_pointer_pos()
-            .filter(|_| response.dragged() || response.clicked())
+        let seek_rect = line.expand2(Vec2::new(0.0, 8.0));
+
+        #[cfg(target_os = "android")]
         {
-            let ratio = ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64;
-            if let Some(player) = media.existing_player(id) {
+            _seek_zones.push(seek_rect);
+            let response = ui.interact(
+                seek_rect,
+                ui.id().with(("seek", id)),
+                Sense::click(),
+            );
+            if let Some(ratio) = android_seek_ratio(ui, &response, line)
+                && let Some(player) = media.existing_player(id)
+            {
                 let duration = player.duration();
                 player.seek(duration * ratio);
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let response = ui.interact(
+                seek_rect,
+                ui.id().with(("seek", id)),
+                Sense::click_and_drag(),
+            );
+            if let Some(pointer) = response
+                .interact_pointer_pos()
+                .filter(|_| response.dragged() || response.clicked())
+            {
+                let ratio = ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64;
+                if let Some(player) = media.existing_player(id) {
+                    let duration = player.duration();
+                    player.seek(duration * ratio);
+                }
             }
         }
 
@@ -634,6 +733,63 @@ fn transport(
     }
 
     outcome
+}
+
+#[cfg(target_os = "android")]
+fn android_seek_ratio(ui: &egui::Ui, response: &egui::Response, line: Rect) -> Option<f64> {
+    // 0 = ainda indeciso; 1 = horizontal/scrub; -1 = vertical/scroll.
+    let gesture_id = response.id.with("android-axis-lock");
+
+    if response.clicked() {
+        ui.ctx().data_mut(|data| data.remove::<i8>(gesture_id));
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| ui.ctx().pointer_interact_pos())?;
+        return Some(((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64);
+    }
+
+    let (down, origin, pointer) = ui.input(|input| {
+        (
+            input.pointer.primary_down(),
+            input.pointer.press_origin(),
+            input.pointer.latest_pos(),
+        )
+    });
+
+    if !down {
+        ui.ctx().data_mut(|data| data.remove::<i8>(gesture_id));
+        return None;
+    }
+
+    let (Some(origin), Some(pointer)) = (origin, pointer) else {
+        return None;
+    };
+    if !response.rect.contains(origin) {
+        return None;
+    }
+
+    let delta = pointer - origin;
+    let mut axis = ui
+        .ctx()
+        .data(|data| data.get_temp::<i8>(gesture_id))
+        .unwrap_or(0);
+
+    // Espera sair do touch slop antes de escolher. Depois de escolhido, o
+    // eixo não muda no meio do gesto mesmo se o dedo derivar um pouco.
+    if axis == 0 && delta.length() >= 6.0 {
+        const BIAS: f32 = 1.15;
+        if delta.x.abs() > delta.y.abs() * BIAS {
+            axis = 1;
+        } else if delta.y.abs() > delta.x.abs() * BIAS {
+            axis = -1;
+        }
+        if axis != 0 {
+            ui.ctx().data_mut(|data| data.insert_temp(gesture_id, axis));
+        }
+    }
+
+    (axis == 1)
+        .then(|| ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64)
 }
 
 fn control(ui: &mut egui::Ui, rect: Rect, glyph: &str, id: &str, tag: &str) -> bool {
