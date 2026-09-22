@@ -27,7 +27,9 @@ use super::widgets::avatar;
 /// Altura da barra de conectado, no pé da coluna de canais.
 pub const BAR_HEIGHT: f32 = 52.0;
 
-/// Proporção de cada retrato da grade. 16:9 é o que a câmera entrega.
+/// Proporção usada só enquanto ainda não existe um quadro para medir.
+/// Assim que chega vídeo, a textura é a fonte de verdade: Android pode
+/// publicar 3:4 enquanto uma webcam de desktop continua em 16:9.
 const TILE_RATIO: f32 = 16.0 / 9.0;
 
 /// O que a grade precisa saber de cada pessoa na sala.
@@ -778,18 +780,9 @@ fn draw_faces(
     let ctx = ui.ctx().clone();
 
     for (index, face) in people.iter().enumerate() {
-        let column = index % columns;
-        let row = index / columns;
-        let origin = egui::pos2(
-            area.min.x + column as f32 * (cell.x + gap),
-            area.min.y + row as f32 * (cell.y + gap),
-        );
-        let size = fit(cell, TILE_RATIO);
-        let rect = Rect::from_center_size(
-            egui::pos2(origin.x + cell.x / 2.0, origin.y + cell.y / 2.0),
-            size,
-        );
-
+        // Primeiro pega o quadro: a proporção do tile vem dele, não de uma
+        // constante global. Uma call pode misturar 480×640 do Android com
+        // 640×360 de uma webcam de desktop ao mesmo tempo.
         let texture = if face.camera {
             match (face.me, call.as_deref_mut()) {
                 (true, Some(call)) => call.preview(&ctx),
@@ -799,6 +792,25 @@ fn draw_faces(
         } else {
             None
         };
+        let ratio = texture
+            .as_ref()
+            .map(|texture| texture.size_vec2())
+            .filter(|size| size.x > 0.0 && size.y > 0.0)
+            .map(|size| size.x / size.y)
+            .unwrap_or(TILE_RATIO);
+
+        let column = index % columns;
+        let row = index / columns;
+        let origin = egui::pos2(
+            area.min.x + column as f32 * (cell.x + gap),
+            area.min.y + row as f32 * (cell.y + gap),
+        );
+        let size = fit(cell, ratio);
+        let rect = Rect::from_center_size(
+            egui::pos2(origin.x + cell.x / 2.0, origin.y + cell.y / 2.0),
+            size,
+        );
+
         let crowded = face.camera
             && !face.me
             && call
@@ -859,11 +871,13 @@ fn tile(
 
     match &video {
         Some(texture) => {
-            // O vídeo cobre o retrato: sobra é cortada, não esticada.
+            // O retângulo já foi dimensionado com a proporção da própria
+            // textura. Usa o quadro inteiro: nada de "cover" escondendo FOV
+            // para forçar um Android 3:4 dentro de um tile 16:9.
             let mut mesh = egui::Mesh::with_texture(texture.id());
             mesh.add_rect_with_uv(
                 rect,
-                cover(texture.size_vec2(), rect.size()),
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                 Color32::WHITE,
             );
             ui.painter()
@@ -958,21 +972,6 @@ fn tile(
             },
         );
     }
-}
-
-/// O retângulo de textura que cobre o destino sem deformar a imagem.
-fn cover(texture: Vec2, target: Vec2) -> Rect {
-    if texture.x <= 0.0 || texture.y <= 0.0 || target.y <= 0.0 {
-        return Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-    }
-    let source = texture.x / texture.y;
-    let wanted = target.x / target.y;
-    let (w, h) = if source > wanted {
-        (wanted / source, 1.0)
-    } else {
-        (1.0, source / wanted)
-    };
-    Rect::from_center_size(egui::pos2(0.5, 0.5), Vec2::new(w, h))
 }
 
 /// A fileira de controles embaixo da grade.
