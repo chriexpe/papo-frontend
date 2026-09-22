@@ -64,6 +64,16 @@ pub enum Request {
         id: String,
         blob: Option<String>,
     },
+    /// Resolve mídia rica anunciada por páginas de embed social conhecidas.
+    ResolveEmbed {
+        id: String,
+        page_url: String,
+    },
+    /// Imagem original de um rich embed.
+    RemoteImage {
+        id: String,
+        url: String,
+    },
 }
 
 pub enum Loaded {
@@ -88,10 +98,28 @@ pub enum Loaded {
         id: String,
         peaks: Vec<f32>,
     },
+    EmbedResolved {
+        id: String,
+        kind: RichEmbedKind,
+        url: String,
+    },
     Failed {
         key: String,
         error: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RichEmbedKind {
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone)]
+pub enum RichEmbedState {
+    Loading,
+    Ready { kind: RichEmbedKind, url: String },
+    Failed,
 }
 
 pub struct Media {
@@ -148,6 +176,12 @@ async fn worker(
         log::error!("mídia sem cliente HTTP");
         return;
     };
+    let embed_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(Duration::from_secs(10))
+        .user_agent("Papo/0.2 rich-embed")
+        .build()
+        .ok();
 
     // O cache em disco não tinha quem o limpasse. Uma varrida na partida,
     // fora da thread da janela.
@@ -155,10 +189,11 @@ async fn worker(
 
     while let Some(request) = requests.recv().await {
         let api = api.clone();
+        let embed_client = embed_client.clone();
         let results = results.clone();
         let repaint = repaint.clone();
         tokio::spawn(async move {
-            let outcome = run(&api, request).await;
+            let outcome = run(&api, embed_client.as_ref(), request).await;
             if results.send(outcome).is_ok() {
                 repaint.request_repaint();
             }
@@ -166,7 +201,7 @@ async fn worker(
     }
 }
 
-async fn run(api: &Api, request: Request) -> Loaded {
+async fn run(api: &Api, embed_client: Option<&reqwest::Client>, request: Request) -> Loaded {
     match request {
         Request::Thumb { id, thumb_id } => {
             let key = thumb_key(&id);
@@ -259,7 +294,225 @@ async fn run(api: &Api, request: Request) -> Loaded {
                 Err(error) => Loaded::Failed { key, error },
             }
         }
+        Request::ResolveEmbed { id, page_url } => {
+            let key = embed_key(&id);
+            let Some(client) = embed_client else {
+                return Loaded::Failed {
+                    key,
+                    error: "cliente de rich embed indisponível".into(),
+                };
+            };
+            match resolve_rich_embed(client, &page_url).await {
+                Ok((kind, url)) => Loaded::EmbedResolved { id, kind, url },
+                Err(error) => Loaded::Failed { key, error },
+            }
+        }
+        Request::RemoteImage { id, url } => {
+            let key = remote_image_key(&id);
+            let Some(client) = embed_client else {
+                return Loaded::Failed {
+                    key,
+                    error: "cliente de rich embed indisponível".into(),
+                };
+            };
+            match fetch_remote_bytes(client, &url, 12 << 20).await {
+                Ok(bytes) => decode(key, &bytes, FULL_MAX),
+                Err(error) => Loaded::Failed { key, error },
+            }
+        }
     }
+}
+
+const EMBED_HTML_MAX: usize = 2 << 20;
+
+fn rich_embed_source(url: &str) -> bool {
+    let Ok(url) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    ["vxtwitter.com", "oginstagram.com"]
+        .into_iter()
+        .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
+}
+
+async fn resolve_rich_embed(
+    client: &reqwest::Client,
+    page_url: &str,
+) -> Result<(RichEmbedKind, String), String> {
+    if !rich_embed_source(page_url) {
+        return Err("origem não habilitada para rich embed".into());
+    }
+    let response = client
+        .get(page_url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    if bytes.len() > EMBED_HTML_MAX {
+        return Err("página de embed grande demais".into());
+    }
+    let html = String::from_utf8_lossy(&bytes);
+    let base = url::Url::parse(page_url).map_err(|error| error.to_string())?;
+
+    let video = meta_content(
+        &html,
+        &[
+            "og:video:secure_url",
+            "og:video:url",
+            "og:video",
+            "twitter:player:stream",
+        ],
+    );
+    if let Some(url) = video
+        .and_then(|value| resolve_meta_url(&base, &value))
+        .filter(|url| safe_remote_media_url(url))
+    {
+        return Ok((RichEmbedKind::Video, url));
+    }
+
+    let image = meta_content(
+        &html,
+        &[
+            "og:image:secure_url",
+            "og:image:url",
+            "og:image",
+            "twitter:image",
+        ],
+    );
+    if let Some(url) = image
+        .and_then(|value| resolve_meta_url(&base, &value))
+        .filter(|url| safe_remote_media_url(url))
+    {
+        return Ok((RichEmbedKind::Image, url));
+    }
+
+    Err("página não anunciou mídia embutível".into())
+}
+
+async fn fetch_remote_bytes(
+    client: &reqwest::Client,
+    raw_url: &str,
+    max: usize,
+) -> Result<Vec<u8>, String> {
+    if !safe_remote_media_url(raw_url) {
+        return Err("URL de mídia recusada".into());
+    }
+    let response = client
+        .get(raw_url)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?;
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    if bytes.len() > max {
+        return Err("mídia remota grande demais".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+fn safe_remote_media_url(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".local") {
+        return false;
+    }
+    // URLs com IP literal são recusadas para não transformar metadados de uma
+    // página social em ponte para a rede local do usuário.
+    host.parse::<std::net::IpAddr>().is_err()
+}
+
+fn resolve_meta_url(base: &url::Url, value: &str) -> Option<String> {
+    let value = decode_html_url(value.trim());
+    base.join(&value).ok().map(|url| url.to_string())
+}
+
+fn decode_html_url(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&#38;", "&")
+        .replace("&#x26;", "&")
+}
+
+fn meta_content(html: &str, names: &[&str]) -> Option<String> {
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        let trimmed = tag.trim_start();
+        if !trimmed
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("meta"))
+        {
+            continue;
+        }
+        let key = html_attr(trimmed, "property")
+            .or_else(|| html_attr(trimmed, "name"))
+            .unwrap_or_default();
+        if names.iter().any(|name| key.eq_ignore_ascii_case(name))
+            && let Some(content) = html_attr(trimmed, "content")
+            && !content.trim().is_empty()
+        {
+            return Some(content);
+        }
+    }
+    None
+}
+
+fn html_attr(tag: &str, wanted: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let bytes = tag.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = lower[from..].find(wanted) {
+        let start = from + rel;
+        let before_ok = start == 0
+            || !lower.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let after = start + wanted.len();
+        let after_ok = after >= lower.len()
+            || !lower.as_bytes()[after].is_ascii_alphanumeric();
+        if !before_ok || !after_ok {
+            from = after;
+            continue;
+        }
+
+        let mut index = after;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() || bytes[index] != b'=' {
+            from = after;
+            continue;
+        }
+        index += 1;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() || !matches!(bytes[index], b'\'' | b'"') {
+            from = after;
+            continue;
+        }
+        let quote = bytes[index];
+        index += 1;
+        let value_start = index;
+        while index < bytes.len() && bytes[index] != quote {
+            index += 1;
+        }
+        if index <= bytes.len() {
+            return tag.get(value_start..index).map(str::to_owned);
+        }
+        return None;
+    }
+    None
 }
 
 /// Lê do cache quando já existe; senão busca, grava e devolve.
@@ -458,6 +711,12 @@ pub fn emoji_key(id: &str) -> String {
 pub fn preview_key(id: &str) -> String {
     format!("preview:{id}")
 }
+fn embed_key(id: &str) -> String {
+    format!("embed:{id}")
+}
+fn remote_image_key(id: &str) -> String {
+    format!("remote-image:{id}")
+}
 
 // ---------------------------------------------------------------------------
 // Estado do lado da interface
@@ -525,6 +784,7 @@ pub struct MediaStore {
     textures: HashMap<String, Texture>,
     files: HashMap<String, FileState>,
     waveforms: HashMap<String, Vec<f32>>,
+    rich_embeds: HashMap<String, RichEmbedState>,
     players: HashMap<String, player::Player>,
     /// Última vez que alguém pediu cada chave, para saber quem sai quando o
     /// teto aperta. Guarda textura e player no mesmo mapa: as chaves de
@@ -547,6 +807,7 @@ impl MediaStore {
             textures: HashMap::new(),
             files: HashMap::new(),
             waveforms: HashMap::new(),
+            rich_embeds: HashMap::new(),
             players: HashMap::new(),
             used: HashMap::new(),
             tick: 0,
@@ -601,10 +862,16 @@ impl MediaStore {
                 Loaded::Waveform { id, peaks } => {
                     self.waveforms.insert(waveform_key(&id), peaks);
                 }
+                Loaded::EmbedResolved { id, kind, url } => {
+                    self.rich_embeds
+                        .insert(embed_key(&id), RichEmbedState::Ready { kind, url });
+                }
                 Loaded::Failed { key, error } => {
                     log::warn!("mídia {key}: {error}");
                     if key.starts_with("file:") {
                         self.files.insert(key, FileState::Failed);
+                    } else if key.starts_with("embed:") {
+                        self.rich_embeds.insert(key, RichEmbedState::Failed);
                     } else {
                         self.textures.insert(key, Texture::Failed);
                     }
@@ -744,6 +1011,34 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
+    pub fn rich_embed(&mut self, id: &str, page_url: &str) -> Option<RichEmbedState> {
+        if !rich_embed_source(page_url) {
+            return None;
+        }
+        let key = embed_key(id);
+        if !self.rich_embeds.contains_key(&key) {
+            self.rich_embeds.insert(key.clone(), RichEmbedState::Loading);
+            self.ask(Request::ResolveEmbed {
+                id: id.to_owned(),
+                page_url: page_url.to_owned(),
+            });
+        }
+        self.rich_embeds.get(&key).cloned()
+    }
+
+    pub fn remote_image(&mut self, id: &str, url: &str) -> Option<&Texture> {
+        let key = remote_image_key(id);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::RemoteImage {
+                id: id.to_owned(),
+                url: url.to_owned(),
+            });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
     /// Arquivo local do anexo, baixando na primeira vez.
     pub fn file(&mut self, id: &str, name: &str) -> FileState {
         let key = file_key(id);
@@ -822,6 +1117,35 @@ impl MediaStore {
     pub fn toggle_player(&mut self, id: &str, path: &Path, video: bool, ctx: &egui::Context) {
         let fresh = !self.players.contains_key(id);
         let Some(player) = self.start_player(id, path, video, ctx) else {
+            return;
+        };
+        if fresh {
+            player.play();
+        } else {
+            player.toggle();
+        }
+    }
+
+    pub fn start_remote_player(
+        &mut self,
+        id: &str,
+        url: &str,
+        ctx: &egui::Context,
+    ) -> Option<&mut player::Player> {
+        if !safe_remote_media_url(url) {
+            return None;
+        }
+        if !self.players.contains_key(id) {
+            let player = player::Player::open_uri(url, true, ctx.clone())?;
+            self.players.insert(id.to_owned(), player);
+        }
+        self.touch(id);
+        self.players.get_mut(id)
+    }
+
+    pub fn toggle_remote_player(&mut self, id: &str, url: &str, ctx: &egui::Context) {
+        let fresh = !self.players.contains_key(id);
+        let Some(player) = self.start_remote_player(id, url, ctx) else {
             return;
         };
         if fresh {
