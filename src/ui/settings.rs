@@ -567,7 +567,7 @@ impl Rows<'_> {
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
-        self.row(label, None, |ui, t| {
+        self.row(label, None, |ui, _t| {
             let width = ui.available_width();
 
             #[cfg(target_os = "android")]
@@ -577,8 +577,8 @@ impl Rows<'_> {
                 ui.painter().rect(
                     rect,
                     CornerRadius::same(radius::FIELD),
-                    t.fill_soft,
-                    Stroke::new(1.0, t.separator),
+                    _t.fill_soft,
+                    Stroke::new(1.0, _t.separator),
                     egui::StrokeKind::Inside,
                 );
                 let edit_id = ui.id().with(("settings-field", label));
@@ -596,8 +596,8 @@ impl Rows<'_> {
                     },
                     limit,
                     false,
-                    t.label,
-                    t.label_tertiary,
+                    _t.label,
+                    _t.label_tertiary,
                     text::body().size,
                 )
                 .submit;
