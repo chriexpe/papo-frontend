@@ -439,11 +439,25 @@ impl Attachment {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LinkPreview {
     pub id: String,
+    /// URL normalizada pelo backend.
+    #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub kind: String,
     pub title: Option<String>,
     pub description: Option<String>,
-    pub site_name: Option<String>,
-    /// Imagem embutida em base64 quando o preview chega por evento.
+    /// O contrato atual chama este campo de `provider_name`; o alias mantém
+    /// compatibilidade com servidores antigos que usavam `site_name`.
+    #[serde(default, alias = "site_name")]
+    pub provider_name: Option<String>,
+    /// Hoje o backend só preenche para embeds allowlistados (YouTube no MVP).
+    pub embed_url: Option<String>,
+    pub image_mime_type: Option<String>,
+    pub image_size_bytes: Option<i64>,
+    pub fetched_at: Option<DateTime<Utc>>,
+    /// Só vem em GET /link-previews/:id e em link_preview_update; a listagem
+    /// de mensagens carrega os metadados sem duplicar a imagem em base64.
+    #[serde(default)]
     pub image_data: Option<String>,
 }
 
@@ -503,6 +517,9 @@ pub struct MessageList {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PinnedList {
+    /// O backend devolve as próprias mensagens completas aqui, não wrappers
+    /// com `message_id`. Manter o tipo igual ao contrato é o que faz os pins
+    /// sobreviverem a reload/reinstalação do cliente.
     #[serde(default, deserialize_with = "nullable_list")]
     pub pinned: Vec<Message>,
 }
@@ -771,6 +788,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(body, r#"{"ids":["a"]}"#);
+    }
+
+    #[test]
+    fn fixadas_leem_mensagens_diretas_do_backend() {
+        let json = r#"{"pinned":[{"id":"m1","channel_id":"c1","author_id":"u1","content":"oi","created_at":"2026-09-22T12:00:00Z","edited_at":null,"reply_to":null,"attachments":[],"previews":[],"reactions":[],"user_reactions":[]}]}"#;
+        let list: PinnedList = serde_json::from_str(json).unwrap();
+        assert_eq!(list.pinned.len(), 1);
+        assert_eq!(list.pinned[0].id, "m1");
     }
 
     /// A busca manda só o que foi preenchido.

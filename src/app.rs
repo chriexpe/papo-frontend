@@ -22,9 +22,9 @@ use crate::state::{Phase, Screen, Store};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
 
-/// Endereço interno usado enquanto "Adicionar servidor" ainda é só um
-/// rascunho. Nunca é persistido nem mostrado e não pode colidir com um
-/// servidor real.
+/// Endereço interno usado enquanto o cartão de "adicionar servidor" ainda é
+/// só um rascunho. Ele nunca é persistido nem mostrado ao usuário e, por ser
+/// um domínio reservado, não pode colidir com um servidor real.
 const DRAFT_SERVER_URL: &str = "https://add-server.invalid";
 use crate::ui::shell::{self, ChatAction, UiState};
 use crate::ui::glass::GlassRenderer;
@@ -331,9 +331,10 @@ impl Settings {
     fn normalise(&mut self) {
         self.server_url = normalise_server_url(&self.server_url);
 
-        // URL normalizada é a identidade local do servidor: sessão, senha e
-        // marcas também usam essa chave. Remove duplicatas antigas que o +
-        // podia persistir e preserva a entrada que estava ativa.
+        // Um servidor é identificado pelo endereço normalizado. Versões
+        // anteriores deixavam o botão + criar outra entrada com o endereço
+        // padrão e podiam persistir as duas. Limpa esse estado antigo já na
+        // leitura, preservando qual das entradas equivalentes estava ativa.
         let had_servers = !self.servers.is_empty();
         let wanted_active = self.active.min(self.servers.len().saturating_sub(1));
         let mut unique: Vec<ServerEntry> = Vec::with_capacity(self.servers.len());
@@ -358,6 +359,7 @@ impl Settings {
 
         if self.servers.is_empty() {
             self.servers.push(ServerEntry::new(self.server_url.clone()));
+            // As marcas antigas eram todas do único servidor que existia.
             if !had_servers && !self.read_marks.is_empty() {
                 let key = crate::state::server_key(&self.server_url);
                 self.server_marks
@@ -510,7 +512,7 @@ pub struct PapoApp {
     own_chrome: bool,
     header: crate::ui::headerbar::HeaderState,
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
-    /// qual servidor estava na tela para cancelar sem persistir o rascunho.
+    /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
 }
 
@@ -860,12 +862,19 @@ impl PapoApp {
         // Mudar o endereço aqui é mudar de servidor: a conexão antiga cai e
         // o item do trilho passa a apontar para o endereço novo.
         let url = normalise_server_url(&self.workspaces[index].form.server_url);
+        // Um endereço vazio ou que nem vira URL deixaria o rascunho apontando
+        // para o endereço interno e faria o login parecer travado.
         if url.is_empty() || url::Url::parse(&url).is_err() {
             let s = self.settings.lang.strings();
             self.workspaces[index].store.error = Some(s.invalid_server_address.to_owned());
             return;
         }
 
+        // O mesmo backend não pode ocupar duas posições do trilho: sessão,
+        // senha do servidor e marcas locais já são todos indexados pela URL.
+        // Se o endereço digitado no modal já existe, descarta o rascunho,
+        // reaproveita a entrada real e continua o login nela com o formulário
+        // que o usuário acabou de preencher.
         if self.add_server_previous.is_some()
             && let Some(existing) = self
                 .workspaces
@@ -952,9 +961,14 @@ impl PapoApp {
 
     /// Abre "Adicionar servidor" como rascunho cancelável.
     fn add_server(&mut self, ctx: &egui::Context) {
+        // O novo servidor é provisório até a autenticação terminar. Se o
+        // usuário clicar fora do cartão, voltamos exatamente para quem estava
+        // ativo e descartamos este workspace.
         let previous = self.active;
         let entry = ServerEntry::new(DRAFT_SERVER_URL.to_owned());
         let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        // Não herda o endereço padrão nem a sessão dele. O cartão nasce
+        // realmente vazio e só cria conexão com o servidor digitado no envio.
         workspace.form.server_url.clear();
         workspace.store.screen = Screen::Auth;
         self.settings.servers.push(entry);
@@ -972,6 +986,8 @@ impl PapoApp {
             return;
         }
 
+        // Recolhe o estado visual do rascunho, remove-o e devolve o estado
+        // visual do servidor que estava aberto antes do +.
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
@@ -1563,6 +1579,7 @@ impl PapoApp {
     fn handle_rail_action(&mut self, action: crate::ui::rail::RailAction, ctx: &egui::Context) {
         match action {
             crate::ui::rail::RailAction::Select(index) => {
+                self.add_server_previous = None;
                 self.activate(index, ctx);
                 self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
             }
@@ -2065,6 +2082,8 @@ impl eframe::App for PapoApp {
                 }
             }
             Screen::Chat => {
+                // A autenticação terminou; a partir daqui o servidor deixa de
+                // ser provisório e passa a fazer parte do trilho normalmente.
                 self.add_server_previous = None;
                 let mobile_entries = compact_chat.then(|| {
                     self.workspaces
@@ -2127,6 +2146,8 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // As marcas de leitura vivem no estado de cada servidor; só o ajuste
+        // persiste, e cada servidor guarda as suas sob a própria chave.
         let draft = self.add_server_previous.map(|_| self.active);
         for (index, ws) in self.workspaces.iter().enumerate() {
             if Some(index) == draft {
@@ -2137,6 +2158,10 @@ impl eframe::App for PapoApp {
                 .insert(crate::state::server_key(&ws.url), ws.store.read_marks.clone());
         }
 
+        // O rascunho do botão + é estado de UI, não um servidor. Em especial
+        // no Android o autosave roda enquanto o cartão está aberto e o
+        // processo pode morrer logo depois; persistir o rascunho transformava
+        // um simples + em outro servidor na próxima abertura.
         let mut persisted = self.settings.clone();
         persisted.servers = self
             .workspaces

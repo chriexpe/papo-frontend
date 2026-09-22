@@ -352,8 +352,10 @@ async fn worker(
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
 
-    // Sessão persistida não é descartada porque a rede sumiu. Só 401 prova
-    // que o token deixou de valer; o restante é tentado outra vez.
+    // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
+    // Falha de rede não é logout. Só uma resposta de autenticação inválida
+    // pode apagar o token; qualquer outra falha deixa a sessão guardada para
+    // ser verificada de novo quando o servidor voltar.
     if session.is_authenticated() {
         verify_saved_session(
             &api,
@@ -369,6 +371,8 @@ async fn worker(
         publish(&updates, &wake, Update::Session(None));
     }
 
+    // Enquanto há token mas ainda não conseguimos confirmá-lo, tenta de novo.
+    // Isto cobre abrir o app sem internet, DNS fora, Render dormindo e afins.
     let mut verification =
         tokio::time::interval(std::time::Duration::from_secs(5));
     verification.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -429,7 +433,24 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                publish(&updates, &wake, Update::Event(Box::new(event)));
+                // new_preview traz só o id porque o crawl termina depois da
+                // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
+                // para a Store receber o mesmo formato das mensagens listadas.
+                if let Event::NewPreview { message_id, preview_id } = event {
+                    match api.link_preview(&preview_id).await {
+                        Ok(preview) => publish(
+                            &updates,
+                            &wake,
+                            Update::Event(Box::new(Event::LinkPreviewUpdated {
+                                message_id,
+                                preview,
+                            })),
+                        ),
+                        Err(error) => log::warn!("preview {preview_id} não carregou: {error}"),
+                    }
+                } else {
+                    publish(&updates, &wake, Update::Event(Box::new(event)));
+                }
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
@@ -483,7 +504,11 @@ async fn worker(
     }
 }
 
-/// Confirma uma sessão persistida sem converter indisponibilidade em logout.
+/// Confirma uma sessão persistida sem transformar indisponibilidade em logout.
+///
+/// Só `Unauthorized` prova que o token deixou de valer. Timeout, DNS, 5xx,
+/// resposta incompleta e servidor temporariamente fora mantêm a credencial e
+/// deixam o próximo tique tentar novamente.
 async fn verify_saved_session(
     api: &Api,
     storage_key: &str,
@@ -495,6 +520,8 @@ async fn verify_saved_session(
 ) {
     let mut result = api.whoami().await;
 
+    // Servidor fechado é um portão separado da conta. Se já conhecemos a
+    // senha do servidor, abre e repete o whoami sem tocar no token do usuário.
     if matches!(result, Err(ApiError::ServerLocked)) {
         match unlock_with_saved(api, storage_key, storage).await {
             Ok(true) => result = api.whoami().await,
@@ -522,7 +549,9 @@ async fn verify_saved_session(
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
         }
-        Err(ApiError::ServerLocked) => publish(updates, wake, Update::ServerLocked),
+        Err(ApiError::ServerLocked) => {
+            publish(updates, wake, Update::ServerLocked);
+        }
         Err(error) => {
             log::warn!("sessão guardada ainda não pôde ser verificada: {error}");
             publish(updates, wake, Update::Connection(Connection::Offline));
@@ -692,6 +721,8 @@ async fn handle(
                         messages: list.messages,
                     },
                 );
+                // A listagem comum de mensagens não carrega o estado de pin.
+                // Reaplica a fonte persistida no banco logo depois.
                 load_pinned(api, updates, wake, channel_id).await;
             }
             Err(error) => report(updates, wake, error),
@@ -982,6 +1013,10 @@ async fn handle(
             Ok(()) => {
                 store_secret(storage, storage_key, Secret::ServerPassword, &password);
                 publish(updates, wake, Update::ServerUnlocked);
+
+                // Se chegamos ao portão com uma sessão já persistida (caso
+                // típico ao reabrir o app), terminar o unlock deve retomar a
+                // sessão sozinho — não obrigar usuário e senha outra vez.
                 let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
                 if session.is_authenticated() && !verified {
                     verify_saved_session(

@@ -122,22 +122,48 @@ impl Player {
     /// Abre a mídia numa thread própria. Volta na hora: quem espera pelo
     /// preroll é a thread, não a janela.
     pub fn open(path: &Path, video: bool, repaint: egui::Context) -> Option<Self> {
-        if !init() {
-            return None;
-        }
-        let uri = gst::glib::filename_to_uri(path, None).ok()?;
-        let shared = Arc::new(Shared::default());
-        let (tx, rx) = mpsc::channel();
-
-        let worker_shared = Arc::clone(&shared);
+        let uri = gst::glib::filename_to_uri(path, None).ok()?.to_string();
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
+        Self::open_source(uri, video, repaint, name)
+    }
+
+    /// Abre uma mídia HTTP(S) diretamente. Link embeds usam isto para tocar
+    /// o stream público entregue por og:video/twitter:player:stream sem
+    /// baixar o arquivo inteiro antes.
+    pub fn open_uri(uri: &str, video: bool, repaint: egui::Context) -> Option<Self> {
+        let parsed = url::Url::parse(uri).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return None;
+        }
+        let name = parsed
+            .path_segments()
+            .and_then(|mut segments| segments.next_back())
+            .filter(|name| !name.is_empty())
+            .unwrap_or("link-embed")
+            .to_owned();
+        Self::open_source(parsed.to_string(), video, repaint, name)
+    }
+
+    fn open_source(
+        uri: String,
+        video: bool,
+        repaint: egui::Context,
+        name: String,
+    ) -> Option<Self> {
+        if !init() {
+            return None;
+        }
+        let shared = Arc::new(Shared::default());
+        let (tx, rx) = mpsc::channel();
+
+        let worker_shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("papo-player".into())
             .spawn(move || {
-                run(uri.to_string(), video, worker_shared, repaint, rx, name);
+                run(uri, video, worker_shared, repaint, rx, name);
             })
             .ok()?;
 

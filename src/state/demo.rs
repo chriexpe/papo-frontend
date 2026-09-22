@@ -98,6 +98,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: vec![Reaction {
                 emoji: Emoji::Unicode("👍".into()),
                 count: 3,
@@ -115,6 +116,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: media.video.clone().into_iter().collect(),
+            previews: Vec::new(),
             reactions: vec![
                 Reaction {
                     emoji: Emoji::Unicode("🔥".into()),
@@ -139,6 +141,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: Some("m-2".into()),
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: false,
@@ -152,6 +155,7 @@ pub fn seed(store: &mut Store) {
             edited: true,
             reply_to: None,
             attachments: media.image.clone().into_iter().collect(),
+            previews: Vec::new(),
             reactions: vec![Reaction {
                 emoji: Emoji::Unicode("❤️".into()),
                 count: 4,
@@ -169,6 +173,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: media.audio.clone().into_iter().collect(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: false,
@@ -182,6 +187,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: vec![Reaction {
                 emoji: Emoji::Custom("e-papo".into()),
                 count: 2,
@@ -199,6 +205,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: false,
@@ -212,6 +219,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: Some("m-4".into()),
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: false,
@@ -225,6 +233,7 @@ pub fn seed(store: &mut Store) {
             edited: false,
             reply_to: None,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: false,
@@ -451,6 +460,7 @@ fn attachment(id: &str, name: &str, mime: &str, path: &std::path::Path) -> Attac
 fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>) -> Member {
     Member {
         id: id.into(),
+        username: name.to_lowercase().replace(' ', "."),
         name: name.into(),
         presence,
         role_color: color.map(|(r, g, b)| [r, g, b]),

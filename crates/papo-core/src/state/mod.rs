@@ -63,6 +63,9 @@ impl Presence {
 #[derive(Clone, Debug)]
 pub struct Member {
     pub id: String,
+    /// Nome de conta estável; serve para ligar resultados de busca, que hoje
+    /// chegam do backend com `author_username`, ao membro carregado.
+    pub username: String,
     pub name: String,
     pub presence: Presence,
     pub role_color: Option<[u8; 3]>,
@@ -130,6 +133,7 @@ pub struct Message {
     pub edited: bool,
     pub reply_to: Option<String>,
     pub attachments: Vec<Attachment>,
+    pub previews: Vec<models::LinkPreview>,
     pub reactions: Vec<Reaction>,
     pub pinned: bool,
     /// Mensagem ainda não confirmada pelo servidor.
@@ -257,6 +261,12 @@ impl Store {
 
     pub fn member(&self, id: &str) -> Option<&Member> {
         self.members.iter().find(|member| member.id == id)
+    }
+
+    pub fn member_by_username(&self, username: &str) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|member| member.username.eq_ignore_ascii_case(username))
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -519,6 +529,7 @@ impl Store {
                         role_color: role_color(&user.roles),
                         roles: user.roles.iter().map(|role| role.id.clone()).collect(),
                         name: user.display_name().to_owned(),
+                        username: user.username,
                         id: user.id,
                     })
                     .collect();
@@ -684,6 +695,41 @@ impl Store {
                     .find(|message| message.id == message_id)
                 {
                     message.pinned = pinned;
+                }
+            }
+            Event::NewPreview { .. } => {
+                // O worker de rede resolve new_preview para LinkPreviewUpdated
+                // antes de publicar o evento para a Store.
+            }
+            Event::RemovePreview {
+                message_id,
+                preview_id,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.previews.retain(|preview| preview.id != preview_id);
+                }
+            }
+            Event::LinkPreviewUpdated {
+                message_id,
+                preview,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    match message
+                        .previews
+                        .iter_mut()
+                        .find(|existing| existing.id == preview.id)
+                    {
+                        Some(existing) => *existing = preview,
+                        None => message.previews.push(preview),
+                    }
                 }
             }
             Event::AttachmentModeration {
@@ -931,6 +977,7 @@ impl Store {
             edited: false,
             reply_to,
             attachments: Vec::new(),
+            previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: true,
@@ -980,6 +1027,7 @@ fn convert(message: models::Message, me: &str) -> Message {
         edited: message.edited_at.is_some(),
         reply_to: message.reply_to,
         attachments: message.attachments,
+        previews: message.previews,
         reactions: message
             .reactions
             .into_iter()

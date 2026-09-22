@@ -3,7 +3,7 @@
 //! As barras funcionais (laterais, topo e caixa de mensagem) formam a camada
 //! translúcida; a lista de mensagens é a camada de conteúdo, sempre opaca.
 
-use chrono::{Datelike, Local};
+use chrono::{DateTime, Datelike, Local};
 use egui::{
     Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
     TextEdit, UiBuilder, Vec2,
@@ -272,15 +272,15 @@ pub fn is_compact(rect: Rect) -> bool {
     rect.width() < COMPACT_BREAKPOINT
 }
 
-/// A pastilha de ações, esticada para mostrar busca ou fixadas. Fecha só
-/// pelo mesmo ícone que a abriu ou pelo X — clicar fora não fecha, porque
-/// ler um resultado costuma passar por clicar na conversa atrás dela.
+/// A pastilha de ações, esticada para mostrar busca ou fixadas.
 #[derive(Clone, Debug)]
 pub struct Panel {
     pub kind: PanelKind,
     pub query: String,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
+    /// Distingue "ainda não buscou" de uma busca válida com zero resultados.
+    pub searched: bool,
 }
 
 /// Teclas que pertencem à lista de sugestões neste quadro.
@@ -314,6 +314,12 @@ pub struct Jump {
     pub since: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct LinkViewer {
+    pub id: String,
+    pub url: String,
+}
+
 /// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
 #[derive(Clone, Debug)]
 pub struct Popup {
@@ -343,6 +349,7 @@ pub struct Stash {
     /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
+    pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
     pub last_channel: String,
     pub topic_since: Option<f64>,
@@ -359,6 +366,7 @@ impl Stash {
             editing: None,
             edit_focus_pending: false,
             viewer: None,
+            link_viewer: None,
             popup: None,
             last_channel: String::new(),
             topic_since: None,
@@ -375,6 +383,7 @@ impl Stash {
         std::mem::swap(&mut self.editing, &mut ui.editing);
         std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
+        std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
@@ -422,6 +431,7 @@ pub struct UiState {
     pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
+    pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
     /// Pastilha de ações esticada em busca ou fixadas.
     pub panel: Option<Panel>,
@@ -483,6 +493,7 @@ impl Default for UiState {
             edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
+            link_viewer: None,
             popup: None,
             panel: None,
             jump: None,
@@ -997,6 +1008,7 @@ fn account_pill(
 ) {
     let me = store.member(&store.me).cloned().unwrap_or(crate::state::Member {
         id: store.me.clone(),
+        username: store.my_username.clone(),
         name: store.my_name.clone(),
         presence: crate::state::Presence::Online,
         role_color: None,
@@ -1660,6 +1672,11 @@ fn conversation(
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             egui::ScrollArea::vertical()
+                .scroll_source(if state.panel.is_some() {
+                    egui::containers::scroll_area::ScrollSource::NONE
+                } else {
+                    egui::containers::scroll_area::ScrollSource::ALL
+                })
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
@@ -2057,11 +2074,9 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
 
 /// Pastilha de ações do canal, no alto à direita.
 ///
-/// Fechada, são três ícones. Aberta em busca ou em fixadas, ela mesma
-/// estica para baixo e mostra a lista dentro do mesmo vidro — em vez de uma
-/// janela solta por cima da conversa. Fecha só pelo ícone que a abriu ou
-/// pelo X à esquerda: clicar fora não fecha, porque ler um resultado passa
-/// por clicar na conversa que está atrás.
+/// Fechada, são três ícones. Aberta em busca ou em fixadas, vira uma camada
+/// modal leve: fica acima da conversa, bloqueia a rolagem de trás e fecha ao
+/// clicar fora, pelo X ou pelo mesmo ícone que a abriu.
 fn actions_pill(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -2070,6 +2085,11 @@ fn actions_pill(
     s: &Strings,
     area: Rect,
 ) {
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"));
+    let screen = ui.ctx().content_rect();
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+    let ui = &mut top;
+
     let open = state.panel.as_ref().map(|panel| panel.kind);
     let width = if open.is_some() {
         PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
@@ -2147,17 +2167,31 @@ fn actions_pill(
         },
     );
 
-    // A pastilha aberta é um popover: tocar/clicar em qualquer lugar fora
-    // dela fecha busca/fixadas. Usar click (release), e não press, evita
-    // matar um gesto de rolagem que começou fora.
-    let outside = ui.input(|input| {
-        input.pointer.any_click()
-            && input
-                .pointer
-                .interact_pos()
-                .is_some_and(|position| !rect.contains(position))
+    // Quatro zonas cobrem tudo que não é a pastilha. Como vivem na camada
+    // Foreground, o clique não atravessa para mensagens/canais atrás.
+    let outside = [
+        Rect::from_min_max(screen.min, egui::pos2(rect.min.x, screen.max.y)),
+        Rect::from_min_max(
+            egui::pos2(rect.min.x, screen.min.y),
+            egui::pos2(screen.max.x, rect.min.y),
+        ),
+        Rect::from_min_max(
+            egui::pos2(rect.max.x, rect.min.y),
+            egui::pos2(screen.max.x, rect.max.y),
+        ),
+        Rect::from_min_max(
+            egui::pos2(rect.min.x, rect.max.y),
+            screen.max,
+        ),
+    ];
+    let dismiss = outside.into_iter().enumerate().any(|(index, zone)| {
+        zone.width() > 0.0
+            && zone.height() > 0.0
+            && ui
+                .interact(zone, Id::new(("actions-panel-dismiss", index)), Sense::click())
+                .clicked()
     });
-    if outside {
+    if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         state.panel = None;
     }
 }
@@ -2171,6 +2205,7 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 kind,
                 query: String::new(),
                 focus: kind == PanelKind::Search,
+                searched: false,
             })
         }
     }
@@ -2280,6 +2315,9 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         panel.query.clone_from(&query);
     }
     if run && !query.trim().is_empty() {
+        if let Some(panel) = state.panel.as_mut() {
+            panel.searched = true;
+        }
         store.searching = true;
         state.actions.push(ChatAction::Search(query.trim().to_owned()));
     }
@@ -2296,35 +2334,32 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
     if store.search_results.is_empty() {
         // Antes da primeira busca o que falta é a instrução, não o "nada
         // encontrado": quem acabou de abrir ainda não procurou coisa alguma.
-        let empty_query = state
+        let searched = state
             .panel
             .as_ref()
-            .map(|panel| panel.query.trim().is_empty())
-            .unwrap_or(true);
+            .is_some_and(|panel| panel.searched);
         ui.label(
-            RichText::new(if empty_query { s.search_hint } else { s.search_empty })
+            RichText::new(if searched { s.search_empty } else { s.search_hint })
                 .font(text::footnote())
                 .color(t.label_tertiary),
         );
         return;
     }
 
-    let found: Vec<(String, String, String, String)> = store
+    let found: Vec<_> = store
         .search_results
         .iter()
         .map(|result| {
+            let member = store.member_by_username(&result.author_username);
             (
                 result.channel_id.clone(),
                 result.id.clone(),
-                format!(
-                    "#{} · {} · {}",
-                    result.channel_name,
-                    result.author_username,
-                    result
-                        .created_at
-                        .map(|at| at.with_timezone(&Local).format("%d/%m %H:%M").to_string())
-                        .unwrap_or_default()
-                ),
+                result.channel_name.clone(),
+                member.map(|member| member.id.clone()),
+                member
+                    .map(|member| member.name.clone())
+                    .unwrap_or_else(|| result.author_username.clone()),
+                result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
             )
         })
@@ -2333,8 +2368,22 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .id_salt("resultados-da-busca")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (channel_id, message_id, header, body) in found {
-                if result_row(ui, t, &header, &body) {
+            for (channel_id, message_id, channel_name, author_id, author_name, at, body) in found {
+                if result_row(
+                    ui,
+                    store,
+                    state,
+                    t,
+                    s,
+                    ResultPreview {
+                        message_id: &message_id,
+                        author_id: author_id.as_deref(),
+                        author_name: &author_name,
+                        at,
+                        channel_name: Some(&channel_name),
+                        body: &body,
+                    },
+                ) {
                     go_to(store, state, ui, &channel_id, &message_id);
                 }
             }
@@ -2344,21 +2393,29 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
 /// Fixadas do canal aberto, dentro da mesma pastilha.
 fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let channel_id = store.selected_channel.clone();
-    let pinned: Vec<(String, String, String)> = store
+    let pinned: Vec<_> = store
         .messages_in(&channel_id)
         .filter(|message| message.pinned)
         .map(|message| {
+            let body = if !message.content.trim().is_empty() {
+                message.content.clone()
+            } else {
+                message
+                    .attachments
+                    .first()
+                    .and_then(|attachment| attachment.original_file_name.clone())
+                    .map(|name| format!("📎 {name}"))
+                    .unwrap_or_default()
+            };
             (
                 message.id.clone(),
-                format!(
-                    "{} · {}",
-                    store
-                        .member(&message.author_id)
-                        .map(|member| member.name.clone())
-                        .unwrap_or_else(|| "?".into()),
-                    message.at.format("%d/%m %H:%M")
-                ),
-                message.content.clone(),
+                message.author_id.clone(),
+                store
+                    .member(&message.author_id)
+                    .map(|member| member.name.clone())
+                    .unwrap_or_else(|| "?".into()),
+                message.at,
+                body,
             )
         })
         .collect();
@@ -2375,8 +2432,22 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .id_salt("lista-de-fixadas")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, header, body) in pinned {
-                if result_row(ui, t, &header, &body) {
+            for (message_id, author_id, author_name, at, body) in pinned {
+                if result_row(
+                    ui,
+                    store,
+                    state,
+                    t,
+                    s,
+                    ResultPreview {
+                        message_id: &message_id,
+                        author_id: Some(&author_id),
+                        author_name: &author_name,
+                        at: Some(at),
+                        channel_name: None,
+                        body: &body,
+                    },
+                ) {
                     let channel = channel_id.clone();
                     go_to(store, state, ui, &channel, &message_id);
                 }
@@ -2384,37 +2455,106 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         });
 }
 
-/// Uma linha da lista: realce de borda a borda ao passar o mouse.
-fn result_row(ui: &mut egui::Ui, t: &Tokens, header: &str, body: &str) -> bool {
-    let width = ui.available_width();
+struct ResultPreview<'a> {
+    message_id: &'a str,
+    author_id: Option<&'a str>,
+    author_name: &'a str,
+    at: Option<DateTime<Local>>,
+    channel_name: Option<&'a str>,
+    body: &'a str,
+}
+
+/// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
+/// o bloco da miniatura em vez de ocupar toda a largura da pastilha.
+fn result_row(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    preview: ResultPreview<'_>,
+) -> bool {
+    let ResultPreview {
+        message_id,
+        author_id,
+        author_name,
+        at,
+        channel_name,
+        body,
+    } = preview;
     let backdrop = ui.painter().add(egui::Shape::Noop);
+    let avatar_size = 30.0;
+    let row_width = ui.available_width();
+    let max_text_width =
+        (row_width - space::SM * 2.0 - avatar_size - space::MD).max(80.0);
+    let member = author_id.and_then(|id| store.member(id));
+    let initials = member
+        .map(|member| member.initials())
+        .unwrap_or_else(|| initials_for_name(author_name));
+    let texture = author_id.and_then(|id| {
+        state
+            .media
+            .avatar(id, store.avatars.get(id).map(String::as_str))
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .map(|handle| handle.id())
+    });
+
     let inner = ui.scope(|ui| {
-        ui.set_max_width(width - space::MD * 2.0);
+        ui.set_min_width(row_width);
+        ui.set_max_width(row_width);
         ui.add_space(space::XS);
         ui.horizontal(|ui| {
             ui.add_space(space::SM);
-            ui.label(
-                RichText::new(header)
-                    .font(text::caption())
-                    .color(t.label_tertiary),
+            avatar(
+                ui,
+                t,
+                &initials,
+                avatar_size,
+                member.and_then(|member| member.role_color.map(rgb)),
+                texture,
             );
-        });
-        ui.horizontal(|ui| {
+            ui.add_space(space::MD);
+            ui.vertical(|ui| {
+                ui.set_max_width(max_text_width);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(author_name)
+                            .font(text::headline())
+                            .color(member.and_then(|member| member.role_color.map(rgb)).unwrap_or(t.label)),
+                    );
+                    if let Some(channel_name) = channel_name.filter(|name| !name.is_empty()) {
+                        ui.add_space(space::XXS);
+                        ui.label(
+                            RichText::new(format!("#{channel_name}"))
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        );
+                    }
+                    if let Some(at) = at {
+                        ui.add_space(space::XXS);
+                        ui.label(
+                            RichText::new(relative_time(at, s))
+                                .font(text::footnote())
+                                .color(t.label_tertiary),
+                        );
+                    }
+                });
+                if !body.trim().is_empty() {
+                    ui.add_space(space::XXS);
+                    ui.label(RichText::new(body).font(text::body()).color(t.label));
+                }
+            });
             ui.add_space(space::SM);
-            ui.label(
-                RichText::new(body)
-                    .font(text::body())
-                    .color(t.label),
-            );
         });
         ui.add_space(space::XS);
     });
 
-    let row = Rect::from_x_y_ranges(
-        egui::Rangef::new(ui.max_rect().min.x, ui.max_rect().max.x),
-        inner.response.rect.y_range(),
+    let row = inner.response.rect;
+    let response = ui.interact(
+        row,
+        ui.id().with(("message-preview", message_id)),
+        Sense::click(),
     );
-    let response = ui.interact(row, ui.id().with(header).with(body), Sense::click());
     if response.hovered() {
         ui.painter().set(
             backdrop,
@@ -2422,7 +2562,49 @@ fn result_row(ui: &mut egui::Ui, t: &Tokens, header: &str, body: &str) -> bool {
         );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+    ui.add_space(space::XXS);
     response.clicked()
+}
+
+fn initials_for_name(name: &str) -> String {
+    let mut words = name.split_whitespace();
+    let Some(first) = words.next() else {
+        return "?".into();
+    };
+    if let Some(second) = words.next() {
+        format!(
+            "{}{}",
+            first.chars().next().unwrap_or('?'),
+            second.chars().next().unwrap_or('?')
+        )
+        .to_uppercase()
+    } else {
+        first.chars().take(2).collect::<String>().to_uppercase()
+    }
+}
+
+fn relative_time(at: DateTime<Local>, s: &Strings) -> String {
+    let seconds = (Local::now() - at).num_seconds().max(0);
+    let (value, singular, plural) = if seconds < 60 {
+        return s.relative_now.to_owned();
+    } else if seconds < 60 * 60 {
+        (seconds / 60, s.time_minute, s.time_minutes)
+    } else if seconds < 24 * 60 * 60 {
+        (seconds / (60 * 60), s.time_hour, s.time_hours)
+    } else if seconds < 7 * 24 * 60 * 60 {
+        (seconds / (24 * 60 * 60), s.time_day, s.time_days)
+    } else if seconds < 30 * 24 * 60 * 60 {
+        (seconds / (7 * 24 * 60 * 60), s.time_week, s.time_weeks)
+    } else if seconds < 365 * 24 * 60 * 60 {
+        (seconds / (30 * 24 * 60 * 60), s.time_month, s.time_months)
+    } else {
+        (seconds / (365 * 24 * 60 * 60), s.time_year, s.time_years)
+    };
+    let unit = if value == 1 { singular } else { plural };
+    format!(
+        "{}{} {}{}",
+        s.relative_ago_prefix, value, unit, s.relative_ago_suffix
+    )
 }
 
 /// Intensidade do realce desta mensagem neste quadro, entre 0 e 1.
@@ -2636,7 +2818,7 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
-        if state.compact {
+        if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state
                 .message_rows
@@ -2771,10 +2953,10 @@ fn reply_quote(
     let exists = store.message(reply_to).is_some();
     let sense = if exists { Sense::click() } else { Sense::hover() };
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
-    if exists && response.hovered() {
+    if exists && state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if exists && response.clicked() {
+    if exists && state.panel.is_none() && response.clicked() {
         state.jump = Some(Jump {
             message_id: reply_to.to_owned(),
             found: None,
@@ -2990,6 +3172,18 @@ fn message_body(
             }
     }
 
+    if !message.previews.is_empty() {
+        link_previews(ui, state, t, &message.previews, width);
+    }
+    rich_links_from_message(
+        ui,
+        state,
+        t,
+        &message.content,
+        &message.previews,
+        width,
+    );
+
     if !message.reactions.is_empty() {
         ui.add_space(space::XS);
         let mut toggled = None;
@@ -3098,6 +3292,525 @@ fn rich_body(
             );
         }
     });
+}
+
+
+/// Link previews são cartões nativos. Para páginas sociais que publicam
+/// metadados de mídia próprios (como vxTwitter e ogInstagram), o cliente
+/// resolve og:video/twitter:player:stream e og:image e transforma o card em
+/// mídia interativa sem precisar de WebView.
+fn link_previews(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    previews: &[crate::api::models::LinkPreview],
+    width: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const IMAGE_MAX_H: f32 = 280.0;
+
+    for preview in previews {
+        let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
+            continue;
+        };
+        ui.add_space(space::SM);
+
+        let card_width = width.clamp(160.0, MAX_W);
+        let backdrop = ui.painter().add(egui::Shape::Noop);
+        let fallback = state
+            .media
+            .preview(preview)
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned();
+        let rich = state.media.rich_embed(&preview.id, url);
+
+        let rich_image = match &rich {
+            Some(crate::media::RichEmbedState::Ready {
+                kind: crate::media::RichEmbedKind::Image,
+                url,
+            }) => state
+                .media
+                .remote_image(&preview.id, url)
+                .and_then(|texture| texture.frame(ui.ctx()))
+                .cloned(),
+            _ => None,
+        };
+
+        let remote_video = match &rich {
+            Some(crate::media::RichEmbedState::Ready {
+                kind: crate::media::RichEmbedKind::Video,
+                url,
+            }) => Some(url.clone()),
+            _ => None,
+        };
+        let player_id = format!("link-embed:{}", preview.id);
+        let (video_frame, video_aspect, video_playing, video_position, video_duration) =
+            if remote_video.is_some() {
+                match state.media.existing_player(&player_id) {
+                    Some(player) => {
+                        let aspect = player.aspect().clamp(0.4, 3.0);
+                        let playing = player.is_playing();
+                        let position = player.position();
+                        let duration = player.duration();
+                        let frame = player.frame(ui.ctx()).cloned();
+                        (frame, aspect, playing, position, duration)
+                    }
+                    None => (None, 16.0 / 9.0, false, 0.0, 0.0),
+                }
+            } else {
+                (None, 16.0 / 9.0, false, 0.0, 0.0)
+            };
+
+        let mut media_clicked = false;
+        let inner = ui.scope(|ui| {
+            ui.set_width(card_width);
+
+            if let Some(video_url) = remote_video.as_deref() {
+                let aspect = if video_frame.is_some() {
+                    video_aspect
+                } else {
+                    fallback
+                        .as_ref()
+                        .map(|texture| {
+                            let size = texture.size_vec2();
+                            (size.x / size.y).clamp(0.4, 3.0)
+                        })
+                        .unwrap_or(16.0 / 9.0)
+                };
+                let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
+                let controls_h = 30.0;
+                let (media_rect, response) =
+                    ui.allocate_exact_size(Vec2::new(card_width, frame_size.y + controls_h), Sense::click());
+                let frame_rect = Rect::from_min_size(media_rect.min, frame_size);
+                ui.painter().rect_filled(
+                    media_rect,
+                    CornerRadius::same(radius::CARD),
+                    Color32::BLACK,
+                );
+
+                if let Some(texture) = video_frame.as_ref().or(fallback.as_ref()) {
+                    let source = texture.size_vec2();
+                    let scale = (frame_rect.width() / source.x)
+                        .min(frame_rect.height() / source.y);
+                    let size = source * scale;
+                    let centered = Rect::from_center_size(frame_rect.center(), size);
+                    ui.painter().image(
+                        texture.id(),
+                        centered,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+
+                if !video_playing {
+                    ui.painter()
+                        .circle_filled(frame_rect.center(), 28.0, Color32::from_black_alpha(155));
+                    ui.painter().text(
+                        frame_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(22.0),
+                        Color32::WHITE,
+                    );
+                }
+
+                let controls = Rect::from_min_max(
+                    egui::pos2(media_rect.min.x, frame_rect.max.y),
+                    media_rect.max,
+                );
+                ui.painter().rect_filled(
+                    controls,
+                    CornerRadius::ZERO,
+                    Color32::from_black_alpha(190),
+                );
+                let progress = if video_duration > 0.0 {
+                    (video_position / video_duration).clamp(0.0, 1.0) as f32
+                } else {
+                    0.0
+                };
+                let line = Rect::from_min_max(
+                    egui::pos2(controls.min.x + space::MD, controls.center().y - 2.0),
+                    egui::pos2(controls.max.x - 94.0, controls.center().y + 2.0),
+                );
+                ui.painter()
+                    .rect_filled(line, CornerRadius::same(2), Color32::from_white_alpha(45));
+                if line.width() > 0.0 {
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(line.min, Vec2::new(line.width() * progress, line.height())),
+                        CornerRadius::same(2),
+                        t.accent,
+                    );
+                }
+                ui.painter().text(
+                    egui::pos2(controls.max.x - space::MD, controls.center().y),
+                    egui::Align2::RIGHT_CENTER,
+                    format!(
+                        "{} / {}",
+                        attachments::clock(video_position),
+                        attachments::clock(video_duration)
+                    ),
+                    text::footnote(),
+                    Color32::from_white_alpha(205),
+                );
+
+                if response.clicked() {
+                    let ctx = ui.ctx().clone();
+                    state
+                        .media
+                        .toggle_remote_player(&player_id, video_url, &ctx);
+                    state.media.solo(&player_id);
+                    media_clicked = true;
+                }
+                if video_playing {
+                    ui.ctx().request_repaint();
+                }
+                ui.add_space(space::SM);
+            } else if let Some(texture) = rich_image.as_ref().or(fallback.as_ref()) {
+                let source = texture.size_vec2();
+                let scale = (card_width / source.x)
+                    .min(IMAGE_MAX_H / source.y)
+                    .min(1.0);
+                let size = Vec2::new(
+                    (source.x * scale).max(1.0),
+                    (source.y * scale).max(1.0),
+                );
+                let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+
+                if let Some(crate::media::RichEmbedState::Ready {
+                    kind: crate::media::RichEmbedKind::Image,
+                    url,
+                }) = &rich
+                    && response.clicked()
+                {
+                    state.link_viewer = Some(LinkViewer {
+                        id: preview.id.clone(),
+                        url: url.clone(),
+                    });
+                    media_clicked = true;
+                } else if preview.embed_url.is_some() {
+                    ui.painter().circle_filled(
+                        image_rect.center(),
+                        22.0,
+                        Color32::from_black_alpha(170),
+                    );
+                    ui.painter().text(
+                        image_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(18.0),
+                        Color32::WHITE,
+                    );
+                }
+                ui.add_space(space::SM);
+            }
+
+            let provider = preview
+                .provider_name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    url::Url::parse(url)
+                        .ok()
+                        .and_then(|parsed| parsed.host_str().map(str::to_owned))
+                });
+
+            if let Some(provider) = provider {
+                ui.label(
+                    RichText::new(provider)
+                        .font(text::caption())
+                        .color(t.label_tertiary),
+                );
+                ui.add_space(space::XXS);
+            }
+
+            if let Some(title) = preview.title.as_deref().filter(|title| !title.is_empty()) {
+                ui.label(RichText::new(title).font(text::headline()).color(t.label));
+            }
+
+            if let Some(description) = preview
+                .description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+            {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new(description)
+                        .font(text::body())
+                        .color(t.label_secondary),
+                );
+            }
+
+            if preview.title.as_deref().is_none_or(str::is_empty)
+                && preview.description.as_deref().is_none_or(str::is_empty)
+            {
+                ui.label(
+                    RichText::new(url)
+                        .font(text::footnote())
+                        .color(t.label_secondary),
+                );
+            }
+        });
+
+        let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
+        let response = ui.interact(
+            rect,
+            Id::new(("link-preview", &preview.id)),
+            Sense::click(),
+        );
+
+        let fill = if response.hovered() {
+            t.fill_medium
+        } else {
+            t.fill_soft
+        };
+        ui.painter().set(
+            backdrop,
+            egui::epaint::RectShape::new(
+                rect,
+                CornerRadius::same(radius::CARD),
+                fill,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() && !media_clicked {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        ui.add_space(space::XS);
+    }
+}
+
+
+fn rich_links_from_message(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    content: &str,
+    previews: &[crate::api::models::LinkPreview],
+    width: f32,
+) {
+    use std::hash::{Hash, Hasher};
+
+    let mut seen = std::collections::HashSet::new();
+    for token in content.split_whitespace() {
+        let url = token.trim_matches(|ch: char| {
+            matches!(ch, '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '!' | '?')
+        });
+        if !url.starts_with("https://")
+            || !crate::media::rich_embed_source(url)
+            || previews
+                .iter()
+                .any(|preview| preview.url.as_deref() == Some(url))
+            || !seen.insert(url.to_owned())
+        {
+            continue;
+        }
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hasher);
+        let id = format!("rich-{:016x}", hasher.finish());
+        rich_link_card(ui, state, t, &id, url, width);
+    }
+}
+
+fn rich_link_card(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    url: &str,
+    width: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const IMAGE_MAX_H: f32 = 300.0;
+
+    ui.add_space(space::SM);
+    let card_width = width.clamp(160.0, MAX_W);
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let rich = state.media.rich_embed(id, url);
+
+    let image_url = match &rich {
+        Some(crate::media::RichEmbedState::Ready {
+            kind: crate::media::RichEmbedKind::Image,
+            url,
+        }) => Some(url.clone()),
+        _ => None,
+    };
+    let video_url = match &rich {
+        Some(crate::media::RichEmbedState::Ready {
+            kind: crate::media::RichEmbedKind::Video,
+            url,
+        }) => Some(url.clone()),
+        _ => None,
+    };
+
+    let image = image_url
+        .as_deref()
+        .and_then(|remote| state.media.remote_image(id, remote))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .cloned();
+
+    let player_id = format!("link-embed:{id}");
+    let (frame, aspect, playing, position, duration) = if video_url.is_some() {
+        match state.media.existing_player(&player_id) {
+            Some(player) => {
+                let aspect = player.aspect().clamp(0.4, 3.0);
+                let playing = player.is_playing();
+                let position = player.position();
+                let duration = player.duration();
+                let frame = player.frame(ui.ctx()).cloned();
+                (frame, aspect, playing, position, duration)
+            }
+            None => (None, 16.0 / 9.0, false, 0.0, 0.0),
+        }
+    } else {
+        (None, 16.0 / 9.0, false, 0.0, 0.0)
+    };
+
+    let inner = ui.scope(|ui| {
+        ui.set_width(card_width);
+
+        if let Some(remote) = video_url.as_deref() {
+            let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
+            let controls_h = 30.0;
+            let (rect, response) = ui.allocate_exact_size(
+                Vec2::new(card_width, frame_size.y + controls_h),
+                Sense::click(),
+            );
+            let video_rect = Rect::from_min_size(rect.min, frame_size);
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
+
+            if let Some(texture) = frame.as_ref() {
+                let source = texture.size_vec2();
+                let scale = (video_rect.width() / source.x)
+                    .min(video_rect.height() / source.y);
+                let painted = Rect::from_center_size(video_rect.center(), source * scale);
+                ui.painter().image(
+                    texture.id(),
+                    painted,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+
+            if !playing {
+                ui.painter()
+                    .circle_filled(video_rect.center(), 28.0, Color32::from_black_alpha(155));
+                ui.painter().text(
+                    video_rect.center() + Vec2::new(1.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon::PLAY,
+                    text::icon(22.0),
+                    Color32::WHITE,
+                );
+            }
+
+            let controls = Rect::from_min_max(
+                egui::pos2(rect.min.x, video_rect.max.y),
+                rect.max,
+            );
+            ui.painter()
+                .rect_filled(controls, CornerRadius::ZERO, Color32::from_black_alpha(190));
+            ui.painter().text(
+                egui::pos2(controls.max.x - space::MD, controls.center().y),
+                egui::Align2::RIGHT_CENTER,
+                format!(
+                    "{} / {}",
+                    attachments::clock(position),
+                    attachments::clock(duration)
+                ),
+                text::footnote(),
+                Color32::from_white_alpha(205),
+            );
+
+            if response.clicked() {
+                let ctx = ui.ctx().clone();
+                state.media.toggle_remote_player(&player_id, remote, &ctx);
+                state.media.solo(&player_id);
+            }
+            if playing {
+                ui.ctx().request_repaint();
+            }
+        } else if let Some(texture) = image.as_ref() {
+            let source = texture.size_vec2();
+            let scale = (card_width / source.x)
+                .min(IMAGE_MAX_H / source.y)
+                .min(1.0);
+            let size = source * scale;
+            let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+            ui.painter().image(
+                texture.id(),
+                rect,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            if response.clicked()
+                && let Some(remote) = image_url.as_ref()
+            {
+                state.link_viewer = Some(LinkViewer {
+                    id: id.to_owned(),
+                    url: remote.clone(),
+                });
+            }
+        } else {
+            let (rect, _) = ui.allocate_exact_size(
+                Vec2::new(card_width, 84.0),
+                Sense::hover(),
+            );
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(radius::CARD),
+                t.fill_soft,
+            );
+            let label = match rich {
+                Some(crate::media::RichEmbedState::Failed) => "Não foi possível carregar a mídia",
+                _ => "Carregando mídia…",
+            };
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                text::footnote(),
+                t.label_secondary,
+            );
+        }
+
+        ui.add_space(space::SM);
+        let provider = url::Url::parse(url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "link".to_owned());
+        ui.label(
+            RichText::new(provider)
+                .font(text::caption())
+                .color(t.label_tertiary),
+        );
+    });
+
+    let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
+    ui.painter().set(
+        backdrop,
+        egui::epaint::RectShape::new(
+            rect,
+            CornerRadius::same(radius::CARD),
+            t.fill_soft,
+            Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    ui.add_space(space::XS);
 }
 
 fn reaction_chip(
@@ -3272,6 +3985,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
         }
     }
 
+    if state.link_viewer.is_some() {
+        link_image_viewer(ui, state, t);
+    }
+
     if let Some(mut viewer) = state.viewer.take() {
         let attachments = store
             .message(&viewer.message_id)
@@ -3285,6 +4002,79 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             }
             None => state.viewer = Some(viewer),
         }
+    }
+}
+
+fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
+    let Some(viewer) = state.link_viewer.clone() else {
+        return;
+    };
+    let screen = ui.ctx().content_rect();
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-link-viewer"));
+    let top = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(screen)
+            .sense(Sense::click()),
+    );
+
+    top.painter()
+        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
+
+    let texture = state
+        .media
+        .remote_image(&viewer.id, &viewer.url)
+        .and_then(|texture| texture.frame(top.ctx()))
+        .cloned();
+
+    let mut content = Rect::NOTHING;
+    if let Some(texture) = texture {
+        let stage = screen.shrink2(Vec2::new(space::XXXL, 64.0));
+        let natural = texture.size_vec2();
+        let scale = (stage.width() / natural.x)
+            .min(stage.height() / natural.y)
+            .min(1.0);
+        let size = natural * scale;
+        content = Rect::from_center_size(stage.center(), size);
+        top.painter().image(
+            texture.id(),
+            content,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        top.painter().text(
+            screen.center(),
+            egui::Align2::CENTER_CENTER,
+            "Carregando imagem…",
+            text::body(),
+            t.label_secondary,
+        );
+        top.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(150));
+    }
+
+    let close_rect = Rect::from_center_size(
+        egui::pos2(screen.max.x - 28.0, screen.min.y + 28.0),
+        Vec2::splat(36.0),
+    );
+    let close = top.interact(close_rect, Id::new("link-viewer-close"), Sense::click());
+    top.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        text::icon(20.0),
+        Color32::WHITE,
+    );
+
+    let backdrop = top.interact(screen, Id::new("link-viewer-backdrop"), Sense::click());
+    let escape = top.input(|input| input.key_pressed(egui::Key::Escape));
+    let outside = backdrop.clicked()
+        && backdrop
+            .interact_pointer_pos()
+            .is_some_and(|position| !content.expand(space::MD).contains(position));
+    if close.clicked() || escape || outside {
+        state.link_viewer = None;
     }
 }
 
@@ -3768,16 +4558,13 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     let left_count = 1 + usize::from(with_record);
     let left_width =
         left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
-
     let composer_width =
         (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
-    let controls_width =
-        space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
+
+    // Reserva dos quatro controles à direita e das margens do campo.
+    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
     let text_width = (composer_width - controls_width).max(80.0);
 
-    // Contar '\n' não basta: uma mensagem comprida pode ocupar três linhas
-    // sem conter newline nenhum. O mesmo layouter proporcional usado pelo
-    // TextEdit nos dá o número real de linhas depois do word-wrap.
     let rows = if state.composer.is_empty() {
         1
     } else {
@@ -3793,10 +4580,10 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
             .clamp(1, COMPOSER_MAX_ROWS)
     };
 
-    let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
         + ui.spacing().extra_text_line_spacing;
-    let text_block = rows as f32 * line_height + space::SM * 2.0;
-    let mut height = COMPOSER_LINE_H.max(text_block);
+    let text_h = rows as f32 * row_h + space::SM * 2.0;
+    let mut height = COMPOSER_LINE_H.max(text_h);
 
     if state.replying.is_some() {
         height += COMPOSER_REPLY_H;
@@ -4227,8 +5014,8 @@ fn composer(
 
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
     let field = Rect::from_min_max(
-        egui::pos2(line.min.x + space::MD, line.min.y + space::XS),
-        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y - space::XS),
+        egui::pos2(line.min.x + space::MD, line.min.y),
+        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
     );
 
     #[cfg(target_os = "android")]
