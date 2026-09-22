@@ -649,7 +649,16 @@ pub fn floating(
     let rows = limit.div_ceil(columns);
     let gap = space::SM;
     let cell_width = (width - gap * (columns as f32 - 1.0)) / columns as f32;
-    let height = rows as f32 * (cell_width / TILE_RATIO)
+    // O overlay compacto precisa reservar altura suficiente para câmera
+    // em pé. O tile em si usa a proporção real da textura; aqui usamos a
+    // proporção mais alta que o Android publica como reserva, para não
+    // obrigar um quadro 3:4 a caber numa faixa 16:9 antes mesmo de ser
+    // desenhado.
+    #[cfg(target_os = "android")]
+    let panel_ratio = 3.0 / 4.0;
+    #[cfg(not(target_os = "android"))]
+    let panel_ratio = TILE_RATIO;
+    let height = rows as f32 * (cell_width / panel_ratio)
         + gap * (rows as f32 - 1.0)
         + space::SM * 2.0;
     let bridge_gap = 18.0;
