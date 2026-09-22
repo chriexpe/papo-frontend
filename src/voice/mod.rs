@@ -155,6 +155,7 @@ pub(crate) enum Command {
         sdp_mline_index: u32,
     },
     /// O `webrtcbin` avisou que a sessão mudou e precisa de oferta nova.
+    #[allow(dead_code)]
     Negotiate,
     /// A SDP do servidor terminou de ser aplicada (`true` quando era
     /// resposta à nossa oferta).
