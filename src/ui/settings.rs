@@ -567,7 +567,7 @@ impl Rows<'_> {
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         let mut submitted = false;
-        self.row(label, None, |ui, _| {
+        self.row(label, None, |ui, t| {
             let width = ui.available_width();
 
             #[cfg(target_os = "android")]
