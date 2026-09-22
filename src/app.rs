@@ -505,6 +505,13 @@ impl PapoApp {
         );
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
+        #[cfg(target_os = "android")]
+        cc.egui_ctx.options_mut(|options| {
+            // 0.8 s (egui default) feels sluggish for a phone context menu.
+            // Android's conventional long-press timing is around half a second.
+            options.input_options.max_click_duration = 0.5;
+        });
+
         let glass = cc.gl.as_ref().and_then(|gl| GlassRenderer::new(gl));
         if glass.is_none() {
             log::warn!("sem backend glow: o vidro fosco fica desligado");

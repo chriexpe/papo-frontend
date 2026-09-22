@@ -38,14 +38,25 @@ pub fn draw(
     message_id: &str,
     attachments: &[Attachment],
     width: f32,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let mut action = None;
     for (index, attachment) in attachments.iter().enumerate() {
         ui.add_space(space::XS);
         let outcome = match attachment.kind() {
             Kind::Image => image(ui, t, s, media, message_id, index, attachment, width),
-            Kind::Video => video(ui, t, s, media, message_id, index, attachment, width),
-            Kind::Audio => audio(ui, t, s, media, attachment, width),
+            Kind::Video => video(
+                ui,
+                t,
+                s,
+                media,
+                message_id,
+                index,
+                attachment,
+                width,
+                seek_zones,
+            ),
+            Kind::Audio => audio(ui, t, s, media, attachment, width, seek_zones),
             Kind::Other => file_card(ui, t, s, attachment, width),
         };
         action = action.or(outcome);
@@ -167,6 +178,7 @@ fn video(
     index: usize,
     attachment: &Attachment,
     width: f32,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
     let state = media.file(&attachment.id, attachment.name());
@@ -254,7 +266,18 @@ fn video(
         egui::pos2(rect.min.x, frame_rect.max.y),
         Vec2::new(card_width, CONTROLS_H),
     );
-    if let Some(command) = transport(ui, t, media, &attachment.id, &path, controls, position, duration, true) {
+    if let Some(command) = transport(
+        ui,
+        t,
+        media,
+        &attachment.id,
+        &path,
+        controls,
+        position,
+        duration,
+        true,
+        seek_zones,
+    ) {
         match command {
             Transport::Fullscreen => {
                 action = Some(MediaAction::Open {
@@ -287,6 +310,7 @@ fn audio(
     media: &mut MediaStore,
     attachment: &Attachment,
     width: f32,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
     let state = media.file(&attachment.id, attachment.name());
@@ -314,7 +338,11 @@ fn audio(
         None => (false, 0.0, 0.0, None),
     };
 
-    let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), Sense::click_and_drag());
+    #[cfg(target_os = "android")]
+    let audio_sense = Sense::click();
+    #[cfg(not(target_os = "android"))]
+    let audio_sense = Sense::click_and_drag();
+    let (rect, card) = ui.allocate_exact_size(Vec2::new(card_width, AUDIO_H), audio_sense);
     ui.painter().rect(
         rect,
         CornerRadius::same(radius::CARD),
@@ -376,16 +404,42 @@ fn audio(
     }
 
     // Clicar ou arrastar em cima da onda pula para o ponto.
+    let wave_hit = wave.expand2(Vec2::new(0.0, 10.0));
     let over_wave = ui
         .ctx()
         .pointer_latest_pos()
-        .map(|pos| wave.expand2(Vec2::new(0.0, 8.0)).contains(pos))
+        .map(|pos| wave_hit.contains(pos))
         .unwrap_or(false);
     if over_wave {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
+
+    #[cfg(target_os = "android")]
+    {
+        seek_zones.push(wave_hit);
+        // No Android a onda NÃO possui Sense::drag: isso deixaria o filho
+        // roubar a rolagem vertical do ScrollArea. O toque cru decide o eixo
+        // e trava a decisão até o dedo subir.
+        let response = ui.interact(
+            wave_hit,
+            ui.id().with(("audio-seek", &attachment.id)),
+            Sense::click(),
+        );
+        if let Some(ratio) = android_seek_ratio(ui, &response, wave) {
+            if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
+                let duration = player.duration();
+                if duration > 0.0 {
+                    player.seek(duration * ratio);
+                } else {
+                    player.play();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     if let Some(pos) = pointer.filter(|pos| {
-        (card.dragged() || card.clicked()) && wave.expand2(Vec2::new(0.0, 10.0)).contains(*pos)
+        (card.dragged() || card.clicked()) && wave_hit.contains(*pos)
     }) {
         let ratio = ((pos.x - wave.min.x) / wave.width()).clamp(0.0, 1.0) as f64;
         if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
@@ -555,6 +609,7 @@ fn transport(
     position: f64,
     duration: f64,
     fullscreen: bool,
+    seek_zones: &mut Vec<Rect>,
 ) -> Option<Transport> {
     let mut outcome = None;
     ui.painter()
@@ -630,19 +685,40 @@ fn transport(
         ui.painter()
             .circle_filled(egui::pos2(played.max.x, mid), 5.0, Color32::WHITE);
 
-        let response = ui.interact(
-            line.expand2(Vec2::new(0.0, 8.0)),
-            ui.id().with(("seek", id)),
-            Sense::click_and_drag(),
-        );
-        if let Some(pointer) = response
-            .interact_pointer_pos()
-            .filter(|_| response.dragged() || response.clicked())
+        let seek_rect = line.expand2(Vec2::new(0.0, 8.0));
+
+        #[cfg(target_os = "android")]
         {
-            let ratio = ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64;
-            if let Some(player) = media.existing_player(id) {
+            seek_zones.push(seek_rect);
+            let response = ui.interact(
+                seek_rect,
+                ui.id().with(("seek", id)),
+                Sense::click(),
+            );
+            if let Some(ratio) = android_seek_ratio(ui, &response, line)
+                && let Some(player) = media.existing_player(id)
+            {
                 let duration = player.duration();
                 player.seek(duration * ratio);
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let response = ui.interact(
+                seek_rect,
+                ui.id().with(("seek", id)),
+                Sense::click_and_drag(),
+            );
+            if let Some(pointer) = response
+                .interact_pointer_pos()
+                .filter(|_| response.dragged() || response.clicked())
+            {
+                let ratio = ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64;
+                if let Some(player) = media.existing_player(id) {
+                    let duration = player.duration();
+                    player.seek(duration * ratio);
+                }
             }
         }
 
@@ -656,6 +732,63 @@ fn transport(
     }
 
     outcome
+}
+
+#[cfg(target_os = "android")]
+fn android_seek_ratio(ui: &egui::Ui, response: &egui::Response, line: Rect) -> Option<f64> {
+    // 0 = ainda indeciso; 1 = horizontal/scrub; -1 = vertical/scroll.
+    let gesture_id = response.id.with("android-axis-lock");
+
+    if response.clicked() {
+        ui.ctx().data_mut(|data| data.remove::<i8>(gesture_id));
+        let pointer = response
+            .interact_pointer_pos()
+            .or_else(|| ui.ctx().pointer_interact_pos())?;
+        return Some(((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64);
+    }
+
+    let (down, origin, pointer) = ui.input(|input| {
+        (
+            input.pointer.primary_down(),
+            input.pointer.press_origin(),
+            input.pointer.latest_pos(),
+        )
+    });
+
+    if !down {
+        ui.ctx().data_mut(|data| data.remove::<i8>(gesture_id));
+        return None;
+    }
+
+    let (Some(origin), Some(pointer)) = (origin, pointer) else {
+        return None;
+    };
+    if !response.rect.contains(origin) {
+        return None;
+    }
+
+    let delta = pointer - origin;
+    let mut axis = ui
+        .ctx()
+        .data(|data| data.get_temp::<i8>(gesture_id))
+        .unwrap_or(0);
+
+    // Espera sair do touch slop antes de escolher. Depois de escolhido, o
+    // eixo não muda no meio do gesto mesmo se o dedo derivar um pouco.
+    if axis == 0 && delta.length() >= 6.0 {
+        const BIAS: f32 = 1.15;
+        if delta.x.abs() > delta.y.abs() * BIAS {
+            axis = 1;
+        } else if delta.y.abs() > delta.x.abs() * BIAS {
+            axis = -1;
+        }
+        if axis != 0 {
+            ui.ctx().data_mut(|data| data.insert_temp(gesture_id, axis));
+        }
+    }
+
+    (axis == 1)
+        .then(|| ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64)
 }
 
 fn control(ui: &mut egui::Ui, rect: Rect, glyph: &str, id: &str, tag: &str) -> bool {

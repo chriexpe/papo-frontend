@@ -397,6 +397,9 @@ pub struct UiState {
     /// Retângulos das mensagens deste quadro, usados para swipe-to-reply sem
     /// roubar o drag vertical do ScrollArea.
     message_rows: Vec<(String, Rect)>,
+    /// Zonas de timeline/waveform que, no Android, arbitram o próprio gesto:
+    /// horizontal = scrub; vertical = rolagem. O swipe da mensagem não entra.
+    media_seek_zones: Vec<Rect>,
     pub translucent: bool,
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
@@ -466,6 +469,7 @@ impl Default for UiState {
             drawer: Drawer::default(),
             reply_drag: None,
             message_rows: Vec::new(),
+            media_seek_zones: Vec::new(),
             translucent: true,
             pending: Vec::new(),
             glass: None,
@@ -521,6 +525,7 @@ pub fn draw(
     mobile_servers: Option<MobileServers<'_>>,
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
+    state.media_seek_zones.clear();
 
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
@@ -1794,9 +1799,18 @@ fn handle_mobile_gesture(
             None
         };
         let controls = origin.y < area.min.y + top_inset || origin.y > area.max.y - bottom_inset;
+        #[cfg(target_os = "android")]
+        let media_seek = state
+            .media_seek_zones
+            .iter()
+            .any(|rect| rect.contains(origin));
+        #[cfg(not(target_os = "android"))]
+        let media_seek = false;
+
         let blocked = state.popup.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
+            || media_seek
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
@@ -2947,6 +2961,7 @@ fn message_body(
             &message.id,
             &message.attachments,
             width,
+            &mut state.media_seek_zones,
         )
     {
         match action {
