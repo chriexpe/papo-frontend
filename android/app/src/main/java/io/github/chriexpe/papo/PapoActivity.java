@@ -8,19 +8,27 @@ import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.Selection;
+import android.util.Log;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
-
-import android.util.Log;
+import android.view.inputmethod.BaseInputConnection;
+import android.view.inputmethod.EditorInfo;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
 
 import com.google.androidgamesdk.GameActivity;
+import com.google.androidgamesdk.gametextinput.InputConnection;
+import com.google.androidgamesdk.gametextinput.Settings;
 import com.google.androidgamesdk.gametextinput.State;
 
 import org.freedesktop.gstreamer.GStreamer;
@@ -54,6 +62,112 @@ public class PapoActivity extends GameActivity {
 
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
+
+    /**
+     * O mesmo GameTextInput do GameActivity, mas observando cada operação no
+     * ponto em que o teclado realmente a executa.
+     *
+     * <p>Alguns IMEs agrupam movimentos de seleção e repetição de apagar antes
+     * de o Listener de alto nível publicar o State. Para um editor desenhado
+     * pelo egui isso é tarde demais: a barra de espaço parece "teleportar" o
+     * cursor e apagar segurado pode parecer um único toque. Aqui cada mutação
+     * publica imediatamente o Editable completo, sem inventar KeyEvents no Rust.
+     */
+    private final class TrackingInputConnection extends InputConnection {
+        TrackingInputConnection(View target, Settings settings) {
+            super(PapoActivity.this, target, settings);
+            setListener(PapoActivity.this);
+        }
+
+        private void publishEditorState() {
+            final Editable editable = getEditable();
+            if (editable == null) {
+                return;
+            }
+            nativeSetText(
+                    editable.toString(),
+                    Selection.getSelectionStart(editable),
+                    Selection.getSelectionEnd(editable),
+                    BaseInputConnection.getComposingSpanStart(editable),
+                    BaseInputConnection.getComposingSpanEnd(editable));
+        }
+
+        private boolean publish(boolean result) {
+            publishEditorState();
+            return result;
+        }
+
+        @Override
+        public boolean setSelection(int start, int end) {
+            return publish(super.setSelection(start, end));
+        }
+
+        @Override
+        public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+            return publish(super.deleteSurroundingText(beforeLength, afterLength));
+        }
+
+        @Override
+        public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+            return publish(super.deleteSurroundingTextInCodePoints(beforeLength, afterLength));
+        }
+
+        @Override
+        public boolean setComposingText(CharSequence text, int newCursorPosition) {
+            return publish(super.setComposingText(text, newCursorPosition));
+        }
+
+        @Override
+        public boolean setComposingRegion(int start, int end) {
+            return publish(super.setComposingRegion(start, end));
+        }
+
+        @Override
+        public boolean finishComposingText() {
+            return publish(super.finishComposingText());
+        }
+
+        @Override
+        public boolean commitText(CharSequence text, int newCursorPosition) {
+            return publish(super.commitText(text, newCursorPosition));
+        }
+
+        @Override
+        public boolean sendKeyEvent(KeyEvent event) {
+            return publish(super.sendKeyEvent(event));
+        }
+
+        @Override
+        public boolean endBatchEdit() {
+            return publish(super.endBatchEdit());
+        }
+    }
+
+    /**
+     * GameActivity 4.4.0 cria uma conexão concreta dentro do SurfaceView e
+     * entrega exatamente essa instância tanto ao Android quanto ao lado nativo.
+     * O campo é package-private, então substituímos uma única vez por reflexão
+     * antes de GameActivity registrar a conexão no C/Rust.
+     */
+    @Override
+    protected InputEnabledSurfaceView createSurfaceView() {
+        final InputEnabledSurfaceView view = new InputEnabledSurfaceView(this);
+        final EditorInfo editorInfo = getImeEditorInfo();
+        final TrackingInputConnection connection = new TrackingInputConnection(
+                view,
+                new Settings(
+                        editorInfo,
+                        editorInfo.inputType == InputType.TYPE_NULL));
+        try {
+            final Field field =
+                    InputEnabledSurfaceView.class.getDeclaredField("mInputConnection");
+            field.setAccessible(true);
+            field.set(view, connection);
+        } catch (ReflectiveOperationException error) {
+            Log.e("papo-ime", "não deu para instalar a conexão de texto rastreada", error);
+        }
+        return view;
+    }
 
     /**
      * Pede uma permissão ao usuário. Chamado <b>do Rust</b>.
@@ -201,14 +315,11 @@ public class PapoActivity extends GameActivity {
     }
 
     /**
-     * O teclado mudou o texto.
+     * Fallback/espelho do Listener do GameTextInput.
      *
-     * <p>É daqui que o texto digitado chega ao Rust. O caminho natural seria
-     * o lado nativo ler o buffer do GameTextInput sozinho, mas a função que
-     * faz isso no `android-activity` 0.6.1 monta uma fatia sobre um ponteiro
-     * nulo enquanto ninguém digitou nada, e aborta o processo assim que o
-     * teclado sobe. Empurrar daqui contorna isso e ainda sai mais barato:
-     * não é preciso olhar nada a cada quadro.
+     * <p>As operações interativas já são publicadas diretamente pela
+     * TrackingInputConnection; este callback continua cobrindo qualquer
+     * mudança que a biblioteca produza por outro caminho.
      */
     @Override
     public void stateChanged(State state, boolean dismissed) {
