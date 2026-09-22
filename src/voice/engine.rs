@@ -661,6 +661,11 @@ impl Engine {
             let _ = element.sync_state_with_parent();
         }
         let line = pad.property::<gst_webrtc::WebRTCRTPTransceiver>("transceiver");
+        // O request-pad dispara on-negotiation-needed imediatamente. Até a
+        // captura abrir e voice_camera=true estar a caminho do servidor, esta
+        // m-line NÃO pode publicar: o backend rejeita vídeo ativo quando
+        // cameraOn ainda é false.
+        line.set_property_from_str("direction", "inactive");
         Some((line, src))
     }
 
