@@ -2166,22 +2166,31 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .map(|panel| panel.query.clone())
         .unwrap_or_default();
 
-    let field = ui.add(
-        egui::TextEdit::singleline(&mut query)
-            .hint_text(s.search_placeholder)
-            .desired_width(f32::INFINITY)
-            .font(text::body()),
-    );
-    if let Some(panel) = state.panel.as_mut() {
-        panel.query = query.clone();
-        if panel.focus {
-            field.request_focus();
-            panel.focus = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut query)
+                .hint_text(s.search_placeholder)
+                .desired_width(field_width)
+                .font(text::body()),
+        );
+        if let Some(panel) = state.panel.as_mut() {
+            panel.query = query.clone();
+            if panel.focus {
+                field.request_focus();
+                panel.focus = false;
+            }
         }
-    }
-    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-        run = true;
-    }
+        if ui.input(|input| input.key_pressed(egui::Key::Enter))
+            && (field.has_focus() || field.lost_focus())
+        {
+            run = true;
+        }
+        if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
+            run = true;
+        }
+    });
     if run && !query.trim().is_empty() {
         store.searching = true;
         state.actions.push(ChatAction::Search(query.trim().to_owned()));
@@ -2404,7 +2413,7 @@ fn message_list(
     let rows = egui::Rangef::new(area.min.x + space::MD, area.max.x - space::MD);
     // Com um popup aberto, só a mensagem dona dele fica em destaque: o resto
     // da lista não deve reagir ao ponteiro que está a caminho do menu.
-    let interactive = state.viewer.is_none();
+    let interactive = state.viewer.is_none() && state.panel.is_none();
     let focused_message = state
         .popup
         .as_ref()
