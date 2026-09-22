@@ -21,6 +21,11 @@ use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
+
+/// Endereço interno usado enquanto "Adicionar servidor" ainda é só um
+/// rascunho. Nunca é persistido nem mostrado e não pode colidir com um
+/// servidor real.
+const DRAFT_SERVER_URL: &str = "https://add-server.invalid";
 use crate::ui::shell::{self, ChatAction, UiState};
 use crate::ui::glass::GlassRenderer;
 use crate::ui::theme::{self, Appearance, ThemePref, Tokens};
@@ -324,22 +329,43 @@ impl Settings {
     /// Garante que a lista de servidores existe e que o ativo aponta para um
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
-        // Endereços gravados antes disto podem estar sem esquema; sem ele o
-        // cliente não abre conexão nenhuma.
         self.server_url = normalise_server_url(&self.server_url);
-        for entry in &mut self.servers {
+
+        // URL normalizada é a identidade local do servidor: sessão, senha e
+        // marcas também usam essa chave. Remove duplicatas antigas que o +
+        // podia persistir e preserva a entrada que estava ativa.
+        let had_servers = !self.servers.is_empty();
+        let wanted_active = self.active.min(self.servers.len().saturating_sub(1));
+        let mut unique: Vec<ServerEntry> = Vec::with_capacity(self.servers.len());
+        let mut active = 0;
+        for (index, mut entry) in std::mem::take(&mut self.servers).into_iter().enumerate() {
             entry.url = normalise_server_url(&entry.url);
+            if let Some(existing) = unique.iter().position(|known| known.url == entry.url) {
+                if index == wanted_active {
+                    active = existing;
+                }
+                if unique[existing].label.is_empty() && !entry.label.is_empty() {
+                    unique[existing].label = entry.label;
+                }
+                continue;
+            }
+            if index == wanted_active {
+                active = unique.len();
+            }
+            unique.push(entry);
         }
+        self.servers = unique;
+
         if self.servers.is_empty() {
             self.servers.push(ServerEntry::new(self.server_url.clone()));
-            // As marcas antigas eram todas do único servidor que existia.
-            if !self.read_marks.is_empty() {
+            if !had_servers && !self.read_marks.is_empty() {
                 let key = crate::state::server_key(&self.server_url);
                 self.server_marks
                     .insert(key, std::mem::take(&mut self.read_marks));
             }
+            active = 0;
         }
-        self.active = self.active.min(self.servers.len() - 1);
+        self.active = active.min(self.servers.len() - 1);
         self.server_url = self.servers[self.active].url.clone();
     }
 }
@@ -483,6 +509,9 @@ pub struct PapoApp {
     /// tem menu global para onde mandar o menu.
     own_chrome: bool,
     header: crate::ui::headerbar::HeaderState,
+    /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
+    /// qual servidor estava na tela para cancelar sem persistir o rascunho.
+    add_server_previous: Option<usize>,
 }
 
 impl PapoApp {
@@ -626,6 +655,7 @@ impl PapoApp {
             // pela pastilha da conta, que é por onde o layout compacto abre.
             own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
+            add_server_previous: None,
         }
     }
 
@@ -830,15 +860,32 @@ impl PapoApp {
         // Mudar o endereço aqui é mudar de servidor: a conexão antiga cai e
         // o item do trilho passa a apontar para o endereço novo.
         let url = normalise_server_url(&self.workspaces[index].form.server_url);
-        // Um endereço que nem vira URL deixaria a tela presa em "Conectando…"
-        // para sempre: a conexão morre antes de responder, e nada tira o
-        // `busy`. Melhor recusar aqui, com uma palavra.
-        if !url.is_empty() && url::Url::parse(&url).is_err() {
+        if url.is_empty() || url::Url::parse(&url).is_err() {
             let s = self.settings.lang.strings();
             self.workspaces[index].store.error = Some(s.invalid_server_address.to_owned());
             return;
         }
-        if !url.is_empty() && url != self.workspaces[index].url {
+
+        if self.add_server_previous.is_some()
+            && let Some(existing) = self
+                .workspaces
+                .iter()
+                .enumerate()
+                .find(|(other, ws)| *other != index && normalise_server_url(&ws.url) == url)
+                .map(|(other, _)| other)
+        {
+            let form = self.workspaces[index].form.clone();
+            self.cancel_add_server(ctx);
+            self.activate(existing, ctx);
+            self.workspaces[existing].form = AuthForm {
+                server_url: url,
+                ..form
+            };
+            self.authenticate(register, ctx);
+            return;
+        }
+
+        if url != self.workspaces[index].url {
             self.reopen(index, url, ctx);
         }
 
@@ -903,14 +950,50 @@ impl PapoApp {
         ctx.request_repaint();
     }
 
-    /// Acrescenta um servidor vazio e já o coloca na tela, esperando o
-    /// endereço.
+    /// Abre "Adicionar servidor" como rascunho cancelável.
     fn add_server(&mut self, ctx: &egui::Context) {
-        let entry = ServerEntry::new(default_server_url());
-        let workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        let previous = self.active;
+        let entry = ServerEntry::new(DRAFT_SERVER_URL.to_owned());
+        let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        workspace.form.server_url.clear();
+        workspace.store.screen = Screen::Auth;
         self.settings.servers.push(entry);
         self.workspaces.push(workspace);
         self.activate(self.workspaces.len() - 1, ctx);
+        self.add_server_previous = Some(previous);
+    }
+
+    fn cancel_add_server(&mut self, ctx: &egui::Context) {
+        let Some(previous) = self.add_server_previous.take() else {
+            return;
+        };
+        let index = self.active;
+        if index >= self.workspaces.len() || index == previous {
+            return;
+        }
+
+        self.workspaces[index].stash.swap(&mut self.ui);
+        let key = crate::state::server_key(&self.workspaces[index].url);
+        self.settings.server_marks.remove(&key);
+        self.workspaces[index].net.forget_credentials();
+        self.workspaces.remove(index);
+        self.settings.servers.remove(index);
+
+        self.active = previous.min(self.workspaces.len() - 1);
+        self.settings.active = self.active;
+        self.settings.server_url = self.workspaces[self.active].url.clone();
+        self.workspaces[self.active].stash.swap(&mut self.ui);
+        ctx.request_repaint();
+    }
+
+    fn clicked_outside_auth_card(ctx: &egui::Context, rect: egui::Rect) -> bool {
+        ctx.input(|input| {
+            input.pointer.any_pressed()
+                && input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|position| !rect.contains(position))
+        })
     }
 
     /// Tira um servidor do trilho. A conta no servidor continua existindo; o
@@ -1942,7 +2025,8 @@ impl eframe::App for PapoApp {
             self.workspaces[self.active].store.screen,
             Screen::Chat
         ) && crate::ui::shell::is_compact(ctx.content_rect());
-        if !compact_chat {
+        let add_server_modal = self.add_server_previous.is_some();
+        if !compact_chat && !add_server_modal {
             self.draw_rail(ui, strings, &ctx);
         }
 
@@ -1950,26 +2034,38 @@ impl eframe::App for PapoApp {
         match self.workspaces[active].store.screen {
             Screen::Starting => auth::starting(ui, &self.tokens, strings),
             Screen::Auth => {
-                let ws = &mut self.workspaces[active];
-                match auth::sign_in(ui, &mut ws.form, &ws.store, &self.tokens, strings) {
+                let response = {
+                    let ws = &mut self.workspaces[active];
+                    auth::sign_in(ui, &mut ws.form, &ws.store, &self.tokens, strings)
+                };
+                match response.action {
                     AuthAction::SignIn => self.authenticate(false, &ctx),
                     AuthAction::Register => self.authenticate(true, &ctx),
                     AuthAction::UnlockServer => self.unlock_server(),
                     _ => {}
                 }
+                if add_server_modal && Self::clicked_outside_auth_card(&ctx, response.rect) {
+                    self.cancel_add_server(&ctx);
+                }
             }
             Screen::NeedsServer => {
-                let ws = &mut self.workspaces[active];
-                if auth::create_server(ui, &mut ws.form, &ws.store, &self.tokens, strings)
-                    == AuthAction::CreateServer
-                {
+                let response = {
+                    let ws = &mut self.workspaces[active];
+                    auth::create_server(ui, &mut ws.form, &ws.store, &self.tokens, strings)
+                };
+                if response.action == AuthAction::CreateServer {
+                    let ws = &mut self.workspaces[active];
                     ws.store.busy = true;
                     ws.net.send(Command::CreateServer {
                         name: ws.form.server_name.trim().to_owned(),
                     });
                 }
+                if add_server_modal && Self::clicked_outside_auth_card(&ctx, response.rect) {
+                    self.cancel_add_server(&ctx);
+                }
             }
             Screen::Chat => {
+                self.add_server_previous = None;
                 let mobile_entries = compact_chat.then(|| {
                     self.workspaces
                         .iter()
@@ -2031,23 +2127,33 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        // As marcas de leitura vivem no estado de cada servidor; só o ajuste
-        // persiste, e cada servidor guarda as suas sob a própria chave.
-        for ws in &self.workspaces {
+        let draft = self.add_server_previous.map(|_| self.active);
+        for (index, ws) in self.workspaces.iter().enumerate() {
+            if Some(index) == draft {
+                continue;
+            }
             self.settings
                 .server_marks
                 .insert(crate::state::server_key(&ws.url), ws.store.read_marks.clone());
         }
-        self.settings.servers = self
+
+        let mut persisted = self.settings.clone();
+        persisted.servers = self
             .workspaces
             .iter()
-            .map(|ws| ServerEntry {
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != draft)
+            .map(|(_, ws)| ServerEntry {
                 url: ws.url.clone(),
                 label: ws.label.clone(),
             })
             .collect();
-        self.settings.active = self.active;
-        eframe::set_value(storage, eframe::APP_KEY, &self.settings);
+        persisted.active = self.add_server_previous.unwrap_or(self.active);
+        persisted.active = persisted.active.min(persisted.servers.len().saturating_sub(1));
+        if let Some(entry) = persisted.servers.get(persisted.active) {
+            persisted.server_url = entry.url.clone();
+        }
+        eframe::set_value(storage, eframe::APP_KEY, &persisted);
     }
 
     /// A janela é opaca: o vidro é desenhado por nós, não pelo compositor.
