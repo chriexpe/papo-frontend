@@ -268,6 +268,7 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
     #[cfg(not(target_os = "android"))]
     let submitted = {
         let edit_id = ui.id().with(("auth-field", label));
+        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
         let response = ui.put(
             rect.shrink2(Vec2::new(space::MD, space::XXS)),
             TextEdit::singleline(value)
@@ -277,6 +278,17 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
                 .font(text::body())
                 .vertical_align(Align::Center)
                 .desired_width(f32::INFINITY),
+        );
+        let _ = crate::platform::ime::sync_text_edit(
+            ui.ctx(),
+            edit_id,
+            value,
+            response.has_focus(),
+            if secret {
+                crate::platform::ime::Kind::Password
+            } else {
+                crate::platform::ime::Kind::Text
+            },
         );
         response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
     };
