@@ -1178,7 +1178,7 @@ fn connect_signals(
     webrtc: &gst::Element,
     pipeline: &gst::Pipeline,
     shared: &Arc<Shared>,
-    inbox: &mpsc::Sender<Command>,
+    _inbox: &mpsc::Sender<Command>,
     signals: &mpsc::Sender<String>,
     channel_id: &str,
     video_lines: Arc<Mutex<Vec<gst_webrtc::WebRTCRTPTransceiver>>>,
