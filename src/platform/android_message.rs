@@ -182,6 +182,12 @@ pub fn take_navigation() -> Option<Navigation> {
     })
 }
 
+pub fn defer_navigation(target: Navigation) {
+    if let Ok(mut pending) = PENDING.lock() {
+        pending.insert(0, target);
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeMessageNotificationTapped(
     mut env: jni::JNIEnv,
