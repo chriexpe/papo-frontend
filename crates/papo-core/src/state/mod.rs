@@ -186,12 +186,15 @@ pub struct Store {
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
     pub my_username: String,
     pub selected_channel: String,
-    /// Canais cuja carga de mensagens já foi pedida nesta geração da conexão.
+    /// Canais cuja carga terminou nesta geração contínua da conexão.
     ///
     /// O cache só é válido enquanto o WebSocket permanece na mesma geração:
     /// qualquer transição de conexão invalida esta lista. As mensagens já
     /// renderizadas ficam na memória até a carga nova substituí-las.
     loaded_channels: HashSet<String>,
+    /// Cargas REST em voo. Separar "carregando" de "carregado" evita que uma
+    /// falha HTTP transforme uma tentativa em cache fresco para sempre.
+    loading_channels: HashSet<String>,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
     /// Até quando cada canal foi visto; é o que define o não lido, já que o
@@ -239,6 +242,7 @@ impl Default for Store {
             my_username: String::new(),
             selected_channel: String::new(),
             loaded_channels: HashSet::new(),
+            loading_channels: HashSet::new(),
             typing: HashMap::new(),
             read_marks: HashMap::new(),
             counted_notifications: HashSet::new(),
@@ -312,7 +316,10 @@ impl Store {
             return None;
         }
         let id = &self.selected_channel;
-        if id.is_empty() || self.loaded_channels.contains(id) {
+        if id.is_empty()
+            || self.loaded_channels.contains(id)
+            || self.loading_channels.contains(id)
+        {
             return None;
         }
         // Canal de voz não tem mensagem: pedir a lista dele seria uma
@@ -324,7 +331,7 @@ impl Store {
     }
 
     pub fn mark_loading(&mut self, channel_id: &str) {
-        self.loaded_channels.insert(channel_id.to_owned());
+        self.loading_channels.insert(channel_id.to_owned());
     }
 
     // -- Não lidos ---------------------------------------------------------
@@ -555,7 +562,11 @@ impl Store {
                 self.messages
                     .extend(messages.into_iter().map(|message| convert(message, &me)));
                 self.sort_messages();
+                self.loading_channels.remove(&channel_id);
                 self.loaded_channels.insert(channel_id);
+            }
+            Update::MessagesFailed(channel_id) => {
+                self.loading_channels.remove(&channel_id);
             }
             Update::Sent(message) => {
                 self.messages.retain(|existing| !existing.pending);
@@ -653,6 +664,7 @@ impl Store {
                 // mas obrigamos uma carga REST assim que Online voltar.
                 if self.connection != connection {
                     self.loaded_channels.clear();
+                    self.loading_channels.clear();
                 }
                 self.connection = connection;
             }
@@ -1123,6 +1135,26 @@ mod tests {
         assert_eq!(store.channel_needing_messages(), None);
 
         store.apply(Update::Connection(Connection::Online));
+        assert_eq!(
+            store.channel_needing_messages(),
+            Some("geral".to_owned())
+        );
+    }
+
+    #[test]
+    fn falha_de_historico_libera_nova_tentativa() {
+        let mut store = Store::default();
+        store.selected_channel = "geral".to_owned();
+        store.apply(Update::Connection(Connection::Online));
+
+        assert_eq!(
+            store.channel_needing_messages(),
+            Some("geral".to_owned())
+        );
+        store.mark_loading("geral");
+        assert_eq!(store.channel_needing_messages(), None);
+
+        store.apply(Update::MessagesFailed("geral".to_owned()));
         assert_eq!(
             store.channel_needing_messages(),
             Some("geral".to_owned())
