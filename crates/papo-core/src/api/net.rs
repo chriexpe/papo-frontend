@@ -514,7 +514,10 @@ impl Net {
     /// escolhido pelo frontend.
     pub fn forget_credentials(&self) {
         if let Err(error) = self.storage.forget_server(&self.storage_key) {
-            log::warn!("não foi possível esquecer credenciais: {error}");
+            log::warn!(
+                "runtime {}: não foi possível esquecer credenciais: {error}",
+                self.storage_key
+            );
         }
         self.session.set_token(None);
     }
@@ -1884,7 +1887,10 @@ fn load_secret(storage: &dyn SecretStore, server: &str, secret: Secret) -> Optio
     match storage.load(server, secret) {
         Ok(value) => value,
         Err(error) => {
-            log::warn!("não foi possível carregar {}: {error}", secret.key());
+            log::warn!(
+                "runtime {server}: não foi possível carregar {}: {error}",
+                secret.key()
+            );
             None
         }
     }
@@ -1892,13 +1898,19 @@ fn load_secret(storage: &dyn SecretStore, server: &str, secret: Secret) -> Optio
 
 fn store_secret(storage: &dyn SecretStore, server: &str, secret: Secret, value: &str) {
     if let Err(error) = storage.store(server, secret, value) {
-        log::warn!("não foi possível guardar {}: {error}", secret.key());
+        log::warn!(
+            "runtime {server}: não foi possível guardar {}: {error}",
+            secret.key()
+        );
     }
 }
 
 fn remove_secret(storage: &dyn SecretStore, server: &str, secret: Secret) {
     if let Err(error) = storage.remove(server, secret) {
-        log::warn!("não foi possível apagar {}: {error}", secret.key());
+        log::warn!(
+            "runtime {server}: não foi possível apagar {}: {error}",
+            secret.key()
+        );
     }
 }
 
