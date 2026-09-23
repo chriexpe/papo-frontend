@@ -293,13 +293,30 @@ impl ClientDb {
             .map_err(|_| "ClientDb não respondeu a tempo".to_owned())?
     }
 
+    /// Escritas da fila de saída não podem transformar "timeout esperando o
+    /// ack" em "a escrita falhou": o worker poderia confirmar a transação um
+    /// instante depois. O chamador é o worker de rede, nunca a thread egui, e
+    /// portanto espera o resultado definitivo antes de permitir um POST.
+    fn wait_durable_result<T>(
+        &self,
+        msg: WorkerMsg,
+        reply_rx: std::sync::mpsc::Receiver<Result<T, String>>,
+    ) -> Result<T, String> {
+        if !self.enqueue(msg, false) {
+            return Err("ClientDb indisponível".to_owned());
+        }
+        reply_rx
+            .recv()
+            .map_err(|_| "worker do ClientDb encerrou antes do ack".to_owned())?
+    }
+
     pub fn enqueue_outgoing(
         &self,
         server_key: &str,
         outgoing: CachedOutgoing,
     ) -> Result<(), String> {
         let (reply, recv) = std::sync::mpsc::channel();
-        self.wait_result(
+        self.wait_durable_result(
             WorkerMsg::EnqueueOutgoing {
                 server_key: server_key.to_owned(),
                 outgoing,
@@ -334,7 +351,7 @@ impl ClientDb {
         last_error: Option<String>,
     ) -> Result<(), String> {
         let (reply, recv) = std::sync::mpsc::channel();
-        self.wait_result(
+        self.wait_durable_result(
             WorkerMsg::TransitionOutgoing {
                 server_key: server_key.to_owned(),
                 owner_user_id: owner_user_id.to_owned(),
@@ -354,7 +371,7 @@ impl ClientDb {
         message: CachedMessage,
     ) -> Result<(), String> {
         let (reply, recv) = std::sync::mpsc::channel();
-        self.wait_result(
+        self.wait_durable_result(
             WorkerMsg::ConfirmOutgoing {
                 server_key: server_key.to_owned(),
                 local_id: local_id.to_owned(),
@@ -372,7 +389,7 @@ impl ClientDb {
         local_id: &str,
     ) -> Result<(), String> {
         let (reply, recv) = std::sync::mpsc::channel();
-        self.wait_result(
+        self.wait_durable_result(
             WorkerMsg::RemoveOutgoing {
                 server_key: server_key.to_owned(),
                 owner_user_id: owner_user_id.to_owned(),
