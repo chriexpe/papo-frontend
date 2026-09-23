@@ -228,6 +228,36 @@ enum TimelineMutation {
         emoji: Emoji,
         count: i64,
     },
+    LocalReaction {
+        message_id: String,
+        emoji: Emoji,
+        add: bool,
+    },
+    MessagePending {
+        id: String,
+        pending: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MutationSource {
+    CacheRestore,
+    Reconcile,
+    Live,
+    Local,
+}
+
+#[derive(Clone, Debug)]
+enum StoreMutation {
+    Timeline {
+        channel_id: Option<String>,
+        mutation: TimelineMutation,
+    },
+    ReplaceChannelSnapshot {
+        channel_id: String,
+        messages: Vec<Message>,
+    },
+    ConfirmSent(Message),
 }
 
 #[derive(Clone, Debug)]
@@ -635,15 +665,109 @@ impl Store {
             })
             .unwrap_or_default();
         for mutation in mutations {
-            self.apply_timeline_mutation(mutation);
+            self.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some(channel_id.to_owned()),
+                    mutation,
+                },
+            );
         }
     }
 
-    fn apply_timeline_mutation(&mut self, mutation: TimelineMutation) {
+    fn apply_mutation(&mut self, source: MutationSource, mutation: StoreMutation) {
+        match mutation {
+            StoreMutation::Timeline {
+                channel_id,
+                mutation,
+            } => {
+                let live_message = if source == MutationSource::Live {
+                    match &mutation {
+                        TimelineMutation::MessageUpsert(message) => Some((
+                            message.clone(),
+                            !self.message_is_known(&message.id),
+                        )),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                if source == MutationSource::Live
+                    && let Some(channel_id) = channel_id.as_deref()
+                {
+                    self.record_timeline_mutation(channel_id, mutation.clone());
+                }
+
+                let project = !matches!(
+                    (source, &mutation),
+                    (
+                        MutationSource::Live,
+                        TimelineMutation::MessageUpsert(message)
+                    ) if self.timeline_status(&message.channel_id) != TimelineStatus::Fresh
+                );
+                if project {
+                    self.apply_timeline_projection(mutation);
+                }
+
+                if let Some((message, first_delivery)) = live_message {
+                    self.apply_live_message_effects(&message, first_delivery);
+                }
+            }
+            StoreMutation::ReplaceChannelSnapshot {
+                channel_id,
+                messages,
+            } => {
+                // O snapshot autoritativo substitui apenas estado confirmado
+                // pelo servidor. Ecos locais continuam sendo outra projeção.
+                self.messages
+                    .retain(|message| message.channel_id != channel_id || message.pending);
+                for message in messages {
+                    self.upsert_message(message);
+                }
+                self.sort_messages();
+            }
+            StoreMutation::ConfirmSent(message) => {
+                // O backend não fornece transaction/local-id ainda. Mantemos
+                // a semântica atual: uma confirmação limpa ecos pendentes e
+                // converge pela mesma implementação de upsert usada no resto.
+                self.messages.retain(|existing| !existing.pending);
+                self.apply_timeline_projection(TimelineMutation::MessageUpsert(message));
+            }
+        }
+    }
+
+    fn message_is_known(&self, message_id: &str) -> bool {
+        self.channel_for_message(message_id).is_some()
+    }
+
+    fn apply_live_message_effects(&mut self, message: &Message, first_delivery: bool) {
+        if first_delivery {
+            let mention = self.mentions_me(message);
+            if message.channel_id != self.selected_channel
+                && message.author_id != self.me
+                && let Some(channel) = self
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == message.channel_id)
+            {
+                channel.unread = true;
+                if mention {
+                    channel.mentions += 1;
+                }
+            }
+        }
+
+        if let Some(users) = self.typing.get_mut(&message.channel_id) {
+            users.remove(&message.author_id);
+        }
+    }
+
+    fn apply_timeline_projection(&mut self, mutation: TimelineMutation) {
         match mutation {
             TimelineMutation::MessageUpsert(message) => {
-                self.messages.retain(|existing| !existing.pending);
-                self.upsert(message);
+                self.upsert_message(message);
+                self.sort_messages();
             }
             TimelineMutation::MessageEdit { id, content } => {
                 if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
@@ -737,6 +861,61 @@ impl Store {
                     message.reactions.retain(|reaction| reaction.count > 0);
                 }
             }
+            TimelineMutation::LocalReaction {
+                message_id,
+                emoji,
+                add,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    match message
+                        .reactions
+                        .iter_mut()
+                        .find(|reaction| reaction.emoji == emoji)
+                    {
+                        Some(reaction) if add && !reaction.mine => {
+                            reaction.mine = true;
+                            reaction.count = reaction.count.saturating_add(1);
+                        }
+                        Some(reaction) if !add && reaction.mine => {
+                            reaction.mine = false;
+                            reaction.count = reaction.count.saturating_sub(1);
+                        }
+                        None if add => message.reactions.push(Reaction {
+                            emoji,
+                            count: 1,
+                            mine: true,
+                        }),
+                        _ => {}
+                    }
+                    message.reactions.retain(|reaction| reaction.count > 0);
+                }
+            }
+            TimelineMutation::MessagePending { id, pending } => {
+                if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
+                    message.pending = pending;
+                }
+            }
+        }
+    }
+
+    fn upsert_message(&mut self, mut message: Message) {
+        match self
+            .messages
+            .iter_mut()
+            .find(|existing| existing.id == message.id)
+        {
+            Some(existing) => {
+                // Pin é mantido por uma trilha própria (snapshot de pins /
+                // evento MessagePinned), portanto um upsert de mensagem não
+                // pode apagá-lo só porque o payload comum não o carrega.
+                message.pinned = existing.pinned;
+                *existing = message;
+            }
+            None => self.messages.push(message),
         }
     }
 
@@ -981,15 +1160,23 @@ impl Store {
                     let pinned: HashSet<String> = pinned_ids
                         .map(|ids| ids.into_iter().collect())
                         .unwrap_or(previous_pins);
-
-                    self.messages.retain(|message| message.channel_id != channel_id);
                     let me = self.me.clone();
-                    self.messages.extend(messages.into_iter().map(|message| {
-                        let mut message = convert(message, &me);
-                        message.pinned = pinned.contains(&message.id);
-                        message
-                    }));
-                    self.sort_messages();
+                    let messages = messages
+                        .into_iter()
+                        .map(|message| {
+                            let mut message = convert(message, &me);
+                            message.pinned = pinned.contains(&message.id);
+                            message
+                        })
+                        .collect();
+
+                    self.apply_mutation(
+                        MutationSource::Reconcile,
+                        StoreMutation::ReplaceChannelSnapshot {
+                            channel_id: channel_id.clone(),
+                            messages,
+                        },
+                    );
 
                     // O snapshot só vira autoridade depois de reaplicar tudo
                     // que chegou pelo WebSocket após o barrier deste ticket.
@@ -1008,25 +1195,32 @@ impl Store {
                 }
             }
             Update::Sent(message) => {
-                self.messages.retain(|existing| !existing.pending);
                 let me = self.me.clone();
-                self.upsert(convert(*message, &me));
+                self.apply_mutation(
+                    MutationSource::Reconcile,
+                    StoreMutation::ConfirmSent(convert(*message, &me)),
+                );
             }
             Update::Edited(message) => {
                 let me = self.me.clone();
                 let updated = convert(*message, &me);
-                if let Some(existing) = self
-                    .messages
-                    .iter_mut()
-                    .find(|existing| existing.id == updated.id)
-                {
-                    let pinned = existing.pinned;
-                    *existing = updated;
-                    existing.pinned = pinned;
-                }
+                self.apply_mutation(
+                    MutationSource::Reconcile,
+                    StoreMutation::Timeline {
+                        channel_id: Some(updated.channel_id.clone()),
+                        mutation: TimelineMutation::MessageUpsert(updated),
+                    },
+                );
             }
             Update::Deleted(id) => {
-                self.messages.retain(|message| message.id != id);
+                let channel_id = self.channel_for_message(&id);
+                self.apply_mutation(
+                    MutationSource::Reconcile,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::MessageDelete { id },
+                    },
+                );
             }
             Update::Emojis(emojis) => {
                 self.emojis = emojis
@@ -1040,12 +1234,20 @@ impl Store {
             }
             Update::Pinned { channel_id, ids } => {
                 let pinned: HashSet<String> = ids.into_iter().collect();
-                for message in self
+                let changes: Vec<(String, bool)> = self
                     .messages
-                    .iter_mut()
+                    .iter()
                     .filter(|message| message.channel_id == channel_id)
-                {
-                    message.pinned = pinned.contains(&message.id);
+                    .map(|message| (message.id.clone(), pinned.contains(&message.id)))
+                    .collect();
+                for (message_id, pinned) in changes {
+                    self.apply_mutation(
+                        MutationSource::Reconcile,
+                        StoreMutation::Timeline {
+                            channel_id: Some(channel_id.clone()),
+                            mutation: TimelineMutation::MessagePinned { message_id, pinned },
+                        },
+                    );
                 }
             }
             Update::Notifications(notifications) => {
@@ -1115,54 +1317,49 @@ impl Store {
             Event::Message(message) => {
                 let me = self.me.clone();
                 let message = convert(*message, &me);
-                let mutation = TimelineMutation::MessageUpsert(message.clone());
-                self.record_timeline_mutation(&message.channel_id, mutation.clone());
-                // Durante stale/refreshing continuamos sem projetar creates
-                // imediatamente; o replay após o snapshot garante a convergência.
-                if self.timeline_status(&message.channel_id) == TimelineStatus::Fresh {
-                    self.apply_timeline_mutation(mutation);
-                }
-                let mention = self.mentions_me(&message);
-                if message.channel_id != self.selected_channel
-                    && message.author_id != self.me
-                    && let Some(channel) = self
-                        .channels
-                        .iter_mut()
-                        .find(|channel| channel.id == message.channel_id)
-                {
-                    channel.unread = true;
-                    if mention {
-                        channel.mentions += 1;
-                    }
-                }
-                if let Some(users) = self.typing.get_mut(&message.channel_id) {
-                    users.remove(&message.author_id);
-                }
+                let channel_id = message.channel_id.clone();
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id),
+                        mutation: TimelineMutation::MessageUpsert(message),
+                    },
+                );
             }
             Event::MessageEdited {
                 id,
                 channel_id,
                 content,
             } => {
-                let mutation = TimelineMutation::MessageEdit { id, content };
-                self.record_timeline_mutation(&channel_id, mutation.clone());
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id),
+                        mutation: TimelineMutation::MessageEdit { id, content },
+                    },
+                );
             }
             Event::MessageDeleted { id, channel_id } => {
-                let mutation = TimelineMutation::MessageDelete { id };
-                self.record_timeline_mutation(&channel_id, mutation.clone());
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id),
+                        mutation: TimelineMutation::MessageDelete { id },
+                    },
+                );
             }
             Event::MessagePinned {
                 message_id,
                 pinned,
             } => {
                 let channel_id = self.channel_for_message(&message_id);
-                let mutation = TimelineMutation::MessagePinned { message_id, pinned };
-                if let Some(channel_id) = channel_id {
-                    self.record_timeline_mutation(&channel_id, mutation.clone());
-                }
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::MessagePinned { message_id, pinned },
+                    },
+                );
             }
             Event::NewPreview { .. } => {
                 // O worker de rede resolve new_preview para LinkPreviewUpdated
@@ -1173,28 +1370,32 @@ impl Store {
                 preview_id,
             } => {
                 let channel_id = self.channel_for_message(&message_id);
-                let mutation = TimelineMutation::PreviewRemoved {
-                    message_id,
-                    preview_id,
-                };
-                if let Some(channel_id) = channel_id {
-                    self.record_timeline_mutation(&channel_id, mutation.clone());
-                }
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::PreviewRemoved {
+                            message_id,
+                            preview_id,
+                        },
+                    },
+                );
             }
             Event::LinkPreviewUpdated {
                 message_id,
                 preview,
             } => {
                 let channel_id = self.channel_for_message(&message_id);
-                let mutation = TimelineMutation::PreviewUpsert {
-                    message_id,
-                    preview,
-                };
-                if let Some(channel_id) = channel_id {
-                    self.record_timeline_mutation(&channel_id, mutation.clone());
-                }
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::PreviewUpsert {
+                            message_id,
+                            preview,
+                        },
+                    },
+                );
             }
             Event::AttachmentModeration {
                 message_id,
@@ -1202,15 +1403,17 @@ impl Store {
                 status,
             } => {
                 let channel_id = self.channel_for_message(&message_id);
-                let mutation = TimelineMutation::AttachmentModeration {
-                    message_id,
-                    attachment_id,
-                    status,
-                };
-                if let Some(channel_id) = channel_id {
-                    self.record_timeline_mutation(&channel_id, mutation.clone());
-                }
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::AttachmentModeration {
+                            message_id,
+                            attachment_id,
+                            status,
+                        },
+                    },
+                );
             }
             Event::Typing {
                 channel_id,
@@ -1372,60 +1575,62 @@ impl Store {
                     return;
                 };
                 let channel_id = self.channel_for_message(&message_id);
-                let mutation = TimelineMutation::Reaction {
-                    message_id,
-                    emoji,
-                    count,
-                };
-                if let Some(channel_id) = channel_id {
-                    self.record_timeline_mutation(&channel_id, mutation.clone());
-                }
-                self.apply_timeline_mutation(mutation);
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id,
+                        mutation: TimelineMutation::Reaction {
+                            message_id,
+                            emoji,
+                            count,
+                        },
+                    },
+                );
             }
         }
     }
 
-    /// Reage na hora, sem esperar o servidor: o contador certo chega pelo
-    /// evento `react_update`.
-    pub fn toggle_reaction_local(&mut self, message_id: &str, emoji: &Emoji) -> bool {
-        let Some(message) = self
-            .messages
-            .iter_mut()
-            .find(|message| message.id == message_id)
-        else {
-            return false;
-        };
-        match message
-            .reactions
-            .iter_mut()
-            .find(|reaction| &reaction.emoji == emoji)
-        {
-            Some(reaction) if reaction.mine => {
-                reaction.mine = false;
-                reaction.count = reaction.count.saturating_sub(1);
-                message.reactions.retain(|reaction| reaction.count > 0);
-                false
-            }
-            Some(reaction) => {
-                reaction.mine = true;
-                reaction.count += 1;
-                true
-            }
-            None => {
-                message.reactions.push(Reaction {
+    /// Aplica a intenção otimista de reação pela mesma projeção canônica.
+    pub fn set_reaction_local(&mut self, message_id: &str, emoji: &Emoji, add: bool) {
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::LocalReaction {
+                    message_id: message_id.to_owned(),
                     emoji: emoji.clone(),
-                    count: 1,
-                    mine: true,
-                });
-                true
-            }
-        }
+                    add,
+                },
+            },
+        );
+    }
+
+    /// Compatibilidade para chamadores que ainda expressam a ação como toggle.
+    pub fn toggle_reaction_local(&mut self, message_id: &str, emoji: &Emoji) -> bool {
+        let add = self
+            .message(message_id)
+            .and_then(|message| {
+                message
+                    .reactions
+                    .iter()
+                    .find(|reaction| &reaction.emoji == emoji)
+            })
+            .is_none_or(|reaction| !reaction.mine);
+        self.set_reaction_local(message_id, emoji, add);
+        add
     }
 
     /// Mensagem otimista: aparece antes da confirmação do servidor.
-    pub fn push_pending(&mut self, channel_id: &str, content: &str, reply_to: Option<String>) {
-        self.messages.push(Message {
-            id: format!("pending-{}", self.messages.len()),
+    pub fn push_pending(
+        &mut self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+    ) -> String {
+        let id = format!("pending-{}", self.messages.len());
+        let message = Message {
+            id: id.clone(),
             channel_id: channel_id.to_owned(),
             author_id: self.me.clone(),
             content: content.to_owned(),
@@ -1437,21 +1642,70 @@ impl Store {
             reactions: Vec::new(),
             pinned: false,
             pending: true,
-        });
+        };
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id: Some(channel_id.to_owned()),
+                mutation: TimelineMutation::MessageUpsert(message),
+            },
+        );
+        id
     }
 
-    fn upsert(&mut self, message: Message) {
-        match self
-            .messages
-            .iter_mut()
-            .find(|existing| existing.id == message.id)
-        {
-            Some(existing) => *existing = message,
-            None => {
-                self.messages.push(message);
-                self.sort_messages();
-            }
-        }
+    pub fn set_message_pending_local(&mut self, message_id: &str, pending: bool) {
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::MessagePending {
+                    id: message_id.to_owned(),
+                    pending,
+                },
+            },
+        );
+    }
+
+    pub fn edit_message_local(&mut self, message_id: &str, content: String) {
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::MessageEdit {
+                    id: message_id.to_owned(),
+                    content,
+                },
+            },
+        );
+    }
+
+    pub fn delete_message_local(&mut self, message_id: &str) {
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::MessageDelete {
+                    id: message_id.to_owned(),
+                },
+            },
+        );
+    }
+
+    pub fn set_message_pinned_local(&mut self, message_id: &str, pinned: bool) {
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(
+            MutationSource::Local,
+            StoreMutation::Timeline {
+                channel_id,
+                mutation: TimelineMutation::MessagePinned {
+                    message_id: message_id.to_owned(),
+                    pinned,
+                },
+            },
+        );
     }
 
     fn sort_messages(&mut self) {
@@ -2044,5 +2298,359 @@ mod tests {
         );
         assert_eq!(segundo.channel_needing_messages(), None);
     }
-}
 
+    fn store_para_proveniencia() -> Store {
+        let mut store = Store {
+            selected_channel: "aberto".to_owned(),
+            me: "eu".to_owned(),
+            my_name: "Eu".to_owned(),
+            ..Store::default()
+        };
+        store.channels = vec![
+            Channel {
+                id: "aberto".to_owned(),
+                name: "Aberto".to_owned(),
+                kind: ChannelKind::Text,
+                topic: None,
+                position: 0,
+                unread: false,
+                mentions: 0,
+            },
+            Channel {
+                id: "outro".to_owned(),
+                name: "Outro".to_owned(),
+                kind: ChannelKind::Text,
+                topic: None,
+                position: 1,
+                unread: false,
+                mentions: 0,
+            },
+        ];
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading("outro");
+        finish_snapshot(&mut store, ticket, Vec::new());
+        store
+    }
+
+    fn mensagem_convertida(id: &str, channel_id: &str, content: &str) -> Message {
+        convert(wire_message(id, channel_id, content), "eu")
+    }
+
+    #[test]
+    fn live_aplica_unread_e_mencao_uma_vez() {
+        let mut store = store_para_proveniencia();
+        let message = wire_message("m-live", "outro", "<@eu> oi");
+
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(message.clone())))));
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(message)))));
+
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(channel.unread);
+        assert_eq!(channel.mentions, 1);
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "m-live")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconcile_converge_sem_parecer_atividade_nova() {
+        let mut store = store_para_proveniencia();
+        store.apply_mutation(
+            MutationSource::Reconcile,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-reconcile",
+                    "outro",
+                    "<@eu> antigo",
+                )),
+            },
+        );
+
+        assert!(store.message("m-reconcile").is_some());
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+    }
+
+    #[test]
+    fn cache_restore_nao_notifica_nao_journaliza_nem_fica_fresh() {
+        let mut store = store_para_proveniencia();
+        perder_continuidade(&mut store);
+        let _ticket = store.mark_loading("outro");
+        assert_eq!(store.timeline_status("outro"), TimelineStatus::Refreshing);
+        let journal_before = store
+            .mutation_journals
+            .get("outro")
+            .map(|journal| journal.entries.len())
+            .unwrap_or_default();
+
+        store.apply_mutation(
+            MutationSource::CacheRestore,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-cache",
+                    "outro",
+                    "<@eu> cache",
+                )),
+            },
+        );
+
+        assert!(store.message("m-cache").is_some());
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+        assert_eq!(store.timeline_status("outro"), TimelineStatus::Refreshing);
+        assert_eq!(
+            store
+                .mutation_journals
+                .get("outro")
+                .map(|journal| journal.entries.len())
+                .unwrap_or_default(),
+            journal_before
+        );
+    }
+
+    #[test]
+    fn local_nao_parece_atividade_remota() {
+        let mut store = store_para_proveniencia();
+        let pending_id = store.push_pending("outro", "<@eu> local", None);
+
+        assert!(store.message(&pending_id).is_some_and(|message| message.pending));
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+    }
+
+    #[test]
+    fn replay_reconcile_nao_rejournaliza_mutacao_live() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+        let barrier = store
+            .loading_channels
+            .get("geral")
+            .expect("refresh ativo")
+            .barrier_revision;
+
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "live".to_owned(),
+        })));
+        let before = store
+            .mutation_journals
+            .get("geral")
+            .expect("journal existe")
+            .entries
+            .len();
+
+        store.replay_timeline_mutations("geral", barrier);
+
+        assert_eq!(
+            store
+                .mutation_journals
+                .get("geral")
+                .expect("journal existe")
+                .entries
+                .len(),
+            before
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("live")
+        );
+
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "snapshot")],
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("live")
+        );
+    }
+
+    #[test]
+    fn mutacoes_duplicadas_convergem_sem_deriva() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+
+        for _ in 0..2 {
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessageEdit {
+                        id: "m1".to_owned(),
+                        content: "editado".to_owned(),
+                    },
+                },
+            );
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessagePinned {
+                        message_id: "m1".to_owned(),
+                        pinned: true,
+                    },
+                },
+            );
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::Reaction {
+                        message_id: "m1".to_owned(),
+                        emoji: Emoji::Unicode("👍".to_owned()),
+                        count: 3,
+                    },
+                },
+            );
+        }
+
+        let message = store.message("m1").expect("mensagem existe");
+        assert_eq!(message.content, "editado");
+        assert!(message.edited);
+        assert!(message.pinned);
+        assert_eq!(message.reactions.len(), 1);
+        assert_eq!(message.reactions[0].count, 3);
+
+        for _ in 0..2 {
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessageDelete {
+                        id: "m1".to_owned(),
+                    },
+                },
+            );
+        }
+        assert!(store.message("m1").is_none());
+    }
+
+    #[test]
+    fn rest_depois_ws_e_ws_depois_rest_convergem_em_uma_linha() {
+        let mut rest_primeiro = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        rest_primeiro.apply(Update::Connection(Connection::Online));
+        let ticket = rest_primeiro.mark_loading("geral");
+        finish_snapshot(
+            &mut rest_primeiro,
+            ticket,
+            vec![wire_message("m1", "geral", "rest")],
+        );
+        rest_primeiro.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "ws"),
+        )))));
+        assert_eq!(
+            rest_primeiro
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rest_primeiro.message("m1").map(|message| message.content.as_str()),
+            Some("ws")
+        );
+
+        let mut ws_primeiro = store_com_mensagem("geral", "base", "base");
+        perder_continuidade(&mut ws_primeiro);
+        let ticket = ws_primeiro.mark_loading("geral");
+        ws_primeiro.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "ws"),
+        )))));
+        finish_snapshot(
+            &mut ws_primeiro,
+            ticket,
+            vec![wire_message("m1", "geral", "rest")],
+        );
+        assert_eq!(
+            ws_primeiro
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            ws_primeiro.message("m1").map(|message| message.content.as_str()),
+            Some("ws")
+        );
+    }
+
+    #[test]
+    fn sent_e_evento_live_da_mesma_mensagem_nao_duplicam() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading("geral");
+        finish_snapshot(&mut store, ticket, Vec::new());
+
+        let pending = store.push_pending("geral", "oi", None);
+        assert!(store.message(&pending).is_some());
+
+        store.apply(Update::Sent(Box::new(wire_message("m1", "geral", "oi"))));
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "oi"),
+        )))));
+
+        assert!(store.messages.iter().all(|message| !message.pending));
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fontes_de_stores_distintos_nao_vazam_efeitos() {
+        let mut a = store_para_proveniencia();
+        let mut b = store_para_proveniencia();
+
+        a.apply_mutation(
+            MutationSource::Live,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-a",
+                    "outro",
+                    "<@eu> a",
+                )),
+            },
+        );
+        b.apply_mutation(
+            MutationSource::CacheRestore,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-b",
+                    "outro",
+                    "<@eu> b",
+                )),
+            },
+        );
+
+        assert_eq!(a.channel("outro").expect("canal").mentions, 1);
+        assert_eq!(b.channel("outro").expect("canal").mentions, 0);
+        assert!(a.message("m-b").is_none());
+        assert!(b.message("m-a").is_none());
+    }
+}

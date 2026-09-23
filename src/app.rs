@@ -1290,7 +1290,7 @@ impl PapoApp {
                     .map(|message| message.channel_id.clone())
                     .unwrap_or_else(|| ws.store.selected_channel.clone());
                 // A reação aparece na hora; o contador certo vem pelo evento.
-                ws.store.toggle_reaction_local(&message_id, &emoji);
+                ws.store.set_reaction_local(&message_id, &emoji, add);
                 ws.net.send(Command::React {
                     channel_id,
                     message_id,
@@ -1417,42 +1417,27 @@ impl PapoApp {
         match action {
             ChatAction::Send { content, reply_to, .. } => {
                 let channel_id = ws.store.selected_channel.clone();
-                ws.store.push_pending(&channel_id, &content, reply_to);
-                if let Some(message) = ws.store.messages.last_mut() {
-                    message.pending = false;
-                }
+                let message_id = ws.store.push_pending(&channel_id, &content, reply_to);
+                ws.store.set_message_pending_local(&message_id, false);
             }
             ChatAction::Edit {
                 message_id,
                 content,
             } => {
-                if let Some(message) = ws
-                    .store
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.content = content;
-                    message.edited = true;
-                }
+                ws.store.edit_message_local(&message_id, content);
             }
             ChatAction::Delete(message_id) => {
-                ws.store.messages.retain(|message| message.id != message_id)
+                ws.store.delete_message_local(&message_id);
             }
             ChatAction::React {
-                message_id, emoji, ..
+                message_id,
+                emoji,
+                add,
             } => {
-                ws.store.toggle_reaction_local(&message_id, &emoji);
+                ws.store.set_reaction_local(&message_id, &emoji, add);
             }
             ChatAction::Pin { message_id, pin } => {
-                if let Some(message) = ws
-                    .store
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.pinned = pin;
-                }
+                ws.store.set_message_pinned_local(&message_id, pin);
             }
             ChatAction::Download { id, name } => match self.settings.downloads.clone() {
                 DownloadMode::Ask => {
