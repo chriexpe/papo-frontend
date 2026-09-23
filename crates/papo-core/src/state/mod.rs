@@ -9,8 +9,8 @@ use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
-    now_millis, CachedChannel, CachedMember, CachedMessage, CachedServer, CachedServerSnapshot,
-    CacheOp,
+    now_millis, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedServer,
+    CachedServerSnapshot, CacheOp, OutgoingState,
 };
 
 pub use call::{CallState, Phase, Stage};
@@ -303,7 +303,10 @@ enum StoreMutation {
         channel_id: String,
         messages: Vec<Message>,
     },
-    ConfirmSent(Message),
+    ConfirmSent {
+        local_id: String,
+        message: Message,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -342,6 +345,9 @@ pub struct Store {
     cached_channels: HashSet<String>,
     /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
     pending_cache: Vec<CacheOp>,
+    /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
+    /// servidor nunca entra aqui.
+    outgoing_states: HashMap<String, OutgoingState>,
     /// Refresh aceito atualmente por canal, incluindo o barrier local.
     loading_channels: HashMap<String, ActiveRefresh>,
     /// Mutações live recebidas durante refreshes REST.
@@ -397,6 +403,7 @@ impl Default for Store {
             channel_freshness: HashMap::new(),
             cached_channels: HashSet::new(),
             pending_cache: Vec::new(),
+            outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
             mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
@@ -707,6 +714,7 @@ impl Store {
         self.messages.clear();
         self.cached_channels.clear();
         self.pending_cache.clear();
+        self.outgoing_states.clear();
         self.selected_channel.clear();
     }
 
@@ -948,14 +956,13 @@ impl Store {
                         });
                 }
             }
-            StoreMutation::ConfirmSent(message) => {
-                // O backend não fornece transaction/local-id ainda. Mantemos
-                // a semântica atual: uma confirmação limpa ecos pendentes e
-                // converge pela mesma implementação de upsert usada no resto.
-                self.messages.retain(|existing| !existing.pending);
-                let cached = CachedMessage::from_store(&message);
+            StoreMutation::ConfirmSent { local_id, message } => {
+                // Uma confirmação resolve só a intenção correspondente. A
+                // persistência da mensagem+remoção da fila já foi feita
+                // transacionalmente pelo ClientDb no worker de rede.
+                self.messages.retain(|existing| existing.id != local_id);
+                self.outgoing_states.remove(&local_id);
                 self.apply_timeline_projection(TimelineMutation::MessageUpsert(message));
-                self.pending_cache.push(CacheOp::UpsertMessage(cached));
             }
         }
     }
@@ -1495,11 +1502,38 @@ impl Store {
                     );
                 }
             }
-            Update::Sent(message) => {
+            Update::Outgoing(outgoing) => {
+                self.project_outgoing(*outgoing);
+            }
+            Update::OutgoingRestored(outgoing) => {
+                self.messages.retain(|message| !message.pending);
+                self.outgoing_states.clear();
+                for outgoing in outgoing {
+                    self.project_outgoing(outgoing);
+                }
+            }
+            Update::OutgoingRejected { message, .. } => {
+                self.error = Some(message);
+            }
+            Update::SendConfirmed { local_id, message } => {
                 let me = self.me.clone();
                 self.apply_mutation(
                     MutationSource::Reconcile,
-                    StoreMutation::ConfirmSent(convert(*message, &me)),
+                    StoreMutation::ConfirmSent {
+                        local_id,
+                        message: convert(*message, &me),
+                    },
+                );
+            }
+            Update::Sent(message) => {
+                // Caminho legado de anexos: ele não tem local-id persistente.
+                let me = self.me.clone();
+                self.apply_mutation(
+                    MutationSource::Reconcile,
+                    StoreMutation::Timeline {
+                        channel_id: Some(message.channel_id.clone()),
+                        mutation: TimelineMutation::MessageUpsert(convert(*message, &me)),
+                    },
                 );
             }
             Update::Edited(message) => {
@@ -1925,35 +1959,63 @@ impl Store {
         add
     }
 
-    /// Mensagem otimista: aparece antes da confirmação do servidor.
-    pub fn push_pending(
-        &mut self,
-        channel_id: &str,
-        content: &str,
-        reply_to: Option<String>,
-    ) -> String {
-        let id = format!("pending-{}", self.messages.len());
+    /// Projeta uma linha já durável da fila como eco local. Repetir o mesmo
+    /// local_id é idempotente e só atualiza o estado visível.
+    pub fn project_outgoing(&mut self, outgoing: CachedOutgoing) {
+        let local_id = outgoing.local_id.clone();
+        let state = outgoing.state;
         let message = Message {
-            id: id.clone(),
-            channel_id: channel_id.to_owned(),
-            author_id: self.me.clone(),
-            content: content.to_owned(),
-            at: Local::now(),
+            id: local_id.clone(),
+            channel_id: outgoing.channel_id.clone(),
+            author_id: outgoing.owner_user_id,
+            content: outgoing.content,
+            at: DateTime::from_timestamp_millis(outgoing.created_at)
+                .unwrap_or_else(Utc::now)
+                .with_timezone(&Local),
             edited: false,
-            reply_to,
+            reply_to: outgoing.reply_to,
             attachments: Vec::new(),
             previews: Vec::new(),
             reactions: Vec::new(),
             pinned: false,
             pending: true,
         };
+        self.outgoing_states.insert(local_id, state);
         self.apply_mutation(
             MutationSource::Local,
             StoreMutation::Timeline {
-                channel_id: Some(channel_id.to_owned()),
+                channel_id: Some(outgoing.channel_id),
                 mutation: TimelineMutation::MessageUpsert(message),
             },
         );
+    }
+
+    pub fn outgoing_state(&self, local_id: &str) -> Option<OutgoingState> {
+        self.outgoing_states.get(local_id).copied()
+    }
+
+    /// Compatibilidade usada só por testes/fluxos locais antigos. Produz uma
+    /// identidade collision-resistant, mas não implica persistência.
+    pub fn push_pending(
+        &mut self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+    ) -> String {
+        let id = crate::cache::new_local_id();
+        self.project_outgoing(CachedOutgoing {
+            local_id: id.clone(),
+            owner_user_id: self.me.clone(),
+            channel_id: channel_id.to_owned(),
+            content: content.to_owned(),
+            reply_to,
+            notify_reply: false,
+            created_at: now_millis(),
+            state: OutgoingState::Queued,
+            attempt_count: 0,
+            last_attempt_at: None,
+            last_error: None,
+        });
         id
     }
 
