@@ -3247,12 +3247,12 @@ fn message_body(
 
     if message.pending {
         let (label, color) = match store.outgoing_state(&message.id) {
-            Some(crate::cache::OutgoingState::Queued) => ("waiting to send", t.label_tertiary),
-            Some(crate::cache::OutgoingState::Sending) => ("sending…", t.label_tertiary),
-            Some(crate::cache::OutgoingState::UnknownOutcome) => {
+            Some(papo_core::cache::OutgoingState::Queued) => ("waiting to send", t.label_tertiary),
+            Some(papo_core::cache::OutgoingState::Sending) => ("sending…", t.label_tertiary),
+            Some(papo_core::cache::OutgoingState::UnknownOutcome) => {
                 ("delivery uncertain · not retried automatically", t.away)
             }
-            Some(crate::cache::OutgoingState::FailedPermanent) => {
+            Some(papo_core::cache::OutgoingState::FailedPermanent) => {
                 ("not sent", t.danger)
             }
             None => ("waiting to send", t.label_tertiary),
