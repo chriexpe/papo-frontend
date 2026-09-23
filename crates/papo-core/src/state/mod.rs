@@ -1385,9 +1385,6 @@ impl Store {
         }
     }
 
-    /// Reage na hora        }
-    }
-
     /// Reage na hora, sem esperar o servidor: o contador certo chega pelo
     /// evento `react_update`.
     pub fn toggle_reaction_local(&mut self, message_id: &str, emoji: &Emoji) -> bool {
