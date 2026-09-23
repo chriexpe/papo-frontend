@@ -78,6 +78,7 @@ static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 /// quadro.
 static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
 static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
+static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
@@ -85,6 +86,7 @@ pub fn bind(
     channel_id: String,
     muted: bool,
     camera: bool,
+    me: String,
 ) {
     if let Ok(mut slot) = CONTROL.lock() {
         *slot = Some(Control {
@@ -94,6 +96,9 @@ pub fn bind(
             muted,
             camera,
         });
+    }
+    if let Ok(mut local) = PIP_LOCAL_ID.lock() {
+        *local = Some(me);
     }
 }
 
@@ -231,6 +236,15 @@ pub fn pip_wants(publisher: &str) -> bool {
         .lock()
         .map(|target| target.as_deref().is_none_or(|wanted| wanted == publisher))
         .unwrap_or(true)
+}
+
+pub fn pip_wants_local() -> bool {
+    let target = PIP_TARGET.lock().ok().and_then(|target| target.clone());
+    let local = PIP_LOCAL_ID.lock().ok().and_then(|local| local.clone());
+    match target {
+        None => true,
+        Some(target) => local.as_deref() == Some(target.as_str()),
+    }
 }
 
 /// Fecha imediatamente a apresentação Android da call. Diferente da Store,
