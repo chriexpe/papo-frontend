@@ -35,7 +35,10 @@ pub enum Stage {
     /// Folha de vidro por cima da conversa — é para onde a call vai assim
     /// que aparece vídeo, para o texto continuar alcançável embaixo.
     Sheet,
-    /// Janela própria, para jogar noutro monitor.
+    /// Mini-overlay da call por cima da conversa. É parte da janela do Papo
+    /// e existe igualmente no desktop e no Android.
+    Floating,
+    /// Janela própria do sistema, para jogar noutro monitor.
     Window,
 }
 
@@ -52,7 +55,9 @@ pub struct CallState {
     pub camera: bool,
     /// A folha foi encolhida numa pastilha pelo usuário.
     pub collapsed: bool,
-    /// A call foi jogada numa janela só dela.
+    /// A call está no mini-overlay sobre a conversa.
+    pub floating: bool,
+    /// A call foi jogada numa janela do sistema só dela.
     pub popped_out: bool,
     pub error: Option<String>,
     /// Qual tentativa de entrada é a atual. O canal não basta para
@@ -119,6 +124,8 @@ impl CallState {
     pub fn stage(&self) -> Stage {
         if self.popped_out {
             Stage::Window
+        } else if self.floating {
+            Stage::Floating
         } else if self.has_video() && !self.collapsed {
             Stage::Sheet
         } else {
@@ -136,6 +143,7 @@ impl CallState {
         self.muted = true;
         self.camera = false;
         self.collapsed = false;
+        self.floating = false;
         self.popped_out = false;
         self.error = None;
         self.attempt
@@ -153,6 +161,7 @@ impl CallState {
         self.speakers.clear();
         self.camera = false;
         self.collapsed = false;
+        self.floating = false;
         self.popped_out = false;
     }
 
@@ -216,6 +225,10 @@ mod tests {
 
         call.update("c1", member("ana", true));
         assert_eq!(call.stage(), Stage::Sheet);
+
+        call.floating = true;
+        assert_eq!(call.stage(), Stage::Floating);
+        call.floating = false;
 
         // Encolher devolve a conversa; a call continua.
         call.collapsed = true;
