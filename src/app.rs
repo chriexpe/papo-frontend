@@ -482,6 +482,18 @@ impl Workspace {
         {
             cached_owner = snapshot.owner_user_id.clone();
             store.restore_cached(snapshot);
+            if let Some(owner) = cached_owner.as_deref() {
+                match cache.load_outgoing(&server_key, owner) {
+                    Ok(outgoing) => {
+                        for item in outgoing {
+                            store.project_outgoing(item);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("outgoing {server_key}: restore inicial falhou: {error}");
+                    }
+                }
+            }
         }
 
         let repaint = ctx.clone();
@@ -489,6 +501,7 @@ impl Workspace {
             entry.url.clone(),
             Wake::new(move || repaint.request_repaint()),
             std::sync::Arc::new(crate::storage::FileSecretStore::new()),
+            std::sync::Arc::clone(cache),
         );
 
         #[cfg(target_os = "android")]
@@ -1314,19 +1327,35 @@ impl PapoApp {
                     ws.store.error = Some(s.no_channel_selected.to_owned());
                     return;
                 }
-                // Com anexo não há eco otimista: o servidor é quem sabe o que
-                // saiu do upload.
+                // Texto comum entra na fila persistente. O Net só publica o
+                // eco depois que o ClientDb confirmou a linha; anexo continua
+                // no caminho legado porque o backend define os metadados do
+                // upload e caminhos locais não podem ir para o banco.
                 if attachments.is_empty() {
-                    ws.store
-                        .push_pending(&channel_id, &wire_content, reply_to.clone());
+                    let owner_user_id = ws.store.me.clone();
+                    if owner_user_id.is_empty() {
+                        ws.store.error =
+                            Some("sessão ainda não verificada para enviar".to_owned());
+                        return;
+                    }
+                    ws.net.send(Command::QueueMessage {
+                        local_id: crate::cache::new_local_id(),
+                        owner_user_id,
+                        channel_id,
+                        content: wire_content,
+                        reply_to,
+                        notify_reply,
+                        created_at: crate::cache::now_millis(),
+                    });
+                } else {
+                    ws.net.send(Command::SendMessage {
+                        channel_id,
+                        content: wire_content,
+                        reply_to,
+                        notify_reply,
+                        attachments,
+                    });
                 }
-                ws.net.send(Command::SendMessage {
-                    channel_id,
-                    content: wire_content,
-                    reply_to,
-                    notify_reply,
-                    attachments,
-                });
             }
             ChatAction::Edit {
                 message_id,
@@ -1637,6 +1666,15 @@ impl PapoApp {
                 };
                 let session_ended =
                     matches!(update, crate::api::net::Update::Session(None));
+                let rejected_outgoing = match &update {
+                    crate::api::net::Update::OutgoingRejected {
+                        content,
+                        reply_to,
+                        notify_reply,
+                        ..
+                    } => Some((content.clone(), reply_to.clone(), *notify_reply)),
+                    _ => None,
+                };
                 let ws = &mut self.workspaces[index];
                 route_call_update(ws, &update, ctx);
                 if reconnected && ws.store.screen == Screen::Chat {
@@ -1670,7 +1708,10 @@ impl PapoApp {
                         .as_deref()
                         .is_some_and(|owner| owner != me_id)
                     {
-                        ws.cache.clear_server(&ws.server_key);
+                        // Troca de conta limpa só o cache reconstruível.
+                        // Intenções não enviadas continuam particionadas pelo
+                        // owner antigo e nunca são projetadas para esta conta.
+                        ws.cache.clear_cached_data(&ws.server_key);
                         ws.store.clear_cached_state();
                     }
                     ws.cached_owner = Some(me_id);
@@ -1683,6 +1724,18 @@ impl PapoApp {
                 let ops = ws.store.take_cache_ops();
                 if !ops.is_empty() {
                     ws.cache.submit(&ws.server_key, ops);
+                }
+
+                if index == self.active
+                    && let Some((content, reply_to, notify_reply)) = rejected_outgoing
+                {
+                    let (visible, bindings) = ws.store.display_mentions_with_bindings(&content);
+                    // O editor tinha sido limpo no submit; uma falha da
+                    // persistência restaura o texto porque nenhum POST saiu.
+                    self.ui.composer = visible;
+                    self.ui.composer_mentions = bindings;
+                    self.ui.replying = reply_to;
+                    self.ui.reply_notify = notify_reply;
                 }
             }
         }
