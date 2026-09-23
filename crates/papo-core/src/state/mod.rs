@@ -1550,6 +1550,10 @@ impl Store {
                     self.project_outgoing(outgoing);
                 }
             }
+            Update::OutgoingRemoved(local_id) => {
+                self.messages.retain(|message| message.id != local_id);
+                self.outgoing_states.remove(&local_id);
+            }
             Update::OutgoingRejected { message, .. } => {
                 self.error = Some(message);
             }
