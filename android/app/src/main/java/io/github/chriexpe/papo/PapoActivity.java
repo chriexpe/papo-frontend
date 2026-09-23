@@ -187,6 +187,23 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    public void setPipVideoVisible(String visible) {
+        runOnUiThread(() -> {
+            ensurePipLayer();
+            final boolean hasVideo = "1".equals(visible);
+            final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    hasVideo ? (Gravity.START | Gravity.BOTTOM) : Gravity.CENTER);
+            if (hasVideo) {
+                params.setMargins(12, 0, 12, 12);
+            }
+            pipSpeaker.setLayoutParams(params);
+            pipSpeaker.setBackgroundColor(hasVideo ? 0x66000000 : 0x00000000);
+            pipSpeaker.setTextSize(hasVideo ? 14 : 18);
+        });
+    }
+
     public void closeCallPictureInPicture() {
         runOnUiThread(() -> {
             callPresentation = "off";
