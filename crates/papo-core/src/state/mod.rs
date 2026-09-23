@@ -186,7 +186,11 @@ pub struct Store {
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
     pub my_username: String,
     pub selected_channel: String,
-    /// Canais já carregados, para não repetir a busca a cada troca.
+    /// Canais cuja carga de mensagens já foi pedida nesta geração da conexão.
+    ///
+    /// O cache só é válido enquanto o WebSocket permanece na mesma geração:
+    /// qualquer transição de conexão invalida esta lista. As mensagens já
+    /// renderizadas ficam na memória até a carga nova substituí-las.
     loaded_channels: HashSet<String>,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
@@ -301,6 +305,12 @@ impl Store {
 
     /// Canal que ainda precisa ter as mensagens buscadas.
     pub fn channel_needing_messages(&self) -> Option<String> {
+        // Não marque uma tentativa feita durante a queda como "carregada".
+        // Quando o socket voltar para Online a geração é invalidada de novo
+        // e o canal aberto será buscado pela fonte REST.
+        if self.connection != Connection::Online {
+            return None;
+        }
         let id = &self.selected_channel;
         if id.is_empty() || self.loaded_channels.contains(id) {
             return None;
@@ -636,7 +646,16 @@ impl Store {
                 }
                 self.error = Some(message);
             }
-            Update::Connection(connection) => self.connection = connection,
+            Update::Connection(connection) => {
+                // loaded_channels só vale para uma geração contínua do
+                // WebSocket. Se a conexão muda de estado, algum evento pode
+                // ter sido perdido; mantemos as mensagens velhas visíveis,
+                // mas obrigamos uma carga REST assim que Online voltar.
+                if self.connection != connection {
+                    self.loaded_channels.clear();
+                }
+                self.connection = connection;
+            }
             Update::Error(message) => {
                 self.error = Some(message);
                 self.busy = false;
@@ -1054,3 +1073,76 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<[u8; 3]> {
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store_com_canal_carregado(channel_id: &str) -> Store {
+        let mut store = Store::default();
+        store.selected_channel = channel_id.to_owned();
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(
+            store.channel_needing_messages(),
+            Some(channel_id.to_owned())
+        );
+        store.mark_loading(channel_id);
+        store.apply(Update::Messages {
+            channel_id: channel_id.to_owned(),
+            messages: Vec::new(),
+        });
+        assert_eq!(store.channel_needing_messages(), None);
+        store
+    }
+
+    #[test]
+    fn reconexao_invalida_cache_de_mensagens() {
+        let mut store = store_com_canal_carregado("geral");
+
+        store.apply(Update::Connection(Connection::Offline));
+        assert_eq!(store.channel_needing_messages(), None);
+
+        store.apply(Update::Connection(Connection::Connecting));
+        assert_eq!(store.channel_needing_messages(), None);
+
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(
+            store.channel_needing_messages(),
+            Some("geral".to_owned())
+        );
+    }
+
+    #[test]
+    fn nao_carrega_historico_enquanto_socket_esta_fora() {
+        let mut store = Store::default();
+        store.selected_channel = "geral".to_owned();
+
+        assert_eq!(store.channel_needing_messages(), None);
+
+        store.apply(Update::Connection(Connection::Connecting));
+        assert_eq!(store.channel_needing_messages(), None);
+
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(
+            store.channel_needing_messages(),
+            Some("geral".to_owned())
+        );
+    }
+
+    #[test]
+    fn cache_de_um_servidor_nao_invalida_o_outro() {
+        let mut primeiro = store_com_canal_carregado("canal-a");
+        let segundo = store_com_canal_carregado("canal-b");
+
+        primeiro.apply(Update::Connection(Connection::Offline));
+        primeiro.apply(Update::Connection(Connection::Connecting));
+        primeiro.apply(Update::Connection(Connection::Online));
+
+        assert_eq!(
+            primeiro.channel_needing_messages(),
+            Some("canal-a".to_owned())
+        );
+        assert_eq!(segundo.channel_needing_messages(), None);
+    }
+}
+
