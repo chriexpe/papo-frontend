@@ -110,6 +110,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                     channel_id.clone(),
                     ws.store.call.muted,
                     ws.store.call.camera,
+                    ws.store.me.clone(),
                 );
             } else {
                 ws.store.call.error = Some("a call não abriu".to_owned());
