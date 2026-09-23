@@ -9,7 +9,8 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use super::client::{Api, ApiError, Session, Upload};
+use super::client::{Api, ApiError, SendMessageError, Session, Upload};
+use crate::cache::{CachedMessage, CachedOutgoing, ClientDb, OutgoingState};
 use super::scheduler::{
     DiagnosticJobState, ReconcileKey, ReconcileKind, ReconcilePriority, ReconcileRequest,
     ReconcileScheduler, StartedReconcile, TaskOwner,
@@ -297,6 +298,17 @@ pub enum Command {
         emoji_id: String,
     },
     LoadAuditLogs,
+    /// Envio de texto durável. A UI fornece o owner que já estava verificado
+    /// na projeção; o worker recusa se ele divergir da sessão verificada.
+    QueueMessage {
+        local_id: String,
+        owner_user_id: String,
+        channel_id: String,
+        content: String,
+        reply_to: Option<String>,
+        notify_reply: bool,
+        created_at: i64,
+    },
     SendMessage {
         channel_id: String,
         content: String,
@@ -377,6 +389,13 @@ pub enum Update {
     },
     /// A carga de histórico falhou; a Store libera a tentativa correspondente.
     MessagesFailed(RefreshTicket),
+    /// Projeção durável local, criada/restaurada antes de qualquer POST.
+    Outgoing(Box<CachedOutgoing>),
+    OutgoingRestored(Vec<CachedOutgoing>),
+    SendConfirmed {
+        local_id: String,
+        message: Box<Message>,
+    },
     Sent(Box<Message>),
     Edited(Box<Message>),
     Deleted(String),
@@ -482,6 +501,7 @@ impl Net {
         base_url: String,
         wake: Wake,
         storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
@@ -502,6 +522,7 @@ impl Net {
         ));
         let worker_session = Arc::clone(&session);
         let worker_storage = Arc::clone(&storage);
+        let worker_cache = Arc::clone(&cache);
         let worker_storage_key = storage_key.clone();
         let diagnostics = Arc::new(RwLock::new(RuntimeDiagnostics::default()));
         let worker_diagnostics = Arc::clone(&diagnostics);
@@ -525,6 +546,7 @@ impl Net {
                     worker_storage_key,
                     worker_storage,
                     worker_session,
+                    worker_cache,
                     commands_rx,
                     updates_tx,
                     wake,
@@ -661,6 +683,7 @@ async fn worker(
     storage_key: String,
     storage: Arc<dyn SecretStore>,
     session: Arc<Session>,
+    cache: Arc<ClientDb>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
@@ -698,6 +721,11 @@ async fn worker(
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
     let mut network_gate = NetworkGate::default();
+    let mut outgoing: Vec<CachedOutgoing> = Vec::new();
+    let mut outgoing_owner: Option<String> = None;
+    let mut outgoing_retry = tokio::time::interval(std::time::Duration::from_secs(5));
+    outgoing_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    outgoing_retry.tick().await;
     let mut diagnostics_dirty = false;
     update_runtime_diagnostics(
         &diagnostics,
