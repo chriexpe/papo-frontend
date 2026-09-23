@@ -223,6 +223,12 @@ pub struct Strings {
     pub replying_to: &'static str,
     pub reply_missing: &'static str,
     pub edit_hint: &'static str,
+    pub outgoing_waiting: &'static str,
+    pub outgoing_sending: &'static str,
+    pub outgoing_uncertain: &'static str,
+    pub outgoing_failed: &'static str,
+    pub outgoing_retry_anyway: &'static str,
+    pub outgoing_dismiss: &'static str,
 
     // Mídia
     pub open: &'static str,
@@ -478,6 +484,12 @@ pub static PT_BR: Strings = Strings {
     replying_to: "Respondendo para",
     reply_missing: "mensagem não disponível",
     edit_hint: "Enter salva · Esc cancela",
+    outgoing_waiting: "aguardando envio",
+    outgoing_sending: "enviando…",
+    outgoing_uncertain: "entrega incerta · não será reenviada sozinha",
+    outgoing_failed: "não enviada",
+    outgoing_retry_anyway: "Tentar mesmo assim",
+    outgoing_dismiss: "Descartar",
 
     open: "Abrir",
     downloading: "Baixando…",
@@ -729,6 +741,12 @@ pub static EN: Strings = Strings {
     replying_to: "Replying to",
     reply_missing: "message unavailable",
     edit_hint: "Enter saves · Esc cancels",
+    outgoing_waiting: "waiting to send",
+    outgoing_sending: "sending…",
+    outgoing_uncertain: "delivery uncertain · not retried automatically",
+    outgoing_failed: "not sent",
+    outgoing_retry_anyway: "Retry anyway",
+    outgoing_dismiss: "Dismiss",
 
     open: "Open",
     downloading: "Downloading…",
