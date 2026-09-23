@@ -1339,6 +1339,8 @@ impl PapoApp {
                 if !ws.store.call.channel_id.is_empty() {
                     ws.store.selected_channel = ws.store.call.channel_id.clone();
                     ws.store.call.collapsed = false;
+                    ws.store.call.floating = false;
+                    ws.store.call.floating = false;
                 }
             }
             ChatAction::PopOutCall(out) => {
