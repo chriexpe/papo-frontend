@@ -6,7 +6,9 @@
 
 use std::path::Path;
 
-use turso::{Builder, Connection, IntoParams, Value};
+use turso::{Builder, Connection, IntoParams};
+#[cfg(test)]
+use turso::Value;
 
 pub type ProbeError = Box<dyn std::error::Error + Send + Sync + 'static>;
 pub type ProbeResult<T> = Result<T, ProbeError>;

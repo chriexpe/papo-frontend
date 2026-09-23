@@ -28,4 +28,8 @@ base64 = "0.22"
 
 # PR7 feasibility gate only. Keep Turso's public optional defaults (mimalloc,
 # FTS) out of Papo while proving the ordinary local database path.
-turso = { version = "=0.7.2", default-features = false }
+#
+# Pinned to the exact 0.8 prerelease: Android/native-dependency cleanup landed
+# in the 0.8 line, and this is the family Papo would realistically ship. The
+# pin is deliberate qualification, not a floating semver range.
+turso = { version = "=0.8.0-pre.12", default-features = false }
