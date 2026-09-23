@@ -1420,8 +1420,12 @@ impl Store {
                         .filter(|message| message.channel_id == channel_id && message.pinned)
                         .map(|message| message.id.clone())
                         .collect();
-                    let pinned: HashSet<String> = pinned_ids
-                        .map(|ids| ids.into_iter().collect())
+                    // `Some(ids)` é o snapshot autoritativo de fixadas; `None`
+                    // (falha ao buscá-las) preserva o que já se sabia.
+                    let authoritative_pins = pinned_ids;
+                    let pinned: HashSet<String> = authoritative_pins
+                        .as_ref()
+                        .map(|ids| ids.iter().cloned().collect())
                         .unwrap_or(previous_pins);
                     let me = self.me.clone();
                     let messages = messages
@@ -1440,6 +1444,17 @@ impl Store {
                             messages,
                         },
                     );
+
+                    // O snapshot de fixadas converge o banco mesmo para
+                    // mensagens fora da janela carregada: uma fixada antiga que
+                    // saiu do conjunto precisa ser desafixada para a retenção
+                    // poder removê-la.
+                    if let Some(ids) = authoritative_pins {
+                        self.pending_cache.push(CacheOp::ReplacePins {
+                            channel_id: channel_id.clone(),
+                            ids,
+                        });
+                    }
 
                     // O snapshot só vira autoridade depois de reaplicar tudo
                     // que chegou pelo WebSocket após o barrier deste ticket.
@@ -1519,7 +1534,7 @@ impl Store {
                     .collect();
             }
             Update::Pinned { channel_id, ids } => {
-                let pinned: HashSet<String> = ids.into_iter().collect();
+                let pinned: HashSet<String> = ids.iter().cloned().collect();
                 let changes: Vec<(String, bool)> = self
                     .messages
                     .iter()
@@ -1535,6 +1550,9 @@ impl Store {
                         },
                     );
                 }
+                // Snapshot autoritativo: converge também linhas que a Store
+                // não tem carregadas.
+                self.pending_cache.push(CacheOp::ReplacePins { channel_id, ids });
             }
             Update::Notifications(notifications) => {
                 for notification in notifications {
@@ -3212,5 +3230,63 @@ mod tests {
         store.apply(Update::Session(None));
         let ops = store.take_cache_ops();
         assert!(ops.iter().any(|op| matches!(op, CacheOp::ClearServer)));
+    }
+
+    #[test]
+    fn pins_autoritativos_persistem_mesmo_fora_da_store() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        let _ = store.take_cache_ops();
+
+        // Um id que a Store não carregou ainda assim precisa convergir no
+        // banco: é o snapshot autoritativo que manda.
+        store.apply(Update::Pinned {
+            channel_id: "geral".to_owned(),
+            ids: vec!["m1".to_owned(), "fantasma".to_owned()],
+        });
+        let ops = store.take_cache_ops();
+        let pins = ops.iter().find_map(|op| match op {
+            CacheOp::ReplacePins { channel_id, ids } => Some((channel_id, ids)),
+            _ => None,
+        });
+        let (channel_id, ids) = pins.expect("snapshot de pins precisa ir para o cache");
+        assert_eq!(channel_id, "geral");
+        assert!(ids.contains(&"fantasma".to_owned()));
+    }
+
+    #[test]
+    fn snapshot_de_mensagens_so_converge_pins_quando_autoritativo() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+
+        // `Some` é autoritativo: emite ReplacePins.
+        let ticket = store.mark_loading("geral");
+        let _ = store.take_cache_ops();
+        store.apply(Update::Messages {
+            ticket,
+            messages: Vec::new(),
+            pinned_ids: Some(vec!["x".to_owned()]),
+        });
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::ReplacePins { ids, .. } if ids == &vec!["x".to_owned()]
+        )));
+
+        // `None` (busca falhou): preserva o que já estava no disco.
+        let ticket = store.mark_loading("geral");
+        let _ = store.take_cache_ops();
+        store.apply(Update::Messages {
+            ticket,
+            messages: Vec::new(),
+            pinned_ids: None,
+        });
+        let ops = store.take_cache_ops();
+        assert!(
+            !ops.iter().any(|op| matches!(op, CacheOp::ReplacePins { .. })),
+            "falha ao buscar pins não pode zerar o cache"
+        );
     }
 }

@@ -261,8 +261,27 @@ pub enum CacheOp {
     },
     UpsertMessage(CachedMessage),
     DeleteMessage { message_id: String },
+    /// Snapshot autoritativo de fixadas. Converge também linhas que a Store
+    /// não tem carregadas: uma fixada antiga que saiu da janela precisa ser
+    /// desafixada para a retenção poder removê-la.
+    ///
+    /// A ausência desta operação (falha ao buscar pins) preserva o que já
+    /// estava gravado.
+    ReplacePins {
+        channel_id: String,
+        ids: Vec<String>,
+    },
     /// Apaga tudo deste servidor: conta trocada, logout ou remoção.
     ClearServer,
+}
+
+impl CacheOp {
+    /// Operações de posse/controle não podem ser descartadas: um clear perdido
+    /// deixaria a conversa da conta anterior no lugar. Dados reconstruíveis
+    /// continuam best-effort.
+    pub fn is_control(&self) -> bool {
+        matches!(self, CacheOp::ClearServer | CacheOp::SetOwner { .. })
+    }
 }
 
 pub fn now_millis() -> i64 {

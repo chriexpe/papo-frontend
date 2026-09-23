@@ -197,6 +197,24 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                     ],
                 });
             }
+            // Só agora a subconsulta enxerga a lista autoritativa nova; canais
+            // que sumiram perdem mensagens e marcador de cache junto.
+            statements.push(Stmt {
+                sql: "DELETE FROM messages
+                      WHERE server_key = ?1
+                        AND channel_id NOT IN (
+                            SELECT channel_id FROM channels WHERE server_key = ?1
+                        )",
+                params: vec![text(server_key)],
+            });
+            statements.push(Stmt {
+                sql: "DELETE FROM channel_cache_state
+                      WHERE server_key = ?1
+                        AND channel_id NOT IN (
+                            SELECT channel_id FROM channels WHERE server_key = ?1
+                        )",
+                params: vec![text(server_key)],
+            });
             statements
         }
         CacheOp::ReplaceMembers(members) => {
@@ -256,7 +274,7 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                     params: message_params(server_key, message),
                 });
             }
-            statements.extend(retention_statements(server_key, channel_id));
+            // A retenção deste canal roda uma vez no fim do lote.
             statements
         }
         CacheOp::UpsertMessage(message) => vec![Stmt {
@@ -267,6 +285,24 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             sql: "DELETE FROM messages WHERE server_key = ?1 AND message_id = ?2",
             params: vec![text(server_key), text(message_id)],
         }],
+        CacheOp::ReplacePins { channel_id, ids } => {
+            // Limpa o estado local de fixadas do canal e reaplica só o que o
+            // servidor confirmou. Fixadas fora da janela recente que saíram do
+            // conjunto ficam desafixadas e a retenção pode removê-las.
+            let mut statements = vec![Stmt {
+                sql: "UPDATE messages SET pinned = 0
+                      WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1",
+                params: vec![text(server_key), text(channel_id)],
+            }];
+            for message_id in ids {
+                statements.push(Stmt {
+                    sql: "UPDATE messages SET pinned = 1
+                          WHERE server_key = ?1 AND message_id = ?2",
+                    params: vec![text(server_key), text(message_id)],
+                });
+            }
+            statements
+        }
         CacheOp::ClearServer => vec![
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
@@ -308,10 +344,31 @@ impl TursoCache {
         server_key: &str,
         ops: &[CacheOp],
     ) -> Result<(), turso::Error> {
-        let statements: Vec<Stmt> = ops
-            .iter()
-            .flat_map(|op| statements_for(server_key, op))
-            .collect();
+        let mut statements: Vec<Stmt> = Vec::new();
+        let mut retention_channels: Vec<String> = Vec::new();
+        for op in ops {
+            // Toda operação que pode aumentar (ou desafixar) mensagens de um
+            // canal passa pela retenção, uma vez por canal no fim do lote.
+            match op {
+                CacheOp::UpsertMessage(message) => {
+                    retention_channels.push(message.channel_id.clone());
+                }
+                CacheOp::ReplaceChannelSnapshot { channel_id, .. }
+                | CacheOp::ReplacePins { channel_id, .. } => {
+                    retention_channels.push(channel_id.clone());
+                }
+                _ => {}
+            }
+            statements.extend(statements_for(server_key, op));
+        }
+
+        let mut seen: HashSet<&str> = HashSet::new();
+        for channel_id in &retention_channels {
+            if seen.insert(channel_id.as_str()) {
+                statements.extend(retention_statements(server_key, channel_id));
+            }
+        }
+
         if statements.is_empty() {
             return Ok(());
         }

@@ -365,6 +365,361 @@ fn no_path_disables_cache() {
 }
 
 #[test]
+fn live_upserts_stay_within_retention() {
+    let temp = TempDb::new("live-retention");
+    let db = open(&temp);
+    // Começa exatamente no teto.
+    let initial: Vec<CachedMessage> = (0..MESSAGE_RETENTION)
+        .map(|index| message(&format!("base{index}"), "geral", "x", index))
+        .collect();
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: initial,
+        }],
+    );
+    db.flush();
+
+    // Um WebSocket saudável só acrescenta mensagens novas, sem snapshot.
+    for index in 0..300 {
+        db.submit(
+            "srv",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("live{index}"),
+                "geral",
+                "y",
+                10_000 + index,
+            ))],
+        );
+    }
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert_eq!(
+        snapshot.messages.len() as i64,
+        MESSAGE_RETENTION,
+        "o crescimento live precisa continuar limitado"
+    );
+    assert!(
+        snapshot.messages.iter().any(|m| m.id == "live299"),
+        "as mais recentes ficam"
+    );
+    assert!(
+        snapshot.messages.iter().all(|m| m.id != "base0"),
+        "as mais antigas saem"
+    );
+}
+
+#[test]
+fn pinned_upserts_stay_within_pinned_retention() {
+    let temp = TempDb::new("pinned-retention");
+    let db = open(&temp);
+    for index in 0..(PINNED_RETENTION + 80) {
+        let mut pinned = message(&format!("pin{index}"), "geral", "p", index);
+        pinned.pinned = true;
+        db.submit("srv", vec![CacheOp::UpsertMessage(pinned)]);
+    }
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    let pinned = snapshot.messages.iter().filter(|m| m.pinned).count() as i64;
+    assert_eq!(pinned, PINNED_RETENTION, "o teto de fixadas vale para live");
+}
+
+#[test]
+fn clear_server_survives_saturated_data_queue() {
+    use std::time::Duration;
+
+    let temp = TempDb::new("clear-saturated");
+    // Fila minúscula para saturar de forma determinística.
+    let db = ClientDb::open_with_capacity(Some(temp.path()), 1);
+    assert!(db.is_enabled());
+
+    // Semeia com a fila vazia e confirma cada um antes de saturar.
+    db.submit(
+        "srv-a",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![message("m1", "geral", "a", 1_000)],
+        }],
+    );
+    db.flush();
+    db.submit(
+        "srv-b",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![message("m1", "geral", "b", 1_000)],
+        }],
+    );
+    db.flush();
+
+    let (entered, resume) = db.pause_worker();
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker precisa pausar");
+
+    // Com o worker parado e a fila de capacidade 1, quase tudo é descartado.
+    for index in 0..32 {
+        db.submit(
+            "srv-a",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("late{index}"),
+                "geral",
+                "late",
+                2_000 + index,
+            ))],
+        );
+    }
+    assert!(
+        db.stats().dropped > 0,
+        "a fila de dados precisa ter saturado"
+    );
+
+    // Controle não pode ser descartado, mesmo com a fila de dados cheia.
+    db.clear_server("srv-a");
+
+    resume.send(()).expect("retomar o worker");
+    db.flush();
+
+    let a = db.load_snapshot("srv-a").expect("a");
+    assert!(
+        a.is_empty(),
+        "o clear precisa ter apagado A mesmo sob pressão: {a:?}"
+    );
+    let b = db.load_snapshot("srv-b").expect("b");
+    assert_eq!(b.messages.len(), 1, "B não pode ser tocado");
+}
+
+#[test]
+fn owner_transition_survives_saturated_data_queue() {
+    use std::time::Duration;
+
+    let temp = TempDb::new("owner-saturated");
+    let db = ClientDb::open_with_capacity(Some(temp.path()), 1);
+    assert!(db.is_enabled());
+
+    db.submit(
+        "srv-a",
+        vec![CacheOp::SetOwner {
+            owner_user_id: "user-1".to_owned(),
+            me_name: "Ana".to_owned(),
+            me_username: "ana".to_owned(),
+        }],
+    );
+    db.flush();
+
+    let (entered, resume) = db.pause_worker();
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker precisa pausar");
+
+    for index in 0..32 {
+        db.submit(
+            "srv-a",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("m{index}"),
+                "geral",
+                "x",
+                1_000 + index,
+            ))],
+        );
+    }
+    assert!(db.stats().dropped > 0, "fila de dados saturada");
+
+    // `SetOwner` viaja na fila confiável, então não pode cair.
+    db.submit(
+        "srv-a",
+        vec![CacheOp::SetOwner {
+            owner_user_id: "user-2".to_owned(),
+            me_name: "Bia".to_owned(),
+            me_username: "bia".to_owned(),
+        }],
+    );
+
+    resume.send(()).expect("retomar o worker");
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv-a").expect("snapshot");
+    assert_eq!(
+        snapshot.owner_user_id.as_deref(),
+        Some("user-2"),
+        "a troca de dono não pode ser descartada"
+    );
+}
+
+#[test]
+fn replace_channels_prunes_orphaned_rows() {
+    let temp = TempDb::new("prune-channels");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannels(vec![channel("A", 0), channel("B", 1)]),
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "A".to_owned(),
+                cached_at: now_millis(),
+                messages: vec![message("a1", "A", "no a", 1_000)],
+            },
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "B".to_owned(),
+                cached_at: now_millis(),
+                messages: vec![message("b1", "B", "no b", 1_000)],
+            },
+        ],
+    );
+    db.flush();
+
+    // Autoritativo: B foi apagado no servidor.
+    db.submit("srv", vec![CacheOp::ReplaceChannels(vec![channel("A", 0)])]);
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert_eq!(snapshot.channels.len(), 1);
+    assert_eq!(snapshot.channels[0].id, "A");
+    assert!(
+        snapshot.messages.iter().all(|m| m.channel_id != "B"),
+        "mensagens de B precisam sumir: {:?}",
+        snapshot.messages
+    );
+    assert!(
+        !snapshot.cached_channels.contains("B"),
+        "o marcador de cache de B precisa sumir"
+    );
+    assert!(snapshot.messages.iter().any(|m| m.id == "a1"), "A intacto");
+}
+
+#[test]
+fn authoritative_pins_drop_stale_row_after_reopen() {
+    let temp = TempDb::new("pins-drop");
+    let db = open(&temp);
+
+    // P antiga e fixada, fora da janela recente.
+    let mut old_pin = message("P", "geral", "pin antigo", 1);
+    old_pin.pinned = true;
+    let mut snapshot_messages = vec![old_pin];
+    for index in 0..(MESSAGE_RETENTION + 50) {
+        snapshot_messages.push(message(
+            &format!("recent{index}"),
+            "geral",
+            "r",
+            10_000 + index,
+        ));
+    }
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: snapshot_messages,
+        }],
+    );
+    db.flush();
+    assert!(
+        db.load_snapshot("srv")
+            .expect("snapshot")
+            .messages
+            .iter()
+            .any(|m| m.id == "P")
+    );
+
+    // O servidor não fixa mais P.
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplacePins {
+            channel_id: "geral".to_owned(),
+            ids: Vec::new(),
+        }],
+    );
+    db.flush();
+    drop(db);
+
+    let reopened = open(&temp);
+    let snapshot = reopened.load_snapshot("srv").expect("snapshot");
+    assert!(
+        snapshot.messages.iter().all(|m| m.id != "P"),
+        "P desafixada e velha não pode voltar: {:?}",
+        snapshot.messages.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn authoritative_pins_keep_old_pinned_row_after_reopen() {
+    let temp = TempDb::new("pins-keep");
+    let db = open(&temp);
+
+    let mut old_pin = message("P", "geral", "pin antigo", 1);
+    old_pin.pinned = true;
+    let mut snapshot_messages = vec![old_pin];
+    for index in 0..(MESSAGE_RETENTION + 50) {
+        snapshot_messages.push(message(
+            &format!("recent{index}"),
+            "geral",
+            "r",
+            10_000 + index,
+        ));
+    }
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: snapshot_messages,
+        }],
+    );
+    db.flush();
+
+    // O servidor continua fixando P.
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplacePins {
+            channel_id: "geral".to_owned(),
+            ids: vec!["P".to_owned()],
+        }],
+    );
+    db.flush();
+    drop(db);
+
+    let reopened = open(&temp);
+    let snapshot = reopened.load_snapshot("srv").expect("snapshot");
+    let pin = snapshot.messages.iter().find(|m| m.id == "P");
+    assert!(pin.is_some_and(|m| m.pinned), "P segue fixada e presente");
+}
+
+#[test]
+fn missing_pin_snapshot_preserves_cached_pins() {
+    let temp = TempDb::new("pins-preserve");
+    let db = open(&temp);
+    let mut pinned = message("P", "geral", "pin", 1_000);
+    pinned.pinned = true;
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![pinned],
+        }],
+    );
+    db.flush();
+    drop(db);
+
+    // Reabre sem nenhum ReplacePins (a busca de pins falhou): preserva.
+    let reopened = open(&temp);
+    let snapshot = reopened.load_snapshot("srv").expect("snapshot");
+    assert!(
+        snapshot
+            .messages
+            .iter()
+            .find(|m| m.id == "P")
+            .is_some_and(|m| m.pinned),
+        "fixada antiga sobrevive quando o snapshot de pins falha"
+    );
+}
+
+#[test]
 fn restart_produces_deterministic_store_projection() {
     use crate::state::{Store, TimelineStatus};
 
