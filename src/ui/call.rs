@@ -538,16 +538,12 @@ fn compact_pill(
         ui,
         t,
         return_or_expand,
-        icon::ARROWS_OUT,
-        if floating { s.call_overlay_close } else { s.call_expand },
+        if floating { icon::ARROWS_OUT } else { icon::ARROWS_IN },
+        if floating { s.call_overlay_close } else { s.call_overlay },
         false,
         false,
     ) {
-        state.actions.push(if floating {
-            ChatAction::FloatCall(false)
-        } else {
-            ChatAction::OpenCall
-        });
+        state.actions.push(ChatAction::FloatCall(!floating));
     }
     x -= button + button_gap;
 
