@@ -235,6 +235,8 @@ impl Call {
     ) -> EventCallback {
         let channel_id = self.channel_id.clone();
         let commands = self.commands.clone();
+        #[cfg(not(target_os = "android"))]
+        let _ = (&me, &names);
         Arc::new(move |event| match event {
             Event::VoiceAnswer { channel_id: event_channel, sdp }
                 if event_channel == &channel_id =>
