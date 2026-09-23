@@ -1196,6 +1196,8 @@ impl PapoApp {
             // dispositivo.
             let ids = ws.store.take_open_notifications(&channel_id);
             if !ids.is_empty() && !ws.store.me.is_empty() {
+                #[cfg(target_os = "android")]
+                crate::platform::android_message::clear_channel(&ws.url, &channel_id);
                 ws.net.send(Command::MarkNotificationsRead {
                     user_id: ws.store.me.clone(),
                     ids,
