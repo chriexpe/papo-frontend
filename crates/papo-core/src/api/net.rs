@@ -11,8 +11,8 @@ use tokio::task::JoinSet;
 
 use super::client::{Api, ApiError, Session, Upload};
 use super::scheduler::{
-    ReconcileKind, ReconcilePriority, ReconcileRequest, ReconcileScheduler, StartedReconcile,
-    TaskOwner,
+    DiagnosticJobState, ReconcileKey, ReconcileKind, ReconcilePriority, ReconcileRequest,
+    ReconcileScheduler, StartedReconcile, TaskOwner,
 };
 use super::models::{
     Channel, Emoji, Message, Notification, ReactionRequest, Server, UserSummary, Whoami,
@@ -341,6 +341,55 @@ pub enum Update {
 
 const RECONCILE_CONCURRENCY: usize = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileJobState {
+    Queued,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconcileJobDiagnostics {
+    pub key: String,
+    pub priority: String,
+    pub generation: u64,
+    pub session_epoch: u64,
+    pub request_id: Option<u64>,
+    pub state: ReconcileJobState,
+    pub retry_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerDiagnostics {
+    pub queued: usize,
+    pub running: usize,
+    pub capacity: usize,
+    pub jobs: Vec<ReconcileJobDiagnostics>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDiagnostics {
+    pub connection: Connection,
+    pub sync_generation: u64,
+    pub session_epoch: u64,
+    pub scheduler: SchedulerDiagnostics,
+}
+
+impl Default for RuntimeDiagnostics {
+    fn default() -> Self {
+        Self {
+            connection: Connection::Offline,
+            sync_generation: 0,
+            session_epoch: 0,
+            scheduler: SchedulerDiagnostics {
+                queued: 0,
+                running: 0,
+                capacity: RECONCILE_CONCURRENCY,
+                jobs: Vec::new(),
+            },
+        }
+    }
+}
+
 struct ReconcileCompletion {
     run_id: u64,
     success: bool,
@@ -353,6 +402,7 @@ pub struct Net {
     event_hook: EventHook,
     message_hook: MessageHook,
     notification_hook: NotificationHook,
+    diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
     /// A mídia usa o mesmo cookie para baixar anexos.
     pub session: Arc<Session>,
     storage: Arc<dyn SecretStore>,
@@ -385,6 +435,8 @@ impl Net {
         let worker_session = Arc::clone(&session);
         let worker_storage = Arc::clone(&storage);
         let worker_storage_key = storage_key.clone();
+        let diagnostics = Arc::new(RwLock::new(RuntimeDiagnostics::default()));
+        let worker_diagnostics = Arc::clone(&diagnostics);
 
         std::thread::Builder::new()
             .name("papo-net".into())
@@ -409,6 +461,7 @@ impl Net {
                     updates_tx,
                     wake,
                     worker_hooks,
+                    worker_diagnostics,
                 ));
             })
             .expect("thread de rede");
@@ -419,6 +472,7 @@ impl Net {
             event_hook,
             message_hook,
             notification_hook,
+            diagnostics,
             session,
             storage,
             storage_key,
@@ -447,6 +501,13 @@ impl Net {
 
     pub fn try_recv(&self) -> Option<Update> {
         self.updates.try_recv().ok()
+    }
+
+    pub fn diagnostics(&self) -> RuntimeDiagnostics {
+        self.diagnostics
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default()
     }
 
     /// Esquece sessão e senha deste servidor no backend de persistência
@@ -484,6 +545,7 @@ async fn worker(
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
     hooks: WorkerHooks,
+    diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
@@ -503,12 +565,20 @@ async fn worker(
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
     let mut recent_message_channels: HashMap<String, String> = HashMap::new();
-    let mut reconcile_scheduler = ReconcileScheduler::new(RECONCILE_CONCURRENCY);
+    let mut reconcile_scheduler =
+        ReconcileScheduler::with_scope(RECONCILE_CONCURRENCY, storage_key.clone());
     let mut reconcile_tasks = JoinSet::new();
     let mut reconcile_aborts: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
+    update_runtime_diagnostics(
+        &diagnostics,
+        worker_connection,
+        runtime_generation,
+        session_epoch,
+        &reconcile_scheduler,
+    );
 
     // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
     // Falha de rede não é logout. Só uma resposta de autenticação inválida
@@ -581,6 +651,13 @@ async fn worker(
             &mut reconcile_scheduler,
             &mut reconcile_tasks,
             &mut reconcile_aborts,
+        );
+        update_runtime_diagnostics(
+            &diagnostics,
+            worker_connection,
+            runtime_generation,
+            session_epoch,
+            &reconcile_scheduler,
         );
         let scheduler_deadline = reconcile_scheduler.next_ready_at();
 
@@ -739,6 +816,8 @@ async fn worker(
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
+                let previous_connection = worker_connection;
+                let previous_generation = runtime_generation;
                 if worker_connection == Connection::Online && status != Connection::Online {
                     runtime_generation = runtime_generation.saturating_add(1);
                     abort_reconciles(
@@ -750,6 +829,16 @@ async fn worker(
                     );
                 }
                 worker_connection = status;
+                if previous_connection != worker_connection || previous_generation != runtime_generation {
+                    log::info!(
+                        "runtime {}: connection {:?} -> {:?}, generation {} -> {}",
+                        storage_key,
+                        previous_connection,
+                        worker_connection,
+                        previous_generation,
+                        runtime_generation
+                    );
+                }
                 publish(&updates, &wake, Update::Connection(status));
             }
             completion = reconcile_tasks.join_next(), if !reconcile_tasks.is_empty() => {
@@ -841,11 +930,68 @@ async fn worker(
     }
 
     abort_reconciles(reconcile_scheduler.cancel_all(), &mut reconcile_aborts);
+    worker_connection = Connection::Offline;
+    update_runtime_diagnostics(
+        &diagnostics,
+        worker_connection,
+        runtime_generation,
+        session_epoch,
+        &reconcile_scheduler,
+    );
     reconcile_tasks.abort_all();
     while reconcile_tasks.join_next().await.is_some() {}
 
     if let Some(socket) = socket {
         socket.abort();
+    }
+}
+
+fn update_runtime_diagnostics(
+    shared: &Arc<RwLock<RuntimeDiagnostics>>,
+    connection: Connection,
+    sync_generation: u64,
+    session_epoch: u64,
+    scheduler: &ReconcileScheduler,
+) {
+    let scheduler = scheduler.diagnostics(std::time::Instant::now());
+    let jobs = scheduler
+        .jobs
+        .into_iter()
+        .map(|job| ReconcileJobDiagnostics {
+            key: match job.key {
+                ReconcileKey::ChannelHistory(channel_id) => format!("channel:{channel_id}"),
+                ReconcileKey::ServerMetadata => "server-metadata".to_owned(),
+            },
+            priority: match job.priority {
+                ReconcilePriority::Background => "background",
+                ReconcilePriority::ActiveServer => "active-server",
+                ReconcilePriority::UserRequested => "user-requested",
+                ReconcilePriority::Visible => "visible",
+            }
+            .to_owned(),
+            generation: job.owner.generation,
+            session_epoch: job.owner.session_epoch,
+            request_id: job.request_id,
+            state: match job.state {
+                DiagnosticJobState::Queued => ReconcileJobState::Queued,
+                DiagnosticJobState::Running => ReconcileJobState::Running,
+            },
+            retry_blocked: job.retry_blocked,
+        })
+        .collect();
+
+    if let Ok(mut snapshot) = shared.write() {
+        *snapshot = RuntimeDiagnostics {
+            connection,
+            sync_generation,
+            session_epoch,
+            scheduler: SchedulerDiagnostics {
+                queued: scheduler.queued,
+                running: scheduler.running,
+                capacity: scheduler.capacity,
+                jobs,
+            },
+        };
     }
 }
 
