@@ -978,7 +978,24 @@ async fn worker(
     loop {
         // O socket acompanha a sessão: abre quando há cookie válido e fecha
         // quando ele some.
-        let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+        let verified_owner = me.lock().ok().and_then(|slot| slot.clone());
+        let verified = verified_owner.is_some();
+        if verified_owner != outgoing_owner {
+            outgoing.clear();
+            outgoing_owner = verified_owner.clone();
+            if let Some(owner) = verified_owner.as_deref() {
+                restore_outgoing(
+                    cache.as_ref(),
+                    &storage_key,
+                    owner,
+                    &updates,
+                    &wake,
+                    &mut outgoing,
+                );
+            } else {
+                publish(&updates, &wake, Update::OutgoingRestored(Vec::new()));
+            }
+        }
         match (session.is_authenticated() && verified, socket.is_some()) {
             (true, false) if !network_gate.explicitly_unavailable() => {
                 if let (Some(receiver), Some(probes)) = (outbound_rx.take(), probe_rx.take()) {
@@ -1085,6 +1102,21 @@ async fn worker(
                             );
                         }
                     }
+                    if !network_gate.explicitly_unavailable()
+                        && let Some(owner) = outgoing_owner.as_deref()
+                    {
+                        drive_outgoing(
+                            &api,
+                            cache.as_ref(),
+                            &storage_key,
+                            owner,
+                            false,
+                            &updates,
+                            &wake,
+                            &mut outgoing,
+                        )
+                        .await;
+                    }
                     continue;
                 }
 
@@ -1108,6 +1140,91 @@ async fn worker(
                 }
 
                 match command {
+                    Command::QueueMessage {
+                        local_id,
+                        owner_user_id,
+                        channel_id,
+                        content,
+                        reply_to,
+                        notify_reply,
+                        created_at,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if !session.is_authenticated()
+                            || verified_owner
+                                .as_deref()
+                                .is_some_and(|verified| verified != owner_user_id)
+                        {
+                            publish(
+                                &updates,
+                                &wake,
+                                Update::OutgoingRejected {
+                                    content,
+                                    reply_to,
+                                    notify_reply,
+                                    message: "sessão não disponível para enfileirar a mensagem"
+                                        .to_owned(),
+                                },
+                            );
+                            continue;
+                        }
+
+                        let item = CachedOutgoing {
+                            local_id,
+                            owner_user_id: owner_user_id.clone(),
+                            channel_id,
+                            content: content.clone(),
+                            reply_to: reply_to.clone(),
+                            notify_reply,
+                            created_at,
+                            state: OutgoingState::Queued,
+                            attempt_count: 0,
+                            last_attempt_at: None,
+                            last_error: None,
+                        };
+                        match cache.enqueue_outgoing(&storage_key, item.clone()) {
+                            Ok(()) => {
+                                if outgoing_owner.as_deref() != Some(owner_user_id.as_str()) {
+                                    outgoing_owner = Some(owner_user_id.clone());
+                                    outgoing.clear();
+                                }
+                                outgoing.push(item.clone());
+                                outgoing.sort_by_key(|row| (row.created_at, row.local_id.clone()));
+                                publish_outgoing(&storage_key, &updates, &wake, &item);
+                                drive_outgoing(
+                                    &api,
+                                    cache.as_ref(),
+                                    &storage_key,
+                                    &owner_user_id,
+                                    network_gate.explicitly_unavailable(),
+                                    &updates,
+                                    &wake,
+                                    &mut outgoing,
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "outgoing {}: enqueue falhou local={}: {error}",
+                                    storage_key,
+                                    short_local_id(&item.local_id)
+                                );
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::OutgoingRejected {
+                                        content,
+                                        reply_to,
+                                        notify_reply,
+                                        message: format!(
+                                            "não foi possível salvar a mensagem antes do envio: {error}"
+                                        ),
+                                    },
+                                );
+                            }
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -1324,6 +1441,21 @@ async fn worker(
                 }
             } => {}
 
+            _ = outgoing_retry.tick() => {
+                if let Some(owner) = outgoing_owner.as_deref() {
+                    drive_outgoing(
+                        &api,
+                        cache.as_ref(),
+                        &storage_key,
+                        owner,
+                        network_gate.explicitly_unavailable(),
+                        &updates,
+                        &wake,
+                        &mut outgoing,
+                    )
+                    .await;
+                }
+            }
             _ = verification.tick() => {
                 if network_gate.explicitly_unavailable() {
                     continue;
