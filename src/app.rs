@@ -1326,6 +1326,13 @@ impl PapoApp {
                 }
             }
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::FloatCall(floating) => {
+                ws.store.call.floating = floating;
+                if floating {
+                    ws.store.call.collapsed = true;
+                    ws.store.call.popped_out = false;
+                }
+            }
             // Voltar para a call é ir ao canal dela, como o clique que
             // levou na primeira vez — e abrir a folha se estava encolhida.
             ChatAction::OpenCall => {
@@ -1334,7 +1341,12 @@ impl PapoApp {
                     ws.store.call.collapsed = false;
                 }
             }
-            ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
+            ChatAction::PopOutCall(out) => {
+                ws.store.call.popped_out = out;
+                if out {
+                    ws.store.call.floating = false;
+                }
+            }
             ChatAction::Search(text) => ws.net.send(Command::Search { text }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
@@ -1453,6 +1465,7 @@ impl PapoApp {
             ChatAction::ToggleMute => ws.store.call.muted = !ws.store.call.muted,
             ChatAction::ToggleCamera => ws.store.call.camera = !ws.store.call.camera,
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::FloatCall(floating) => ws.store.call.floating = floating,
             // Voltar para a call é ir ao canal dela, como o clique que
             // levou na primeira vez — e abrir a folha se estava encolhida.
             ChatAction::OpenCall => {
@@ -1544,9 +1557,12 @@ impl PapoApp {
     /// e para isso ela precisa ser uma janela que o compositor conheça.
     fn call_window(&mut self, ctx: &egui::Context) {
         let active = self.active;
-        // No layout compacto "janela só da call" é uma sobreposição dentro
-        // da conversa; criar uma viewport do SO no Android não faria sentido.
-        if self.ui.compact || !self.workspaces[active].store.call.popped_out {
+        #[cfg(target_os = "android")]
+        {
+            return;
+        }
+        #[cfg(not(target_os = "android"))]
+        if !self.workspaces[active].store.call.popped_out {
             return;
         }
         let t = self.tokens;
