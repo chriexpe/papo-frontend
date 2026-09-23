@@ -30,11 +30,15 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -77,6 +81,7 @@ public class PapoActivity extends GameActivity {
     /** Ciclo de vida/PiP da call. Implementados em `src/platform/android_call.rs`. */
     private static native void nativeSetPictureInPictureMode(boolean enabled);
     private static native void nativeLifecycleChanged(boolean foreground);
+    private static native void nativeSetPipSurface(Surface surface);
 
     /** Envia o documento completo do IME ao Rust. */
     private static native void nativeSetText(
@@ -110,6 +115,89 @@ public class PapoActivity extends GameActivity {
     private boolean mutatingNativeEditor;
     private boolean imeWasVisible;
     private String callPresentation = "off";
+    private FrameLayout pipLayer;
+    private SurfaceView pipSurface;
+    private TextView pipSpeaker;
+
+    private void ensurePipLayer() {
+        if (pipLayer != null) {
+            return;
+        }
+
+        pipLayer = new FrameLayout(this);
+        pipLayer.setBackgroundColor(Color.BLACK);
+        pipLayer.setVisibility(View.GONE);
+
+        pipSurface = new SurfaceView(this);
+        pipSurface.setZOrderOnTop(true);
+        pipSurface.getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
+        pipSurface.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                nativeSetPipSurface(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceChanged(
+                    SurfaceHolder holder,
+                    int format,
+                    int width,
+                    int height) {
+                nativeSetPipSurface(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                nativeSetPipSurface(null);
+            }
+        });
+        pipLayer.addView(
+                pipSurface,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
+        pipSpeaker = new TextView(this);
+        pipSpeaker.setTextColor(Color.WHITE);
+        pipSpeaker.setTextSize(14);
+        pipSpeaker.setShadowLayer(6.0f, 0.0f, 1.0f, Color.BLACK);
+        pipSpeaker.setPadding(18, 8, 18, 8);
+        pipSpeaker.setBackgroundColor(0x66000000);
+        final FrameLayout.LayoutParams speakerParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.START | Gravity.BOTTOM);
+        speakerParams.setMargins(12, 0, 12, 12);
+        pipLayer.addView(pipSpeaker, speakerParams);
+
+        addContentView(
+                pipLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+        pipLayer.bringToFront();
+    }
+
+    public void setPipSpeaker(String name) {
+        runOnUiThread(() -> {
+            ensurePipLayer();
+            pipSpeaker.setText(name == null ? "" : name);
+            pipSpeaker.setVisibility(
+                    name == null || name.isBlank() ? View.GONE : View.VISIBLE);
+        });
+    }
+
+    public void closeCallPictureInPicture() {
+        runOnUiThread(() -> {
+            callPresentation = "off";
+            if (pipLayer != null) {
+                pipLayer.setVisibility(View.GONE);
+            }
+            if (isInPictureInPictureMode()) {
+                finish();
+            }
+        });
+    }
 
     /**
      * O compositor Android é um EditText de verdade, não um TextEdit do egui
@@ -969,6 +1057,7 @@ public class PapoActivity extends GameActivity {
         }
 
         super.onCreate(savedInstanceState);
+        ensurePipLayer();
 
         final View root = getWindow().getDecorView();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -1014,6 +1103,11 @@ public class PapoActivity extends GameActivity {
             boolean isInPictureInPictureMode,
             Configuration newConfig) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        ensurePipLayer();
+        pipLayer.setVisibility(isInPictureInPictureMode ? View.VISIBLE : View.GONE);
+        if (isInPictureInPictureMode) {
+            pipLayer.bringToFront();
+        }
         nativeSetPictureInPictureMode(isInPictureInPictureMode);
     }
 
