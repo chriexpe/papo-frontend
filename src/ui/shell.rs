@@ -95,6 +95,8 @@ pub enum ChatAction {
         content: String,
     },
     Delete(String),
+    RetryOutgoing(String),
+    DismissOutgoing(String),
     React {
         message_id: String,
         emoji: Emoji,
@@ -3246,19 +3248,51 @@ fn message_body(
     }
 
     if message.pending {
-        let (label, color) = match store.outgoing_state(&message.id) {
-            Some(papo_core::cache::OutgoingState::Queued) => ("waiting to send", t.label_tertiary),
-            Some(papo_core::cache::OutgoingState::Sending) => ("sending…", t.label_tertiary),
+        let outgoing_state = store.outgoing_state(&message.id);
+        let (label, color) = match outgoing_state {
+            Some(papo_core::cache::OutgoingState::Queued) => {
+                (s.outgoing_waiting, t.label_tertiary)
+            }
+            Some(papo_core::cache::OutgoingState::Sending) => {
+                (s.outgoing_sending, t.label_tertiary)
+            }
             Some(papo_core::cache::OutgoingState::UnknownOutcome) => {
-                ("delivery uncertain · not retried automatically", t.away)
+                (s.outgoing_uncertain, t.away)
             }
             Some(papo_core::cache::OutgoingState::FailedPermanent) => {
-                ("not sent", t.danger)
+                (s.outgoing_failed, t.danger)
             }
-            None => ("waiting to send", t.label_tertiary),
+            None => (s.outgoing_waiting, t.label_tertiary),
         };
         ui.add_space(space::XXS);
-        ui.label(RichText::new(label).font(text::footnote()).color(color));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            ui.label(RichText::new(label).font(text::footnote()).color(color));
+            if matches!(
+                outgoing_state,
+                Some(
+                    papo_core::cache::OutgoingState::UnknownOutcome
+                        | papo_core::cache::OutgoingState::FailedPermanent
+                )
+            ) {
+                if ui
+                    .small_button(RichText::new(s.outgoing_retry_anyway).font(text::footnote()))
+                    .clicked()
+                {
+                    state
+                        .actions
+                        .push(ChatAction::RetryOutgoing(message.id.clone()));
+                }
+                if ui
+                    .small_button(RichText::new(s.outgoing_dismiss).font(text::footnote()))
+                    .clicked()
+                {
+                    state
+                        .actions
+                        .push(ChatAction::DismissOutgoing(message.id.clone()));
+                }
+            }
+        });
     }
 
     if !message.attachments.is_empty()
