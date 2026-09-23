@@ -21,6 +21,7 @@ struct Snapshot {
     my_username: String,
     channels: HashMap<String, String>,
     members: HashMap<String, String>,
+    usernames: HashMap<String, String>,
 }
 
 /// Metadados mínimos que a thread de rede precisa para montar uma
@@ -48,6 +49,7 @@ pub fn sync_context(
     my_username: &str,
     channels: impl IntoIterator<Item = (String, String)>,
     members: impl IntoIterator<Item = (String, String)>,
+    usernames: impl IntoIterator<Item = (String, String)>,
 ) {
     let Ok(mut snapshot) = context.0.write() else {
         return;
@@ -60,6 +62,7 @@ pub fn sync_context(
     snapshot.my_username = my_username.to_owned();
     snapshot.channels = channels.into_iter().collect();
     snapshot.members = members.into_iter().collect();
+    snapshot.usernames = usernames.into_iter().collect();
 }
 
 static DELIVERED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -77,6 +80,32 @@ fn delivered_once(server_url: &str, message_id: &str) -> bool {
         delivered.pop_front();
     }
     true
+}
+
+fn display_mentions(snapshot: &Snapshot, text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
+            let mut end = i + 2;
+            while end < chars.len() && chars[end] != '>' {
+                end += 1;
+            }
+            if end < chars.len() {
+                let id: String = chars[i + 2..end].iter().collect();
+                if let Some(username) = snapshot.usernames.get(&id) {
+                    out.push('@');
+                    out.push_str(username);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn post(
@@ -118,7 +147,7 @@ fn post(
 
     show(&NativeNotification {
         title,
-        body: body.to_owned(),
+        body: display_mentions(snapshot, body),
         server_url: snapshot.server_url.clone(),
         channel_id: channel_id.to_owned(),
         message_id: message_id.to_owned(),
@@ -139,8 +168,10 @@ pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Me
 
     let content = message.content.as_deref().unwrap_or("");
     let lower = content.to_lowercase();
-    let mentioned = (!snapshot.my_username.is_empty()
-        && lower.contains(&format!("@{}", snapshot.my_username.to_lowercase())))
+    let mentioned = (!snapshot.me.is_empty()
+        && lower.contains(&format!("<@{}>", snapshot.me.to_lowercase())))
+        || (!snapshot.my_username.is_empty()
+            && lower.contains(&format!("@{}", snapshot.my_username.to_lowercase())))
         || lower.contains("@everyone")
         || lower.contains("@todos");
     if !mentioned {
