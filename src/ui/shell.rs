@@ -294,12 +294,19 @@ struct SuggestKeys {
     dismiss: bool,
 }
 
-/// Sugestão de figurinha enquanto se digita `:alguma`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuggestKind {
+    Sticker,
+    Mention,
+}
+
+/// Sugestão contextual do compositor: `:figurinha` ou `@pessoa`.
 #[derive(Clone, Debug)]
 pub struct Suggest {
-    /// Onde está o `:` que abriu a sugestão, em caracteres.
+    pub kind: SuggestKind,
+    /// Onde está o caractere que abriu a sugestão, em caracteres.
     pub start: usize,
-    /// Ids das figurinhas que combinam, na ordem em que aparecem.
+    /// Ids de emoji ou de membro, conforme `kind`.
     pub matches: Vec<String>,
     /// Qual delas está marcada.
     pub index: usize,
@@ -5311,13 +5318,19 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
         state.suggest = None;
         return;
     };
-    let Some((start, query)) = typing_shortcode(&state.composer, caret) else {
+
+    let candidate = typing_mention(&state.composer, caret)
+        .map(|(start, query)| (SuggestKind::Mention, start, query))
+        .or_else(|| {
+            typing_shortcode(&state.composer, caret)
+                .map(|(start, query)| (SuggestKind::Sticker, start, query))
+        });
+    let Some((kind, start, query)) = candidate else {
         state.suggest = None;
         state.suggest_muted = false;
         return;
     };
-    // Esc dispensou a lista para este apelido; ela só volta quando o que
-    // está sendo digitado mudar de lugar.
+
     if state.suggest_muted {
         if state.suggest_start == Some(start) {
             return;
@@ -5327,28 +5340,82 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
     state.suggest_start = Some(start);
 
     let needle = query.to_lowercase();
-    let matches: Vec<String> = store
-        .emojis
-        .iter()
-        .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
-        .map(|emoji| emoji.id.clone())
-        .take(8)
-        .collect();
+    let matches: Vec<String> = match kind {
+        SuggestKind::Sticker => store
+            .emojis
+            .iter()
+            .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
+            .map(|emoji| emoji.id.clone())
+            .take(8)
+            .collect(),
+        SuggestKind::Mention => {
+            let mut people: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| member.id != store.me)
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.username.to_lowercase().contains(&needle)
+                        || member.name.to_lowercase().contains(&needle)
+                })
+                .collect();
+            people.sort_by_key(|member| {
+                let username = member.username.to_lowercase();
+                let name = member.name.to_lowercase();
+                (
+                    !(needle.is_empty() || username.starts_with(&needle) || name.starts_with(&needle)),
+                    member.presence == Presence::Offline,
+                    username,
+                )
+            });
+            people
+                .into_iter()
+                .map(|member| member.id.clone())
+                .take(8)
+                .collect()
+        }
+    };
+
     if matches.is_empty() {
         state.suggest = None;
         return;
     }
-    // Mantém a escolha quando a lista não mudou: digitar mais uma letra não
-    // pode jogar a seleção de volta para o topo sem motivo.
     let index = match &state.suggest {
-        Some(previous) if previous.matches == matches => previous.index,
+        Some(previous) if previous.kind == kind && previous.matches == matches => previous.index,
         _ => 0,
     };
     state.suggest = Some(Suggest {
+        kind,
         start,
         matches,
         index: index.min(7),
     });
+}
+
+/// O `@nome` imediatamente antes do cursor. Diferente da figurinha, um
+/// `@` sozinho já abre a lista inteira para citar alguém rapidamente.
+fn typing_mention(text: &str, caret: usize) -> Option<(usize, String)> {
+    let chars: Vec<char> = text.chars().collect();
+    if caret > chars.len() {
+        return None;
+    }
+    let mut index = caret;
+    while index > 0 {
+        let c = chars[index - 1];
+        if c == '@' {
+            let start = index - 1;
+            if start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+                return None;
+            }
+            let query: String = chars[index..caret].iter().collect();
+            return Some((start, query));
+        }
+        if c.is_whitespace() || !c.is_alphanumeric() && c != '_' && c != '-' {
+            return None;
+        }
+        index -= 1;
+    }
+    None
 }
 
 /// O `:alguma` imediatamente antes do cursor, se houver. Devolve onde o
@@ -5394,15 +5461,26 @@ fn accept_suggestion(
     let (Some(caret), Some(chosen)) = (caret, suggest.matches.get(suggest.index)) else {
         return;
     };
-    let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == chosen) else {
-        return;
+
+    let replacement = match suggest.kind {
+        SuggestKind::Sticker => {
+            let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == chosen) else {
+                return;
+            };
+            format!(":{}:", emoji.name)
+        }
+        SuggestKind::Mention => {
+            let Some(member) = store.member(chosen) else {
+                return;
+            };
+            format!("@{} ", member.username)
+        }
     };
 
     let chars: Vec<char> = state.composer.chars().collect();
     if suggest.start > chars.len() || caret > chars.len() || suggest.start > caret {
         return;
     }
-    let replacement = format!(":{}:", emoji.name);
     let mut next: String = chars[..suggest.start].iter().collect();
     next.push_str(&replacement);
     let tail: String = chars[caret..].iter().collect();
@@ -5424,7 +5502,7 @@ fn accept_suggestion(
     }
 }
 
-/// Lista de figurinhas sugeridas, logo acima da caixa de mensagem.
+/// Lista de sugestões do compositor, logo acima da caixa de mensagem.
 ///
 /// Mora numa camada própria à frente de tudo. Desenhada solta dentro da
 /// conversa, ela ficava por baixo do que já tinha sido registrado ali e o
