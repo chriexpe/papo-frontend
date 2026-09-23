@@ -1220,9 +1220,7 @@ async fn worker(
                         let verified_owner =
                             me.lock().ok().and_then(|slot| slot.clone());
                         if !session.is_authenticated()
-                            || verified_owner
-                                .as_deref()
-                                .is_some_and(|verified| verified != owner_user_id)
+                            || verified_owner.as_deref() != Some(owner_user_id.as_str())
                         {
                             publish(
                                 &updates,
