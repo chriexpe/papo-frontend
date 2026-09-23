@@ -2168,6 +2168,9 @@ impl eframe::App for PapoApp {
         {
             crate::platform::native_text::begin_frame();
             crate::platform::native_field::begin_frame();
+            if self.settings.notifications {
+                crate::platform::android_message::ensure_permission();
+            }
         }
         self.attach_window(frame);
 
