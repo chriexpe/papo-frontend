@@ -5521,15 +5521,12 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
 
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    egui::Area::new(Id::new("sugestoes-de-figurinha"))
+    egui::Area::new(Id::new("sugestoes-do-compositor"))
         .order(egui::Order::Foreground)
         .fixed_pos(rect.min)
         .show(&ctx, |ui| {
             pill_surface(ui, state, t, rect);
             for (index, id) in suggest.matches.iter().enumerate() {
-                let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
-                    continue;
-                };
                 let slot = Rect::from_min_size(
                     egui::pos2(
                         rect.min.x + space::SM,
@@ -5556,31 +5553,82 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                     egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
                     Vec2::splat(20.0),
                 );
-                let texture = state
-                    .media
-                    .emoji(&emoji.id, emoji.blob.as_deref())
-                    .and_then(|texture| texture.frame(&ctx))
-                    .map(|handle| handle.id());
-                if let Some(texture) = texture {
-                    let mut mesh = egui::Mesh::with_texture(texture);
-                    mesh.add_rect_with_uv(
-                        art,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    ui.painter().add(egui::Shape::mesh(mesh));
+                match suggest.kind {
+                    SuggestKind::Sticker => {
+                        let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
+                            continue;
+                        };
+                        let texture = state
+                            .media
+                            .emoji(&emoji.id, emoji.blob.as_deref())
+                            .and_then(|texture| texture.frame(&ctx))
+                            .map(|handle| handle.id());
+                        if let Some(texture) = texture {
+                            let mut mesh = egui::Mesh::with_texture(texture);
+                            mesh.add_rect_with_uv(
+                                art,
+                                Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                            ui.painter().add(egui::Shape::mesh(mesh));
+                        }
+                        ui.painter().text(
+                            egui::pos2(art.max.x + space::MD, slot.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            format!(":{}:", emoji.name),
+                            text::body(),
+                            if index == suggest.index {
+                                t.label
+                            } else {
+                                t.label_secondary
+                            },
+                        );
+                    }
+                    SuggestKind::Mention => {
+                        let Some(member) = store.member(id) else {
+                            continue;
+                        };
+                        ui.painter().circle_filled(
+                            art.center(),
+                            art.width() / 2.0,
+                            t.accent.gamma_multiply(0.28),
+                        );
+                        ui.painter().text(
+                            art.center(),
+                            egui::Align2::CENTER_CENTER,
+                            member.initials(),
+                            text::footnote(),
+                            t.label,
+                        );
+                        let x = art.max.x + space::MD;
+                        ui.painter().text(
+                            egui::pos2(x, slot.center().y - 4.0),
+                            egui::Align2::LEFT_CENTER,
+                            &member.name,
+                            text::body(),
+                            if index == suggest.index {
+                                t.label
+                            } else {
+                                t.label_secondary
+                            },
+                        );
+                        ui.painter().text(
+                            egui::pos2(x, slot.center().y + 8.0),
+                            egui::Align2::LEFT_CENTER,
+                            format!("@{}", member.username),
+                            text::footnote(),
+                            t.label_tertiary,
+                        );
+                        ui.painter().circle_filled(
+                            egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
+                            3.0,
+                            presence_color(t, member.presence),
+                        );
+                    }
                 }
-                ui.painter().text(
-                    egui::pos2(art.max.x + space::MD, slot.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!(":{}:", emoji.name),
-                    text::body(),
-                    if index == suggest.index {
-                        t.label
-                    } else {
-                        t.label_secondary
-                    },
-                );
                 if response.clicked() {
                     chosen = Some(index);
                 }
