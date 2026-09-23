@@ -2,7 +2,7 @@
 //! WebSocket.
 
 pub mod call;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Local, Utc};
 use crate::api::models::{self, parse_hex_color, Attachment};
@@ -194,6 +194,30 @@ pub enum TimelineStatus {
 struct ActiveRefresh {
     ticket: RefreshTicket,
     barrier_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefreshDiagnostics {
+    pub generation: u64,
+    pub request_id: u64,
+    pub barrier_revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimelineDiagnostics {
+    pub channel_id: String,
+    pub status: TimelineStatus,
+    pub fresh_generation: Option<u64>,
+    pub active_refresh: Option<RefreshDiagnostics>,
+    pub journal_revision: u64,
+    pub journal_entries: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreDiagnostics {
+    pub sync_generation: u64,
+    pub selected_channel: String,
+    pub timelines: Vec<TimelineDiagnostics>,
 }
 
 #[derive(Clone, Debug)]
@@ -562,6 +586,52 @@ impl Store {
             Some(generation) if *generation == self.sync_generation => TimelineStatus::Fresh,
             Some(_) => TimelineStatus::Stale,
             None => TimelineStatus::Missing,
+        }
+    }
+
+    /// Projeção pequena e somente-leitura do estado de sincronização.
+    /// Não contém mensagens, credenciais ou URLs privadas.
+    pub fn diagnostics(&self) -> StoreDiagnostics {
+        let mut ids = BTreeSet::new();
+        ids.extend(self.channels.iter().map(|channel| channel.id.clone()));
+        ids.extend(self.channel_freshness.keys().cloned());
+        ids.extend(self.loading_channels.keys().cloned());
+        ids.extend(self.mutation_journals.keys().cloned());
+        if !self.selected_channel.is_empty() {
+            ids.insert(self.selected_channel.clone());
+        }
+
+        let timelines = ids
+            .into_iter()
+            .map(|channel_id| {
+                let active_refresh = self.loading_channels.get(&channel_id).map(|refresh| {
+                    RefreshDiagnostics {
+                        generation: refresh.ticket.generation,
+                        request_id: refresh.ticket.request_id,
+                        barrier_revision: refresh.barrier_revision,
+                    }
+                });
+                let (journal_revision, journal_entries) = self
+                    .mutation_journals
+                    .get(&channel_id)
+                    .map(|journal| (journal.revision, journal.entries.len()))
+                    .unwrap_or_default();
+
+                TimelineDiagnostics {
+                    status: self.timeline_status(&channel_id),
+                    fresh_generation: self.channel_freshness.get(&channel_id).copied(),
+                    active_refresh,
+                    journal_revision,
+                    journal_entries,
+                    channel_id,
+                }
+            })
+            .collect();
+
+        StoreDiagnostics {
+            sync_generation: self.sync_generation,
+            selected_channel: self.selected_channel.clone(),
+            timelines,
         }
     }
 
@@ -1763,6 +1833,78 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<[u8; 3]> {
         .max_by_key(|role| role.position)
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
+    #[test]
+    fn diagnostics_project_freshness_refresh_and_barrier_state() {
+        let mut store = Store::default();
+        store.sync_generation = 7;
+        store.selected_channel = "refreshing".to_owned();
+        store.channel_freshness.insert("fresh".to_owned(), 7);
+        store.channel_freshness.insert("stale".to_owned(), 6);
+        store.loading_channels.insert(
+            "refreshing".to_owned(),
+            ActiveRefresh {
+                ticket: RefreshTicket {
+                    channel_id: "refreshing".to_owned(),
+                    generation: 7,
+                    request_id: 42,
+                },
+                barrier_revision: 109,
+            },
+        );
+        store.mutation_journals.insert(
+            "refreshing".to_owned(),
+            ChannelMutationJournal {
+                revision: 111,
+                entries: VecDeque::from([
+                    JournalEntry {
+                        revision: 110,
+                        mutation: TimelineMutation::MessageDelete { id: "m1".to_owned() },
+                    },
+                    JournalEntry {
+                        revision: 111,
+                        mutation: TimelineMutation::MessageDelete { id: "m2".to_owned() },
+                    },
+                ]),
+            },
+        );
+
+        let diagnostics = store.diagnostics();
+        assert_eq!(diagnostics.sync_generation, 7);
+        assert_eq!(diagnostics.selected_channel, "refreshing");
+
+        let fresh = diagnostics.timelines.iter().find(|item| item.channel_id == "fresh").unwrap();
+        assert_eq!(fresh.status, TimelineStatus::Fresh);
+        assert_eq!(fresh.fresh_generation, Some(7));
+
+        let stale = diagnostics.timelines.iter().find(|item| item.channel_id == "stale").unwrap();
+        assert_eq!(stale.status, TimelineStatus::Stale);
+
+        let refreshing = diagnostics.timelines.iter().find(|item| item.channel_id == "refreshing").unwrap();
+        assert_eq!(refreshing.status, TimelineStatus::Refreshing);
+        assert_eq!(
+            refreshing.active_refresh,
+            Some(RefreshDiagnostics {
+                generation: 7,
+                request_id: 42,
+                barrier_revision: 109,
+            })
+        );
+        assert_eq!(refreshing.journal_revision, 111);
+        assert_eq!(refreshing.journal_entries, 2);
+    }
+
+    #[test]
+    fn diagnostics_do_not_expose_payloads_or_secrets() {
+        let mut store = Store::default();
+        store.sync_generation = 3;
+        store.selected_channel = "geral".to_owned();
+        let diagnostics = store.diagnostics();
+
+        assert_eq!(diagnostics.sync_generation, 3);
+        assert_eq!(diagnostics.timelines.len(), 1);
+        assert_eq!(diagnostics.timelines[0].channel_id, "geral");
+    }
+
 }
 
 #[cfg(test)]
