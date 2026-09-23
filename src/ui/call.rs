@@ -454,10 +454,10 @@ fn compact_pill(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
     );
-    let back = ui.interact(rect, egui::Id::new(("pastilha-da-call", floating)), Sense::click());
-    if back.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
+    // O fundo não pode competir pelo mesmo clique dos controles. Antes ele
+    // cobria a cápsula inteira, então o botão "sobrepor" podia disparar
+    // FloatCall(true) e logo depois OpenCall, anulando o overlay no desktop.
+    let back = ui.interact(rect, egui::Id::new(("pastilha-da-call", floating)), Sense::hover());
     super::shell::glass_backdrop(ui, state, rect, 18.0);
     ui.painter().rect(
         rect,
@@ -609,8 +609,17 @@ fn compact_pill(
         state.actions.push(ChatAction::ToggleMute);
     }
 
-    if back.clicked() && !floating {
-        state.actions.push(ChatAction::OpenCall);
+    if !floating {
+        let body_max_x = (rect.max.x - controls_width - space::MD * 2.0).max(rect.min.x);
+        let body = Rect::from_min_max(rect.min, egui::pos2(body_max_x, rect.max.y));
+        let response = ui.interact(body, egui::Id::new("corpo-da-pastilha-da-call"), Sense::click());
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.painter().rect_filled(rect, CornerRadius::same(18), t.fill_soft);
+        }
+        if response.clicked() {
+            state.actions.push(ChatAction::OpenCall);
+        }
     }
     rect
 }
@@ -1074,6 +1083,16 @@ fn controls_row(
             ChatAction::ToggleCamera,
         ),
     ];
+    if !windowed && !store.call.floating {
+        buttons.push((
+            icon::ARROWS_IN,
+            s.call_overlay,
+            false,
+            false,
+            ChatAction::FloatCall(true),
+        ));
+    }
+
     if store.call.popped_out {
         buttons.push((
             icon::ARROW_SQUARE_IN,
@@ -1083,6 +1102,7 @@ fn controls_row(
             ChatAction::PopOutCall(false),
         ));
     } else if !windowed {
+        #[cfg(not(target_os = "android"))]
         buttons.push((
             icon::ARROW_SQUARE_OUT,
             s.call_popout,
