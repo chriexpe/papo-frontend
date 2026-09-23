@@ -442,6 +442,8 @@ pub struct Workspace {
     /// Quantas mudanças de câmera a thread da call já publicou quando
     /// olhamos pela última vez.
     camera_revision: u64,
+    #[cfg(target_os = "android")]
+    notification_context: std::sync::Arc<crate::platform::android_message::Context>,
 }
 
 impl Workspace {
@@ -452,6 +454,20 @@ impl Workspace {
             Wake::new(move || repaint.request_repaint()),
             std::sync::Arc::new(crate::storage::FileSecretStore::new()),
         );
+
+        #[cfg(target_os = "android")]
+        let notification_context = {
+            let context = crate::platform::android_message::Context::new(
+                entry.url.clone(),
+                entry.label.clone(),
+            );
+            let callback_context = std::sync::Arc::clone(&context);
+            net.set_notification_callback(Some(std::sync::Arc::new(move |notification| {
+                crate::platform::android_message::received(&callback_context, notification);
+            })));
+            context
+        };
+
         // A mídia usa o cookie da sessão deste servidor para baixar anexos.
         let media = Media::spawn(
             entry.url.clone(),
@@ -478,7 +494,29 @@ impl Workspace {
             call_ready: false,
             watching: Vec::new(),
             camera_revision: 0,
+            #[cfg(target_os = "android")]
+            notification_context,
         }
+    }
+
+    #[cfg(target_os = "android")]
+    fn sync_notification_context(&self, enabled: bool, active: bool) {
+        crate::platform::android_message::sync_context(
+            &self.notification_context,
+            enabled,
+            active,
+            &self.label,
+            &self.store.selected_channel,
+            &self.store.me,
+            self.store
+                .channels
+                .iter()
+                .map(|channel| (channel.id.clone(), channel.name.clone())),
+            self.store
+                .members
+                .iter()
+                .map(|member| (member.id.clone(), member.name.clone())),
+        );
     }
 
     /// Como o trilho vê este servidor.
@@ -880,70 +918,6 @@ impl PapoApp {
             body: message.content.clone().unwrap_or_default(),
             tag: Some(message.channel_id.clone()),
         });
-    }
-
-    #[cfg(target_os = "android")]
-    fn maybe_notify_android(&self, index: usize, update: &crate::api::net::Update) {
-        use crate::api::net::Update;
-
-        if !self.settings.notifications {
-            return;
-        }
-        let Update::Notification(notification) = update else {
-            return;
-        };
-        let Some(channel_id) = notification.channel_id.as_deref() else {
-            return;
-        };
-        let Some(message_id) = notification.message_id.as_deref() else {
-            return;
-        };
-
-        let ws = &self.workspaces[index];
-        if notification.author_id.as_deref() == Some(ws.store.me.as_str()) {
-            return;
-        }
-
-        // Se esta conversa já está literalmente na frente, a mensagem está
-        // sendo lida; não empilhar uma notificação do sistema redundante.
-        let viewing = self.focused
-            && index == self.active
-            && ws.store.screen == Screen::Chat
-            && ws.store.selected_channel == channel_id;
-        if viewing {
-            return;
-        }
-
-        let author = notification
-            .author_id
-            .as_deref()
-            .and_then(|id| ws.store.member(id))
-            .map(|member| member.name.clone())
-            .or_else(|| notification.author_id.clone())
-            .unwrap_or_else(|| "Papo".to_owned());
-        let channel = ws
-            .store
-            .channel(channel_id)
-            .map(|channel| format!("#{}", channel.name))
-            .unwrap_or_default();
-
-        let title = match (channel.is_empty(), self.workspaces.len() > 1) {
-            (true, true) => format!("{author} · {}", ws.label),
-            (true, false) => author,
-            (false, true) => format!("{author} · {channel} · {}", ws.label),
-            (false, false) => format!("{author} · {channel}"),
-        };
-
-        crate::platform::android_message::show(
-            &crate::platform::android_message::NativeNotification {
-                title,
-                body: notification.message_content.clone().unwrap_or_default(),
-                server_url: ws.url.clone(),
-                channel_id: channel_id.to_owned(),
-                message_id: message_id.to_owned(),
-                notification_id: notification.id.clone(),
-            },
-        );
     }
 
     #[cfg(target_os = "android")]
@@ -1621,8 +1595,6 @@ impl PapoApp {
             while let Some(update) = self.workspaces[index].net.try_recv() {
                 #[cfg(target_os = "linux")]
                 self.maybe_notify(&self.workspaces[index], &update);
-                #[cfg(target_os = "android")]
-                self.maybe_notify_android(index, &update);
 
                 // Reconectou: o que aconteceu durante a queda vem da carga
                 // nova.
@@ -2124,6 +2096,18 @@ impl PapoApp {
 
  }
 
+#[cfg(target_os = "android")]
+impl PapoApp {
+    fn sync_android_notification_contexts(&self) {
+        for (index, workspace) in self.workspaces.iter().enumerate() {
+            workspace.sync_notification_context(
+                self.settings.notifications,
+                index == self.active,
+            );
+        }
+    }
+}
+
 impl eframe::App for PapoApp {
     /// Tira da área desenhável as bordas que o sistema ocupa.
     ///
@@ -2177,7 +2161,10 @@ impl eframe::App for PapoApp {
         self.attach_window(frame);
 
         #[cfg(target_os = "android")]
-        self.handle_android_notification_navigation(&ctx);
+        {
+            self.handle_android_notification_navigation(&ctx);
+            self.sync_android_notification_contexts();
+        }
 
         // Indo para segundo plano: gravar agora, porque pode não haver um
         // depois. Perder o foco é o último aviso que o aplicativo recebe
@@ -2203,6 +2190,9 @@ impl eframe::App for PapoApp {
         self.handle_window_lifecycle(&ctx);
 
         self.pump_network(&ctx);
+        #[cfg(target_os = "android")]
+        self.sync_android_notification_contexts();
+
         // A call segue viva com outro servidor na tela: o trilho troca a
         // conversa, não quem está falando.
         for ws in &mut self.workspaces {
