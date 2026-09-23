@@ -300,6 +300,9 @@ pub enum Update {
     Messages {
         ticket: RefreshTicket,
         messages: Vec<Message>,
+        /// Snapshot de pins lido junto com o histórico. None preserva o
+        /// cache anterior caso apenas a consulta de pins falhe.
+        pinned_ids: Option<Vec<String>>,
     },
     /// A carga de histórico falhou; a Store libera a tentativa correspondente.
     MessagesFailed(RefreshTicket),
@@ -919,8 +922,16 @@ async fn handle(
             let channel_id = ticket.channel_id.clone();
             match api.messages(&channel_id).await {
                 Ok(list) => {
-                    publish(updates, wake, Update::Messages { ticket, messages: list.messages });
-                    load_pinned(api, updates, wake, channel_id).await;
+                    let pinned_ids = fetch_pinned_ids(api, &channel_id).await;
+                    publish(
+                        updates,
+                        wake,
+                        Update::Messages {
+                            ticket,
+                            messages: list.messages,
+                            pinned_ids,
+                        },
+                    );
                 }
                 Err(error) => {
                     publish(updates, wake, Update::MessagesFailed(ticket));
@@ -1246,23 +1257,30 @@ async fn handle(
     }
 }
 
+async fn fetch_pinned_ids(api: &Api, channel_id: &str) -> Option<Vec<String>> {
+    match api.pinned(channel_id).await {
+        Ok(list) => Some(
+            list.pinned
+                .into_iter()
+                .map(|message| message.id)
+                .collect(),
+        ),
+        Err(ApiError::NotFound) => Some(Vec::new()),
+        Err(error) => {
+            log::warn!("fixadas: {error}");
+            None
+        }
+    }
+}
+
 async fn load_pinned(
     api: &Api,
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     channel_id: String,
 ) {
-    match api.pinned(&channel_id).await {
-        Ok(list) => {
-            let ids = list
-                .pinned
-                .into_iter()
-                .map(|message| message.id)
-                .collect();
-            publish(updates, wake, Update::Pinned { channel_id, ids });
-        }
-        Err(ApiError::NotFound) => {}
-        Err(error) => log::warn!("fixadas: {error}"),
+    if let Some(ids) = fetch_pinned_ids(api, &channel_id).await {
+        publish(updates, wake, Update::Pinned { channel_id, ids });
     }
 }
 

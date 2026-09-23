@@ -2,7 +2,7 @@
 //! WebSocket.
 
 pub mod call;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use chrono::{DateTime, Local, Utc};
 use crate::api::models::{self, parse_hex_color, Attachment};
@@ -190,6 +190,58 @@ pub enum TimelineStatus {
     Fresh,
 }
 
+#[derive(Clone, Debug)]
+struct ActiveRefresh {
+    ticket: RefreshTicket,
+    barrier_revision: u64,
+}
+
+#[derive(Clone, Debug)]
+enum TimelineMutation {
+    MessageUpsert(Message),
+    MessageEdit {
+        id: String,
+        content: String,
+    },
+    MessageDelete {
+        id: String,
+    },
+    MessagePinned {
+        message_id: String,
+        pinned: bool,
+    },
+    PreviewRemoved {
+        message_id: String,
+        preview_id: String,
+    },
+    PreviewUpsert {
+        message_id: String,
+        preview: models::LinkPreview,
+    },
+    AttachmentModeration {
+        message_id: String,
+        attachment_id: String,
+        status: String,
+    },
+    Reaction {
+        message_id: String,
+        emoji: Emoji,
+        count: i64,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct JournalEntry {
+    revision: u64,
+    mutation: TimelineMutation,
+}
+
+#[derive(Debug, Default)]
+struct ChannelMutationJournal {
+    revision: u64,
+    entries: VecDeque<JournalEntry>,
+}
+
 #[derive(Debug)]
 pub struct Store {
     pub screen: Screen,
@@ -208,8 +260,10 @@ pub struct Store {
     sync_generation: u64,
     /// Última geração em que cada canal recebeu uma carga REST autoritativa.
     channel_freshness: HashMap<String, u64>,
-    /// Refresh aceito atualmente por canal.
-    loading_channels: HashMap<String, RefreshTicket>,
+    /// Refresh aceito atualmente por canal, incluindo o barrier local.
+    loading_channels: HashMap<String, ActiveRefresh>,
+    /// Mutações live recebidas durante refreshes REST.
+    mutation_journals: HashMap<String, ChannelMutationJournal>,
     next_refresh_request_id: u64,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
@@ -260,6 +314,7 @@ impl Default for Store {
             sync_generation: 0,
             channel_freshness: HashMap::new(),
             loading_channels: HashMap::new(),
+            mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
             typing: HashMap::new(),
             read_marks: HashMap::new(),
@@ -499,18 +554,190 @@ impl Store {
 
     pub fn mark_loading(&mut self, channel_id: &str) -> RefreshTicket {
         self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
+        let journal = self
+            .mutation_journals
+            .entry(channel_id.to_owned())
+            .or_default();
+        // Uma tentativa nova supersede a anterior. Tudo que chegou antes
+        // deste ponto deve estar incluído no novo snapshot REST; só mutações
+        // posteriores ao barrier precisam de replay.
+        journal.entries.clear();
+        let barrier_revision = journal.revision;
         let ticket = RefreshTicket {
             channel_id: channel_id.to_owned(),
             generation: self.sync_generation,
             request_id: self.next_refresh_request_id,
         };
-        self.loading_channels.insert(channel_id.to_owned(), ticket.clone());
+        self.loading_channels.insert(
+            channel_id.to_owned(),
+            ActiveRefresh {
+                ticket: ticket.clone(),
+                barrier_revision,
+            },
+        );
         ticket
     }
 
     fn refresh_ticket_is_current(&self, ticket: &RefreshTicket) -> bool {
         ticket.generation == self.sync_generation
-            && self.loading_channels.get(&ticket.channel_id) == Some(ticket)
+            && self
+                .loading_channels
+                .get(&ticket.channel_id)
+                .is_some_and(|refresh| refresh.ticket == *ticket)
+    }
+
+    fn record_timeline_mutation(&mut self, channel_id: &str, mutation: TimelineMutation) {
+        if !self.loading_channels.contains_key(channel_id) {
+            return;
+        }
+        let journal = self
+            .mutation_journals
+            .entry(channel_id.to_owned())
+            .or_default();
+        journal.revision = journal.revision.saturating_add(1);
+        journal.entries.push_back(JournalEntry {
+            revision: journal.revision,
+            mutation,
+        });
+    }
+
+    fn channel_for_message(&self, message_id: &str) -> Option<String> {
+        self.messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .map(|message| message.channel_id.clone())
+            .or_else(|| {
+                self.mutation_journals.iter().find_map(|(channel_id, journal)| {
+                    journal.entries.iter().rev().find_map(|entry| {
+                        if let TimelineMutation::MessageUpsert(message) = &entry.mutation
+                            && message.id == message_id
+                        {
+                            Some(channel_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+            })
+    }
+
+    fn replay_timeline_mutations(&mut self, channel_id: &str, barrier_revision: u64) {
+        let mutations: Vec<TimelineMutation> = self
+            .mutation_journals
+            .get(channel_id)
+            .map(|journal| {
+                journal
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.revision > barrier_revision)
+                    .map(|entry| entry.mutation.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for mutation in mutations {
+            self.apply_timeline_mutation(mutation);
+        }
+    }
+
+    fn apply_timeline_mutation(&mut self, mutation: TimelineMutation) {
+        match mutation {
+            TimelineMutation::MessageUpsert(message) => {
+                self.messages.retain(|existing| !existing.pending);
+                self.upsert(message);
+            }
+            TimelineMutation::MessageEdit { id, content } => {
+                if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
+                    message.content = content;
+                    message.edited = true;
+                }
+            }
+            TimelineMutation::MessageDelete { id } => {
+                self.messages.retain(|message| message.id != id);
+            }
+            TimelineMutation::MessagePinned { message_id, pinned } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.pinned = pinned;
+                }
+            }
+            TimelineMutation::PreviewRemoved {
+                message_id,
+                preview_id,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.previews.retain(|preview| preview.id != preview_id);
+                }
+            }
+            TimelineMutation::PreviewUpsert {
+                message_id,
+                preview,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    match message
+                        .previews
+                        .iter_mut()
+                        .find(|existing| existing.id == preview.id)
+                    {
+                        Some(existing) => *existing = preview,
+                        None => message.previews.push(preview),
+                    }
+                }
+            }
+            TimelineMutation::AttachmentModeration {
+                message_id,
+                attachment_id,
+                status,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                    && let Some(attachment) = message
+                        .attachments
+                        .iter_mut()
+                        .find(|attachment| attachment.id == attachment_id)
+                {
+                    attachment.moderation_status = Some(status);
+                }
+            }
+            TimelineMutation::Reaction {
+                message_id,
+                emoji,
+                count,
+            } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    match message
+                        .reactions
+                        .iter_mut()
+                        .find(|reaction| reaction.emoji == emoji)
+                    {
+                        Some(reaction) => reaction.count = count.max(0) as u32,
+                        None if count > 0 => message.reactions.push(Reaction {
+                            emoji,
+                            count: count as u32,
+                            mine: false,
+                        }),
+                        None => {}
+                    }
+                    message.reactions.retain(|reaction| reaction.count > 0);
+                }
+            }
+        }
     }
 
     // -- Não lidos ---------------------------------------------------------
@@ -733,15 +960,46 @@ impl Store {
                     .collect();
                 self.sort_members();
             }
-            Update::Messages { ticket, messages } => {
+            Update::Messages {
+                ticket,
+                messages,
+                pinned_ids,
+            } => {
                 if self.refresh_ticket_is_current(&ticket) {
                     let channel_id = ticket.channel_id.clone();
+                    let barrier_revision = self
+                        .loading_channels
+                        .get(&channel_id)
+                        .map(|refresh| refresh.barrier_revision)
+                        .unwrap_or_default();
+                    let previous_pins: HashSet<String> = self
+                        .messages
+                        .iter()
+                        .filter(|message| message.channel_id == channel_id && message.pinned)
+                        .map(|message| message.id.clone())
+                        .collect();
+                    let pinned: HashSet<String> = pinned_ids
+                        .map(|ids| ids.into_iter().collect())
+                        .unwrap_or(previous_pins);
+
                     self.messages.retain(|message| message.channel_id != channel_id);
                     let me = self.me.clone();
-                    self.messages.extend(messages.into_iter().map(|message| convert(message, &me)));
+                    self.messages.extend(messages.into_iter().map(|message| {
+                        let mut message = convert(message, &me);
+                        message.pinned = pinned.contains(&message.id);
+                        message
+                    }));
                     self.sort_messages();
+
+                    // O snapshot só vira autoridade depois de reaplicar tudo
+                    // que chegou pelo WebSocket após o barrier deste ticket.
+                    self.replay_timeline_mutations(&channel_id, barrier_revision);
+                    self.sort_messages();
+
                     self.loading_channels.remove(&channel_id);
-                    self.channel_freshness.insert(channel_id, ticket.generation);
+                    self.channel_freshness
+                        .insert(channel_id.clone(), ticket.generation);
+                    self.mutation_journals.remove(&channel_id);
                 }
             }
             Update::MessagesFailed(ticket) => {
@@ -857,11 +1115,12 @@ impl Store {
             Event::Message(message) => {
                 let me = self.me.clone();
                 let message = convert(*message, &me);
-                // O barrier REST/WS entra no PR seguinte; por enquanto só
-                // projetamos live events em timeline já fresca desta geração.
+                let mutation = TimelineMutation::MessageUpsert(message.clone());
+                self.record_timeline_mutation(&message.channel_id, mutation.clone());
+                // Durante stale/refreshing continuamos sem projetar creates
+                // imediatamente; o replay após o snapshot garante a convergência.
                 if self.timeline_status(&message.channel_id) == TimelineStatus::Fresh {
-                    self.messages.retain(|existing| !existing.pending);
-                    self.upsert(message.clone());
+                    self.apply_timeline_mutation(mutation);
                 }
                 let mention = self.mentions_me(&message);
                 if message.channel_id != self.selected_channel
@@ -882,28 +1141,28 @@ impl Store {
             }
             Event::MessageEdited {
                 id,
-                channel_id: _,
+                channel_id,
                 content,
             } => {
-                if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
-                    message.content = content;
-                    message.edited = true;
-                }
+                let mutation = TimelineMutation::MessageEdit { id, content };
+                self.record_timeline_mutation(&channel_id, mutation.clone());
+                self.apply_timeline_mutation(mutation);
             }
-            Event::MessageDeleted { id, .. } => {
-                self.messages.retain(|message| message.id != id);
+            Event::MessageDeleted { id, channel_id } => {
+                let mutation = TimelineMutation::MessageDelete { id };
+                self.record_timeline_mutation(&channel_id, mutation.clone());
+                self.apply_timeline_mutation(mutation);
             }
             Event::MessagePinned {
                 message_id,
                 pinned,
             } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.pinned = pinned;
+                let channel_id = self.channel_for_message(&message_id);
+                let mutation = TimelineMutation::MessagePinned { message_id, pinned };
+                if let Some(channel_id) = channel_id {
+                    self.record_timeline_mutation(&channel_id, mutation.clone());
                 }
+                self.apply_timeline_mutation(mutation);
             }
             Event::NewPreview { .. } => {
                 // O worker de rede resolve new_preview para LinkPreviewUpdated
@@ -913,49 +1172,45 @@ impl Store {
                 message_id,
                 preview_id,
             } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.previews.retain(|preview| preview.id != preview_id);
+                let channel_id = self.channel_for_message(&message_id);
+                let mutation = TimelineMutation::PreviewRemoved {
+                    message_id,
+                    preview_id,
+                };
+                if let Some(channel_id) = channel_id {
+                    self.record_timeline_mutation(&channel_id, mutation.clone());
                 }
+                self.apply_timeline_mutation(mutation);
             }
             Event::LinkPreviewUpdated {
                 message_id,
                 preview,
             } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    match message
-                        .previews
-                        .iter_mut()
-                        .find(|existing| existing.id == preview.id)
-                    {
-                        Some(existing) => *existing = preview,
-                        None => message.previews.push(preview),
-                    }
+                let channel_id = self.channel_for_message(&message_id);
+                let mutation = TimelineMutation::PreviewUpsert {
+                    message_id,
+                    preview,
+                };
+                if let Some(channel_id) = channel_id {
+                    self.record_timeline_mutation(&channel_id, mutation.clone());
                 }
+                self.apply_timeline_mutation(mutation);
             }
             Event::AttachmentModeration {
                 message_id,
                 attachment_id,
                 status,
             } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                    && let Some(attachment) = message
-                        .attachments
-                        .iter_mut()
-                        .find(|attachment| attachment.id == attachment_id)
-                {
-                    attachment.moderation_status = Some(status);
+                let channel_id = self.channel_for_message(&message_id);
+                let mutation = TimelineMutation::AttachmentModeration {
+                    message_id,
+                    attachment_id,
+                    status,
+                };
+                if let Some(channel_id) = channel_id {
+                    self.record_timeline_mutation(&channel_id, mutation.clone());
                 }
+                self.apply_timeline_mutation(mutation);
             }
             Event::Typing {
                 channel_id,
@@ -1031,6 +1286,9 @@ impl Store {
             Event::ChannelDeleted { id } => {
                 self.channels.retain(|channel| channel.id != id);
                 self.messages.retain(|message| message.channel_id != id);
+                self.loading_channels.remove(&id);
+                self.mutation_journals.remove(&id);
+                self.channel_freshness.remove(&id);
                 if self.selected_channel == id {
                     self.selected_channel = self
                         .channels
@@ -1113,26 +1371,16 @@ impl Store {
                 let Some(emoji) = Emoji::from_parts(unicode, emoji_id) else {
                     return;
                 };
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    match message
-                        .reactions
-                        .iter_mut()
-                        .find(|reaction| reaction.emoji == emoji)
-                    {
-                        Some(reaction) => reaction.count = count.max(0) as u32,
-                        None if count > 0 => message.reactions.push(Reaction {
-                            emoji,
-                            count: count as u32,
-                            mine: false,
-                        }),
-                        None => {}
-                    }
-                    message.reactions.retain(|reaction| reaction.count > 0);
+                let channel_id = self.channel_for_message(&message_id);
+                let mutation = TimelineMutation::Reaction {
+                    message_id,
+                    emoji,
+                    count,
+                };
+                if let Some(channel_id) = channel_id {
+                    self.record_timeline_mutation(&channel_id, mutation.clone());
                 }
+                self.apply_timeline_mutation(mutation);
             }
         }
     }
@@ -1278,9 +1526,58 @@ mod tests {
             Some(channel_id.to_owned())
         );
         let ticket = store.mark_loading(channel_id);
-        store.apply(Update::Messages { ticket, messages: Vec::new() });
+        store.apply(Update::Messages { ticket, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.channel_needing_messages(), None);
         store
+    }
+
+    fn wire_message(id: &str, channel_id: &str, content: &str) -> models::Message {
+        models::Message {
+            id: id.to_owned(),
+            channel_id: channel_id.to_owned(),
+            author_id: "outro".to_owned(),
+            content: Some(content.to_owned()),
+            created_at: Utc::now(),
+            edited_at: None,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            user_reactions: Vec::new(),
+        }
+    }
+
+    fn finish_snapshot(
+        store: &mut Store,
+        ticket: RefreshTicket,
+        messages: Vec<models::Message>,
+    ) {
+        store.apply(Update::Messages {
+            ticket,
+            messages,
+            pinned_ids: Some(Vec::new()),
+        });
+    }
+
+    fn store_com_mensagem(channel_id: &str, message_id: &str, content: &str) -> Store {
+        let mut store = Store {
+            selected_channel: channel_id.to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading(channel_id);
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message(message_id, channel_id, content)],
+        );
+        store
+    }
+
+    fn perder_continuidade(store: &mut Store) {
+        store.apply(Update::Connection(Connection::Offline));
+        store.apply(Update::Connection(Connection::Connecting));
+        store.apply(Update::Connection(Connection::Online));
     }
 
     #[test]
@@ -1440,9 +1737,9 @@ mod tests {
         store.apply(Update::Connection(Connection::Online));
         let atual = store.mark_loading("geral");
 
-        store.apply(Update::Messages { ticket: antiga, messages: Vec::new() });
+        store.apply(Update::Messages { ticket: antiga, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new() });
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -1454,9 +1751,9 @@ mod tests {
         let segunda = store.mark_loading("geral");
         assert_ne!(primeira.request_id, segunda.request_id);
 
-        store.apply(Update::Messages { ticket: primeira, messages: Vec::new() });
+        store.apply(Update::Messages { ticket: primeira, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: segunda, messages: Vec::new() });
+        store.apply(Update::Messages { ticket: segunda, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -1468,7 +1765,7 @@ mod tests {
         let atual = store.mark_loading("geral");
         store.apply(Update::MessagesFailed(antiga));
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new() });
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -1483,6 +1780,253 @@ mod tests {
         store.apply(Update::Connection(Connection::Connecting));
         store.apply(Update::Connection(Connection::Online));
         assert_eq!(store.sync_generation(), 1);
+    }
+
+    #[test]
+    fn mensagem_live_durante_refresh_sobrevive_ao_snapshot() {
+        let mut store = store_com_mensagem("geral", "antiga", "antes");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("nova", "geral", "live"),
+        )))));
+        assert!(store.message("nova").is_none());
+
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("antiga", "geral", "antes")],
+        );
+
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
+        assert_eq!(
+            store.messages.iter().filter(|message| message.id == "nova").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn edicao_live_durante_refresh_nao_e_revertida() {
+        let mut store = store_com_mensagem("geral", "m1", "velho");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "novo".to_owned(),
+        })));
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "velho")],
+        );
+
+        assert_eq!(store.message("m1").map(|message| message.content.as_str()), Some("novo"));
+    }
+
+    #[test]
+    fn delete_live_durante_refresh_nao_ressuscita_mensagem() {
+        let mut store = store_com_mensagem("geral", "m1", "existe");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+
+        store.apply(Update::Event(Box::new(Event::MessageDeleted {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+        })));
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "existe")],
+        );
+
+        assert!(store.message("m1").is_none());
+    }
+
+    #[test]
+    fn snapshot_e_evento_duplicado_convergem_em_uma_mensagem() {
+        let mut store = store_com_mensagem("geral", "antiga", "antes");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "live"),
+        )))));
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "snapshot")],
+        );
+
+        let found: Vec<&Message> = store
+            .messages
+            .iter()
+            .filter(|message| message.id == "m1")
+            .collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].content, "live");
+    }
+
+    #[test]
+    fn resposta_de_geracao_antiga_nao_toca_barrier_atual() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let antiga = store.mark_loading("geral");
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "geracao-antiga".to_owned(),
+        })));
+
+        perder_continuidade(&mut store);
+        let atual = store.mark_loading("geral");
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "geracao-atual".to_owned(),
+        })));
+
+        finish_snapshot(
+            &mut store,
+            antiga,
+            vec![wire_message("m1", "geral", "snapshot-antigo")],
+        );
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
+
+        finish_snapshot(
+            &mut store,
+            atual,
+            vec![wire_message("m1", "geral", "snapshot-atual")],
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("geracao-atual")
+        );
+    }
+
+    #[test]
+    fn resposta_supersedida_na_mesma_geracao_nao_toca_barrier_novo() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let primeira = store.mark_loading("geral");
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "entre-a-e-b".to_owned(),
+        })));
+
+        let segunda = store.mark_loading("geral");
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "depois-de-b".to_owned(),
+        })));
+
+        finish_snapshot(
+            &mut store,
+            primeira,
+            vec![wire_message("m1", "geral", "snapshot-a")],
+        );
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
+
+        finish_snapshot(
+            &mut store,
+            segunda,
+            vec![wire_message("m1", "geral", "entre-a-e-b")],
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("depois-de-b")
+        );
+    }
+
+    #[test]
+    fn falha_de_refresh_mantem_cache_stale_e_permite_retry() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "live".to_owned(),
+        })));
+
+        store.apply(Update::MessagesFailed(ticket));
+
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("live")
+        );
+        assert_eq!(store.channel_needing_messages(), Some("geral".to_owned()));
+    }
+
+    #[test]
+    fn trocar_de_canal_durante_refresh_nao_muda_selecao() {
+        let mut store = store_com_mensagem("a", "m1", "base");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("a");
+        store.selected_channel = "b".to_owned();
+
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "a", "reconciliado")],
+        );
+
+        assert_eq!(store.selected_channel, "b");
+        assert_eq!(store.timeline_status("a"), TimelineStatus::Fresh);
+        assert_eq!(store.timeline_status("b"), TimelineStatus::Missing);
+    }
+
+    #[test]
+    fn journals_de_servidores_diferentes_ficam_isolados() {
+        let mut primeiro = store_com_mensagem("a", "m-a", "base-a");
+        let segundo = store_com_mensagem("b", "m-b", "base-b");
+
+        perder_continuidade(&mut primeiro);
+        let ticket = primeiro.mark_loading("a");
+        primeiro.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m-a".to_owned(),
+            channel_id: "a".to_owned(),
+            content: "live-a".to_owned(),
+        })));
+        finish_snapshot(
+            &mut primeiro,
+            ticket,
+            vec![wire_message("m-a", "a", "snapshot-a")],
+        );
+
+        assert_eq!(
+            primeiro.message("m-a").map(|message| message.content.as_str()),
+            Some("live-a")
+        );
+        assert_eq!(
+            segundo.message("m-b").map(|message| message.content.as_str()),
+            Some("base-b")
+        );
+        assert_eq!(segundo.timeline_status("b"), TimelineStatus::Fresh);
+    }
+
+    #[test]
+    fn pin_live_durante_refresh_sobrevive_snapshot_de_pins() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+
+        store.apply(Update::Event(Box::new(Event::MessagePinned {
+            message_id: "m1".to_owned(),
+            pinned: true,
+        })));
+        store.apply(Update::Messages {
+            ticket,
+            messages: vec![wire_message("m1", "geral", "base")],
+            pinned_ids: Some(Vec::new()),
+        });
+
+        assert!(store.message("m1").is_some_and(|message| message.pinned));
     }
 
     #[test]
