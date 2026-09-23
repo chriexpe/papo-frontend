@@ -1325,6 +1325,14 @@ impl PapoApp {
                 // acontecia, sem uma palavra de explicação.
                 if channel_id.is_empty() {
                     ws.store.error = Some(s.no_channel_selected.to_owned());
+                    if attachments.is_empty() {
+                        let (visible, bindings) =
+                            ws.store.display_mentions_with_bindings(&wire_content);
+                        self.ui.composer = visible;
+                        self.ui.composer_mentions = bindings;
+                        self.ui.replying = reply_to;
+                        self.ui.reply_notify = notify_reply;
+                    }
                     return;
                 }
                 // Texto comum entra na fila persistente. O Net só publica o
@@ -1336,6 +1344,12 @@ impl PapoApp {
                     if owner_user_id.is_empty() {
                         ws.store.error =
                             Some("sessão ainda não verificada para enviar".to_owned());
+                        let (visible, bindings) =
+                            ws.store.display_mentions_with_bindings(&wire_content);
+                        self.ui.composer = visible;
+                        self.ui.composer_mentions = bindings;
+                        self.ui.replying = reply_to;
+                        self.ui.reply_notify = notify_reply;
                         return;
                     }
                     ws.net.send(Command::QueueMessage {
