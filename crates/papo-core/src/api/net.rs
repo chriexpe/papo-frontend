@@ -686,6 +686,74 @@ fn restore_outgoing(
     }
 }
 
+fn outgoing_match(
+    outgoing: &[CachedOutgoing],
+    owner: &str,
+    message: &Message,
+) -> Option<usize> {
+    const WINDOW_MS: i64 = 120_000;
+    let content = message.content.as_deref().unwrap_or_default();
+    let created_at = message.created_at.timestamp_millis();
+    let mut matches = outgoing
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.owner_user_id == owner
+                && matches!(
+                    item.state,
+                    OutgoingState::Sending | OutgoingState::UnknownOutcome
+                )
+                && item.channel_id == message.channel_id
+                && item.content == content
+                && item.reply_to == message.reply_to
+                && item.created_at.abs_diff(created_at) <= WINDOW_MS as u64
+        })
+        .map(|(index, _)| index);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn reconcile_outgoing_message(
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+    message: &Message,
+) -> bool {
+    let Some(index) = outgoing_match(outgoing, owner, message) else {
+        return false;
+    };
+    let local_id = outgoing[index].local_id.clone();
+    match cache.confirm_outgoing(scope, &local_id, CachedMessage::from_api(message)) {
+        Ok(()) => {
+            log::info!(
+                "outgoing {scope}: reconciled local={} server_message={}",
+                short_local_id(&local_id),
+                message.id
+            );
+            outgoing.remove(index);
+            publish(
+                updates,
+                wake,
+                Update::SendConfirmed {
+                    local_id,
+                    message: Box::new(message.clone()),
+                },
+            );
+            true
+        }
+        Err(error) => {
+            log::warn!(
+                "outgoing {scope}: reconciliação durável falhou local={}: {error}",
+                short_local_id(&local_id)
+            );
+            false
+        }
+    }
+}
+
 async fn drive_outgoing(
     api: &Api,
     cache: &ClientDb,
@@ -1289,6 +1357,17 @@ async fn worker(
                 hooks.event.emit(&event);
 
                 if let Event::Message(message) = &event {
+                    if let Some(owner) = outgoing_owner.as_deref() {
+                        let _ = reconcile_outgoing_message(
+                            cache.as_ref(),
+                            &storage_key,
+                            owner,
+                            &updates,
+                            &wake,
+                            &mut outgoing,
+                            message,
+                        );
+                    }
                     recent_message_channels
                         .insert(message.id.clone(), message.channel_id.clone());
                     if recent_message_channels.len() > 256 {
@@ -1419,6 +1498,21 @@ async fn worker(
                                 );
                             }
                             for update in completion.updates {
+                                if let Update::Messages { messages, .. } = &update
+                                    && let Some(owner) = outgoing_owner.as_deref()
+                                {
+                                    for message in messages {
+                                        let _ = reconcile_outgoing_message(
+                                            cache.as_ref(),
+                                            &storage_key,
+                                            owner,
+                                            &updates,
+                                            &wake,
+                                            &mut outgoing,
+                                            message,
+                                        );
+                                    }
+                                }
                                 publish_runtime(&storage_key, &updates, &wake, update);
                             }
                         }
