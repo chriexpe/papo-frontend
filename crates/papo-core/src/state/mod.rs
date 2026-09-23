@@ -1257,11 +1257,34 @@ impl Store {
                     self.channel_freshness
                         .insert(channel_id.clone(), ticket.generation);
                     self.mutation_journals.remove(&channel_id);
+                    log::debug!(
+                        "timeline reconciled channel={} generation={} request={} barrier={}",
+                        channel_id,
+                        ticket.generation,
+                        ticket.request_id,
+                        barrier_revision
+                    );
+                } else {
+                    log::debug!(
+                        "ignored refresh completion channel={} generation={} request={}: ticket is no longer current (store generation={})",
+                        ticket.channel_id,
+                        ticket.generation,
+                        ticket.request_id,
+                        self.sync_generation
+                    );
                 }
             }
             Update::MessagesFailed(ticket) => {
                 if self.refresh_ticket_is_current(&ticket) {
                     self.loading_channels.remove(&ticket.channel_id);
+                } else {
+                    log::debug!(
+                        "ignored failed refresh channel={} generation={} request={}: ticket is no longer current (store generation={})",
+                        ticket.channel_id,
+                        ticket.generation,
+                        ticket.request_id,
+                        self.sync_generation
+                    );
                 }
             }
             Update::Sent(message) => {
