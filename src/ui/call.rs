@@ -432,8 +432,9 @@ fn compact_pill(
     let avatar_size = 22.0;
     let avatar_gap = 4.0;
     let speaker_chrome = space::SM * 2.0 + 1.0;
-    let max_width = (area.width() * 0.56 - space::SM)
-        .clamp(controls_only, 320.0);
+    // `area` já é o corredor real entre a pastilha do canal e a de
+    // busca/fixadas/membros. Nunca crescer para baixo delas.
+    let max_width = (area.width() - space::SM * 2.0).max(controls_only);
     let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
     let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
         as usize)
@@ -525,11 +526,13 @@ fn compact_pill(
             person.and_then(|p| p.role_color.map(rgb)),
             texture,
         );
-        child.painter().circle_stroke(
-            ring.rect.center(),
-            ring.rect.width() / 2.0 + 1.5,
-            Stroke::new(1.5, t.online),
-        );
+        if store.call.speaking(user_id) {
+            child.painter().circle_stroke(
+                ring.rect.center(),
+                ring.rect.width() / 2.0 + 1.5,
+                Stroke::new(1.5, t.online),
+            );
+        }
         x += avatar_size + avatar_gap;
     }
 
@@ -653,8 +656,9 @@ pub fn floating(
     t: &Tokens,
     s: &Strings,
     area: Rect,
+    pill_area: Rect,
 ) {
-    let pill = compact_pill(ui, store, state, t, s, area, true);
+    let pill = compact_pill(ui, store, state, t, s, pill_area, true);
     let limit: usize = match state.call_video_tiles {
         1 => 1,
         4 => 4,
