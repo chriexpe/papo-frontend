@@ -86,6 +86,9 @@ pub enum Command {
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
+    /// Testa imediatamente a saúde do WebSocket atual ou antecipa a próxima
+    /// tentativa caso ele já esteja reconectando.
+    ProbeConnection,
     LoadMessages {
         channel_id: String,
     },
@@ -406,6 +409,8 @@ async fn worker(
     let me: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
     let (status_tx, mut status_rx) = mpsc::unbounded_channel();
+    let (mut probe_tx, probe_rx) = mpsc::unbounded_channel();
+    let mut probe_rx = Some(probe_rx);
     let (mut outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
@@ -448,13 +453,14 @@ async fn worker(
         let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
         match (session.is_authenticated() && verified, socket.is_some()) {
             (true, false) => {
-                if let Some(receiver) = outbound_rx.take() {
+                if let (Some(receiver), Some(probes)) = (outbound_rx.take(), probe_rx.take()) {
                     socket = Some(start_socket(
                         &api,
                         &session,
                         &events_tx,
                         &status_tx,
                         receiver,
+                        probes,
                     ));
                 }
             }
@@ -467,6 +473,9 @@ async fn worker(
                 let (tx, rx) = mpsc::unbounded_channel();
                 outbound_tx = tx;
                 outbound_rx = Some(rx);
+                let (tx, rx) = mpsc::unbounded_channel();
+                probe_tx = tx;
+                probe_rx = Some(rx);
                 publish(&updates, &wake, Update::Connection(Connection::Offline));
             }
             _ => {}
@@ -475,6 +484,10 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
+                if matches!(command, Command::ProbeConnection) {
+                    let _ = probe_tx.send(());
+                    continue;
+                }
                 handle(
                     &api,
                     &base_url,
@@ -646,6 +659,7 @@ fn start_socket(
     events: &mpsc::UnboundedSender<Event>,
     status: &mpsc::UnboundedSender<Connection>,
     outbound: mpsc::UnboundedReceiver<String>,
+    probe: mpsc::UnboundedReceiver<()>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(ws::run(
         api.clone(),
@@ -653,6 +667,7 @@ fn start_socket(
         events.clone(),
         status.clone(),
         outbound,
+        probe,
     ))
 }
 
@@ -770,6 +785,8 @@ async fn handle(
             let id = me.lock().ok().and_then(|slot| slot.clone());
             bootstrap(api, updates, wake, id.as_deref()).await
         }
+        // Consumido no laço do worker antes de chegar aqui.
+        Command::ProbeConnection => {}
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
             Ok(list) => {
                 publish(

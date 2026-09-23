@@ -2071,6 +2071,22 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
+        #[cfg(target_os = "android")]
+        if crate::platform::android_call::take_resumed() {
+            // O servidor ativo não é especial para a rede: todos os
+            // workspaces autenticados já têm worker próprio. Ao voltar do
+            // background testamos todos de uma vez; socket saudável continua,
+            // socket zumbi cai pelo heartbeat e reconecta, e quem estava em
+            // backoff tenta imediatamente.
+            for ws in &self.workspaces {
+                ws.net.send(Command::ProbeConnection);
+            }
+            log::debug!(
+                "retorno ao foreground: testando {} websocket(s)",
+                self.workspaces.len()
+            );
+        }
+
         // Indo para segundo plano: gravar agora, porque pode não haver um
         // depois. Perder o foco é o último aviso que o aplicativo recebe
         // antes de o sistema poder encerrá-lo sem mais nada.
