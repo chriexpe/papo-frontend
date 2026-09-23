@@ -210,6 +210,7 @@ struct PresenceSyncPayload {
 pub async fn run(
     api: Api,
     session: Arc<Session>,
+    scope: String,
     events: mpsc::UnboundedSender<Event>,
     status: mpsc::UnboundedSender<Connection>,
     mut outbound: mpsc::UnboundedReceiver<String>,
@@ -226,6 +227,7 @@ pub async fn run(
         match connect(
             &api,
             &session,
+            &scope,
             &events,
             &status,
             &mut outbound,
@@ -235,10 +237,12 @@ pub async fn run(
         {
             Ok(()) => {
                 backoff = BACKOFF_MIN;
-                log::info!("websocket {endpoint}: encerrado; reconectando");
+                log::info!(
+                    "runtime {scope}: websocket {endpoint}: encerrado; reconectando"
+                );
             }
             Err(error) => {
-                log::warn!("websocket {endpoint}: caiu: {error}");
+                log::warn!("runtime {scope}: websocket {endpoint}: caiu: {error}");
             }
         }
 
@@ -253,7 +257,9 @@ pub async fn run(
                 }
                 // Voltar ao foreground não deve esperar um backoff antigo.
                 backoff = BACKOFF_MIN;
-                log::debug!("websocket {endpoint}: nova tentativa antecipada");
+                log::debug!(
+                    "runtime {scope}: websocket {endpoint}: nova tentativa antecipada"
+                );
             }
         }
     }
@@ -262,6 +268,7 @@ pub async fn run(
 async fn connect(
     api: &Api,
     session: &Session,
+    scope: &str,
     events: &mpsc::UnboundedSender<Event>,
     status: &mpsc::UnboundedSender<Connection>,
     outbound: &mut mpsc::UnboundedReceiver<String>,
@@ -286,7 +293,7 @@ async fn connect(
     .await
     .map_err(|_| "timeout no handshake".to_owned())?
     .map_err(|e| e.to_string())?;
-    log::info!("websocket {}: conectado", api.websocket_url());
+    log::info!("runtime {scope}: websocket {}: conectado", api.websocket_url());
     let _ = status.send(Connection::Online);
     let (mut sink, mut source) = stream.split();
 

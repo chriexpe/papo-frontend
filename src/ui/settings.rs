@@ -13,7 +13,15 @@
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
 
 use crate::i18n::Strings;
-use crate::state::Store;
+use crate::api::net::{ReconcileJobState, RuntimeDiagnostics};
+use crate::state::{Store, StoreDiagnostics};
+
+pub struct WorkspaceDiagnostics {
+    pub label: String,
+    pub server_key: String,
+    pub runtime: RuntimeDiagnostics,
+    pub store: StoreDiagnostics,
+}
 
 use super::theme::{radius, space, text, Tokens};
 
@@ -32,6 +40,7 @@ pub enum AppPane {
     Files,
     Language,
     Sessions,
+    Diagnostics,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,13 +53,14 @@ pub enum ServerPane {
 }
 
 impl AppPane {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Account,
         Self::Appearance,
         Self::Alerts,
         Self::Files,
         Self::Language,
         Self::Sessions,
+        Self::Diagnostics,
     ];
 
     fn title(self, s: &Strings) -> &'static str {
@@ -61,6 +71,7 @@ impl AppPane {
             Self::Files => s.pane_files,
             Self::Language => s.language,
             Self::Sessions => s.sessions,
+            Self::Diagnostics => "Diagnostics",
         }
     }
 }
@@ -870,6 +881,7 @@ pub struct Context<'a> {
     pub record_button: &'a mut bool,
     pub ask_download: &'a mut bool,
     pub download_dir: Option<String>,
+    pub diagnostics: &'a [WorkspaceDiagnostics],
 }
 
 /// Desenha a folha, ancorada na pastilha que a abriu.
@@ -1321,6 +1333,91 @@ fn app_pane(
                     }
                 }
             });
+        }
+
+        AppPane::Diagnostics => {
+            section(ui, t, "Runtime diagnostics");
+            for workspace in data.diagnostics {
+                let title = if workspace.label.is_empty() {
+                    workspace.server_key.as_str()
+                } else {
+                    workspace.label.as_str()
+                };
+                section(ui, t, title);
+                group(ui, t, |rows| {
+                    let runtime = &workspace.runtime;
+                    let connection = format!("{:?}", runtime.connection);
+                    rows.row("Server key", Some(&workspace.server_key), |_, _| {});
+                    rows.row("Connection", Some(&connection), |_, _| {});
+                    rows.row(
+                        "Generation",
+                        Some(&runtime.sync_generation.to_string()),
+                        |_, _| {},
+                    );
+                    let scheduler = format!(
+                        "{} running / {} queued / limit {}",
+                        runtime.scheduler.running,
+                        runtime.scheduler.queued,
+                        runtime.scheduler.capacity
+                    );
+                    rows.row("Scheduler", Some(&scheduler), |_, _| {});
+                    for job in &runtime.scheduler.jobs {
+                        let state = match job.state {
+                            ReconcileJobState::Queued => "queued",
+                            ReconcileJobState::Running => "running",
+                        };
+                        let detail = format!(
+                            "{} · {} · gen {}{}{}",
+                            state,
+                            job.priority,
+                            job.generation,
+                            job.request_id
+                                .map(|id| format!(" · request {id}"))
+                                .unwrap_or_default(),
+                            if job.retry_blocked { " · retry gated" } else { "" }
+                        );
+                        rows.row(&job.key, Some(&detail), |_, _| {});
+                    }
+                });
+
+                if workspace.store.timelines.is_empty() {
+                    group(ui, t, |rows| {
+                        rows.row("Timelines", Some("no cached timeline state"), |_, _| {});
+                    });
+                    continue;
+                }
+
+                group(ui, t, |rows| {
+                    for timeline in &workspace.store.timelines {
+                        let mut detail = format!("{:?}", timeline.status);
+                        if Some(timeline.channel_id.as_str())
+                            == (!workspace.store.selected_channel.is_empty())
+                                .then_some(workspace.store.selected_channel.as_str())
+                        {
+                            detail.push_str(" · selected");
+                        }
+                        if let Some(generation) = timeline.fresh_generation {
+                            detail.push_str(&format!(" · fresh gen {generation}"));
+                        }
+                        if let Some(refresh) = &timeline.active_refresh {
+                            detail.push_str(&format!(
+                                " · request {} gen {} · barrier {}",
+                                refresh.request_id,
+                                refresh.generation,
+                                refresh.barrier_revision
+                            ));
+                        }
+                        if timeline.journal_revision > 0 || timeline.journal_entries > 0 {
+                            detail.push_str(&format!(
+                                " · journal rev {} / {} entries",
+                                timeline.journal_revision,
+                                timeline.journal_entries
+                            ));
+                        }
+                        rows.row(&timeline.channel_id, Some(&detail), |_, _| {});
+                    }
+                });
+            }
         }
 
         AppPane::Sessions => {
