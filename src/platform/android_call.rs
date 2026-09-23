@@ -77,6 +77,7 @@ static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 /// está tomado, então surfaceDestroyed não consegue liberá-lo no meio de um
 /// quadro.
 static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
+static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
@@ -217,6 +218,19 @@ pub fn set_pip_speaker(name: &str) {
         "(Ljava/lang/String;)V",
         Some(name),
     );
+}
+
+pub fn set_pip_target(user_id: Option<&str>) {
+    if let Ok(mut target) = PIP_TARGET.lock() {
+        *target = user_id.map(str::to_owned);
+    }
+}
+
+pub fn pip_wants(publisher: &str) -> bool {
+    PIP_TARGET
+        .lock()
+        .map(|target| target.as_deref().is_none_or(|wanted| wanted == publisher))
+        .unwrap_or(true)
 }
 
 /// Fecha imediatamente a apresentação Android da call. Diferente da Store,
