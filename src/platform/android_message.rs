@@ -4,7 +4,7 @@
 //! background. Ela transforma notificações que o cliente já recebeu em
 //! notificações nativas e recebe o alvo de navegação quando o usuário toca.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -18,6 +18,7 @@ struct Snapshot {
     server_label: String,
     selected_channel: String,
     me: String,
+    my_username: String,
     channels: HashMap<String, String>,
     members: HashMap<String, String>,
 }
@@ -44,6 +45,7 @@ pub fn sync_context(
     server_label: &str,
     selected_channel: &str,
     me: &str,
+    my_username: &str,
     channels: impl IntoIterator<Item = (String, String)>,
     members: impl IntoIterator<Item = (String, String)>,
 ) {
@@ -55,43 +57,51 @@ pub fn sync_context(
     snapshot.server_label = server_label.to_owned();
     snapshot.selected_channel = selected_channel.to_owned();
     snapshot.me = me.to_owned();
+    snapshot.my_username = my_username.to_owned();
     snapshot.channels = channels.into_iter().collect();
     snapshot.members = members.into_iter().collect();
 }
 
-/// Chamado diretamente pela thread de rede quando a notificação já tem
-/// channel_id. A decisão de suprimir a conversa aberta usa o lifecycle
-/// nativo, portanto continua correta mesmo quando o egui parou de desenhar.
-pub fn received(context: &Arc<Context>, notification: &crate::api::models::Notification) {
-    let Ok(snapshot) = context.0.read() else {
-        return;
+static DELIVERED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
+fn delivered_once(server_url: &str, message_id: &str) -> bool {
+    let key = format!("{server_url}\n{message_id}");
+    let Ok(mut delivered) = DELIVERED.lock() else {
+        return false;
     };
-    if !snapshot.enabled || notification.read {
-        return;
+    if delivered.iter().any(|known| known == &key) {
+        return false;
     }
-    let Some(channel_id) = notification.channel_id.as_deref() else {
-        return;
-    };
-    let Some(message_id) = notification.message_id.as_deref() else {
-        return;
-    };
-    if notification.author_id.as_deref() == Some(snapshot.me.as_str()) {
+    delivered.push_back(key);
+    while delivered.len() > 256 {
+        delivered.pop_front();
+    }
+    true
+}
+
+fn post(
+    snapshot: &Snapshot,
+    channel_id: &str,
+    message_id: &str,
+    author_id: Option<&str>,
+    body: &str,
+    notification_id: &str,
+) {
+    if !snapshot.enabled || author_id == Some(snapshot.me.as_str()) {
         return;
     }
 
     let viewing = crate::platform::android_call::is_foreground()
         && snapshot.active
         && snapshot.selected_channel == channel_id;
-    if viewing {
+    if viewing || !delivered_once(&snapshot.server_url, message_id) {
         return;
     }
 
-    let author = notification
-        .author_id
-        .as_deref()
+    let author = author_id
         .and_then(|id| snapshot.members.get(id))
         .cloned()
-        .or_else(|| notification.author_id.clone())
+        .or_else(|| author_id.map(str::to_owned))
         .unwrap_or_else(|| "Papo".to_owned());
     let channel = snapshot
         .channels
@@ -108,12 +118,70 @@ pub fn received(context: &Arc<Context>, notification: &crate::api::models::Notif
 
     show(&NativeNotification {
         title,
-        body: notification.message_content.clone().unwrap_or_default(),
+        body: body.to_owned(),
         server_url: snapshot.server_url.clone(),
         channel_id: channel_id.to_owned(),
         message_id: message_id.to_owned(),
-        notification_id: notification.id.clone(),
+        notification_id: notification_id.to_owned(),
     });
+}
+
+/// Toda mensagem legível chega pelo socket, independentemente de
+/// new_notification. Para menções usamos a mesma sintaxe que o próprio Papo
+/// destaca na timeline: @username, @everyone e @todos.
+pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Message) {
+    let Ok(snapshot) = context.0.read() else {
+        return;
+    };
+    if !snapshot.enabled || message.author_id == snapshot.me {
+        return;
+    }
+
+    let content = message.content.as_deref().unwrap_or("");
+    let lower = content.to_lowercase();
+    let mentioned = (!snapshot.my_username.is_empty()
+        && lower.contains(&format!("@{}", snapshot.my_username.to_lowercase())))
+        || lower.contains("@everyone")
+        || lower.contains("@todos");
+    if !mentioned {
+        return;
+    }
+
+    post(
+        &snapshot,
+        &message.channel_id,
+        &message.id,
+        Some(&message.author_id),
+        content,
+        &message.id,
+    );
+}
+
+/// new_notification continua útil para replies e canais em modo all.
+/// Menções que já foram publicadas pelo evento message são deduplicadas por
+/// message_id.
+pub fn received(context: &Arc<Context>, notification: &crate::api::models::Notification) {
+    let Ok(snapshot) = context.0.read() else {
+        return;
+    };
+    if notification.read {
+        return;
+    }
+    let (Some(channel_id), Some(message_id)) = (
+        notification.channel_id.as_deref(),
+        notification.message_id.as_deref(),
+    ) else {
+        return;
+    };
+
+    post(
+        &snapshot,
+        channel_id,
+        message_id,
+        notification.author_id.as_deref(),
+        notification.message_content.as_deref().unwrap_or(""),
+        &notification.id,
+    );
 }
 
 #[derive(Debug, Clone, Serialize)]
