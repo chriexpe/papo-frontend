@@ -2,6 +2,7 @@
 //! (assíncrona). A janela envia comandos e lê atualizações sem nunca
 //! bloquear um quadro; o runtime tokio vive numa thread própria.
 
+use std::collections::HashMap;
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, RwLock};
 
@@ -75,6 +76,52 @@ impl EventHook {
             callback(event);
         }
     }
+}
+
+pub type MessageCallback = Arc<dyn Fn(&Message) + Send + Sync>;
+pub type NotificationCallback = Arc<dyn Fn(&Notification) + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct MessageHook(Arc<RwLock<Option<MessageCallback>>>);
+
+impl MessageHook {
+    fn set(&self, callback: Option<MessageCallback>) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = callback;
+        }
+    }
+
+    fn emit(&self, message: &Message) {
+        let callback = self.0.read().ok().and_then(|slot| slot.clone());
+        if let Some(callback) = callback {
+            callback(message);
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct NotificationHook(Arc<RwLock<Option<NotificationCallback>>>);
+
+impl NotificationHook {
+    fn set(&self, callback: Option<NotificationCallback>) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = callback;
+        }
+    }
+
+    fn emit(&self, notification: &Notification) {
+        let callback = self.0.read().ok().and_then(|slot| slot.clone());
+        if let Some(callback) = callback {
+            callback(notification);
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct WorkerHooks {
+    event: EventHook,
+    message: MessageHook,
+    notification: NotificationHook,
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +328,8 @@ pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
     event_hook: EventHook,
+    message_hook: MessageHook,
+    notification_hook: NotificationHook,
     /// A mídia usa o mesmo cookie para baixar anexos.
     pub session: Arc<Session>,
     storage: Arc<dyn SecretStore>,
@@ -296,7 +345,13 @@ impl Net {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
         let event_hook = EventHook::default();
-        let worker_event_hook = event_hook.clone();
+        let message_hook = MessageHook::default();
+        let notification_hook = NotificationHook::default();
+        let worker_hooks = WorkerHooks {
+            event: event_hook.clone(),
+            message: message_hook.clone(),
+            notification: notification_hook.clone(),
+        };
         let storage_key = crate::server_key(&base_url);
         let session = Arc::new(Session::default());
         session.set_token(load_secret(
@@ -330,7 +385,7 @@ impl Net {
                     commands_rx,
                     updates_tx,
                     wake,
-                    worker_event_hook,
+                    worker_hooks,
                 ));
             })
             .expect("thread de rede");
@@ -339,6 +394,8 @@ impl Net {
             commands: commands_tx,
             updates: updates_rx,
             event_hook,
+            message_hook,
+            notification_hook,
             session,
             storage,
             storage_key,
@@ -355,6 +412,14 @@ impl Net {
 
     pub fn set_event_callback(&self, callback: Option<EventCallback>) {
         self.event_hook.set(callback);
+    }
+
+    pub fn set_message_callback(&self, callback: Option<MessageCallback>) {
+        self.message_hook.set(callback);
+    }
+
+    pub fn set_notification_callback(&self, callback: Option<NotificationCallback>) {
+        self.notification_hook.set(callback);
     }
 
     pub fn try_recv(&self) -> Option<Update> {
@@ -395,7 +460,7 @@ async fn worker(
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
-    event_hook: EventHook,
+    hooks: WorkerHooks,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
@@ -414,6 +479,7 @@ async fn worker(
     let (mut outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
+    let mut recent_message_channels: HashMap<String, String> = HashMap::new();
 
     // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
     // Falha de rede não é logout. Só uma resposta de autenticação inválida
@@ -504,7 +570,62 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                event_hook.emit(&event);
+                hooks.event.emit(&event);
+
+                if let Event::Message(message) = &event {
+                    recent_message_channels
+                        .insert(message.id.clone(), message.channel_id.clone());
+                    if recent_message_channels.len() > 256 {
+                        recent_message_channels.clear();
+                        recent_message_channels
+                            .insert(message.id.clone(), message.channel_id.clone());
+                    }
+                    hooks.message.emit(message);
+                }
+
+                if let Event::Notification {
+                    id,
+                    message_id,
+                    author_id,
+                    preview,
+                } = &event {
+                    if let Some(channel_id) = message_id
+                        .as_ref()
+                        .and_then(|message_id| recent_message_channels.get(message_id))
+                        .cloned()
+                    {
+                        hooks.notification.emit(&Notification {
+                            id: id.clone(),
+                            message_id: message_id.clone(),
+                            channel_id: Some(channel_id),
+                            author_id: author_id.clone(),
+                            message_content: preview.clone(),
+                            read: false,
+                            created_at: None,
+                        });
+                    } else if let Some(user_id) =
+                        me.lock().ok().and_then(|slot| slot.clone())
+                    {
+                        let api = api.clone();
+                        let notification_hook = hooks.notification.clone();
+                        let id = id.clone();
+                        tokio::spawn(async move {
+                            match api.notifications(&user_id).await {
+                                Ok(notifications) => {
+                                    if let Some(notification) =
+                                        notifications.into_iter().find(|item| item.id == id)
+                                    {
+                                        notification_hook.emit(&notification);
+                                    }
+                                }
+                                Err(error) => {
+                                    log::warn!("resolver notificação {id}: {error}");
+                                }
+                            }
+                        });
+                    }
+                }
+
                 // new_preview traz só o id porque o crawl termina depois da
                 // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
                 // para a Store receber o mesmo formato das mensagens listadas.
