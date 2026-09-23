@@ -262,39 +262,10 @@ impl Default for Store {
     }
 }
 
-fn mention_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_' || c == '-'
+fn mention_boundary(c: char) -> bool {
+    c.is_whitespace() || c.is_ascii_punctuation()
 }
 
-/// Reescreve somente @tokens em posição de palavra. Endereços como
-/// `nome@dominio` não viram menção.
-fn rewrite_mentions(text: &str, mut resolve: impl FnMut(&str) -> Option<String>) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '@'
-            && (i == 0 || !mention_char(chars[i - 1]))
-        {
-            let start = i + 1;
-            let mut end = start;
-            while end < chars.len() && mention_char(chars[end]) {
-                end += 1;
-            }
-            if end > start {
-                let token: String = chars[start..end].iter().collect();
-                if let Some(replacement) = resolve(&token) {
-                    out.push_str(&replacement);
-                    i = end;
-                    continue;
-                }
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-    out
-}
 
 impl Store {
     pub fn channel(&self, id: &str) -> Option<&Channel> {
@@ -317,13 +288,54 @@ impl Store {
     /// O compositor nunca vê esse formato; ele continua editando texto normal.
     /// Chamados globais permanecem literais.
     pub fn encode_mentions(&self, text: &str) -> String {
-        rewrite_mentions(text, |token| {
-            if token.eq_ignore_ascii_case("everyone") || token.eq_ignore_ascii_case("todos") {
-                return None;
+        let mut members: Vec<_> = self.members.iter().collect();
+        // Se existem "ana" e "ana maria", a identidade mais específica ganha.
+        members.sort_by_key(|member| std::cmp::Reverse(member.username.len()));
+
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0;
+        for (at, ch) in text.char_indices() {
+            if at < cursor || ch != '@' {
+                continue;
             }
-            self.member_by_username(token)
-                .map(|member| format!("<@{}>", member.id))
-        })
+            let before_ok = at == 0
+                || text[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(mention_boundary);
+            if !before_ok {
+                continue;
+            }
+
+            let after_at = at + '@'.len_utf8();
+            let rest = &text[after_at..];
+            let matched = members.iter().find(|member| {
+                let username = member.username.as_str();
+                if username.eq_ignore_ascii_case("everyone")
+                    || username.eq_ignore_ascii_case("todos")
+                    || rest.len() < username.len()
+                    || !rest.is_char_boundary(username.len())
+                    || !rest[..username.len()].eq_ignore_ascii_case(username)
+                {
+                    return false;
+                }
+                rest[username.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(mention_boundary)
+            });
+            let Some(member) = matched else {
+                continue;
+            };
+
+            out.push_str(&text[cursor..at]);
+            out.push_str("<@");
+            out.push_str(&member.id);
+            out.push('>');
+            cursor = after_at + member.username.len();
+        }
+        out.push_str(&text[cursor..]);
+        out
     }
 
     /// Resolve tokens estáveis para o username atual. Assim uma mensagem
