@@ -130,6 +130,7 @@ pub(crate) struct ReconcileScheduler {
 }
 
 impl ReconcileScheduler {
+    #[cfg(test)]
     pub fn new(max_in_flight: usize) -> Self {
         Self::with_scope(max_in_flight, "scheduler")
     }
