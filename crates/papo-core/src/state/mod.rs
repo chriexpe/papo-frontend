@@ -1091,8 +1091,10 @@ mod tests {
     use super::*;
 
     fn store_com_canal_carregado(channel_id: &str) -> Store {
-        let mut store = Store::default();
-        store.selected_channel = channel_id.to_owned();
+        let mut store = Store {
+            selected_channel: channel_id.to_owned(),
+            ..Store::default()
+        };
         store.apply(Update::Connection(Connection::Online));
         assert_eq!(
             store.channel_needing_messages(),
@@ -1126,8 +1128,10 @@ mod tests {
 
     #[test]
     fn nao_carrega_historico_enquanto_socket_esta_fora() {
-        let mut store = Store::default();
-        store.selected_channel = "geral".to_owned();
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
 
         assert_eq!(store.channel_needing_messages(), None);
 
@@ -1143,8 +1147,10 @@ mod tests {
 
     #[test]
     fn falha_de_historico_libera_nova_tentativa() {
-        let mut store = Store::default();
-        store.selected_channel = "geral".to_owned();
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
         store.apply(Update::Connection(Connection::Online));
 
         assert_eq!(
