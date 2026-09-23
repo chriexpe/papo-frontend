@@ -1248,6 +1248,7 @@ impl PapoApp {
                 attachments,
             } => {
                 let channel_id = ws.store.selected_channel.clone();
+                let wire_content = ws.store.encode_mentions(&content);
                 // Sem canal não há para onde mandar. Engolir a mensagem aqui
                 // fazia o envio parecer quebrado: a caixa esvaziava e nada
                 // acontecia, sem uma palavra de explicação.
@@ -1259,11 +1260,11 @@ impl PapoApp {
                 // saiu do upload.
                 if attachments.is_empty() {
                     ws.store
-                        .push_pending(&channel_id, &content, reply_to.clone());
+                        .push_pending(&channel_id, &wire_content, reply_to.clone());
                 }
                 ws.net.send(Command::SendMessage {
                     channel_id,
-                    content,
+                    content: wire_content,
                     reply_to,
                     notify_reply,
                     attachments,
@@ -1274,7 +1275,7 @@ impl PapoApp {
                 content,
             } => ws.net.send(Command::EditMessage {
                 message_id,
-                content,
+                content: ws.store.encode_mentions(&content),
             }),
             ChatAction::Delete(message_id) => {
                 ws.net.send(Command::DeleteMessage { message_id })
