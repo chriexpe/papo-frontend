@@ -2,6 +2,7 @@
 //! (assíncrona). A janela envia comandos e lê atualizações sem nunca
 //! bloquear um quadro; o runtime tokio vive numa thread própria.
 
+use std::collections::HashMap;
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, RwLock};
 
@@ -411,6 +412,11 @@ async fn worker(
     let (mut outbound_tx, outbound_rx) = mpsc::unbounded_channel();
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
+    // new_notification não traz channel_id. O backend transmite a mensagem
+    // antes de iniciar a goroutine das notificações, então quase sempre já
+    // conhecemos o canal sem tocar no REST. Mantemos só uma janela curta para
+    // não transformar isto em outro cache de mensagens.
+    let mut recent_message_channels: HashMap<String, String> = HashMap::new();
 
     // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
     // Falha de rede não é logout. Só uma resposta de autenticação inválida
@@ -494,6 +500,20 @@ async fn worker(
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
                 event_hook.emit(&event);
+
+                if let Event::Message(message) = &event {
+                    recent_message_channels
+                        .insert(message.id.clone(), message.channel_id.clone());
+                    // Um burst enorme de chat não precisa manter este mapa
+                    // crescendo: notificações são disparadas logo depois da
+                    // mensagem correspondente.
+                    if recent_message_channels.len() > 256 {
+                        recent_message_channels.clear();
+                        recent_message_channels
+                            .insert(message.id.clone(), message.channel_id.clone());
+                    }
+                }
+
                 // new_preview traz só o id porque o crawl termina depois da
                 // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
                 // para a Store receber o mesmo formato das mensagens listadas.
@@ -509,12 +529,37 @@ async fn worker(
                         ),
                         Err(error) => log::warn!("preview {preview_id} não carregou: {error}"),
                     }
-                } else if let Event::Notification { ref id, .. } = event {
-                    // O evento unicast é deliberadamente pequeno e não traz
-                    // channel_id. Resolver pelo REST roda numa tarefa própria:
-                    // a thread do socket não pode esperar HTTP e atrasar voz,
-                    // digitação ou sinalização que venha logo depois.
-                    if let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) {
+                } else if let Event::Notification {
+                    ref id,
+                    ref message_id,
+                    ref author_id,
+                    ref preview,
+                } = event {
+                    let channel_id = message_id
+                        .as_ref()
+                        .and_then(|message_id| recent_message_channels.get(message_id))
+                        .cloned();
+
+                    if let Some(channel_id) = channel_id {
+                        publish(
+                            &updates,
+                            &wake,
+                            Update::Notification(Box::new(Notification {
+                                id: id.clone(),
+                                message_id: message_id.clone(),
+                                channel_id: Some(channel_id),
+                                author_id: author_id.clone(),
+                                message_content: preview.clone(),
+                                read: false,
+                                created_at: None,
+                            })),
+                        );
+                    } else if let Some(user_id) =
+                        me.lock().ok().and_then(|slot| slot.clone())
+                    {
+                        // Reconexão/race raro: a mensagem não passou por este
+                        // worker. O REST atual continua sendo a fonte de
+                        // verdade, mas roda fora do laço do socket.
                         let api = api.clone();
                         let updates = updates.clone();
                         let wake = wake.clone();
@@ -536,6 +581,7 @@ async fn worker(
                             }
                         });
                     }
+
                     publish(&updates, &wake, Update::Event(Box::new(event)));
                 } else {
                     publish(&updates, &wake, Update::Event(Box::new(event)));
