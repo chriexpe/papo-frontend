@@ -1339,13 +1339,13 @@ impl PapoApp {
                         return;
                     }
                     ws.net.send(Command::QueueMessage {
-                        local_id: crate::cache::new_local_id(),
+                        local_id: papo_core::cache::new_local_id(),
                         owner_user_id,
                         channel_id,
                         content: wire_content,
                         reply_to,
                         notify_reply,
-                        created_at: crate::cache::now_millis(),
+                        created_at: papo_core::cache::now_millis(),
                     });
                 } else {
                     ws.net.send(Command::SendMessage {
