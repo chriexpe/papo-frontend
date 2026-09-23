@@ -551,6 +551,11 @@ impl PapoApp {
             .unwrap_or_default();
         settings.normalise();
 
+        #[cfg(target_os = "android")]
+        if settings.notifications {
+            crate::platform::android_message::ensure_permission();
+        }
+
         let system = SystemTheme::read();
         theme::install_fonts(&cc.egui_ctx, desktop::system_ui_font().as_ref());
 
@@ -875,6 +880,99 @@ impl PapoApp {
             body: message.content.clone().unwrap_or_default(),
             tag: Some(message.channel_id.clone()),
         });
+    }
+
+    #[cfg(target_os = "android")]
+    fn maybe_notify_android(&self, index: usize, update: &crate::api::net::Update) {
+        use crate::api::net::Update;
+
+        if !self.settings.notifications {
+            return;
+        }
+        let Update::Notification(notification) = update else {
+            return;
+        };
+        let Some(channel_id) = notification.channel_id.as_deref() else {
+            return;
+        };
+        let Some(message_id) = notification.message_id.as_deref() else {
+            return;
+        };
+
+        let ws = &self.workspaces[index];
+        if notification.author_id.as_deref() == Some(ws.store.me.as_str()) {
+            return;
+        }
+
+        // Se esta conversa já está literalmente na frente, a mensagem está
+        // sendo lida; não empilhar uma notificação do sistema redundante.
+        let viewing = self.focused
+            && index == self.active
+            && ws.store.screen == Screen::Chat
+            && ws.store.selected_channel == channel_id;
+        if viewing {
+            return;
+        }
+
+        let author = notification
+            .author_id
+            .as_deref()
+            .and_then(|id| ws.store.member(id))
+            .map(|member| member.name.clone())
+            .or_else(|| notification.author_id.clone())
+            .unwrap_or_else(|| "Papo".to_owned());
+        let channel = ws
+            .store
+            .channel(channel_id)
+            .map(|channel| format!("#{}", channel.name))
+            .unwrap_or_default();
+
+        let title = match (channel.is_empty(), self.workspaces.len() > 1) {
+            (true, true) => format!("{author} · {}", ws.label),
+            (true, false) => author,
+            (false, true) => format!("{author} · {channel} · {}", ws.label),
+            (false, false) => format!("{author} · {channel}"),
+        };
+
+        crate::platform::android_message::show(
+            &crate::platform::android_message::NativeNotification {
+                title,
+                body: notification.message_content.clone().unwrap_or_default(),
+                server_url: ws.url.clone(),
+                channel_id: channel_id.to_owned(),
+                message_id: message_id.to_owned(),
+                notification_id: notification.id.clone(),
+            },
+        );
+    }
+
+    #[cfg(target_os = "android")]
+    fn handle_android_notification_navigation(&mut self, ctx: &egui::Context) {
+        while let Some(target) = crate::platform::android_message::take_navigation() {
+            let wanted = normalise_server_url(&target.server_url);
+            let Some(index) = self
+                .workspaces
+                .iter()
+                .position(|ws| normalise_server_url(&ws.url) == wanted)
+            else {
+                continue;
+            };
+
+            self.activate(index, ctx);
+            let ws = &mut self.workspaces[index];
+            ws.store.selected_channel = target.channel_id.clone();
+            self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+            self.ui.jump = Some(crate::ui::shell::Jump {
+                message_id: target.message_id,
+                found: None,
+                since: ctx.input(|input| input.time),
+            });
+
+            // Se a notificação já está na Store, o pump_chat a marca como
+            // lida neste mesmo canal. Em cold start ela entra pelo bootstrap
+            // REST e é marcada no quadro seguinte.
+            ctx.request_repaint();
+        }
     }
 
     /// Entra ou cria a conta com o que está no formulário.
@@ -1521,6 +1619,8 @@ impl PapoApp {
             while let Some(update) = self.workspaces[index].net.try_recv() {
                 #[cfg(target_os = "linux")]
                 self.maybe_notify(&self.workspaces[index], &update);
+                #[cfg(target_os = "android")]
+                self.maybe_notify_android(index, &update);
 
                 // Reconectou: o que aconteceu durante a queda vem da carga
                 // nova.
@@ -2070,6 +2170,9 @@ impl eframe::App for PapoApp {
             crate::platform::native_field::begin_frame();
         }
         self.attach_window(frame);
+
+        #[cfg(target_os = "android")]
+        self.handle_android_notification_navigation(&ctx);
 
         // Indo para segundo plano: gravar agora, porque pode não haver um
         // depois. Perder o foco é o último aviso que o aplicativo recebe
