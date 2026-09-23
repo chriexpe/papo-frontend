@@ -930,7 +930,9 @@ impl PapoApp {
             } else {
                 format!("{author} · {channel}")
             },
-            body: message.content.clone().unwrap_or_default(),
+            body: ws
+                .store
+                .display_mentions(message.content.as_deref().unwrap_or("")),
             tag: Some(message.channel_id.clone()),
         });
     }
