@@ -124,6 +124,13 @@ struct WorkerHooks {
     notification: NotificationHook,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshTicket {
+    pub channel_id: String,
+    pub generation: u64,
+    pub request_id: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Login { username: String, password: String },
@@ -137,7 +144,7 @@ pub enum Command {
     /// tentativa caso ele já esteja reconectando.
     ProbeConnection,
     LoadMessages {
-        channel_id: String,
+        ticket: RefreshTicket,
     },
     CreateChannel {
         name: String,
@@ -291,11 +298,11 @@ pub enum Update {
     Done,
     Users(Vec<UserSummary>),
     Messages {
-        channel_id: String,
+        ticket: RefreshTicket,
         messages: Vec<Message>,
     },
-    /// A carga de histórico falhou; a Store libera o canal para nova tentativa.
-    MessagesFailed(String),
+    /// A carga de histórico falhou; a Store libera a tentativa correspondente.
+    MessagesFailed(RefreshTicket),
     Sent(Box<Message>),
     Edited(Box<Message>),
     Deleted(String),
@@ -908,29 +915,19 @@ async fn handle(
         }
         // Consumido no laço do worker antes de chegar aqui.
         Command::ProbeConnection => {}
-        Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
-            Ok(list) => {
-                publish(
-                    updates,
-                    wake,
-                    Update::Messages {
-                        channel_id: channel_id.clone(),
-                        messages: list.messages,
-                    },
-                );
-                // A listagem comum de mensagens não carrega o estado de pin.
-                // Reaplica a fonte persistida no banco logo depois.
-                load_pinned(api, updates, wake, channel_id).await;
+        Command::LoadMessages { ticket } => {
+            let channel_id = ticket.channel_id.clone();
+            match api.messages(&channel_id).await {
+                Ok(list) => {
+                    publish(updates, wake, Update::Messages { ticket, messages: list.messages });
+                    load_pinned(api, updates, wake, channel_id).await;
+                }
+                Err(error) => {
+                    publish(updates, wake, Update::MessagesFailed(ticket));
+                    report(updates, wake, error);
+                }
             }
-            Err(error) => {
-                publish(
-                    updates,
-                    wake,
-                    Update::MessagesFailed(channel_id),
-                );
-                report(updates, wake, error);
-            }
-        },
+        }
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {

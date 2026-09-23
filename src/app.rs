@@ -1139,10 +1139,8 @@ impl PapoApp {
         let ws = &mut self.workspaces[self.active];
 
         if let Some(channel_id) = ws.store.channel_needing_messages() {
-            ws.store.mark_loading(&channel_id);
-            ws.net.send(Command::LoadMessages {
-                channel_id: channel_id.clone(),
-            });
+            let ticket = ws.store.mark_loading(&channel_id);
+            ws.net.send(Command::LoadMessages { ticket });
             ws.net.send(Command::LoadPinned { channel_id });
         }
 
