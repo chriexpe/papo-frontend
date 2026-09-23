@@ -273,7 +273,7 @@ impl Default for Store {
 }
 
 fn mention_boundary(c: char) -> bool {
-    c.is_whitespace() || c.is_ascii_punctuation()
+    c.is_whitespace() || (!c.is_alphanumeric() && c != '_')
 }
 
 
