@@ -80,7 +80,6 @@ static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
 static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
-static PIP_TARGET_FRAME_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
@@ -113,9 +112,6 @@ pub fn clear() {
     }
     if let Ok(mut local) = PIP_LOCAL_ID.lock() {
         *local = None;
-    }
-    if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
-        *seen = None;
     }
 }
 
@@ -241,35 +237,21 @@ pub fn set_pip_target(user_id: Option<&str>) {
         let next = user_id.map(str::to_owned);
         if *target != next {
             *target = next;
-            if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
-                *seen = None;
-            }
+            // Trocou quem está falando: apaga imediatamente o quadro antigo.
+            // Se o novo speaker não tiver câmera, este fundo preto permanece
+            // e o nome no centro vira o fallback correto.
+            clear_pip_surface();
         }
     }
 }
 
-/// Aceita sempre o vídeo do speaker escolhido. Se ele não publica vídeo,
-/// depois de 700 ms deixa outro participante preencher o PiP enquanto o nome
-/// do speaker continua correto no overlay.
+/// O speaker ativo é soberano: só o vídeo dele pode ocupar o PiP.
+/// Não emprestamos a câmera de outra pessoa quando quem fala está sem vídeo.
 pub fn pip_wants(publisher: &str) -> bool {
-    let target = PIP_TARGET.lock().ok().and_then(|target| target.clone());
-    let Some(target) = target else {
-        return true;
-    };
-
-    if target == publisher {
-        if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
-            *seen = Some(std::time::Instant::now());
-        }
-        return true;
-    }
-
-    PIP_TARGET_FRAME_AT
+    PIP_TARGET
         .lock()
-        .map(|seen| {
-            seen.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(700))
-        })
-        .unwrap_or(true)
+        .map(|target| target.as_deref().is_none_or(|wanted| wanted == publisher))
+        .unwrap_or(false)
 }
 
 pub fn pip_wants_local() -> bool {
@@ -277,13 +259,7 @@ pub fn pip_wants_local() -> bool {
     let local = PIP_LOCAL_ID.lock().ok().and_then(|local| local.clone());
     match target {
         None => true,
-        Some(target) if local.as_deref() == Some(target.as_str()) => {
-            if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
-                *seen = Some(std::time::Instant::now());
-            }
-            true
-        }
-        Some(_) => false,
+        Some(target) => local.as_deref() == Some(target.as_str()),
     }
 }
 
@@ -293,6 +269,57 @@ pub fn pip_wants_local() -> bool {
 pub fn call_ended_from_network() {
     let _ = super::jvm::call_activity("closeCallPictureInPicture", "()V", None);
     stop_service();
+}
+
+/// Preenche o Surface inteiro de preto **opaco**. O alfa é 255 de propósito:
+/// alfa zero deixava o GameActivity aparecer através das barras laterais de
+/// vídeo vertical.
+pub fn clear_pip_surface() {
+    if !is_in_pip() {
+        return;
+    }
+    let Ok(window_guard) = PIP_WINDOW.lock() else {
+        return;
+    };
+    let window = *window_guard as *mut ANativeWindow;
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        if ANativeWindow_setBuffersGeometry(
+            window,
+            PIP_WIDTH as i32,
+            PIP_HEIGHT as i32,
+            WINDOW_FORMAT_RGBA_8888,
+        ) != 0
+        {
+            return;
+        }
+
+        let mut buffer = std::mem::zeroed::<ANativeWindowBuffer>();
+        if ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut()) != 0
+            || buffer.bits.is_null()
+            || buffer.stride <= 0
+        {
+            return;
+        }
+
+        let out_w = buffer.width.max(1) as usize;
+        let out_h = buffer.height.max(1) as usize;
+        let stride = buffer.stride as usize;
+        let dst = buffer.bits.cast::<u8>();
+        for y in 0..out_h {
+            for x in 0..out_w {
+                let at = dst.add((y * stride + x) * 4);
+                *at = 0;
+                *at.add(1) = 0;
+                *at.add(2) = 0;
+                *at.add(3) = 255;
+            }
+        }
+        let _ = ANativeWindow_unlockAndPost(window);
+    }
 }
 
 /// Escreve o quadro decodificado diretamente no SurfaceView do PiP.
@@ -337,9 +364,16 @@ pub fn present_pip_frame(frame: &Frame) {
         let out_w = buffer.width.max(1) as usize;
         let out_h = buffer.height.max(1) as usize;
 
-        // Fundo preto, inclusive nas barras de letterbox.
+        // Fundo preto opaco, inclusive nas barras de letterbox. Alfa zero
+        // faria o conteúdo egui da Activity aparecer atrás do vídeo vertical.
         for y in 0..out_h {
-            std::ptr::write_bytes(dst.add(y * stride * 4), 0, out_w * 4);
+            for x in 0..out_w {
+                let at = dst.add((y * stride + x) * 4);
+                *at = 0;
+                *at.add(1) = 0;
+                *at.add(2) = 0;
+                *at.add(3) = 255;
+            }
         }
 
         let source_ratio = frame.width as f32 / frame.height as f32;
