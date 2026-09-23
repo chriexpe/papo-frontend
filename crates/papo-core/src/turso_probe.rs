@@ -30,7 +30,7 @@ async fn scalar_i64<P: IntoParams>(
     let row = rows
         .next()
         .await?
-        .ok_or_else(|| "Turso probe query returned no rows".to_owned())?;
+        .ok_or_else(|| std::io::Error::other("Turso probe query returned no rows"))?;
     Ok(row.get::<i64>(0)?)
 }
 
@@ -183,7 +183,7 @@ mod tests {
                 ["alpha"],
             )
             .await?;
-        let row = rows.next().await?.ok_or("inserted probe row is missing")?;
+        let row = rows.next().await?.ok_or_else(|| std::io::Error::other("inserted probe row is missing"))?;
         assert_eq!(row.get::<String>(0)?, "A");
         assert_eq!(row.get::<i64>(1)?, 1);
         assert_eq!(row.get_value(2)?, Value::Blob(vec![0, 1, 2, 255]));
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(
             rows.next()
                 .await?
-                .ok_or("alpha disappeared after rollback")?
+                .ok_or_else(|| std::io::Error::other("alpha disappeared after rollback"))?
                 .get::<String>(0)?,
             "B"
         );
@@ -276,7 +276,7 @@ mod tests {
                 ["alpha"],
             )
             .await?;
-        let row = rows.next().await?.ok_or("reopened alpha row is missing")?;
+        let row = rows.next().await?.ok_or_else(|| std::io::Error::other("reopened alpha row is missing"))?;
         assert_eq!(row.get::<String>(0)?, "upserted");
         assert_eq!(row.get::<i64>(1)?, 3);
         assert!(temp.path.exists(), "Turso did not create the database file");
