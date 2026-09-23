@@ -572,6 +572,7 @@ async fn worker(
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
+    let mut diagnostics_dirty = false;
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
@@ -646,19 +647,22 @@ async fn worker(
             _ => {}
         }
 
-        spawn_ready_reconciles(
+        diagnostics_dirty |= spawn_ready_reconciles(
             &api,
             &mut reconcile_scheduler,
             &mut reconcile_tasks,
             &mut reconcile_aborts,
         );
-        update_runtime_diagnostics(
-            &diagnostics,
-            worker_connection,
-            runtime_generation,
-            session_epoch,
-            &reconcile_scheduler,
-        );
+        if diagnostics_dirty {
+            update_runtime_diagnostics(
+                &diagnostics,
+                worker_connection,
+                runtime_generation,
+                session_epoch,
+                &reconcile_scheduler,
+            );
+            diagnostics_dirty = false;
+        }
         let scheduler_deadline = reconcile_scheduler.next_ready_at();
 
         tokio::select! {
@@ -678,6 +682,7 @@ async fn worker(
                         reconcile_scheduler.cancel_all(),
                         &mut reconcile_aborts,
                     );
+                    diagnostics_dirty = true;
                 }
 
                 match command {
@@ -695,6 +700,7 @@ async fn worker(
                             std::time::Instant::now(),
                         );
                         abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
                     }
                     Command::LoadMessages { ticket } => {
                         if ticket.generation != runtime_generation {
@@ -719,6 +725,7 @@ async fn worker(
                             std::time::Instant::now(),
                         );
                         abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
                     }
                     other => {
                         handle(
@@ -829,6 +836,7 @@ async fn worker(
                     );
                 }
                 worker_connection = status;
+                diagnostics_dirty = true;
                 if previous_connection != worker_connection || previous_generation != runtime_generation {
                     log::info!(
                         "runtime {}: connection {:?} -> {:?}, generation {} -> {}",
@@ -845,11 +853,13 @@ async fn worker(
                 match completion {
                     Some(Ok(completion)) => {
                         reconcile_aborts.remove(&completion.run_id);
-                        if reconcile_scheduler.complete(
+                        let current = reconcile_scheduler.complete(
                             completion.run_id,
                             completion.success,
                             std::time::Instant::now(),
-                        ) {
+                        );
+                        diagnostics_dirty = true;
+                        if current {
                             let session_invalid = completion
                                 .updates
                                 .iter()
@@ -914,6 +924,7 @@ async fn worker(
                             reconcile_scheduler.cancel_all(),
                             &mut reconcile_aborts,
                         );
+                        diagnostics_dirty = true;
                         session.set_token(None);
                         if let Ok(mut slot) = me.lock() {
                             *slot = None;
@@ -1011,12 +1022,15 @@ fn spawn_ready_reconciles(
     scheduler: &mut ReconcileScheduler,
     tasks: &mut JoinSet<ReconcileCompletion>,
     aborts: &mut HashMap<u64, tokio::task::AbortHandle>,
-) {
+) -> bool {
+    let mut started_any = false;
     for StartedReconcile { run_id, request } in scheduler.start_ready(std::time::Instant::now()) {
+        started_any = true;
         let api = api.clone();
         let handle = tasks.spawn(async move { run_reconcile(api, run_id, request).await });
         aborts.insert(run_id, handle);
     }
+    started_any
 }
 
 async fn run_reconcile(
