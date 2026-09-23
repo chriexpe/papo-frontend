@@ -308,10 +308,14 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
         t.label_secondary,
     );
 
-    let (label, action) = match (here, store.call.popped_out) {
-        (true, true) => (s.call_popin, ChatAction::PopOutCall(false)),
-        (true, false) => (s.call_expand, ChatAction::OpenCall),
-        (false, _) => (s.call_join, ChatAction::JoinVoice(channel_id)),
+    let (label, action) = if !here {
+        (s.call_join, ChatAction::JoinVoice(channel_id))
+    } else if store.call.popped_out {
+        (s.call_popin, ChatAction::PopOutCall(false))
+    } else if store.call.floating {
+        (s.call_overlay_close, ChatAction::FloatCall(false))
+    } else {
+        (s.call_expand, ChatAction::OpenCall)
     };
 
     let button = Rect::from_center_size(
@@ -377,14 +381,16 @@ pub fn sheet(
     );
 
     let mut x = header.max.x - space::LG - 13.0;
-    for (glyph, tip, action) in [
-        (icon::X, s.call_collapse, ChatAction::CollapseCall(true)),
-        (
-            icon::ARROW_SQUARE_OUT,
-            s.call_popout,
-            ChatAction::PopOutCall(true),
-        ),
-    ] {
+    let mut header_actions = vec![
+        (icon::ARROWS_IN, s.call_overlay, ChatAction::FloatCall(true)),
+    ];
+    #[cfg(not(target_os = "android"))]
+    header_actions.push((
+        icon::ARROW_SQUARE_OUT,
+        s.call_popout,
+        ChatAction::PopOutCall(true),
+    ));
+    for (glyph, tip, action) in header_actions {
         let spot = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(26.0));
         if round_button(ui, t, spot, glyph, tip, false, false) {
             state.actions.push(action);
@@ -426,12 +432,13 @@ fn compact_pill(
     let avatar_size = 22.0;
     let avatar_gap = 4.0;
     let speaker_chrome = space::SM * 2.0 + 1.0;
-    let max_width = (area.width() * 0.56 - space::SM)
-        .clamp(controls_only, 320.0);
+    // `area` já é o corredor real entre a pastilha do canal e a de
+    // busca/fixadas/membros. Nunca crescer para baixo delas.
+    let max_width = (area.width() - space::SM * 2.0).max(controls_only);
     let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
     let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
         as usize)
-        .min(store.call.speakers.len());
+        .min(store.call.members().len().max(store.call.speakers.len()));
     let speakers_width = if max_speakers == 0 {
         0.0
     } else {
@@ -448,10 +455,10 @@ fn compact_pill(
         egui::pos2(area.center().x - width / 2.0, area.min.y + space::LG),
         Vec2::new(width, 36.0),
     );
-    let back = ui.interact(rect, egui::Id::new(("pastilha-da-call", floating)), Sense::click());
-    if back.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
+    // O fundo não pode competir pelo mesmo clique dos controles. Antes ele
+    // cobria a cápsula inteira, então o botão "sobrepor" podia disparar
+    // FloatCall(true) e logo depois OpenCall, anulando o overlay no desktop.
+    let back = ui.interact(rect, egui::Id::new(("pastilha-da-call", floating)), Sense::hover());
     super::shell::glass_backdrop(ui, state, rect, 18.0);
     ui.painter().rect(
         rect,
@@ -485,9 +492,16 @@ fn compact_pill(
         );
     }
 
+    let mut shown_people = store.call.speakers.clone();
+    for member in store.call.members() {
+        if !shown_people.iter().any(|id| id == &member.user_id) {
+            shown_people.push(member.user_id.clone());
+        }
+    }
+
     let mut x = rect.min.x + space::SM + avatar_size / 2.0;
     let ctx = ui.ctx().clone();
-    for user_id in store.call.speakers.iter().take(max_speakers) {
+    for user_id in shown_people.iter().take(max_speakers) {
         let person = store.member(user_id);
         let initials = person
             .map(crate::state::Member::initials)
@@ -512,11 +526,13 @@ fn compact_pill(
             person.and_then(|p| p.role_color.map(rgb)),
             texture,
         );
-        child.painter().circle_stroke(
-            ring.rect.center(),
-            ring.rect.width() / 2.0 + 1.5,
-            Stroke::new(1.5, t.online),
-        );
+        if store.call.speaking(user_id) {
+            child.painter().circle_stroke(
+                ring.rect.center(),
+                ring.rect.width() / 2.0 + 1.5,
+                Stroke::new(1.5, t.online),
+            );
+        }
         x += avatar_size + avatar_gap;
     }
 
@@ -532,16 +548,12 @@ fn compact_pill(
         ui,
         t,
         return_or_expand,
-        if floating { icon::ARROW_SQUARE_IN } else { icon::ARROWS_OUT },
-        if floating { s.call_popin } else { s.call_expand },
+        if floating { icon::ARROWS_OUT } else { icon::ARROWS_IN },
+        if floating { s.call_overlay_close } else { s.call_overlay },
         false,
         false,
     ) {
-        state.actions.push(if floating {
-            ChatAction::PopOutCall(false)
-        } else {
-            ChatAction::OpenCall
-        });
+        state.actions.push(ChatAction::FloatCall(!floating));
     }
     x -= button + button_gap;
 
@@ -607,8 +619,17 @@ fn compact_pill(
         state.actions.push(ChatAction::ToggleMute);
     }
 
-    if back.clicked() && !floating {
-        state.actions.push(ChatAction::OpenCall);
+    if !floating {
+        let body_max_x = (rect.max.x - controls_width - space::MD * 2.0).max(rect.min.x);
+        let body = Rect::from_min_max(rect.min, egui::pos2(body_max_x, rect.max.y));
+        let response = ui.interact(body, egui::Id::new("corpo-da-pastilha-da-call"), Sense::click());
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            ui.painter().rect_filled(rect, CornerRadius::same(18), t.fill_soft);
+        }
+        if response.clicked() {
+            state.actions.push(ChatAction::OpenCall);
+        }
     }
     rect
 }
@@ -635,8 +656,9 @@ pub fn floating(
     t: &Tokens,
     s: &Strings,
     area: Rect,
+    pill_area: Rect,
 ) {
-    let pill = compact_pill(ui, store, state, t, s, area, true);
+    let pill = compact_pill(ui, store, state, t, s, pill_area, true);
     let limit: usize = match state.call_video_tiles {
         1 => 1,
         4 => 4,
@@ -712,6 +734,45 @@ pub fn window(
     controls_row(ui, store, state, t, s, controls, true);
 }
 
+/// Conteúdo mínimo usado pelo Picture-in-Picture do Android.
+/// A janela já é minúscula e os controles ficam na notificação da call, então
+/// só a grade de vídeo ocupa a superfície.
+#[cfg(target_os = "android")]
+pub fn pip(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    call: Option<&mut Call>,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, t.content_bg);
+
+    // PiP não é uma miniatura da grade inteira. Ele acompanha quem está
+    // falando; quando ninguém fala, prefere alguém que realmente tenha vídeo.
+    // Assim a janela pequena continua legível e útil numa call com várias
+    // pessoas em vez de virar quatro selos microscópicos.
+    let mut people = faces(store);
+    people.sort_by_key(|face| {
+        let speaker_rank = store
+            .call
+            .speakers
+            .iter()
+            .position(|speaker| speaker == &face.id)
+            .unwrap_or(usize::MAX);
+        let video_rank = if face.camera { 0 } else { 1 };
+        (speaker_rank, video_rank)
+    });
+
+    if !people.iter().any(|face| face.speaking) {
+        people.sort_by_key(|face| if face.camera { 0 } else { 1 });
+    }
+    people.truncate(1);
+
+    draw_faces(ui, store, state, call, t, s, rect, &people, None);
+}
+
 /// A grade: uma pessoa por retrato, vídeo quando há, foto quando não há.
 fn grid(
     ui: &mut egui::Ui,
@@ -723,7 +784,7 @@ fn grid(
     area: Rect,
 ) {
     let people = faces(store);
-    draw_faces(ui, store, state, call, t, s, area, &people);
+    draw_faces(ui, store, state, call, t, s, area, &people, None);
 }
 
 fn compact_grid(
@@ -746,7 +807,8 @@ fn compact_grid(
             .unwrap_or(usize::MAX)
     });
     people.truncate(limit);
-    draw_faces(ui, store, state, call, t, s, area, &people);
+    let columns = if people.len() >= 2 { Some(2) } else { Some(1) };
+    draw_faces(ui, store, state, call, t, s, area, &people, columns);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -759,6 +821,7 @@ fn draw_faces(
     s: &Strings,
     area: Rect,
     people: &[Face],
+    forced_columns: Option<usize>,
 ) {
     if people.is_empty() {
         ui.painter().text(
@@ -780,7 +843,12 @@ fn draw_faces(
         );
     }
 
-    let (columns, rows) = layout(people.len(), area);
+    let (columns, rows) = forced_columns
+        .map(|columns| {
+            let columns = columns.clamp(1, people.len());
+            (columns, people.len().div_ceil(columns))
+        })
+        .unwrap_or_else(|| layout(people.len(), area));
     let gap = space::MD;
     let cell = Vec2::new(
         (area.width() - gap * (columns as f32 - 1.0)) / columns as f32,
@@ -1026,6 +1094,16 @@ fn controls_row(
             ChatAction::ToggleCamera,
         ),
     ];
+    if !windowed && !store.call.floating {
+        buttons.push((
+            icon::ARROWS_IN,
+            s.call_overlay,
+            false,
+            false,
+            ChatAction::FloatCall(true),
+        ));
+    }
+
     if store.call.popped_out {
         buttons.push((
             icon::ARROW_SQUARE_IN,
@@ -1035,6 +1113,7 @@ fn controls_row(
             ChatAction::PopOutCall(false),
         ));
     } else if !windowed {
+        #[cfg(not(target_os = "android"))]
         buttons.push((
             icon::ARROW_SQUARE_OUT,
             s.call_popout,

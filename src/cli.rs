@@ -254,6 +254,7 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
                         channel_id,
                         voice::IceConfig::from_servers(&servers),
                         ctx.clone(),
+                        net.sender(),
                     );
                     if call.is_none() {
                         println!("a call não abriu");
@@ -301,18 +302,6 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
         }
 
         if let Some(call) = &call {
-            for signal in call.take_signals() {
-                let kind = serde_json::from_str::<serde_json::Value>(&signal)
-                    .ok()
-                    .and_then(|value| {
-                        value.get("type").and_then(serde_json::Value::as_str).map(str::to_owned)
-                    })
-                    .unwrap_or_default();
-                if kind != "voice_ice_candidate" {
-                    println!("→ {kind}");
-                }
-                net.send(Command::VoiceSignal(signal));
-            }
             if !live && call.is_live() {
                 live = true;
                 println!("conexão de mídia estabelecida");
@@ -348,10 +337,12 @@ fn voice_test(username: Option<String>, password: Option<String>, channel: Optio
 
 /// Imprime a oferta que a call mandaria, sem rede e sem janela.
 fn voice_sdp() {
+    let (sender, mut commands) = api::net::NetSender::channel();
     let Some(call) = voice::Call::start(
         "canal-de-teste".to_owned(),
         voice::IceConfig::default(),
         egui::Context::default(),
+        sender,
     ) else {
         println!("a call não abriu (falta GStreamer ou o webrtcbin)");
         return;
@@ -359,7 +350,10 @@ fn voice_sdp() {
     call.ready();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
-        for signal in call.take_signals() {
+        while let Ok(command) = commands.try_recv() {
+            let api::net::Command::VoiceSignal(signal) = command else {
+                continue;
+            };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&signal) else {
                 continue;
             };

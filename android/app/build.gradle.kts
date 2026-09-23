@@ -18,7 +18,7 @@ android {
         // atualização, é outro aplicativo — instalação separada, sessão e
         // ajustes perdidos.
         applicationId = "io.github.chriexpe.papo"
-        minSdk = 24
+        minSdk = 31
         targetSdk = 37
         versionCode = 1
         versionName = "0.2.0"

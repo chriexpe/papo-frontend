@@ -21,6 +21,9 @@ pub mod global_menu;
 /// Chamar a Activity a partir do Rust (Android).
 #[cfg(target_os = "android")]
 pub mod jvm;
+/// Foreground service, lifecycle e Picture-in-Picture da call.
+#[cfg(target_os = "android")]
+pub mod android_call;
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
 pub mod permission;

@@ -89,11 +89,34 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                 channel_id.clone(),
                 IceConfig::from_servers(servers),
                 ctx.clone(),
+                ws.net.sender(),
             );
             ws.call_ready = false;
-            if ws.call.is_none() {
+            if let Some(call) = &ws.call {
+                let names = ws
+                    .store
+                    .members
+                    .iter()
+                    .map(|member| (member.id.clone(), member.name.clone()))
+                    .collect();
+                ws.net.set_event_callback(Some(call.event_callback(
+                    ws.store.me.clone(),
+                    names,
+                )));
+                #[cfg(target_os = "android")]
+                crate::platform::android_call::bind(
+                    call.command_sender(),
+                    ws.net.sender(),
+                    channel_id.clone(),
+                    ws.store.call.muted,
+                    ws.store.call.camera,
+                    ws.store.me.clone(),
+                );
+            } else {
                 ws.store.call.error = Some("a call não abriu".to_owned());
                 ws.store.call.left();
+                #[cfg(target_os = "android")]
+                crate::platform::android_call::stop_service();
             }
         }
         Update::Event(event) => {
@@ -105,20 +128,6 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
             let mut over = false;
             let mut tell_server = false;
             match &**event {
-                Event::VoiceAnswer { channel_id, sdp } if *channel_id == call.channel_id => {
-                    call.answer(sdp.clone());
-                }
-                Event::VoiceOffer { channel_id, sdp } if *channel_id == call.channel_id => {
-                    call.offer(sdp.clone());
-                }
-                Event::VoiceCandidate {
-                    channel_id,
-                    candidate,
-                    sdp_mline_index,
-                    ..
-                } if *channel_id == call.channel_id => {
-                    call.candidate(candidate.clone(), sdp_mline_index.unwrap_or(0));
-                }
                 Event::VoiceLeft {
                     channel_id,
                     user_id,
@@ -140,20 +149,34 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
                 if tell_server {
                     leave_call(ws);
                 } else {
+                    ws.net.set_event_callback(None);
                     ws.call = None;
                     ws.call_ready = false;
                     ws.watching.clear();
+                    #[cfg(target_os = "android")]
+                    crate::platform::android_call::stop_service();
                 }
             }
         }
         // O socket caiu: o servidor derruba o peer junto com a conexão que
         // pediu a entrada, então a call já acabou — só não sabíamos.
         Update::Connection(crate::api::ws::Connection::Offline) if ws.store.call.active() => {
+            ws.net.set_event_callback(None);
             ws.call = None;
             ws.call_ready = false;
             ws.watching.clear();
             ws.store.call.error = None;
             ws.store.call.left();
+            #[cfg(target_os = "android")]
+            crate::platform::android_call::stop_service();
+        }
+        Update::VoiceFailed {
+            channel_id,
+            attempt,
+            ..
+        } if ws.store.call.current(channel_id, *attempt) => {
+            #[cfg(target_os = "android")]
+            crate::platform::android_call::stop_service();
         }
         _ => {}
     }
@@ -161,27 +184,31 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
 
 /// Sai da call: avisa o servidor, desmonta o pipeline e limpa o retrato.
 fn leave_call(ws: &mut Workspace) {
+    #[cfg(target_os = "android")]
+    let had_call = ws.store.call.active() || ws.call.is_some();
     if ws.store.call.active() && !ws.store.call.channel_id.is_empty() {
         ws.net.send(Command::VoiceSignal(format!(
             r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
             ws.store.call.channel_id
         )));
     }
+    ws.net.set_event_callback(None);
     ws.call = None;
     ws.call_ready = false;
     ws.watching.clear();
     ws.camera_revision = 0;
     ws.store.call.left();
+    #[cfg(target_os = "android")]
+    if had_call {
+        crate::platform::android_call::stop_service();
+    }
 }
 
-/// O vaivém da call a cada quadro: o que a thread quer mandar vai para o
-/// socket, e o que mudou na sala vira pedido de vídeo.
+/// O vaivém da call a cada quadro. SDP/ICE já circulam diretamente entre a
+/// thread de rede e a thread da call; aqui ficam apenas estado visual e
+/// seleção das câmeras que queremos receber.
 fn pump_call(ws: &mut Workspace) {
     let Some(call) = &ws.call else { return };
-
-    for signal in call.take_signals() {
-        ws.net.send(Command::VoiceSignal(signal));
-    }
 
     // A oferta só pode sair depois do `voice_joined`: antes disso o servidor
     // ainda não tem peer para receber a SDP.
@@ -1127,8 +1154,24 @@ impl PapoApp {
         // para o B e entrar lá deixava os dois mandando a sua voz, cada um
         // com o seu pipeline — e o trilho não mostra nem qual deles era.
         if let ChatAction::JoinVoice(channel_id) = action {
+            #[cfg(target_os = "android")]
+            {
+                use crate::platform::permission::{self, Status};
+                if permission::ensure(permission::RECORD_AUDIO) == Status::Asking {
+                    return;
+                }
+            }
             for ws in &mut self.workspaces {
                 leave_call(ws);
+            }
+            #[cfg(target_os = "android")]
+            {
+                let title = self.workspaces[self.active]
+                    .store
+                    .channel(&channel_id)
+                    .map(|channel| channel.name.clone())
+                    .unwrap_or_else(|| "Papo".to_owned());
+                crate::platform::android_call::start_service(&title);
             }
             let ws = &mut self.workspaces[self.active];
             ws.store.selected_channel = channel_id.clone();
@@ -1283,15 +1326,28 @@ impl PapoApp {
                 }
             }
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::FloatCall(floating) => {
+                ws.store.call.floating = floating;
+                ws.store.call.collapsed = floating;
+                if floating {
+                    ws.store.call.popped_out = false;
+                }
+            }
             // Voltar para a call é ir ao canal dela, como o clique que
             // levou na primeira vez — e abrir a folha se estava encolhida.
             ChatAction::OpenCall => {
                 if !ws.store.call.channel_id.is_empty() {
                     ws.store.selected_channel = ws.store.call.channel_id.clone();
                     ws.store.call.collapsed = false;
+                    ws.store.call.floating = false;
                 }
             }
-            ChatAction::PopOutCall(out) => ws.store.call.popped_out = out,
+            ChatAction::PopOutCall(out) => {
+                ws.store.call.popped_out = out;
+                if out {
+                    ws.store.call.floating = false;
+                }
+            }
             ChatAction::Search(text) => ws.net.send(Command::Search { text }),
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
@@ -1410,6 +1466,13 @@ impl PapoApp {
             ChatAction::ToggleMute => ws.store.call.muted = !ws.store.call.muted,
             ChatAction::ToggleCamera => ws.store.call.camera = !ws.store.call.camera,
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
+            ChatAction::FloatCall(floating) => {
+                ws.store.call.floating = floating;
+                ws.store.call.collapsed = floating;
+                if floating {
+                    ws.store.call.popped_out = false;
+                }
+            }
             // Voltar para a call é ir ao canal dela, como o clique que
             // levou na primeira vez — e abrir a folha se estava encolhida.
             ChatAction::OpenCall => {
@@ -1501,9 +1564,12 @@ impl PapoApp {
     /// e para isso ela precisa ser uma janela que o compositor conheça.
     fn call_window(&mut self, ctx: &egui::Context) {
         let active = self.active;
-        // No layout compacto "janela só da call" é uma sobreposição dentro
-        // da conversa; criar uma viewport do SO no Android não faria sentido.
-        if self.ui.compact || !self.workspaces[active].store.call.popped_out {
+        #[cfg(target_os = "android")]
+        {
+            return;
+        }
+        #[cfg(not(target_os = "android"))]
+        if !self.workspaces[active].store.call.popped_out {
             return;
         }
         let t = self.tokens;
@@ -2033,6 +2099,82 @@ impl eframe::App for PapoApp {
         // conversa, não quem está falando.
         for ws in &mut self.workspaces {
             pump_call(ws);
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            for action in crate::platform::android_call::take_actions() {
+                match action {
+                    crate::platform::android_call::UiAction::Muted(muted) => {
+                        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.store.call.active()) {
+                            ws.store.call.muted = muted;
+                        }
+                    }
+                    crate::platform::android_call::UiAction::Camera(camera) => {
+                        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.store.call.active()) {
+                            ws.store.call.camera = camera;
+                        }
+                    }
+                    crate::platform::android_call::UiAction::Hangup => {
+                        if let Some(index) = self.workspaces.iter().position(|ws| ws.store.call.active()) {
+                            leave_call(&mut self.workspaces[index]);
+                        }
+                    }
+                }
+            }
+
+            let call_index = self.workspaces.iter().position(|ws| ws.store.call.active());
+            let has_video = call_index
+                .is_some_and(|index| self.workspaces[index].store.call.has_video());
+
+            let (muted, camera, members, speaker_name) = if let Some(index) = call_index {
+                let ws = &self.workspaces[index];
+                let speaker_name = ws.store.call.speakers.first().and_then(|id| {
+                    ws.store.member(id).map(|member| member.name.clone())
+                });
+                (
+                    ws.store.call.muted,
+                    ws.store.call.camera,
+                    ws.store.call.members().len(),
+                    speaker_name,
+                )
+            } else {
+                (true, false, 0, None)
+            };
+
+            if call_index.is_some() {
+                crate::platform::android_call::sync_service(
+                    muted,
+                    camera,
+                    members,
+                    speaker_name.as_deref(),
+                );
+            }
+            crate::platform::android_call::set_presentation(
+                call_index.is_some(),
+                has_video,
+                muted,
+                camera,
+            );
+
+            if crate::platform::android_call::is_in_pip() {
+                ctx.request_repaint();
+                if let Some(index) = call_index {
+                    let strings = self.settings.lang.strings();
+                    let ws = &mut self.workspaces[index];
+                    crate::ui::call::pip(
+                        ui,
+                        &ws.store,
+                        &mut self.ui,
+                        ws.call.as_mut(),
+                        &self.tokens,
+                        strings,
+                    );
+                }
+                crate::platform::native_field::end_frame();
+                crate::platform::native_text::end_frame();
+                return;
+            }
         }
 
         let strings = self.settings.lang.strings();

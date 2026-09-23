@@ -27,6 +27,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
+use crate::api::net::{Command as NetCommand, EventCallback, NetSender};
+use crate::api::ws::Event;
+
 pub use engine::check;
 pub use ice::IceConfig;
 pub use slots::Kind;
@@ -167,18 +170,23 @@ pub(crate) enum Command {
 pub struct Call {
     pub channel_id: String,
     commands: mpsc::Sender<Command>,
-    signals: mpsc::Receiver<String>,
     shared: Arc<Shared>,
     /// Texturas por lugar de vídeo, recriadas só quando o quadro muda.
     textures: HashMap<usize, (egui::TextureHandle, u64)>,
     preview: Option<(egui::TextureHandle, u64)>,
     thread: Option<std::thread::JoinHandle<()>>,
+    signal_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Call {
     /// Abre a call: monta o pipeline numa thread própria e espera o sinal
     /// verde do servidor (`Command::Ready`) para mandar a oferta.
-    pub fn start(channel_id: String, ice: IceConfig, repaint: egui::Context) -> Option<Self> {
+    pub fn start(
+        channel_id: String,
+        ice: IceConfig,
+        repaint: egui::Context,
+        net: NetSender,
+    ) -> Option<Self> {
         let (commands_tx, commands_rx) = mpsc::channel();
         let (signals_tx, signals_rx) = mpsc::channel();
         let shared = Arc::new(Shared::default());
@@ -191,14 +199,26 @@ impl Call {
             signals_tx,
             repaint,
         )?;
+
+        // SDP/ICE sai da thread da call direto para a thread de rede. A UI
+        // pode parar de desenhar no Android sem congelar a sinalização.
+        let signal_thread = std::thread::Builder::new()
+            .name("papo-call-signal".into())
+            .spawn(move || {
+                while let Ok(signal) = signals_rx.recv() {
+                    net.send(NetCommand::VoiceSignal(signal));
+                }
+            })
+            .ok();
+
         Some(Self {
             channel_id,
             commands: commands_tx,
-            signals: signals_rx,
             shared,
             textures: HashMap::new(),
             preview: None,
             thread: Some(thread),
+            signal_thread,
         })
     }
 
@@ -206,10 +226,75 @@ impl Call {
         let _ = self.commands.send(command);
     }
 
-    /// O JSON que a call quer mandar pelo socket. A janela drena isto todo
-    /// quadro e repassa para a rede.
-    pub fn take_signals(&self) -> Vec<String> {
-        self.signals.try_iter().collect()
+    /// Callback instalado no Net enquanto esta call existe. SDP/ICE que
+    /// chegam do socket entram na thread do GStreamer sem esperar a UI.
+    pub fn event_callback(
+        &self,
+        me: String,
+        names: HashMap<String, String>,
+    ) -> EventCallback {
+        let channel_id = self.channel_id.clone();
+        let commands = self.commands.clone();
+        #[cfg(not(target_os = "android"))]
+        let _ = (&me, &names);
+        Arc::new(move |event| match event {
+            Event::VoiceAnswer { channel_id: event_channel, sdp }
+                if event_channel == &channel_id =>
+            {
+                let _ = commands.send(Command::Answer(sdp.clone()));
+            }
+            Event::VoiceOffer { channel_id: event_channel, sdp }
+                if event_channel == &channel_id =>
+            {
+                let _ = commands.send(Command::Offer(sdp.clone()));
+            }
+            Event::VoiceCandidate {
+                channel_id: event_channel,
+                candidate,
+                sdp_mline_index,
+                ..
+            } if event_channel == &channel_id => {
+                let _ = commands.send(Command::Candidate {
+                    candidate: candidate.clone(),
+                    sdp_mline_index: sdp_mline_index.unwrap_or(0),
+                });
+            }
+            #[cfg(target_os = "android")]
+            Event::ActiveSpeakers {
+                channel_id: event_channel,
+                user_ids,
+            } if event_channel == &channel_id => {
+                // O servidor manda lista vazia entre rajadas de fala. Isso
+                // não significa "escolha qualquer câmera": o PiP mantém o
+                // último speaker até outro tomar a prioridade.
+                if let Some(speaker) = user_ids.first() {
+                    crate::platform::android_call::set_pip_target(Some(speaker));
+                    let name = names.get(speaker).map(String::as_str).unwrap_or("");
+                    crate::platform::android_call::set_pip_speaker(name);
+                }
+            }
+            #[cfg(target_os = "android")]
+            Event::VoiceLeft {
+                channel_id: event_channel,
+                user_id,
+            } if event_channel == &channel_id && user_id == &me => {
+                crate::platform::android_call::call_ended_from_network();
+            }
+            #[cfg(target_os = "android")]
+            Event::Failure { code, .. }
+                if code
+                    .as_deref()
+                    .is_some_and(|code| crate::state::call::fatal(code, false)) =>
+            {
+                crate::platform::android_call::call_ended_from_network();
+            }
+            _ => {}
+        })
+    }
+
+    #[cfg(target_os = "android")]
+    pub(crate) fn command_sender(&self) -> mpsc::Sender<Command> {
+        self.commands.clone()
     }
 
     pub fn ready(&self) {
@@ -363,6 +448,7 @@ impl Drop for Call {
         // orçamento do quadro. A thread fecha tudo sozinha ao ver o Stop.
         let _ = self.commands.send(Command::Stop);
         self.thread.take();
+        self.signal_thread.take();
     }
 }
 

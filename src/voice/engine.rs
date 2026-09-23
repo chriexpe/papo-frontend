@@ -1453,6 +1453,13 @@ fn show_video(
                     if let Ok(mut tiles) = shared.tiles.lock()
                         && let Some(tile) = tiles.get_mut(index)
                     {
+                        #[cfg(target_os = "android")]
+                        if let Some(publisher) = tile.publisher.as_deref()
+                            && crate::platform::android_call::pip_wants(publisher)
+                        {
+                            crate::platform::android_call::present_pip_frame(&frame);
+                        }
+
                         tile.frame = Some(frame);
                         tile.seq = tile.seq.wrapping_add(1);
                     }
@@ -1750,6 +1757,11 @@ fn capture(
             .new_sample(move |sink| {
                 let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                 if let Some(frame) = to_frame(&sample) {
+                    #[cfg(target_os = "android")]
+                    if crate::platform::android_call::pip_wants_local() {
+                        crate::platform::android_call::present_pip_frame(&frame);
+                    }
+
                     if let Ok(mut slot) = shared.preview.lock() {
                         *slot = Some(frame);
                     }

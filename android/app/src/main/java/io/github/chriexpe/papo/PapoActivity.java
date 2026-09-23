@@ -1,11 +1,17 @@
 package io.github.chriexpe.papo;
 
+import android.Manifest;
 import android.content.Context;
+import android.app.PendingIntent;
+import android.app.PictureInPictureParams;
+import android.app.RemoteAction;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.drawable.Icon;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.os.Build;
@@ -17,17 +23,22 @@ import android.text.Selection;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 import android.util.Log;
+import android.util.Rational;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -37,6 +48,8 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+
+import org.json.JSONObject;
 import java.util.Map;
 
 import com.google.androidgamesdk.GameActivity;
@@ -64,6 +77,11 @@ public class PapoActivity extends GameActivity {
 
     /** Envia as bordas ao Rust. Implementada em `src/platform/safe_area.rs`. */
     private static native void nativeSetInsets(int left, int top, int right, int bottom);
+
+    /** Ciclo de vida/PiP da call. Implementados em `src/platform/android_call.rs`. */
+    private static native void nativeSetPictureInPictureMode(boolean enabled);
+    private static native void nativeLifecycleChanged(boolean foreground);
+    private static native void nativeSetPipSurface(Surface surface);
 
     /** Envia o documento completo do IME ao Rust. */
     private static native void nativeSetText(
@@ -96,6 +114,107 @@ public class PapoActivity extends GameActivity {
     private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
     private boolean mutatingNativeEditor;
     private boolean imeWasVisible;
+    private String callPresentation = "off";
+    private FrameLayout pipLayer;
+    private SurfaceView pipSurface;
+    private TextView pipSpeaker;
+
+    private void ensurePipLayer() {
+        if (pipLayer != null) {
+            return;
+        }
+
+        pipLayer = new FrameLayout(this);
+        pipLayer.setBackgroundColor(Color.BLACK);
+        pipLayer.setVisibility(View.GONE);
+
+        pipSurface = new SurfaceView(this);
+        pipSurface.setZOrderMediaOverlay(true);
+        pipSurface.getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
+        pipSurface.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                nativeSetPipSurface(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceChanged(
+                    SurfaceHolder holder,
+                    int format,
+                    int width,
+                    int height) {
+                nativeSetPipSurface(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                nativeSetPipSurface(null);
+            }
+        });
+        pipLayer.addView(
+                pipSurface,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
+        pipSpeaker = new TextView(this);
+        pipSpeaker.setTextColor(Color.WHITE);
+        pipSpeaker.setTextSize(14);
+        pipSpeaker.setShadowLayer(6.0f, 0.0f, 1.0f, Color.BLACK);
+        pipSpeaker.setPadding(18, 8, 18, 8);
+        pipSpeaker.setBackgroundColor(0x66000000);
+        final FrameLayout.LayoutParams speakerParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.START | Gravity.BOTTOM);
+        speakerParams.setMargins(12, 0, 12, 12);
+        pipLayer.addView(pipSpeaker, speakerParams);
+
+        addContentView(
+                pipLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+        pipLayer.bringToFront();
+    }
+
+    public void setPipSpeaker(String name) {
+        runOnUiThread(() -> {
+            ensurePipLayer();
+            pipSpeaker.setText(name == null ? "" : name);
+            pipSpeaker.setVisibility(
+                    name == null || name.isBlank() ? View.GONE : View.VISIBLE);
+        });
+    }
+
+    public void setPipVideoVisible(String visible) {
+        runOnUiThread(() -> {
+            ensurePipLayer();
+            final boolean hasVideo = "1".equals(visible);
+            final FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    hasVideo ? (Gravity.START | Gravity.BOTTOM) : Gravity.CENTER);
+            if (hasVideo) {
+                params.setMargins(12, 0, 12, 12);
+            }
+            pipSpeaker.setLayoutParams(params);
+            pipSpeaker.setBackgroundColor(hasVideo ? 0x66000000 : 0x00000000);
+            pipSpeaker.setTextSize(hasVideo ? 14 : 18);
+        });
+    }
+
+    public void closeCallPictureInPicture() {
+        runOnUiThread(() -> {
+            callPresentation = "off";
+            if (pipLayer != null) {
+                pipLayer.setVisibility(View.GONE);
+            }
+            if (isInPictureInPictureMode()) {
+                finish();
+            }
+        });
+    }
 
     /**
      * O compositor Android é um EditText de verdade, não um TextEdit do egui
@@ -680,6 +799,125 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /** Inicia a execução em primeiro plano da call enquanto a Activity está visível. */
+    public void startCallService(String title) {
+        runOnUiThread(() -> {
+            // Android 13+ permite o FGS sem esta permissão, mas esconde a
+            // notificação da gaveta. Pedimos aqui, depois da decisão do
+            // microfone, sem bloquear o início da call.
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                        new String[] {Manifest.permission.POST_NOTIFICATIONS},
+                        PERMISSION_REQUEST);
+            }
+
+            final Intent intent = new Intent(this, CallService.class)
+                    .setAction(CallService.ACTION_START)
+                    .putExtra(CallService.EXTRA_TITLE, title)
+                    .putExtra(CallService.EXTRA_MUTED, true)
+                    .putExtra(CallService.EXTRA_CAMERA, false);
+            startForegroundService(intent);
+        });
+    }
+
+    /** Atualiza os tipos/controles do foreground service. */
+    public void updateCallService(String state) {
+        runOnUiThread(() -> {
+            try {
+                final JSONObject json = new JSONObject(state);
+                final Intent intent = new Intent(this, CallService.class)
+                        .setAction(CallService.ACTION_UPDATE)
+                        .putExtra(CallService.EXTRA_MUTED, json.optBoolean("muted", true))
+                        .putExtra(CallService.EXTRA_CAMERA, json.optBoolean("camera", false))
+                        .putExtra(CallService.EXTRA_MEMBERS, json.optInt("members", 0))
+                        .putExtra(CallService.EXTRA_SPEAKER, json.optString("speaker", ""));
+                startService(intent);
+            } catch (Exception error) {
+                Log.e("papo-call", "estado inválido do serviço da call", error);
+            }
+        });
+    }
+
+    /** Encerra o foreground service quando a call termina. */
+    public void stopCallService() {
+        runOnUiThread(() -> stopService(new Intent(this, CallService.class)));
+    }
+
+    /**
+     * Mantém os parâmetros do PiP sincronizados com o estado da call.
+     * Android 12+ faz a transição automática ao gesto Home quando há vídeo.
+     */
+    public void setCallPresentation(String state) {
+        runOnUiThread(() -> {
+            if (state.equals(callPresentation)) {
+                return;
+            }
+            callPresentation = state;
+
+            if ("off".equals(state) && isInPictureInPictureMode()) {
+                // A call terminou enquanto o usuário estava no Home. Fechar a
+                // Activity faz a bolha desaparecer em vez de deixar um PiP
+                // vazio; abrir o Papo depois cria a Activity normalmente.
+                finish();
+                return;
+            }
+
+            final boolean video = state.startsWith("video");
+            final boolean muted = state.contains("muted=1");
+            final boolean camera = state.contains("camera=1");
+            final List<RemoteAction> actions = new ArrayList<>();
+
+            final PendingIntent mute = PendingIntent.getService(
+                    this,
+                    21,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_TOGGLE_MUTE),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(
+                            this,
+                            muted ? R.drawable.ic_mic_off_notification : R.drawable.ic_mic_notification),
+                    muted ? "Ativar microfone" : "Silenciar",
+                    "Alternar microfone",
+                    mute));
+
+            final PendingIntent cameraAction = PendingIntent.getService(
+                    this,
+                    22,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_TOGGLE_CAMERA),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(
+                            this,
+                            camera ? R.drawable.ic_camera_off_notification : R.drawable.ic_camera_notification),
+                    camera ? "Desligar câmera" : "Ligar câmera",
+                    "Alternar câmera",
+                    cameraAction));
+
+            final PendingIntent hangup = PendingIntent.getService(
+                    this,
+                    23,
+                    new Intent(this, CallService.class)
+                            .setAction(CallService.ACTION_HANGUP),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            actions.add(new RemoteAction(
+                    Icon.createWithResource(this, R.drawable.ic_hangup_notification),
+                    "Desligar",
+                    "Sair da chamada",
+                    hangup));
+
+            final PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9))
+                    .setAutoEnterEnabled(video)
+                    .setSeamlessResizeEnabled(false)
+                    .setActions(actions)
+                    .build();
+            setPictureInPictureParams(params);
+        });
+    }
+
     private static final int PERMISSION_REQUEST = 1;
     private static final int PICK_REQUEST = 2;
 
@@ -836,6 +1074,7 @@ public class PapoActivity extends GameActivity {
         }
 
         super.onCreate(savedInstanceState);
+        ensurePipLayer();
 
         final View root = getWindow().getDecorView();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -862,6 +1101,31 @@ public class PapoActivity extends GameActivity {
             return view.onApplyWindowInsets(insets);
         });
         root.requestApplyInsets();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        nativeLifecycleChanged(true);
+    }
+
+    @Override
+    protected void onStop() {
+        nativeLifecycleChanged(false);
+        super.onStop();
+    }
+
+    @Override
+    public void onPictureInPictureModeChanged(
+            boolean isInPictureInPictureMode,
+            Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        ensurePipLayer();
+        pipLayer.setVisibility(isInPictureInPictureMode ? View.VISIBLE : View.GONE);
+        if (isInPictureInPictureMode) {
+            pipLayer.bringToFront();
+        }
+        nativeSetPictureInPictureMode(isInPictureInPictureMode);
     }
 
     private void publish(WindowInsets insets) {

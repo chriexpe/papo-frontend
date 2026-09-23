@@ -3,7 +3,7 @@
 //! bloquear um quadro; o runtime tokio vive numa thread própria.
 
 use std::sync::mpsc as sync_mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use tokio::sync::mpsc;
 
@@ -32,6 +32,48 @@ impl Wake {
 
     fn wake(&self) {
         (self.0)();
+    }
+}
+
+/// Emissor clonável de comandos para trabalhos que precisam continuar sem
+/// depender do laço da interface (por exemplo uma call em segundo plano).
+#[derive(Clone)]
+pub struct NetSender(mpsc::UnboundedSender<Command>);
+
+impl NetSender {
+    pub fn send(&self, command: Command) {
+        let _ = self.0.send(command);
+    }
+
+    /// Canal avulso para consumidores sem um `Net` completo, como
+    /// diagnósticos/headless frontends. A call continua usando exatamente o
+    /// mesmo caminho de sinalização da aplicação real.
+    pub fn channel() -> (Self, mpsc::UnboundedReceiver<Command>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
+}
+
+/// Eventos do socket que precisam alcançar um consumidor em tempo real além
+/// da Store. A call usa isto para SDP/ICE: a UI continua recebendo o mesmo
+/// evento depois, mas o transporte não espera um quadro ser desenhado.
+pub type EventCallback = Arc<dyn Fn(&Event) + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct EventHook(Arc<RwLock<Option<EventCallback>>>);
+
+impl EventHook {
+    fn set(&self, callback: Option<EventCallback>) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = callback;
+        }
+    }
+
+    fn emit(&self, event: &Event) {
+        let callback = self.0.read().ok().and_then(|slot| slot.clone());
+        if let Some(callback) = callback {
+            callback(event);
+        }
     }
 }
 
@@ -233,6 +275,7 @@ pub enum Update {
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
+    event_hook: EventHook,
     /// A mídia usa o mesmo cookie para baixar anexos.
     pub session: Arc<Session>,
     storage: Arc<dyn SecretStore>,
@@ -247,6 +290,8 @@ impl Net {
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
+        let event_hook = EventHook::default();
+        let worker_event_hook = event_hook.clone();
         let storage_key = crate::server_key(&base_url);
         let session = Arc::new(Session::default());
         session.set_token(load_secret(
@@ -280,6 +325,7 @@ impl Net {
                     commands_rx,
                     updates_tx,
                     wake,
+                    worker_event_hook,
                 ));
             })
             .expect("thread de rede");
@@ -287,6 +333,7 @@ impl Net {
         Self {
             commands: commands_tx,
             updates: updates_rx,
+            event_hook,
             session,
             storage,
             storage_key,
@@ -295,6 +342,14 @@ impl Net {
 
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
+    }
+
+    pub fn sender(&self) -> NetSender {
+        NetSender(self.commands.clone())
+    }
+
+    pub fn set_event_callback(&self, callback: Option<EventCallback>) {
+        self.event_hook.set(callback);
     }
 
     pub fn try_recv(&self) -> Option<Update> {
@@ -335,6 +390,7 @@ async fn worker(
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
+    event_hook: EventHook,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
@@ -433,6 +489,7 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
+                event_hook.emit(&event);
                 // new_preview traz só o id porque o crawl termina depois da
                 // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
                 // para a Store receber o mesmo formato das mensagens listadas.

@@ -1,0 +1,548 @@
+//! Integração da call com o ciclo de vida do Android.
+//!
+//! O transporte continua em Rust/GStreamer. O Android só mantém a execução
+//! autorizada em segundo plano (foreground service), apresenta os controles
+//! nativos e informa quando a Activity virou Picture-in-Picture.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, mpsc};
+
+use crate::api::net::{Command as NetCommand, NetSender};
+use crate::voice::{Command as CallCommand, Frame};
+
+use std::ffi::c_void;
+
+#[repr(C)]
+struct ANativeWindow {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct ANativeWindowBuffer {
+    width: i32,
+    height: i32,
+    stride: i32,
+    format: i32,
+    bits: *mut c_void,
+    reserved: [u32; 6],
+}
+
+#[link(name = "android")]
+unsafe extern "C" {
+    fn ANativeWindow_fromSurface(
+        env: *mut jni::sys::JNIEnv,
+        surface: jni::sys::jobject,
+    ) -> *mut ANativeWindow;
+    fn ANativeWindow_release(window: *mut ANativeWindow);
+    fn ANativeWindow_setBuffersGeometry(
+        window: *mut ANativeWindow,
+        width: i32,
+        height: i32,
+        format: i32,
+    ) -> i32;
+    fn ANativeWindow_lock(
+        window: *mut ANativeWindow,
+        out_buffer: *mut ANativeWindowBuffer,
+        dirty_bounds: *mut c_void,
+    ) -> i32;
+    fn ANativeWindow_unlockAndPost(window: *mut ANativeWindow) -> i32;
+}
+
+const WINDOW_FORMAT_RGBA_8888: i32 = 1;
+const PIP_WIDTH: usize = 640;
+const PIP_HEIGHT: usize = 360;
+
+#[derive(Debug, Clone, Copy)]
+pub enum UiAction {
+    Muted(bool),
+    Camera(bool),
+    Hangup,
+}
+
+struct Control {
+    commands: mpsc::Sender<CallCommand>,
+    net: NetSender,
+    channel_id: String,
+    muted: bool,
+    camera: bool,
+}
+
+static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
+static ACTIONS: Mutex<Vec<UiAction>> = Mutex::new(Vec::new());
+static IN_PIP: AtomicBool = AtomicBool::new(false);
+static FOREGROUND: AtomicBool = AtomicBool::new(true);
+static LAST_SERVICE_STATE: Mutex<Option<String>> = Mutex::new(None);
+static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
+/// Endereço do ANativeWindow do SurfaceView de PiP. Guardado como usize
+/// para que o mutex seja Send/Sync; o ponteiro só é usado enquanto o mutex
+/// está tomado, então surfaceDestroyed não consegue liberá-lo no meio de um
+/// quadro.
+static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
+static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
+static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
+static PIP_HAS_VIDEO: AtomicBool = AtomicBool::new(false);
+
+pub fn bind(
+    commands: mpsc::Sender<CallCommand>,
+    net: NetSender,
+    channel_id: String,
+    muted: bool,
+    camera: bool,
+    me: String,
+) {
+    if let Ok(mut slot) = CONTROL.lock() {
+        *slot = Some(Control {
+            commands,
+            net,
+            channel_id,
+            muted,
+            camera,
+        });
+    }
+    if let Ok(mut local) = PIP_LOCAL_ID.lock() {
+        *local = Some(me);
+    }
+}
+
+pub fn clear() {
+    if let Ok(mut slot) = CONTROL.lock() {
+        *slot = None;
+    }
+    if let Ok(mut target) = PIP_TARGET.lock() {
+        *target = None;
+    }
+    if let Ok(mut local) = PIP_LOCAL_ID.lock() {
+        *local = None;
+    }
+    PIP_HAS_VIDEO.store(false, Ordering::Relaxed);
+}
+
+pub fn start_service(title: &str) {
+    let _ = super::jvm::call_activity(
+        "startCallService",
+        "(Ljava/lang/String;)V",
+        Some(title),
+    );
+}
+
+pub fn stop_service() {
+    let _ = super::jvm::call_activity("stopCallService", "()V", None);
+    if let Ok(mut state) = LAST_SERVICE_STATE.lock() {
+        *state = None;
+    }
+    if let Ok(mut state) = LAST_PRESENTATION.lock() {
+        *state = None;
+    }
+    clear();
+}
+
+/// Mantém a notificação nativa em sincronia com a pastilha da call sem fazer
+/// JNI em todo frame. O nome do speaker vai em JSON para não depender de
+/// separadores que também podem existir num nome de usuário.
+pub fn sync_service(
+    muted: bool,
+    camera: bool,
+    members: usize,
+    speaker: Option<&str>,
+) {
+    let state = serde_json::json!({
+        "muted": muted,
+        "camera": camera,
+        "members": members,
+        "speaker": speaker.unwrap_or(""),
+    })
+    .to_string();
+
+    let changed = LAST_SERVICE_STATE
+        .lock()
+        .map(|mut last| {
+            if last.as_deref() == Some(state.as_str()) {
+                false
+            } else {
+                *last = Some(state.clone());
+                true
+            }
+        })
+        .unwrap_or(true);
+
+    if changed {
+        let _ = super::jvm::call_activity(
+            "updateCallService",
+            "(Ljava/lang/String;)V",
+            Some(&state),
+        );
+    }
+
+    if let Ok(mut slot) = CONTROL.lock()
+        && let Some(control) = slot.as_mut()
+    {
+        control.muted = muted;
+        control.camera = camera;
+    }
+}
+
+pub fn set_presentation(active: bool, video: bool, muted: bool, camera: bool) {
+    let state = format!(
+        "{};muted={};camera={}",
+        if !active {
+            "off"
+        } else if video {
+            "video"
+        } else {
+            "voice"
+        },
+        if muted { 1 } else { 0 },
+        if camera { 1 } else { 0 },
+    );
+
+    let changed = LAST_PRESENTATION
+        .lock()
+        .map(|mut last| {
+            if last.as_deref() == Some(state.as_str()) {
+                false
+            } else {
+                *last = Some(state.clone());
+                true
+            }
+        })
+        .unwrap_or(true);
+
+    if changed {
+        let _ = super::jvm::call_activity(
+            "setCallPresentation",
+            "(Ljava/lang/String;)V",
+            Some(&state),
+        );
+    }
+}
+
+pub fn is_in_pip() -> bool {
+    IN_PIP.load(Ordering::Relaxed)
+}
+
+pub fn is_foreground() -> bool {
+    FOREGROUND.load(Ordering::Relaxed)
+}
+
+/// Nome mostrado sobre o vídeo nativo de PiP. Pode ser chamado da thread de
+/// rede: a Activity publica a mudança na UI thread.
+pub fn set_pip_speaker(name: &str) {
+    let _ = super::jvm::call_activity(
+        "setPipSpeaker",
+        "(Ljava/lang/String;)V",
+        Some(name),
+    );
+}
+
+pub fn set_pip_target(user_id: Option<&str>) {
+    if let Ok(mut target) = PIP_TARGET.lock() {
+        let next = user_id.map(str::to_owned);
+        if *target != next {
+            *target = next;
+            PIP_HAS_VIDEO.store(false, Ordering::Relaxed);
+            let _ = super::jvm::call_activity(
+                "setPipVideoVisible",
+                "(Ljava/lang/String;)V",
+                Some("0"),
+            );
+            // Trocou quem está falando: apaga imediatamente o quadro antigo.
+            // Se o novo speaker não tiver câmera, este fundo preto permanece
+            // e o nome no centro vira o fallback correto.
+            clear_pip_surface();
+        }
+    }
+}
+
+/// O speaker ativo é soberano: só o vídeo dele pode ocupar o PiP.
+/// Não emprestamos a câmera de outra pessoa quando quem fala está sem vídeo.
+pub fn pip_wants(publisher: &str) -> bool {
+    PIP_TARGET
+        .lock()
+        .map(|target| target.as_deref().is_none_or(|wanted| wanted == publisher))
+        .unwrap_or(false)
+}
+
+pub fn pip_wants_local() -> bool {
+    let target = PIP_TARGET.lock().ok().and_then(|target| target.clone());
+    let local = PIP_LOCAL_ID.lock().ok().and_then(|local| local.clone());
+    match target {
+        None => true,
+        Some(target) => local.as_deref() == Some(target.as_str()),
+    }
+}
+
+/// Fecha imediatamente a apresentação Android da call. Diferente da Store,
+/// isto não espera um frame egui — é usado quando o servidor encerra a call
+/// enquanto a Activity está pausada dentro do PiP.
+pub fn call_ended_from_network() {
+    let _ = super::jvm::call_activity("closeCallPictureInPicture", "()V", None);
+    stop_service();
+}
+
+/// Preenche o Surface inteiro de preto **opaco**. O alfa é 255 de propósito:
+/// alfa zero deixava o GameActivity aparecer através das barras laterais de
+/// vídeo vertical.
+pub fn clear_pip_surface() {
+    if !is_in_pip() {
+        return;
+    }
+    let Ok(window_guard) = PIP_WINDOW.lock() else {
+        return;
+    };
+    let window = *window_guard as *mut ANativeWindow;
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        if ANativeWindow_setBuffersGeometry(
+            window,
+            PIP_WIDTH as i32,
+            PIP_HEIGHT as i32,
+            WINDOW_FORMAT_RGBA_8888,
+        ) != 0
+        {
+            return;
+        }
+
+        let mut buffer = std::mem::zeroed::<ANativeWindowBuffer>();
+        if ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut()) != 0
+            || buffer.bits.is_null()
+            || buffer.stride <= 0
+        {
+            return;
+        }
+
+        let out_w = buffer.width.max(1) as usize;
+        let out_h = buffer.height.max(1) as usize;
+        let stride = buffer.stride as usize;
+        let dst = buffer.bits.cast::<u8>();
+        for y in 0..out_h {
+            for x in 0..out_w {
+                let at = dst.add((y * stride + x) * 4);
+                *at = 0;
+                *at.add(1) = 0;
+                *at.add(2) = 0;
+                *at.add(3) = 255;
+            }
+        }
+        let _ = ANativeWindow_unlockAndPost(window);
+    }
+}
+
+/// Escreve o quadro decodificado diretamente no SurfaceView do PiP.
+///
+/// O buffer do Surface é 16:9 porque essa é a janela que pedimos ao Android.
+/// A imagem inteira é encaixada dentro dele, sem crop: câmera vertical ganha
+/// barras laterais; vídeo 16:9 ocupa tudo.
+pub fn present_pip_frame(frame: &Frame) {
+    if !is_in_pip() || frame.width == 0 || frame.height == 0 {
+        return;
+    }
+
+    if !PIP_HAS_VIDEO.swap(true, Ordering::Relaxed) {
+        let _ = super::jvm::call_activity(
+            "setPipVideoVisible",
+            "(Ljava/lang/String;)V",
+            Some("1"),
+        );
+    }
+
+    let Ok(window_guard) = PIP_WINDOW.lock() else {
+        return;
+    };
+    let window = *window_guard as *mut ANativeWindow;
+    if window.is_null() {
+        return;
+    }
+
+    unsafe {
+        if ANativeWindow_setBuffersGeometry(
+            window,
+            PIP_WIDTH as i32,
+            PIP_HEIGHT as i32,
+            WINDOW_FORMAT_RGBA_8888,
+        ) != 0
+        {
+            return;
+        }
+
+        let mut buffer = std::mem::zeroed::<ANativeWindowBuffer>();
+        if ANativeWindow_lock(window, &mut buffer, std::ptr::null_mut()) != 0
+            || buffer.bits.is_null()
+            || buffer.stride <= 0
+        {
+            return;
+        }
+
+        let dst = buffer.bits.cast::<u8>();
+        let stride = buffer.stride as usize;
+        let out_w = buffer.width.max(1) as usize;
+        let out_h = buffer.height.max(1) as usize;
+
+        // Fundo preto opaco, inclusive nas barras de letterbox. Alfa zero
+        // faria o conteúdo egui da Activity aparecer atrás do vídeo vertical.
+        for y in 0..out_h {
+            for x in 0..out_w {
+                let at = dst.add((y * stride + x) * 4);
+                *at = 0;
+                *at.add(1) = 0;
+                *at.add(2) = 0;
+                *at.add(3) = 255;
+            }
+        }
+
+        let source_ratio = frame.width as f32 / frame.height as f32;
+        let target_ratio = out_w as f32 / out_h as f32;
+        let (draw_w, draw_h) = if source_ratio > target_ratio {
+            (out_w, ((out_w as f32) / source_ratio).round() as usize)
+        } else {
+            (((out_h as f32) * source_ratio).round() as usize, out_h)
+        };
+        let draw_w = draw_w.max(1).min(out_w);
+        let draw_h = draw_h.max(1).min(out_h);
+        let x0 = (out_w - draw_w) / 2;
+        let y0 = (out_h - draw_h) / 2;
+
+        // Nearest-neighbour é suficiente para uma janela PiP pequena e evita
+        // criar outro buffer/Bitmap em cada quadro.
+        for y in 0..draw_h {
+            let sy = y * frame.height / draw_h;
+            for x in 0..draw_w {
+                let sx = x * frame.width / draw_w;
+                let [r, g, b, a] = frame.pixels[sy * frame.width + sx].to_array();
+                let at = dst.add(((y0 + y) * stride + x0 + x) * 4);
+                *at = r;
+                *at.add(1) = g;
+                *at.add(2) = b;
+                *at.add(3) = a;
+            }
+        }
+
+        let _ = ANativeWindow_unlockAndPost(window);
+    }
+}
+
+/// SurfaceView criado pela Activity para o vídeo de PiP.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetPipSurface(
+    env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    surface: jni::objects::JObject,
+) {
+    let Ok(mut guard) = PIP_WINDOW.lock() else {
+        return;
+    };
+
+    let old = *guard as *mut ANativeWindow;
+    if !old.is_null() {
+        unsafe { ANativeWindow_release(old) };
+        *guard = 0;
+    }
+
+    if surface.is_null() {
+        return;
+    }
+
+    let window = unsafe {
+        ANativeWindow_fromSurface(env.get_native_interface(), surface.as_raw())
+    };
+    *guard = window as usize;
+    drop(guard);
+
+    // Surface recém-criado não tem quadro válido ainda. Pintá-lo aqui evita
+    // que o buffer inicial revele a Activity até o primeiro frame do speaker.
+    clear_pip_surface();
+}
+
+pub fn take_actions() -> Vec<UiAction> {
+    ACTIONS
+        .lock()
+        .map(|mut actions| std::mem::take(&mut *actions))
+        .unwrap_or_default()
+}
+
+fn push_action(action: UiAction) {
+    if let Ok(mut actions) = ACTIONS.lock() {
+        actions.push(action);
+    }
+    super::wake::request();
+}
+
+/// Ação de uma notificação de call. Mute e hangup são executados aqui mesmo:
+/// não dependem de um novo frame da Activity.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_CallService_nativeCallAction(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    action: jni::objects::JString,
+) {
+    let Ok(action) = env.get_string(&action) else {
+        return;
+    };
+    let action: String = action.into();
+
+    let Ok(mut slot) = CONTROL.lock() else {
+        return;
+    };
+
+    if action == "hangup" {
+        if let Some(control) = slot.as_mut() {
+            control.net.send(NetCommand::VoiceSignal(format!(
+                r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
+                control.channel_id
+            )));
+            let _ = control.commands.send(CallCommand::Stop);
+        }
+        // Mesmo antes de VoiceReady/Call::start, a Store já está em Joining.
+        // A UI acordada abaixo cancela essa tentativa e manda voice_leave se
+        // o join tiver alcançado o socket no meio da corrida.
+        drop(slot);
+        push_action(UiAction::Hangup);
+        call_ended_from_network();
+        return;
+    }
+
+    if let Some(value) = action.strip_prefix("mute=") {
+        let muted = value == "1";
+        if let Some(control) = slot.as_mut() {
+            control.muted = muted;
+            let _ = control.commands.send(CallCommand::Muted(muted));
+        }
+        // Antes de a thread da call existir, guardar a escolha na Store basta:
+        // pump_call a reaplica assim que o servidor confirmar a entrada.
+        drop(slot);
+        push_action(UiAction::Muted(muted));
+        return;
+    }
+
+    if let Some(value) = action.strip_prefix("camera=") {
+        let camera = value == "1";
+        if let Some(control) = slot.as_mut() {
+            control.camera = camera;
+            let _ = control.commands.send(CallCommand::Camera(camera));
+        }
+        drop(slot);
+        push_action(UiAction::Camera(camera));
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetPictureInPictureMode(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    enabled: bool,
+) {
+    IN_PIP.store(enabled, Ordering::Relaxed);
+    super::wake::request();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeLifecycleChanged(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    foreground: bool,
+) {
+    FOREGROUND.store(foreground, Ordering::Relaxed);
+    super::wake::request();
+}
