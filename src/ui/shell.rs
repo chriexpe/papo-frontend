@@ -5666,7 +5666,27 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
 
 #[cfg(test)]
 mod sugestao {
-    use super::typing_shortcode;
+    use super::{typing_mention, typing_shortcode};
+
+    #[test]
+    fn arroba_sozinho_abre_lista_de_pessoas() {
+        assert_eq!(typing_mention("@", 1), Some((0, String::new())));
+    }
+
+    #[test]
+    fn arroba_filtra_username() {
+        let text = "fala @chr";
+        assert_eq!(
+            typing_mention(text, text.chars().count()),
+            Some((5, "chr".to_owned()))
+        );
+    }
+
+    #[test]
+    fn email_nao_e_mencao() {
+        let text = "ana@exemplo";
+        assert_eq!(typing_mention(text, text.chars().count()), None);
+    }
 
     #[test]
     fn acha_o_apelido_sendo_digitado() {
