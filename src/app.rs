@@ -93,7 +93,7 @@ fn route_call_update(ws: &mut Workspace, update: &crate::api::net::Update, ctx: 
             );
             ws.call_ready = false;
             if let Some(call) = &ws.call {
-                ws.net.set_event_callback(Some(call.event_callback()));
+                ws.net.set_event_callback(Some(call.event_callback(ws.store.me.clone())));
                 #[cfg(target_os = "android")]
                 crate::platform::android_call::bind(
                     call.command_sender(),
