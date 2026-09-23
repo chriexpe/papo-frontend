@@ -590,36 +590,11 @@ impl Store {
             }
             Update::Notifications(notifications) => {
                 for notification in notifications {
-                    if notification.read {
-                        continue;
-                    }
-                    let Some(channel_id) = notification.channel_id.clone() else {
-                        continue;
-                    };
-                    if !self.counted_notifications.insert(notification.id.clone()) {
-                        continue;
-                    }
-                    let newer = notification
-                        .created_at
-                        .zip(self.read_marks.get(&channel_id).copied())
-                        .map(|(at, mark)| at > mark)
-                        .unwrap_or(true);
-                    if !newer {
-                        continue;
-                    }
-                    if let Some(channel) = self
-                        .channels
-                        .iter_mut()
-                        .find(|channel| channel.id == channel_id)
-                    {
-                        channel.mentions += 1;
-                        channel.unread = true;
-                    }
-                    self.open_notifications
-                        .entry(channel_id)
-                        .or_default()
-                        .push(notification.id);
+                    self.apply_notification(notification);
                 }
+            }
+            Update::Notification(notification) => {
+                self.apply_notification(*notification);
             }
             Update::Event(event) => self.apply_event(*event),
             // Quem monta a call com isso é a janela (ela tem a thread de
@@ -642,6 +617,38 @@ impl Store {
                 self.busy = false;
             }
         }
+    }
+
+    fn apply_notification(&mut self, notification: crate::api::models::Notification) {
+        if notification.read {
+            return;
+        }
+        let Some(channel_id) = notification.channel_id.clone() else {
+            return;
+        };
+        if !self.counted_notifications.insert(notification.id.clone()) {
+            return;
+        }
+        let newer = notification
+            .created_at
+            .zip(self.read_marks.get(&channel_id).copied())
+            .map(|(at, mark)| at > mark)
+            .unwrap_or(true);
+        if !newer {
+            return;
+        }
+        if let Some(channel) = self
+            .channels
+            .iter_mut()
+            .find(|channel| channel.id == channel_id)
+        {
+            channel.mentions += 1;
+            channel.unread = true;
+        }
+        self.open_notifications
+            .entry(channel_id)
+            .or_default()
+            .push(notification.id);
     }
 
     fn apply_event(&mut self, event: Event) {
