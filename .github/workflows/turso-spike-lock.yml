@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - spike/turso-local-cache
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
