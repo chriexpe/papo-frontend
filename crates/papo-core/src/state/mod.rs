@@ -84,6 +84,16 @@ impl Member {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MentionBinding {
+    /// Índice em caracteres do @ visível no editor.
+    pub start: usize,
+    /// Nickname/display name visível, sem o @.
+    pub label: String,
+    /// Identidade persistida no wire.
+    pub user_id: String,
+}
+
 /// Um emoji de reação: do teclado ou do próprio servidor.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Emoji {
@@ -282,65 +292,90 @@ impl Store {
             .find(|member| member.username.eq_ignore_ascii_case(username))
     }
 
-    /// Converte menções humanas (`@username`) para a identidade estável que
-    /// vai no wire/storage: `<@user_id>`.
+    /// Canonicaliza menções visíveis (`@nickname`) para `<@user_id>`.
     ///
-    /// O compositor nunca vê esse formato; ele continua editando texto normal.
-    /// Chamados globais permanecem literais.
-    pub fn encode_mentions(&self, text: &str) -> String {
-        let mut members: Vec<_> = self.members.iter().collect();
-        // Se existem "ana" e "ana maria", a identidade mais específica ganha.
-        members.sort_by_key(|member| std::cmp::Reverse(member.username.len()));
+    /// Bindings produzidos pelo autocomplete/edit têm prioridade e eliminam
+    /// a ambiguidade de nicknames repetidos. Texto digitado manualmente só é
+    /// resolvido quando aquele nickname/display name identifica uma única
+    /// pessoa no servidor.
+    pub fn encode_mentions(&self, text: &str, bindings: &[MentionBinding]) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut bindings_by_start: HashMap<usize, &MentionBinding> =
+            bindings.iter().map(|binding| (binding.start, binding)).collect();
 
         let mut out = String::with_capacity(text.len());
-        let mut cursor = 0;
-        for (at, ch) in text.char_indices() {
-            if at < cursor || ch != '@' {
-                continue;
-            }
-            let previous = text[..at].chars().next_back();
-            let before_ok = at == 0
-                || previous.is_some_and(|c| c != '<' && mention_boundary(c));
-            if !before_ok {
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] != '@' {
+                out.push(chars[i]);
+                i += 1;
                 continue;
             }
 
-            let after_at = at + '@'.len_utf8();
-            let rest = &text[after_at..];
-            let matched = members.iter().find(|member| {
-                let username = member.username.as_str();
-                if username.eq_ignore_ascii_case("everyone")
-                    || username.eq_ignore_ascii_case("todos")
-                    || rest.len() < username.len()
-                    || !rest.is_char_boundary(username.len())
-                    || !rest[..username.len()].eq_ignore_ascii_case(username)
+            if let Some(binding) = bindings_by_start.remove(&i) {
+                let label: Vec<char> = binding.label.chars().collect();
+                let end = i + 1 + label.len();
+                if end <= chars.len()
+                    && chars[i + 1..end]
+                        .iter()
+                        .copied()
+                        .eq(label.iter().copied())
                 {
-                    return false;
+                    out.push_str("<@");
+                    out.push_str(&binding.user_id);
+                    out.push('>');
+                    i = end;
+                    continue;
                 }
-                rest[username.len()..]
-                    .chars()
-                    .next()
-                    .is_none_or(mention_boundary)
-            });
-            let Some(member) = matched else {
-                continue;
-            };
+            }
 
-            out.push_str(&text[cursor..at]);
-            out.push_str("<@");
-            out.push_str(&member.id);
-            out.push('>');
-            cursor = after_at + member.username.len();
+            // Entrada manual: maior nome visível primeiro. Se duas pessoas
+            // compartilham exatamente o mesmo nickname, não adivinhamos.
+            let rest: String = chars[i + 1..].iter().collect();
+            let mut candidates: Vec<&Member> = self
+                .members
+                .iter()
+                .filter(|member| {
+                    rest.len() >= member.name.len()
+                        && rest.is_char_boundary(member.name.len())
+                        && rest[..member.name.len()].eq_ignore_ascii_case(&member.name)
+                })
+                .collect();
+            candidates.sort_by_key(|member| std::cmp::Reverse(member.name.len()));
+
+            if let Some(first) = candidates.first().copied() {
+                let same_label = candidates
+                    .iter()
+                    .filter(|member| member.name.eq_ignore_ascii_case(&first.name))
+                    .count();
+                let end = i + 1 + first.name.chars().count();
+                let boundary_ok = end >= chars.len() || mention_boundary(chars[end]);
+                if same_label == 1 && boundary_ok {
+                    out.push_str("<@");
+                    out.push_str(&first.id);
+                    out.push('>');
+                    i = end;
+                    continue;
+                }
+            }
+
+            out.push('@');
+            i += 1;
         }
-        out.push_str(&text[cursor..]);
         out
     }
 
-    /// Resolve tokens estáveis para o username atual. Assim uma mensagem
-    /// antiga continua apontando para a mesma conta depois de um rename.
+    /// Resolve tokens estáveis para o nickname/display name atual.
     pub fn display_mentions(&self, text: &str) -> String {
+        self.display_mentions_with_bindings(text).0
+    }
+
+    /// Versão usada pelo editor: além do texto humano, devolve a ligação de
+    /// cada nickname ao user_id original para preservar duplicatas.
+    pub fn display_mentions_with_bindings(&self, text: &str) -> (String, Vec<MentionBinding>) {
         let chars: Vec<char> = text.chars().collect();
         let mut out = String::with_capacity(text.len());
+        let mut bindings = Vec::new();
         let mut i = 0;
         while i < chars.len() {
             if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
@@ -351,8 +386,14 @@ impl Store {
                 if end < chars.len() {
                     let id: String = chars[i + 2..end].iter().collect();
                     if let Some(member) = self.member(&id) {
+                        let start = out.chars().count();
                         out.push('@');
-                        out.push_str(&member.username);
+                        out.push_str(&member.name);
+                        bindings.push(MentionBinding {
+                            start,
+                            label: member.name.clone(),
+                            user_id: member.id.clone(),
+                        });
                         i = end + 1;
                         continue;
                     }
@@ -361,7 +402,7 @@ impl Store {
             out.push(chars[i]);
             i += 1;
         }
-        out
+        (out, bindings)
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -461,15 +502,15 @@ impl Store {
         }
     }
 
-    /// A mensagem cita você? Menção estável, legado por username ou chamado geral.
+    /// A mensagem cita você? Menção estável, legado por nickname/display name ou chamado geral.
     pub fn mentions_me(&self, message: &Message) -> bool {
         if message.author_id == self.me {
             return false;
         }
         let content = message.content.to_lowercase();
         (!self.me.is_empty() && content.contains(&format!("<@{}>", self.me.to_lowercase())))
-            || (!self.my_username.is_empty()
-                && content.contains(&format!("@{}", self.my_username.to_lowercase())))
+            || (!self.my_name.is_empty()
+                && content.contains(&format!("@{}", self.my_name.to_lowercase())))
             || content.contains("@everyone")
             || content.contains("@todos")
     }
@@ -1199,60 +1240,73 @@ mod tests {
     }
 
     #[test]
-    fn mencao_vai_para_id_e_volta_ao_username_atual() {
+    fn mencao_vai_para_id_e_volta_ao_nickname_atual() {
         let mut store = Store::default();
         store.members.push(Member {
             id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
             username: "christian".to_owned(),
-            name: "Christian".to_owned(),
+            name: "Chris".to_owned(),
             presence: Presence::Online,
             role_color: None,
             roles: Vec::new(),
         });
 
-        let encoded = store.encode_mentions("oi @christian");
+        let binding = MentionBinding {
+            start: 3,
+            label: "Chris".to_owned(),
+            user_id: store.members[0].id.clone(),
+        };
+        let encoded = store.encode_mentions("oi @Chris", &[binding]);
         assert_eq!(
             encoded,
             "oi <@550e8400-e29b-41d4-a716-446655440000>"
         );
 
-        store.members[0].username = "chris".to_owned();
-        assert_eq!(store.display_mentions(&encoded), "oi @chris");
+        store.members[0].name = "Christian H".to_owned();
+        assert_eq!(store.display_mentions(&encoded), "oi @Christian H");
     }
 
     #[test]
-    fn mencao_aceita_username_com_espaco_e_nao_duplica_token_canonico() {
+    fn autocomplete_desambigua_nicknames_iguais_por_user_id() {
+        let mut store = Store::default();
+        for (id, username) in [("id-a", "chris_a"), ("id-b", "chris_b")] {
+            store.members.push(Member {
+                id: id.to_owned(),
+                username: username.to_owned(),
+                name: "Chris".to_owned(),
+                presence: Presence::Online,
+                role_color: None,
+                roles: Vec::new(),
+            });
+        }
+
+        // Digitado à mão é ambíguo, portanto fica texto comum.
+        assert_eq!(store.encode_mentions("@Chris", &[]), "@Chris");
+
+        // A escolha no autocomplete carrega a identidade exata.
+        let binding = MentionBinding {
+            start: 0,
+            label: "Chris".to_owned(),
+            user_id: "id-b".to_owned(),
+        };
+        assert_eq!(store.encode_mentions("@Chris", &[binding]), "<@id-b>");
+    }
+
+    #[test]
+    fn mencao_manual_unica_e_chamados_globais() {
         let mut store = Store::default();
         store.members.push(Member {
             id: "id-ana".to_owned(),
-            username: "Ana Maria".to_owned(),
-            name: "Ana".to_owned(),
-            presence: Presence::Online,
-            role_color: None,
-            roles: Vec::new(),
-        });
-
-        assert_eq!(
-            store.encode_mentions("oi @Ana Maria! <@id-ana>"),
-            "oi <@id-ana>! <@id-ana>"
-        );
-    }
-
-    #[test]
-    fn mencao_nao_reescreve_email_nem_chamado_global() {
-        let mut store = Store::default();
-        store.members.push(Member {
-            id: "id-da-ana".to_owned(),
-            username: "ana".to_owned(),
-            name: "Ana".to_owned(),
+            username: "ana_real".to_owned(),
+            name: "Ana Maria".to_owned(),
             presence: Presence::Offline,
             role_color: None,
             roles: Vec::new(),
         });
 
         assert_eq!(
-            store.encode_mentions("ana@exemplo.com @everyone @todos @ana"),
-            "ana@exemplo.com @everyone @todos <@id-da-ana>"
+            store.encode_mentions("oi @Ana Maria! @everyone @todos", &[]),
+            "oi <@id-ana>! @everyone @todos"
         );
     }
 
