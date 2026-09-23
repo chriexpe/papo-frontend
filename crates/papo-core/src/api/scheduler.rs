@@ -162,6 +162,7 @@ impl ReconcileScheduler {
 
             if Self::supersedes_running(&request, running) {
                 self.active_by_key.remove(&key);
+                self.running.remove(&run_id);
                 self.enqueue(request, now);
                 log::debug!("reconcile scheduler: superseded running {key:?} run={run_id}");
                 return SubmitResult {
@@ -311,7 +312,7 @@ impl ReconcileScheduler {
             .collect();
 
         for run_id in &stale {
-            if let Some(running) = self.running.get(run_id)
+            if let Some(running) = self.running.remove(run_id)
                 && self.active_by_key.get(&running.key) == Some(run_id)
             {
                 self.active_by_key.remove(&running.key);
@@ -325,7 +326,9 @@ impl ReconcileScheduler {
         self.queued.clear();
         self.retry_until.clear();
         self.active_by_key.clear();
-        self.running.keys().copied().collect()
+        let running = self.running.keys().copied().collect();
+        self.running.clear();
+        running
     }
 
     fn supersedes(incoming: &ReconcileRequest, existing: &ReconcileRequest) -> bool {
