@@ -17,6 +17,11 @@ use super::client::{Api, Session};
 use super::models::{LinkPreview, Message};
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
+/// Depois de mandar um heartbeat o backend responde com heartbeat_ack. Sem
+/// essa confirmação o TCP pode parecer aberto depois de troca de rede/suspensão.
+const HEARTBEAT_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const WATCHDOG_TICK: Duration = Duration::from_secs(1);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -208,7 +213,9 @@ pub async fn run(
     events: mpsc::UnboundedSender<Event>,
     status: mpsc::UnboundedSender<Connection>,
     mut outbound: mpsc::UnboundedReceiver<String>,
+    mut probe: mpsc::UnboundedReceiver<()>,
 ) {
+    let endpoint = api.websocket_url();
     let mut backoff = BACKOFF_MIN;
     loop {
         if events.is_closed() {
@@ -216,19 +223,39 @@ pub async fn run(
         }
         let _ = status.send(Connection::Connecting);
 
-        match connect(&api, &session, &events, &status, &mut outbound).await {
+        match connect(
+            &api,
+            &session,
+            &events,
+            &status,
+            &mut outbound,
+            &mut probe,
+        )
+        .await
+        {
             Ok(()) => {
                 backoff = BACKOFF_MIN;
-                log::info!("websocket encerrado pelo servidor; reconectando");
+                log::info!("websocket {endpoint}: encerrado; reconectando");
             }
             Err(error) => {
-                log::warn!("websocket caiu: {error}");
+                log::warn!("websocket {endpoint}: caiu: {error}");
             }
         }
 
         let _ = status.send(Connection::Offline);
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(BACKOFF_MAX);
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => {
+                backoff = (backoff * 2).min(BACKOFF_MAX);
+            }
+            signal = probe.recv() => {
+                if signal.is_none() {
+                    return;
+                }
+                // Voltar ao foreground não deve esperar um backoff antigo.
+                backoff = BACKOFF_MIN;
+                log::debug!("websocket {endpoint}: nova tentativa antecipada");
+            }
+        }
     }
 }
 
@@ -238,6 +265,7 @@ async fn connect(
     events: &mpsc::UnboundedSender<Event>,
     status: &mpsc::UnboundedSender<Connection>,
     outbound: &mut mpsc::UnboundedReceiver<String>,
+    probe: &mut mpsc::UnboundedReceiver<()>,
 ) -> Result<(), String> {
     let token = session.token().ok_or_else(|| "sem sessão".to_owned())?;
     let mut request = api
@@ -251,25 +279,58 @@ async fn connect(
             .map_err(|_| "cookie inválido".to_owned())?,
     );
 
-    let (stream, _) = tokio_tungstenite::connect_async(request)
-        .await
-        .map_err(|e| e.to_string())?;
-    log::info!("websocket conectado");
+    let (stream, _) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .map_err(|_| "timeout no handshake".to_owned())?
+    .map_err(|e| e.to_string())?;
+    log::info!("websocket {}: conectado", api.websocket_url());
     let _ = status.send(Connection::Online);
     let (mut sink, mut source) = stream.split();
 
     let mut heartbeat = tokio::time::interval(HEARTBEAT);
     heartbeat.tick().await; // o primeiro tick sai na hora
+    let mut watchdog = tokio::time::interval(WATCHDOG_TICK);
+    watchdog.tick().await;
+    let mut awaiting_ack: Option<tokio::time::Instant> = None;
 
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                if sink
-                    .send(WsMessage::Text(r#"{"type":"heartbeat"}"#.into()))
-                    .await
-                    .is_err()
+                if awaiting_ack.is_none() {
+                    if sink
+                        .send(WsMessage::Text(r#"{"type":"heartbeat"}"#.into()))
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                    awaiting_ack = Some(tokio::time::Instant::now());
+                }
+            }
+            _ = watchdog.tick() => {
+                if awaiting_ack
+                    .is_some_and(|since| since.elapsed() >= HEARTBEAT_ACK_TIMEOUT)
                 {
-                    return Ok(());
+                    return Err("heartbeat sem confirmação".to_owned());
+                }
+            }
+            signal = probe.recv() => {
+                let Some(()) = signal else { return Ok(()) };
+                // Ao voltar ao foreground, testa a conexão que já existe sem
+                // derrubá-la. Se estiver saudável, o ack chega e nada muda;
+                // se virou um TCP zumbi, o watchdog a substitui.
+                if awaiting_ack.is_none() {
+                    if sink
+                        .send(WsMessage::Text(r#"{"type":"heartbeat"}"#.into()))
+                        .await
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                    awaiting_ack = Some(tokio::time::Instant::now());
                 }
             }
             message = outbound.recv() => {
@@ -283,6 +344,10 @@ async fn connect(
                 let message = incoming.map_err(|e| e.to_string())?;
                 match message {
                     WsMessage::Text(text) => {
+                        if is_heartbeat_ack(&text) {
+                            awaiting_ack = None;
+                            continue;
+                        }
                         if let Some(event) = parse(&text)
                             && events.send(event).is_err()
                         {
@@ -298,6 +363,11 @@ async fn connect(
             }
         }
     }
+}
+
+fn is_heartbeat_ack(text: &str) -> bool {
+    serde_json::from_str::<Envelope>(text)
+        .is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
 }
 
 /// Traduz o JSON cru para os eventos da interface.
@@ -466,6 +536,13 @@ mod tests {
     #[test]
     fn ignora_evento_desconhecido() {
         assert!(parse(r#"{"type":"coisa_nova","sdp":"..."}"#).is_none());
+    }
+
+    #[test]
+    fn heartbeat_ack_e_controle_do_socket_nao_vira_evento_de_ui() {
+        assert!(is_heartbeat_ack(r#"{"type":"heartbeat_ack"}"#));
+        assert!(!is_heartbeat_ack(r#"{"type":"message"}"#));
+        assert!(parse(r#"{"type":"heartbeat_ack"}"#).is_none());
     }
 
     /// O `voice_joined` chega com `members: null` quando a sala está vazia;
