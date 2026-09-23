@@ -117,6 +117,13 @@ impl NotificationHook {
     }
 }
 
+#[derive(Clone, Default)]
+struct WorkerHooks {
+    event: EventHook,
+    message: MessageHook,
+    notification: NotificationHook,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Login { username: String, password: String },
@@ -338,11 +345,13 @@ impl Net {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
         let event_hook = EventHook::default();
-        let worker_event_hook = event_hook.clone();
         let message_hook = MessageHook::default();
-        let worker_message_hook = message_hook.clone();
         let notification_hook = NotificationHook::default();
-        let worker_notification_hook = notification_hook.clone();
+        let worker_hooks = WorkerHooks {
+            event: event_hook.clone(),
+            message: message_hook.clone(),
+            notification: notification_hook.clone(),
+        };
         let storage_key = crate::server_key(&base_url);
         let session = Arc::new(Session::default());
         session.set_token(load_secret(
@@ -376,9 +385,7 @@ impl Net {
                     commands_rx,
                     updates_tx,
                     wake,
-                    worker_event_hook,
-                    worker_message_hook,
-                    worker_notification_hook,
+                    worker_hooks,
                 ));
             })
             .expect("thread de rede");
@@ -453,9 +460,7 @@ async fn worker(
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
-    event_hook: EventHook,
-    message_hook: MessageHook,
-    notification_hook: NotificationHook,
+    hooks: WorkerHooks,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
@@ -565,7 +570,7 @@ async fn worker(
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
-                event_hook.emit(&event);
+                hooks.event.emit(&event);
 
                 if let Event::Message(message) = &event {
                     recent_message_channels
@@ -575,7 +580,7 @@ async fn worker(
                         recent_message_channels
                             .insert(message.id.clone(), message.channel_id.clone());
                     }
-                    message_hook.emit(message);
+                    hooks.message.emit(message);
                 }
 
                 if let Event::Notification {
@@ -589,7 +594,7 @@ async fn worker(
                         .and_then(|message_id| recent_message_channels.get(message_id))
                         .cloned()
                     {
-                        notification_hook.emit(&Notification {
+                        hooks.notification.emit(&Notification {
                             id: id.clone(),
                             message_id: message_id.clone(),
                             channel_id: Some(channel_id),
@@ -602,7 +607,7 @@ async fn worker(
                         me.lock().ok().and_then(|slot| slot.clone())
                     {
                         let api = api.clone();
-                        let notification_hook = notification_hook.clone();
+                        let notification_hook = hooks.notification.clone();
                         let id = id.clone();
                         tokio::spawn(async move {
                             match api.notifications(&user_id).await {
