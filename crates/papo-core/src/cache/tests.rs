@@ -1118,3 +1118,59 @@ fn outgoing_queue_hard_bound_rejects_excess_without_discarding_old_rows() {
     assert_eq!(rows.len() as i64, OUTGOING_LIMIT);
     assert!(rows.iter().all(|row| row.local_id != "local-excess"));
 }
+
+
+#[test]
+fn deliberate_retry_is_a_durable_explicit_transition_back_to_queued() {
+    let temp = TempDb::new("outgoing-explicit-retry");
+    let db = open(&temp);
+    db.enqueue_outgoing(
+        "srv",
+        outgoing("local-a", "user-a", "hello", OutgoingState::Queued),
+    )
+    .expect("enqueue");
+    db.transition_outgoing(
+        "srv",
+        "user-a",
+        "local-a",
+        OutgoingState::UnknownOutcome,
+        Some("ambiguous".to_owned()),
+    )
+    .expect("unknown");
+    assert_eq!(
+        db.load_outgoing("srv", "user-a").expect("load")[0].state,
+        OutgoingState::UnknownOutcome
+    );
+
+    db.transition_outgoing(
+        "srv",
+        "user-a",
+        "local-a",
+        OutgoingState::Queued,
+        None,
+    )
+    .expect("explicit retry");
+    assert_eq!(
+        db.load_outgoing("srv", "user-a").expect("load")[0].state,
+        OutgoingState::Queued
+    );
+}
+
+#[test]
+fn dismiss_removes_only_the_selected_outgoing_row_durably() {
+    let temp = TempDb::new("outgoing-dismiss");
+    let db = open(&temp);
+    for id in ["local-a", "local-b"] {
+        db.enqueue_outgoing(
+            "srv",
+            outgoing(id, "user-a", "hello", OutgoingState::UnknownOutcome),
+        )
+        .expect("enqueue");
+    }
+
+    db.remove_outgoing("srv", "user-a", "local-a")
+        .expect("dismiss");
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_id, "local-b");
+}
