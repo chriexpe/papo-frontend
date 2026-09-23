@@ -2655,4 +2655,71 @@ mod network_hint_tests {
         ));
         assert_eq!(generation, 7);
     }
+
+    fn outgoing_row(id: &str, content: &str, state: OutgoingState) -> CachedOutgoing {
+        CachedOutgoing {
+            local_id: id.to_owned(),
+            owner_user_id: "me".to_owned(),
+            channel_id: "general".to_owned(),
+            content: content.to_owned(),
+            reply_to: None,
+            notify_reply: false,
+            created_at: crate::cache::now_millis(),
+            state,
+            attempt_count: 1,
+            last_attempt_at: None,
+            last_error: None,
+        }
+    }
+
+    fn server_message(content: &str) -> Message {
+        Message {
+            id: "server-message".to_owned(),
+            channel_id: "general".to_owned(),
+            author_id: "me".to_owned(),
+            content: Some(content.to_owned()),
+            created_at: chrono::Utc::now(),
+            edited_at: None,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            user_reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn strong_unique_outgoing_match_can_reconcile() {
+        let rows = vec![outgoing_row(
+            "local-a",
+            "hello",
+            OutgoingState::UnknownOutcome,
+        )];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), Some(0));
+    }
+
+    #[test]
+    fn identical_outgoing_candidates_are_left_ambiguous() {
+        let rows = vec![
+            outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome),
+            outgoing_row("local-b", "hello", OutgoingState::Sending),
+        ];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), None);
+    }
+
+    #[test]
+    fn queued_item_is_never_consumed_by_server_reconciliation() {
+        let rows = vec![outgoing_row("local-a", "hello", OutgoingState::Queued)];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), None);
+    }
+
+    #[test]
+    fn content_alone_is_not_enough_for_outgoing_match() {
+        let mut row = outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome);
+        row.channel_id = "other".to_owned();
+        assert_eq!(
+            outgoing_match(&[row], "me", &server_message("hello")),
+            None
+        );
+    }
 }
