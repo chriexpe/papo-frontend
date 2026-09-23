@@ -312,6 +312,13 @@ impl Store {
                 continue;
             }
 
+            // Não interpretar e-mail nem o @ interno de um token já canônico.
+            if i > 0 && (!mention_boundary(chars[i - 1]) || chars[i - 1] == '<') {
+                out.push('@');
+                i += 1;
+                continue;
+            }
+
             if let Some(binding) = bindings_by_start.remove(&i) {
                 let label: Vec<char> = binding.label.chars().collect();
                 let end = i + 1 + label.len();
@@ -329,9 +336,24 @@ impl Store {
                 }
             }
 
-            // Entrada manual: maior nome visível primeiro. Se duas pessoas
-            // compartilham exatamente o mesmo nickname, não adivinhamos.
+            // Entrada manual: chamados globais continuam especiais.
             let rest: String = chars[i + 1..].iter().collect();
+            let global = ["everyone", "todos"].iter().any(|word| {
+                rest.len() >= word.len()
+                    && rest[..word.len()].eq_ignore_ascii_case(word)
+                    && rest[word.len()..]
+                        .chars()
+                        .next()
+                        .is_none_or(mention_boundary)
+            });
+            if global {
+                out.push('@');
+                i += 1;
+                continue;
+            }
+
+            // Maior nome visível primeiro. Se duas pessoas compartilham
+            // exatamente o mesmo nickname, não adivinhamos.
             let mut candidates: Vec<&Member> = self
                 .members
                 .iter()
@@ -1290,6 +1312,24 @@ mod tests {
             user_id: "id-b".to_owned(),
         };
         assert_eq!(store.encode_mentions("@Chris", &[binding]), "<@id-b>");
+    }
+
+    #[test]
+    fn email_nao_vira_mencao() {
+        let mut store = Store::default();
+        store.members.push(Member {
+            id: "id-chris".to_owned(),
+            username: "chris_real".to_owned(),
+            name: "Chris".to_owned(),
+            presence: Presence::Online,
+            role_color: None,
+            roles: Vec::new(),
+        });
+
+        assert_eq!(
+            store.encode_mentions("ana@Chris.com", &[]),
+            "ana@Chris.com"
+        );
     }
 
     #[test]
