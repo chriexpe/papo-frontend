@@ -16,6 +16,9 @@ import android.database.Cursor;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.drawable.Icon;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.provider.OpenableColumns;
 import android.os.Build;
@@ -85,6 +88,7 @@ public class PapoActivity extends GameActivity {
     /** Ciclo de vida/PiP da call. Implementados em `src/platform/android_call.rs`. */
     private static native void nativeSetPictureInPictureMode(boolean enabled);
     private static native void nativeLifecycleChanged(boolean foreground);
+    private static native void nativeNetworkChanged(boolean available, long epoch, String transport);
     private static native void nativeSetPipSurface(Surface surface);
     private static native void nativeMessageNotificationTapped(String payload);
 
@@ -126,6 +130,12 @@ public class PapoActivity extends GameActivity {
     private boolean mutatingNativeEditor;
     private boolean imeWasVisible;
     private String callPresentation = "off";
+    private ConnectivityManager connectivityManager;
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private long currentNetworkHandle = -1L;
+    private long networkEpoch;
+    private boolean networkSnapshotKnown;
+    private boolean networkAvailable;
     private FrameLayout pipLayer;
     private SurfaceView pipSurface;
     private TextView pipSpeaker;
@@ -1209,6 +1219,116 @@ public class PapoActivity extends GameActivity {
         System.loadLibrary("gstreamer_android");
     }
 
+    private String networkTransport(NetworkCapabilities capabilities) {
+        if (capabilities == null) {
+            return "other";
+        }
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+            return "wifi";
+        }
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+            return "cellular";
+        }
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
+            return "ethernet";
+        }
+        if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+            return "vpn";
+        }
+        return "other";
+    }
+
+    /**
+     * Publica a identidade do default network, não "Internet validada".
+     *
+     * <p>Um Wi-Fi sem NET_CAPABILITY_VALIDATED ainda pode alcançar um backend
+     * Papo na LAN. Reachability continua sendo responsabilidade de cada
+     * runtime WebSocket/REST.
+     */
+    private void publishCurrentNetwork() {
+        if (connectivityManager == null) {
+            return;
+        }
+
+        final Network active = connectivityManager.getActiveNetwork();
+        if (active == null) {
+            if (networkSnapshotKnown && !networkAvailable) {
+                return;
+            }
+            networkSnapshotKnown = true;
+            networkAvailable = false;
+            currentNetworkHandle = -1L;
+            networkEpoch++;
+            nativeNetworkChanged(false, networkEpoch, "none");
+            return;
+        }
+
+        final long handle = active.getNetworkHandle();
+        if (networkSnapshotKnown && networkAvailable && currentNetworkHandle == handle) {
+            return;
+        }
+
+        networkSnapshotKnown = true;
+        networkAvailable = true;
+        currentNetworkHandle = handle;
+        networkEpoch++;
+        nativeNetworkChanged(
+                true,
+                networkEpoch,
+                networkTransport(connectivityManager.getNetworkCapabilities(active)));
+    }
+
+    private void registerNetworkCallback() {
+        connectivityManager = getSystemService(ConnectivityManager.class);
+        if (connectivityManager == null) {
+            return;
+        }
+
+        networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                // Query the process default rather than trusting callback
+                // ordering during Wi-Fi/cellular handover.
+                publishCurrentNetwork();
+            }
+
+            @Override
+            public void onLost(Network network) {
+                // Give an arriving replacement default network one main-loop
+                // turn to become active. This avoids A-lost/B-available
+                // handovers looking like a false no-network interval.
+                getWindow().getDecorView().post(PapoActivity.this::publishCurrentNetwork);
+            }
+
+            @Override
+            public void onCapabilitiesChanged(
+                    Network network, NetworkCapabilities networkCapabilities) {
+                // Same Network handle is intentionally deduplicated.
+                publishCurrentNetwork();
+            }
+        };
+
+        try {
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+            publishCurrentNetwork();
+        } catch (RuntimeException error) {
+            Log.e("papo-network", "não foi possível observar a rede padrão", error);
+            networkCallback = null;
+        }
+    }
+
+    private void unregisterNetworkCallback() {
+        if (connectivityManager == null || networkCallback == null) {
+            return;
+        }
+        try {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+        } catch (RuntimeException error) {
+            Log.w("papo-network", "callback de rede já não estava registrado", error);
+        }
+        networkCallback = null;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Antes do `super`, que é quando o GameActivity carrega o libpapo e
@@ -1224,6 +1344,9 @@ public class PapoActivity extends GameActivity {
         }
 
         super.onCreate(savedInstanceState);
+        // libpapo já foi carregado pelo GameActivity; JNI pode ser chamado
+        // com segurança a partir deste ponto.
+        registerNetworkCallback();
         ensurePipLayer();
         ensureMessageNotificationChannel();
         handleMessageNotificationIntent(getIntent());
@@ -1253,6 +1376,12 @@ public class PapoActivity extends GameActivity {
             return view.onApplyWindowInsets(insets);
         });
         root.requestApplyInsets();
+    }
+
+    @Override
+    protected void onDestroy() {
+        unregisterNetworkCallback();
+        super.onDestroy();
     }
 
     @Override
