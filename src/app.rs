@@ -1381,6 +1381,18 @@ impl PapoApp {
             ChatAction::Delete(message_id) => {
                 ws.net.send(Command::DeleteMessage { message_id })
             }
+            ChatAction::RetryOutgoing(local_id) => {
+                ws.net.send(Command::RetryOutgoing {
+                    local_id,
+                    owner_user_id: ws.store.me.clone(),
+                });
+            }
+            ChatAction::DismissOutgoing(local_id) => {
+                ws.net.send(Command::DismissOutgoing {
+                    local_id,
+                    owner_user_id: ws.store.me.clone(),
+                });
+            }
             ChatAction::React {
                 message_id,
                 emoji,
@@ -1529,6 +1541,10 @@ impl PapoApp {
                 ws.store.edit_message_local(&message_id, content);
             }
             ChatAction::Delete(message_id) => {
+                ws.store.delete_message_local(&message_id);
+            }
+            ChatAction::RetryOutgoing(_) => {}
+            ChatAction::DismissOutgoing(message_id) => {
                 ws.store.delete_message_local(&message_id);
             }
             ChatAction::React {
