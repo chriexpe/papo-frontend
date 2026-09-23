@@ -699,6 +699,7 @@ fn outgoing_match(
         .enumerate()
         .filter(|(_, item)| {
             item.owner_user_id == owner
+                && message.author_id == owner
                 && matches!(
                     item.state,
                     OutgoingState::Sending | OutgoingState::UnknownOutcome
@@ -2716,5 +2717,13 @@ mod network_hint_tests {
             outgoing_match(&[row], "me", &server_message("hello")),
             None
         );
+    }
+
+    #[test]
+    fn another_authors_identical_message_never_resolves_outgoing() {
+        let row = outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome);
+        let mut message = server_message("hello");
+        message.author_id = "someone-else".to_owned();
+        assert_eq!(outgoing_match(&[row], "me", &message), None);
     }
 }
