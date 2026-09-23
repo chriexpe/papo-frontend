@@ -1189,6 +1189,46 @@ mod tests {
     }
 
     #[test]
+    fn mencao_vai_para_id_e_volta_ao_username_atual() {
+        let mut store = Store::default();
+        store.members.push(Member {
+            id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+            username: "christian".to_owned(),
+            name: "Christian".to_owned(),
+            presence: Presence::Online,
+            role_color: None,
+            roles: Vec::new(),
+        });
+
+        let encoded = store.encode_mentions("oi @christian");
+        assert_eq!(
+            encoded,
+            "oi <@550e8400-e29b-41d4-a716-446655440000>"
+        );
+
+        store.members[0].username = "chris".to_owned();
+        assert_eq!(store.display_mentions(&encoded), "oi @chris");
+    }
+
+    #[test]
+    fn mencao_nao_reescreve_email_nem_chamado_global() {
+        let mut store = Store::default();
+        store.members.push(Member {
+            id: "id-da-ana".to_owned(),
+            username: "ana".to_owned(),
+            name: "Ana".to_owned(),
+            presence: Presence::Offline,
+            role_color: None,
+            roles: Vec::new(),
+        });
+
+        assert_eq!(
+            store.encode_mentions("ana@exemplo.com @everyone @todos @ana"),
+            "ana@exemplo.com @everyone @todos <@id-da-ana>"
+        );
+    }
+
+    #[test]
     fn reconexao_invalida_cache_de_mensagens() {
         let mut store = store_com_canal_carregado("geral");
 
