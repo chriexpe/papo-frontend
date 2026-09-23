@@ -448,6 +448,11 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeSetPipSur
         ANativeWindow_fromSurface(env.get_native_interface(), surface.as_raw())
     };
     *guard = window as usize;
+    drop(guard);
+
+    // Surface recém-criado não tem quadro válido ainda. Pintá-lo aqui evita
+    // que o buffer inicial revele a Activity até o primeiro frame do speaker.
+    clear_pip_surface();
 }
 
 pub fn take_actions() -> Vec<UiAction> {
