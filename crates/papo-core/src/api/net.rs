@@ -511,25 +511,30 @@ async fn worker(
                     }
                 } else if let Event::Notification { ref id, .. } = event {
                     // O evento unicast é deliberadamente pequeno e não traz
-                    // channel_id. A listagem REST já contém a forma completa;
-                    // resolve só esta notificação para a UI não precisar
-                    // adivinhar pelo cache de mensagens.
-                    let user_id = me.lock().ok().and_then(|slot| slot.clone());
-                    if let Some(user_id) = user_id {
-                        match api.notifications(&user_id).await {
-                            Ok(notifications) => {
-                                if let Some(notification) =
-                                    notifications.into_iter().find(|item| item.id == *id)
-                                {
-                                    publish(
-                                        &updates,
-                                        &wake,
-                                        Update::Notification(Box::new(notification)),
-                                    );
+                    // channel_id. Resolver pelo REST roda numa tarefa própria:
+                    // a thread do socket não pode esperar HTTP e atrasar voz,
+                    // digitação ou sinalização que venha logo depois.
+                    if let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) {
+                        let api = api.clone();
+                        let updates = updates.clone();
+                        let wake = wake.clone();
+                        let id = id.clone();
+                        tokio::spawn(async move {
+                            match api.notifications(&user_id).await {
+                                Ok(notifications) => {
+                                    if let Some(notification) =
+                                        notifications.into_iter().find(|item| item.id == id)
+                                    {
+                                        publish(
+                                            &updates,
+                                            &wake,
+                                            Update::Notification(Box::new(notification)),
+                                        );
+                                    }
                                 }
+                                Err(error) => log::warn!("resolver notificação {id}: {error}"),
                             }
-                            Err(error) => log::warn!("resolver notificação {id}: {error}"),
-                        }
+                        });
                     }
                     publish(&updates, &wake, Update::Event(Box::new(event)));
                 } else {
