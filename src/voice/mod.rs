@@ -264,13 +264,14 @@ impl Call {
                 channel_id: event_channel,
                 user_ids,
             } if event_channel == &channel_id => {
-                let speaker = user_ids.first();
-                crate::platform::android_call::set_pip_target(speaker.map(String::as_str));
-                let name = speaker
-                    .and_then(|id| names.get(id))
-                    .map(String::as_str)
-                    .unwrap_or("");
-                crate::platform::android_call::set_pip_speaker(name);
+                // O servidor manda lista vazia entre rajadas de fala. Isso
+                // não significa "escolha qualquer câmera": o PiP mantém o
+                // último speaker até outro tomar a prioridade.
+                if let Some(speaker) = user_ids.first() {
+                    crate::platform::android_call::set_pip_target(Some(speaker));
+                    let name = names.get(speaker).map(String::as_str).unwrap_or("");
+                    crate::platform::android_call::set_pip_speaker(name);
+                }
             }
             #[cfg(target_os = "android")]
             Event::VoiceLeft {
