@@ -4361,7 +4361,10 @@ fn context_menu(
             }
             MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
-                state.editing = Some((message.id.clone(), message.content.clone()));
+                state.editing = Some((
+                    message.id.clone(),
+                    store.display_mentions(&message.content),
+                ));
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
