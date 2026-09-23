@@ -2028,6 +2028,17 @@ impl PapoApp {
             ask_download,
         );
 
+        let diagnostics: Vec<crate::ui::settings::WorkspaceDiagnostics> = self
+            .workspaces
+            .iter()
+            .map(|workspace| crate::ui::settings::WorkspaceDiagnostics {
+                label: workspace.label.clone(),
+                server_key: crate::state::server_key(&workspace.url),
+                runtime: workspace.net.diagnostics(),
+                store: workspace.store.diagnostics(),
+            })
+            .collect();
+
         let actions = {
             let ws = &self.workspaces[self.active];
             let mut data = crate::ui::settings::Context {
@@ -2049,6 +2060,7 @@ impl PapoApp {
                     DownloadMode::Folder(dir) => Some(dir.display().to_string()),
                     DownloadMode::Ask => None,
                 },
+                diagnostics: &diagnostics,
             };
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
