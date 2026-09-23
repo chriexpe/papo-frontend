@@ -244,6 +244,8 @@ pub enum Update {
         channel_id: String,
         messages: Vec<Message>,
     },
+    /// A carga de histórico falhou; a Store libera o canal para nova tentativa.
+    MessagesFailed(String),
     Sent(Box<Message>),
     Edited(Box<Message>),
     Deleted(String),
@@ -782,7 +784,14 @@ async fn handle(
                 // Reaplica a fonte persistida no banco logo depois.
                 load_pinned(api, updates, wake, channel_id).await;
             }
-            Err(error) => report(updates, wake, error),
+            Err(error) => {
+                publish(
+                    updates,
+                    wake,
+                    Update::MessagesFailed(channel_id),
+                );
+                report(updates, wake, error);
+            }
         },
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
