@@ -65,18 +65,33 @@ pub struct CachedOutgoing {
     pub last_error: Option<String>,
 }
 
-/// Identidade local persistente. O timestamp em nanos ocupa a parte alta e um
-/// contador monotônico por processo impede colisões entre criações no mesmo
-/// instante. É apenas identidade do cliente; o backend não a recebe.
+/// Identidade local persistente e client-only. Dois hashers com seeds
+/// aleatórias independentes produzem 128 bits sem adicionar uma dependência
+/// só para UUID; timestamp+contador entram como material extra e preservam
+/// unicidade mesmo sob rajadas dentro do mesmo processo. O backend nunca vê
+/// este valor e ele não é uma chave de idempotência.
 pub fn new_local_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
+
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("local-{nanos:032x}-{sequence:016x}")
+
+    fn half(nanos: u128, sequence: u64) -> u64 {
+        let state = std::collections::hash_map::RandomState::new();
+        let mut hasher = state.build_hasher();
+        hasher.write_u128(nanos);
+        hasher.write_u64(sequence);
+        hasher.finish()
+    }
+
+    let high = half(nanos, sequence);
+    let low = half(nanos ^ u128::from(sequence), sequence.rotate_left(29));
+    format!("local-{high:016x}{low:016x}")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
