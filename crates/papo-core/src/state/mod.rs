@@ -1856,6 +1856,12 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<[u8; 3]> {
         .max_by_key(|role| role.position)
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     #[test]
     fn diagnostics_project_freshness_refresh_and_barrier_state() {
         let mut store = Store::default();
@@ -1928,11 +1934,6 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<[u8; 3]> {
         assert_eq!(diagnostics.timelines[0].channel_id, "geral");
     }
 
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     fn store_com_canal_carregado(channel_id: &str) -> Store {
         let mut store = Store {
