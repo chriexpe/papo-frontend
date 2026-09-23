@@ -2055,9 +2055,7 @@ fn channel_pill(
     t: &Tokens,
     area: Rect,
 ) -> Option<Rect> {
-    let Some(channel) = store.channel(&store.selected_channel).cloned() else {
-        return None;
-    };
+    let channel = store.channel(&store.selected_channel).cloned()?;
 
     let painter = ui.painter();
     let glyph = painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
