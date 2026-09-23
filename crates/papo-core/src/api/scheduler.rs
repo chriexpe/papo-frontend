@@ -18,6 +18,7 @@ pub(crate) enum ReconcileKey {
     ServerMetadata,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ReconcilePriority {
     Background,
@@ -77,12 +78,14 @@ pub(crate) struct StartedReconcile {
     pub request: ReconcileRequest,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SchedulerStats {
     pub queued: usize,
     pub in_flight: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub(crate) struct SubmitResult {
     pub accepted: bool,
@@ -115,6 +118,7 @@ impl ReconcileScheduler {
         }
     }
 
+    #[allow(dead_code)]
     pub fn stats(&self) -> SchedulerStats {
         SchedulerStats {
             queued: self.queued.len(),
