@@ -4660,13 +4660,13 @@ fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
                     || text[..byte]
                         .chars()
                         .next_back()
-                        .is_some_and(|c| c.is_whitespace() || c.is_ascii_punctuation());
+                        .is_some_and(|c| c.is_whitespace() || (!c.is_alphanumeric() && c != '_'));
                 let end = byte + pattern.len();
                 let after_ok = end == text.len()
                     || text[end..]
                         .chars()
                         .next()
-                        .is_some_and(|c| c.is_whitespace() || c.is_ascii_punctuation());
+                        .is_some_and(|c| c.is_whitespace() || (!c.is_alphanumeric() && c != '_'));
                 if !before_ok || !after_ok {
                     return None;
                 }
