@@ -2478,7 +2478,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .filter(|message| message.pinned)
         .map(|message| {
             let body = if !message.content.trim().is_empty() {
-                message.content.clone()
+                store.display_mentions(&message.content)
             } else {
                 message
                     .attachments
@@ -2562,6 +2562,7 @@ fn result_row(
         channel_name,
         body,
     } = preview;
+    let body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
     let row_width = ui.available_width();
@@ -2621,7 +2622,7 @@ fn result_row(
                 });
                 if !body.trim().is_empty() {
                     ui.add_space(space::XXS);
-                    ui.label(RichText::new(body).font(text::body()).color(t.label));
+                    ui.label(RichText::new(&body).font(text::body()).color(t.label));
                 }
             });
             ui.add_space(space::SM);
@@ -3188,12 +3189,13 @@ fn message_body(
     }
 
     if !message.content.is_empty() {
+        let shown_content = store.display_mentions(&message.content);
         let color = if message.pending {
             t.label_secondary
         } else {
             t.label
         };
-        let tokens = emoji::tokenize(&message.content, &store.emojis);
+        let tokens = emoji::tokenize(&shown_content, &store.emojis);
         let plain = tokens
             .iter()
             .all(|token| matches!(token, emoji::Token::Text(_)));
@@ -3202,7 +3204,7 @@ fn message_body(
             // Sem emoji, uma passada só de texto — é o caminho rápido.
             let mut job = egui::text::LayoutJob::default();
             job.append(
-                &message.content,
+                &shown_content,
                 0.0,
                 egui::TextFormat {
                     font_id: text::message(),
@@ -4028,7 +4030,10 @@ fn hover_pill(
                 }
                 icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
-                    state.editing = Some((message.id.clone(), message.content.clone()));
+                    state.editing = Some((
+                        message.id.clone(),
+                        store.display_mentions(&message.content),
+                    ));
                     state.edit_focus_pending = true;
                 }
                 _ => {
@@ -4360,7 +4365,7 @@ fn context_menu(
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
-                ui.ctx().copy_text(message.content.clone());
+                ui.ctx().copy_text(store.display_mentions(&message.content));
             }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
                 message_id: message.id.clone(),
