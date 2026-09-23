@@ -1254,7 +1254,7 @@ impl PapoApp {
                 attachments,
             } => {
                 let channel_id = ws.store.selected_channel.clone();
-                let wire_content = ws.store.encode_mentions(&content);
+                let wire_content = content;
                 // Sem canal não há para onde mandar. Engolir a mensagem aqui
                 // fazia o envio parecer quebrado: a caixa esvaziava e nada
                 // acontecia, sem uma palavra de explicação.
@@ -1281,7 +1281,7 @@ impl PapoApp {
                 content,
             } => ws.net.send(Command::EditMessage {
                 message_id,
-                content: ws.store.encode_mentions(&content),
+                content,
             }),
             ChatAction::Delete(message_id) => {
                 ws.net.send(Command::DeleteMessage { message_id })
