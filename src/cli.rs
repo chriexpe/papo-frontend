@@ -351,7 +351,7 @@ fn voice_sdp() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         while let Ok(command) = commands.try_recv() {
-            let Command::VoiceSignal(signal) = command else {
+            let api::net::Command::VoiceSignal(signal) = command else {
                 continue;
             };
             let Ok(value) = serde_json::from_str::<serde_json::Value>(&signal) else {
