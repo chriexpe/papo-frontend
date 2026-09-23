@@ -85,6 +85,7 @@ pub fn resumed() {
 /// Snapshot do Android. `epoch` muda somente quando a identidade do default
 /// network muda ou quando ele some/volta. VALIDATED não participa da decisão:
 /// uma rede Wi-Fi local pode alcançar perfeitamente um Papo na LAN.
+#[cfg(target_os = "android")]
 fn network_changed(available: bool, epoch: u64, transport: &str) {
     let hint = NetworkHint {
         availability: if available {
