@@ -2,7 +2,7 @@
 //! (assíncrona). A janela envia comandos e lê atualizações sem nunca
 //! bloquear um quadro; o runtime tokio vive numa thread própria.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, RwLock};
 
@@ -642,6 +642,37 @@ fn publish_runtime(
     publish(tx, wake, update);
 }
 
+const OUTGOING_CHANNEL_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+struct OutgoingChannelGate {
+    ids: HashSet<String>,
+    refreshed_at: Option<std::time::Instant>,
+}
+
+impl OutgoingChannelGate {
+    fn invalidate(&mut self) {
+        self.refreshed_at = None;
+    }
+
+    async fn refresh_if_needed(&mut self, api: &Api) -> Result<(), ApiError> {
+        if self
+            .refreshed_at
+            .is_some_and(|at| at.elapsed() < OUTGOING_CHANNEL_TTL)
+        {
+            return Ok(());
+        }
+        let channels = api.channels().await?;
+        self.ids = channels.into_iter().map(|channel| channel.id).collect();
+        self.refreshed_at = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    fn contains(&self, channel_id: &str) -> bool {
+        self.ids.contains(channel_id)
+    }
+}
+
 fn short_local_id(local_id: &str) -> &str {
     local_id.get(local_id.len().saturating_sub(12)..).unwrap_or(local_id)
 }
@@ -755,17 +786,33 @@ fn reconcile_outgoing_message(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_outgoing(
     api: &Api,
     cache: &ClientDb,
     scope: &str,
     owner: &str,
     network_unavailable: bool,
+    channel_gate: &mut OutgoingChannelGate,
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     outgoing: &mut Vec<CachedOutgoing>,
 ) {
     if network_unavailable {
+        return;
+    }
+
+    if !outgoing
+        .iter()
+        .any(|item| item.owner_user_id == owner && item.state.may_auto_send())
+    {
+        return;
+    }
+
+    if let Err(error) = channel_gate.refresh_if_needed(api).await {
+        log::debug!(
+            "outgoing {scope}: channel validation unavailable; keeping queue parked: {error}"
+        );
         return;
     }
 
@@ -777,6 +824,27 @@ async fn drive_outgoing(
         .map(|(index, _)| index)
     {
         let local_id = outgoing[index].local_id.clone();
+        if !channel_gate.contains(&outgoing[index].channel_id) {
+            let reason = "channel no longer exists or is not usable".to_owned();
+            if let Err(error) = cache.transition_outgoing(
+                scope,
+                owner,
+                &local_id,
+                OutgoingState::FailedPermanent,
+                Some(reason.clone()),
+            ) {
+                log::warn!(
+                    "outgoing {scope}: could not persist missing-channel failure local={}: {error}",
+                    short_local_id(&local_id)
+                );
+                break;
+            }
+            outgoing[index].state = OutgoingState::FailedPermanent;
+            outgoing[index].last_error = Some(reason);
+            publish_outgoing(scope, updates, wake, &outgoing[index]);
+            continue;
+        }
+
         if let Err(error) = cache.transition_outgoing(
             scope,
             owner,
@@ -996,6 +1064,7 @@ async fn worker(
     let mut network_gate = NetworkGate::default();
     let mut outgoing: Vec<CachedOutgoing> = Vec::new();
     let mut outgoing_owner: Option<String> = None;
+    let mut outgoing_channels = OutgoingChannelGate::default();
     let mut outgoing_retry = tokio::time::interval(std::time::Duration::from_secs(5));
     outgoing_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     outgoing_retry.tick().await;
@@ -1048,6 +1117,7 @@ async fn worker(
         let verified = verified_owner.is_some();
         if verified_owner != outgoing_owner {
             outgoing.clear();
+            outgoing_channels.invalidate();
             outgoing_owner = verified_owner.clone();
             if let Some(owner) = verified_owner.as_deref() {
                 restore_outgoing(
@@ -1120,6 +1190,9 @@ async fn worker(
                 if let Command::NetworkHint(hint) = &command {
                     let action = network_gate.apply(*hint);
                     diagnostics_dirty = true;
+                    if !matches!(action, NetworkAction::None) {
+                        outgoing_channels.invalidate();
+                    }
                     match action {
                         NetworkAction::None => {}
                         NetworkAction::Probe => {
@@ -1177,6 +1250,7 @@ async fn worker(
                             &storage_key,
                             owner,
                             false,
+                            &mut outgoing_channels,
                             &updates,
                             &wake,
                             &mut outgoing,
@@ -1262,6 +1336,7 @@ async fn worker(
                                     &storage_key,
                                     &owner_user_id,
                                     network_gate.explicitly_unavailable(),
+                                    &mut outgoing_channels,
                                     &updates,
                                     &wake,
                                     &mut outgoing,
@@ -1539,6 +1614,7 @@ async fn worker(
                         &storage_key,
                         owner,
                         network_gate.explicitly_unavailable(),
+                        &mut outgoing_channels,
                         &updates,
                         &wake,
                         &mut outgoing,
