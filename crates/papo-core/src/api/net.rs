@@ -392,6 +392,12 @@ pub enum Update {
     /// Projeção durável local, criada/restaurada antes de qualquer POST.
     Outgoing(Box<CachedOutgoing>),
     OutgoingRestored(Vec<CachedOutgoing>),
+    OutgoingRejected {
+        content: String,
+        reply_to: Option<String>,
+        notify_reply: bool,
+        message: String,
+    },
     SendConfirmed {
         local_id: String,
         message: Box<Message>,
@@ -634,6 +640,207 @@ fn publish_runtime(
         _ => {}
     }
     publish(tx, wake, update);
+}
+
+fn short_local_id(local_id: &str) -> &str {
+    local_id.get(local_id.len().saturating_sub(12)..).unwrap_or(local_id)
+}
+
+fn publish_outgoing(
+    scope: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &CachedOutgoing,
+) {
+    log::info!(
+        "outgoing {scope}: {:?} local={}",
+        outgoing.state,
+        short_local_id(&outgoing.local_id)
+    );
+    publish(updates, wake, Update::Outgoing(Box::new(outgoing.clone())));
+}
+
+fn restore_outgoing(
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+) {
+    match cache.load_outgoing(scope, owner) {
+        Ok(mut restored) => {
+            restored.sort_by_key(|item| (item.created_at, item.local_id.clone()));
+            *outgoing = restored.clone();
+            publish(updates, wake, Update::OutgoingRestored(restored));
+        }
+        Err(error) => {
+            log::warn!("outgoing {scope}: restore falhou: {error}");
+            publish_runtime(
+                scope,
+                updates,
+                wake,
+                Update::Error(format!("fila de envio indisponível: {error}")),
+            );
+        }
+    }
+}
+
+async fn drive_outgoing(
+    api: &Api,
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    network_unavailable: bool,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+) {
+    if network_unavailable {
+        return;
+    }
+
+    loop {
+        let Some(index) = outgoing
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.owner_user_id == owner && item.state.may_auto_send())
+            .min_by_key(|(_, item)| (item.created_at, item.local_id.as_str()))
+            .map(|(index, _)| index)
+        else {
+            break;
+        };
+
+        let local_id = outgoing[index].local_id.clone();
+        if let Err(error) = cache.transition_outgoing(
+            scope,
+            owner,
+            &local_id,
+            OutgoingState::Sending,
+            None,
+        ) {
+            log::warn!("outgoing {scope}: não marcou Sending local={}: {error}", short_local_id(&local_id));
+            publish_runtime(
+                scope,
+                updates,
+                wake,
+                Update::Error(format!("não foi possível preparar a mensagem para envio: {error}")),
+            );
+            break;
+        }
+
+        outgoing[index].state = OutgoingState::Sending;
+        outgoing[index].attempt_count = outgoing[index].attempt_count.saturating_add(1);
+        outgoing[index].last_attempt_at = Some(crate::cache::now_millis());
+        outgoing[index].last_error = None;
+        publish_outgoing(scope, updates, wake, &outgoing[index]);
+
+        let attempt = outgoing[index].clone();
+        match api
+            .send_queued_message(
+                &attempt.channel_id,
+                &attempt.content,
+                attempt.reply_to.as_deref(),
+                attempt.notify_reply,
+            )
+            .await
+        {
+            Ok(message) => {
+                let cached = CachedMessage::from_api(&message);
+                if let Err(error) = cache.confirm_outgoing(scope, &local_id, cached) {
+                    log::warn!(
+                        "outgoing {scope}: confirmação durável falhou local={}: {error}",
+                        short_local_id(&local_id)
+                    );
+                    let _ = cache.transition_outgoing(
+                        scope,
+                        owner,
+                        &local_id,
+                        OutgoingState::UnknownOutcome,
+                        Some(format!("servidor confirmou, persistência local falhou: {error}")),
+                    );
+                }
+                log::info!(
+                    "outgoing {scope}: confirmed local={} server_message={}",
+                    short_local_id(&local_id),
+                    message.id
+                );
+                outgoing.remove(index);
+                publish(
+                    updates,
+                    wake,
+                    Update::SendConfirmed {
+                        local_id,
+                        message: Box::new(message),
+                    },
+                );
+            }
+            Err(SendMessageError::SafeToRetry(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::Queued,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao devolver local={} para Queued: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                    outgoing[index].state = OutgoingState::UnknownOutcome;
+                    outgoing[index].last_error = Some(db_error);
+                    publish_outgoing(scope, updates, wake, &outgoing[index]);
+                    break;
+                }
+                outgoing[index].state = OutgoingState::Queued;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                // Não gira em loop contra DNS/servidor fora: o timer ou uma
+                // mudança de conectividade tentará novamente.
+                break;
+            }
+            Err(SendMessageError::UnknownOutcome(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::UnknownOutcome,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao persistir UnknownOutcome local={}: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                }
+                outgoing[index].state = OutgoingState::UnknownOutcome;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                // O item ambíguo não bloqueia mensagens posteriores.
+                continue;
+            }
+            Err(SendMessageError::FailedPermanent(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::FailedPermanent,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao persistir FailedPermanent local={}: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                }
+                outgoing[index].state = OutgoingState::FailedPermanent;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                continue;
+            }
+        }
+    }
 }
 
 fn reset_socket_channels(
