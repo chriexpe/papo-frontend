@@ -1141,7 +1141,6 @@ impl PapoApp {
         if let Some(channel_id) = ws.store.channel_needing_messages() {
             let ticket = ws.store.mark_loading(&channel_id);
             ws.net.send(Command::LoadMessages { ticket });
-            ws.net.send(Command::LoadPinned { channel_id });
         }
 
         // Com a janela à frente, o canal aberto está sendo lido agora.
