@@ -620,6 +620,16 @@ async fn worker(
                         abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
                     }
                     Command::LoadMessages { ticket } => {
+                        if ticket.generation != runtime_generation {
+                            log::debug!(
+                                "reconcile scheduler: dropped stale ticket channel={} ticket_generation={} runtime_generation={}",
+                                ticket.channel_id,
+                                ticket.generation,
+                                runtime_generation
+                            );
+                            publish(&updates, &wake, Update::MessagesFailed(ticket));
+                            continue;
+                        }
                         let result = reconcile_scheduler.submit(
                             ReconcileRequest {
                                 owner: TaskOwner {
