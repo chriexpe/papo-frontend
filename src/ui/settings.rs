@@ -1374,6 +1374,19 @@ fn app_pane(
                         "unavailable".to_owned()
                     };
                     rows.row("Cache", Some(&cache), |_, _| {});
+                    let outgoing = format!(
+                        "{} queued · {} sending · {} uncertain · {} failed{}",
+                        workspace.store.outgoing_queued,
+                        workspace.store.outgoing_sending,
+                        workspace.store.outgoing_unknown,
+                        workspace.store.outgoing_failed,
+                        workspace
+                            .store
+                            .outgoing_oldest_age_ms
+                            .map(|age| format!(" · oldest {}s", age / 1000))
+                            .unwrap_or_default(),
+                    );
+                    rows.row("Outgoing", Some(&outgoing), |_, _| {});
                     let scheduler = format!(
                         "{} running / {} queued / limit {}",
                         runtime.scheduler.running,
