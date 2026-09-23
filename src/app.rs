@@ -509,6 +509,14 @@ impl Workspace {
         }
     }
 
+    fn ensure_channel_reconciled(&mut self) {
+        let Some(channel_id) = self.store.channel_needing_messages() else {
+            return;
+        };
+        let ticket = self.store.mark_loading(&channel_id);
+        self.net.send(Command::LoadMessages { ticket });
+    }
+
     #[cfg(target_os = "android")]
     fn sync_notification_context(&self, enabled: bool, active: bool) {
         crate::platform::android_message::sync_context(
@@ -1138,10 +1146,7 @@ impl PapoApp {
         let typed = self.ui.typed;
         let ws = &mut self.workspaces[self.active];
 
-        if let Some(channel_id) = ws.store.channel_needing_messages() {
-            let ticket = ws.store.mark_loading(&channel_id);
-            ws.net.send(Command::LoadMessages { ticket });
-        }
+        ws.ensure_channel_reconciled();
 
         // Com a janela à frente, o canal aberto está sendo lido agora.
         if focused && !ws.store.selected_channel.is_empty() {

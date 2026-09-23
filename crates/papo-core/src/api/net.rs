@@ -7,8 +7,13 @@ use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use super::client::{Api, ApiError, Session, Upload};
+use super::scheduler::{
+    ReconcileKind, ReconcilePriority, ReconcileRequest, ReconcileScheduler, StartedReconcile,
+    TaskOwner,
+};
 use super::models::{
     Channel, Emoji, Message, Notification, ReactionRequest, Server, UserSummary, Whoami,
 };
@@ -334,6 +339,14 @@ pub enum Update {
     Error(String),
 }
 
+const RECONCILE_CONCURRENCY: usize = 2;
+
+struct ReconcileCompletion {
+    run_id: u64,
+    success: bool,
+    updates: Vec<Update>,
+}
+
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
@@ -490,6 +503,12 @@ async fn worker(
     let mut outbound_rx = Some(outbound_rx);
     let mut socket: Option<tokio::task::JoinHandle<()>> = None;
     let mut recent_message_channels: HashMap<String, String> = HashMap::new();
+    let mut reconcile_scheduler = ReconcileScheduler::new(RECONCILE_CONCURRENCY);
+    let mut reconcile_tasks = JoinSet::new();
+    let mut reconcile_aborts: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
+    let mut runtime_generation = 0_u64;
+    let mut session_epoch = 0_u64;
+    let mut worker_connection = Connection::Offline;
 
     // Sessão persistida pelo frontend: tenta seguir logado sem pedir senha.
     // Falha de rede não é logout. Só uma resposta de autenticação inválida
@@ -557,26 +576,89 @@ async fn worker(
             _ => {}
         }
 
+        spawn_ready_reconciles(
+            &api,
+            &mut reconcile_scheduler,
+            &mut reconcile_tasks,
+            &mut reconcile_aborts,
+        );
+        let scheduler_deadline = reconcile_scheduler.next_ready_at();
+
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
-                if matches!(command, Command::ProbeConnection) {
+                if matches!(&command, Command::ProbeConnection) {
                     let _ = probe_tx.send(());
                     continue;
                 }
-                handle(
-                    &api,
-                    &base_url,
-                    &storage_key,
-                    storage.as_ref(),
-                    &session,
-                    &me,
-                    &updates,
-                    &wake,
-                    &outbound_tx,
-                    command,
-                )
-                .await;
+
+                if matches!(
+                    &command,
+                    Command::Login { .. } | Command::Register { .. } | Command::Logout
+                ) {
+                    session_epoch = session_epoch.saturating_add(1);
+                    abort_reconciles(
+                        reconcile_scheduler.cancel_all(),
+                        &mut reconcile_aborts,
+                    );
+                }
+
+                match command {
+                    Command::Refresh => {
+                        let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: runtime_generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::ActiveServer,
+                                kind: ReconcileKind::ServerMetadata { user_id },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                    }
+                    Command::LoadMessages { ticket } => {
+                        if ticket.generation != runtime_generation {
+                            log::debug!(
+                                "reconcile scheduler: dropped stale ticket channel={} ticket_generation={} runtime_generation={}",
+                                ticket.channel_id,
+                                ticket.generation,
+                                runtime_generation
+                            );
+                            publish(&updates, &wake, Update::MessagesFailed(ticket));
+                            continue;
+                        }
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: ticket.generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::Visible,
+                                kind: ReconcileKind::ChannelHistory { ticket },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                    }
+                    other => {
+                        handle(
+                            &api,
+                            &base_url,
+                            &storage_key,
+                            storage.as_ref(),
+                            &session,
+                            &me,
+                            &updates,
+                            &wake,
+                            &outbound_tx,
+                            other,
+                        )
+                        .await;
+                    }
+                }
             }
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
@@ -657,8 +739,59 @@ async fn worker(
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
+                if worker_connection == Connection::Online && status != Connection::Online {
+                    runtime_generation = runtime_generation.saturating_add(1);
+                    abort_reconciles(
+                        reconcile_scheduler.invalidate_owner(TaskOwner {
+                            generation: runtime_generation,
+                            session_epoch,
+                        }),
+                        &mut reconcile_aborts,
+                    );
+                }
+                worker_connection = status;
                 publish(&updates, &wake, Update::Connection(status));
             }
+            completion = reconcile_tasks.join_next(), if !reconcile_tasks.is_empty() => {
+                match completion {
+                    Some(Ok(completion)) => {
+                        reconcile_aborts.remove(&completion.run_id);
+                        if reconcile_scheduler.complete(
+                            completion.run_id,
+                            completion.success,
+                            std::time::Instant::now(),
+                        ) {
+                            let session_invalid = completion
+                                .updates
+                                .iter()
+                                .any(|update| matches!(update, Update::Session(None)));
+                            if session_invalid {
+                                session_epoch = session_epoch.saturating_add(1);
+                                abort_reconciles(
+                                    reconcile_scheduler.cancel_all(),
+                                    &mut reconcile_aborts,
+                                );
+                            }
+                            for update in completion.updates {
+                                publish(&updates, &wake, update);
+                            }
+                        }
+                    }
+                    Some(Err(error)) if !error.is_cancelled() => {
+                        log::warn!("tarefa de reconciliação falhou: {error}");
+                    }
+                    Some(Err(_)) | None => {}
+                }
+            }
+            _ = async {
+                match scheduler_deadline {
+                    Some(deadline) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            } => {}
+
             _ = verification.tick() => {
                 let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
                 if session.is_authenticated() && !verified {
@@ -687,6 +820,11 @@ async fn worker(
                         session.token(),
                     ),
                     Err(ApiError::Unauthorized) => {
+                        session_epoch = session_epoch.saturating_add(1);
+                        abort_reconciles(
+                            reconcile_scheduler.cancel_all(),
+                            &mut reconcile_aborts,
+                        );
                         session.set_token(None);
                         if let Ok(mut slot) = me.lock() {
                             *slot = None;
@@ -702,9 +840,125 @@ async fn worker(
         }
     }
 
+    abort_reconciles(reconcile_scheduler.cancel_all(), &mut reconcile_aborts);
+    reconcile_tasks.abort_all();
+    while reconcile_tasks.join_next().await.is_some() {}
+
     if let Some(socket) = socket {
         socket.abort();
     }
+}
+
+fn abort_reconciles(
+    run_ids: Vec<u64>,
+    aborts: &mut HashMap<u64, tokio::task::AbortHandle>,
+) {
+    for run_id in run_ids {
+        if let Some(handle) = aborts.remove(&run_id) {
+            handle.abort();
+        }
+    }
+}
+
+fn spawn_ready_reconciles(
+    api: &Api,
+    scheduler: &mut ReconcileScheduler,
+    tasks: &mut JoinSet<ReconcileCompletion>,
+    aborts: &mut HashMap<u64, tokio::task::AbortHandle>,
+) {
+    for StartedReconcile { run_id, request } in scheduler.start_ready(std::time::Instant::now()) {
+        let api = api.clone();
+        let handle = tasks.spawn(async move { run_reconcile(api, run_id, request).await });
+        aborts.insert(run_id, handle);
+    }
+}
+
+async fn run_reconcile(
+    api: Api,
+    run_id: u64,
+    request: ReconcileRequest,
+) -> ReconcileCompletion {
+    match request.kind {
+        ReconcileKind::ChannelHistory { ticket } => {
+            let channel_id = ticket.channel_id.clone();
+            match api.messages(&channel_id).await {
+                Ok(list) => ReconcileCompletion {
+                    run_id,
+                    success: true,
+                    updates: vec![Update::Messages {
+                        ticket,
+                        messages: list.messages,
+                        pinned_ids: fetch_pinned_ids(&api, &channel_id).await,
+                    }],
+                },
+                Err(error) => ReconcileCompletion {
+                    run_id,
+                    success: false,
+                    updates: vec![
+                        Update::MessagesFailed(ticket),
+                        update_for_error(error),
+                    ],
+                },
+            }
+        }
+        ReconcileKind::ServerMetadata { user_id } => ReconcileCompletion {
+            run_id,
+            success: true,
+            updates: bootstrap_updates(&api, user_id.as_deref()).await,
+        },
+    }
+}
+
+fn update_for_error(error: ApiError) -> Update {
+    match error {
+        ApiError::Unauthorized => Update::Session(None),
+        other => Update::Error(other.to_string()),
+    }
+}
+
+async fn bootstrap_updates(api: &Api, user_id: Option<&str>) -> Vec<Update> {
+    let mut updates = Vec::new();
+
+    match api.server().await {
+        Ok(server) => updates.push(Update::Server(server.map(Box::new))),
+        Err(error) => updates.push(update_for_error(error)),
+    }
+    match api.channels().await {
+        Ok(channels) => updates.push(Update::Channels(channels)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => updates.push(update_for_error(error)),
+    }
+    match api.users().await {
+        Ok(users) => {
+            let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
+            updates.push(Update::Users(users));
+            if !ids.is_empty() {
+                match api.profiles(ids).await {
+                    Ok(profiles) => updates.push(Update::Profiles(profiles)),
+                    Err(error) => log::warn!("perfis: {error}"),
+                }
+            }
+        }
+        Err(ApiError::NotFound) => {}
+        Err(error) => updates.push(update_for_error(error)),
+    }
+    match api.roles().await {
+        Ok(roles) => updates.push(Update::Roles(roles)),
+        Err(error) => log::warn!("cargos: {error}"),
+    }
+    match api.emojis().await {
+        Ok(emojis) if !emojis.is_empty() => updates.push(Update::Emojis(emojis)),
+        Ok(_) => {}
+        Err(error) => log::warn!("emojis: {error}"),
+    }
+    if let Some(user_id) = user_id {
+        match api.notifications(user_id).await {
+            Ok(notifications) => updates.push(Update::Notifications(notifications)),
+            Err(error) => log::warn!("notificações: {error}"),
+        }
+    }
+
+    updates
 }
 
 /// Confirma uma sessão persistida sem transformar indisponibilidade em logout.
@@ -912,33 +1166,9 @@ async fn handle(
             }
             Err(error) => publish(updates, wake, Update::Error(error.to_string())),
         },
-        Command::Refresh => {
-            let id = me.lock().ok().and_then(|slot| slot.clone());
-            bootstrap(api, updates, wake, id.as_deref()).await
-        }
-        // Consumido no laço do worker antes de chegar aqui.
-        Command::ProbeConnection => {}
-        Command::LoadMessages { ticket } => {
-            let channel_id = ticket.channel_id.clone();
-            match api.messages(&channel_id).await {
-                Ok(list) => {
-                    let pinned_ids = fetch_pinned_ids(api, &channel_id).await;
-                    publish(
-                        updates,
-                        wake,
-                        Update::Messages {
-                            ticket,
-                            messages: list.messages,
-                            pinned_ids,
-                        },
-                    );
-                }
-                Err(error) => {
-                    publish(updates, wake, Update::MessagesFailed(ticket));
-                    report(updates, wake, error);
-                }
-            }
-        }
+        // Reconciliação é consumida no laço do worker e executada pelo
+        // scheduler; nunca deve entrar no caminho ordenado abaixo.
+        Command::Refresh | Command::LoadMessages { .. } | Command::ProbeConnection => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {
