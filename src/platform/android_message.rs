@@ -18,10 +18,9 @@ struct Snapshot {
     server_label: String,
     selected_channel: String,
     me: String,
-    my_username: String,
+    my_name: String,
     channels: HashMap<String, String>,
     members: HashMap<String, String>,
-    usernames: HashMap<String, String>,
 }
 
 /// Metadados mínimos que a thread de rede precisa para montar uma
@@ -46,10 +45,9 @@ pub fn sync_context(
     server_label: &str,
     selected_channel: &str,
     me: &str,
-    my_username: &str,
+    my_name: &str,
     channels: impl IntoIterator<Item = (String, String)>,
     members: impl IntoIterator<Item = (String, String)>,
-    usernames: impl IntoIterator<Item = (String, String)>,
 ) {
     let Ok(mut snapshot) = context.0.write() else {
         return;
@@ -59,10 +57,9 @@ pub fn sync_context(
     snapshot.server_label = server_label.to_owned();
     snapshot.selected_channel = selected_channel.to_owned();
     snapshot.me = me.to_owned();
-    snapshot.my_username = my_username.to_owned();
+    snapshot.my_name = my_name.to_owned();
     snapshot.channels = channels.into_iter().collect();
     snapshot.members = members.into_iter().collect();
-    snapshot.usernames = usernames.into_iter().collect();
 }
 
 static DELIVERED: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
@@ -94,9 +91,9 @@ fn display_mentions(snapshot: &Snapshot, text: &str) -> String {
             }
             if end < chars.len() {
                 let id: String = chars[i + 2..end].iter().collect();
-                if let Some(username) = snapshot.usernames.get(&id) {
+                if let Some(name) = snapshot.members.get(&id) {
                     out.push('@');
-                    out.push_str(username);
+                    out.push_str(name);
                     i = end + 1;
                     continue;
                 }
@@ -157,7 +154,7 @@ fn post(
 
 /// Toda mensagem legível chega pelo socket, independentemente de
 /// new_notification. Para menções usamos a mesma sintaxe que o próprio Papo
-/// destaca na timeline: @username, @everyone e @todos.
+/// destaca na timeline: <@user_id>, legado por nickname, @everyone e @todos.
 pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Message) {
     let Ok(snapshot) = context.0.read() else {
         return;
@@ -170,8 +167,8 @@ pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Me
     let lower = content.to_lowercase();
     let mentioned = (!snapshot.me.is_empty()
         && lower.contains(&format!("<@{}>", snapshot.me.to_lowercase())))
-        || (!snapshot.my_username.is_empty()
-            && lower.contains(&format!("@{}", snapshot.my_username.to_lowercase())))
+        || (!snapshot.my_name.is_empty()
+            && lower.contains(&format!("@{}", snapshot.my_name.to_lowercase())))
         || lower.contains("@everyone")
         || lower.contains("@todos");
     if !mentioned {
