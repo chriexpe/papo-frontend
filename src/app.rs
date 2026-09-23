@@ -527,6 +527,10 @@ impl Workspace {
                 .members
                 .iter()
                 .map(|member| (member.id.clone(), member.name.clone())),
+            self.store
+                .members
+                .iter()
+                .map(|member| (member.id.clone(), member.username.clone())),
         );
     }
 
