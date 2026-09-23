@@ -922,31 +922,42 @@ impl PapoApp {
 
     #[cfg(target_os = "android")]
     fn handle_android_notification_navigation(&mut self, ctx: &egui::Context) {
-        while let Some(target) = crate::platform::android_message::take_navigation() {
-            let wanted = normalise_server_url(&target.server_url);
-            let Some(index) = self
-                .workspaces
-                .iter()
-                .position(|ws| normalise_server_url(&ws.url) == wanted)
-            else {
-                continue;
-            };
+        let Some(target) = crate::platform::android_message::take_navigation() else {
+            return;
+        };
+        let wanted = normalise_server_url(&target.server_url);
+        let Some(index) = self
+            .workspaces
+            .iter()
+            .position(|ws| normalise_server_url(&ws.url) == wanted)
+        else {
+            return;
+        };
 
-            self.activate(index, ctx);
-            let ws = &mut self.workspaces[index];
-            ws.store.selected_channel = target.channel_id.clone();
-            self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
-            self.ui.jump = Some(crate::ui::shell::Jump {
-                message_id: target.message_id,
-                found: None,
-                since: ctx.input(|input| input.time),
-            });
-
-            // Se a notificação já está na Store, o pump_chat a marca como
-            // lida neste mesmo canal. Em cold start ela entra pelo bootstrap
-            // REST e é marcada no quadro seguinte.
-            ctx.request_repaint();
+        let ready = self.workspaces[index]
+            .store
+            .channels
+            .iter()
+            .any(|channel| channel.id == target.channel_id);
+        if !ready {
+            crate::platform::android_message::defer_navigation(target);
+            return;
         }
+
+        self.activate(index, ctx);
+        let ws = &mut self.workspaces[index];
+        ws.store.selected_channel = target.channel_id.clone();
+        self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+        self.ui.jump = Some(crate::ui::shell::Jump {
+            message_id: target.message_id,
+            found: None,
+            since: ctx.input(|input| input.time),
+        });
+
+        // Se a notificação já está na Store, o pump_chat a marca como
+        // lida neste mesmo canal. Em cold start ela entra pelo bootstrap
+        // REST e é marcada no quadro seguinte.
+        ctx.request_repaint();
     }
 
     /// Entra ou cria a conta com o que está no formulário.
