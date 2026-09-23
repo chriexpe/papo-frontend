@@ -1864,9 +1864,11 @@ mod tests {
 
     #[test]
     fn diagnostics_project_freshness_refresh_and_barrier_state() {
-        let mut store = Store::default();
-        store.sync_generation = 7;
-        store.selected_channel = "refreshing".to_owned();
+        let mut store = Store {
+            sync_generation: 7,
+            selected_channel: "refreshing".to_owned(),
+            ..Store::default()
+        };
         store.channel_freshness.insert("fresh".to_owned(), 7);
         store.channel_freshness.insert("stale".to_owned(), 6);
         store.loading_channels.insert(
@@ -1924,9 +1926,11 @@ mod tests {
 
     #[test]
     fn diagnostics_do_not_expose_payloads_or_secrets() {
-        let mut store = Store::default();
-        store.sync_generation = 3;
-        store.selected_channel = "geral".to_owned();
+        let store = Store {
+            sync_generation: 3,
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
         let diagnostics = store.diagnostics();
 
         assert_eq!(diagnostics.sync_generation, 3);
