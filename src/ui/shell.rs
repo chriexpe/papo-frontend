@@ -5677,18 +5677,39 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                         let Some(member) = store.member(id) else {
                             continue;
                         };
-                        ui.painter().circle_filled(
-                            art.center(),
-                            art.width() / 2.0,
-                            t.accent.gamma_multiply(0.28),
-                        );
-                        ui.painter().text(
-                            art.center(),
-                            egui::Align2::CENTER_CENTER,
-                            member.initials(),
-                            text::footnote(),
-                            t.label,
-                        );
+                        let avatar = state
+                            .media
+                            .avatar(
+                                &member.id,
+                                store.avatars.get(&member.id).map(String::as_str),
+                            )
+                            .and_then(|texture| texture.frame(&ctx))
+                            .map(|handle| handle.id());
+                        if let Some(texture) = avatar {
+                            let mut mesh = egui::Mesh::with_texture(texture);
+                            mesh.add_rect_with_uv(
+                                art,
+                                Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                            ui.painter().add(egui::Shape::mesh(mesh));
+                        } else {
+                            ui.painter().circle_filled(
+                                art.center(),
+                                art.width() / 2.0,
+                                t.accent.gamma_multiply(0.28),
+                            );
+                            ui.painter().text(
+                                art.center(),
+                                egui::Align2::CENTER_CENTER,
+                                member.initials(),
+                                text::footnote(),
+                                t.label,
+                            );
+                        }
                         let x = art.max.x + space::MD;
                         ui.painter().text(
                             egui::pos2(x, slot.center().y - 4.0),
