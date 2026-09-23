@@ -545,6 +545,32 @@ mod tests {
         assert_eq!(scheduler.start_ready(now + RETRY_BACKOFF).len(), 1);
     }
 
+    #[tokio::test]
+    async fn pending_reconcile_does_not_block_runtime_input() {
+        let now = Instant::now();
+        let mut scheduler = ReconcileScheduler::new(1);
+        scheduler.submit(channel("geral", 1, ReconcilePriority::Visible), now);
+        let run = scheduler.start_ready(now).pop().expect("run");
+
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(async move {
+            let _ = finish_rx.await;
+            run.run_id
+        });
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        event_tx.send("ws-event").expect("runtime input");
+
+        tokio::select! {
+            event = event_rx.recv() => assert_eq!(event, Some("ws-event")),
+            completion = tasks.join_next() => panic!("reconcile completed before release: {completion:?}"),
+        }
+
+        finish_tx.send(()).expect("release reconcile");
+        assert!(tasks.join_next().await.is_some());
+    }
+
     #[test]
     fn cancel_all_makes_running_work_logically_obsolete() {
         let now = Instant::now();
