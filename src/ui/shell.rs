@@ -14,7 +14,7 @@ use crate::api::client::Upload;
 use crate::i18n::Strings;
 use crate::media::MediaStore;
 use crate::platform::menu::MenuCommand;
-use crate::state::{ChannelKind, Emoji, Message, Presence, Store};
+use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store};
 
 use super::attachments::{self, MediaAction};
 use super::emoji;
@@ -351,10 +351,12 @@ pub struct Popup {
 pub struct Stash {
     pub media: MediaStore,
     pub composer: String,
+    pub composer_mentions: Vec<MentionBinding>,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
+    pub editing_mentions: Vec<MentionBinding>,
     /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
@@ -369,10 +371,12 @@ impl Stash {
         Self {
             media,
             composer: String::new(),
+            composer_mentions: Vec::new(),
             attachments: Vec::new(),
             replying: None,
             reply_notify: true,
             editing: None,
+            editing_mentions: Vec::new(),
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
@@ -386,10 +390,12 @@ impl Stash {
     pub fn swap(&mut self, ui: &mut UiState) {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
+        std::mem::swap(&mut self.composer_mentions, &mut ui.composer_mentions);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
+        std::mem::swap(&mut self.editing_mentions, &mut ui.editing_mentions);
         std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
@@ -401,6 +407,7 @@ impl Stash {
 
 pub struct UiState {
     pub composer: String,
+    pub composer_mentions: Vec<MentionBinding>,
     pub show_members: bool,
     /// Layout estreito ativo neste quadro.
     pub compact: bool,
@@ -436,6 +443,7 @@ pub struct UiState {
     pub reply_notify_default: bool,
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
+    pub editing_mentions: Vec<MentionBinding>,
     /// Só o primeiro quadro da edição pede foco ao TextEdit.
     pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
@@ -446,7 +454,7 @@ pub struct UiState {
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
     pub jump: Option<Jump>,
-    /// Figurinhas sugeridas para o `:alguma` que está sendo digitado.
+    /// Sugestão contextual de figurinha ou pessoa no compositor.
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
     pub suggest_muted: bool,
@@ -480,6 +488,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             composer: String::new(),
+            composer_mentions: Vec::new(),
             show_members: true,
             compact: false,
             mobile_surface: MobileSurface::Chat,
@@ -499,6 +508,7 @@ impl Default for UiState {
             reply_notify: true,
             reply_notify_default: true,
             editing: None,
+            editing_mentions: Vec::new(),
             edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
@@ -3170,6 +3180,7 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.editing_mentions.clear();
                 state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
@@ -3177,8 +3188,11 @@ fn message_body(
                 state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
                 if content.is_empty() {
+                    state.editing_mentions.clear();
                     state.actions.push(ChatAction::Delete(id));
                 } else {
+                    let content = store.encode_mentions(&content, &state.editing_mentions);
+                    state.editing_mentions.clear();
                     state.actions.push(ChatAction::Edit {
                         message_id: id,
                         content,
@@ -4030,10 +4044,10 @@ fn hover_pill(
                 }
                 icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
-                    state.editing = Some((
-                        message.id.clone(),
-                        store.display_mentions(&message.content),
-                    ));
+                    let (content, bindings) =
+                        store.display_mentions_with_bindings(&message.content);
+                    state.editing = Some((message.id.clone(), content));
+                    state.editing_mentions = bindings;
                     state.edit_focus_pending = true;
                 }
                 _ => {
@@ -4626,12 +4640,14 @@ fn empty_state(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
 // ---------------------------------------------------------------------------
 
 /// Tira o texto da caixa e o coloca na fila de envio.
-fn submit(state: &mut UiState) {
-    let content = state.composer.trim().to_owned();
-    if content.is_empty() && state.attachments.is_empty() {
+fn submit(store: &Store, state: &mut UiState) {
+    let visible = state.composer.trim().to_owned();
+    if visible.is_empty() && state.attachments.is_empty() {
         return;
     }
+    let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
+    state.composer_mentions.clear();
     state.actions.push(ChatAction::Send {
         content,
         reply_to: state.replying.take(),
@@ -5097,7 +5113,7 @@ fn composer(
         if ready { t.accent_label } else { t.label_tertiary },
     );
     if send.clicked() && ready {
-        submit(state);
+        submit(store, state);
     }
 
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
@@ -5126,6 +5142,7 @@ fn composer(
         // Portanto ele encerra a edição. Se caiu no compositor, o foco é
         // transferido para ele logo abaixo.
         state.editing = None;
+        state.editing_mentions.clear();
         state.edit_focus_pending = false;
         crate::platform::native_text::dismiss();
     }
@@ -5299,7 +5316,7 @@ fn composer(
                         input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
                     });
                 if enter {
-                    submit(state);
+                    submit(store, state);
                 }
             }
         },
@@ -5319,8 +5336,7 @@ fn caret_of(ctx: &egui::Context, id: Id) -> Option<usize> {
         .map(|range| range.primary.index.0)
 }
 
-/// Acha o `:alguma` que está sendo digitado e lista as figurinhas que
-/// combinam. Fora disso, apaga a sugestão.
+/// Atualiza as sugestões de `@pessoa` ou `:figurinha` em torno do cursor.
 fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret: Option<usize>) {
     let Some(caret) = caret.filter(|_| focused) else {
         state.suggest = None;
@@ -5371,8 +5387,10 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
                 let username = member.username.to_lowercase();
                 let name = member.name.to_lowercase();
                 (
-                    !(needle.is_empty() || username.starts_with(&needle) || name.starts_with(&needle)),
+                    !(needle.is_empty() || name.starts_with(&needle)),
+                    !(needle.is_empty() || username.starts_with(&needle)),
                     member.presence == Presence::Offline,
+                    name,
                     username,
                 )
             });
@@ -5481,7 +5499,7 @@ fn accept_suggestion(
             let Some(member) = store.member(chosen) else {
                 return;
             };
-            format!("@{} ", member.username)
+            format!("@{} ", member.name)
         }
     };
 
@@ -5494,6 +5512,18 @@ fn accept_suggestion(
     let tail: String = chars[caret..].iter().collect();
     next.push_str(&tail);
     state.composer = next;
+    if suggest.kind == SuggestKind::Mention
+        && let Some(member) = store.member(chosen)
+    {
+        // Remove binding anterior que ocupava o mesmo início e conserva a
+        // identidade exata escolhida mesmo se houver nicknames iguais.
+        state.composer_mentions.retain(|binding| binding.start != suggest.start);
+        state.composer_mentions.push(MentionBinding {
+            start: suggest.start,
+            label: member.name.clone(),
+            user_id: member.id.clone(),
+        });
+    }
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
