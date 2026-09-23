@@ -1652,8 +1652,19 @@ fn conversation(
             } else {
                 crate::ui::call::lobby(ui, store, state, t, s);
             }
-            channel_pill(ui, store, state, t, full);
-            call_layers(ui, store, state, call, t, s, full, stage);
+            let channel_rect = channel_pill(ui, store, state, t, full);
+            call_layers(
+                ui,
+                store,
+                state,
+                call,
+                t,
+                s,
+                full,
+                stage,
+                channel_rect,
+                None,
+            );
             if state.compact {
                 handle_mobile_gesture(
                     ui,
@@ -1708,10 +1719,21 @@ fn conversation(
 
         // Camada funcional: tudo flutua.
         connection_pill(ui, store, state, t, s, full);
-        channel_pill(ui, store, state, t, full);
-        actions_pill(ui, store, state, t, s, full);
+        let channel_rect = channel_pill(ui, store, state, t, full);
+        let actions_rect = actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
-        call_layers(ui, store, state, call, t, s, full, stage);
+        call_layers(
+            ui,
+            store,
+            state,
+            call,
+            t,
+            s,
+            full,
+            stage,
+            channel_rect,
+            Some(actions_rect),
+        );
 
         if state.compact {
             handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
@@ -1972,16 +1994,33 @@ fn call_layers(
     s: &Strings,
     full: Rect,
     stage: Option<crate::state::Stage>,
+    channel_rect: Option<Rect>,
+    actions_rect: Option<Rect>,
 ) {
     use crate::state::Stage;
 
+    let left = channel_rect
+        .map(|rect| rect.max.x + space::SM)
+        .unwrap_or(full.min.x + PILL_MARGIN);
+    let right = actions_rect
+        .map(|rect| rect.min.x - space::SM)
+        .unwrap_or(full.max.x - PILL_MARGIN);
+    let pill_area = if right > left {
+        Rect::from_min_max(
+            egui::pos2(left, full.min.y),
+            egui::pos2(right, full.max.y),
+        )
+    } else {
+        full
+    };
+
     match stage {
         Some(Stage::Floating) => {
-            crate::ui::call::floating(ui, store, state, call, t, s, full);
+            crate::ui::call::floating(ui, store, state, call, t, s, full, pill_area);
         }
         Some(Stage::Sheet) => crate::ui::call::sheet(ui, store, state, call, t, s, full),
         Some(Stage::Docked) if store.call.channel_id != store.selected_channel => {
-            crate::ui::call::pill(ui, store, state, t, s, full);
+            crate::ui::call::pill(ui, store, state, t, s, pill_area);
         }
         _ => {}
     }
@@ -1991,9 +2030,15 @@ fn call_layers(
 ///
 /// A descrição entra junto com o canal, fica alguns segundos e escorrega na
 /// direção do nome até sumir — a pastilha encolhe junto.
-fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, area: Rect) {
+fn channel_pill(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    area: Rect,
+) -> Option<Rect> {
     let Some(channel) = store.channel(&store.selected_channel).cloned() else {
-        return;
+        return None;
     };
 
     let painter = ui.painter();
@@ -2072,6 +2117,8 @@ fn channel_pill(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Token
             t.label_tertiary.gamma_multiply(alpha),
         );
     }
+
+    Some(rect)
 }
 
 /// Pastilha de ações do canal, no alto à direita.
@@ -2086,13 +2133,19 @@ fn actions_pill(
     t: &Tokens,
     s: &Strings,
     area: Rect,
-) {
-    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"));
+) -> Rect {
+    let open = state.panel.as_ref().map(|panel| panel.kind);
+    // Fechada, esta pastilha precisa morar na camada normal. Antes ela
+    // criava uma camada Foreground do tamanho da tela inteira e roubava o
+    // ponteiro da pastilha da call mesmo sem painel aberto.
+    let layer = if open.is_some() {
+        egui::LayerId::new(egui::Order::Foreground, Id::new("actions-panel-layer"))
+    } else {
+        ui.layer_id()
+    };
     let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
-
-    let open = state.panel.as_ref().map(|panel| panel.kind);
     let width = if open.is_some() {
         PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
     } else {
@@ -2146,7 +2199,7 @@ fn actions_pill(
         },
     );
 
-    let Some(kind) = open else { return };
+    let Some(kind) = open else { return rect };
     ui.painter().line_segment(
         [
             egui::pos2(rect.min.x + space::MD, header.max.y),
@@ -2196,6 +2249,8 @@ fn actions_pill(
     if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
         state.panel = None;
     }
+
+    rect
 }
 
 /// Abre a lista pedida, ou fecha se ela já era a que estava aberta.
