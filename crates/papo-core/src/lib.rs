@@ -4,6 +4,7 @@
 //! reutilizar o mesmo contrato REST/WebSocket, sessão e runtime assíncrono.
 
 pub mod api;
+pub mod cache;
 pub mod core;
 pub mod state;
 pub mod storage;

@@ -8,6 +8,10 @@ use chrono::{DateTime, Local, Utc};
 use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
+use crate::cache::{
+    now_millis, CachedChannel, CachedMember, CachedMessage, CachedServer, CachedServerSnapshot,
+    CacheOp,
+};
 
 pub use call::{CallState, Phase, Stage};
 
@@ -263,6 +267,24 @@ enum TimelineMutation {
     },
 }
 
+impl TimelineMutation {
+    /// A mensagem que esta mutação toca, quando há uma.
+    fn affected_message_id(&self) -> Option<&str> {
+        match self {
+            TimelineMutation::MessageUpsert(message) => Some(&message.id),
+            TimelineMutation::MessageEdit { id, .. } => Some(id),
+            TimelineMutation::MessageDelete { id } => Some(id),
+            TimelineMutation::MessagePinned { message_id, .. } => Some(message_id),
+            TimelineMutation::Reaction { message_id, .. } => Some(message_id),
+            TimelineMutation::LocalReaction { message_id, .. } => Some(message_id),
+            TimelineMutation::AttachmentModeration { message_id, .. } => Some(message_id),
+            TimelineMutation::MessagePending { id, .. } => Some(id),
+            TimelineMutation::PreviewRemoved { message_id, .. }
+            | TimelineMutation::PreviewUpsert { message_id, .. } => Some(message_id),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MutationSource {
     CacheRestore,
@@ -314,6 +336,12 @@ pub struct Store {
     sync_generation: u64,
     /// Última geração em que cada canal recebeu uma carga REST autoritativa.
     channel_freshness: HashMap<String, u64>,
+    /// Canais com cache em disco ainda não reconciliados nesta geração. Um
+    /// snapshot vazio também entra aqui: cacheado e "nunca carregado" são
+    /// coisas diferentes.
+    cached_channels: HashSet<String>,
+    /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
+    pending_cache: Vec<CacheOp>,
     /// Refresh aceito atualmente por canal, incluindo o barrier local.
     loading_channels: HashMap<String, ActiveRefresh>,
     /// Mutações live recebidas durante refreshes REST.
@@ -367,6 +395,8 @@ impl Default for Store {
             selected_channel: String::new(),
             sync_generation: 0,
             channel_freshness: HashMap::new(),
+            cached_channels: HashSet::new(),
+            pending_cache: Vec::new(),
             loading_channels: HashMap::new(),
             mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
@@ -585,8 +615,104 @@ impl Store {
         match self.channel_freshness.get(channel_id) {
             Some(generation) if *generation == self.sync_generation => TimelineStatus::Fresh,
             Some(_) => TimelineStatus::Stale,
+            // Cache restaurado nunca é frescura: só a reconciliação desta
+            // geração marca um canal como atual.
+            None if self.cached_channels.contains(channel_id) => TimelineStatus::Stale,
             None => TimelineStatus::Missing,
         }
+    }
+
+    /// Hidrata a Store a partir do cache em disco, antes de a rede começar.
+    ///
+    /// É deliberadamente sem efeitos colaterais: não soma não lidos nem
+    /// menções novas, não notifica, não abre tickets, não mexe na geração e
+    /// não devolve operações de persistência — senão o restore viraria eco.
+    pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
+        if let Some(server) = &snapshot.server {
+            self.me = server.me_user_id.clone().unwrap_or_default();
+            self.my_name = server.me_display_name.clone().unwrap_or_default();
+            self.my_username = server.me_username.clone().unwrap_or_default();
+            self.server = Some(Server {
+                name: server.name.clone(),
+                description: server.description.clone(),
+            });
+        }
+
+        self.channels = snapshot
+            .channels
+            .into_iter()
+            .map(|channel| Channel {
+                id: channel.id,
+                name: channel.name,
+                kind: ChannelKind::parse(&channel.kind),
+                topic: channel.topic,
+                position: channel.position,
+                unread: channel.unread,
+                mentions: channel.mentions,
+            })
+            .collect();
+        self.channels.sort_by_key(|channel| channel.position);
+
+        // Presença lida do disco é sempre velha; ninguém é "online" só por
+        // causa dela.
+        self.members = snapshot
+            .members
+            .into_iter()
+            .map(|member| Member {
+                id: member.id,
+                username: member.username,
+                name: member.name,
+                presence: Presence::Offline,
+                role_color: member.role_color,
+                roles: member.roles,
+            })
+            .collect();
+
+        self.messages = snapshot
+            .messages
+            .into_iter()
+            .map(|message| message.to_store())
+            .collect();
+        self.sort_messages();
+
+        self.cached_channels = snapshot.cached_channels;
+        for message in &self.messages {
+            self.cached_channels.insert(message.channel_id.clone());
+        }
+
+        if self.selected_channel.is_empty()
+            && let Some(first) = self
+                .channels
+                .iter()
+                .find(|channel| channel.kind == ChannelKind::Text)
+        {
+            self.selected_channel = first.id.clone();
+        }
+
+        if !self.channels.is_empty() || !self.messages.is_empty() {
+            self.screen = Screen::Chat;
+            self.connection = Connection::Offline;
+        }
+
+        self.pending_cache.clear();
+    }
+
+    /// Esvazia o estado vindo do cache. Usado quando a conta verificada não é
+    /// a dona do cache — nunca deixar a conversa de um usuário aparecer para
+    /// outro.
+    pub fn clear_cached_state(&mut self) {
+        self.server = None;
+        self.channels.clear();
+        self.members.clear();
+        self.messages.clear();
+        self.cached_channels.clear();
+        self.pending_cache.clear();
+        self.selected_channel.clear();
+    }
+
+    /// Retira os efeitos de cache acumulados desde a última drenagem.
+    pub fn take_cache_ops(&mut self) -> Vec<CacheOp> {
+        std::mem::take(&mut self.pending_cache)
     }
 
     /// Projeção pequena e somente-leitura do estado de sincronização.
@@ -762,6 +888,8 @@ impl Store {
                 } else {
                     None
                 };
+                let cache_message_id = mutation.affected_message_id().map(str::to_owned);
+                let deleted = matches!(mutation, TimelineMutation::MessageDelete { .. });
 
                 if source == MutationSource::Live
                     && let Some(channel_id) = channel_id.as_deref()
@@ -780,6 +908,14 @@ impl Store {
                     self.apply_timeline_projection(mutation);
                 }
 
+                // Só Live e Reconcile persistem; CacheRestore nunca volta ao
+                // banco e Local (eco pendente) ainda não é persistido.
+                if matches!(source, MutationSource::Live | MutationSource::Reconcile)
+                    && let Some(message_id) = cache_message_id
+                {
+                    self.emit_message_cache_effect(&message_id, deleted);
+                }
+
                 if let Some((message, first_delivery)) = live_message {
                     self.apply_live_message_effects(&message, first_delivery);
                 }
@@ -796,14 +932,49 @@ impl Store {
                     self.upsert_message(message);
                 }
                 self.sort_messages();
+
+                if source == MutationSource::Reconcile {
+                    let confirmed: Vec<CachedMessage> = self
+                        .messages
+                        .iter()
+                        .filter(|message| message.channel_id == channel_id && !message.pending)
+                        .map(CachedMessage::from_store)
+                        .collect();
+                    self.pending_cache
+                        .push(CacheOp::ReplaceChannelSnapshot {
+                            channel_id,
+                            messages: confirmed,
+                            cached_at: now_millis(),
+                        });
+                }
             }
             StoreMutation::ConfirmSent(message) => {
                 // O backend não fornece transaction/local-id ainda. Mantemos
                 // a semântica atual: uma confirmação limpa ecos pendentes e
                 // converge pela mesma implementação de upsert usada no resto.
                 self.messages.retain(|existing| !existing.pending);
+                let cached = CachedMessage::from_store(&message);
                 self.apply_timeline_projection(TimelineMutation::MessageUpsert(message));
+                self.pending_cache.push(CacheOp::UpsertMessage(cached));
             }
+        }
+    }
+
+    /// Publica o efeito de cache de uma mutação já projetada. Deletar remove a
+    /// linha; qualquer outra mudança regrava a mensagem resultante, e não a
+    /// intenção — assim edição, reação e fixação convergem sozinhas.
+    fn emit_message_cache_effect(&mut self, message_id: &str, deleted: bool) {
+        if deleted {
+            self.pending_cache.push(CacheOp::DeleteMessage {
+                message_id: message_id.to_owned(),
+            });
+            return;
+        }
+        if let Some(message) = self.messages.iter().find(|message| message.id == message_id)
+            && !message.pending
+        {
+            self.pending_cache
+                .push(CacheOp::UpsertMessage(CachedMessage::from_store(message)));
         }
     }
 
@@ -1054,12 +1225,19 @@ impl Store {
                 self.screen = Screen::Chat;
                 self.error = None;
                 self.busy = false;
+                self.pending_cache.push(CacheOp::SetOwner {
+                    owner_user_id: me.id.clone(),
+                    me_name: me.display_name().to_owned(),
+                    me_username: me.username.clone(),
+                });
             }
             Update::Session(None) => {
                 let was = std::mem::take(self);
                 self.screen = Screen::Auth;
                 self.error = was.error;
                 self.read_marks = was.read_marks;
+                // Sessão inválida: o cache deste usuário não deve sobreviver.
+                self.pending_cache.push(CacheOp::ClearServer);
             }
             Update::AuthFailed(message) => {
                 self.screen = Screen::Auth;
@@ -1092,6 +1270,15 @@ impl Store {
                         .map(|owner| format!("de {owner}")),
                 });
                 self.busy = false;
+                if let Some(server) = &self.server {
+                    self.pending_cache
+                        .push(CacheOp::UpsertServer(CachedServer::from_store(
+                            server,
+                            &self.me,
+                            &self.my_name,
+                            &self.my_username,
+                        )));
+                }
             }
             Update::Channels(channels) => {
                 let previous: HashMap<String, (bool, u32)> = self
@@ -1148,6 +1335,9 @@ impl Store {
                 {
                     self.selected_channel = first.id.clone();
                 }
+                let cached: Vec<CachedChannel> =
+                    self.channels.iter().map(CachedChannel::from).collect();
+                self.pending_cache.push(CacheOp::ReplaceChannels(cached));
             }
             Update::Roles(roles) => {
                 self.roles = roles;
@@ -1208,6 +1398,9 @@ impl Store {
                     })
                     .collect();
                 self.sort_members();
+                let cached: Vec<CachedMember> =
+                    self.members.iter().map(CachedMember::from).collect();
+                self.pending_cache.push(CacheOp::ReplaceMembers(cached));
             }
             Update::Messages {
                 ticket,
@@ -2822,5 +3015,202 @@ mod tests {
         assert_eq!(b.channel("outro").expect("canal").mentions, 0);
         assert!(a.message("m-b").is_none());
         assert!(b.message("m-a").is_none());
+    }
+
+    fn snapshot_de_cache() -> CachedServerSnapshot {
+        CachedServerSnapshot {
+            owner_user_id: Some("eu".to_owned()),
+            server: Some(CachedServer {
+                name: "Papo".to_owned(),
+                description: None,
+                owner_user_id: Some("eu".to_owned()),
+                me_user_id: Some("eu".to_owned()),
+                me_display_name: Some("Eu".to_owned()),
+                me_username: Some("eu".to_owned()),
+                updated_at: 0,
+            }),
+            channels: vec![CachedChannel {
+                id: "geral".to_owned(),
+                name: "Geral".to_owned(),
+                kind: "text".to_owned(),
+                topic: None,
+                position: 0,
+                unread: false,
+                mentions: 0,
+            }],
+            members: vec![CachedMember {
+                id: "outro".to_owned(),
+                username: "outro".to_owned(),
+                name: "Outro".to_owned(),
+                role_color: None,
+                roles: Vec::new(),
+            }],
+            messages: vec![CachedMessage {
+                id: "m-cached".to_owned(),
+                channel_id: "geral".to_owned(),
+                author_id: "outro".to_owned(),
+                content: "do disco".to_owned(),
+                created_at: 1_000,
+                edited: false,
+                reply_to: None,
+                pinned: false,
+                attachments: Vec::new(),
+                reactions: Vec::new(),
+            }],
+            cached_channels: ["geral".to_owned()].into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn cache_restore_hidrata_sem_frescura_nem_eco() {
+        let mut store = Store::default();
+        store.restore_cached(snapshot_de_cache());
+
+        assert_eq!(store.message("m-cached").expect("mensagem").content, "do disco");
+        assert_eq!(store.server.as_ref().expect("servidor").name, "Papo");
+        assert_eq!(store.me, "eu");
+        // Cacheado não é fresco.
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
+        assert_eq!(store.sync_generation(), 0);
+        // Sem ticket, sem journal, sem operações devolvidas ao banco.
+        assert!(!store.loading_channels.contains_key("geral"));
+        assert!(store.take_cache_ops().is_empty());
+        assert_eq!(store.channel("geral").expect("canal").mentions, 0);
+        assert!(!store.channel("geral").expect("canal").unread);
+    }
+
+    #[test]
+    fn canal_vazio_cacheado_nao_e_missing() {
+        let mut snapshot = snapshot_de_cache();
+        snapshot.messages.clear();
+        snapshot.cached_channels = ["geral".to_owned()].into_iter().collect();
+        let mut store = Store::default();
+        store.restore_cached(snapshot);
+
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
+        assert_eq!(store.timeline_status("inexistente"), TimelineStatus::Missing);
+    }
+
+    #[test]
+    fn restore_seguido_de_reconcile_converge_para_o_servidor() {
+        let mut store = Store::default();
+        store.restore_cached(snapshot_de_cache());
+        store.apply(Update::Connection(Connection::Online));
+
+        let ticket = store.mark_loading("geral");
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![
+                wire_message("m-cached", "geral", "atualizada"),
+                wire_message("m-nova", "geral", "nova"),
+            ],
+        );
+
+        assert_eq!(
+            store.message("m-cached").expect("mensagem").content,
+            "atualizada"
+        );
+        assert!(store.message("m-nova").is_some());
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
+    }
+
+    #[test]
+    fn persistencia_vem_so_de_live_e_reconcile() {
+        let mut store = store_para_proveniencia();
+        let _ = store.take_cache_ops();
+
+        // CacheRestore não gera efeito.
+        store.apply_mutation(
+            MutationSource::CacheRestore,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-cache",
+                    "outro",
+                    "cache",
+                )),
+            },
+        );
+        assert!(store.take_cache_ops().is_empty());
+
+        // Eco local pendente também não.
+        store.push_pending("outro", "rascunho", None);
+        assert!(store.take_cache_ops().is_empty());
+
+        // Live persiste.
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m-live", "outro", "viva"),
+        )))));
+        let ops = store.take_cache_ops();
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                CacheOp::UpsertMessage(message) if message.id == "m-live"
+            )),
+            "live precisa persistir: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_reconciliado_gera_substituicao_e_edicao_resulta_em_upsert() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        let _ = store.take_cache_ops();
+
+        let ticket = store.mark_loading("geral");
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "reconciliada")],
+        );
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::ReplaceChannelSnapshot { channel_id, .. } if channel_id == "geral"
+        )));
+
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "editada".to_owned(),
+        })));
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::UpsertMessage(message)
+                if message.id == "m1" && message.content == "editada" && message.edited
+        )));
+
+        store.apply(Update::Event(Box::new(Event::MessageDeleted {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+        })));
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::DeleteMessage { message_id } if message_id == "m1"
+        )));
+    }
+
+    #[test]
+    fn sessao_marca_dono_e_logout_limpa_cache() {
+        let mut store = Store::default();
+        store.apply(Update::Session(Some(Box::new(models::Whoami {
+            id: "eu".to_owned(),
+            username: "eu".to_owned(),
+            nickname: None,
+            status: None,
+            status_message: None,
+            roles: Vec::new(),
+        }))));
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::SetOwner { owner_user_id, .. } if owner_user_id == "eu"
+        )));
+
+        store.apply(Update::Session(None));
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(op, CacheOp::ClearServer)));
     }
 }

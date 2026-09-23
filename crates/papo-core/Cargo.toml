@@ -26,13 +26,8 @@ thiserror = "2"
 log = "0.4"
 base64 = "0.22"
 
-[dev-dependencies]
-# PR7 feasibility qualification only. Turso is pinned to the exact 0.8
-# prerelease because Android/native-dependency cleanup landed in the 0.8 line
-# and this is the family Papo would realistically ship; the pin is deliberate,
-# not a floating semver range.
-#
-# It is a dev-dependency on purpose: PR7 only proves the engine via test-only
-# probes. Production `ClientDb` integration belongs to PR8, which will promote
-# this dependency and deal with its packaging.
+# Engine of the production `ClientDb` cache. Pinned to the exact 0.8
+# prerelease qualified by PR #29; the pin is deliberate, not a floating semver
+# range. Public mimalloc/FTS defaults stay off. The unused `turso_sdk_kit`
+# cdylibs this pulls into Android builds are excluded in `android/app`.
 turso = { version = "=0.8.0-pre.12", default-features = false }
