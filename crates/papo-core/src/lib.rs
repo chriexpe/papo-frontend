@@ -7,7 +7,11 @@ pub mod api;
 pub mod core;
 pub mod state;
 pub mod storage;
-pub mod turso_probe;
+
+// PR7 feasibility probe. Test-only: it exercises the boring local-database
+// subset Turso must support, and is not part of the production runtime.
+#[cfg(test)]
+mod turso_probe;
 
 /// Chave estável e segura para nome de arquivo a partir do endereço de um
 /// servidor. Separa sessão, cache e outras persistências por backend.

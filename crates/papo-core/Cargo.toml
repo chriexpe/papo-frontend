@@ -26,10 +26,13 @@ thiserror = "2"
 log = "0.4"
 base64 = "0.22"
 
-# PR7 feasibility gate only. Keep Turso's public optional defaults (mimalloc,
-# FTS) out of Papo while proving the ordinary local database path.
+[dev-dependencies]
+# PR7 feasibility qualification only. Turso is pinned to the exact 0.8
+# prerelease because Android/native-dependency cleanup landed in the 0.8 line
+# and this is the family Papo would realistically ship; the pin is deliberate,
+# not a floating semver range.
 #
-# Pinned to the exact 0.8 prerelease: Android/native-dependency cleanup landed
-# in the 0.8 line, and this is the family Papo would realistically ship. The
-# pin is deliberate qualification, not a floating semver range.
+# It is a dev-dependency on purpose: PR7 only proves the engine via test-only
+# probes. Production `ClientDb` integration belongs to PR8, which will promote
+# this dependency and deal with its packaging.
 turso = { version = "=0.8.0-pre.12", default-features = false }

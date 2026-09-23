@@ -24,8 +24,6 @@ fn android_main(app: AndroidApp) {
         None => log::error!("sem pasta privada: a sessão não vai sobreviver ao fechamento"),
     }
 
-    start_turso_probe();
-
     // Campos egui que ainda usam GameTextInput.
     crate::platform::ime::install(app.clone());
     // Compositor e edição de mensagem usam um EditText Android de verdade.
@@ -77,47 +75,4 @@ fn install_panic_hook() {
         );
         previous(info);
     }));
-}
-
-
-/// PR7-only persistent sentinel. It runs outside the UI thread and cannot
-/// make application startup depend on the database being healthy.
-fn start_turso_probe() {
-    let Some(path) = crate::platform::dirs::data_dir()
-        .map(|dir| dir.join("papo-turso-probe.db"))
-    else {
-        log::warn!("turso probe: sem pasta privada; ignorando");
-        return;
-    };
-
-    if let Err(error) = std::thread::Builder::new()
-        .name("papo-turso-probe".to_owned())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    log::error!("turso probe: runtime não abriu: {error}");
-                    return;
-                }
-            };
-
-            match runtime.block_on(papo_core::turso_probe::run_restart_probe(&path)) {
-                Ok(result) => log::info!(
-                    "turso probe: committed restart sentinel {} -> {} path={}",
-                    result.previous_generation,
-                    result.committed_generation,
-                    path.display()
-                ),
-                Err(error) => log::error!(
-                    "turso probe: falhou em {}: {error}",
-                    path.display()
-                ),
-            }
-        })
-    {
-        log::error!("turso probe: thread não abriu: {error}");
-    }
 }
