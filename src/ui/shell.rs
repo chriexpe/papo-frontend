@@ -3245,6 +3245,22 @@ fn message_body(
         }
     }
 
+    if message.pending {
+        let (label, color) = match store.outgoing_state(&message.id) {
+            Some(crate::cache::OutgoingState::Queued) => ("waiting to send", t.label_tertiary),
+            Some(crate::cache::OutgoingState::Sending) => ("sending…", t.label_tertiary),
+            Some(crate::cache::OutgoingState::UnknownOutcome) => {
+                ("delivery uncertain · not retried automatically", t.warning)
+            }
+            Some(crate::cache::OutgoingState::FailedPermanent) => {
+                ("not sent", t.danger)
+            }
+            None => ("waiting to send", t.label_tertiary),
+        };
+        ui.add_space(space::XXS);
+        ui.label(RichText::new(label).font(text::footnote()).color(color));
+    }
+
     if !message.attachments.is_empty()
         && let Some(action) = attachments::draw(
             ui,
