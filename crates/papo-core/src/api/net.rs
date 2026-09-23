@@ -78,6 +78,27 @@ impl EventHook {
     }
 }
 
+/// Notificação persistida recém-criada, já com channel_id resolvido.
+pub type NotificationCallback = Arc<dyn Fn(&Notification) + Send + Sync>;
+
+#[derive(Clone, Default)]
+struct NotificationHook(Arc<RwLock<Option<NotificationCallback>>>);
+
+impl NotificationHook {
+    fn set(&self, callback: Option<NotificationCallback>) {
+        if let Ok(mut slot) = self.0.write() {
+            *slot = callback;
+        }
+    }
+
+    fn emit(&self, notification: &Notification) {
+        let callback = self.0.read().ok().and_then(|slot| slot.clone());
+        if let Some(callback) = callback {
+            callback(notification);
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Login { username: String, password: String },
@@ -281,6 +302,7 @@ pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
     event_hook: EventHook,
+    notification_hook: NotificationHook,
     /// A mídia usa o mesmo cookie para baixar anexos.
     pub session: Arc<Session>,
     storage: Arc<dyn SecretStore>,
@@ -297,6 +319,8 @@ impl Net {
         let (updates_tx, updates_rx) = sync_mpsc::channel();
         let event_hook = EventHook::default();
         let worker_event_hook = event_hook.clone();
+        let notification_hook = NotificationHook::default();
+        let worker_notification_hook = notification_hook.clone();
         let storage_key = crate::server_key(&base_url);
         let session = Arc::new(Session::default());
         session.set_token(load_secret(
@@ -331,6 +355,7 @@ impl Net {
                     updates_tx,
                     wake,
                     worker_event_hook,
+                    worker_notification_hook,
                 ));
             })
             .expect("thread de rede");
@@ -339,6 +364,7 @@ impl Net {
             commands: commands_tx,
             updates: updates_rx,
             event_hook,
+            notification_hook,
             session,
             storage,
             storage_key,
@@ -355,6 +381,10 @@ impl Net {
 
     pub fn set_event_callback(&self, callback: Option<EventCallback>) {
         self.event_hook.set(callback);
+    }
+
+    pub fn set_notification_callback(&self, callback: Option<NotificationCallback>) {
+        self.notification_hook.set(callback);
     }
 
     pub fn try_recv(&self) -> Option<Update> {
@@ -396,6 +426,7 @@ async fn worker(
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
     event_hook: EventHook,
+    notification_hook: NotificationHook,
 ) {
     let api = match Api::new(&base_url, Arc::clone(&session)) {
         Ok(api) => api,
@@ -541,18 +572,20 @@ async fn worker(
                         .cloned();
 
                     if let Some(channel_id) = channel_id {
+                        let notification = Notification {
+                            id: id.clone(),
+                            message_id: message_id.clone(),
+                            channel_id: Some(channel_id),
+                            author_id: author_id.clone(),
+                            message_content: preview.clone(),
+                            read: false,
+                            created_at: None,
+                        };
+                        notification_hook.emit(&notification);
                         publish(
                             &updates,
                             &wake,
-                            Update::Notification(Box::new(Notification {
-                                id: id.clone(),
-                                message_id: message_id.clone(),
-                                channel_id: Some(channel_id),
-                                author_id: author_id.clone(),
-                                message_content: preview.clone(),
-                                read: false,
-                                created_at: None,
-                            })),
+                            Update::Notification(Box::new(notification)),
                         );
                     } else if let Some(user_id) =
                         me.lock().ok().and_then(|slot| slot.clone())
@@ -563,6 +596,7 @@ async fn worker(
                         let api = api.clone();
                         let updates = updates.clone();
                         let wake = wake.clone();
+                        let notification_hook = notification_hook.clone();
                         let id = id.clone();
                         tokio::spawn(async move {
                             match api.notifications(&user_id).await {
@@ -570,6 +604,7 @@ async fn worker(
                                     if let Some(notification) =
                                         notifications.into_iter().find(|item| item.id == id)
                                     {
+                                        notification_hook.emit(&notification);
                                         publish(
                                             &updates,
                                             &wake,
