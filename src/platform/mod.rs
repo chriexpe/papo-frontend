@@ -21,6 +21,10 @@ pub mod global_menu;
 /// Chamar a Activity a partir do Rust (Android).
 #[cfg(target_os = "android")]
 pub mod jvm;
+/// ConnectivityManager/lifecycle -> runtimes de rede. Também compila em
+/// testes desktop para validar fanout/registro sem depender de um aparelho.
+#[cfg(any(target_os = "android", test))]
+pub mod android_network;
 /// Foreground service, lifecycle e Picture-in-Picture da call.
 #[cfg(target_os = "android")]
 pub mod android_call;
