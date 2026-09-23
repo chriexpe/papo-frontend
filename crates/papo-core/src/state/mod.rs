@@ -222,6 +222,11 @@ pub struct StoreDiagnostics {
     pub sync_generation: u64,
     pub selected_channel: String,
     pub timelines: Vec<TimelineDiagnostics>,
+    pub outgoing_queued: usize,
+    pub outgoing_sending: usize,
+    pub outgoing_unknown: usize,
+    pub outgoing_failed: usize,
+    pub outgoing_oldest_age_ms: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -762,10 +767,43 @@ impl Store {
             })
             .collect();
 
+        let outgoing_queued = self
+            .outgoing_states
+            .values()
+            .filter(|state| **state == OutgoingState::Queued)
+            .count();
+        let outgoing_sending = self
+            .outgoing_states
+            .values()
+            .filter(|state| **state == OutgoingState::Sending)
+            .count();
+        let outgoing_unknown = self
+            .outgoing_states
+            .values()
+            .filter(|state| **state == OutgoingState::UnknownOutcome)
+            .count();
+        let outgoing_failed = self
+            .outgoing_states
+            .values()
+            .filter(|state| **state == OutgoingState::FailedPermanent)
+            .count();
+        let oldest = self
+            .messages
+            .iter()
+            .filter(|message| message.pending)
+            .map(|message| message.at.with_timezone(&Utc).timestamp_millis())
+            .min();
+
         StoreDiagnostics {
             sync_generation: self.sync_generation,
             selected_channel: self.selected_channel.clone(),
             timelines,
+            outgoing_queued,
+            outgoing_sending,
+            outgoing_unknown,
+            outgoing_failed,
+            outgoing_oldest_age_ms: oldest
+                .map(|created| now_millis().saturating_sub(created).max(0)),
         }
     }
 
