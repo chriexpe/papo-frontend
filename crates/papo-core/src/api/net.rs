@@ -768,17 +768,13 @@ async fn drive_outgoing(
         return;
     }
 
-    loop {
-        let Some(index) = outgoing
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| item.owner_user_id == owner && item.state.may_auto_send())
-            .min_by_key(|(_, item)| (item.created_at, item.local_id.as_str()))
-            .map(|(index, _)| index)
-        else {
-            break;
-        };
-
+    while let Some(index) = outgoing
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.owner_user_id == owner && item.state.may_auto_send())
+        .min_by_key(|(_, item)| (item.created_at, item.local_id.as_str()))
+        .map(|(index, _)| index)
+    {
         let local_id = outgoing[index].local_id.clone();
         if let Err(error) = cache.transition_outgoing(
             scope,
@@ -953,6 +949,7 @@ fn advance_generation_for_connection(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn worker(
     base_url: String,
     storage_key: String,
