@@ -87,6 +87,27 @@ pub enum ApiError {
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
+#[derive(Debug)]
+pub enum SendMessageError {
+    /// A requisição não chegou ao ponto em que o POST poderia ter sido
+    /// aceito pelo backend. É a única classe que a fila pode repetir sozinha.
+    SafeToRetry(ApiError),
+    /// O backend respondeu com uma rejeição definitiva ao POST.
+    FailedPermanent(ApiError),
+    /// O POST pode ter sido aceito; repetir automaticamente pode duplicar.
+    UnknownOutcome(ApiError),
+}
+
+impl SendMessageError {
+    pub fn message(&self) -> String {
+        match self {
+            Self::SafeToRetry(error)
+            | Self::FailedPermanent(error)
+            | Self::UnknownOutcome(error) => error.to_string(),
+        }
+    }
+}
+
 /// Pote de cookies mínimo: o backend só entrega o cookie `Auth`.
 #[derive(Default, Debug)]
 pub struct Session {
@@ -523,6 +544,76 @@ impl Api {
             .map_err(|e| ApiError::Network(e.to_string()))?;
         self.session.absorb(&response);
         Self::parse(response).await
+    }
+
+    /// Caminho classificado usado exclusivamente pela fila durável de texto.
+    /// Sem anexos não há I/O local de arquivo: erro de builder/conexão antes
+    /// do HTTP é seguro; qualquer falha depois que o request pode ter saído é
+    /// ambígua. Respostas 4xx são rejeições definitivas deste POST.
+    pub async fn send_queued_message(
+        &self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<&str>,
+        notify_reply: bool,
+    ) -> Result<Message, SendMessageError> {
+        let url = self
+            .base
+            .join("/messages")
+            .map_err(|error| SendMessageError::SafeToRetry(ApiError::Network(error.to_string())))?;
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("channel_id", channel_id.to_owned())
+            .text("content", content.to_owned());
+        if let Some(reply_to) = reply_to {
+            form = form
+                .text("reply_to", reply_to.to_owned())
+                .text("notify_reply", notify_reply.to_string());
+        }
+
+        let mut request = self
+            .http
+            .post(url)
+            .header("X-Request-ID", request_id())
+            .header(ACCEPT, "application/problem+json, application/json")
+            .multipart(form);
+        if let Some(token) = self.session.token()
+            && let Ok(value) = HeaderValue::from_str(&format!("{COOKIE_NAME}={token}"))
+        {
+            request = request.header(COOKIE, value);
+        }
+
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) if error.is_builder() || error.is_connect() => {
+                return Err(SendMessageError::SafeToRetry(ApiError::Network(
+                    error.to_string(),
+                )));
+            }
+            Err(error) => {
+                return Err(SendMessageError::UnknownOutcome(ApiError::Network(
+                    error.to_string(),
+                )));
+            }
+        };
+        self.session.absorb(&response);
+        let status = response.status();
+        let body = response.text().await.map_err(|error| {
+            SendMessageError::UnknownOutcome(ApiError::Network(error.to_string()))
+        })?;
+
+        if status.is_success() {
+            return serde_json::from_str(&body).map_err(|error| {
+                SendMessageError::UnknownOutcome(ApiError::Decode(error.to_string()))
+            });
+        }
+
+        let error = problem_error(status, &body);
+        if status.is_client_error() {
+            Err(SendMessageError::FailedPermanent(error))
+        } else {
+            Err(SendMessageError::UnknownOutcome(error))
+        }
     }
 
     pub async fn edit_message(&self, message_id: &str, content: &str) -> ApiResult<Message> {
