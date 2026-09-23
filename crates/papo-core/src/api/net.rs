@@ -930,7 +930,7 @@ async fn bootstrap_updates(api: &Api, user_id: Option<&str>) -> Vec<Update> {
     }
     match api.users().await {
         Ok(users) => {
-            let ids = users.iter().map(|user| user.id.clone()).collect();
+            let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
             updates.push(Update::Users(users));
             if !ids.is_empty() {
                 match api.profiles(ids).await {
