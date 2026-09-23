@@ -253,6 +253,10 @@ pub enum Update {
         ids: Vec<String>,
     },
     Notifications(Vec<Notification>),
+    /// Uma notificação que acabou de chegar pelo WebSocket, enriquecida com
+    /// channel_id pelo endpoint REST. Diferente de Notifications, isto é um
+    /// evento ao vivo e pode virar notificação nativa na plataforma.
+    Notification(Box<Notification>),
     Event(Box<Event>),
     /// Os servidores ICE chegaram e o `voice_join` já saiu: dá para montar a
     /// call e esperar o `voice_joined`.
@@ -505,6 +509,29 @@ async fn worker(
                         ),
                         Err(error) => log::warn!("preview {preview_id} não carregou: {error}"),
                     }
+                } else if let Event::Notification { ref id, .. } = event {
+                    // O evento unicast é deliberadamente pequeno e não traz
+                    // channel_id. A listagem REST já contém a forma completa;
+                    // resolve só esta notificação para a UI não precisar
+                    // adivinhar pelo cache de mensagens.
+                    let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                    if let Some(user_id) = user_id {
+                        match api.notifications(&user_id).await {
+                            Ok(notifications) => {
+                                if let Some(notification) =
+                                    notifications.into_iter().find(|item| item.id == *id)
+                                {
+                                    publish(
+                                        &updates,
+                                        &wake,
+                                        Update::Notification(Box::new(notification)),
+                                    );
+                                }
+                            }
+                            Err(error) => log::warn!("resolver notificação {id}: {error}"),
+                        }
+                    }
+                    publish(&updates, &wake, Update::Event(Box::new(event)));
                 } else {
                     publish(&updates, &wake, Update::Event(Box::new(event)));
                 }
