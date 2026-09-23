@@ -44,6 +44,14 @@ impl NetSender {
     pub fn send(&self, command: Command) {
         let _ = self.0.send(command);
     }
+
+    /// Canal avulso para consumidores sem um `Net` completo, como
+    /// diagnósticos/headless frontends. A call continua usando exatamente o
+    /// mesmo caminho de sinalização da aplicação real.
+    pub fn channel() -> (Self, mpsc::UnboundedReceiver<Command>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
 }
 
 /// Eventos do socket que precisam alcançar um consumidor em tempo real além
