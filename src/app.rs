@@ -444,6 +444,8 @@ pub struct Workspace {
     camera_revision: u64,
     #[cfg(target_os = "android")]
     notification_context: std::sync::Arc<crate::platform::android_message::Context>,
+    #[cfg(target_os = "android")]
+    _network_registration: crate::platform::android_network::Registration,
 }
 
 impl Workspace {
@@ -454,6 +456,10 @@ impl Workspace {
             Wake::new(move || repaint.request_repaint()),
             std::sync::Arc::new(crate::storage::FileSecretStore::new()),
         );
+
+        #[cfg(target_os = "android")]
+        let network_registration =
+            crate::platform::android_network::register(net.sender());
 
         #[cfg(target_os = "android")]
         let notification_context = {
@@ -506,6 +512,8 @@ impl Workspace {
             camera_revision: 0,
             #[cfg(target_os = "android")]
             notification_context,
+            #[cfg(target_os = "android")]
+            _network_registration: network_registration,
         }
     }
 
@@ -2184,22 +2192,6 @@ impl eframe::App for PapoApp {
         {
             self.handle_android_notification_navigation(&ctx);
             self.sync_android_notification_contexts();
-        }
-
-        #[cfg(target_os = "android")]
-        if crate::platform::android_call::take_resumed() {
-            // O servidor ativo não é especial para a rede: todos os
-            // workspaces autenticados já têm worker próprio. Ao voltar do
-            // background testamos todos de uma vez; socket saudável continua,
-            // socket zumbi cai pelo heartbeat e reconecta, e quem estava em
-            // backoff tenta imediatamente.
-            for ws in &self.workspaces {
-                ws.net.send(Command::ProbeConnection);
-            }
-            log::debug!(
-                "retorno ao foreground: testando {} websocket(s)",
-                self.workspaces.len()
-            );
         }
 
         // Indo para segundo plano: gravar agora, porque pode não haver um

@@ -136,6 +136,69 @@ pub struct RefreshTicket {
     pub request_id: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NetworkAvailability {
+    #[default]
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NetworkHint {
+    pub availability: NetworkAvailability,
+    pub epoch: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkAction {
+    None,
+    Probe,
+    Park,
+    Wake,
+    Recycle,
+}
+
+#[derive(Debug, Default)]
+struct NetworkGate {
+    hint: NetworkHint,
+}
+
+impl NetworkGate {
+    fn apply(&mut self, next: NetworkHint) -> NetworkAction {
+        let previous = self.hint;
+        if previous == next {
+            return NetworkAction::None;
+        }
+
+        let action = match (previous.availability, next.availability) {
+            (_, NetworkAvailability::Unavailable)
+                if previous.availability != NetworkAvailability::Unavailable =>
+            {
+                NetworkAction::Park
+            }
+            (NetworkAvailability::Unavailable, NetworkAvailability::Available) => {
+                NetworkAction::Wake
+            }
+            (NetworkAvailability::Available, NetworkAvailability::Available)
+                if previous.epoch != next.epoch =>
+            {
+                NetworkAction::Recycle
+            }
+            (NetworkAvailability::Unknown, NetworkAvailability::Available) => {
+                NetworkAction::Probe
+            }
+            _ => NetworkAction::None,
+        };
+        self.hint = next;
+        action
+    }
+
+    fn explicitly_unavailable(&self) -> bool {
+        self.hint.availability == NetworkAvailability::Unavailable
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     Login { username: String, password: String },
@@ -148,6 +211,9 @@ pub enum Command {
     /// Testa imediatamente a saúde do WebSocket atual ou antecipa a próxima
     /// tentativa caso ele já esteja reconectando.
     ProbeConnection,
+    /// Dica genérica da plataforma sobre a existência/troca do caminho de
+    /// rede. A plataforma nunca altera freshness/generation diretamente.
+    NetworkHint(NetworkHint),
     LoadMessages {
         ticket: RefreshTicket,
     },
@@ -369,6 +435,7 @@ pub struct SchedulerDiagnostics {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeDiagnostics {
     pub connection: Connection,
+    pub network: NetworkHint,
     pub sync_generation: u64,
     pub session_epoch: u64,
     pub scheduler: SchedulerDiagnostics,
@@ -378,6 +445,7 @@ impl Default for RuntimeDiagnostics {
     fn default() -> Self {
         Self {
             connection: Connection::Offline,
+            network: NetworkHint::default(),
             sync_generation: 0,
             session_epoch: 0,
             scheduler: SchedulerDiagnostics {
@@ -546,6 +614,48 @@ fn publish_runtime(
     publish(tx, wake, update);
 }
 
+fn reset_socket_channels(
+    outbound_tx: &mut mpsc::UnboundedSender<String>,
+    outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
+    probe_tx: &mut mpsc::UnboundedSender<()>,
+    probe_rx: &mut Option<mpsc::UnboundedReceiver<()>>,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    *outbound_tx = tx;
+    *outbound_rx = Some(rx);
+    let (tx, rx) = mpsc::unbounded_channel();
+    *probe_tx = tx;
+    *probe_rx = Some(rx);
+}
+
+fn retire_socket(
+    socket: &mut Option<tokio::task::JoinHandle<()>>,
+    outbound_tx: &mut mpsc::UnboundedSender<String>,
+    outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
+    probe_tx: &mut mpsc::UnboundedSender<()>,
+    probe_rx: &mut Option<mpsc::UnboundedReceiver<()>>,
+) -> bool {
+    let Some(handle) = socket.take() else {
+        return false;
+    };
+    handle.abort();
+    reset_socket_channels(outbound_tx, outbound_rx, probe_tx, probe_rx);
+    true
+}
+
+fn advance_generation_for_connection(
+    previous: Connection,
+    next: Connection,
+    generation: &mut u64,
+) -> bool {
+    if previous == Connection::Online && next != Connection::Online {
+        *generation = generation.saturating_add(1);
+        true
+    } else {
+        false
+    }
+}
+
 async fn worker(
     base_url: String,
     storage_key: String,
@@ -587,10 +697,12 @@ async fn worker(
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
+    let mut network_gate = NetworkGate::default();
     let mut diagnostics_dirty = false;
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
+        network_gate.hint,
         runtime_generation,
         session_epoch,
         &reconcile_scheduler,
@@ -633,7 +745,7 @@ async fn worker(
         // quando ele some.
         let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
         match (session.is_authenticated() && verified, socket.is_some()) {
-            (true, false) => {
+            (true, false) if !network_gate.explicitly_unavailable() => {
                 if let (Some(receiver), Some(probes)) = (outbound_rx.take(), probe_rx.take()) {
                     socket = Some(start_socket(
                         &api,
@@ -652,12 +764,12 @@ async fn worker(
                 }
                 // Canal novo para o próximo login: o anterior foi junto com a
                 // tarefa abortada.
-                let (tx, rx) = mpsc::unbounded_channel();
-                outbound_tx = tx;
-                outbound_rx = Some(rx);
-                let (tx, rx) = mpsc::unbounded_channel();
-                probe_tx = tx;
-                probe_rx = Some(rx);
+                reset_socket_channels(
+                    &mut outbound_tx,
+                    &mut outbound_rx,
+                    &mut probe_tx,
+                    &mut probe_rx,
+                );
                 publish(&updates, &wake, Update::Connection(Connection::Offline));
             }
             _ => {}
@@ -674,6 +786,7 @@ async fn worker(
             update_runtime_diagnostics(
                 &diagnostics,
                 worker_connection,
+                network_gate.hint,
                 runtime_generation,
                 session_epoch,
                 &reconcile_scheduler,
@@ -685,8 +798,65 @@ async fn worker(
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
+
+                if let Command::NetworkHint(hint) = &command {
+                    let action = network_gate.apply(*hint);
+                    diagnostics_dirty = true;
+                    match action {
+                        NetworkAction::None => {}
+                        NetworkAction::Probe => {
+                            let _ = probe_tx.send(());
+                            log::debug!(
+                                "runtime {}: network available; probing websocket",
+                                storage_key
+                            );
+                        }
+                        NetworkAction::Park => {
+                            let retired = retire_socket(
+                                &mut socket,
+                                &mut outbound_tx,
+                                &mut outbound_rx,
+                                &mut probe_tx,
+                                &mut probe_rx,
+                            );
+                            if retired || worker_connection == Connection::Online {
+                                let _ = status_tx.send(Connection::Offline);
+                            }
+                            log::info!(
+                                "runtime {}: network unavailable; websocket parked",
+                                storage_key
+                            );
+                        }
+                        NetworkAction::Wake => {
+                            log::info!(
+                                "runtime {}: network available; reconnecting immediately",
+                                storage_key
+                            );
+                        }
+                        NetworkAction::Recycle => {
+                            let retired = retire_socket(
+                                &mut socket,
+                                &mut outbound_tx,
+                                &mut outbound_rx,
+                                &mut probe_tx,
+                                &mut probe_rx,
+                            );
+                            if retired || worker_connection == Connection::Online {
+                                let _ = status_tx.send(Connection::Offline);
+                            }
+                            log::info!(
+                                "runtime {}: network path changed; recycling websocket",
+                                storage_key
+                            );
+                        }
+                    }
+                    continue;
+                }
+
                 if matches!(&command, Command::ProbeConnection) {
-                    let _ = probe_tx.send(());
+                    if !network_gate.explicitly_unavailable() {
+                        let _ = probe_tx.send(());
+                    }
                     continue;
                 }
 
@@ -847,8 +1017,11 @@ async fn worker(
                 let Some(status) = status else { continue };
                 let previous_connection = worker_connection;
                 let previous_generation = runtime_generation;
-                if worker_connection == Connection::Online && status != Connection::Online {
-                    runtime_generation = runtime_generation.saturating_add(1);
+                if advance_generation_for_connection(
+                    worker_connection,
+                    status,
+                    &mut runtime_generation,
+                ) {
                     abort_reconciles(
                         reconcile_scheduler.invalidate_owner(TaskOwner {
                             generation: runtime_generation,
@@ -917,6 +1090,9 @@ async fn worker(
             } => {}
 
             _ = verification.tick() => {
+                if network_gate.explicitly_unavailable() {
+                    continue;
+                }
                 let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
                 if session.is_authenticated() && !verified {
                     verify_saved_session(
@@ -932,7 +1108,7 @@ async fn worker(
                 }
             }
             _ = renewal.tick() => {
-                if !session.is_authenticated() {
+                if !session.is_authenticated() || network_gate.explicitly_unavailable() {
                     continue;
                 }
                 match api.refresh().await {
@@ -973,6 +1149,7 @@ async fn worker(
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
+        network_gate.hint,
         runtime_generation,
         session_epoch,
         &reconcile_scheduler,
@@ -988,6 +1165,7 @@ async fn worker(
 fn update_runtime_diagnostics(
     shared: &Arc<RwLock<RuntimeDiagnostics>>,
     connection: Connection,
+    network: NetworkHint,
     sync_generation: u64,
     session_epoch: u64,
     scheduler: &ReconcileScheduler,
@@ -1022,6 +1200,7 @@ fn update_runtime_diagnostics(
     if let Ok(mut snapshot) = shared.write() {
         *snapshot = RuntimeDiagnostics {
             connection,
+            network,
             sync_generation,
             session_epoch,
             scheduler: SchedulerDiagnostics {
@@ -1389,7 +1568,10 @@ async fn handle(
         },
         // Reconciliação é consumida no laço do worker e executada pelo
         // scheduler; nunca deve entrar no caminho ordenado abaixo.
-        Command::Refresh | Command::LoadMessages { .. } | Command::ProbeConnection => {}
+        Command::Refresh
+        | Command::LoadMessages { .. }
+        | Command::ProbeConnection
+        | Command::NetworkHint(_) => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {
@@ -1923,5 +2105,90 @@ fn store_optional_secret(
     match value {
         Some(value) => store_secret(storage, server, secret, &value),
         None => remove_secret(storage, server, secret),
+    }
+}
+
+
+#[cfg(test)]
+mod network_hint_tests {
+    use super::*;
+
+    fn hint(availability: NetworkAvailability, epoch: u64) -> NetworkHint {
+        NetworkHint { availability, epoch }
+    }
+
+    #[test]
+    fn unknown_available_only_probes() {
+        let mut gate = NetworkGate::default();
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 1)),
+            NetworkAction::Probe
+        );
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 1)),
+            NetworkAction::None
+        );
+    }
+
+    #[test]
+    fn unavailable_is_parked_once_and_restore_wakes() {
+        let mut gate = NetworkGate::default();
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Unavailable, 1)),
+            NetworkAction::Park
+        );
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Unavailable, 1)),
+            NetworkAction::None
+        );
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 2)),
+            NetworkAction::Wake
+        );
+    }
+
+    #[test]
+    fn path_change_recycles_once_and_same_path_is_ignored() {
+        let mut gate = NetworkGate::default();
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 4)),
+            NetworkAction::Probe
+        );
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 5)),
+            NetworkAction::Recycle
+        );
+        assert_eq!(
+            gate.apply(hint(NetworkAvailability::Available, 5)),
+            NetworkAction::None
+        );
+    }
+
+    #[test]
+    fn continuity_break_advances_generation_only_once() {
+        let mut generation = 12;
+        assert!(advance_generation_for_connection(
+            Connection::Online,
+            Connection::Offline,
+            &mut generation,
+        ));
+        assert_eq!(generation, 13);
+        assert!(!advance_generation_for_connection(
+            Connection::Offline,
+            Connection::Offline,
+            &mut generation,
+        ));
+        assert_eq!(generation, 13);
+    }
+
+    #[test]
+    fn healthy_probe_transition_does_not_advance_generation() {
+        let mut generation = 7;
+        assert!(!advance_generation_for_connection(
+            Connection::Online,
+            Connection::Online,
+            &mut generation,
+        ));
+        assert_eq!(generation, 7);
     }
 }

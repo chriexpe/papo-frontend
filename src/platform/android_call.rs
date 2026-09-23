@@ -71,9 +71,6 @@ static CONTROL: Mutex<Option<Control>> = Mutex::new(None);
 static ACTIONS: Mutex<Vec<UiAction>> = Mutex::new(Vec::new());
 static IN_PIP: AtomicBool = AtomicBool::new(false);
 static FOREGROUND: AtomicBool = AtomicBool::new(true);
-/// Borda false -> true do ciclo de vida. Consumida uma vez pela aplicação
-/// para testar todos os sockets salvos ao voltar do background.
-static RESUMED: AtomicBool = AtomicBool::new(false);
 static LAST_SERVICE_STATE: Mutex<Option<String>> = Mutex::new(None);
 static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 /// Endereço do ANativeWindow do SurfaceView de PiP. Guardado como usize
@@ -225,10 +222,6 @@ pub fn is_in_pip() -> bool {
 
 pub fn is_foreground() -> bool {
     FOREGROUND.load(Ordering::Relaxed)
-}
-
-pub fn take_resumed() -> bool {
-    RESUMED.swap(false, Ordering::AcqRel)
 }
 
 /// Nome mostrado sobre o vídeo nativo de PiP. Pode ser chamado da thread de
@@ -552,7 +545,8 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeLifecycle
 ) {
     let was_foreground = FOREGROUND.swap(foreground, Ordering::AcqRel);
     if foreground && !was_foreground {
-        RESUMED.store(true, Ordering::Release);
+        // Networking must not wait for the next egui frame after resume.
+        super::android_network::resumed();
     }
     super::wake::request();
 }

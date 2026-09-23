@@ -1349,6 +1349,12 @@ fn app_pane(
                     let connection = format!("{:?}", runtime.connection);
                     rows.row("Server key", Some(&workspace.server_key), |_, _| {});
                     rows.row("Connection", Some(&connection), |_, _| {});
+                    let network = format!(
+                        "{:?} · epoch {}",
+                        runtime.network.availability,
+                        runtime.network.epoch
+                    );
+                    rows.row("Network", Some(&network), |_, _| {});
                     rows.row(
                         "Generation",
                         Some(&runtime.sync_generation.to_string()),
