@@ -518,7 +518,7 @@ impl Workspace {
             &self.label,
             &self.store.selected_channel,
             &self.store.me,
-            &self.store.my_username,
+            &self.store.my_name,
             self.store
                 .channels
                 .iter()
@@ -926,7 +926,9 @@ impl PapoApp {
             } else {
                 format!("{author} · {channel}")
             },
-            body: message.content.clone().unwrap_or_default(),
+            body: ws
+                .store
+                .display_mentions(message.content.as_deref().unwrap_or("")),
             tag: Some(message.channel_id.clone()),
         });
     }
@@ -1248,6 +1250,7 @@ impl PapoApp {
                 attachments,
             } => {
                 let channel_id = ws.store.selected_channel.clone();
+                let wire_content = content;
                 // Sem canal não há para onde mandar. Engolir a mensagem aqui
                 // fazia o envio parecer quebrado: a caixa esvaziava e nada
                 // acontecia, sem uma palavra de explicação.
@@ -1259,11 +1262,11 @@ impl PapoApp {
                 // saiu do upload.
                 if attachments.is_empty() {
                     ws.store
-                        .push_pending(&channel_id, &content, reply_to.clone());
+                        .push_pending(&channel_id, &wire_content, reply_to.clone());
                 }
                 ws.net.send(Command::SendMessage {
                     channel_id,
-                    content,
+                    content: wire_content,
                     reply_to,
                     notify_reply,
                     attachments,

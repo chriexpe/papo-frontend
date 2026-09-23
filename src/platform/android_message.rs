@@ -18,7 +18,7 @@ struct Snapshot {
     server_label: String,
     selected_channel: String,
     me: String,
-    my_username: String,
+    my_name: String,
     channels: HashMap<String, String>,
     members: HashMap<String, String>,
 }
@@ -45,7 +45,7 @@ pub fn sync_context(
     server_label: &str,
     selected_channel: &str,
     me: &str,
-    my_username: &str,
+    my_name: &str,
     channels: impl IntoIterator<Item = (String, String)>,
     members: impl IntoIterator<Item = (String, String)>,
 ) {
@@ -57,7 +57,7 @@ pub fn sync_context(
     snapshot.server_label = server_label.to_owned();
     snapshot.selected_channel = selected_channel.to_owned();
     snapshot.me = me.to_owned();
-    snapshot.my_username = my_username.to_owned();
+    snapshot.my_name = my_name.to_owned();
     snapshot.channels = channels.into_iter().collect();
     snapshot.members = members.into_iter().collect();
 }
@@ -77,6 +77,32 @@ fn delivered_once(server_url: &str, message_id: &str) -> bool {
         delivered.pop_front();
     }
     true
+}
+
+fn display_mentions(snapshot: &Snapshot, text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
+            let mut end = i + 2;
+            while end < chars.len() && chars[end] != '>' {
+                end += 1;
+            }
+            if end < chars.len() {
+                let id: String = chars[i + 2..end].iter().collect();
+                if let Some(name) = snapshot.members.get(&id) {
+                    out.push('@');
+                    out.push_str(name);
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 fn post(
@@ -118,7 +144,7 @@ fn post(
 
     show(&NativeNotification {
         title,
-        body: body.to_owned(),
+        body: display_mentions(snapshot, body),
         server_url: snapshot.server_url.clone(),
         channel_id: channel_id.to_owned(),
         message_id: message_id.to_owned(),
@@ -128,7 +154,7 @@ fn post(
 
 /// Toda mensagem legível chega pelo socket, independentemente de
 /// new_notification. Para menções usamos a mesma sintaxe que o próprio Papo
-/// destaca na timeline: @username, @everyone e @todos.
+/// destaca na timeline: <@user_id>, legado por nickname, @everyone e @todos.
 pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Message) {
     let Ok(snapshot) = context.0.read() else {
         return;
@@ -139,8 +165,10 @@ pub fn received_message(context: &Arc<Context>, message: &crate::api::models::Me
 
     let content = message.content.as_deref().unwrap_or("");
     let lower = content.to_lowercase();
-    let mentioned = (!snapshot.my_username.is_empty()
-        && lower.contains(&format!("@{}", snapshot.my_username.to_lowercase())))
+    let mentioned = (!snapshot.me.is_empty()
+        && lower.contains(&format!("<@{}>", snapshot.me.to_lowercase())))
+        || (!snapshot.my_name.is_empty()
+            && lower.contains(&format!("@{}", snapshot.my_name.to_lowercase())))
         || lower.contains("@everyone")
         || lower.contains("@todos");
     if !mentioned {

@@ -14,7 +14,7 @@ use crate::api::client::Upload;
 use crate::i18n::Strings;
 use crate::media::MediaStore;
 use crate::platform::menu::MenuCommand;
-use crate::state::{ChannelKind, Emoji, Message, Presence, Store};
+use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store};
 
 use super::attachments::{self, MediaAction};
 use super::emoji;
@@ -294,12 +294,19 @@ struct SuggestKeys {
     dismiss: bool,
 }
 
-/// Sugestão de figurinha enquanto se digita `:alguma`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SuggestKind {
+    Sticker,
+    Mention,
+}
+
+/// Sugestão contextual do compositor: `:figurinha` ou `@pessoa`.
 #[derive(Clone, Debug)]
 pub struct Suggest {
-    /// Onde está o `:` que abriu a sugestão, em caracteres.
+    pub kind: SuggestKind,
+    /// Onde está o caractere que abriu a sugestão, em caracteres.
     pub start: usize,
-    /// Ids das figurinhas que combinam, na ordem em que aparecem.
+    /// Ids de emoji ou de membro, conforme `kind`.
     pub matches: Vec<String>,
     /// Qual delas está marcada.
     pub index: usize,
@@ -344,10 +351,12 @@ pub struct Popup {
 pub struct Stash {
     pub media: MediaStore,
     pub composer: String,
+    pub composer_mentions: Vec<MentionBinding>,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
+    pub editing_mentions: Vec<MentionBinding>,
     /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
@@ -362,10 +371,12 @@ impl Stash {
         Self {
             media,
             composer: String::new(),
+            composer_mentions: Vec::new(),
             attachments: Vec::new(),
             replying: None,
             reply_notify: true,
             editing: None,
+            editing_mentions: Vec::new(),
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
@@ -379,10 +390,12 @@ impl Stash {
     pub fn swap(&mut self, ui: &mut UiState) {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
+        std::mem::swap(&mut self.composer_mentions, &mut ui.composer_mentions);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
+        std::mem::swap(&mut self.editing_mentions, &mut ui.editing_mentions);
         std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
@@ -394,6 +407,7 @@ impl Stash {
 
 pub struct UiState {
     pub composer: String,
+    pub composer_mentions: Vec<MentionBinding>,
     pub show_members: bool,
     /// Layout estreito ativo neste quadro.
     pub compact: bool,
@@ -429,6 +443,7 @@ pub struct UiState {
     pub reply_notify_default: bool,
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
+    pub editing_mentions: Vec<MentionBinding>,
     /// Só o primeiro quadro da edição pede foco ao TextEdit.
     pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
@@ -439,7 +454,7 @@ pub struct UiState {
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
     pub jump: Option<Jump>,
-    /// Figurinhas sugeridas para o `:alguma` que está sendo digitado.
+    /// Sugestão contextual de figurinha ou pessoa no compositor.
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
     pub suggest_muted: bool,
@@ -473,6 +488,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             composer: String::new(),
+            composer_mentions: Vec::new(),
             show_members: true,
             compact: false,
             mobile_surface: MobileSurface::Chat,
@@ -492,6 +508,7 @@ impl Default for UiState {
             reply_notify: true,
             reply_notify_default: true,
             editing: None,
+            editing_mentions: Vec::new(),
             edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
@@ -2471,7 +2488,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .filter(|message| message.pinned)
         .map(|message| {
             let body = if !message.content.trim().is_empty() {
-                message.content.clone()
+                store.display_mentions(&message.content)
             } else {
                 message
                     .attachments
@@ -2555,6 +2572,7 @@ fn result_row(
         channel_name,
         body,
     } = preview;
+    let body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
     let row_width = ui.available_width();
@@ -2614,7 +2632,7 @@ fn result_row(
                 });
                 if !body.trim().is_empty() {
                     ui.add_space(space::XXS);
-                    ui.label(RichText::new(body).font(text::body()).color(t.label));
+                    ui.label(RichText::new(&body).font(text::body()).color(t.label));
                 }
             });
             ui.add_space(space::SM);
@@ -3151,6 +3169,7 @@ fn message_body(
             };
 
             *buffer = buffer_copy;
+            reanchor_mentions(buffer, &mut state.editing_mentions);
 
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
@@ -3162,6 +3181,7 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.editing_mentions.clear();
                 state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
@@ -3169,8 +3189,11 @@ fn message_body(
                 state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
                 if content.is_empty() {
+                    state.editing_mentions.clear();
                     state.actions.push(ChatAction::Delete(id));
                 } else {
+                    let content = store.encode_mentions(&content, &state.editing_mentions);
+                    state.editing_mentions.clear();
                     state.actions.push(ChatAction::Edit {
                         message_id: id,
                         content,
@@ -3181,12 +3204,13 @@ fn message_body(
     }
 
     if !message.content.is_empty() {
+        let shown_content = store.display_mentions(&message.content);
         let color = if message.pending {
             t.label_secondary
         } else {
             t.label
         };
-        let tokens = emoji::tokenize(&message.content, &store.emojis);
+        let tokens = emoji::tokenize(&shown_content, &store.emojis);
         let plain = tokens
             .iter()
             .all(|token| matches!(token, emoji::Token::Text(_)));
@@ -3195,7 +3219,7 @@ fn message_body(
             // Sem emoji, uma passada só de texto — é o caminho rápido.
             let mut job = egui::text::LayoutJob::default();
             job.append(
-                &message.content,
+                &shown_content,
                 0.0,
                 egui::TextFormat {
                     font_id: text::message(),
@@ -4021,7 +4045,10 @@ fn hover_pill(
                 }
                 icon::ARROW_BEND_UP_LEFT => state.start_reply(message.id.clone()),
                 icon::PENCIL_SIMPLE => {
-                    state.editing = Some((message.id.clone(), message.content.clone()));
+                    let (content, bindings) =
+                        store.display_mentions_with_bindings(&message.content);
+                    state.editing = Some((message.id.clone(), content));
+                    state.editing_mentions = bindings;
                     state.edit_focus_pending = true;
                 }
                 _ => {
@@ -4349,11 +4376,14 @@ fn context_menu(
             }
             MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
-                state.editing = Some((message.id.clone(), message.content.clone()));
+                let (content, bindings) =
+                    store.display_mentions_with_bindings(&message.content);
+                state.editing = Some((message.id.clone(), content));
+                state.editing_mentions = bindings;
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
-                ui.ctx().copy_text(message.content.clone());
+                ui.ctx().copy_text(store.display_mentions(&message.content));
             }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
                 message_id: message.id.clone(),
@@ -4610,13 +4640,60 @@ fn empty_state(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
 // Caixa de mensagem
 // ---------------------------------------------------------------------------
 
+/// Reencontra no texto as menções escolhidas pelo autocomplete.
+///
+/// O offset salvo é só uma âncora. Se o usuário escreve/apaga antes da
+/// menção, escolhemos a ocorrência válida mais próxima do offset anterior.
+/// Isso preserva a identidade de nicknames duplicados sem pôr ids invisíveis
+/// dentro do EditText.
+fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
+    bindings.sort_by_key(|binding| binding.start);
+    let mut used = Vec::<usize>::new();
+    let mut kept = Vec::with_capacity(bindings.len());
+
+    for mut binding in bindings.drain(..) {
+        let pattern = format!("@{}", binding.label);
+        let best = text
+            .match_indices(&pattern)
+            .filter_map(|(byte, _)| {
+                let before_ok = byte == 0
+                    || text[..byte]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_whitespace() || (!c.is_alphanumeric() && c != '_'));
+                let end = byte + pattern.len();
+                let after_ok = end == text.len()
+                    || text[end..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_whitespace() || (!c.is_alphanumeric() && c != '_'));
+                if !before_ok || !after_ok {
+                    return None;
+                }
+                let start = text[..byte].chars().count();
+                (!used.contains(&start)).then_some(start)
+            })
+            .min_by_key(|start| start.abs_diff(binding.start));
+
+        if let Some(start) = best {
+            binding.start = start;
+            used.push(start);
+            kept.push(binding);
+        }
+    }
+
+    *bindings = kept;
+}
+
 /// Tira o texto da caixa e o coloca na fila de envio.
-fn submit(state: &mut UiState) {
-    let content = state.composer.trim().to_owned();
-    if content.is_empty() && state.attachments.is_empty() {
+fn submit(store: &Store, state: &mut UiState) {
+    let visible = state.composer.trim().to_owned();
+    if visible.is_empty() && state.attachments.is_empty() {
         return;
     }
+    let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
+    state.composer_mentions.clear();
     state.actions.push(ChatAction::Send {
         content,
         reply_to: state.replying.take(),
@@ -5082,7 +5159,7 @@ fn composer(
         if ready { t.accent_label } else { t.label_tertiary },
     );
     if send.clicked() && ready {
-        submit(state);
+        submit(store, state);
     }
 
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
@@ -5111,6 +5188,7 @@ fn composer(
         // Portanto ele encerra a edição. Se caiu no compositor, o foco é
         // transferido para ele logo abaixo.
         state.editing = None;
+        state.editing_mentions.clear();
         state.edit_focus_pending = false;
         crate::platform::native_text::dismiss();
     }
@@ -5252,6 +5330,8 @@ fn composer(
                 (response.has_focus(), caret_of(ui.ctx(), edit_id))
             };
 
+            reanchor_mentions(&state.composer, &mut state.composer_mentions);
+
             if keys.dismiss {
                 state.suggest = None;
                 state.suggest_muted = true;
@@ -5284,7 +5364,7 @@ fn composer(
                         input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
                     });
                 if enter {
-                    submit(state);
+                    submit(store, state);
                 }
             }
         },
@@ -5304,20 +5384,25 @@ fn caret_of(ctx: &egui::Context, id: Id) -> Option<usize> {
         .map(|range| range.primary.index.0)
 }
 
-/// Acha o `:alguma` que está sendo digitado e lista as figurinhas que
-/// combinam. Fora disso, apaga a sugestão.
+/// Atualiza as sugestões de `@pessoa` ou `:figurinha` em torno do cursor.
 fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret: Option<usize>) {
     let Some(caret) = caret.filter(|_| focused) else {
         state.suggest = None;
         return;
     };
-    let Some((start, query)) = typing_shortcode(&state.composer, caret) else {
+
+    let candidate = typing_mention(&state.composer, caret)
+        .map(|(start, query)| (SuggestKind::Mention, start, query))
+        .or_else(|| {
+            typing_shortcode(&state.composer, caret)
+                .map(|(start, query)| (SuggestKind::Sticker, start, query))
+        });
+    let Some((kind, start, query)) = candidate else {
         state.suggest = None;
         state.suggest_muted = false;
         return;
     };
-    // Esc dispensou a lista para este apelido; ela só volta quando o que
-    // está sendo digitado mudar de lugar.
+
     if state.suggest_muted {
         if state.suggest_start == Some(start) {
             return;
@@ -5327,28 +5412,84 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
     state.suggest_start = Some(start);
 
     let needle = query.to_lowercase();
-    let matches: Vec<String> = store
-        .emojis
-        .iter()
-        .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
-        .map(|emoji| emoji.id.clone())
-        .take(8)
-        .collect();
+    let matches: Vec<String> = match kind {
+        SuggestKind::Sticker => store
+            .emojis
+            .iter()
+            .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
+            .map(|emoji| emoji.id.clone())
+            .take(8)
+            .collect(),
+        SuggestKind::Mention => {
+            let mut people: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| member.id != store.me)
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.username.to_lowercase().contains(&needle)
+                        || member.name.to_lowercase().contains(&needle)
+                })
+                .collect();
+            people.sort_by_key(|member| {
+                let username = member.username.to_lowercase();
+                let name = member.name.to_lowercase();
+                (
+                    !(needle.is_empty() || name.starts_with(&needle)),
+                    !(needle.is_empty() || username.starts_with(&needle)),
+                    member.presence == Presence::Offline,
+                    name,
+                    username,
+                )
+            });
+            people
+                .into_iter()
+                .map(|member| member.id.clone())
+                .take(8)
+                .collect()
+        }
+    };
+
     if matches.is_empty() {
         state.suggest = None;
         return;
     }
-    // Mantém a escolha quando a lista não mudou: digitar mais uma letra não
-    // pode jogar a seleção de volta para o topo sem motivo.
     let index = match &state.suggest {
-        Some(previous) if previous.matches == matches => previous.index,
+        Some(previous) if previous.kind == kind && previous.matches == matches => previous.index,
         _ => 0,
     };
     state.suggest = Some(Suggest {
+        kind,
         start,
         matches,
         index: index.min(7),
     });
+}
+
+/// O `@nome` imediatamente antes do cursor. Diferente da figurinha, um
+/// `@` sozinho já abre a lista inteira para citar alguém rapidamente.
+fn typing_mention(text: &str, caret: usize) -> Option<(usize, String)> {
+    let chars: Vec<char> = text.chars().collect();
+    if caret > chars.len() {
+        return None;
+    }
+    let mut index = caret;
+    while index > 0 {
+        let c = chars[index - 1];
+        if c == '@' {
+            let start = index - 1;
+            if start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+                return None;
+            }
+            let query: String = chars[index..caret].iter().collect();
+            return Some((start, query));
+        }
+        if c.is_whitespace() || !c.is_alphanumeric() && c != '_' && c != '-' {
+            return None;
+        }
+        index -= 1;
+    }
+    None
 }
 
 /// O `:alguma` imediatamente antes do cursor, se houver. Devolve onde o
@@ -5394,20 +5535,43 @@ fn accept_suggestion(
     let (Some(caret), Some(chosen)) = (caret, suggest.matches.get(suggest.index)) else {
         return;
     };
-    let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == chosen) else {
-        return;
+
+    let replacement = match suggest.kind {
+        SuggestKind::Sticker => {
+            let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == chosen) else {
+                return;
+            };
+            format!(":{}:", emoji.name)
+        }
+        SuggestKind::Mention => {
+            let Some(member) = store.member(chosen) else {
+                return;
+            };
+            format!("@{} ", member.name)
+        }
     };
 
     let chars: Vec<char> = state.composer.chars().collect();
     if suggest.start > chars.len() || caret > chars.len() || suggest.start > caret {
         return;
     }
-    let replacement = format!(":{}:", emoji.name);
     let mut next: String = chars[..suggest.start].iter().collect();
     next.push_str(&replacement);
     let tail: String = chars[caret..].iter().collect();
     next.push_str(&tail);
     state.composer = next;
+    if suggest.kind == SuggestKind::Mention
+        && let Some(member) = store.member(chosen)
+    {
+        // Remove binding anterior que ocupava o mesmo início e conserva a
+        // identidade exata escolhida mesmo se houver nicknames iguais.
+        state.composer_mentions.retain(|binding| binding.start != suggest.start);
+        state.composer_mentions.push(MentionBinding {
+            start: suggest.start,
+            label: member.name.clone(),
+            user_id: member.id.clone(),
+        });
+    }
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
@@ -5424,7 +5588,7 @@ fn accept_suggestion(
     }
 }
 
-/// Lista de figurinhas sugeridas, logo acima da caixa de mensagem.
+/// Lista de sugestões do compositor, logo acima da caixa de mensagem.
 ///
 /// Mora numa camada própria à frente de tudo. Desenhada solta dentro da
 /// conversa, ela ficava por baixo do que já tinha sido registrado ali e o
@@ -5443,15 +5607,12 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
 
     let ctx = ui.ctx().clone();
     let mut chosen = None;
-    egui::Area::new(Id::new("sugestoes-de-figurinha"))
+    egui::Area::new(Id::new("sugestoes-do-compositor"))
         .order(egui::Order::Foreground)
         .fixed_pos(rect.min)
         .show(&ctx, |ui| {
             pill_surface(ui, state, t, rect);
             for (index, id) in suggest.matches.iter().enumerate() {
-                let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
-                    continue;
-                };
                 let slot = Rect::from_min_size(
                     egui::pos2(
                         rect.min.x + space::SM,
@@ -5478,31 +5639,103 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                     egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
                     Vec2::splat(20.0),
                 );
-                let texture = state
-                    .media
-                    .emoji(&emoji.id, emoji.blob.as_deref())
-                    .and_then(|texture| texture.frame(&ctx))
-                    .map(|handle| handle.id());
-                if let Some(texture) = texture {
-                    let mut mesh = egui::Mesh::with_texture(texture);
-                    mesh.add_rect_with_uv(
-                        art,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    ui.painter().add(egui::Shape::mesh(mesh));
+                match suggest.kind {
+                    SuggestKind::Sticker => {
+                        let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
+                            continue;
+                        };
+                        let texture = state
+                            .media
+                            .emoji(&emoji.id, emoji.blob.as_deref())
+                            .and_then(|texture| texture.frame(&ctx))
+                            .map(|handle| handle.id());
+                        if let Some(texture) = texture {
+                            let mut mesh = egui::Mesh::with_texture(texture);
+                            mesh.add_rect_with_uv(
+                                art,
+                                Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                            ui.painter().add(egui::Shape::mesh(mesh));
+                        }
+                        ui.painter().text(
+                            egui::pos2(art.max.x + space::MD, slot.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            format!(":{}:", emoji.name),
+                            text::body(),
+                            if index == suggest.index {
+                                t.label
+                            } else {
+                                t.label_secondary
+                            },
+                        );
+                    }
+                    SuggestKind::Mention => {
+                        let Some(member) = store.member(id) else {
+                            continue;
+                        };
+                        let avatar = state
+                            .media
+                            .avatar(
+                                &member.id,
+                                store.avatars.get(&member.id).map(String::as_str),
+                            )
+                            .and_then(|texture| texture.frame(&ctx))
+                            .map(|handle| handle.id());
+                        if let Some(texture) = avatar {
+                            let mut mesh = egui::Mesh::with_texture(texture);
+                            mesh.add_rect_with_uv(
+                                art,
+                                Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
+                                Color32::WHITE,
+                            );
+                            ui.painter().add(egui::Shape::mesh(mesh));
+                        } else {
+                            ui.painter().circle_filled(
+                                art.center(),
+                                art.width() / 2.0,
+                                t.accent.gamma_multiply(0.28),
+                            );
+                            ui.painter().text(
+                                art.center(),
+                                egui::Align2::CENTER_CENTER,
+                                member.initials(),
+                                text::footnote(),
+                                t.label,
+                            );
+                        }
+                        let x = art.max.x + space::MD;
+                        ui.painter().text(
+                            egui::pos2(x, slot.center().y - 4.0),
+                            egui::Align2::LEFT_CENTER,
+                            &member.name,
+                            text::body(),
+                            if index == suggest.index {
+                                t.label
+                            } else {
+                                t.label_secondary
+                            },
+                        );
+                        ui.painter().text(
+                            egui::pos2(x, slot.center().y + 8.0),
+                            egui::Align2::LEFT_CENTER,
+                            format!("@{}", member.username),
+                            text::footnote(),
+                            t.label_tertiary,
+                        );
+                        ui.painter().circle_filled(
+                            egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
+                            3.0,
+                            presence_color(t, member.presence),
+                        );
+                    }
                 }
-                ui.painter().text(
-                    egui::pos2(art.max.x + space::MD, slot.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!(":{}:", emoji.name),
-                    text::body(),
-                    if index == suggest.index {
-                        t.label
-                    } else {
-                        t.label_secondary
-                    },
-                );
                 if response.clicked() {
                     chosen = Some(index);
                 }
@@ -5535,7 +5768,27 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
 
 #[cfg(test)]
 mod sugestao {
-    use super::typing_shortcode;
+    use super::{typing_mention, typing_shortcode};
+
+    #[test]
+    fn arroba_sozinho_abre_lista_de_pessoas() {
+        assert_eq!(typing_mention("@", 1), Some((0, String::new())));
+    }
+
+    #[test]
+    fn arroba_filtra_username() {
+        let text = "fala @chr";
+        assert_eq!(
+            typing_mention(text, text.chars().count()),
+            Some((5, "chr".to_owned()))
+        );
+    }
+
+    #[test]
+    fn email_nao_e_mencao() {
+        let text = "ana@exemplo";
+        assert_eq!(typing_mention(text, text.chars().count()), None);
+    }
 
     #[test]
     fn acha_o_apelido_sendo_digitado() {
