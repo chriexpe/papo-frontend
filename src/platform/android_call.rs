@@ -80,6 +80,7 @@ static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
 static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
+static PIP_HAS_VIDEO: AtomicBool = AtomicBool::new(false);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
@@ -113,6 +114,7 @@ pub fn clear() {
     if let Ok(mut local) = PIP_LOCAL_ID.lock() {
         *local = None;
     }
+    PIP_HAS_VIDEO.store(false, Ordering::Relaxed);
 }
 
 pub fn start_service(title: &str) {
@@ -237,6 +239,12 @@ pub fn set_pip_target(user_id: Option<&str>) {
         let next = user_id.map(str::to_owned);
         if *target != next {
             *target = next;
+            PIP_HAS_VIDEO.store(false, Ordering::Relaxed);
+            let _ = super::jvm::call_activity(
+                "setPipVideoVisible",
+                "(Ljava/lang/String;)V",
+                Some("0"),
+            );
             // Trocou quem está falando: apaga imediatamente o quadro antigo.
             // Se o novo speaker não tiver câmera, este fundo preto permanece
             // e o nome no centro vira o fallback correto.
@@ -330,6 +338,14 @@ pub fn clear_pip_surface() {
 pub fn present_pip_frame(frame: &Frame) {
     if !is_in_pip() || frame.width == 0 || frame.height == 0 {
         return;
+    }
+
+    if !PIP_HAS_VIDEO.swap(true, Ordering::Relaxed) {
+        let _ = super::jvm::call_activity(
+            "setPipVideoVisible",
+            "(Ljava/lang/String;)V",
+            Some("1"),
+        );
     }
 
     let Ok(window_guard) = PIP_WINDOW.lock() else {
