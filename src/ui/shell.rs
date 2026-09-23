@@ -3250,7 +3250,7 @@ fn message_body(
             Some(crate::cache::OutgoingState::Queued) => ("waiting to send", t.label_tertiary),
             Some(crate::cache::OutgoingState::Sending) => ("sending…", t.label_tertiary),
             Some(crate::cache::OutgoingState::UnknownOutcome) => {
-                ("delivery uncertain · not retried automatically", t.warning)
+                ("delivery uncertain · not retried automatically", t.away)
             }
             Some(crate::cache::OutgoingState::FailedPermanent) => {
                 ("not sent", t.danger)
