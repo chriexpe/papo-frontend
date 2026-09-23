@@ -434,7 +434,7 @@ fn clear_server_survives_saturated_data_queue() {
 
     let temp = TempDb::new("clear-saturated");
     // Fila minúscula para saturar de forma determinística.
-    let db = ClientDb::open_with_capacity(Some(temp.path()), 1);
+    let db = ClientDb::open_with_limit(Some(temp.path()), 1);
     assert!(db.is_enabled());
 
     // Semeia com a fila vazia e confirma cada um antes de saturar.
@@ -499,7 +499,7 @@ fn owner_transition_survives_saturated_data_queue() {
     use std::time::Duration;
 
     let temp = TempDb::new("owner-saturated");
-    let db = ClientDb::open_with_capacity(Some(temp.path()), 1);
+    let db = ClientDb::open_with_limit(Some(temp.path()), 1);
     assert!(db.is_enabled());
 
     db.submit(
@@ -548,6 +548,128 @@ fn owner_transition_survives_saturated_data_queue() {
         snapshot.owner_user_id.as_deref(),
         Some("user-2"),
         "a troca de dono não pode ser descartada"
+    );
+}
+
+#[test]
+fn clear_server_orders_after_large_backlog() {
+    use std::time::Duration;
+
+    let temp = TempDb::new("clear-backlog");
+    let db = open(&temp);
+
+    db.submit(
+        "srv-a",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![message("seed", "geral", "seed", 0)],
+        }],
+    );
+    db.submit(
+        "srv-b",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![message("b", "geral", "b", 0)],
+        }],
+    );
+    db.flush();
+
+    let (entered, resume) = db.pause_worker();
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("worker precisa pausar");
+
+    // Backlog maior que o BATCH_LIMIT do worker: um lote local não pode
+    // reordenar o clear para o meio dele.
+    let backlog = BATCH_LIMIT + 300;
+    for index in 0..backlog {
+        db.submit(
+            "srv-a",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("pre{index}"),
+                "geral",
+                "pre",
+                1_000 + index as i64,
+            ))],
+        );
+    }
+    assert_eq!(
+        db.stats().dropped,
+        0,
+        "todo o backlog precisa ter sido aceito para o teste valer"
+    );
+    db.clear_server("srv-a");
+    db.submit(
+        "srv-a",
+        vec![CacheOp::UpsertMessage(message("post", "geral", "post", 100_000))],
+    );
+
+    resume.send(()).expect("retomar o worker");
+    db.flush();
+
+    let a = db.load_snapshot("srv-a").expect("a");
+    let ids: Vec<&str> = a.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["post"],
+        "o clear precede todo o backlog aceito antes dele: {ids:?}"
+    );
+    let b = db.load_snapshot("srv-b").expect("b");
+    assert_eq!(b.messages.len(), 1, "o outro servidor fica intacto");
+}
+
+#[test]
+fn flush_is_a_barrier_behind_large_backlog() {
+    let temp = TempDb::new("flush-barrier");
+    let db = open(&temp);
+
+    let backlog = BATCH_LIMIT + 100;
+    for index in 0..backlog {
+        db.submit(
+            "srv",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("m{index}"),
+                "geral",
+                "x",
+                index as i64,
+            ))],
+        );
+    }
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert_eq!(
+        snapshot.messages.len(),
+        backlog,
+        "depois do flush tudo que foi aceito já precisa estar visível"
+    );
+}
+
+#[test]
+fn load_is_a_barrier_behind_previously_accepted_writes() {
+    let temp = TempDb::new("load-barrier");
+    let db = open(&temp);
+
+    let backlog = BATCH_LIMIT + 100;
+    for index in 0..backlog {
+        db.submit(
+            "srv",
+            vec![CacheOp::UpsertMessage(message(
+                &format!("m{index}"),
+                "geral",
+                "x",
+                index as i64,
+            ))],
+        );
+    }
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert_eq!(
+        snapshot.messages.len(),
+        backlog,
+        "o load observa tudo que foi aceito antes dele"
     );
 }
 

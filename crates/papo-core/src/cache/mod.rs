@@ -17,6 +17,7 @@ pub use types::{
     CachedServer, CachedServerSnapshot, CacheOp, MESSAGE_RETENTION, PINNED_RETENTION,
 };
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,10 +25,10 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-/// Fila limitada de dados: sob pressão extrema o cache descarta em vez de
-/// crescer sem limite. A próxima reconciliação autoritativa recompõe o que
-/// faltar.
-const QUEUE_CAPACITY: usize = 4096;
+/// Teto de dados pendentes: dados são best-effort e o cache descarta em vez
+/// de crescer sem limite. A próxima reconciliação autoritativa recompõe o que
+/// faltar. Controle (clear, dono, load, flush) não consome esta cota.
+const MAX_PENDING_DATA: usize = 4096;
 /// Quantas mensagens o worker drena de uma vez antes de gravar.
 const BATCH_LIMIT: usize = 256;
 /// Espera máxima por open/load síncronos no arranque.
@@ -88,24 +89,16 @@ enum WorkerMsg {
     },
 }
 
-/// Mensagem com ordem global. As duas filas (dados e controle) são fundidas
-/// por `seq` antes de aplicar, então um clear nunca "passa na frente" de um
-/// dado enfileirado antes dele.
-struct Queued {
-    seq: u64,
-    msg: WorkerMsg,
-}
-
-/// Dono do banco de cache. Clonável por fora apenas por `Arc` no frontend;
-/// aqui a posse real é do worker, alcançado por canal.
+/// Uma fila FIFO só para tudo, com uma cota separada de dados pendentes.
 ///
-/// Há duas filas: uma limitada para dados reconstruíveis (best-effort) e uma
-/// ilimitada para posse/controle (`ClearServer`, `SetOwner`), que nunca pode
-/// ser descartada. Nenhuma das duas bloqueia quem chama.
+/// Controlar a cota dentro do mesmo lock que enfileira dá um ponto de
+/// linearização único: se `A` foi aceito antes de `B`, `A` entra na fila
+/// antes de `B`, sem depender de qual classe cada um é. O worker nunca
+/// reordena — só funde escritas de dados adjacentes do mesmo servidor.
 pub struct ClientDb {
-    data: Option<mpsc::Sender<Queued>>,
-    control: Option<mpsc::UnboundedSender<Queued>>,
-    next_seq: Arc<AtomicU64>,
+    queue: Option<mpsc::UnboundedSender<WorkerMsg>>,
+    pending_data: Arc<Mutex<usize>>,
+    max_pending_data: usize,
     stats: Arc<CacheStats>,
     path: Option<PathBuf>,
 }
@@ -114,72 +107,72 @@ impl ClientDb {
     /// Abre o banco (se houver caminho) e espera o worker ficar pronto.
     /// Qualquer falha vira um cache desabilitado — nunca impede o Papo.
     pub fn open(path: Option<PathBuf>) -> Self {
-        Self::open_with_capacity(path, QUEUE_CAPACITY)
+        Self::open_with_limit(path, MAX_PENDING_DATA)
     }
 
-    fn open_with_capacity(path: Option<PathBuf>, capacity: usize) -> Self {
+    fn open_with_limit(path: Option<PathBuf>, max_pending_data: usize) -> Self {
         let Some(path) = path else {
             log::warn!("cache: sem pasta de dados; seguindo sem cache");
-            return Self::disabled(None);
+            return Self::disabled(None, max_pending_data);
         };
 
         let stats = Arc::new(CacheStats::default());
-        let (data_tx, data_rx) = mpsc::channel(capacity.max(1));
-        let (control_tx, control_rx) = mpsc::unbounded_channel();
+        let pending_data = Arc::new(Mutex::new(0usize));
+        let (queue_tx, queue_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let worker_stats = Arc::clone(&stats);
+        let worker_pending = Arc::clone(&pending_data);
         let worker_path = path.clone();
 
         let spawned = std::thread::Builder::new()
             .name("papo-cache".to_owned())
-            .spawn(move || worker(data_rx, control_rx, ready_tx, worker_path, worker_stats));
+            .spawn(move || worker(queue_rx, worker_pending, ready_tx, worker_path, worker_stats));
 
         if let Err(error) = spawned {
             log::warn!("cache: worker não abriu: {error}");
             return Self {
-                data: None,
-                control: None,
-                next_seq: Arc::new(AtomicU64::new(0)),
+                queue: None,
+                pending_data,
+                max_pending_data,
                 stats,
                 path: Some(path),
             };
         }
 
-        let ready = ready_rx.recv_timeout(OPEN_TIMEOUT);
-        match ready {
+        match ready_rx.recv_timeout(OPEN_TIMEOUT) {
             Ok(Ok(())) => {
                 log::info!("cache: habilitado em {}", path.display());
                 Self {
-                    data: Some(data_tx),
-                    control: Some(control_tx),
-                    next_seq: Arc::new(AtomicU64::new(0)),
+                    queue: Some(queue_tx),
+                    pending_data,
+                    max_pending_data,
                     stats,
                     path: Some(path),
                 }
             }
             Ok(Err(error)) => {
                 log::warn!("cache: indisponível ({error}); seguindo sem cache");
-                Self::disabled(Some(path))
+                Self::disabled(Some(path), max_pending_data)
             }
             Err(_) => {
                 log::warn!("cache: worker não respondeu a tempo; seguindo sem cache");
-                Self::disabled(Some(path))
+                Self::disabled(Some(path), max_pending_data)
             }
         }
     }
 
-    fn disabled(path: Option<PathBuf>) -> Self {
+    fn disabled(path: Option<PathBuf>, max_pending_data: usize) -> Self {
         Self {
-            data: None,
-            control: None,
-            next_seq: Arc::new(AtomicU64::new(0)),
+            queue: None,
+            pending_data: Arc::new(Mutex::new(0)),
+            max_pending_data,
             stats: Arc::new(CacheStats::default()),
             path,
         }
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.data.is_some()
+        self.queue.is_some()
     }
 
     pub fn path(&self) -> Option<&std::path::Path> {
@@ -190,91 +183,83 @@ impl ClientDb {
         self.stats.snapshot()
     }
 
-    fn next_seq(&self) -> u64 {
-        self.next_seq.fetch_add(1, Ordering::Relaxed)
-    }
-
-    /// Operações de posse/controle vão pela fila ilimitada: nunca bloqueiam e
-    /// nunca são descartadas.
-    fn send_control(&self, msg: WorkerMsg) -> bool {
-        let Some(control) = &self.control else {
+    /// Enfileira uma mensagem com um ponto de linearização único. Dados
+    /// consomem a cota limitada; controle nunca. Nunca bloqueia no banco.
+    fn enqueue(&self, msg: WorkerMsg, data: bool) -> bool {
+        let Some(queue) = &self.queue else {
             return false;
         };
-        control
-            .send(Queued {
-                seq: self.next_seq(),
-                msg,
-            })
-            .is_ok()
-    }
-
-    /// Dados vão pela fila limitada: sob pressão, o lote é descartado.
-    fn send_data(&self, msg: WorkerMsg) {
-        let Some(data) = &self.data else {
-            return;
+        let Ok(mut pending) = self.pending_data.lock() else {
+            return false;
         };
-        match data.try_send(Queued {
-            seq: self.next_seq(),
-            msg,
-        }) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
+        if data {
+            if *pending >= self.max_pending_data {
+                drop(pending);
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                log::warn!("cache: fila cheia; lote descartado");
+                log::warn!("cache: fila de dados cheia; lote descartado");
+                return false;
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            *pending += 1;
+        }
+        match queue.send(msg) {
+            Ok(()) => true,
+            Err(_) => {
+                if data {
+                    *pending = pending.saturating_sub(1);
+                }
                 self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
+                false
             }
         }
     }
 
-    /// Enfileira operações de um servidor. Lotes que contêm controle usam a
-    /// fila confiável; o resto é best-effort.
+    /// Enfileira operações de um servidor. Lotes que contêm controle são
+    /// confiáveis e não consomem a cota de dados; o resto é best-effort.
     pub fn submit(&self, server_key: &str, ops: Vec<CacheOp>) {
         if ops.is_empty() {
             return;
         }
+        let data = !is_control_batch(&ops);
         let msg = WorkerMsg::Write {
             server_key: server_key.to_owned(),
             ops,
         };
-        match &msg {
-            WorkerMsg::Write { ops, .. } if ops.iter().any(CacheOp::is_control) => {
-                if !self.send_control(msg) {
-                    self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            _ => self.send_data(msg),
+        if !self.enqueue(msg, data) && !data {
+            log::warn!("cache: não foi possível enfileirar o controle de {server_key}");
         }
     }
 
     pub fn clear_server(&self, server_key: &str) {
-        let sent = self.send_control(WorkerMsg::Write {
+        let msg = WorkerMsg::Write {
             server_key: server_key.to_owned(),
             ops: vec![CacheOp::ClearServer],
-        });
-        if !sent {
-            self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
+        };
+        if !self.enqueue(msg, false) {
             log::warn!("cache: não foi possível enfileirar o clear de {server_key}");
         }
     }
 
-    /// Espera tudo que já foi enfileirado ser aplicado. Usado por testes.
+    /// Espera tudo que já foi enfileirado ser aplicado. É barreira: como só há
+    /// uma fila, tudo que foi aceito antes entra antes e é aplicado antes.
     pub fn flush(&self) {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if !self.send_control(WorkerMsg::Flush(reply_tx)) {
+        if !self.enqueue(WorkerMsg::Flush(reply_tx), false) {
             return;
         }
         let _ = reply_rx.recv_timeout(LOAD_TIMEOUT);
     }
 
-    /// Leitura síncrona no arranque. Não é caminho de frame.
+    /// Leitura síncrona no arranque; também é barreira atrás do que já foi
+    /// aceito. Não é caminho de frame.
     pub fn load_snapshot(&self, server_key: &str) -> Option<CachedServerSnapshot> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
-        if !self.send_control(WorkerMsg::Load {
-            server_key: server_key.to_owned(),
-            reply: reply_tx,
-        }) {
+        if !self.enqueue(
+            WorkerMsg::Load {
+                server_key: server_key.to_owned(),
+                reply: reply_tx,
+            },
+            false,
+        ) {
             return None;
         }
         match reply_rx.recv_timeout(LOAD_TIMEOUT) {
@@ -311,19 +296,32 @@ impl ClientDb {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         assert!(
-            self.send_control(WorkerMsg::Pause {
-                entered: entered_tx,
-                resume: resume_rx,
-            }),
+            self.enqueue(
+                WorkerMsg::Pause {
+                    entered: entered_tx,
+                    resume: resume_rx,
+                },
+                false
+            ),
             "worker precisa aceitar o pause"
         );
         (entered_rx, resume_tx)
     }
 }
 
+fn is_control_batch(ops: &[CacheOp]) -> bool {
+    ops.iter().any(CacheOp::is_control)
+}
+
+fn release_data(pending: &Mutex<usize>, count: usize) {
+    if let Ok(mut pending) = pending.lock() {
+        *pending = pending.saturating_sub(count);
+    }
+}
+
 fn worker(
-    mut data: mpsc::Receiver<Queued>,
-    mut control: mpsc::UnboundedReceiver<Queued>,
+    mut queue: mpsc::UnboundedReceiver<WorkerMsg>,
+    pending_data: Arc<Mutex<usize>>,
     ready: std::sync::mpsc::Sender<Result<(), String>>,
     path: PathBuf,
     stats: Arc<CacheStats>,
@@ -353,60 +351,46 @@ fn worker(
         };
 
         loop {
-            // Controle tem prioridade para acordar o worker, mas a ordem real
-            // vem do `seq` depois de fundir as duas filas.
-            let first = tokio::select! {
-                biased;
-                Some(queued) = control.recv() => queued,
-                Some(queued) = data.recv() => queued,
-                else => break,
+            // Uma fila só: a ordem de chegada é a ordem de aplicação. O dreno
+            // é limitado para não monopolizar, mas nunca reordena nem pula o
+            // que ficou para o próximo ciclo.
+            let Some(first) = queue.recv().await else {
+                break;
             };
-
-            let mut batch = vec![first];
+            let mut batch: VecDeque<WorkerMsg> = VecDeque::with_capacity(BATCH_LIMIT);
+            batch.push_back(first);
             while batch.len() < BATCH_LIMIT {
-                let mut progressed = false;
-                if let Ok(queued) = data.try_recv() {
-                    batch.push(queued);
-                    progressed = true;
-                }
-                if batch.len() >= BATCH_LIMIT {
-                    break;
-                }
-                if let Ok(queued) = control.try_recv() {
-                    batch.push(queued);
-                    progressed = true;
-                }
-                if !progressed {
-                    break;
+                match queue.try_recv() {
+                    Ok(message) => batch.push_back(message),
+                    Err(_) => break,
                 }
             }
-            batch.sort_by_key(|queued| queued.seq);
 
-            // Funde escritas consecutivas do mesmo servidor num só lote de
-            // banco: a retenção de cada canal roda uma vez no fim do lote.
-            let mut queue: std::collections::VecDeque<Queued> = batch.into();
-            while let Some(queued) = queue.pop_front() {
-                match queued.msg {
-                    WorkerMsg::Write {
-                        server_key,
-                        mut ops,
-                    } => {
-                        while let Some(front) = queue.front() {
-                            match &front.msg {
-                                WorkerMsg::Write { server_key: next, .. }
-                                    if *next == server_key => {}
-                                _ => break,
+            while let Some(message) = batch.pop_front() {
+                match message {
+                    // Funde escritas de dados adjacentes do mesmo servidor num
+                    // só lote de banco. Controle nunca entra na fusão: ele
+                    // muda a semântica de ordenação.
+                    WorkerMsg::Write { server_key, ops } if !is_control_batch(&ops) => {
+                        let mut merged = ops;
+                        let mut merged_count = 1usize;
+                        while let Some(WorkerMsg::Write {
+                            server_key: next,
+                            ops: more,
+                        }) = batch.front()
+                        {
+                            if *next != server_key || is_control_batch(more) {
+                                break;
                             }
-                            let Some(Queued {
-                                msg: WorkerMsg::Write { ops: mut more, .. },
-                                ..
-                            }) = queue.pop_front()
+                            let Some(WorkerMsg::Write { ops: mut more, .. }) = batch.pop_front()
                             else {
                                 break;
                             };
-                            ops.append(&mut more);
+                            merged.append(&mut more);
+                            merged_count += 1;
                         }
-                        apply_write(&mut cache, &stats, &server_key, &ops).await;
+                        apply_write(&mut cache, &stats, &server_key, &merged).await;
+                        release_data(&pending_data, merged_count);
                     }
                     other => apply(&mut cache, &stats, other).await,
                 }
