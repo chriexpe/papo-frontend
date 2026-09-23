@@ -308,10 +308,14 @@ pub fn lobby(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, 
         t.label_secondary,
     );
 
-    let (label, action) = match (here, store.call.popped_out) {
-        (true, true) => (s.call_popin, ChatAction::PopOutCall(false)),
-        (true, false) => (s.call_expand, ChatAction::OpenCall),
-        (false, _) => (s.call_join, ChatAction::JoinVoice(channel_id)),
+    let (label, action) = if !here {
+        (s.call_join, ChatAction::JoinVoice(channel_id))
+    } else if store.call.popped_out {
+        (s.call_popin, ChatAction::PopOutCall(false))
+    } else if store.call.floating {
+        (s.call_overlay_close, ChatAction::FloatCall(false))
+    } else {
+        (s.call_expand, ChatAction::OpenCall)
     };
 
     let button = Rect::from_center_size(
@@ -377,14 +381,16 @@ pub fn sheet(
     );
 
     let mut x = header.max.x - space::LG - 13.0;
-    for (glyph, tip, action) in [
+    let mut header_actions = vec![
         (icon::ARROWS_IN, s.call_overlay, ChatAction::FloatCall(true)),
-        (
-            icon::ARROW_SQUARE_OUT,
-            s.call_popout,
-            ChatAction::PopOutCall(true),
-        ),
-    ] {
+    ];
+    #[cfg(not(target_os = "android"))]
+    header_actions.push((
+        icon::ARROW_SQUARE_OUT,
+        s.call_popout,
+        ChatAction::PopOutCall(true),
+    ));
+    for (glyph, tip, action) in header_actions {
         let spot = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(26.0));
         if round_button(ui, t, spot, glyph, tip, false, false) {
             state.actions.push(action);
