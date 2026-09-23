@@ -8,6 +8,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.PictureInPictureParams;
 import android.app.RemoteAction;
+import android.service.notification.StatusBarNotification;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -877,6 +878,30 @@ public class PapoActivity extends GameActivity {
                 }
             } catch (Exception error) {
                 Log.e("papo-notify", "falha ao publicar notificação", error);
+            }
+        });
+    }
+
+    /** Remove da gaveta as notificações do canal que acabou de ser lido. */
+    public void clearMessageNotifications(String payload) {
+        runOnUiThread(() -> {
+            try {
+                final JSONObject json = new JSONObject(payload);
+                final String group = "papo:"
+                        + json.getString("server_url")
+                        + ":"
+                        + json.getString("channel_id");
+                final NotificationManager manager = getSystemService(NotificationManager.class);
+                if (manager == null) {
+                    return;
+                }
+                for (StatusBarNotification active : manager.getActiveNotifications()) {
+                    if (group.equals(active.getNotification().getGroup())) {
+                        manager.cancel(active.getTag(), active.getId());
+                    }
+                }
+            } catch (Exception error) {
+                Log.e("papo-notify", "falha ao limpar notificações do canal", error);
             }
         });
     }
