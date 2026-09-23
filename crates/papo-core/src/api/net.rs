@@ -2203,6 +2203,9 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
+        Command::QueueMessage { .. } => {
+            unreachable!("QueueMessage é interceptado pelo worker antes do handler legado")
+        }
         Command::SendMessage {
             channel_id,
             content,
