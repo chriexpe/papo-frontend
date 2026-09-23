@@ -162,7 +162,9 @@ pub enum ChatAction {
     /// Volta para a call: leva à sala em que já se está, como o clique que
     /// levou na primeira vez.
     OpenCall,
-    /// Joga a call numa janela só dela (ou a traz de volta).
+    /// Mostra/esconde o mini-overlay da call sobre a conversa.
+    FloatCall(bool),
+    /// Joga a call numa janela do sistema só dela (ou a traz de volta).
     PopOutCall(bool),
 }
 
@@ -1974,7 +1976,7 @@ fn call_layers(
     use crate::state::Stage;
 
     match stage {
-        Some(Stage::Window) if state.compact => {
+        Some(Stage::Floating) => {
             crate::ui::call::floating(ui, store, state, call, t, s, full);
         }
         Some(Stage::Sheet) => crate::ui::call::sheet(ui, store, state, call, t, s, full),
