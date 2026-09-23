@@ -309,6 +309,16 @@ pub enum Command {
         notify_reply: bool,
         created_at: i64,
     },
+    /// Reenvio deliberado pelo usuário. Pode duplicar uma mensagem cujo
+    /// resultado anterior era ambíguo; nunca é disparado automaticamente.
+    RetryOutgoing {
+        local_id: String,
+        owner_user_id: String,
+    },
+    DismissOutgoing {
+        local_id: String,
+        owner_user_id: String,
+    },
     SendMessage {
         channel_id: String,
         content: String,
@@ -392,6 +402,7 @@ pub enum Update {
     /// Projeção durável local, criada/restaurada antes de qualquer POST.
     Outgoing(Box<CachedOutgoing>),
     OutgoingRestored(Vec<CachedOutgoing>),
+    OutgoingRemoved(String),
     OutgoingRejected {
         content: String,
         reply_to: Option<String>,
@@ -1364,6 +1375,122 @@ async fn worker(
                             }
                         }
                     }
+                    Command::RetryOutgoing {
+                        local_id,
+                        owner_user_id,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if !session.is_authenticated()
+                            || verified_owner.as_deref() != Some(owner_user_id.as_str())
+                        {
+                            publish_runtime(
+                                &storage_key,
+                                &updates,
+                                &wake,
+                                Update::Error(
+                                    "sessão não disponível para reenviar a mensagem".to_owned(),
+                                ),
+                            );
+                            continue;
+                        }
+                        let Some(index) = outgoing.iter().position(|item| {
+                            item.local_id == local_id
+                                && item.owner_user_id == owner_user_id
+                                && matches!(
+                                    item.state,
+                                    OutgoingState::UnknownOutcome
+                                        | OutgoingState::FailedPermanent
+                                )
+                        }) else {
+                            continue;
+                        };
+                        match cache.transition_outgoing(
+                            &storage_key,
+                            &owner_user_id,
+                            &local_id,
+                            OutgoingState::Queued,
+                            None,
+                        ) {
+                            Ok(()) => {
+                                outgoing[index].state = OutgoingState::Queued;
+                                outgoing[index].last_error = None;
+                                publish_outgoing(
+                                    &storage_key,
+                                    &updates,
+                                    &wake,
+                                    &outgoing[index],
+                                );
+                                drive_outgoing(
+                                    &api,
+                                    cache.as_ref(),
+                                    &storage_key,
+                                    &owner_user_id,
+                                    network_gate.explicitly_unavailable(),
+                                    &mut outgoing_channels,
+                                    &updates,
+                                    &wake,
+                                    &mut outgoing,
+                                )
+                                .await;
+                            }
+                            Err(error) => publish_runtime(
+                                &storage_key,
+                                &updates,
+                                &wake,
+                                Update::Error(format!(
+                                    "não foi possível preparar o reenvio: {error}"
+                                )),
+                            ),
+                        }
+                    }
+                    Command::DismissOutgoing {
+                        local_id,
+                        owner_user_id,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if verified_owner.as_deref() != Some(owner_user_id.as_str()) {
+                            continue;
+                        }
+                        if let Some(index) = outgoing.iter().position(|item| {
+                            item.local_id == local_id
+                                && item.owner_user_id == owner_user_id
+                                && matches!(
+                                    item.state,
+                                    OutgoingState::UnknownOutcome
+                                        | OutgoingState::FailedPermanent
+                                )
+                        }) {
+                            match cache.remove_outgoing(
+                                &storage_key,
+                                &owner_user_id,
+                                &local_id,
+                            ) {
+                                Ok(()) => {
+                                    outgoing.remove(index);
+                                    log::info!(
+                                        "outgoing {}: dismissed local={}",
+                                        storage_key,
+                                        short_local_id(&local_id)
+                                    );
+                                    publish(
+                                        &updates,
+                                        &wake,
+                                        Update::OutgoingRemoved(local_id),
+                                    );
+                                }
+                                Err(error) => publish_runtime(
+                                    &storage_key,
+                                    &updates,
+                                    &wake,
+                                    Update::Error(format!(
+                                        "não foi possível descartar a mensagem: {error}"
+                                    )),
+                                ),
+                            }
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -2275,8 +2402,10 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
-        Command::QueueMessage { .. } => {
-            unreachable!("QueueMessage é interceptado pelo worker antes do handler legado")
+        Command::QueueMessage { .. }
+        | Command::RetryOutgoing { .. }
+        | Command::DismissOutgoing { .. } => {
+            unreachable!("comando de fila é interceptado pelo worker antes do handler legado")
         }
         Command::SendMessage {
             channel_id,
