@@ -378,7 +378,7 @@ pub fn sheet(
 
     let mut x = header.max.x - space::LG - 13.0;
     for (glyph, tip, action) in [
-        (icon::X, s.call_collapse, ChatAction::CollapseCall(true)),
+        (icon::ARROWS_IN, s.call_overlay, ChatAction::FloatCall(true)),
         (
             icon::ARROW_SQUARE_OUT,
             s.call_popout,
@@ -532,13 +532,13 @@ fn compact_pill(
         ui,
         t,
         return_or_expand,
-        if floating { icon::ARROW_SQUARE_IN } else { icon::ARROWS_OUT },
-        if floating { s.call_popin } else { s.call_expand },
+        icon::ARROWS_OUT,
+        if floating { s.call_overlay_close } else { s.call_expand },
         false,
         false,
     ) {
         state.actions.push(if floating {
-            ChatAction::PopOutCall(false)
+            ChatAction::FloatCall(false)
         } else {
             ChatAction::OpenCall
         });
@@ -748,7 +748,7 @@ pub fn pip(
     }
     people.truncate(1);
 
-    draw_faces(ui, store, state, call, t, s, rect, &people);
+    draw_faces(ui, store, state, call, t, s, rect, &people, None);
 }
 
 /// A grade: uma pessoa por retrato, vídeo quando há, foto quando não há.
@@ -762,7 +762,7 @@ fn grid(
     area: Rect,
 ) {
     let people = faces(store);
-    draw_faces(ui, store, state, call, t, s, area, &people);
+    draw_faces(ui, store, state, call, t, s, area, &people, None);
 }
 
 fn compact_grid(
@@ -785,7 +785,8 @@ fn compact_grid(
             .unwrap_or(usize::MAX)
     });
     people.truncate(limit);
-    draw_faces(ui, store, state, call, t, s, area, &people);
+    let columns = if people.len() >= 2 { Some(2) } else { Some(1) };
+    draw_faces(ui, store, state, call, t, s, area, &people, columns);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -798,6 +799,7 @@ fn draw_faces(
     s: &Strings,
     area: Rect,
     people: &[Face],
+    forced_columns: Option<usize>,
 ) {
     if people.is_empty() {
         ui.painter().text(
@@ -819,7 +821,12 @@ fn draw_faces(
         );
     }
 
-    let (columns, rows) = layout(people.len(), area);
+    let (columns, rows) = forced_columns
+        .map(|columns| {
+            let columns = columns.clamp(1, people.len());
+            (columns, people.len().div_ceil(columns))
+        })
+        .unwrap_or_else(|| layout(people.len(), area));
     let gap = space::MD;
     let cell = Vec2::new(
         (area.width() - gap * (columns as f32 - 1.0)) / columns as f32,
