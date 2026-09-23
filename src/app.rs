@@ -1328,8 +1328,8 @@ impl PapoApp {
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
             ChatAction::FloatCall(floating) => {
                 ws.store.call.floating = floating;
+                ws.store.call.collapsed = floating;
                 if floating {
-                    ws.store.call.collapsed = true;
                     ws.store.call.popped_out = false;
                 }
             }
@@ -1467,7 +1467,13 @@ impl PapoApp {
             ChatAction::ToggleMute => ws.store.call.muted = !ws.store.call.muted,
             ChatAction::ToggleCamera => ws.store.call.camera = !ws.store.call.camera,
             ChatAction::CollapseCall(collapsed) => ws.store.call.collapsed = collapsed,
-            ChatAction::FloatCall(floating) => ws.store.call.floating = floating,
+            ChatAction::FloatCall(floating) => {
+                ws.store.call.floating = floating;
+                ws.store.call.collapsed = floating;
+                if floating {
+                    ws.store.call.popped_out = false;
+                }
+            }
             // Voltar para a call é ir ao canal dela, como o clique que
             // levou na primeira vez — e abrir a folha se estava encolhida.
             ChatAction::OpenCall => {
