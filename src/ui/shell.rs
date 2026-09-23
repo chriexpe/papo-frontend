@@ -574,6 +574,24 @@ pub fn draw(
         state.edit_focus_pending = false;
         state.replying = None;
         state.close_popup();
+
+        // Mudar de canal também muda a apresentação da call:
+        // - vídeo continua visível por cima da conversa;
+        // - só voz vira apenas a pastilha compacta;
+        // - voltar ao canal da call devolve a sala inteira.
+        if store.call.active() {
+            if store.selected_channel == store.call.channel_id {
+                store.call.floating = false;
+                store.call.collapsed = false;
+            } else if store.call.has_video() {
+                store.call.floating = true;
+                store.call.collapsed = true;
+                store.call.popped_out = false;
+            } else {
+                store.call.floating = false;
+                store.call.collapsed = true;
+            }
+        }
     }
 
     // A altura da lista mudou no quadro anterior (uma reação a mais, por
