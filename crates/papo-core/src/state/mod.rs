@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Local, Utc};
 use crate::api::models::{self, parse_hex_color, Attachment};
-use crate::api::net::Update;
+use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 
 pub use call::{CallState, Phase, Stage};
@@ -182,6 +182,14 @@ pub enum Screen {
     Chat,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimelineStatus {
+    Missing,
+    Stale,
+    Refreshing,
+    Fresh,
+}
+
 #[derive(Debug)]
 pub struct Store {
     pub screen: Screen,
@@ -196,15 +204,13 @@ pub struct Store {
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
     pub my_username: String,
     pub selected_channel: String,
-    /// Canais cuja carga terminou nesta geração contínua da conexão.
-    ///
-    /// O cache só é válido enquanto o WebSocket permanece na mesma geração:
-    /// qualquer transição de conexão invalida esta lista. As mensagens já
-    /// renderizadas ficam na memória até a carga nova substituí-las.
-    loaded_channels: HashSet<String>,
-    /// Cargas REST em voo. Separar "carregando" de "carregado" evita que uma
-    /// falha HTTP transforme uma tentativa em cache fresco para sempre.
-    loading_channels: HashSet<String>,
+    /// Geração da continuidade atual do WebSocket.
+    sync_generation: u64,
+    /// Última geração em que cada canal recebeu uma carga REST autoritativa.
+    channel_freshness: HashMap<String, u64>,
+    /// Refresh aceito atualmente por canal.
+    loading_channels: HashMap<String, RefreshTicket>,
+    next_refresh_request_id: u64,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
     /// Até quando cada canal foi visto; é o que define o não lido, já que o
@@ -251,8 +257,10 @@ impl Default for Store {
             my_name: String::new(),
             my_username: String::new(),
             selected_channel: String::new(),
-            loaded_channels: HashSet::new(),
-            loading_channels: HashSet::new(),
+            sync_generation: 0,
+            channel_freshness: HashMap::new(),
+            loading_channels: HashMap::new(),
+            next_refresh_request_id: 0,
             typing: HashMap::new(),
             read_marks: HashMap::new(),
             counted_notifications: HashSet::new(),
@@ -457,31 +465,52 @@ impl Store {
             .unwrap_or_default()
     }
 
+    pub fn sync_generation(&self) -> u64 {
+        self.sync_generation
+    }
+
+    pub fn timeline_status(&self, channel_id: &str) -> TimelineStatus {
+        if self.loading_channels.contains_key(channel_id) {
+            return TimelineStatus::Refreshing;
+        }
+        match self.channel_freshness.get(channel_id) {
+            Some(generation) if *generation == self.sync_generation => TimelineStatus::Fresh,
+            Some(_) => TimelineStatus::Stale,
+            None => TimelineStatus::Missing,
+        }
+    }
+
     /// Canal que ainda precisa ter as mensagens buscadas.
     pub fn channel_needing_messages(&self) -> Option<String> {
-        // Não marque uma tentativa feita durante a queda como "carregada".
-        // Quando o socket voltar para Online a geração é invalidada de novo
-        // e o canal aberto será buscado pela fonte REST.
         if self.connection != Connection::Online {
             return None;
         }
         let id = &self.selected_channel;
         if id.is_empty()
-            || self.loaded_channels.contains(id)
-            || self.loading_channels.contains(id)
+            || matches!(self.timeline_status(id), TimelineStatus::Fresh | TimelineStatus::Refreshing)
         {
             return None;
         }
-        // Canal de voz não tem mensagem: pedir a lista dele seria uma
-        // chamada por entrada na call, para receber nada.
         if self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice) {
             return None;
         }
         Some(id.clone())
     }
 
-    pub fn mark_loading(&mut self, channel_id: &str) {
-        self.loading_channels.insert(channel_id.to_owned());
+    pub fn mark_loading(&mut self, channel_id: &str) -> RefreshTicket {
+        self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
+        let ticket = RefreshTicket {
+            channel_id: channel_id.to_owned(),
+            generation: self.sync_generation,
+            request_id: self.next_refresh_request_id,
+        };
+        self.loading_channels.insert(channel_id.to_owned(), ticket.clone());
+        ticket
+    }
+
+    fn refresh_ticket_is_current(&self, ticket: &RefreshTicket) -> bool {
+        ticket.generation == self.sync_generation
+            && self.loading_channels.get(&ticket.channel_id) == Some(ticket)
     }
 
     // -- Não lidos ---------------------------------------------------------
@@ -704,21 +733,21 @@ impl Store {
                     .collect();
                 self.sort_members();
             }
-            Update::Messages {
-                channel_id,
-                messages,
-            } => {
-                self.messages
-                    .retain(|message| message.channel_id != channel_id);
-                let me = self.me.clone();
-                self.messages
-                    .extend(messages.into_iter().map(|message| convert(message, &me)));
-                self.sort_messages();
-                self.loading_channels.remove(&channel_id);
-                self.loaded_channels.insert(channel_id);
+            Update::Messages { ticket, messages } => {
+                if self.refresh_ticket_is_current(&ticket) {
+                    let channel_id = ticket.channel_id.clone();
+                    self.messages.retain(|message| message.channel_id != channel_id);
+                    let me = self.me.clone();
+                    self.messages.extend(messages.into_iter().map(|message| convert(message, &me)));
+                    self.sort_messages();
+                    self.loading_channels.remove(&channel_id);
+                    self.channel_freshness.insert(channel_id, ticket.generation);
+                }
             }
-            Update::MessagesFailed(channel_id) => {
-                self.loading_channels.remove(&channel_id);
+            Update::MessagesFailed(ticket) => {
+                if self.refresh_ticket_is_current(&ticket) {
+                    self.loading_channels.remove(&ticket.channel_id);
+                }
             }
             Update::Sent(message) => {
                 self.messages.retain(|existing| !existing.pending);
@@ -810,12 +839,8 @@ impl Store {
                 self.error = Some(message);
             }
             Update::Connection(connection) => {
-                // loaded_channels só vale para uma geração contínua do
-                // WebSocket. Se a conexão muda de estado, algum evento pode
-                // ter sido perdido; mantemos as mensagens velhas visíveis,
-                // mas obrigamos uma carga REST assim que Online voltar.
-                if self.connection != connection {
-                    self.loaded_channels.clear();
+                if self.connection == Connection::Online && connection != Connection::Online {
+                    self.sync_generation = self.sync_generation.saturating_add(1);
                     self.loading_channels.clear();
                 }
                 self.connection = connection;
@@ -832,9 +857,9 @@ impl Store {
             Event::Message(message) => {
                 let me = self.me.clone();
                 let message = convert(*message, &me);
-                // Só guardamos mensagens de canais já carregados; os outros
-                // são buscados por inteiro quando abertos.
-                if self.loaded_channels.contains(&message.channel_id) {
+                // O barrier REST/WS entra no PR seguinte; por enquanto só
+                // projetamos live events em timeline já fresca desta geração.
+                if self.timeline_status(&message.channel_id) == TimelineStatus::Fresh {
                     self.messages.retain(|existing| !existing.pending);
                     self.upsert(message.clone());
                 }
@@ -1252,11 +1277,8 @@ mod tests {
             store.channel_needing_messages(),
             Some(channel_id.to_owned())
         );
-        store.mark_loading(channel_id);
-        store.apply(Update::Messages {
-            channel_id: channel_id.to_owned(),
-            messages: Vec::new(),
-        });
+        let ticket = store.mark_loading(channel_id);
+        store.apply(Update::Messages { ticket, messages: Vec::new() });
         assert_eq!(store.channel_needing_messages(), None);
         store
     }
@@ -1398,14 +1420,69 @@ mod tests {
             store.channel_needing_messages(),
             Some("geral".to_owned())
         );
-        store.mark_loading("geral");
+        let ticket = store.mark_loading("geral");
         assert_eq!(store.channel_needing_messages(), None);
 
-        store.apply(Update::MessagesFailed("geral".to_owned()));
+        store.apply(Update::MessagesFailed(ticket));
         assert_eq!(
             store.channel_needing_messages(),
             Some("geral".to_owned())
         );
+    }
+
+    #[test]
+    fn resposta_de_geracao_antiga_nao_fica_fresca() {
+        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        store.apply(Update::Connection(Connection::Online));
+        let antiga = store.mark_loading("geral");
+        store.apply(Update::Connection(Connection::Offline));
+        store.apply(Update::Connection(Connection::Connecting));
+        store.apply(Update::Connection(Connection::Online));
+        let atual = store.mark_loading("geral");
+
+        store.apply(Update::Messages { ticket: antiga, messages: Vec::new() });
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new() });
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
+    }
+
+    #[test]
+    fn resposta_antiga_da_mesma_geracao_nao_supersede_tentativa_nova() {
+        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        store.apply(Update::Connection(Connection::Online));
+        let primeira = store.mark_loading("geral");
+        let segunda = store.mark_loading("geral");
+        assert_ne!(primeira.request_id, segunda.request_id);
+
+        store.apply(Update::Messages { ticket: primeira, messages: Vec::new() });
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
+        store.apply(Update::Messages { ticket: segunda, messages: Vec::new() });
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
+    }
+
+    #[test]
+    fn falha_antiga_nao_cancela_tentativa_atual() {
+        let mut store = Store { selected_channel: "geral".to_owned(), ..Store::default() };
+        store.apply(Update::Connection(Connection::Online));
+        let antiga = store.mark_loading("geral");
+        let atual = store.mark_loading("geral");
+        store.apply(Update::MessagesFailed(antiga));
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new() });
+        assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
+    }
+
+    #[test]
+    fn geracao_avanca_so_quando_online_perde_continuidade() {
+        let mut store = Store::default();
+        store.apply(Update::Connection(Connection::Connecting));
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(store.sync_generation(), 0);
+        store.apply(Update::Connection(Connection::Offline));
+        assert_eq!(store.sync_generation(), 1);
+        store.apply(Update::Connection(Connection::Connecting));
+        store.apply(Update::Connection(Connection::Online));
+        assert_eq!(store.sync_generation(), 1);
     }
 
     #[test]
