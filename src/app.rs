@@ -19,6 +19,8 @@ use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
+use papo_core::cache::ClientDb;
+use papo_core::storage::{Secret, SecretStore};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
 
@@ -426,6 +428,12 @@ pub struct Workspace {
     pub label: String,
     pub net: Net,
     pub store: Store,
+    /// Cache durável deste processo, compartilhado por todos os servidores.
+    pub cache: std::sync::Arc<ClientDb>,
+    /// Partição estável deste servidor no banco.
+    pub server_key: String,
+    /// Dono do cache restaurado; detecta troca de conta.
+    pub cached_owner: Option<String>,
     pub form: AuthForm,
     /// O pedaço da interface deste servidor, fora enquanto outro está na tela.
     pub stash: shell::Stash,
@@ -449,7 +457,33 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    fn open(entry: &ServerEntry, marks: &ReadMarks, ctx: &egui::Context) -> Self {
+    fn open(
+        entry: &ServerEntry,
+        marks: &ReadMarks,
+        ctx: &egui::Context,
+        cache: &std::sync::Arc<ClientDb>,
+    ) -> Self {
+        let server_key = crate::state::server_key(&entry.url);
+
+        // Hidrata do cache antes de a rede começar. Um restore tardio poderia
+        // sobrescrever estado mais novo, então ele nunca é assíncrono.
+        let mut store = Store::default();
+        store.read_marks = marks.get(&server_key).cloned().unwrap_or_default();
+        let mut cached_owner = None;
+        let secret_store = crate::storage::FileSecretStore::new();
+        let has_session = secret_store
+            .load(&server_key, Secret::SessionToken)
+            .ok()
+            .flatten()
+            .is_some();
+        if has_session
+            && let Some(snapshot) = cache.load_snapshot(&server_key)
+            && !snapshot.is_empty()
+        {
+            cached_owner = snapshot.owner_user_id.clone();
+            store.restore_cached(snapshot);
+        }
+
         let repaint = ctx.clone();
         let net = Net::spawn(
             entry.url.clone(),
@@ -490,16 +524,14 @@ impl Workspace {
             std::sync::Arc::clone(&net.session),
             ctx.clone(),
         );
-        let mut store = Store::default();
-        store.read_marks = marks
-            .get(&crate::state::server_key(&entry.url))
-            .cloned()
-            .unwrap_or_default();
         Self {
             url: entry.url.clone(),
             label: entry.label.clone(),
             net,
             store,
+            cache: std::sync::Arc::clone(cache),
+            server_key,
+            cached_owner,
             form: AuthForm {
                 server_url: entry.url.clone(),
                 ..AuthForm::default()
@@ -565,6 +597,8 @@ impl Workspace {
 
 pub struct PapoApp {
     workspaces: Vec<Workspace>,
+    /// Um banco de cache por processo, compartilhado pelos servidores.
+    cache: std::sync::Arc<ClientDb>,
     /// Índice do servidor na tela.
     active: usize,
     ui: UiState,
@@ -645,12 +679,16 @@ impl PapoApp {
             log::warn!("sem backend glow: o vidro fosco fica desligado");
         }
 
+        // Um banco de cache por processo. Abrir aqui deixa o restore
+        // acontecer antes de qualquer worker de rede subir.
+        let cache = std::sync::Arc::new(ClientDb::open(crate::platform::dirs::cache_db()));
+
         // Todos os servidores sobem juntos: o que chega num deles enquanto
         // outro está na tela ainda conta para o contador e a notificação.
         let mut workspaces: Vec<Workspace> = settings
             .servers
             .iter()
-            .map(|entry| Workspace::open(entry, &settings.server_marks, &cc.egui_ctx))
+            .map(|entry| Workspace::open(entry, &settings.server_marks, &cc.egui_ctx, &cache))
             .collect();
         let active = settings.active.min(workspaces.len() - 1);
 
@@ -664,7 +702,8 @@ impl PapoApp {
                         url: format!("https://{}.example", label.to_lowercase()),
                         label: label.to_owned(),
                     };
-                    workspaces.push(Workspace::open(&entry, &settings.server_marks, &cc.egui_ctx));
+                    workspaces
+                        .push(Workspace::open(&entry, &settings.server_marks, &cc.egui_ctx, &cache));
                 }
                 workspaces[index].label = label.to_owned();
             }
@@ -688,6 +727,7 @@ impl PapoApp {
 
         Self {
             workspaces,
+            cache,
             active,
             ui: ui_state,
             #[cfg(target_os = "linux")]
@@ -1024,12 +1064,16 @@ impl PapoApp {
     /// Reabre um servidor num endereço novo, jogando fora a conexão antiga.
     fn reopen(&mut self, index: usize, url: String, ctx: &egui::Context) {
         let form = self.workspaces[index].form.clone();
+        let old_key = self.workspaces[index].server_key.clone();
         let entry = ServerEntry::new(url);
-        let mut fresh = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        let mut fresh = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
         fresh.form = AuthForm {
             server_url: entry.url.clone(),
             ..form
         };
+        // O endereço velho some de propósito: o cache dele não pode aparecer
+        // sob a chave nova só porque o servidor é o mesmo.
+        self.cache.clear_server(&old_key);
         self.settings.servers[index] = entry;
         // O servidor na tela devolve o guardado para o substituto, ou a
         // interface ficaria com a mídia de uma conexão que já morreu.
@@ -1065,7 +1109,7 @@ impl PapoApp {
         // ativo e descartamos este workspace.
         let previous = self.active;
         let entry = ServerEntry::new(DRAFT_SERVER_URL.to_owned());
-        let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx);
+        let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
         // Não herda o endereço padrão nem a sessão dele. O cartão nasce
         // realmente vazio e só cria conexão com o servidor digitado no envio.
         workspace.form.server_url.clear();
@@ -1090,6 +1134,7 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
@@ -1125,6 +1170,7 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
@@ -1585,6 +1631,12 @@ impl PapoApp {
                 // O portão do servidor abriu: entra com o que já está no
                 // formulário, em vez de fazer o usuário clicar de novo.
                 let unlocked = matches!(update, crate::api::net::Update::ServerUnlocked);
+                let session_me = match &update {
+                    crate::api::net::Update::Session(Some(me)) => Some(me.id.clone()),
+                    _ => None,
+                };
+                let session_ended =
+                    matches!(update, crate::api::net::Update::Session(None));
                 let ws = &mut self.workspaces[index];
                 route_call_update(ws, &update, ctx);
                 if reconnected && ws.store.screen == Screen::Chat {
@@ -1608,6 +1660,29 @@ impl PapoApp {
                 {
                     ws.label = server.name.clone();
                     self.settings.servers[index].label = server.name.clone();
+                }
+
+                // Conta verificada diferente da dona do cache: a conversa
+                // antiga não pode aparecer para o novo login.
+                if let Some(me_id) = session_me {
+                    if ws
+                        .cached_owner
+                        .as_deref()
+                        .is_some_and(|owner| owner != me_id)
+                    {
+                        ws.cache.clear_server(&ws.server_key);
+                        ws.store.clear_cached_state();
+                    }
+                    ws.cached_owner = Some(me_id);
+                }
+                if session_ended {
+                    ws.cached_owner = None;
+                }
+
+                // Toda mutação Live/Reconcile vira efeito de cache aqui.
+                let ops = ws.store.take_cache_ops();
+                if !ops.is_empty() {
+                    ws.cache.submit(&ws.server_key, ops);
                 }
             }
         }
@@ -2044,6 +2119,8 @@ impl PapoApp {
                 server_key: crate::state::server_key(&workspace.url),
                 runtime: workspace.net.diagnostics(),
                 store: workspace.store.diagnostics(),
+                cache_enabled: workspace.cache.is_enabled(),
+                cache: workspace.cache.stats(),
             })
             .collect();
 

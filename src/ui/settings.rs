@@ -21,6 +21,8 @@ pub struct WorkspaceDiagnostics {
     pub server_key: String,
     pub runtime: RuntimeDiagnostics,
     pub store: StoreDiagnostics,
+    pub cache_enabled: bool,
+    pub cache: papo_core::cache::CacheStatsSnapshot,
 }
 
 use super::theme::{radius, space, text, Tokens};
@@ -1360,6 +1362,18 @@ fn app_pane(
                         Some(&runtime.sync_generation.to_string()),
                         |_, _| {},
                     );
+                    let cache = if workspace.cache_enabled {
+                        format!(
+                            "{} restored · {} written · {} dropped · {} failures",
+                            workspace.cache.restores,
+                            workspace.cache.written,
+                            workspace.cache.dropped,
+                            workspace.cache.write_failures,
+                        )
+                    } else {
+                        "unavailable".to_owned()
+                    };
+                    rows.row("Cache", Some(&cache), |_, _| {});
                     let scheduler = format!(
                         "{} running / {} queued / limit {}",
                         runtime.scheduler.running,

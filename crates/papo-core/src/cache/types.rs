@@ -1,0 +1,295 @@
+//! Valores de cache persistente e as operações que a Store produz.
+//!
+//! Estes tipos são deliberadamente independentes das estruturas de domínio da
+//! Store: normalizam só o que precisa sobreviver a um reinício e evitam
+//! serializar a Store inteira.
+
+use std::collections::HashSet;
+
+use chrono::{DateTime, Local, Utc};
+
+use crate::state::{Channel, ChannelKind, Emoji, Member, Message, Reaction, Server};
+
+/// Limite de mensagens confirmadas guardadas por canal.
+pub const MESSAGE_RETENTION: i64 = 500;
+/// Limite de mensagens fixadas guardadas por canal, além das recentes.
+pub const PINNED_RETENTION: i64 = 200;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedServer {
+    pub name: String,
+    pub description: Option<String>,
+    pub owner_user_id: Option<String>,
+    pub me_user_id: Option<String>,
+    pub me_display_name: Option<String>,
+    pub me_username: Option<String>,
+    pub updated_at: i64,
+}
+
+impl CachedServer {
+    pub fn from_store(server: &Server, me_id: &str, me_name: &str, me_username: &str) -> Self {
+        Self {
+            name: server.name.clone(),
+            description: server.description.clone(),
+            owner_user_id: (!me_id.is_empty()).then(|| me_id.to_owned()),
+            me_user_id: (!me_id.is_empty()).then(|| me_id.to_owned()),
+            me_display_name: (!me_name.is_empty()).then(|| me_name.to_owned()),
+            me_username: (!me_username.is_empty()).then(|| me_username.to_owned()),
+            updated_at: now_millis(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedChannel {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub topic: Option<String>,
+    pub position: i32,
+    /// Cache de exibição apenas; nunca é autoridade depois de reconectar.
+    pub unread: bool,
+    pub mentions: u32,
+}
+
+impl From<&Channel> for CachedChannel {
+    fn from(channel: &Channel) -> Self {
+        Self {
+            id: channel.id.clone(),
+            name: channel.name.clone(),
+            kind: match channel.kind {
+                ChannelKind::Text => "text",
+                ChannelKind::Voice => "voice",
+                ChannelKind::Category => "category",
+            }
+            .to_owned(),
+            topic: channel.topic.clone(),
+            position: channel.position,
+            unread: channel.unread,
+            mentions: channel.mentions,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedMember {
+    pub id: String,
+    pub username: String,
+    pub name: String,
+    pub role_color: Option<[u8; 3]>,
+    pub roles: Vec<String>,
+}
+
+impl From<&Member> for CachedMember {
+    fn from(member: &Member) -> Self {
+        Self {
+            id: member.id.clone(),
+            username: member.username.clone(),
+            name: member.name.clone(),
+            role_color: member.role_color,
+            roles: member.roles.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedAttachment {
+    pub id: String,
+    pub mime_type: Option<String>,
+    pub original_file_name: Option<String>,
+    pub size_bytes: i64,
+    pub thumbnail_id: Option<String>,
+    pub created_at: Option<i64>,
+    pub moderation_status: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedReaction {
+    pub emoji_unicode: Option<String>,
+    pub emoji_custom: Option<String>,
+    pub count: u32,
+    pub mine: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedMessage {
+    pub id: String,
+    pub channel_id: String,
+    pub author_id: String,
+    pub content: String,
+    /// Milissegundos desde a época, em UTC.
+    pub created_at: i64,
+    pub edited: bool,
+    pub reply_to: Option<String>,
+    pub pinned: bool,
+    pub attachments: Vec<CachedAttachment>,
+    pub reactions: Vec<CachedReaction>,
+}
+
+impl CachedMessage {
+    /// Converte uma mensagem já confirmada pelo servidor. Mensagens pendentes
+    /// (ecos locais) não são persistidas nesta fase.
+    pub fn from_store(message: &Message) -> Self {
+        Self {
+            id: message.id.clone(),
+            channel_id: message.channel_id.clone(),
+            author_id: message.author_id.clone(),
+            content: message.content.clone(),
+            created_at: message.at.with_timezone(&Utc).timestamp_millis(),
+            edited: message.edited,
+            reply_to: message.reply_to.clone(),
+            pinned: message.pinned,
+            attachments: message
+                .attachments
+                .iter()
+                .map(|attachment| CachedAttachment {
+                    id: attachment.id.clone(),
+                    mime_type: attachment.mime_type.clone(),
+                    original_file_name: attachment.original_file_name.clone(),
+                    size_bytes: attachment.size_bytes,
+                    thumbnail_id: attachment.thumbnail_id.clone(),
+                    created_at: attachment
+                        .created_at
+                        .map(|at| at.timestamp_millis()),
+                    moderation_status: attachment.moderation_status.clone(),
+                })
+                .collect(),
+            reactions: message
+                .reactions
+                .iter()
+                .map(|reaction| CachedReaction {
+                    emoji_unicode: match &reaction.emoji {
+                        Emoji::Unicode(value) => Some(value.clone()),
+                        Emoji::Custom(_) => None,
+                    },
+                    emoji_custom: match &reaction.emoji {
+                        Emoji::Custom(id) => Some(id.clone()),
+                        Emoji::Unicode(_) => None,
+                    },
+                    count: reaction.count,
+                    mine: reaction.mine,
+                })
+                .collect(),
+        }
+    }
+
+    /// Reconstrói a projeção da Store. Previews ficam vazias de propósito:
+    /// elas pertencem a uma fase posterior e se repovoam na reconciliação.
+    pub fn to_store(&self) -> Message {
+        Message {
+            id: self.id.clone(),
+            channel_id: self.channel_id.clone(),
+            author_id: self.author_id.clone(),
+            content: self.content.clone(),
+            at: millis_to_local(self.created_at),
+            edited: self.edited,
+            reply_to: self.reply_to.clone(),
+            attachments: self
+                .attachments
+                .iter()
+                .map(|attachment| crate::api::models::Attachment {
+                    id: attachment.id.clone(),
+                    mime_type: attachment.mime_type.clone(),
+                    original_file_name: attachment.original_file_name.clone(),
+                    size_bytes: attachment.size_bytes,
+                    thumbnail_id: attachment.thumbnail_id.clone(),
+                    created_at: attachment
+                        .created_at
+                        .and_then(DateTime::from_timestamp_millis),
+                    moderation_status: attachment.moderation_status.clone(),
+                })
+                .collect(),
+            previews: Vec::new(),
+            reactions: self
+                .reactions
+                .iter()
+                .filter_map(|reaction| {
+                    let emoji = Emoji::from_parts(
+                        reaction.emoji_unicode.clone(),
+                        reaction.emoji_custom.clone(),
+                    )?;
+                    Some(Reaction {
+                        emoji,
+                        count: reaction.count,
+                        mine: reaction.mine,
+                    })
+                })
+                .collect(),
+            pinned: self.pinned,
+            pending: false,
+        }
+    }
+}
+
+/// Projeção pronta para hidratar uma Store. Cobre um servidor inteiro.
+#[derive(Clone, Debug, Default)]
+pub struct CachedServerSnapshot {
+    pub owner_user_id: Option<String>,
+    pub server: Option<CachedServer>,
+    pub channels: Vec<CachedChannel>,
+    pub members: Vec<CachedMember>,
+    pub messages: Vec<CachedMessage>,
+    /// Canais com um snapshot gravado, mesmo vazio.
+    pub cached_channels: HashSet<String>,
+}
+
+impl CachedServerSnapshot {
+    pub fn is_empty(&self) -> bool {
+        self.server.is_none()
+            && self.channels.is_empty()
+            && self.members.is_empty()
+            && self.messages.is_empty()
+            && self.cached_channels.is_empty()
+    }
+}
+
+/// Efeito de cache derivado de uma mutação da Store.
+#[derive(Clone, Debug)]
+pub enum CacheOp {
+    UpsertServer(CachedServer),
+    SetOwner {
+        owner_user_id: String,
+        me_name: String,
+        me_username: String,
+    },
+    ReplaceChannels(Vec<CachedChannel>),
+    ReplaceMembers(Vec<CachedMember>),
+    ReplaceChannelSnapshot {
+        channel_id: String,
+        messages: Vec<CachedMessage>,
+        cached_at: i64,
+    },
+    UpsertMessage(CachedMessage),
+    DeleteMessage { message_id: String },
+    /// Snapshot autoritativo de fixadas. Converge também linhas que a Store
+    /// não tem carregadas: uma fixada antiga que saiu da janela precisa ser
+    /// desafixada para a retenção poder removê-la.
+    ///
+    /// A ausência desta operação (falha ao buscar pins) preserva o que já
+    /// estava gravado.
+    ReplacePins {
+        channel_id: String,
+        ids: Vec<String>,
+    },
+    /// Apaga tudo deste servidor: conta trocada, logout ou remoção.
+    ClearServer,
+}
+
+impl CacheOp {
+    /// Operações de posse/controle não podem ser descartadas: um clear perdido
+    /// deixaria a conversa da conta anterior no lugar. Dados reconstruíveis
+    /// continuam best-effort.
+    pub fn is_control(&self) -> bool {
+        matches!(self, CacheOp::ClearServer | CacheOp::SetOwner { .. })
+    }
+}
+
+pub fn now_millis() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+fn millis_to_local(ms: i64) -> DateTime<Local> {
+    DateTime::from_timestamp_millis(ms)
+        .map(|at| at.with_timezone(&Local))
+        .unwrap_or_else(Local::now)
+}

@@ -12,6 +12,12 @@ pub fn data_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", "papo").map(|dirs| dirs.data_dir().to_path_buf())
 }
 
+/// Caminho do banco de cache descartável. Fica na pasta privada de dados —
+/// app-private no Android — e nunca guarda segredos.
+pub fn cache_db() -> Option<PathBuf> {
+    data_dir().map(|dir| dir.join("papo-cache.db"))
+}
+
 #[cfg(not(target_os = "android"))]
 pub fn cache_dir() -> PathBuf {
     directories::ProjectDirs::from("", "", "papo")

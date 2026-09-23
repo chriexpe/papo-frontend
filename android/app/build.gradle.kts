@@ -50,6 +50,20 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    // O Rust entrega o `libpapo.so`; o `cargo ndk` também copia os cdylibs
+    // dos kits do Turso, que existem só para a ABI C e não entram no
+    // `DT_NEEDED` de ninguém. Empacotá-los inflaria o APK sem uso. O único
+    // código nativo do Turso que interessa é o `simsimd`, compilado
+    // estaticamente para dentro do `libpapo.so`.
+    packaging {
+        jniLibs {
+            excludes += setOf(
+                "**/libturso_sdk_kit-*.so",
+                "**/libturso_sync_sdk_kit-*.so",
+            )
+        }
+    }
 }
 
 dependencies {
