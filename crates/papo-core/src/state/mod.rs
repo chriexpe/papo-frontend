@@ -262,6 +262,40 @@ impl Default for Store {
     }
 }
 
+fn mention_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
+/// Reescreve somente @tokens em posição de palavra. Endereços como
+/// `nome@dominio` não viram menção.
+fn rewrite_mentions(text: &str, mut resolve: impl FnMut(&str) -> Option<String>) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '@'
+            && (i == 0 || !mention_char(chars[i - 1]))
+        {
+            let start = i + 1;
+            let mut end = start;
+            while end < chars.len() && mention_char(chars[end]) {
+                end += 1;
+            }
+            if end > start {
+                let token: String = chars[start..end].iter().collect();
+                if let Some(replacement) = resolve(&token) {
+                    out.push_str(&replacement);
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
 impl Store {
     pub fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|channel| channel.id == id)
@@ -275,6 +309,49 @@ impl Store {
         self.members
             .iter()
             .find(|member| member.username.eq_ignore_ascii_case(username))
+    }
+
+    /// Converte menções humanas (`@username`) para a identidade estável que
+    /// vai no wire/storage: `<@user_id>`.
+    ///
+    /// O compositor nunca vê esse formato; ele continua editando texto normal.
+    /// Chamados globais permanecem literais.
+    pub fn encode_mentions(&self, text: &str) -> String {
+        rewrite_mentions(text, |token| {
+            if token.eq_ignore_ascii_case("everyone") || token.eq_ignore_ascii_case("todos") {
+                return None;
+            }
+            self.member_by_username(token)
+                .map(|member| format!("<@{}>", member.id))
+        })
+    }
+
+    /// Resolve tokens estáveis para o username atual. Assim uma mensagem
+    /// antiga continua apontando para a mesma conta depois de um rename.
+    pub fn display_mentions(&self, text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
+                let mut end = i + 2;
+                while end < chars.len() && chars[end] != '>' {
+                    end += 1;
+                }
+                if end < chars.len() {
+                    let id: String = chars[i + 2..end].iter().collect();
+                    if let Some(member) = self.member(&id) {
+                        out.push('@');
+                        out.push_str(&member.username);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+            out.push(chars[i]);
+            i += 1;
+        }
+        out
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -374,13 +451,15 @@ impl Store {
         }
     }
 
-    /// A mensagem cita você? Menção direta ou chamado geral.
+    /// A mensagem cita você? Menção estável, legado por username ou chamado geral.
     pub fn mentions_me(&self, message: &Message) -> bool {
-        if self.my_username.is_empty() || message.author_id == self.me {
+        if message.author_id == self.me {
             return false;
         }
         let content = message.content.to_lowercase();
-        content.contains(&format!("@{}", self.my_username.to_lowercase()))
+        (!self.me.is_empty() && content.contains(&format!("<@{}>", self.me.to_lowercase())))
+            || (!self.my_username.is_empty()
+                && content.contains(&format!("@{}", self.my_username.to_lowercase())))
             || content.contains("@everyone")
             || content.contains("@todos")
     }
