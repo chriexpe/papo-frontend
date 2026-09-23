@@ -14,6 +14,36 @@ pub fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // `papo turso-probe [arquivo]` executa o sentinela persistente da PR7
+    // sem abrir a UI. Repetir o comando (inclusive após matar o processo)
+    // deve mostrar uma geração anterior igual à geração gravada na execução
+    // precedente.
+    if args.get(1).map(String::as_str) == Some("turso-probe") {
+        let path = args
+            .get(2)
+            .map(std::path::PathBuf::from)
+            .or_else(|| platform::dirs::data_dir().map(|dir| dir.join("papo-turso-probe.db")))
+            .unwrap_or_else(|| std::env::temp_dir().join("papo-turso-probe.db"));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime do probe Turso");
+        match runtime.block_on(papo_core::turso_probe::run_restart_probe(&path)) {
+            Ok(result) => println!(
+                "turso probe: {} -> {} ({})",
+                result.previous_generation,
+                result.committed_generation,
+                path.display()
+            ),
+            Err(error) => {
+                eprintln!("turso probe falhou em {}: {error}", path.display());
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
     // `papo poster <arquivo>` tira a capa de um vídeo e diz o que saiu. É
     // como se confere a extração sem passar pela interface.
     if args.get(1).map(String::as_str) == Some("poster") {
