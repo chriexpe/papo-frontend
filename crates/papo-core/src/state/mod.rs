@@ -298,11 +298,9 @@ impl Store {
             if at < cursor || ch != '@' {
                 continue;
             }
+            let previous = text[..at].chars().next_back();
             let before_ok = at == 0
-                || text[..at]
-                    .chars()
-                    .next_back()
-                    .is_some_and(mention_boundary);
+                || previous.is_some_and(|c| c != '<' && mention_boundary(c));
             if !before_ok {
                 continue;
             }
@@ -1220,6 +1218,24 @@ mod tests {
 
         store.members[0].username = "chris".to_owned();
         assert_eq!(store.display_mentions(&encoded), "oi @chris");
+    }
+
+    #[test]
+    fn mencao_aceita_username_com_espaco_e_nao_duplica_token_canonico() {
+        let mut store = Store::default();
+        store.members.push(Member {
+            id: "id-ana".to_owned(),
+            username: "Ana Maria".to_owned(),
+            name: "Ana".to_owned(),
+            presence: Presence::Online,
+            role_color: None,
+            roles: Vec::new(),
+        });
+
+        assert_eq!(
+            store.encode_mentions("oi @Ana Maria! <@id-ana>"),
+            "oi <@id-ana>! <@id-ana>"
+        );
     }
 
     #[test]
