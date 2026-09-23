@@ -785,6 +785,8 @@ async fn handle(
             let id = me.lock().ok().and_then(|slot| slot.clone());
             bootstrap(api, updates, wake, id.as_deref()).await
         }
+        // Consumido no laço do worker antes de chegar aqui.
+        Command::ProbeConnection => {}
         Command::LoadMessages { channel_id } => match api.messages(&channel_id).await {
             Ok(list) => {
                 publish(
