@@ -4,6 +4,7 @@
 //! background. Ela transforma notificações que o cliente já recebeu em
 //! notificações nativas e recebe o alvo de navegação quando o usuário toca.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -27,8 +28,12 @@ pub struct Navigation {
 }
 
 static PENDING: Mutex<Vec<Navigation>> = Mutex::new(Vec::new());
+static PERMISSION_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub fn ensure_permission() {
+    if PERMISSION_REQUESTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
     let _ = super::jvm::call_activity(
         "ensureMessageNotificationPermission",
         "()V",
