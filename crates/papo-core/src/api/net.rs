@@ -761,6 +761,17 @@ async fn worker(
                             completion.success,
                             std::time::Instant::now(),
                         ) {
+                            let session_invalid = completion
+                                .updates
+                                .iter()
+                                .any(|update| matches!(update, Update::Session(None)));
+                            if session_invalid {
+                                session_epoch = session_epoch.saturating_add(1);
+                                abort_reconciles(
+                                    reconcile_scheduler.cancel_all(),
+                                    &mut reconcile_aborts,
+                                );
+                            }
                             for update in completion.updates {
                                 publish(&updates, &wake, update);
                             }
@@ -809,6 +820,11 @@ async fn worker(
                         session.token(),
                     ),
                     Err(ApiError::Unauthorized) => {
+                        session_epoch = session_epoch.saturating_add(1);
+                        abort_reconciles(
+                            reconcile_scheduler.cancel_all(),
+                            &mut reconcile_aborts,
+                        );
                         session.set_token(None);
                         if let Ok(mut slot) = me.lock() {
                             *slot = None;
