@@ -52,6 +52,19 @@ pub fn show(notification: &NativeNotification) {
     );
 }
 
+pub fn clear_channel(server_url: &str, channel_id: &str) {
+    let payload = serde_json::json!({
+        "server_url": server_url,
+        "channel_id": channel_id,
+    })
+    .to_string();
+    let _ = super::jvm::call_activity(
+        "clearMessageNotifications",
+        "(Ljava/lang/String;)V",
+        Some(&payload),
+    );
+}
+
 pub fn take_navigation() -> Option<Navigation> {
     PENDING.lock().ok().and_then(|mut pending| {
         if pending.is_empty() {
