@@ -3073,7 +3073,7 @@ mod tests {
     }
 
     #[test]
-    fn sent_e_evento_live_da_mesma_mensagem_nao_duplicam() {
+    fn http_confirm_then_ws_event_converges_once() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
             ..Store::default()
@@ -3083,19 +3083,80 @@ mod tests {
         finish_snapshot(&mut store, ticket, Vec::new());
 
         let pending = store.push_pending("geral", "oi", None);
-        assert!(store.message(&pending).is_some());
-
-        store.apply(Update::Sent(Box::new(wire_message("m1", "geral", "oi"))));
+        store.apply(Update::SendConfirmed {
+            local_id: pending.clone(),
+            message: Box::new(wire_message("m1", "geral", "oi")),
+        });
         store.apply(Update::Event(Box::new(Event::Message(Box::new(
             wire_message("m1", "geral", "oi"),
         )))));
 
+        assert!(store.message(&pending).is_none());
         assert!(store.messages.iter().all(|message| !message.pending));
         assert_eq!(
             store
                 .messages
                 .iter()
                 .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn ws_event_then_http_confirm_converges_once() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading("geral");
+        finish_snapshot(&mut store, ticket, Vec::new());
+
+        let pending = store.push_pending("geral", "oi", None);
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "oi"),
+        )))));
+        store.apply(Update::SendConfirmed {
+            local_id: pending.clone(),
+            message: Box::new(wire_message("m1", "geral", "oi")),
+        });
+
+        assert!(store.message(&pending).is_none());
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn confirming_one_local_id_does_not_clear_another() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            me: "me".to_owned(),
+            ..Store::default()
+        };
+        let a = store.push_pending("geral", "hello", None);
+        let b = store.push_pending("geral", "hello", None);
+        assert_ne!(a, b);
+
+        store.apply(Update::SendConfirmed {
+            local_id: a.clone(),
+            message: Box::new(wire_message("server-a", "geral", "hello")),
+        });
+
+        assert!(store.message(&a).is_none());
+        assert!(store.message(&b).is_some_and(|message| message.pending));
+        assert_eq!(store.outgoing_state(&b), Some(OutgoingState::Queued));
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "server-a")
                 .count(),
             1
         );
