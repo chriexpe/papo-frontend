@@ -437,7 +437,7 @@ fn compact_pill(
     let speaker_budget = (max_width - controls_only - speaker_chrome).max(0.0);
     let max_speakers = (((speaker_budget + avatar_gap) / (avatar_size + avatar_gap)).floor()
         as usize)
-        .min(store.call.speakers.len());
+        .min(store.call.members().len().max(store.call.speakers.len()));
     let speakers_width = if max_speakers == 0 {
         0.0
     } else {
@@ -491,9 +491,16 @@ fn compact_pill(
         );
     }
 
+    let mut shown_people = store.call.speakers.clone();
+    for member in store.call.members() {
+        if !shown_people.iter().any(|id| id == &member.user_id) {
+            shown_people.push(member.user_id.clone());
+        }
+    }
+
     let mut x = rect.min.x + space::SM + avatar_size / 2.0;
     let ctx = ui.ctx().clone();
-    for user_id in store.call.speakers.iter().take(max_speakers) {
+    for user_id in shown_people.iter().take(max_speakers) {
         let person = store.member(user_id);
         let initials = person
             .map(crate::state::Member::initials)
