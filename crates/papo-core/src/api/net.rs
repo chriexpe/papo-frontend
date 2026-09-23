@@ -799,8 +799,8 @@ async fn worker(
             command = commands.recv() => {
                 let Some(command) = command else { break };
 
-                if let Command::NetworkHint(hint) = command {
-                    let action = network_gate.apply(hint);
+                if let Command::NetworkHint(hint) = &command {
+                    let action = network_gate.apply(*hint);
                     diagnostics_dirty = true;
                     match action {
                         NetworkAction::None => {}
