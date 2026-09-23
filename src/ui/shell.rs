@@ -3169,6 +3169,7 @@ fn message_body(
             };
 
             *buffer = buffer_copy;
+            reanchor_mentions(buffer, &mut state.editing_mentions);
 
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
@@ -4639,6 +4640,51 @@ fn empty_state(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
 // Caixa de mensagem
 // ---------------------------------------------------------------------------
 
+/// Reencontra no texto as menções escolhidas pelo autocomplete.
+///
+/// O offset salvo é só uma âncora. Se o usuário escreve/apaga antes da
+/// menção, escolhemos a ocorrência válida mais próxima do offset anterior.
+/// Isso preserva a identidade de nicknames duplicados sem pôr ids invisíveis
+/// dentro do EditText.
+fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
+    bindings.sort_by_key(|binding| binding.start);
+    let mut used = Vec::<usize>::new();
+    let mut kept = Vec::with_capacity(bindings.len());
+
+    for mut binding in bindings.drain(..) {
+        let pattern = format!("@{}", binding.label);
+        let best = text
+            .match_indices(&pattern)
+            .filter_map(|(byte, _)| {
+                let before_ok = byte == 0
+                    || text[..byte]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_whitespace() || c.is_ascii_punctuation());
+                let end = byte + pattern.len();
+                let after_ok = end == text.len()
+                    || text[end..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_whitespace() || c.is_ascii_punctuation());
+                if !before_ok || !after_ok {
+                    return None;
+                }
+                let start = text[..byte].chars().count();
+                (!used.contains(&start)).then_some(start)
+            })
+            .min_by_key(|start| start.abs_diff(binding.start));
+
+        if let Some(start) = best {
+            binding.start = start;
+            used.push(start);
+            kept.push(binding);
+        }
+    }
+
+    *bindings = kept;
+}
+
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(store: &Store, state: &mut UiState) {
     let visible = state.composer.trim().to_owned();
@@ -5283,6 +5329,8 @@ fn composer(
                 state.typed = response.changed() || ime_changed;
                 (response.has_focus(), caret_of(ui.ctx(), edit_id))
             };
+
+            reanchor_mentions(&state.composer, &mut state.composer_mentions);
 
             if keys.dismiss {
                 state.suggest = None;
