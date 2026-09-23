@@ -700,7 +700,7 @@ impl Store {
                 }
 
                 let project = !matches!(
-                    (&source, &mutation),
+                    (source, &mutation),
                     (
                         MutationSource::Live,
                         TimelineMutation::MessageUpsert(message)
@@ -2297,5 +2297,360 @@ mod tests {
             Some("canal-a".to_owned())
         );
         assert_eq!(segundo.channel_needing_messages(), None);
+    }
+
+    fn store_para_proveniencia() -> Store {
+        let mut store = Store {
+            selected_channel: "aberto".to_owned(),
+            me: "eu".to_owned(),
+            my_name: "Eu".to_owned(),
+            ..Store::default()
+        };
+        store.channels = vec![
+            Channel {
+                id: "aberto".to_owned(),
+                name: "Aberto".to_owned(),
+                kind: ChannelKind::Text,
+                topic: None,
+                position: 0,
+                unread: false,
+                mentions: 0,
+            },
+            Channel {
+                id: "outro".to_owned(),
+                name: "Outro".to_owned(),
+                kind: ChannelKind::Text,
+                topic: None,
+                position: 1,
+                unread: false,
+                mentions: 0,
+            },
+        ];
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading("outro");
+        finish_snapshot(&mut store, ticket, Vec::new());
+        store
+    }
+
+    fn mensagem_convertida(id: &str, channel_id: &str, content: &str) -> Message {
+        convert(wire_message(id, channel_id, content), "eu")
+    }
+
+    #[test]
+    fn live_aplica_unread_e_mencao_uma_vez() {
+        let mut store = store_para_proveniencia();
+        let message = wire_message("m-live", "outro", "<@eu> oi");
+
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(message.clone())))));
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(message)))));
+
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(channel.unread);
+        assert_eq!(channel.mentions, 1);
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "m-live")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconcile_converge_sem_parecer_atividade_nova() {
+        let mut store = store_para_proveniencia();
+        store.apply_mutation(
+            MutationSource::Reconcile,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-reconcile",
+                    "outro",
+                    "<@eu> antigo",
+                )),
+            },
+        );
+
+        assert!(store.message("m-reconcile").is_some());
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+    }
+
+    #[test]
+    fn cache_restore_nao_notifica_nao_journaliza_nem_fica_fresh() {
+        let mut store = store_para_proveniencia();
+        perder_continuidade(&mut store);
+        let _ticket = store.mark_loading("outro");
+        assert_eq!(store.timeline_status("outro"), TimelineStatus::Refreshing);
+        let journal_before = store
+            .mutation_journals
+            .get("outro")
+            .map(|journal| journal.entries.len())
+            .unwrap_or_default();
+
+        store.apply_mutation(
+            MutationSource::CacheRestore,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-cache",
+                    "outro",
+                    "<@eu> cache",
+                )),
+            },
+        );
+
+        assert!(store.message("m-cache").is_some());
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+        assert_eq!(store.timeline_status("outro"), TimelineStatus::Refreshing);
+        assert_eq!(
+            store
+                .mutation_journals
+                .get("outro")
+                .map(|journal| journal.entries.len())
+                .unwrap_or_default(),
+            journal_before
+        );
+    }
+
+    #[test]
+    fn local_nao_parece_atividade_remota() {
+        let mut store = store_para_proveniencia();
+        let pending_id = store.push_pending("outro", "<@eu> local", None);
+
+        assert!(store.message(&pending_id).is_some_and(|message| message.pending));
+        let channel = store.channel("outro").expect("canal existe");
+        assert!(!channel.unread);
+        assert_eq!(channel.mentions, 0);
+    }
+
+    #[test]
+    fn replay_reconcile_nao_rejournaliza_mutacao_live() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+        let barrier = store
+            .loading_channels
+            .get("geral")
+            .expect("refresh ativo")
+            .barrier_revision;
+
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id: "m1".to_owned(),
+            channel_id: "geral".to_owned(),
+            content: "live".to_owned(),
+        })));
+        let before = store
+            .mutation_journals
+            .get("geral")
+            .expect("journal existe")
+            .entries
+            .len();
+
+        store.replay_timeline_mutations("geral", barrier);
+
+        assert_eq!(
+            store
+                .mutation_journals
+                .get("geral")
+                .expect("journal existe")
+                .entries
+                .len(),
+            before
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("live")
+        );
+
+        finish_snapshot(
+            &mut store,
+            ticket,
+            vec![wire_message("m1", "geral", "snapshot")],
+        );
+        assert_eq!(
+            store.message("m1").map(|message| message.content.as_str()),
+            Some("live")
+        );
+    }
+
+    #[test]
+    fn mutacoes_duplicadas_convergem_sem_deriva() {
+        let mut store = store_com_mensagem("geral", "m1", "base");
+
+        for _ in 0..2 {
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessageEdit {
+                        id: "m1".to_owned(),
+                        content: "editado".to_owned(),
+                    },
+                },
+            );
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessagePinned {
+                        message_id: "m1".to_owned(),
+                        pinned: true,
+                    },
+                },
+            );
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::Reaction {
+                        message_id: "m1".to_owned(),
+                        emoji: Emoji::Unicode("👍".to_owned()),
+                        count: 3,
+                    },
+                },
+            );
+        }
+
+        let message = store.message("m1").expect("mensagem existe");
+        assert_eq!(message.content, "editado");
+        assert!(message.edited);
+        assert!(message.pinned);
+        assert_eq!(message.reactions.len(), 1);
+        assert_eq!(message.reactions[0].count, 3);
+
+        for _ in 0..2 {
+            store.apply_mutation(
+                MutationSource::Reconcile,
+                StoreMutation::Timeline {
+                    channel_id: Some("geral".to_owned()),
+                    mutation: TimelineMutation::MessageDelete {
+                        id: "m1".to_owned(),
+                    },
+                },
+            );
+        }
+        assert!(store.message("m1").is_none());
+    }
+
+    #[test]
+    fn rest_depois_ws_e_ws_depois_rest_convergem_em_uma_linha() {
+        let mut rest_primeiro = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        rest_primeiro.apply(Update::Connection(Connection::Online));
+        let ticket = rest_primeiro.mark_loading("geral");
+        finish_snapshot(
+            &mut rest_primeiro,
+            ticket,
+            vec![wire_message("m1", "geral", "rest")],
+        );
+        rest_primeiro.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "ws"),
+        )))));
+        assert_eq!(
+            rest_primeiro
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rest_primeiro.message("m1").map(|message| message.content.as_str()),
+            Some("ws")
+        );
+
+        let mut ws_primeiro = store_com_mensagem("geral", "base", "base");
+        perder_continuidade(&mut ws_primeiro);
+        let ticket = ws_primeiro.mark_loading("geral");
+        ws_primeiro.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "ws"),
+        )))));
+        finish_snapshot(
+            &mut ws_primeiro,
+            ticket,
+            vec![wire_message("m1", "geral", "rest")],
+        );
+        assert_eq!(
+            ws_primeiro
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+        assert_eq!(
+            ws_primeiro.message("m1").map(|message| message.content.as_str()),
+            Some("ws")
+        );
+    }
+
+    #[test]
+    fn sent_e_evento_live_da_mesma_mensagem_nao_duplicam() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+        let ticket = store.mark_loading("geral");
+        finish_snapshot(&mut store, ticket, Vec::new());
+
+        let pending = store.push_pending("geral", "oi", None);
+        assert!(store.message(&pending).is_some());
+
+        store.apply(Update::Sent(Box::new(wire_message("m1", "geral", "oi"))));
+        store.apply(Update::Event(Box::new(Event::Message(Box::new(
+            wire_message("m1", "geral", "oi"),
+        )))));
+
+        assert!(store.messages.iter().all(|message| !message.pending));
+        assert_eq!(
+            store
+                .messages
+                .iter()
+                .filter(|message| message.id == "m1")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fontes_de_stores_distintos_nao_vazam_efeitos() {
+        let mut a = store_para_proveniencia();
+        let mut b = store_para_proveniencia();
+
+        a.apply_mutation(
+            MutationSource::Live,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-a",
+                    "outro",
+                    "<@eu> a",
+                )),
+            },
+        );
+        b.apply_mutation(
+            MutationSource::CacheRestore,
+            StoreMutation::Timeline {
+                channel_id: Some("outro".to_owned()),
+                mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
+                    "m-b",
+                    "outro",
+                    "<@eu> b",
+                )),
+            },
+        );
+
+        assert_eq!(a.channel("outro").expect("canal").mentions, 1);
+        assert_eq!(b.channel("outro").expect("canal").mentions, 0);
+        assert!(a.message("m-b").is_none());
+        assert!(b.message("m-a").is_none());
     }
 }
