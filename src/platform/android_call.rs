@@ -80,6 +80,7 @@ static LAST_PRESENTATION: Mutex<Option<String>> = Mutex::new(None);
 static PIP_WINDOW: Mutex<usize> = Mutex::new(0);
 static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
+static PIP_TARGET_FRAME_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 pub fn bind(
     commands: mpsc::Sender<CallCommand>,
@@ -112,6 +113,9 @@ pub fn clear() {
     }
     if let Ok(mut local) = PIP_LOCAL_ID.lock() {
         *local = None;
+    }
+    if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
+        *seen = None;
     }
 }
 
@@ -234,14 +238,37 @@ pub fn set_pip_speaker(name: &str) {
 
 pub fn set_pip_target(user_id: Option<&str>) {
     if let Ok(mut target) = PIP_TARGET.lock() {
-        *target = user_id.map(str::to_owned);
+        let next = user_id.map(str::to_owned);
+        if *target != next {
+            *target = next;
+            if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
+                *seen = None;
+            }
+        }
     }
 }
 
+/// Aceita sempre o vídeo do speaker escolhido. Se ele não publica vídeo,
+/// depois de 700 ms deixa outro participante preencher o PiP enquanto o nome
+/// do speaker continua correto no overlay.
 pub fn pip_wants(publisher: &str) -> bool {
-    PIP_TARGET
+    let target = PIP_TARGET.lock().ok().and_then(|target| target.clone());
+    let Some(target) = target else {
+        return true;
+    };
+
+    if target == publisher {
+        if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
+            *seen = Some(std::time::Instant::now());
+        }
+        return true;
+    }
+
+    PIP_TARGET_FRAME_AT
         .lock()
-        .map(|target| target.as_deref().is_none_or(|wanted| wanted == publisher))
+        .map(|seen| {
+            seen.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(700))
+        })
         .unwrap_or(true)
 }
 
@@ -250,7 +277,13 @@ pub fn pip_wants_local() -> bool {
     let local = PIP_LOCAL_ID.lock().ok().and_then(|local| local.clone());
     match target {
         None => true,
-        Some(target) => local.as_deref() == Some(target.as_str()),
+        Some(target) if local.as_deref() == Some(target.as_str()) => {
+            if let Ok(mut seen) = PIP_TARGET_FRAME_AT.lock() {
+                *seen = Some(std::time::Instant::now());
+            }
+            true
+        }
+        Some(_) => false,
     }
 }
 
