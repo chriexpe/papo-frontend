@@ -1208,10 +1208,7 @@ impl Store {
                     MutationSource::Reconcile,
                     StoreMutation::Timeline {
                         channel_id: Some(updated.channel_id.clone()),
-                        mutation: TimelineMutation::MessageEdit {
-                            id: updated.id,
-                            content: updated.content,
-                        },
+                        mutation: TimelineMutation::MessageUpsert(updated),
                     },
                 );
             }
