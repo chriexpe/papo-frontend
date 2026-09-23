@@ -4376,10 +4376,10 @@ fn context_menu(
             }
             MessageCommand::Reply => state.start_reply(message.id.clone()),
             MessageCommand::Edit => {
-                state.editing = Some((
-                    message.id.clone(),
-                    store.display_mentions(&message.content),
-                ));
+                let (content, bindings) =
+                    store.display_mentions_with_bindings(&message.content);
+                state.editing = Some((message.id.clone(), content));
+                state.editing_mentions = bindings;
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
