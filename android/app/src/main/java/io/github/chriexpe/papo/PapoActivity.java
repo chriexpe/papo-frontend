@@ -129,7 +129,7 @@ public class PapoActivity extends GameActivity {
         pipLayer.setVisibility(View.GONE);
 
         pipSurface = new SurfaceView(this);
-        pipSurface.setZOrderOnTop(true);
+        pipSurface.setZOrderMediaOverlay(true);
         pipSurface.getHolder().setFormat(android.graphics.PixelFormat.RGBA_8888);
         pipSurface.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
