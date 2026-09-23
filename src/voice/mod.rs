@@ -228,7 +228,7 @@ impl Call {
 
     /// Callback instalado no Net enquanto esta call existe. SDP/ICE que
     /// chegam do socket entram na thread do GStreamer sem esperar a UI.
-    pub fn event_callback(&self) -> EventCallback {
+    pub fn event_callback(&self, me: String) -> EventCallback {
         let channel_id = self.channel_id.clone();
         let commands = self.commands.clone();
         Arc::new(move |event| match event {
@@ -252,6 +252,28 @@ impl Call {
                     candidate: candidate.clone(),
                     sdp_mline_index: sdp_mline_index.unwrap_or(0),
                 });
+            }
+            #[cfg(target_os = "android")]
+            Event::ActiveSpeakers {
+                channel_id: event_channel,
+                user_ids,
+            } if event_channel == &channel_id => {
+                crate::platform::android_call::set_pip_target(user_ids.first().map(String::as_str));
+            }
+            #[cfg(target_os = "android")]
+            Event::VoiceLeft {
+                channel_id: event_channel,
+                user_id,
+            } if event_channel == &channel_id && user_id == &me => {
+                crate::platform::android_call::call_ended_from_network();
+            }
+            #[cfg(target_os = "android")]
+            Event::Failure { code, .. }
+                if code
+                    .as_deref()
+                    .is_some_and(|code| crate::state::call::fatal(code, false)) =>
+            {
+                crate::platform::android_call::call_ended_from_network();
             }
             _ => {}
         })
