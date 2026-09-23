@@ -70,6 +70,31 @@ struct Running {
     key: ReconcileKey,
     owner: TaskOwner,
     request_id: Option<u64>,
+    priority: ReconcilePriority,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiagnosticJobState {
+    Queued,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiagnosticJob {
+    pub key: ReconcileKey,
+    pub priority: ReconcilePriority,
+    pub owner: TaskOwner,
+    pub request_id: Option<u64>,
+    pub state: DiagnosticJobState,
+    pub retry_blocked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchedulerDiagnostics {
+    pub queued: usize,
+    pub running: usize,
+    pub capacity: usize,
+    pub jobs: Vec<DiagnosticJob>,
 }
 
 #[derive(Debug)]
@@ -93,6 +118,7 @@ pub(crate) struct SubmitResult {
 }
 
 pub(crate) struct ReconcileScheduler {
+    scope: String,
     queued: Vec<Queued>,
     running: HashMap<u64, Running>,
     active_by_key: HashMap<ReconcileKey, u64>,
@@ -105,8 +131,13 @@ pub(crate) struct ReconcileScheduler {
 
 impl ReconcileScheduler {
     pub fn new(max_in_flight: usize) -> Self {
+        Self::with_scope(max_in_flight, "scheduler")
+    }
+
+    pub fn with_scope(max_in_flight: usize, scope: impl Into<String>) -> Self {
         assert!(max_in_flight > 0);
         Self {
+            scope: scope.into(),
             queued: Vec::new(),
             running: HashMap::new(),
             active_by_key: HashMap::new(),
@@ -123,6 +154,34 @@ impl ReconcileScheduler {
         SchedulerStats {
             queued: self.queued.len(),
             in_flight: self.running.len(),
+        }
+    }
+
+    pub fn diagnostics(&self, now: Instant) -> SchedulerDiagnostics {
+        let mut jobs = Vec::with_capacity(self.queued.len() + self.running.len());
+        jobs.extend(self.queued.iter().map(|queued| DiagnosticJob {
+            key: queued.request.key(),
+            priority: queued.request.priority,
+            owner: queued.request.owner,
+            request_id: queued.request.request_id(),
+            state: DiagnosticJobState::Queued,
+            retry_blocked: queued.not_before > now,
+        }));
+        jobs.extend(self.running.values().map(|running| DiagnosticJob {
+            key: running.key.clone(),
+            priority: running.priority,
+            owner: running.owner,
+            request_id: running.request_id,
+            state: DiagnosticJobState::Running,
+            retry_blocked: false,
+        }));
+        jobs.sort_by(|a, b| format!("{:?}", a.key).cmp(&format!("{:?}", b.key)));
+
+        SchedulerDiagnostics {
+            queued: self.queued.len(),
+            running: self.running.len(),
+            capacity: self.max_in_flight,
+            jobs,
         }
     }
 
@@ -144,7 +203,7 @@ impl ReconcileScheduler {
                     sequence,
                     not_before,
                 };
-                log::debug!("reconcile scheduler: superseded queued {key:?}");
+                log::debug!("reconcile {}: superseded queued {key:?}", self.scope);
                 return SubmitResult {
                     accepted: true,
                     abort_run_ids: Vec::new(),
@@ -153,7 +212,7 @@ impl ReconcileScheduler {
 
             if Self::equivalent(&request, &queued.request) {
                 queued.request.priority = queued.request.priority.max(request.priority);
-                log::debug!("reconcile scheduler: coalesced queued {key:?}");
+                log::debug!("reconcile {}: coalesced queued {key:?}", self.scope);
             }
             return SubmitResult::default();
         }
@@ -168,7 +227,7 @@ impl ReconcileScheduler {
                 self.active_by_key.remove(&key);
                 self.running.remove(&run_id);
                 self.enqueue(request, now);
-                log::debug!("reconcile scheduler: superseded running {key:?} run={run_id}");
+                log::debug!("reconcile {}: superseded running {key:?} run={run_id}", self.scope);
                 return SubmitResult {
                     accepted: true,
                     abort_run_ids: vec![run_id],
@@ -176,7 +235,7 @@ impl ReconcileScheduler {
             }
 
             if Self::equivalent_running(&request, running) {
-                log::debug!("reconcile scheduler: coalesced running {key:?} run={run_id}");
+                log::debug!("reconcile {}: coalesced running {key:?} run={run_id}", self.scope);
             }
             return SubmitResult::default();
         }
@@ -197,7 +256,7 @@ impl ReconcileScheduler {
             sequence: self.next_sequence,
             not_before,
         });
-        log::debug!("reconcile scheduler: queued {key:?}");
+        log::debug!("reconcile {}: queued {key:?}", self.scope);
     }
 
     pub fn start_ready(&mut self, now: Instant) -> Vec<StartedReconcile> {
@@ -219,9 +278,10 @@ impl ReconcileScheduler {
                     key: key.clone(),
                     owner: queued.request.owner,
                     request_id: queued.request.request_id(),
+                    priority: queued.request.priority,
                 },
             );
-            log::debug!("reconcile scheduler: started {key:?} run={run_id}");
+            log::debug!("reconcile {}: started {key:?} run={run_id}", self.scope);
             started.push(StartedReconcile {
                 run_id,
                 request: queued.request,
@@ -296,7 +356,8 @@ impl ReconcileScheduler {
             }
         }
         log::debug!(
-            "reconcile scheduler: completed {:?} run={} current={} success={}",
+            "reconcile {}: completed {:?} run={} current={} success={}",
+            self.scope,
             running.key,
             run_id,
             current,
@@ -569,6 +630,55 @@ mod tests {
 
         finish_tx.send(()).expect("release reconcile");
         assert!(tasks.join_next().await.is_some());
+    }
+
+    #[test]
+    fn diagnostics_project_queue_running_and_retry_gate() {
+        let now = Instant::now();
+        let mut scheduler = ReconcileScheduler::new(1);
+        scheduler.submit(channel("a", 1, ReconcilePriority::Visible), now);
+        scheduler.submit(channel("b", 2, ReconcilePriority::Background), now);
+
+        let queued = scheduler.diagnostics(now);
+        assert_eq!(queued.queued, 2);
+        assert_eq!(queued.running, 0);
+        assert_eq!(queued.capacity, 1);
+
+        let run = scheduler.start_ready(now).pop().expect("run");
+        let active = scheduler.diagnostics(now);
+        assert_eq!(active.queued, 1);
+        assert_eq!(active.running, 1);
+        assert_eq!(
+            active.jobs.iter().filter(|job| job.state == DiagnosticJobState::Running).count(),
+            1
+        );
+
+        assert!(scheduler.complete(run.run_id, false, now));
+        scheduler.submit(channel("a", 3, ReconcilePriority::Visible), now);
+        let gated = scheduler.diagnostics(now);
+        assert!(gated.jobs.iter().any(|job| {
+            job.key == ReconcileKey::ChannelHistory("a".to_owned()) && job.retry_blocked
+        }));
+    }
+
+    #[test]
+    fn diagnostics_follow_single_flight_supersession_and_invalidation() {
+        let now = Instant::now();
+        let mut scheduler = ReconcileScheduler::new(1);
+        scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now);
+        scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now);
+        assert_eq!(scheduler.diagnostics(now).jobs.len(), 1);
+
+        let first = scheduler.start_ready(now).pop().expect("first");
+        scheduler.submit(channel("geral", 11, ReconcilePriority::Visible), now);
+        let superseded = scheduler.diagnostics(now);
+        assert_eq!(superseded.jobs.len(), 1);
+        assert_eq!(superseded.jobs[0].request_id, Some(11));
+        assert_eq!(superseded.jobs[0].state, DiagnosticJobState::Queued);
+        assert!(!scheduler.complete(first.run_id, true, now));
+
+        scheduler.invalidate_owner(TaskOwner { generation: 4, session_epoch: 1 });
+        assert!(scheduler.diagnostics(now).jobs.is_empty());
     }
 
     #[test]
