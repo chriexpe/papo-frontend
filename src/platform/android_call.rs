@@ -27,6 +27,7 @@ struct ANativeWindowBuffer {
     reserved: [u32; 6],
 }
 
+#[link(name = "android")]
 unsafe extern "C" {
     fn ANativeWindow_fromSurface(
         env: *mut jni::sys::JNIEnv,
@@ -105,6 +106,12 @@ pub fn bind(
 pub fn clear() {
     if let Ok(mut slot) = CONTROL.lock() {
         *slot = None;
+    }
+    if let Ok(mut target) = PIP_TARGET.lock() {
+        *target = None;
+    }
+    if let Ok(mut local) = PIP_LOCAL_ID.lock() {
+        *local = None;
     }
 }
 
@@ -294,23 +301,25 @@ pub fn present_pip_frame(frame: &Frame) {
 
         let dst = buffer.bits.cast::<u8>();
         let stride = buffer.stride as usize;
+        let out_w = buffer.width.max(1) as usize;
+        let out_h = buffer.height.max(1) as usize;
 
         // Fundo preto, inclusive nas barras de letterbox.
-        for y in 0..PIP_HEIGHT {
-            std::ptr::write_bytes(dst.add(y * stride * 4), 0, PIP_WIDTH * 4);
+        for y in 0..out_h {
+            std::ptr::write_bytes(dst.add(y * stride * 4), 0, out_w * 4);
         }
 
         let source_ratio = frame.width as f32 / frame.height as f32;
-        let target_ratio = PIP_WIDTH as f32 / PIP_HEIGHT as f32;
+        let target_ratio = out_w as f32 / out_h as f32;
         let (draw_w, draw_h) = if source_ratio > target_ratio {
-            (PIP_WIDTH, ((PIP_WIDTH as f32) / source_ratio).round() as usize)
+            (out_w, ((out_w as f32) / source_ratio).round() as usize)
         } else {
-            (((PIP_HEIGHT as f32) * source_ratio).round() as usize, PIP_HEIGHT)
+            (((out_h as f32) * source_ratio).round() as usize, out_h)
         };
-        let draw_w = draw_w.max(1).min(PIP_WIDTH);
-        let draw_h = draw_h.max(1).min(PIP_HEIGHT);
-        let x0 = (PIP_WIDTH - draw_w) / 2;
-        let y0 = (PIP_HEIGHT - draw_h) / 2;
+        let draw_w = draw_w.max(1).min(out_w);
+        let draw_h = draw_h.max(1).min(out_h);
+        let x0 = (out_w - draw_w) / 2;
+        let y0 = (out_h - draw_h) / 2;
 
         // Nearest-neighbour é suficiente para uma janela PiP pequena e evita
         // criar outro buffer/Bitmap em cada quadro.
@@ -402,6 +411,7 @@ pub extern "system" fn Java_io_github_chriexpe_papo_CallService_nativeCallAction
         // o join tiver alcançado o socket no meio da corrida.
         drop(slot);
         push_action(UiAction::Hangup);
+        call_ended_from_network();
         return;
     }
 
