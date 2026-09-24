@@ -29,6 +29,9 @@ pub mod android_network;
 /// Process-wide foreground/headless runtime exclusion.
 #[cfg(any(target_os = "android", test))]
 pub mod runtime_lease;
+/// `onTrimMemory` -> latch coalescido -> política de mídia do PR36.
+#[cfg(any(target_os = "android", test))]
+pub mod memory_pressure;
 /// Foreground service, lifecycle e Picture-in-Picture da call.
 #[cfg(target_os = "android")]
 pub mod android_call;

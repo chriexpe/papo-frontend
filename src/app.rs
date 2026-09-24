@@ -1639,6 +1639,36 @@ impl PapoApp {
         }
     }
 
+    /// Aplica o nível a **todos** os `MediaStore` — o da tela e o de cada
+    /// servidor guardado. Um servidor que não está visível não pode escapar
+    /// do trim só porque outro está na frente.
+    #[cfg(target_os = "android")]
+    fn trim_all_media(&mut self, level: crate::media::TrimLevel) {
+        use crate::platform::memory_pressure::TrimTarget;
+        crate::platform::memory_pressure::trim_all(
+            level,
+            std::iter::once(&mut self.ui.media as &mut dyn TrimTarget).chain(
+                self.workspaces
+                    .iter_mut()
+                    .map(|ws| &mut ws.stash.media as &mut dyn TrimTarget),
+            ),
+        );
+    }
+
+    /// Recolhe a pressão de memória publicada pelo `onTrimMemory` e aplica a
+    /// política de mídia do PR36. Roda na thread normal do Papo, nunca na do
+    /// Java, e cobre ativo e guardados de uma vez.
+    #[cfg(target_os = "android")]
+    fn pump_memory_pressure(&mut self, ctx: &egui::Context) {
+        let Some(level) = crate::platform::memory_pressure::take_pending() else {
+            return;
+        };
+        self.trim_all_media(level);
+        // As texturas que saíram ainda estavam na tela deste quadro; o próximo
+        // desenha o estado vazio e reconstrói o que estiver visível.
+        ctx.request_repaint();
+    }
+
     /// Lê o que chegou de cada servidor. Todos são atendidos no mesmo
     /// quadro: um servidor que não está na tela ainda precisa contar as
     /// menções e disparar a notificação.
@@ -2290,6 +2320,9 @@ impl eframe::App for PapoApp {
             if self.settings.notifications {
                 crate::platform::android_message::ensure_permission();
             }
+            // A pressão de memória entra pelo JNI e é aplicada aqui, na thread
+            // normal — não dentro do `shell::draw`.
+            self.pump_memory_pressure(&ctx);
         }
         self.attach_window(frame);
 
