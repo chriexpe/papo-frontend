@@ -361,6 +361,8 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
                 Ok(bytes) => {
                     if let Err(error) = atomic_cache_write(&path, &bytes).await {
                         log::warn!("remote-media {}: cache write: {error}", safe_resource_id(&id));
+                    } else {
+                        let _ = tokio::task::spawn_blocking(|| sweep_cache(&cache_root())).await;
                     }
                     decode(key, &bytes, FULL_MAX)
                 }
@@ -1234,6 +1236,7 @@ mod lifecycle_tests {
     #[derive(Default)]
     struct FakeBackend {
         opens: AtomicUsize,
+        sources: std::sync::Mutex<Vec<DirectMediaSource>>,
     }
 
     impl PlaybackBackend for FakeBackend {
@@ -1241,11 +1244,12 @@ mod lifecycle_tests {
 
         fn open(
             &self,
-            _source: DirectMediaSource,
+            source: DirectMediaSource,
             _kind: DirectMediaKind,
             _repaint: egui::Context,
         ) -> Option<DirectMediaPlayer> {
             self.opens.fetch_add(1, Ordering::SeqCst);
+            self.sources.lock().unwrap().push(source);
             Some(DirectMediaPlayer::new(Box::new(FakePlayer::default())))
         }
     }
@@ -1374,6 +1378,30 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn remote_video_goes_directly_to_backend_as_uri() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(Arc::clone(&backend), 4, Duration::from_secs(60));
+        let ctx = egui::Context::default();
+        let url = "https://example.com/video.mp4?token=1";
+        let key = remote_player_key(url).unwrap();
+
+        assert!(media.start_remote_player(&key, url, &ctx).is_some());
+        assert_eq!(backend.opens.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            backend.sources.lock().unwrap().as_slice(),
+            &[DirectMediaSource::RemoteUri(url.to_owned())]
+        );
+    }
+
+    #[test]
+    fn equivalent_remote_urls_share_player_identity() {
+        assert_eq!(
+            remote_player_key("https://EXAMPLE.com:443/video.mp4?q=1"),
+            remote_player_key("https://example.com/video.mp4?q=1")
+        );
+    }
+
+    #[test]
     fn same_canonical_remote_url_has_same_disk_identity() {
         let a = papo_core::preview::canonical_url("https://EXAMPLE.com:443/a?q=1").unwrap();
         let b = papo_core::preview::canonical_url("https://example.com/a?q=1").unwrap();
@@ -1420,6 +1448,31 @@ mod limpeza {
 
         assert!(!sobra.exists(), "o arquivo parcial devia ter saído");
         assert!(bom.exists(), "o arquivo inteiro devia ter ficado");
+    }
+
+    #[test]
+    fn remoto_parcial_nunca_vira_objeto_valido() {
+        let raiz = raiz("remote-parcial");
+        let parcial = raiz.join("remote/abc.parcial");
+        escreve(&parcial, 128, HORA);
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(!parcial.exists());
+    }
+
+    #[test]
+    fn remoto_entra_no_teto_global_do_cache() {
+        let raiz = raiz("remote-teto");
+        let antigo = raiz.join("remote/antigo");
+        let recente = raiz.join("remote/recente");
+        escreve(&antigo, 1000, HORA * 2);
+        escreve(&recente, 1000, HORA);
+
+        sweep_cache_with(&raiz, 1000, HORA * 24, HORA * 24);
+
+        assert!(!antigo.exists());
+        assert!(recente.exists());
     }
 
     #[test]
