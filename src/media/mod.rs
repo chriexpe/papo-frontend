@@ -203,7 +203,7 @@ async fn worker(
     // Uma única varrida por processo. Cada workspace tem seu próprio worker
     // de mídia, mas todos compartilham a mesma raiz/budget em disco.
     STARTUP_CACHE_SWEEP.call_once(|| {
-        tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+        let _ = tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
     });
 
     while let Some(request) = requests.recv().await {
@@ -445,7 +445,7 @@ async fn cached_fetch(api: &Api, path: &Path, route: &str) -> Result<Vec<u8>, St
         let _ = tokio::fs::create_dir_all(parent).await;
     }
     if tokio::fs::write(path, &bytes).await.is_ok() {
-        tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+        let _ = tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
     }
     Ok(bytes)
 }
@@ -463,7 +463,7 @@ async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> 
     api.fetch_to_file(route, path)
         .await
         .map_err(|error| error.to_string())?;
-    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    let _ = tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
     Ok(())
 }
 
