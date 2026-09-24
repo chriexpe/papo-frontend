@@ -1373,10 +1373,14 @@ async fn registry_oembed_endpoint(
         if !safe_remote_url(endpoint.as_str()) {
             continue;
         }
+        let has_format = endpoint
+            .query_pairs()
+            .any(|(key, _)| key.eq_ignore_ascii_case("format"))
+            || raw_endpoint.contains(".json");
         {
             let mut query = endpoint.query_pairs_mut();
             query.append_pair("url", &source);
-            if !endpoint.as_str().contains("format=") && !raw_endpoint.contains(".json") {
+            if !has_format {
                 query.append_pair("format", "json");
             }
         }
