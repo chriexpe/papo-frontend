@@ -33,11 +33,7 @@ static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 pub fn set_root(root: PathBuf) {
     if let Some(existing) = ROOT.get() {
         if existing != &root {
-            log::error!(
-                "app-private root divergiu: existente={} novo={}",
-                existing.display(),
-                root.display()
-            );
+            log::error!("app-private root divergiu entre entradas do processo");
         }
         return;
     }
