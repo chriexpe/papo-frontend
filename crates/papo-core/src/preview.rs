@@ -1519,6 +1519,106 @@ mod tests {
         assert_eq!(preview.embed_url.as_deref(), Some("https://video.example/embed/1"));
     }
 
+    fn isolated_coordinator() -> (PreviewCoordinator, mpsc::Receiver<String>) {
+        let (queue, receiver) = mpsc::channel(8);
+        let inner = Arc::new(Inner {
+            db: Arc::new(ClientDb::open(None)),
+            entries: Mutex::new(HashMap::new()),
+            wake: Arc::new(|| {}),
+            stats: PreviewStats::default(),
+        });
+        (PreviewCoordinator { inner, queue }, receiver)
+    }
+
+    fn ready_preview(url: &str) -> ResolvedPreview {
+        ResolvedPreview {
+            source_url: url.to_owned(),
+            kind: PreviewKind::Link,
+            media_url: None,
+            image_url: Some("https://cdn.example/cover.png".to_owned()),
+            embed_url: None,
+            title: Some("Preview".to_owned()),
+            description: None,
+            provider_name: Some("example".to_owned()),
+        }
+    }
+
+    #[test]
+    fn repeated_url_is_single_flight_before_worker_runs() {
+        let (coordinator, mut queue) = isolated_coordinator();
+        let url = "https://example.com/post?keep=1";
+        assert_eq!(coordinator.get_or_request(url), Some(PreviewState::Loading));
+        assert_eq!(coordinator.get_or_request(url), Some(PreviewState::Loading));
+        assert_eq!(
+            queue.try_recv().expect("one queued resolution"),
+            canonical_url(url).unwrap()
+        );
+        assert!(queue.try_recv().is_err(), "same URL must not queue twice");
+    }
+
+    #[test]
+    fn stale_ready_is_served_while_exactly_one_refresh_is_queued() {
+        let (coordinator, mut queue) = isolated_coordinator();
+        let url = canonical_url("https://example.com/stale").unwrap();
+        coordinator.inner.entries.lock().unwrap().insert(
+            url.clone(),
+            MemoryEntry {
+                state: PreviewState::Ready(ready_preview(&url)),
+                resolved_at: now_millis() - READY_TTL_MS - 1,
+                retry_after: None,
+                in_flight: false,
+            },
+        );
+
+        assert!(matches!(
+            coordinator.get_or_request(&url),
+            Some(PreviewState::Ready(_))
+        ));
+        assert!(matches!(
+            coordinator.get_or_request(&url),
+            Some(PreviewState::Ready(_))
+        ));
+        assert_eq!(queue.try_recv().unwrap(), url);
+        assert!(queue.try_recv().is_err());
+    }
+
+    #[test]
+    fn retry_deadline_suppresses_then_reenables_resolution() {
+        let (coordinator, mut queue) = isolated_coordinator();
+        let url = canonical_url("https://example.com/retry").unwrap();
+        let future = now_millis() + 60_000;
+        coordinator.inner.entries.lock().unwrap().insert(
+            url.clone(),
+            MemoryEntry {
+                state: PreviewState::RetryLater {
+                    retry_after: future,
+                },
+                resolved_at: now_millis(),
+                retry_after: Some(future),
+                in_flight: false,
+            },
+        );
+
+        assert!(matches!(
+            coordinator.get_or_request(&url),
+            Some(PreviewState::RetryLater { .. })
+        ));
+        assert!(queue.try_recv().is_err());
+
+        {
+            let mut entries = coordinator.inner.entries.lock().unwrap();
+            let entry = entries.get_mut(&url).unwrap();
+            let past = now_millis() - 1;
+            entry.state = PreviewState::RetryLater { retry_after: past };
+            entry.retry_after = Some(past);
+        }
+        assert!(matches!(
+            coordinator.get_or_request(&url),
+            Some(PreviewState::RetryLater { .. })
+        ));
+        assert_eq!(queue.try_recv().unwrap(), url);
+    }
+
     #[test]
     fn discovers_oembed_without_provider_hardcoding() {
         let base = Url::parse("https://video.example/watch/1").unwrap();
