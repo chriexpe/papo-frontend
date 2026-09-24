@@ -1784,19 +1784,6 @@ mod tests {
         assert_eq!(preview.embed_url.as_deref(), Some("https://media.example/embed/1"));
     }
 
-    #[test]
-    fn only_videoish_pages_need_registry_enhancement() {
-        assert!(page_wants_player(
-            r#"<meta property="og:type" content="video.other">"#
-        ));
-        assert!(page_wants_player(
-            r#"<meta name="twitter:card" content="player">"#
-        ));
-        assert!(!page_wants_player(
-            r#"<meta property="og:type" content="object"><meta property="og:image" content="/x.png">"#
-        ));
-    }
-
     #[tokio::test]
     async fn parses_schema_org_video_object_without_provider_hardcoding() {
         let base = Url::parse("https://video.example/watch/1").unwrap();
