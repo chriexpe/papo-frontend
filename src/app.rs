@@ -731,11 +731,14 @@ impl PapoApp {
                 }
                 workspaces[index].label = label.to_owned();
             }
-            crate::state::demo::seed(&mut workspaces[active].runtime.store);
+            let active_key = workspaces[active].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[active].runtime.store, &active_key);
             // Os outros ficam com conversa por ler, para o marcador e o
             // contador aparecerem.
-            crate::state::demo::seed(&mut workspaces[1].runtime.store);
-            crate::state::demo::seed(&mut workspaces[2].runtime.store);
+            let second_key = workspaces[1].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[1].runtime.store, &second_key);
+            let third_key = workspaces[2].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[2].runtime.store, &third_key);
             workspaces[1].runtime.store.read_marks.clear();
             workspaces[2].runtime.store.read_marks.clear();
         }
