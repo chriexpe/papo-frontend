@@ -13,6 +13,7 @@ pub struct Notification {
     pub tag: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Notifier {
     requests: mpsc::Sender<Notification>,
 }
