@@ -1056,6 +1056,7 @@ impl PapoApp {
             fresh.stash.swap(&mut self.ui);
         }
         self.workspaces[index] = fresh;
+        self.sync_notification_contexts();
     }
 
     /// Passa a mostrar outro servidor. Os dois seguem conectados; o que troca
@@ -1123,6 +1124,7 @@ impl PapoApp {
         self.settings.active = self.active;
         self.settings.server_url = self.workspaces[self.active].runtime.url.clone();
         self.workspaces[self.active].stash.swap(&mut self.ui);
+        self.sync_notification_contexts();
         ctx.request_repaint();
     }
 
@@ -1165,6 +1167,7 @@ impl PapoApp {
         if was_active {
             self.workspaces[active].stash.swap(&mut self.ui);
         }
+        self.sync_notification_contexts();
         ctx.request_repaint();
     }
 
