@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -109,6 +109,28 @@ const MIGRATIONS: &[Migration] = &[Migration {
          )",
         "CREATE INDEX notification_ledger_retention_idx
              ON notification_ledger(server_key, owner_user_id, handled_at DESC)",
+    ],
+}, Migration {
+    version: 4,
+    statements: &[
+        "CREATE TABLE preview_cache (
+             url_key TEXT PRIMARY KEY,
+             source_url TEXT NOT NULL,
+             state TEXT NOT NULL,
+             kind TEXT,
+             media_url TEXT,
+             image_url TEXT,
+             embed_url TEXT,
+             title TEXT,
+             description TEXT,
+             provider_name TEXT,
+             resolved_at INTEGER NOT NULL,
+             retry_after INTEGER,
+             failure_class TEXT,
+             last_used_at INTEGER NOT NULL
+         )",
+        "CREATE INDEX preview_cache_retention_idx
+             ON preview_cache(last_used_at DESC, url_key DESC)",
     ],
 }];
 

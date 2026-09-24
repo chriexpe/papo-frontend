@@ -642,6 +642,11 @@ impl PapoApp {
         // Um banco de cache por processo. Abrir aqui deixa o restore
         // acontecer antes de qualquer worker de rede subir.
         let cache = crate::platform::client_db::get();
+        let preview_ctx = cc.egui_ctx.clone();
+        let previews = std::sync::Arc::new(papo_core::preview::PreviewCoordinator::new(
+            std::sync::Arc::clone(&cache),
+            std::sync::Arc::new(move || preview_ctx.request_repaint()),
+        ));
 
         #[cfg(target_os = "linux")]
         let notifier = Notifier::spawn();
@@ -737,6 +742,7 @@ impl PapoApp {
 
         // O servidor que está na tela entrega o seu guardado para a interface.
         let mut ui_state = UiState::default();
+        ui_state.previews = Some(std::sync::Arc::clone(&previews));
         ui_state.show_members = settings.show_members;
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
@@ -2122,6 +2128,12 @@ impl PapoApp {
             })
             .collect();
 
+        let preview_diagnostics = self
+            .ui
+            .previews
+            .as_ref()
+            .map(|preview| preview.stats())
+            .unwrap_or_default();
         let actions = {
             let ws = &self.workspaces[self.active];
             let mut data = crate::ui::settings::Context {
@@ -2144,6 +2156,7 @@ impl PapoApp {
                     DownloadMode::Ask => None,
                 },
                 diagnostics: &diagnostics,
+                preview: preview_diagnostics,
             };
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
