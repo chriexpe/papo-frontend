@@ -38,9 +38,17 @@ final class MessageNotifications {
     }
 
     static boolean available(Context context) {
-        return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
-                || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        == PackageManager.PERMISSION_GRANTED;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            return false;
+        }
+        final NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null || !manager.areNotificationsEnabled()) {
+            return false;
+        }
+        final NotificationChannel channel = manager.getNotificationChannel(CHANNEL_ID);
+        return channel == null || channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
     }
 
     static void show(Context context, String payload) {
