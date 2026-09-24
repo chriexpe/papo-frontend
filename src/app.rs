@@ -1072,6 +1072,19 @@ impl PapoApp {
             return;
         }
         self.persist_active_drafts(true);
+        // Nunca materializa um rascunho guardado de outra conta, nem por um
+        // quadro enquanto o load da conta atual ainda não aconteceu.
+        let target_owner = self.workspaces[index].runtime.store.me.clone();
+        if target_owner.is_empty()
+            || self.workspaces[index].stash.drafts.owner() != Some(target_owner.as_str())
+        {
+            let stash = &mut self.workspaces[index].stash;
+            stash.composer.clear();
+            stash.composer_mentions.clear();
+            stash.replying = None;
+            stash.reply_notify = self.settings.reply_notifications;
+            stash.drafts = Default::default();
+        }
         // O que estava na tela recolhe o seu; o novo entrega o dele.
         let previous = self.active;
         self.workspaces[previous].stash.swap(&mut self.ui);
