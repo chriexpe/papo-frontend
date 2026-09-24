@@ -3123,7 +3123,7 @@ async fn load_profiles(
     if user_ids.is_empty() {
         return Ok(());
     }
-    let profiles = api.profiles(user_ids).await?;
+    let profiles = with_retry(|| api.profiles(user_ids.clone())).await?;
     publish(updates, wake, Update::Profiles(profiles));
     Ok(())
 }

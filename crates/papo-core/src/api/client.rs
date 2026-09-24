@@ -94,13 +94,10 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 impl ApiError {
     /// Falha que vale a pena repetir sem mudar a requisição: ritmo (429) ou
-    /// transporte. A reconciliação usa isto para se repetir em vez de engolir
-    /// o erro como sucesso.
+    /// transporte. Um corpo JSON que não decodifica é incompatibilidade, não
+    /// instabilidade — repetir só repete a mesma falha.
     pub fn is_transient(&self) -> bool {
-        matches!(
-            self,
-            Self::TooManyRequests(_) | Self::Network(_) | Self::Decode(_)
-        )
+        matches!(self, Self::TooManyRequests(_) | Self::Network(_))
     }
 }
 
