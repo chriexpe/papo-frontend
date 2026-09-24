@@ -2128,6 +2128,12 @@ impl PapoApp {
             })
             .collect();
 
+        let preview_diagnostics = self
+            .ui
+            .previews
+            .as_ref()
+            .map(|preview| preview.stats())
+            .unwrap_or_default();
         let actions = {
             let ws = &self.workspaces[self.active];
             let mut data = crate::ui::settings::Context {
@@ -2150,6 +2156,7 @@ impl PapoApp {
                     DownloadMode::Ask => None,
                 },
                 diagnostics: &diagnostics,
+                preview: preview_diagnostics,
             };
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
