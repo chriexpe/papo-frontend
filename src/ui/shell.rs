@@ -435,6 +435,7 @@ impl DraftState {
 #[derive(Debug, Default)]
 pub struct DraftBook {
     owner_user_id: Option<String>,
+    loaded: bool,
     by_channel: std::collections::HashMap<String, DraftState>,
     dirty: std::collections::HashMap<String, std::time::Instant>,
 }
@@ -444,17 +445,23 @@ impl DraftBook {
         self.owner_user_id.as_deref()
     }
 
+    pub fn is_loaded_for(&self, owner_user_id: &str) -> bool {
+        self.loaded && self.owner() == Some(owner_user_id)
+    }
+
     pub fn reset_owner(&mut self, owner_user_id: &str) {
         if self.owner() == Some(owner_user_id) {
             return;
         }
         self.owner_user_id = Some(owner_user_id.to_owned());
+        self.loaded = false;
         self.by_channel.clear();
         self.dirty.clear();
     }
 
     pub fn load(&mut self, owner_user_id: &str, drafts: Vec<papo_core::cache::CachedDraft>) {
         self.owner_user_id = Some(owner_user_id.to_owned());
+        self.loaded = true;
         self.by_channel.clear();
         self.dirty.clear();
         for draft in drafts {
@@ -489,8 +496,8 @@ impl DraftBook {
         self.capture(channel_id, state);
     }
 
-    pub fn get(&self, channel_id: &str) -> DraftState {
-        self.by_channel.get(channel_id).cloned().unwrap_or_default()
+    pub fn get(&self, channel_id: &str) -> Option<DraftState> {
+        self.by_channel.get(channel_id).cloned()
     }
 
     pub fn take_persistence_ops(
@@ -738,7 +745,14 @@ impl UiState {
     }
 
     pub fn restore_draft(&mut self, channel_id: &str) {
-        self.drafts.get(channel_id).apply_to(self);
+        if let Some(draft) = self.drafts.get(channel_id) {
+            draft.apply_to(self);
+        } else {
+            self.composer.clear();
+            self.composer_mentions.clear();
+            self.replying = None;
+            self.reply_notify = self.reply_notify_default;
+        }
     }
 
     pub fn switch_draft_channel(&mut self, channel_id: &str) {
