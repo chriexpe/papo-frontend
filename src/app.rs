@@ -1054,6 +1054,7 @@ impl PapoApp {
         // sob a chave nova só porque o servidor é o mesmo.
         self.notification.remove_context(&old_key);
         self.cache.clear_server(&old_key);
+        crate::media::clear_server_media_cache(&old_key);
         self.settings.servers[index] = entry;
         // O servidor na tela devolve o guardado para o substituto, ou a
         // interface ficaria com a mídia de uma conexão que já morreu.
@@ -1177,6 +1178,7 @@ impl PapoApp {
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
         self.workspaces[index].runtime.forget_server();
+        crate::media::clear_server_media_cache(&key);
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 
