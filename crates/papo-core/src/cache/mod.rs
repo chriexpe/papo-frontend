@@ -14,9 +14,10 @@ mod tests;
 pub use store::TursoCache;
 pub use types::{
     new_local_id, now_millis, CachedAttachment, CachedChannel, CachedMember, CachedMessage,
-    CachedOutgoing, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
-    NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats, OutgoingState,
-    MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
+    CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp,
+    ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
+    OutgoingState, PreviewCacheState, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
+    OUTGOING_LIMIT, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,
 };
 
 use std::collections::VecDeque;
@@ -117,6 +118,14 @@ enum WorkerMsg {
         reply: std::sync::mpsc::Sender<
             Result<(ClaimResult, NotificationLedgerStats), String>,
         >,
+    },
+    LoadPreview {
+        url_key: String,
+        reply: std::sync::mpsc::Sender<Result<Option<CachedPreview>, String>>,
+    },
+    StorePreview {
+        preview: CachedPreview,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     Flush(std::sync::mpsc::Sender<()>),
     /// Só em testes: prende o worker até o teste liberar, para saturar a fila
@@ -427,6 +436,27 @@ impl ClientDb {
         )
     }
 
+    /// Leitura síncrona usada apenas pelo worker de PreviewCoordinator,
+    /// nunca pela thread egui.
+    pub fn load_preview(&self, url_key: &str) -> Result<Option<CachedPreview>, String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_result(
+            WorkerMsg::LoadPreview {
+                url_key: url_key.to_owned(),
+                reply,
+            },
+            recv,
+        )
+    }
+
+    /// Escrita de metadata reconstruível. O coordenador já limita e
+    /// coalesce trabalho; aqui esperamos o commit para que um restart imediato
+    /// não force novo fetch.
+    pub fn store_preview(&self, preview: CachedPreview) -> Result<(), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_result(WorkerMsg::StorePreview { preview, reply }, recv)
+    }
+
     /// Espera tudo que já foi enfileirado ser aplicado. É barreira: como só há
     /// uma fila, tudo que foi aceito antes entra antes e é aplicado antes.
     pub fn flush(&self) {
@@ -693,6 +723,20 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         } => {
             let result = cache
                 .claim_notification(&server_key, &entry)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadPreview { url_key, reply } => {
+            let result = cache
+                .load_preview(&url_key)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::StorePreview { preview, reply } => {
+            let result = cache
+                .store_preview(&preview)
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);
