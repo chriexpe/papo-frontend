@@ -159,7 +159,7 @@ async fn worker(
         return;
     };
     let remote_client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(10))
         .user_agent("Papo/0.2 remote-media")
         .build()
