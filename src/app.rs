@@ -1328,6 +1328,11 @@ impl PapoApp {
                         self.ui.reply_notify = notify_reply;
                         return;
                     }
+                    self.ui.capture_draft(&channel_id);
+                    let draft_ops = self.ui.drafts.take_persistence_ops(&owner_user_id, true);
+                    if !draft_ops.is_empty() {
+                        self.cache.submit(&ws.runtime.server_key, draft_ops);
+                    }
                     ws.runtime.net.send(Command::QueueMessage {
                         local_id: papo_core::cache::new_local_id(),
                         owner_user_id,
@@ -1338,6 +1343,15 @@ impl PapoApp {
                         created_at: papo_core::cache::now_millis(),
                     });
                 } else {
+                    let owner_user_id = ws.runtime.store.me.clone();
+                    if !owner_user_id.is_empty() {
+                        self.ui.capture_draft(&channel_id);
+                        let draft_ops =
+                            self.ui.drafts.take_persistence_ops(&owner_user_id, true);
+                        if !draft_ops.is_empty() {
+                            self.cache.submit(&ws.runtime.server_key, draft_ops);
+                        }
+                    }
                     ws.runtime.net.send(Command::SendMessage {
                         channel_id,
                         content: wire_content,
@@ -1703,18 +1717,58 @@ impl PapoApp {
                             }
                         }
                         RuntimeEffect::OutgoingRejected {
+                            owner_user_id,
+                            channel_id,
                             content,
                             reply_to,
                             notify_reply,
-                        } if index == self.active => {
+                        } => {
+                            if ws.runtime.store.me != owner_user_id {
+                                continue;
+                            }
                             let (visible, bindings) =
                                 ws.runtime.store.display_mentions_with_bindings(&content);
-                            self.ui.composer = visible;
-                            self.ui.composer_mentions = bindings;
-                            self.ui.replying = reply_to;
-                            self.ui.reply_notify = notify_reply;
+                            let draft = crate::ui::shell::DraftState {
+                                text: visible,
+                                mentions: bindings,
+                                reply_to,
+                                notify_reply,
+                            };
+                            let server_key = ws.runtime.server_key.clone();
+                            if index == self.active {
+                                if self.ui.drafts.owner() != Some(owner_user_id.as_str()) {
+                                    self.ui.drafts.reset_owner(&owner_user_id);
+                                }
+                                self.ui.drafts.put(&channel_id, draft.clone());
+                                if self.ui.last_channel == channel_id {
+                                    self.ui.composer = draft.text.clone();
+                                    self.ui.composer_mentions = draft.mentions.clone();
+                                    self.ui.replying = draft.reply_to.clone();
+                                    self.ui.reply_notify = draft.notify_reply;
+                                }
+                                let ops =
+                                    self.ui.drafts.take_persistence_ops(&owner_user_id, true);
+                                if !ops.is_empty() {
+                                    self.cache.submit(&server_key, ops);
+                                }
+                            } else {
+                                if ws.stash.drafts.owner() != Some(owner_user_id.as_str()) {
+                                    ws.stash.drafts.reset_owner(&owner_user_id);
+                                }
+                                ws.stash.drafts.put(&channel_id, draft.clone());
+                                if ws.stash.last_channel == channel_id {
+                                    ws.stash.composer = draft.text;
+                                    ws.stash.composer_mentions = draft.mentions;
+                                    ws.stash.replying = draft.reply_to;
+                                    ws.stash.reply_notify = draft.notify_reply;
+                                }
+                                let ops =
+                                    ws.stash.drafts.take_persistence_ops(&owner_user_id, true);
+                                if !ops.is_empty() {
+                                    self.cache.submit(&server_key, ops);
+                                }
+                            }
                         }
-                        RuntimeEffect::OutgoingRejected { .. } => {}
                         RuntimeEffect::Call(effect) => route_call_effect(ws, *effect, ctx),
                     }
                 }
