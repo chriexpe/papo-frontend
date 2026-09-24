@@ -885,6 +885,7 @@ pub struct Context<'a> {
     pub ask_download: &'a mut bool,
     pub download_dir: Option<String>,
     pub diagnostics: &'a [WorkspaceDiagnostics],
+    pub preview: papo_core::preview::PreviewStatsSnapshot,
 }
 
 /// Desenha a folha, ancorada na pastilha que a abriu.
@@ -1340,6 +1341,18 @@ fn app_pane(
 
         AppPane::Diagnostics => {
             section(ui, t, "Runtime diagnostics");
+            group(ui, t, |rows| {
+                let preview = format!(
+                    "{} cache-ready · {} cache-negative · {} queued · {} network · {} transient · {} stale-served",
+                    data.preview.cache_ready,
+                    data.preview.cache_negative,
+                    data.preview.queued,
+                    data.preview.network_resolves,
+                    data.preview.transient_failures,
+                    data.preview.stale_served,
+                );
+                rows.row("Preview coordinator", Some(&preview), |_, _| {});
+            });
             for workspace in data.diagnostics {
                 let title = if workspace.label.is_empty() {
                     workspace.server_key.as_str()
