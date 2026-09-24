@@ -3393,7 +3393,7 @@ mod tests {
     }
 
     #[test]
-    fn sessao_marca_dono_e_logout_limpa_cache() {
+    fn sessao_marca_dono_e_expiracao_limpa_so_cache_reconstruivel() {
         let mut store = Store::default();
         store.apply(Update::Session(Some(Box::new(models::Whoami {
             id: "eu".to_owned(),
@@ -3411,7 +3411,15 @@ mod tests {
 
         store.apply(Update::Session(None));
         let ops = store.take_cache_ops();
-        assert!(ops.iter().any(|op| matches!(op, CacheOp::ClearServer)));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, CacheOp::ClearCachedData)),
+            "sessão encerrada limpa apenas estado reconstruível"
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(op, CacheOp::ClearServer)),
+            "fila/ledger particionados por owner sobrevivem à expiração"
+        );
     }
 
     #[test]
