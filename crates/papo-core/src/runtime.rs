@@ -554,6 +554,105 @@ mod tests {
     }
 
     #[test]
+    fn background_runtime_no_session_is_clean_bounded_noop() {
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let mut runtime = ServerRuntime::open_background(
+            "http://127.0.0.1:9".to_owned(),
+            secrets,
+            cache,
+            notification,
+            true,
+            std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(runtime.mode(), RuntimeMode::BackgroundReconcile);
+        assert_eq!(runtime.transport_mode(), TransportMode::BackgroundReconcile);
+        assert!(!runtime.transport_mode().opens_websocket());
+        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        assert_eq!(
+            runtime.background_result(),
+            Some(BackgroundRunResult::NoSession)
+        );
+    }
+
+    #[test]
+    fn interactive_runtime_keeps_interactive_transport() {
+        let (runtime, _) = disabled_runtime();
+        assert_eq!(runtime.mode(), RuntimeMode::Interactive);
+        assert_eq!(runtime.transport_mode(), TransportMode::Interactive);
+        assert!(runtime.transport_mode().opens_websocket());
+    }
+
+    #[test]
+    fn background_runtime_honours_hard_deadline() {
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let url = "http://127.0.0.1:9".to_owned();
+        let key = crate::server_key(&url);
+        secrets
+            .store(&key, Secret::SessionToken, "saved-token")
+            .expect("guardar token");
+        let mut runtime = ServerRuntime::open_background(
+            url,
+            secrets,
+            cache,
+            notification,
+            true,
+            std::time::Duration::ZERO,
+        );
+
+        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        assert_eq!(
+            runtime.background_result(),
+            Some(BackgroundRunResult::Deadline)
+        );
+    }
+
+    #[test]
+    fn cancelling_background_runtime_does_not_clear_credentials() {
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let url = "http://127.0.0.1:9".to_owned();
+        let key = crate::server_key(&url);
+        secrets
+            .store(&key, Secret::SessionToken, "saved-token")
+            .expect("guardar token");
+
+        let mut runtime = ServerRuntime::open_background(
+            url,
+            secrets.clone(),
+            cache,
+            notification,
+            true,
+            std::time::Duration::from_secs(5),
+        );
+        runtime.cancel_background();
+        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        drop(runtime);
+
+        assert_eq!(
+            secrets
+                .load(&key, Secret::SessionToken)
+                .expect("ler token")
+                .as_deref(),
+            Some("saved-token")
+        );
+    }
+
+    #[test]
     fn update_aplica_store_e_sinaliza_efeito_de_ui() {
         let (mut runtime, _) = disabled_runtime();
         let effects = runtime.process_update(Update::OutgoingRejected {
