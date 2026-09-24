@@ -25,7 +25,7 @@ final class PapoWorkScheduler {
 
     private PapoWorkScheduler() {}
 
-    static void sync(Context context, String payload) {
+    static boolean sync(Context context, String payload) {
         try {
             final JSONObject config = new JSONObject(payload);
             final boolean notificationsEnabled =
@@ -80,9 +80,14 @@ final class PapoWorkScheduler {
                     workManager.cancelUniqueWork(old);
                 }
             }
-            prefs.edit().putStringSet(KEY_NAMES, wanted).commit();
+            if (!prefs.edit().putStringSet(KEY_NAMES, wanted).commit()) {
+                Log.e("papo-background", "falha ao persistir registro do WorkManager");
+                return false;
+            }
+            return true;
         } catch (Exception error) {
             Log.e("papo-background", "falha ao sincronizar WorkManager", error);
+            return false;
         }
     }
 }
