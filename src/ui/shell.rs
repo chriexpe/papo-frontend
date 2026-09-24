@@ -329,6 +329,8 @@ pub struct Jump {
 pub struct LinkViewer {
     pub id: String,
     pub url: String,
+    /// O clique que abriu o overlay não pode fechá-lo no mesmo quadro.
+    pub opened: f64,
 }
 
 /// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
@@ -3722,6 +3724,7 @@ fn preview_card(
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
+                        opened: ui.input(|input| input.time),
                     });
                 } else {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -4075,7 +4078,8 @@ fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 
     let backdrop = top.interact(screen, Id::new("link-viewer-backdrop"), Sense::click());
     let escape = top.input(|input| input.key_pressed(egui::Key::Escape));
-    let outside = backdrop.clicked()
+    let outside = top.input(|input| input.time) > viewer.opened + 0.05
+        && backdrop.clicked()
         && backdrop
             .interact_pointer_pos()
             .is_some_and(|position| !content.expand(space::MD).contains(position));
