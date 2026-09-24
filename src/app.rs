@@ -20,6 +20,7 @@ use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::G
 use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
 use papo_core::cache::ClientDb;
+use papo_core::notification::{CandidateSource, NotificationContext, NotificationCoordinator, NotificationSink};
 use papo_core::storage::{Secret, SecretStore};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
@@ -451,8 +452,6 @@ pub struct Workspace {
     /// olhamos pela última vez.
     camera_revision: u64,
     #[cfg(target_os = "android")]
-    notification_context: std::sync::Arc<crate::platform::android_message::Context>,
-    #[cfg(target_os = "android")]
     _network_registration: crate::platform::android_network::Registration,
 }
 
@@ -462,6 +461,7 @@ impl Workspace {
         marks: &ReadMarks,
         ctx: &egui::Context,
         cache: &std::sync::Arc<ClientDb>,
+        notification: &std::sync::Arc<NotificationCoordinator>,
     ) -> Self {
         let server_key = crate::state::server_key(&entry.url);
 
@@ -508,28 +508,25 @@ impl Workspace {
         let network_registration =
             crate::platform::android_network::register(net.sender());
 
-        #[cfg(target_os = "android")]
-        let notification_context = {
-            let context = crate::platform::android_message::Context::new(
-                entry.url.clone(),
-                entry.label.clone(),
+        let message_coordinator = std::sync::Arc::clone(notification);
+        let message_server_key = server_key.clone();
+        net.set_message_callback(Some(std::sync::Arc::new(move |message| {
+            let _ = message_coordinator.handle_message(
+                &message_server_key,
+                message,
+                CandidateSource::Live,
             );
+        })));
 
-            let message_context = std::sync::Arc::clone(&context);
-            net.set_message_callback(Some(std::sync::Arc::new(move |message| {
-                crate::platform::android_message::received_message(&message_context, message);
-            })));
-
-            let notification_context = std::sync::Arc::clone(&context);
-            net.set_notification_callback(Some(std::sync::Arc::new(move |notification| {
-                crate::platform::android_message::received(
-                    &notification_context,
-                    notification,
-                );
-            })));
-
-            context
-        };
+        let notification_coordinator = std::sync::Arc::clone(notification);
+        let notification_server_key = server_key.clone();
+        net.set_notification_callback(Some(std::sync::Arc::new(move |item| {
+            let _ = notification_coordinator.handle_notification(
+                &notification_server_key,
+                item,
+                CandidateSource::Live,
+            );
+        })));
 
         // A mídia usa o cookie da sessão deste servidor para baixar anexos.
         let media = Media::spawn(
@@ -556,8 +553,6 @@ impl Workspace {
             watching: Vec::new(),
             camera_revision: 0,
             #[cfg(target_os = "android")]
-            notification_context,
-            #[cfg(target_os = "android")]
             _network_registration: network_registration,
         }
     }
@@ -570,25 +565,23 @@ impl Workspace {
         self.net.send(Command::LoadMessages { ticket });
     }
 
-    #[cfg(target_os = "android")]
-    fn sync_notification_context(&self, enabled: bool, active: bool) {
-        crate::platform::android_message::sync_context(
-            &self.notification_context,
-            enabled,
-            active,
-            &self.label,
-            &self.store.selected_channel,
-            &self.store.me,
-            &self.store.my_name,
-            self.store
-                .channels
-                .iter()
-                .map(|channel| (channel.id.clone(), channel.name.clone())),
-            self.store
-                .members
-                .iter()
-                .map(|member| (member.id.clone(), member.name.clone())),
-        );
+    fn notification_context(&self, enabled: bool, visible_server: bool) -> NotificationContext {
+        NotificationContext {
+            server_key: self.server_key.clone(),
+            navigation_server: self.url.clone(),
+            server_label: self.label.clone(),
+            owner_user_id: self.store.me.clone(),
+            owner_name: self.store.my_name.clone(),
+            selected_channel: self.store.selected_channel.clone(),
+            visible_server,
+            notifications_enabled: enabled,
+            channels: self.store.channels.iter()
+                .map(|channel| (channel.id.clone(), channel.name.clone()))
+                .collect(),
+            members: self.store.members.iter()
+                .map(|member| (member.id.clone(), member.name.clone()))
+                .collect(),
+        }
     }
 
     /// Como o trilho vê este servidor.
@@ -612,6 +605,8 @@ pub struct PapoApp {
     workspaces: Vec<Workspace>,
     /// Um banco de cache por processo, compartilhado pelos servidores.
     cache: std::sync::Arc<ClientDb>,
+    /// Política e deduplicação durável de notificações do processo.
+    notification: std::sync::Arc<NotificationCoordinator>,
     /// Índice do servidor na tela.
     active: usize,
     ui: UiState,
@@ -622,8 +617,6 @@ pub struct PapoApp {
     sheet: crate::ui::settings::SettingsState,
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
-    #[cfg(target_os = "linux")]
-    notifier: Option<Notifier>,
     #[cfg(target_os = "linux")]
     launcher: Option<Launcher>,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
@@ -696,14 +689,67 @@ impl PapoApp {
         // acontecer antes de qualquer worker de rede subir.
         let cache = std::sync::Arc::new(ClientDb::open(crate::platform::dirs::cache_db()));
 
+        #[cfg(target_os = "linux")]
+        let notifier = Notifier::spawn();
+
+        #[cfg(target_os = "linux")]
+        let notification_sink: Option<NotificationSink> = notifier.as_ref().map(|notifier| {
+            let notifier = notifier.clone();
+            std::sync::Arc::new(move |envelope: papo_core::notification::NotificationEnvelope| {
+                notifier.show(Notification {
+                    summary: envelope.title,
+                    body: envelope.body,
+                    tag: Some(format!("{}\n{}", envelope.server_key, envelope.channel_id)),
+                });
+            }) as NotificationSink
+        });
+
+        #[cfg(target_os = "android")]
+        let notification_sink: Option<NotificationSink> = Some(std::sync::Arc::new(
+            |envelope: papo_core::notification::NotificationEnvelope| {
+                crate::platform::android_message::show_envelope(envelope);
+            },
+        ));
+
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let notification_sink: Option<NotificationSink> = None;
+
+        #[cfg(target_os = "android")]
+        let notification = std::sync::Arc::new(NotificationCoordinator::with_foreground_probe(
+            std::sync::Arc::clone(&cache),
+            notification_sink,
+            std::sync::Arc::new(crate::platform::android_call::is_foreground),
+        ));
+        #[cfg(not(target_os = "android"))]
+        let notification = std::sync::Arc::new(NotificationCoordinator::new(
+            std::sync::Arc::clone(&cache),
+            notification_sink,
+        ));
+        #[cfg(not(target_os = "android"))]
+        notification.set_foreground(true);
+
         // Todos os servidores sobem juntos: o que chega num deles enquanto
         // outro está na tela ainda conta para o contador e a notificação.
         let mut workspaces: Vec<Workspace> = settings
             .servers
             .iter()
-            .map(|entry| Workspace::open(entry, &settings.server_marks, &cc.egui_ctx, &cache))
+            .map(|entry| {
+                Workspace::open(
+                    entry,
+                    &settings.server_marks,
+                    &cc.egui_ctx,
+                    &cache,
+                    &notification,
+                )
+            })
             .collect();
         let active = settings.active.min(workspaces.len() - 1);
+        for (index, workspace) in workspaces.iter().enumerate() {
+            notification.sync_context(workspace.notification_context(
+                settings.notifications,
+                index == active,
+            ));
+        }
 
         let demo = std::env::var("PAPO_DEMO").is_ok();
         if demo {
@@ -716,7 +762,13 @@ impl PapoApp {
                         label: label.to_owned(),
                     };
                     workspaces
-                        .push(Workspace::open(&entry, &settings.server_marks, &cc.egui_ctx, &cache));
+                        .push(Workspace::open(
+                            &entry,
+                            &settings.server_marks,
+                            &cc.egui_ctx,
+                            &cache,
+                            &notification,
+                        ));
                 }
                 workspaces[index].label = label.to_owned();
             }
@@ -741,12 +793,11 @@ impl PapoApp {
         Self {
             workspaces,
             cache,
+            notification,
             active,
             ui: ui_state,
             #[cfg(target_os = "linux")]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
-            #[cfg(target_os = "linux")]
-            notifier: Notifier::spawn(),
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
             dialogs: Dialogs::default(),
@@ -949,59 +1000,6 @@ impl PapoApp {
         }
     }
 
-    /// Avisa na área de trabalho quando chega mensagem e a janela não está à
-    /// frente. A checagem acontece antes de aplicar a atualização, para ainda
-    /// enxergar o estado anterior.
-    #[cfg(target_os = "linux")]
-    fn maybe_notify(&self, ws: &Workspace, update: &crate::api::net::Update) {
-        use crate::api::net::Update;
-        use crate::api::ws::Event;
-
-        if !self.settings.notifications || (self.focused && !self.minimized) {
-            return;
-        }
-        let Some(notifier) = &self.notifier else {
-            return;
-        };
-        let Update::Event(event) = update else { return };
-        let Event::Message(message) = &**event else {
-            return;
-        };
-        if message.author_id == ws.store.me {
-            return;
-        }
-
-        let author = ws
-            .store
-            .member(&message.author_id)
-            .map(|member| member.name.clone())
-            .unwrap_or_else(|| message.author_id.clone());
-        // Com vários servidores, o canal sozinho não diz de onde veio.
-        let channel = ws
-            .store
-            .channel(&message.channel_id)
-            .map(|channel| {
-                if self.workspaces.len() > 1 {
-                    format!("#{} · {}", channel.name, ws.label)
-                } else {
-                    format!("#{}", channel.name)
-                }
-            })
-            .unwrap_or_default();
-
-        notifier.show(Notification {
-            summary: if channel.is_empty() {
-                author
-            } else {
-                format!("{author} · {channel}")
-            },
-            body: ws
-                .store
-                .display_mentions(message.content.as_deref().unwrap_or("")),
-            tag: Some(message.channel_id.clone()),
-        });
-    }
-
     /// Entra ou cria a conta com o que está no formulário.
     fn authenticate(&mut self, register: bool, ctx: &egui::Context) {
         let index = self.active;
@@ -1079,13 +1077,20 @@ impl PapoApp {
         let form = self.workspaces[index].form.clone();
         let old_key = self.workspaces[index].server_key.clone();
         let entry = ServerEntry::new(url);
-        let mut fresh = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
+        let mut fresh = Workspace::open(
+            &entry,
+            &self.settings.server_marks,
+            ctx,
+            &self.cache,
+            &self.notification,
+        );
         fresh.form = AuthForm {
             server_url: entry.url.clone(),
             ..form
         };
         // O endereço velho some de propósito: o cache dele não pode aparecer
         // sob a chave nova só porque o servidor é o mesmo.
+        self.notification.remove_context(&old_key);
         self.cache.clear_server(&old_key);
         self.settings.servers[index] = entry;
         // O servidor na tela devolve o guardado para o substituto, ou a
@@ -1110,6 +1115,7 @@ impl PapoApp {
         self.active = index;
         self.settings.active = index;
         self.settings.server_url = self.workspaces[index].url.clone();
+        self.sync_notification_contexts();
         // A mídia do servidor que saiu para de tocar junto com ele.
         self.workspaces[previous].stash.media.pause_all();
         ctx.request_repaint();
@@ -1122,7 +1128,13 @@ impl PapoApp {
         // ativo e descartamos este workspace.
         let previous = self.active;
         let entry = ServerEntry::new(DRAFT_SERVER_URL.to_owned());
-        let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
+        let mut workspace = Workspace::open(
+            &entry,
+            &self.settings.server_marks,
+            ctx,
+            &self.cache,
+            &self.notification,
+        );
         // Não herda o endereço padrão nem a sessão dele. O cartão nasce
         // realmente vazio e só cria conexão com o servidor digitado no envio.
         workspace.form.server_url.clear();
@@ -1147,6 +1159,7 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.notification.remove_context(&key);
         self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
@@ -1183,6 +1196,7 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.notification.remove_context(&key);
         self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
@@ -1678,9 +1692,6 @@ impl PapoApp {
 
         for index in 0..self.workspaces.len() {
             while let Some(update) = self.workspaces[index].net.try_recv() {
-                #[cfg(target_os = "linux")]
-                self.maybe_notify(&self.workspaces[index], &update);
-
                 // Reconectou: o que aconteceu durante a queda vem da carga
                 // nova.
                 let reconnected = matches!(
@@ -2204,6 +2215,7 @@ impl PapoApp {
                 store: workspace.store.diagnostics(),
                 cache_enabled: workspace.cache.is_enabled(),
                 cache: workspace.cache.stats(),
+                notification: self.notification.diagnostics(&workspace.server_key),
             })
             .collect();
 
@@ -2284,14 +2296,13 @@ impl PapoApp {
 
  }
 
-#[cfg(target_os = "android")]
 impl PapoApp {
-    fn sync_android_notification_contexts(&self) {
+    fn sync_notification_contexts(&self) {
         for (index, workspace) in self.workspaces.iter().enumerate() {
-            workspace.sync_notification_context(
+            self.notification.sync_context(workspace.notification_context(
                 self.settings.notifications,
                 index == self.active,
-            );
+            ));
         }
     }
 }
@@ -2349,10 +2360,8 @@ impl eframe::App for PapoApp {
         self.attach_window(frame);
 
         #[cfg(target_os = "android")]
-        {
-            self.handle_android_notification_navigation(&ctx);
-            self.sync_android_notification_contexts();
-        }
+        self.handle_android_notification_navigation(&ctx);
+        self.sync_notification_contexts();
 
         // Indo para segundo plano: gravar agora, porque pode não haver um
         // depois. Perder o foco é o último aviso que o aplicativo recebe
@@ -2375,11 +2384,14 @@ impl eframe::App for PapoApp {
             self.sync_blur_regions(&ctx);
         }
         #[cfg(target_os = "linux")]
-        self.handle_window_lifecycle(&ctx);
+        {
+            self.handle_window_lifecycle(&ctx);
+            self.notification
+                .set_foreground(self.focused && !self.minimized);
+        }
 
         self.pump_network(&ctx);
-        #[cfg(target_os = "android")]
-        self.sync_android_notification_contexts();
+        self.sync_notification_contexts();
 
         // A call segue viva com outro servidor na tela: o trilho troca a
         // conversa, não quem está falando.
@@ -2557,6 +2569,9 @@ impl eframe::App for PapoApp {
         for command in pending {
             self.handle(&ctx, command);
         }
+        // Captura seleção/toggles ocorridos durante este próprio quadro; a
+        // thread de rede pode consultar o snapshot sem esperar outro repaint.
+        self.sync_notification_contexts();
 
         #[cfg(target_os = "android")]
         {

@@ -16,6 +16,48 @@ pub const MESSAGE_RETENTION: i64 = 500;
 pub const PINNED_RETENTION: i64 = 200;
 /// Limite duro de intenções de envio ainda não resolvidas por conta/servidor.
 pub const OUTGOING_LIMIT: i64 = 500;
+/// Limite duro de mensagens já tratadas por conta/servidor no ledger.
+pub const NOTIFICATION_LEDGER_LIMIT: i64 = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotificationDecision {
+    Delivered,
+    Suppressed,
+}
+
+impl NotificationDecision {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::Suppressed => "suppressed",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationLedgerEntry {
+    pub owner_user_id: String,
+    pub message_id: String,
+    pub channel_id: String,
+    pub notification_id: Option<String>,
+    pub decision: NotificationDecision,
+    pub reason: Option<String>,
+    pub handled_at: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClaimResult {
+    New,
+    AlreadyHandled,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NotificationLedgerStats {
+    pub rows: i64,
+    pub delivered: i64,
+    pub suppressed: i64,
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutgoingState {

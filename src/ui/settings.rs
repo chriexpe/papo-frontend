@@ -23,6 +23,7 @@ pub struct WorkspaceDiagnostics {
     pub store: StoreDiagnostics,
     pub cache_enabled: bool,
     pub cache: papo_core::cache::CacheStatsSnapshot,
+    pub notification: papo_core::notification::NotificationDiagnostics,
 }
 
 use super::theme::{radius, space, text, Tokens};
@@ -1374,6 +1375,15 @@ fn app_pane(
                         "unavailable".to_owned()
                     };
                     rows.row("Cache", Some(&cache), |_, _| {});
+                    let notification = format!(
+                        "{} rows · {} delivered · {} suppressed · {} duplicates · {} failures",
+                        workspace.notification.ledger_rows,
+                        workspace.notification.delivered,
+                        workspace.notification.suppressed,
+                        workspace.notification.duplicate_claims,
+                        workspace.notification.claim_failures,
+                    );
+                    rows.row("Notification ledger", Some(&notification), |_, _| {});
                     let outgoing = format!(
                         "{} queued · {} sending · {} uncertain · {} failed{}",
                         workspace.store.outgoing_queued,

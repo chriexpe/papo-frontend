@@ -14,8 +14,9 @@ mod tests;
 pub use store::TursoCache;
 pub use types::{
     new_local_id, now_millis, CachedAttachment, CachedChannel, CachedMember, CachedMessage,
-    CachedOutgoing, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, OutgoingState,
-    MESSAGE_RETENTION, OUTGOING_LIMIT, PINNED_RETENTION,
+    CachedOutgoing, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
+    NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats, OutgoingState,
+    MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
 };
 
 use std::collections::VecDeque;
@@ -109,6 +110,13 @@ enum WorkerMsg {
         owner_user_id: String,
         local_id: String,
         reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    ClaimNotification {
+        server_key: String,
+        entry: NotificationLedgerEntry,
+        reply: std::sync::mpsc::Sender<
+            Result<(ClaimResult, NotificationLedgerStats), String>,
+        >,
     },
     Flush(std::sync::mpsc::Sender<()>),
     /// Só em testes: prende o worker até o teste liberar, para saturar a fila
@@ -400,6 +408,25 @@ impl ClientDb {
         )
     }
 
+    /// Claim durável usado pelo NotificationCoordinator. Assim como a fila
+    /// de saída, não aceita timeout ambíguo: ou o worker confirmou o commit ou
+    /// o chamador não publica a notificação.
+    pub fn claim_notification(
+        &self,
+        server_key: &str,
+        entry: NotificationLedgerEntry,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_durable_result(
+            WorkerMsg::ClaimNotification {
+                server_key: server_key.to_owned(),
+                entry,
+                reply,
+            },
+            recv,
+        )
+    }
+
     /// Espera tudo que já foi enfileirado ser aplicado. É barreira: como só há
     /// uma fila, tudo que foi aceito antes entra antes e é aplicado antes.
     pub fn flush(&self) {
@@ -655,6 +682,17 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         } => {
             let result = cache
                 .remove_outgoing(&server_key, &owner_user_id, &local_id)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::ClaimNotification {
+            server_key,
+            entry,
+            reply,
+        } => {
+            let result = cache
+                .claim_notification(&server_key, &entry)
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);

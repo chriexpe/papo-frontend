@@ -10,7 +10,8 @@ use turso::{Builder, Connection, Value};
 use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedReaction,
-    CachedServer, CachedServerSnapshot, CacheOp, OutgoingState, MESSAGE_RETENTION,
+    CachedServer, CachedServerSnapshot, CacheOp, ClaimResult, NotificationLedgerEntry,
+    NotificationLedgerStats, OutgoingState, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
     OUTGOING_LIMIT, PINNED_RETENTION,
 };
 
@@ -328,6 +329,10 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
         ],
         CacheOp::ClearServer => vec![
             Stmt {
+                sql: "DELETE FROM notification_ledger WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
                 sql: "DELETE FROM send_queue WHERE server_key = ?1",
                 params: vec![text(server_key)],
             },
@@ -459,6 +464,116 @@ impl TursoCache {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Reclama atomicamente uma mensagem para notificação.
+    ///
+    /// O INSERT e a poda ficam na mesma transação. A chave única decide quem
+    /// venceu uma corrida entre Message/Notification; não há SELECT seguido de
+    /// INSERT. O retorno inclui contagens persistentes da partição para
+    /// diagnóstico sem guardar qualquer conteúdo de mensagem.
+    pub async fn claim_notification(
+        &mut self,
+        server_key: &str,
+        entry: &NotificationLedgerEntry,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
+        self.claim_notification_with_limit(server_key, entry, NOTIFICATION_LEDGER_LIMIT)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn claim_notification_for_test(
+        &mut self,
+        server_key: &str,
+        entry: &NotificationLedgerEntry,
+        limit: i64,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
+        self.claim_notification_with_limit(server_key, entry, limit).await
+    }
+
+    async fn claim_notification_with_limit(
+        &mut self,
+        server_key: &str,
+        entry: &NotificationLedgerEntry,
+        limit: i64,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
+        let tx = self.conn.transaction().await?;
+        tx.execute(
+            "INSERT OR IGNORE INTO notification_ledger (
+                 server_key, owner_user_id, message_id, channel_id,
+                 notification_id, decision, reason, handled_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            vec![
+                text(server_key),
+                text(&entry.owner_user_id),
+                text(&entry.message_id),
+                text(&entry.channel_id),
+                opt_text(entry.notification_id.as_deref()),
+                text(entry.decision.as_db()),
+                opt_text(entry.reason.as_deref()),
+                integer(entry.handled_at),
+            ],
+        )
+        .await?;
+
+        let mut rows = tx.query("SELECT changes()", ()).await?;
+        let inserted = rows
+            .next()
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
+            .unwrap_or(0)
+            > 0;
+        drop(rows);
+
+        if inserted {
+            tx.execute(
+                "DELETE FROM notification_ledger
+                 WHERE server_key = ?1 AND owner_user_id = ?2
+                   AND message_id NOT IN (
+                       SELECT message_id FROM notification_ledger
+                       WHERE server_key = ?1 AND owner_user_id = ?2
+                       ORDER BY handled_at DESC, message_id DESC
+                       LIMIT ?3
+                   )",
+                vec![
+                    text(server_key),
+                    text(&entry.owner_user_id),
+                    integer(limit),
+                ],
+            )
+            .await?;
+        }
+
+        let mut rows = tx
+            .query(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN decision = 'delivered' THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN decision = 'suppressed' THEN 1 ELSE 0 END), 0)
+                 FROM notification_ledger
+                 WHERE server_key = ?1 AND owner_user_id = ?2",
+                [server_key, entry.owner_user_id.as_str()],
+            )
+            .await?;
+        let stats = match rows.next().await? {
+            Some(row) => NotificationLedgerStats {
+                rows: row.get(0)?,
+                delivered: row.get(1)?,
+                suppressed: row.get(2)?,
+            },
+            None => NotificationLedgerStats::default(),
+        };
+        drop(rows);
+        tx.commit().await?;
+
+        Ok((
+            if inserted {
+                ClaimResult::New
+            } else {
+                ClaimResult::AlreadyHandled
+            },
+            stats,
+        ))
     }
 
     /// Carrega somente a fila da conta informada. Qualquer envio que estava

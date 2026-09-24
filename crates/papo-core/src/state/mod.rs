@@ -1247,15 +1247,12 @@ impl Store {
 
     /// A mensagem cita você? Menção estável, legado por nickname/display name ou chamado geral.
     pub fn mentions_me(&self, message: &Message) -> bool {
-        if message.author_id == self.me {
-            return false;
-        }
-        let content = message.content.to_lowercase();
-        (!self.me.is_empty() && content.contains(&format!("<@{}>", self.me.to_lowercase())))
-            || (!self.my_name.is_empty()
-                && content.contains(&format!("@{}", self.my_name.to_lowercase())))
-            || content.contains("@everyone")
-            || content.contains("@todos")
+        crate::notification::mentions_user(
+            &message.content,
+            &self.me,
+            &self.my_name,
+            &message.author_id,
+        )
     }
 
     // -- Atualizações ------------------------------------------------------
@@ -1281,8 +1278,10 @@ impl Store {
                 self.screen = Screen::Auth;
                 self.error = was.error;
                 self.read_marks = was.read_marks;
-                // Sessão inválida: o cache deste usuário não deve sobreviver.
-                self.pending_cache.push(CacheOp::ClearServer);
+                // Sessão inválida: estado reconstruível não atravessa a
+                // autenticação, mas filas/ledger particionados pelo owner
+                // antigo continuam duráveis caso a mesma conta retorne.
+                self.pending_cache.push(CacheOp::ClearCachedData);
             }
             Update::AuthFailed(message) => {
                 self.screen = Screen::Auth;
@@ -3394,7 +3393,7 @@ mod tests {
     }
 
     #[test]
-    fn sessao_marca_dono_e_logout_limpa_cache() {
+    fn sessao_marca_dono_e_expiracao_limpa_so_cache_reconstruivel() {
         let mut store = Store::default();
         store.apply(Update::Session(Some(Box::new(models::Whoami {
             id: "eu".to_owned(),
@@ -3412,7 +3411,15 @@ mod tests {
 
         store.apply(Update::Session(None));
         let ops = store.take_cache_ops();
-        assert!(ops.iter().any(|op| matches!(op, CacheOp::ClearServer)));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, CacheOp::ClearCachedData)),
+            "sessão encerrada limpa apenas estado reconstruível"
+        );
+        assert!(
+            !ops.iter().any(|op| matches!(op, CacheOp::ClearServer)),
+            "fila/ledger particionados por owner sobrevivem à expiração"
+        );
     }
 
     #[test]
