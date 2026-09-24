@@ -21,6 +21,25 @@ pub const NOTIFICATION_LEDGER_LIMIT: i64 = 4096;
 /// Limite global de metadados de preview reconstruíveis.
 pub const PREVIEW_CACHE_LIMIT: i64 = 4096;
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedMentionBinding {
+    pub start: usize,
+    pub label: String,
+    pub user_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedDraft {
+    pub owner_user_id: String,
+    pub channel_id: String,
+    pub text: String,
+    pub mentions: Vec<CachedMentionBinding>,
+    pub reply_to: Option<String>,
+    pub notify_reply: bool,
+    pub updated_at: i64,
+}
+
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewCacheState {
     Ready,
@@ -476,11 +495,18 @@ pub enum CacheOp {
         channel_id: String,
         ids: Vec<String>,
     },
+    /// Estado de usuário: a aplicação coalesce/debounce antes de chegar aqui,
+    /// então uma vez aceito pelo ClientDb este write é confiável.
+    UpsertDraft(CachedDraft),
+    DeleteDraft {
+        owner_user_id: String,
+        channel_id: String,
+    },
     /// Apaga somente estado reconstruível do servidor, preservando intenções
-    /// de envio particionadas por conta.
+    /// de envio e rascunhos particionados por conta.
     ClearCachedData,
-    /// Apaga tudo deste servidor, inclusive intenções de envio (remoção do
-    /// servidor/endereço local).
+    /// Apaga tudo deste servidor, inclusive intenções de envio e rascunhos
+    /// locais (remoção do servidor/endereço local).
     ClearServer,
 }
 
@@ -491,7 +517,11 @@ impl CacheOp {
     pub fn is_control(&self) -> bool {
         matches!(
             self,
-            CacheOp::ClearServer | CacheOp::ClearCachedData | CacheOp::SetOwner { .. }
+            CacheOp::ClearServer
+                | CacheOp::ClearCachedData
+                | CacheOp::SetOwner { .. }
+                | CacheOp::UpsertDraft(_)
+                | CacheOp::DeleteDraft { .. }
         )
     }
 }
