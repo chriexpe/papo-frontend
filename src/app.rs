@@ -20,6 +20,7 @@ use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::G
 use crate::api::net::{Command, Net, Wake};
 use crate::state::{Phase, Screen, Store};
 use papo_core::cache::ClientDb;
+use papo_core::notification::{CandidateSource, NotificationContext, NotificationCoordinator, NotificationSink};
 use papo_core::storage::{Secret, SecretStore};
 use crate::voice::{Call, IceConfig};
 use crate::ui::auth::{self, AuthAction, AuthForm};
@@ -451,8 +452,6 @@ pub struct Workspace {
     /// olhamos pela última vez.
     camera_revision: u64,
     #[cfg(target_os = "android")]
-    notification_context: std::sync::Arc<crate::platform::android_message::Context>,
-    #[cfg(target_os = "android")]
     _network_registration: crate::platform::android_network::Registration,
 }
 
@@ -462,6 +461,7 @@ impl Workspace {
         marks: &ReadMarks,
         ctx: &egui::Context,
         cache: &std::sync::Arc<ClientDb>,
+        notification: &std::sync::Arc<NotificationCoordinator>,
     ) -> Self {
         let server_key = crate::state::server_key(&entry.url);
 
