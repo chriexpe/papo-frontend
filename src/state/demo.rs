@@ -44,7 +44,7 @@ pub fn call_members() -> Vec<crate::api::ws::VoiceMember> {
 }
 
 /// Preenche o store com um servidor de mentira.
-pub fn seed(store: &mut Store) {
+pub fn seed(store: &mut Store, server_key: &str) {
     store.screen = Screen::Chat;
     store.connection = crate::api::ws::Connection::Online;
     store.me = "u-eu".into();
@@ -86,7 +86,7 @@ pub fn seed(store: &mut Store) {
     store.mark_loading("c-design");
 
     store.emojis = custom_emojis();
-    let media = generate_media();
+    let media = generate_media(server_key);
     let now = Local::now();
     let mut messages = vec![
         Message {
@@ -345,10 +345,11 @@ struct DemoMedia {
 
 /// Gera os arquivos e os grava no cache com o id do anexo, que é onde o
 /// carregador de mídia procura antes de pedir pela rede.
-fn generate_media() -> DemoMedia {
+fn generate_media(server_key: &str) -> DemoMedia {
     DemoMedia {
-        image: image_attachment(),
+        image: image_attachment(server_key),
         video: encoded_attachment(
+            server_key,
             "a-video",
             "render.ogv",
             "video/ogg",
@@ -356,6 +357,7 @@ fn generate_media() -> DemoMedia {
              video/x-raw,width=960,height=540,framerate=30/1 ! theoraenc ! oggmux",
         ),
         audio: encoded_attachment(
+            server_key,
             "a-audio",
             "aviso.ogg",
             "audio/ogg",
@@ -365,8 +367,9 @@ fn generate_media() -> DemoMedia {
 }
 
 /// Um degradê desenhado na mão, para não depender de arquivo externo.
-fn image_attachment() -> Option<Attachment> {
-    let path = crate::media::cache_path("files", "a-imagem", "paleta.png");
+fn image_attachment(server_key: &str) -> Option<Attachment> {
+    let path =
+        crate::media::authenticated_cache_path(server_key, "files", "a-imagem", "paleta.png");
     let (width, height) = (960u32, 600u32);
     if !path.exists() {
         let mut buffer = image::RgbaImage::new(width, height);
@@ -386,8 +389,8 @@ fn image_attachment() -> Option<Attachment> {
     // A miniatura e a imagem cheia saem do mesmo arquivo: o carregador
     // procura cada uma no seu lugar antes de pedir pela rede.
     for target in [
-        crate::media::cache_path("thumbs", "a-imagem", ""),
-        crate::media::cache_path("files", "a-imagem", ""),
+        crate::media::authenticated_cache_path(server_key, "thumbs", "a-imagem", ""),
+        crate::media::authenticated_cache_path(server_key, "files", "a-imagem", ""),
     ] {
         if !target.exists() {
             if let Some(parent) = target.parent() {
@@ -403,17 +406,29 @@ fn image_attachment() -> Option<Attachment> {
 /// que no Android ainda não existe. Sem eles a demonstração continua de pé:
 /// só não tem vídeo nem áudio para abrir.
 #[cfg(target_os = "android")]
-fn encoded_attachment(_id: &str, _name: &str, _mime: &str, _chain: &str) -> Option<Attachment> {
+fn encoded_attachment(
+    _server_key: &str,
+    _id: &str,
+    _name: &str,
+    _mime: &str,
+    _chain: &str,
+) -> Option<Attachment> {
     None
 }
 
 /// Roda um pipeline do GStreamer até o fim e devolve o anexo correspondente.
 #[cfg(not(target_os = "android"))]
-fn encoded_attachment(id: &str, name: &str, mime: &str, chain: &str) -> Option<Attachment> {
+fn encoded_attachment(
+    server_key: &str,
+    id: &str,
+    name: &str,
+    mime: &str,
+    chain: &str,
+) -> Option<Attachment> {
     use gstreamer as gst;
     use gstreamer::prelude::*;
 
-    let path = crate::media::cache_path("files", id, name);
+    let path = crate::media::authenticated_cache_path(server_key, "files", id, name);
     if path.exists() {
         return Some(attachment(id, name, mime, &path));
     }
