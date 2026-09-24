@@ -662,16 +662,29 @@ async fn resolve_url(
     // Preferimos discovery publicado pela própria página. Quando ela não
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
     // em vez de codificar YouTube/TikTok/etc. no cliente.
-    let oembed = if let Some(endpoint) = oembed_endpoint(&html, &final_url).or(header_oembed) {
+    let declared_oembed = oembed_endpoint(&html, &final_url).or(header_oembed);
+    let registry_fallback = declared_oembed.is_none()
+        && (page_wants_player(&html)
+            || (preview.title.is_none()
+                && preview.description.is_none()
+                && preview.image_url.is_none()));
+    let oembed = if let Some(endpoint) = declared_oembed {
         resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
             .await
             .ok()
-    } else if let Some(endpoint) =
-        registry_oembed_endpoint(client, oembed_registry, source_url).await
-    {
-        resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
+    } else if registry_fallback {
+        match registry_oembed_endpoint(client, oembed_registry, source_url).await {
+            Some(endpoint) => resolve_oembed(
+                client,
+                oembed_registry,
+                source_url,
+                endpoint,
+                depth,
+            )
             .await
-            .ok()
+            .ok(),
+            None => None,
+        }
     } else {
         None
     };
@@ -904,6 +917,15 @@ async fn parse_html_preview(
     }
 
     Ok(preview)
+}
+
+fn page_wants_player(html: &str) -> bool {
+    meta_content(html, &["og:type"]).is_some_and(|kind| {
+        kind.to_ascii_lowercase().starts_with("video")
+    }) || meta_content(html, &["twitter:card"]).is_some_and(|card| {
+        card.eq_ignore_ascii_case("player")
+    }) || html.to_ascii_lowercase().contains("\"@type\":\"videoobject\"")
+        || html.to_ascii_lowercase().contains("\"@type\": \"videoobject\"")
 }
 
 fn is_video_content_type(content_type: &str) -> bool {
@@ -1773,6 +1795,19 @@ mod tests {
         let preview = parse_html_preview(base.as_str(), &base, player).await.unwrap();
         assert_eq!(preview.kind, PreviewKind::Embed);
         assert_eq!(preview.embed_url.as_deref(), Some("https://media.example/embed/1"));
+    }
+
+    #[test]
+    fn only_videoish_pages_need_registry_enhancement() {
+        assert!(page_wants_player(
+            r#"<meta property="og:type" content="video.other">"#
+        ));
+        assert!(page_wants_player(
+            r#"<meta name="twitter:card" content="player">"#
+        ));
+        assert!(!page_wants_player(
+            r#"<meta property="og:type" content="object"><meta property="og:image" content="/x.png">"#
+        ));
     }
 
     #[tokio::test]
