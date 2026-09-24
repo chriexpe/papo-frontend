@@ -610,7 +610,7 @@ async fn resolve_url(
         .trim()
         .to_ascii_lowercase();
 
-    if content_type.starts_with("video/") {
+    if is_video_content_type(&content_type) {
         return Ok(ResolvedPreview {
             source_url: source_url.to_owned(),
             kind: PreviewKind::Video,
@@ -820,7 +820,7 @@ async fn parse_html_preview(
         PreviewKind::Link
     };
 
-    Ok(ResolvedPreview {
+    let mut preview = ResolvedPreview {
         source_url: source_url.to_owned(),
         kind,
         media_url: direct_video,
@@ -829,7 +829,157 @@ async fn parse_html_preview(
         title,
         description,
         provider_name,
-    })
+    };
+
+    // JSON-LD/Schema.org is another provider-neutral capability signal used
+    // by many video sites. It often exposes VideoObject.embedUrl/contentUrl
+    // even when no Open Graph player URL is present.
+    if let Some(structured) = json_ld_preview(html, source_url, base) {
+        merge_preview(&mut preview, structured);
+    }
+
+    Ok(preview)
+}
+
+fn is_video_content_type(content_type: &str) -> bool {
+    content_type.starts_with("video/")
+        || matches!(
+            content_type,
+            "application/vnd.apple.mpegurl"
+                | "application/x-mpegurl"
+                | "application/mpegurl"
+                | "application/dash+xml"
+        )
+}
+
+fn json_ld_preview(html: &str, source_url: &str, base: &Url) -> Option<ResolvedPreview> {
+    let lower = html.to_ascii_lowercase();
+    let mut from = 0usize;
+
+    while let Some(rel) = lower[from..].find("<script") {
+        let start = from + rel;
+        let tag_end = lower[start..].find('>')? + start;
+        let tag = &html[start + 1..tag_end];
+        let mime = html_attr(tag, "type").unwrap_or_default();
+        from = tag_end + 1;
+        if !mime.eq_ignore_ascii_case("application/ld+json") {
+            continue;
+        }
+        let Some(close_rel) = lower[from..].find("</script>") else {
+            break;
+        };
+        let close = from + close_rel;
+        let raw = html[from..close].trim();
+        from = close + "</script>".len();
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+            continue;
+        };
+        if let Some(preview) = json_ld_value_preview(&value, source_url, base) {
+            return Some(preview);
+        }
+    }
+    None
+}
+
+fn json_ld_value_preview(
+    value: &serde_json::Value,
+    source_url: &str,
+    base: &Url,
+) -> Option<ResolvedPreview> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                if let Some(preview) = json_ld_value_preview(value, source_url, base) {
+                    return Some(preview);
+                }
+            }
+            None
+        }
+        serde_json::Value::Object(map) => {
+            if let Some(graph) = map.get("@graph")
+                && let Some(preview) = json_ld_value_preview(graph, source_url, base)
+            {
+                return Some(preview);
+            }
+
+            let type_is = |wanted: &str| {
+                map.get("@type").is_some_and(|kind| match kind {
+                    serde_json::Value::String(kind) => kind.eq_ignore_ascii_case(wanted),
+                    serde_json::Value::Array(kinds) => kinds.iter().any(|kind| {
+                        kind.as_str().is_some_and(|kind| kind.eq_ignore_ascii_case(wanted))
+                    }),
+                    _ => false,
+                })
+            };
+
+            if !type_is("VideoObject") && !type_is("ImageObject") && !type_is("Article") {
+                for nested in map.values() {
+                    if let Some(preview) = json_ld_value_preview(nested, source_url, base) {
+                        return Some(preview);
+                    }
+                }
+                return None;
+            }
+
+            let media_url = json_ld_url(map.get("contentUrl"), base)
+                .filter(|url| safe_remote_url(url));
+            let embed_url = json_ld_url(map.get("embedUrl"), base)
+                .filter(|url| safe_remote_url(url));
+            let image_url = json_ld_url(map.get("thumbnailUrl"), base)
+                .or_else(|| json_ld_url(map.get("image"), base))
+                .filter(|url| safe_remote_url(url));
+            let title = map
+                .get("name")
+                .or_else(|| map.get("headline"))
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            let description = map
+                .get("description")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+            let provider_name = map
+                .get("publisher")
+                .and_then(|publisher| publisher.get("name"))
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+                .or_else(|| base.host_str().map(str::to_owned));
+
+            let kind = if type_is("VideoObject") && media_url.is_some() {
+                PreviewKind::Video
+            } else if type_is("VideoObject") && embed_url.is_some() {
+                PreviewKind::Embed
+            } else if type_is("ImageObject") && image_url.is_some() {
+                PreviewKind::Image
+            } else {
+                PreviewKind::Link
+            };
+
+            Some(ResolvedPreview {
+                source_url: source_url.to_owned(),
+                kind,
+                media_url,
+                image_url,
+                embed_url,
+                title,
+                description,
+                provider_name,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn json_ld_url(value: Option<&serde_json::Value>, base: &Url) -> Option<String> {
+    let raw = match value? {
+        serde_json::Value::String(raw) => Some(raw.as_str()),
+        serde_json::Value::Array(values) => values.iter().find_map(|value| value.as_str()),
+        serde_json::Value::Object(map) => map
+            .get("url")
+            .or_else(|| map.get("contentUrl"))
+            .and_then(|value| value.as_str()),
+        _ => None,
+    }?;
+    resolve_meta_url(base, raw)
 }
 
 fn merge_preview(base: &mut ResolvedPreview, extra: ResolvedPreview) {
@@ -1343,6 +1493,27 @@ mod tests {
         let preview = parse_html_preview(base.as_str(), &base, player).await.unwrap();
         assert_eq!(preview.kind, PreviewKind::Embed);
         assert_eq!(preview.embed_url.as_deref(), Some("https://media.example/embed/1"));
+    }
+
+    #[tokio::test]
+    async fn parses_schema_org_video_object_without_provider_hardcoding() {
+        let base = Url::parse("https://video.example/watch/1").unwrap();
+        let html = r#"
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "VideoObject",
+              "name": "Demo",
+              "thumbnailUrl": "/poster.jpg",
+              "embedUrl": "/embed/1"
+            }
+            </script>
+        "#;
+        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        assert_eq!(preview.kind, PreviewKind::Embed);
+        assert_eq!(preview.title.as_deref(), Some("Demo"));
+        assert_eq!(preview.image_url.as_deref(), Some("https://video.example/poster.jpg"));
+        assert_eq!(preview.embed_url.as_deref(), Some("https://video.example/embed/1"));
     }
 
     #[test]
