@@ -527,6 +527,13 @@ mod tests {
         (runtime, secrets)
     }
 
+    fn wait_background(runtime: &mut ServerRuntime) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtime.background_result().is_none() && std::time::Instant::now() < deadline {
+            let _ = runtime.recv_timeout(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn whoami(id: &str) -> Whoami {
         Whoami {
             id: id.to_owned(),
@@ -578,7 +585,7 @@ mod tests {
         assert_eq!(runtime.mode(), RuntimeMode::BackgroundReconcile);
         assert_eq!(runtime.transport_mode(), TransportMode::BackgroundReconcile);
         assert!(!runtime.transport_mode().opens_websocket());
-        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        wait_background(&mut runtime);
         assert_eq!(
             runtime.background_result(),
             Some(BackgroundRunResult::NoSession)
@@ -615,7 +622,7 @@ mod tests {
             std::time::Duration::ZERO,
         );
 
-        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        wait_background(&mut runtime);
         assert_eq!(
             runtime.background_result(),
             Some(BackgroundRunResult::Deadline)
