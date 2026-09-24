@@ -181,9 +181,12 @@ fn video(
     seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
-    let state = media.file(&attachment.id, attachment.name());
-    let FileState::Ready(path) = state else {
-        return placeholder(ui, t, s, attachment, card_width, matches!(state, FileState::Loading));
+    // Desenhar o cartão não é pedir o vídeo: só com o arquivo já em cache é
+    // que dá para mostrar quadro/capa. Sem ele, um cartão de espera — o play
+    // é que dispara o download. A sondagem é só no disco local.
+    media.probe_file(&attachment.id, attachment.name());
+    let Some(path) = media.file_ready(&attachment.id) else {
+        return video_placeholder(ui, t, s, media, attachment, card_width);
     };
 
     let ctx = ui.ctx().clone();
@@ -314,18 +317,24 @@ fn audio(
     _seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
-    let state = media.file(&attachment.id, attachment.name());
-    let FileState::Ready(path) = state else {
-        return placeholder(ui, t, s, attachment, card_width, matches!(state, FileState::Loading));
-    };
+    // O cartão não baixa o áudio só por estar à vista. Sem arquivo, a onda é
+    // uma linha reta e o play é quem pede o download. A sondagem é só no disco.
+    media.probe_file(&attachment.id, attachment.name());
+    let path = media.file_ready(&attachment.id);
+    let state = media.file_state(&attachment.id);
+    let loading = matches!(state, Some(FileState::Loading));
+    let download_failed = matches!(state, Some(FileState::Failed));
 
     let ctx = ui.ctx().clone();
-    // A forma de onda sai do arquivo, não do player, então o cartão fica
-    // inteiro mesmo sem nada aberto.
-    let peaks: Vec<f32> = media
-        .waveform(&attachment.id, &path)
-        .map(<[f32]>::to_vec)
-        .unwrap_or_default();
+    // A forma de onda sai do arquivo, não do player: só existe depois que o
+    // arquivo existe. Antes disso, vazia.
+    let peaks: Vec<f32> = match &path {
+        Some(path) => media
+            .waveform(&attachment.id, path)
+            .map(<[f32]>::to_vec)
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     let (playing, position, duration, failed) = match media.existing_player(&attachment.id) {
         Some(player) => {
             player.update();
@@ -377,13 +386,20 @@ fn audio(
     ui.painter().text(
         button.center(),
         egui::Align2::CENTER_CENTER,
-        if playing { icon::PAUSE } else { icon::PLAY },
+        if loading {
+            icon::SPINNER
+        } else if download_failed {
+            icon::WARNING
+        } else if playing {
+            icon::PAUSE
+        } else {
+            icon::PLAY
+        },
         text::icon(13.0),
         t.accent_label,
     );
-    if button_response.clicked() && on_button {
-        media.toggle_player(&attachment.id, &path, false, &ctx);
-        media.solo(&attachment.id);
+    if button_response.clicked() && on_button && !loading {
+        media.toggle_play(&attachment.id, attachment.name(), false, &ctx);
     }
 
     // Forma de onda, que também serve de barra de progresso.
@@ -426,14 +442,15 @@ fn audio(
             ui.id().with(("audio-seek", &attachment.id)),
             Sense::click(),
         );
-        if let Some(ratio) = android_seek_ratio(ui, &response, wave) {
-            if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
-                let duration = player.duration();
-                if duration > 0.0 {
-                    player.seek(duration * ratio);
-                } else {
-                    player.play();
-                }
+        if let Some(ratio) = android_seek_ratio(ui, &response, wave)
+            && let Some(path) = path.as_ref()
+            && let Some(player) = media.start_player(&attachment.id, path, false, &ctx)
+        {
+            let duration = player.duration();
+            if duration > 0.0 {
+                player.seek(duration * ratio);
+            } else {
+                player.play();
             }
         }
     }
@@ -443,7 +460,9 @@ fn audio(
         (card.dragged() || card.clicked()) && wave_hit.contains(*pos)
     }) {
         let ratio = ((pos.x - wave.min.x) / wave.width()).clamp(0.0, 1.0) as f64;
-        if let Some(player) = media.start_player(&attachment.id, &path, false, &ctx) {
+        if let Some(path) = path.as_ref()
+            && let Some(player) = media.start_player(&attachment.id, path, false, &ctx)
+        {
             let duration = player.duration();
             if duration > 0.0 {
                 player.seek(duration * ratio);
@@ -455,10 +474,17 @@ fn audio(
         }
     }
 
+    let time = if loading {
+        s.downloading.to_owned()
+    } else if download_failed {
+        s.media_failed.to_owned()
+    } else {
+        format!("{} / {}", clock(position), clock(duration))
+    };
     ui.painter().text(
         egui::pos2(rect.max.x - space::LG, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        format!("{} / {}", clock(position), clock(duration)),
+        time,
         text::footnote(),
         t.label_tertiary,
     );
@@ -466,7 +492,7 @@ fn audio(
         log::warn!("áudio {}: {error}", attachment.id);
     }
 
-    if playing {
+    if playing || loading {
         ui.ctx().request_repaint();
     }
     None
@@ -548,43 +574,117 @@ fn file_card(
     })
 }
 
-/// Cartão enquanto o arquivo ainda está vindo.
-fn placeholder(
+/// Cartão do vídeo que ainda não foi baixado. Nunca busca o arquivo: mostra a
+/// miniatura do servidor quando ela vem de graça, ou um quadro vazio, e deixa
+/// o play ser o pedido explícito.
+fn video_placeholder(
     ui: &mut egui::Ui,
     t: &Tokens,
     s: &Strings,
+    media: &mut MediaStore,
     attachment: &Attachment,
-    width: f32,
-    loading: bool,
+    card_width: f32,
 ) -> Option<MediaAction> {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, FILE_H), Sense::hover());
-    ui.painter().rect(
+    let frame_size = Vec2::new(card_width, (card_width / (16.0 / 9.0)).min(320.0));
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(card_width, frame_size.y + CONTROLS_H),
+        Sense::click(),
+    );
+    let frame_rect = Rect::from_min_size(rect.min, frame_size);
+    let corner = CornerRadius::same(radius::CARD);
+    ui.painter().rect_filled(rect, corner, Color32::BLACK);
+
+    // Miniatura do servidor, se houver: é barata e não baixa o vídeo inteiro.
+    let thumb = media
+        .video_thumb(attachment)
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    match thumb {
+        Some((texture, natural)) => {
+            let size = fit(natural, frame_size);
+            let centered = Rect::from_center_size(frame_rect.center(), size);
+            ui.painter().image(
+                texture,
+                centered,
+                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        None => {
+            ui.painter().text(
+                frame_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::FILM_STRIP,
+                text::icon(30.0),
+                Color32::from_white_alpha(70),
+            );
+        }
+    }
+
+    let state = media.file_state(&attachment.id);
+    let loading = matches!(state, Some(FileState::Loading));
+    let download_failed = matches!(state, Some(FileState::Failed));
+    if loading {
+        ui.painter().text(
+            frame_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::SPINNER,
+            text::icon(24.0),
+            Color32::WHITE,
+        );
+    } else if download_failed {
+        ui.painter().text(
+            frame_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::WARNING,
+            text::icon(24.0),
+            Color32::WHITE,
+        );
+    } else {
+        let button = Rect::from_center_size(frame_rect.center(), Vec2::splat(52.0));
+        ui.painter()
+            .circle_filled(button.center(), 26.0, Color32::from_black_alpha(140));
+        ui.painter().text(
+            button.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::PLAY,
+            text::icon(22.0),
+            Color32::WHITE,
+        );
+    }
+
+    // O clique é o pedido explícito: baixa e toca quando o arquivo chegar.
+    if response.clicked() && !loading {
+        media.toggle_play(&attachment.id, attachment.name(), true, ui.ctx());
+    }
+
+    let status = if loading {
+        s.downloading
+    } else if download_failed {
+        s.media_failed
+    } else {
+        ""
+    };
+    let baseline = frame_rect.max.y + CONTROLS_H / 2.0;
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::MD, baseline),
+        egui::Align2::LEFT_CENTER,
+        elide(attachment.name(), 34),
+        text::footnote(),
+        Color32::from_white_alpha(200),
+    );
+    ui.painter().text(
+        egui::pos2(rect.max.x - space::MD, baseline),
+        egui::Align2::RIGHT_CENTER,
+        status,
+        text::footnote(),
+        Color32::from_white_alpha(160),
+    );
+    ui.painter().rect_stroke(
         rect,
-        CornerRadius::same(radius::CARD),
-        t.fill_soft,
+        corner,
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::XXL, rect.center().y),
-        egui::Align2::CENTER_CENTER,
-        if loading { icon::SPINNER } else { icon::WARNING },
-        text::icon(18.0),
-        t.label_tertiary,
-    );
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::XXL + space::XXL, rect.center().y - 8.0),
-        egui::Align2::LEFT_CENTER,
-        elide(attachment.name(), 42),
-        text::body(),
-        t.label_secondary,
-    );
-    ui.painter().text(
-        egui::pos2(rect.min.x + space::XXL + space::XXL, rect.center().y + 9.0),
-        egui::Align2::LEFT_CENTER,
-        if loading { s.downloading } else { s.media_failed },
-        text::footnote(),
-        t.label_tertiary,
     );
     if loading {
         ui.ctx()
