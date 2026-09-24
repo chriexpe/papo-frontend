@@ -564,4 +564,105 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn runtimes_de_servidores_sao_isolados() {
+        let (mut a, _) = disabled_runtime();
+
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let b = ServerRuntime::open(
+            "http://127.0.0.1:10".to_owned(),
+            Wake::noop(),
+            secrets,
+            cache,
+            notification,
+        );
+
+        a.process_update(Update::Session(Some(Box::new(whoami("conta-a")))));
+
+        assert_eq!(a.store.me, "conta-a");
+        assert!(b.store.me.is_empty());
+        assert_eq!(b.cached_owner(), None);
+        assert_ne!(a.server_key, b.server_key);
+    }
+
+    #[test]
+    fn runtime_headless_nao_inicia_demanda_de_timeline_selecionada() {
+        let (mut runtime, _) = disabled_runtime();
+        runtime.store.screen = Screen::Chat;
+        runtime.store.selected_channel = "geral".to_owned();
+
+        runtime.process_update(Update::Connection(Connection::Online));
+
+        // A demanda continua explícita para o consumidor foreground:
+        // ServerRuntime não chama mark_loading nem LoadMessages sozinho.
+        assert_eq!(
+            runtime.store.channel_needing_messages().as_deref(),
+            Some("geral")
+        );
+    }
+
+    #[test]
+    fn forget_server_limpa_namespace_duravel_e_credenciais() {
+        let path = temp_db_path("forget");
+        let cache = Arc::new(ClientDb::open(Some(path.clone())));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let mut runtime = ServerRuntime::open(
+            "http://127.0.0.1:11".to_owned(),
+            Wake::noop(),
+            secrets.clone(),
+            Arc::clone(&cache),
+            notification,
+        );
+        secrets
+            .store(&runtime.server_key, Secret::SessionToken, "token")
+            .expect("guardar token");
+
+        runtime.process_update(Update::Server(Some(Box::new(Server {
+            id: "srv".to_owned(),
+            name: "Papo".to_owned(),
+            owner_id: None,
+            owner_username: None,
+            public: false,
+            member_count: 1,
+            channel_count: 1,
+        }))));
+        cache.flush();
+        assert!(
+            cache
+                .load_snapshot(&runtime.server_key)
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+
+        runtime.forget_server();
+        cache.flush();
+
+        assert!(
+            cache
+                .load_snapshot(&runtime.server_key)
+                .is_some_and(|snapshot| snapshot.is_empty())
+        );
+        assert!(
+            secrets
+                .load(&runtime.server_key, Secret::SessionToken)
+                .expect("ler token")
+                .is_none()
+        );
+
+        drop(runtime);
+        drop(cache);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
 }
