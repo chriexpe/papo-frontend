@@ -731,11 +731,14 @@ impl PapoApp {
                 }
                 workspaces[index].label = label.to_owned();
             }
-            crate::state::demo::seed(&mut workspaces[active].runtime.store);
+            let active_key = workspaces[active].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[active].runtime.store, &active_key);
             // Os outros ficam com conversa por ler, para o marcador e o
             // contador aparecerem.
-            crate::state::demo::seed(&mut workspaces[1].runtime.store);
-            crate::state::demo::seed(&mut workspaces[2].runtime.store);
+            let second_key = workspaces[1].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[1].runtime.store, &second_key);
+            let third_key = workspaces[2].runtime.server_key.clone();
+            crate::state::demo::seed(&mut workspaces[2].runtime.store, &third_key);
             workspaces[1].runtime.store.read_marks.clear();
             workspaces[2].runtime.store.read_marks.clear();
         }
@@ -1054,6 +1057,7 @@ impl PapoApp {
         // sob a chave nova só porque o servidor é o mesmo.
         self.notification.remove_context(&old_key);
         self.cache.clear_server(&old_key);
+        crate::media::clear_server_media_cache(&old_key);
         self.settings.servers[index] = entry;
         // O servidor na tela devolve o guardado para o substituto, ou a
         // interface ficaria com a mídia de uma conexão que já morreu.
@@ -1177,6 +1181,7 @@ impl PapoApp {
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
         self.workspaces[index].runtime.forget_server();
+        crate::media::clear_server_media_cache(&key);
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 
