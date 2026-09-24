@@ -562,9 +562,6 @@ pub fn emoji_key(id: &str) -> String {
 pub fn preview_key(id: &str) -> String {
     format!("preview:{id}")
 }
-fn embed_key(id: &str) -> String {
-    format!("embed:{id}")
-}
 fn remote_image_key(id: &str) -> String {
     format!("remote-image:{id}")
 }
