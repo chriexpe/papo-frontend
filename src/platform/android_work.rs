@@ -240,6 +240,9 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoReconcileWorker_nativeRu
         }
     }
 
+    // Ownership is not released until the network thread has actually exited.
+    runtime.wait_background_shutdown();
+
     // Drain any update that was queued immediately before the terminal marker,
     // then make accepted cache writes durable before Java returns success.
     while runtime.try_drain().is_some() {
