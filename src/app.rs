@@ -1071,6 +1071,7 @@ impl PapoApp {
         if index == self.active || index >= self.workspaces.len() {
             return;
         }
+        self.persist_active_drafts(true);
         // O que estava na tela recolhe o seu; o novo entrega o dele.
         let previous = self.active;
         self.workspaces[previous].stash.swap(&mut self.ui);
@@ -2243,6 +2244,90 @@ impl PapoApp {
  }
 
 impl PapoApp {
+    fn ensure_active_drafts_loaded(&mut self) {
+        let index = self.active;
+        let owner = self.workspaces[index].runtime.store.me.clone();
+        if owner.is_empty() {
+            if self.ui.drafts.owner().is_some() {
+                self.ui.drafts = Default::default();
+                self.ui.composer.clear();
+                self.ui.composer_mentions.clear();
+                self.ui.replying = None;
+                self.ui.reply_notify = self.ui.reply_notify_default;
+            }
+            return;
+        }
+        if self.ui.drafts.is_loaded_for(&owner) {
+            return;
+        }
+
+        let server_key = self.workspaces[index].runtime.server_key.clone();
+        let channel_id = self.ui.last_channel.clone();
+        let provisional = (self.ui.drafts.owner().is_none())
+            .then(|| self.ui.draft_state())
+            .filter(|draft| !draft.is_empty());
+
+        match self.cache.load_drafts(&server_key, &owner) {
+            Ok(drafts) => {
+                let rows = drafts.len();
+                self.ui.drafts.load(&owner, drafts);
+                log::debug!("draft restored server={server_key} rows={rows}");
+            }
+            Err(error) => {
+                self.ui.drafts.reset_owner(&owner);
+                log::warn!("draft persistence failed server={server_key}: {error}");
+            }
+        }
+
+        if !channel_id.is_empty() {
+            self.ui.restore_draft(&channel_id);
+            if let Some(provisional) = provisional {
+                self.ui.drafts.put(&channel_id, provisional.clone());
+                self.ui.composer = provisional.text;
+                self.ui.composer_mentions = provisional.mentions;
+                self.ui.replying = provisional.reply_to;
+                self.ui.reply_notify = provisional.notify_reply;
+            }
+        }
+    }
+
+    fn persist_active_drafts(&mut self, force: bool) {
+        if self.workspaces.is_empty() {
+            return;
+        }
+        let owner = self.workspaces[self.active].runtime.store.me.clone();
+        if owner.is_empty() {
+            return;
+        }
+        let channel_id = self.ui.last_channel.clone();
+        if !channel_id.is_empty() {
+            self.ui.capture_draft(&channel_id);
+        }
+        let ops = self.ui.drafts.take_persistence_ops(&owner, force);
+        if !ops.is_empty() {
+            let server_key = self.workspaces[self.active].runtime.server_key.clone();
+            self.cache.submit(&server_key, ops);
+        }
+    }
+
+    fn flush_all_drafts(&mut self) {
+        self.persist_active_drafts(true);
+        for (index, workspace) in self.workspaces.iter_mut().enumerate() {
+            if index == self.active {
+                continue;
+            }
+            let owner = workspace.runtime.store.me.clone();
+            if owner.is_empty() {
+                continue;
+            }
+            let ops = workspace.stash.drafts.take_persistence_ops(&owner, true);
+            if !ops.is_empty() {
+                self.cache.submit(&workspace.runtime.server_key, ops);
+            }
+        }
+        self.cache.flush();
+    }
+
     fn sync_notification_contexts(&self) {
         for (index, workspace) in self.workspaces.iter().enumerate() {
             workspace.sync_notification_context(
@@ -2365,6 +2450,7 @@ impl eframe::App for PapoApp {
         }
 
         self.pump_network(&ctx);
+        self.ensure_active_drafts_loaded();
         self.sync_notification_contexts();
 
         // A call segue viva com outro servidor na tela: o trilho troca a
@@ -2506,6 +2592,7 @@ impl eframe::App for PapoApp {
                         .collect::<Vec<_>>()
                 });
                 self.ui.reply_notify_default = self.settings.reply_notifications;
+                let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
                     shell::draw(
@@ -2521,6 +2608,11 @@ impl eframe::App for PapoApp {
                         }),
                     )
                 };
+                let draft_channel_after = self.ui.last_channel.clone();
+                if !draft_channel_after.is_empty() {
+                    self.ui.capture_draft(&draft_channel_after);
+                }
+                self.persist_active_drafts(draft_channel_before != draft_channel_after);
                 if let Some(action) = rail_action {
                     self.handle_rail_action(action, &ctx);
                 }
@@ -2555,6 +2647,7 @@ impl eframe::App for PapoApp {
     }
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
+        self.flush_all_drafts();
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
         {
@@ -2563,6 +2656,7 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.flush_all_drafts();
         // No Android o eframe grava no `suspend` (onPause), antes de o laço de
         // quadros parar — é o último ponto no objeto da aplicação em que dá
         // para soltar mídia reconstruível antes de a Activity sair de cena.
