@@ -6114,3 +6114,105 @@ mod mobile_tests {
         )));
     }
 }
+
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    fn state(text: &str, reply: Option<&str>, notify: bool) -> DraftState {
+        DraftState {
+            text: text.to_owned(),
+            mentions: Vec::new(),
+            reply_to: reply.map(str::to_owned),
+            notify_reply: notify,
+        }
+    }
+
+    #[test]
+    fn canais_guardam_e_restauram_rascunhos_independentes() {
+        let mut ui = UiState::default();
+        ui.drafts.reset_owner("owner");
+        ui.last_channel = "A".to_owned();
+        ui.composer = "alpha".to_owned();
+        ui.replying = Some("m-a".to_owned());
+        ui.reply_notify = false;
+
+        ui.switch_draft_channel("B");
+        assert!(ui.composer.is_empty());
+        assert!(ui.replying.is_none());
+        assert_eq!(ui.reply_notify, ui.reply_notify_default);
+
+        ui.composer = "beta".to_owned();
+        ui.switch_draft_channel("A");
+        assert_eq!(ui.composer, "alpha");
+        assert_eq!(ui.replying.as_deref(), Some("m-a"));
+        assert!(!ui.reply_notify);
+
+        ui.switch_draft_channel("B");
+        assert_eq!(ui.composer, "beta");
+    }
+
+    #[test]
+    fn mencao_exata_sobrevive_round_trip_e_binding_ruim_e_descartado() {
+        let cached = papo_core::cache::CachedDraft {
+            owner_user_id: "owner".to_owned(),
+            channel_id: "general".to_owned(),
+            text: "oi @Alex".to_owned(),
+            mentions: vec![
+                papo_core::cache::CachedMentionBinding {
+                    start: 3,
+                    label: "Alex".to_owned(),
+                    user_id: "id-exato".to_owned(),
+                },
+                papo_core::cache::CachedMentionBinding {
+                    start: 1,
+                    label: "Alex".to_owned(),
+                    user_id: "id-errado".to_owned(),
+                },
+            ],
+            reply_to: None,
+            notify_reply: true,
+            updated_at: 1,
+        };
+        let restored = DraftState::from_cached(cached);
+        assert_eq!(restored.mentions.len(), 1);
+        assert_eq!(restored.mentions[0].user_id, "id-exato");
+        assert_eq!(restored.mentions[0].start, 3);
+    }
+
+    #[test]
+    fn coalescencia_grava_apenas_o_ultimo_valor_do_canal() {
+        let mut book = DraftBook::default();
+        book.reset_owner("owner");
+        book.capture("general", state("h", None, true));
+        book.capture("general", state("he", None, true));
+        book.capture("general", state("hello", None, true));
+
+        let ops = book.take_persistence_ops("owner", true);
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            papo_core::cache::CacheOp::UpsertDraft(draft) => {
+                assert_eq!(draft.text, "hello");
+                assert_eq!(draft.channel_id, "general");
+            }
+            _ => panic!("esperava upsert de draft"),
+        }
+    }
+
+    #[test]
+    fn limpar_um_canal_nao_apaga_o_outro_e_owner_reset_isola_contas() {
+        let mut book = DraftBook::default();
+        book.reset_owner("owner-a");
+        book.capture("A", state("um", None, true));
+        book.capture("B", state("dois", Some("m2"), false));
+        book.capture("A", DraftState::default());
+
+        assert!(book.get("A").is_none());
+        assert_eq!(book.get("B").unwrap().text, "dois");
+
+        book.reset_owner("owner-b");
+        assert!(book.get("B").is_none());
+        assert_eq!(book.owner(), Some("owner-b"));
+    }
+}
