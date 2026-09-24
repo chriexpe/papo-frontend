@@ -1127,7 +1127,7 @@ impl MediaStore {
         path: &Path,
         video: bool,
         ctx: &egui::Context,
-    ) -> Option<&mut player::Player> {
+    ) -> Option<&mut DirectMediaPlayer> {
         if !self.players.contains_key(id) {
             if !self.make_player_room() {
                 return None;
@@ -1164,7 +1164,7 @@ impl MediaStore {
         id: &str,
         url: &str,
         ctx: &egui::Context,
-    ) -> Option<&mut player::Player> {
+    ) -> Option<&mut DirectMediaPlayer> {
         if !papo_core::preview::safe_remote_url(url) {
             return None;
         }
@@ -1197,7 +1197,7 @@ impl MediaStore {
 
     /// Player já aberto, ou nada. Quem só desenha o cartão usa isto e aceita
     /// não ter duração nem quadro antes do primeiro play.
-    pub fn existing_player(&mut self, id: &str) -> Option<&mut player::Player> {
+    pub fn existing_player(&mut self, id: &str) -> Option<&mut DirectMediaPlayer> {
         if self.players.contains_key(id) {
             self.touch_player(id);
         }
@@ -1222,13 +1222,168 @@ impl MediaStore {
 }
 
 #[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct FakeBackend {
+        opens: AtomicUsize,
+    }
+
+    impl PlaybackBackend for FakeBackend {
+        fn name(&self) -> &'static str { "fake" }
+
+        fn open(
+            &self,
+            _source: DirectMediaSource,
+            _kind: DirectMediaKind,
+            _repaint: egui::Context,
+        ) -> Option<DirectMediaPlayer> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            Some(DirectMediaPlayer::new(Box::new(FakePlayer::default())))
+        }
+    }
+
+    #[derive(Default)]
+    struct FakePlayer {
+        playing: bool,
+        muted: bool,
+    }
+
+    impl backend::PlaybackPlayer for FakePlayer {
+        fn play(&mut self) { self.playing = true; }
+        fn pause(&mut self) { self.playing = false; }
+        fn toggle(&mut self) { self.playing = !self.playing; }
+        fn seek(&mut self, _seconds: f64) { self.playing = true; }
+        fn set_muted(&mut self, muted: bool) { self.muted = muted; }
+        fn is_playing(&self) -> bool { self.playing }
+        fn position(&self) -> f64 { 0.0 }
+        fn duration(&self) -> f64 { 1.0 }
+        fn aspect(&self) -> f32 { 16.0 / 9.0 }
+        fn error(&self) -> Option<String> { None }
+        fn update(&mut self) {}
+        fn frame<'a>(&'a mut self, _ctx: &egui::Context) -> Option<&'a TextureHandle> { None }
+    }
+
+    fn store(backend: Arc<FakeBackend>, max_players: usize, ttl: Duration) -> MediaStore {
+        MediaStore::with_backend_and_limits(
+            None,
+            backend,
+            MediaLimits {
+                max_players,
+                player_idle_ttl: ttl,
+                ..MediaLimits::default()
+            },
+        )
+    }
+
+    #[test]
+    fn rendering_without_explicit_play_does_not_open_player() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(Arc::clone(&backend), 4, Duration::from_secs(60));
+        assert!(media.existing_player("x").is_none());
+        assert_eq!(backend.opens.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn explicit_open_is_single_flight_per_resource() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(Arc::clone(&backend), 4, Duration::from_secs(60));
+        let ctx = egui::Context::default();
+        let path = Path::new("/tmp/fake.mp4");
+        assert!(media.start_player("x", path, true, &ctx).is_some());
+        assert!(media.start_player("x", path, true, &ctx).is_some());
+        assert_eq!(backend.opens.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn paused_idle_player_expires_but_playing_player_survives() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(backend, 4, Duration::from_secs(10));
+        let ctx = egui::Context::default();
+        let path = Path::new("/tmp/fake.mp4");
+
+        media.start_player("idle", path, true, &ctx).unwrap();
+        let stale = Instant::now() - Duration::from_secs(20);
+        media.player_last_used.insert("idle".into(), stale);
+        media.housekeep_at(Instant::now());
+        assert!(!media.players.contains_key("idle"));
+
+        media.start_player("playing", path, true, &ctx).unwrap().play();
+        media.player_last_used
+            .insert("playing".into(), Instant::now() - Duration::from_secs(20));
+        media.housekeep_at(Instant::now());
+        assert!(media.players.contains_key("playing"));
+    }
+
+    #[test]
+    fn hard_cap_evicts_oldest_idle_and_never_interrupts_active() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(backend, 2, Duration::from_secs(3600));
+        let ctx = egui::Context::default();
+        let path = Path::new("/tmp/fake.mp4");
+
+        media.start_player("a", path, true, &ctx).unwrap();
+        media.start_player("b", path, true, &ctx).unwrap();
+        media.start_player("c", path, true, &ctx).unwrap();
+        assert_eq!(media.players.len(), 2);
+        assert!(!media.players.contains_key("a"));
+
+        media.players.get_mut("b").unwrap().play();
+        media.players.get_mut("c").unwrap().play();
+        assert!(media.start_player("d", path, true, &ctx).is_none());
+        assert!(media.players.contains_key("b"));
+        assert!(media.players.contains_key("c"));
+    }
+
+    #[test]
+    fn solo_pauses_competing_playback() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(backend, 4, Duration::from_secs(3600));
+        let ctx = egui::Context::default();
+        let path = Path::new("/tmp/fake.mp4");
+        media.start_player("a", path, true, &ctx).unwrap().play();
+        media.start_player("b", path, true, &ctx).unwrap().play();
+        media.solo("b");
+        assert!(!media.players.get("a").unwrap().is_playing());
+        assert!(media.players.get("b").unwrap().is_playing());
+    }
+
+    #[test]
+    fn moderate_and_critical_trim_drop_idle_players() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(backend, 4, Duration::from_secs(3600));
+        let ctx = egui::Context::default();
+        let path = Path::new("/tmp/fake.mp4");
+        media.start_player("idle", path, true, &ctx).unwrap();
+        media.start_player("playing", path, true, &ctx).unwrap().play();
+
+        media.trim(TrimLevel::Moderate);
+        assert!(!media.players.contains_key("idle"));
+        assert!(media.players.contains_key("playing"));
+
+        media.players.get_mut("playing").unwrap().pause();
+        media.trim(TrimLevel::Critical);
+        assert!(media.players.is_empty());
+    }
+
+    #[test]
+    fn same_canonical_remote_url_has_same_disk_identity() {
+        let a = papo_core::preview::canonical_url("https://EXAMPLE.com:443/a?q=1").unwrap();
+        let b = papo_core::preview::canonical_url("https://example.com/a?q=1").unwrap();
+        assert_eq!(remote_resource_id(&a), remote_resource_id(&b));
+    }
+}
+
+#[cfg(test)]
 mod limpeza {
     use super::*;
 
     fn raiz(nome: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("papo-teste-{nome}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        for bucket in ["thumbs", "files", "recordings"] {
+        for bucket in ["thumbs", "files", "remote", "recordings"] {
             std::fs::create_dir_all(dir.join(bucket)).unwrap();
         }
         dir
