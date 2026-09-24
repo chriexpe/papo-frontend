@@ -341,14 +341,17 @@ impl NotificationCoordinator {
             return NotificationOutcome::Suppressed(reason);
         }
 
+        let envelope_title =
+            title(&context, candidate.author_id.as_deref(), &candidate.channel_id);
+        let envelope_body = display_mentions(&context.members, &candidate.body);
         let envelope = NotificationEnvelope {
             server_key: context.server_key.clone(),
             navigation_server: context.navigation_server,
             channel_id: candidate.channel_id,
             message_id: candidate.message_id.clone(),
             notification_id: candidate.notification_id,
-            title: title(&context, candidate.author_id.as_deref(), &candidate.channel_id),
-            body: display_mentions(&context.members, &candidate.body),
+            title: envelope_title,
+            body: envelope_body,
         };
 
         // O claim já foi commitado. Um crash exatamente daqui até o show()
