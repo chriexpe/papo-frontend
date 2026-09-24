@@ -48,6 +48,8 @@ pub enum RuntimeEffect {
     ServerUnlocked,
     ServerLabelChanged(String),
     OutgoingRejected {
+        owner_user_id: String,
+        channel_id: String,
         content: String,
         reply_to: Option<String>,
         notify_reply: bool,
@@ -449,11 +451,15 @@ impl ServerRuntime {
                 effects.push(RuntimeEffect::ServerLabelChanged(server.name.clone()));
             }
             Update::OutgoingRejected {
+                owner_user_id,
+                channel_id,
                 content,
                 reply_to,
                 notify_reply,
                 ..
             } => effects.push(RuntimeEffect::OutgoingRejected {
+                owner_user_id: owner_user_id.clone(),
+                channel_id: channel_id.clone(),
                 content: content.clone(),
                 reply_to: reply_to.clone(),
                 notify_reply: *notify_reply,
@@ -742,6 +748,8 @@ mod tests {
     fn update_aplica_store_e_sinaliza_efeito_de_ui() {
         let (mut runtime, _) = disabled_runtime();
         let effects = runtime.process_update(Update::OutgoingRejected {
+            owner_user_id: "u1".to_owned(),
+            channel_id: "c1".to_owned(),
             content: "olá".to_owned(),
             reply_to: Some("m1".to_owned()),
             notify_reply: true,
@@ -752,10 +760,12 @@ mod tests {
         assert!(matches!(
             effects.as_slice(),
             [RuntimeEffect::OutgoingRejected {
+                owner_user_id,
+                channel_id,
                 content,
                 reply_to: Some(reply_to),
                 notify_reply: true,
-            }] if content == "olá" && reply_to == "m1"
+            }] if owner_user_id == "u1" && channel_id == "c1" && content == "olá" && reply_to == "m1"
         ));
     }
 
