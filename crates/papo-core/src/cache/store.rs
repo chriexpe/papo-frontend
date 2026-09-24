@@ -760,6 +760,23 @@ impl TursoCache {
 
     /// Grava um preview e poda a tabela global na mesma transação.
     pub async fn store_preview(&mut self, preview: &CachedPreview) -> Result<(), turso::Error> {
+        self.store_preview_with_limit(preview, PREVIEW_CACHE_LIMIT).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn store_preview_for_test(
+        &mut self,
+        preview: &CachedPreview,
+        limit: i64,
+    ) -> Result<(), turso::Error> {
+        self.store_preview_with_limit(preview, limit).await
+    }
+
+    async fn store_preview_with_limit(
+        &mut self,
+        preview: &CachedPreview,
+        limit: i64,
+    ) -> Result<(), turso::Error> {
         let tx = self.conn.transaction().await?;
         tx.execute(
             "INSERT INTO preview_cache (
@@ -806,7 +823,7 @@ impl TursoCache {
                  ORDER BY last_used_at DESC, url_key DESC
                  LIMIT ?1
              )",
-            [PREVIEW_CACHE_LIMIT],
+            [limit],
         )
         .await?;
         tx.commit().await?;
