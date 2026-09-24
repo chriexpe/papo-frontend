@@ -61,8 +61,8 @@ final class PapoWorkScheduler {
                                 .setInputData(input)
                                 .setBackoffCriteria(
                                         BackoffPolicy.EXPONENTIAL,
-                                        30,
-                                        TimeUnit.SECONDS)
+                                        10,
+                                        TimeUnit.MINUTES)
                                 .addTag("papo-reconcile")
                                 .build();
                 workManager.enqueueUniquePeriodicWork(
