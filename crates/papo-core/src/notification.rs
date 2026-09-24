@@ -911,4 +911,79 @@ mod tests {
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
     }
 
+
+    fn ledger_entry(owner: &str, message_id: &str, handled_at: i64) -> NotificationLedgerEntry {
+        NotificationLedgerEntry {
+            owner_user_id: owner.to_owned(),
+            message_id: message_id.to_owned(),
+            channel_id: "geral".to_owned(),
+            notification_id: None,
+            decision: NotificationDecision::Delivered,
+            reason: None,
+            handled_at,
+        }
+    }
+
+    #[test]
+    fn full_server_removal_clears_only_its_ledger() {
+        let temp = TempDb::new("server-clear");
+        let db = temp.db();
+        for server in ["srv-a", "srv-b"] {
+            assert_eq!(
+                db.claim_notification(server, ledger_entry("me", "m1", 1))
+                    .expect("seed")
+                    .0,
+                ClaimResult::New
+            );
+        }
+        db.clear_server("srv-a");
+        db.flush();
+
+        assert_eq!(
+            db.claim_notification("srv-a", ledger_entry("me", "m1", 2))
+                .expect("a")
+                .0,
+            ClaimResult::New
+        );
+        assert_eq!(
+            db.claim_notification("srv-b", ledger_entry("me", "m1", 2))
+                .expect("b")
+                .0,
+            ClaimResult::AlreadyHandled
+        );
+    }
+
+    #[test]
+    fn notification_ledger_has_a_hard_row_bound() {
+        let temp = TempDb::new("retention");
+        let db = temp.db();
+        let mut stats = NotificationLedgerStats::default();
+        for index in 0..(crate::cache::NOTIFICATION_LEDGER_LIMIT + 2) {
+            let (claim, current) = db
+                .claim_notification(
+                    "srv",
+                    ledger_entry("me", &format!("m-{index}"), index),
+                )
+                .expect("claim");
+            assert_eq!(claim, ClaimResult::New);
+            stats = current;
+        }
+        assert_eq!(stats.rows, crate::cache::NOTIFICATION_LEDGER_LIMIT);
+
+        // A mais antiga saiu; reclamar o mesmo id precisa voltar a ser New,
+        // sem ultrapassar o teto.
+        let (claim, stats) = db
+            .claim_notification(
+                "srv",
+                ledger_entry(
+                    "me",
+                    "m-0",
+                    crate::cache::NOTIFICATION_LEDGER_LIMIT + 10,
+                ),
+            )
+            .expect("reclaim oldest");
+        assert_eq!(claim, ClaimResult::New);
+        assert_eq!(stats.rows, crate::cache::NOTIFICATION_LEDGER_LIMIT);
+    }
+
 }
