@@ -630,8 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn cancelling_background_runtime_does_not_clear_credentials() {
-        let cache = Arc::new(ClientDb::open(None));
+    fn cancelling_background_runtime_does_not_clear_credentials_or_cache() {
+        let path = temp_db_path("background-cancel");
+        let cache = Arc::new(ClientDb::open(Some(path.clone())));
         let notification = Arc::new(NotificationCoordinator::new(
             Arc::clone(&cache),
             None,
@@ -646,14 +647,31 @@ mod tests {
         let mut runtime = ServerRuntime::open_background(
             url,
             secrets.clone(),
-            cache,
+            Arc::clone(&cache),
             notification,
             true,
             std::time::Duration::from_secs(5),
         );
+        runtime.process_update(Update::Server(Some(Box::new(Server {
+            id: "srv".to_owned(),
+            name: "Papo".to_owned(),
+            owner_id: None,
+            owner_username: None,
+            public: false,
+            member_count: 1,
+            channel_count: 1,
+        }))));
+        cache.flush();
+        assert!(
+            cache
+                .load_snapshot(&key)
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+
         runtime.cancel_background();
-        let _ = runtime.recv_timeout(std::time::Duration::from_secs(1));
+        runtime.wait_background_shutdown();
         drop(runtime);
+        cache.flush();
 
         assert_eq!(
             secrets
@@ -662,6 +680,16 @@ mod tests {
                 .as_deref(),
             Some("saved-token")
         );
+        assert!(
+            cache
+                .load_snapshot(&key)
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+
+        drop(cache);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
