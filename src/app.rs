@@ -725,6 +725,8 @@ impl PapoApp {
             std::sync::Arc::clone(&cache),
             notification_sink,
         ));
+        #[cfg(not(target_os = "android"))]
+        notification.set_foreground(true);
 
         // Todos os servidores sobem juntos: o que chega num deles enquanto
         // outro está na tela ainda conta para o contador e a notificação.
