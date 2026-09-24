@@ -18,7 +18,6 @@ use std::sync::mpsc as sync_mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use sha2::{Digest, Sha256};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use tokio::sync::mpsc;
@@ -521,7 +520,13 @@ pub fn cache_path(bucket: &str, id: &str, name: &str) -> PathBuf {
 /// parado há tempo demais e, se ainda passar do teto, o mais antigo até
 /// caber. Recebe a raiz para poder ser testada fora da pasta do usuário.
 fn sweep_cache(root: &Path) {
-    sweep_cache_with(root, CACHE_BUDGET, CACHE_MAX_AGE, RECORDING_MAX_AGE);
+    let limits = MediaLimits::default();
+    sweep_cache_with(
+        root,
+        limits.disk_budget,
+        limits.disk_max_age,
+        RECORDING_MAX_AGE,
+    );
 }
 
 fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_age: Duration) {
@@ -582,12 +587,19 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
 }
 
 fn remote_resource_id(canonical_url: &str) -> String {
-    let digest = Sha256::digest(canonical_url.as_bytes());
-    format!("{digest:x}")
+    // FNV-1a 128: deterministic across processes/platforms and sufficient for
+    // cache identity. Correctness never depends on a file extension or raw URL.
+    let mut hash = 0x6c62272e07bb014262b821756295c58du128;
+    const PRIME: u128 = 0x0000000001000000000000000000013bu128;
+    for byte in canonical_url.as_bytes() {
+        hash ^= *byte as u128;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("{hash:032x}")
 }
 
 fn texture_eviction_class(key: &str) -> u8 {
-    if key.starts_with("full:") || key.starts_with("remote:") {
+    if key.starts_with("full:") || key.starts_with("remote-image:") {
         0
     } else if key.starts_with("poster:") {
         1
