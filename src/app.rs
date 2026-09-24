@@ -1002,59 +1002,6 @@ impl PapoApp {
         }
     }
 
-    /// Avisa na área de trabalho quando chega mensagem e a janela não está à
-    /// frente. A checagem acontece antes de aplicar a atualização, para ainda
-    /// enxergar o estado anterior.
-    #[cfg(target_os = "linux")]
-    fn maybe_notify(&self, ws: &Workspace, update: &crate::api::net::Update) {
-        use crate::api::net::Update;
-        use crate::api::ws::Event;
-
-        if !self.settings.notifications || (self.focused && !self.minimized) {
-            return;
-        }
-        let Some(notifier) = &self.notifier else {
-            return;
-        };
-        let Update::Event(event) = update else { return };
-        let Event::Message(message) = &**event else {
-            return;
-        };
-        if message.author_id == ws.store.me {
-            return;
-        }
-
-        let author = ws
-            .store
-            .member(&message.author_id)
-            .map(|member| member.name.clone())
-            .unwrap_or_else(|| message.author_id.clone());
-        // Com vários servidores, o canal sozinho não diz de onde veio.
-        let channel = ws
-            .store
-            .channel(&message.channel_id)
-            .map(|channel| {
-                if self.workspaces.len() > 1 {
-                    format!("#{} · {}", channel.name, ws.label)
-                } else {
-                    format!("#{}", channel.name)
-                }
-            })
-            .unwrap_or_default();
-
-        notifier.show(Notification {
-            summary: if channel.is_empty() {
-                author
-            } else {
-                format!("{author} · {channel}")
-            },
-            body: ws
-                .store
-                .display_mentions(message.content.as_deref().unwrap_or("")),
-            tag: Some(message.channel_id.clone()),
-        });
-    }
-
     /// Entra ou cria a conta com o que está no formulário.
     fn authenticate(&mut self, register: bool, ctx: &egui::Context) {
         let index = self.active;
@@ -1745,9 +1692,6 @@ impl PapoApp {
 
         for index in 0..self.workspaces.len() {
             while let Some(update) = self.workspaces[index].net.try_recv() {
-                #[cfg(target_os = "linux")]
-                self.maybe_notify(&self.workspaces[index], &update);
-
                 // Reconectou: o que aconteceu durante a queda vem da carga
                 // nova.
                 let reconnected = matches!(
@@ -2351,14 +2295,13 @@ impl PapoApp {
 
  }
 
-#[cfg(target_os = "android")]
 impl PapoApp {
-    fn sync_android_notification_contexts(&self) {
+    fn sync_notification_contexts(&self) {
         for (index, workspace) in self.workspaces.iter().enumerate() {
-            workspace.sync_notification_context(
+            self.notification.sync_context(workspace.notification_context(
                 self.settings.notifications,
                 index == self.active,
-            );
+            ));
         }
     }
 }
@@ -2416,10 +2359,8 @@ impl eframe::App for PapoApp {
         self.attach_window(frame);
 
         #[cfg(target_os = "android")]
-        {
-            self.handle_android_notification_navigation(&ctx);
-            self.sync_android_notification_contexts();
-        }
+        self.handle_android_notification_navigation(&ctx);
+        self.sync_notification_contexts();
 
         // Indo para segundo plano: gravar agora, porque pode não haver um
         // depois. Perder o foco é o último aviso que o aplicativo recebe
@@ -2442,11 +2383,14 @@ impl eframe::App for PapoApp {
             self.sync_blur_regions(&ctx);
         }
         #[cfg(target_os = "linux")]
-        self.handle_window_lifecycle(&ctx);
+        {
+            self.handle_window_lifecycle(&ctx);
+            self.notification
+                .set_foreground(self.focused && !self.minimized);
+        }
 
         self.pump_network(&ctx);
-        #[cfg(target_os = "android")]
-        self.sync_android_notification_contexts();
+        self.sync_notification_contexts();
 
         // A call segue viva com outro servidor na tela: o trilho troca a
         // conversa, não quem está falando.
