@@ -433,6 +433,9 @@ pub struct UiState {
     pub glass: Option<SharedGlass>,
     /// O texto mudou neste quadro (dispara o evento de digitação).
     pub typed: bool,
+    /// Coordenador global de previews. Não pertence a um servidor e por isso
+    /// não entra no Stash quando o usuário troca de workspace.
+    pub previews: Option<std::sync::Arc<papo_core::preview::PreviewCoordinator>>,
     /// Mídia baixada, decodificada e tocando.
     pub media: MediaStore,
     /// Arquivos escolhidos, ainda não enviados.
@@ -504,6 +507,7 @@ impl Default for UiState {
             pending: Vec::new(),
             glass: None,
             typed: false,
+            previews: None,
             media: MediaStore::new(None),
             attachments: Vec::new(),
             replying: None,
