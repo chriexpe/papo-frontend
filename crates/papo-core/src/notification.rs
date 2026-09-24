@@ -953,37 +953,41 @@ mod tests {
         );
     }
 
-    #[test]
-    fn notification_ledger_has_a_hard_row_bound() {
+    #[tokio::test]
+    async fn notification_ledger_has_a_hard_row_bound() {
         let temp = TempDb::new("retention");
-        let db = temp.db();
+        let path = temp.dir.join("papo-cache.db");
+        let mut db = crate::cache::TursoCache::open(
+            path.to_str().expect("utf-8 temp path"),
+        )
+        .await
+        .expect("open");
+        const TEST_LIMIT: i64 = 8;
         let mut stats = NotificationLedgerStats::default();
-        for index in 0..(crate::cache::NOTIFICATION_LEDGER_LIMIT + 2) {
+        for index in 0..(TEST_LIMIT + 2) {
             let (claim, current) = db
-                .claim_notification(
+                .claim_notification_for_test(
                     "srv",
-                    ledger_entry("me", &format!("m-{index}"), index),
+                    &ledger_entry("me", &format!("m-{index}"), index),
+                    TEST_LIMIT,
                 )
+                .await
                 .expect("claim");
             assert_eq!(claim, ClaimResult::New);
             stats = current;
         }
-        assert_eq!(stats.rows, crate::cache::NOTIFICATION_LEDGER_LIMIT);
+        assert_eq!(stats.rows, TEST_LIMIT);
 
-        // A mais antiga saiu; reclamar o mesmo id precisa voltar a ser New,
-        // sem ultrapassar o teto.
         let (claim, stats) = db
-            .claim_notification(
+            .claim_notification_for_test(
                 "srv",
-                ledger_entry(
-                    "me",
-                    "m-0",
-                    crate::cache::NOTIFICATION_LEDGER_LIMIT + 10,
-                ),
+                &ledger_entry("me", "m-0", TEST_LIMIT + 10),
+                TEST_LIMIT,
             )
+            .await
             .expect("reclaim oldest");
         assert_eq!(claim, ClaimResult::New);
-        assert_eq!(stats.rows, crate::cache::NOTIFICATION_LEDGER_LIMIT);
+        assert_eq!(stats.rows, TEST_LIMIT);
     }
 
 }
