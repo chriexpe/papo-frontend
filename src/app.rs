@@ -2355,7 +2355,7 @@ impl PapoApp {
                 log::debug!("draft restored server={server_key} rows={rows}");
             }
             Err(error) => {
-                self.ui.drafts.reset_owner(&owner);
+                self.ui.drafts.load(&owner, Vec::new());
                 log::warn!("draft persistence failed server={server_key}: {error}");
             }
         }
