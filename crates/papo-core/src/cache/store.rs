@@ -477,6 +477,26 @@ impl TursoCache {
         server_key: &str,
         entry: &NotificationLedgerEntry,
     ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
+        self.claim_notification_with_limit(server_key, entry, NOTIFICATION_LEDGER_LIMIT)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn claim_notification_for_test(
+        &mut self,
+        server_key: &str,
+        entry: &NotificationLedgerEntry,
+        limit: i64,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
+        self.claim_notification_with_limit(server_key, entry, limit).await
+    }
+
+    async fn claim_notification_with_limit(
+        &mut self,
+        server_key: &str,
+        entry: &NotificationLedgerEntry,
+        limit: i64,
+    ) -> Result<(ClaimResult, NotificationLedgerStats), turso::Error> {
         let tx = self.conn.transaction().await?;
         tx.execute(
             "INSERT OR IGNORE INTO notification_ledger (
@@ -519,7 +539,7 @@ impl TursoCache {
                 vec![
                     text(server_key),
                     text(&entry.owner_user_id),
-                    integer(NOTIFICATION_LEDGER_LIMIT),
+                    integer(limit),
                 ],
             )
             .await?;
