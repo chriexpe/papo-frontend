@@ -22,6 +22,8 @@ pub enum CandidateSource {
     Live,
     CacheRestore,
     Reconcile,
+    /// Authoritative backend Notification discovered by bounded background reconciliation.
+    Background,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +220,7 @@ impl NotificationCoordinator {
         notification: &Notification,
         source: CandidateSource,
     ) -> NotificationOutcome {
-        if source != CandidateSource::Live || notification.read {
+        if !matches!(source, CandidateSource::Live | CandidateSource::Background) || notification.read {
             return NotificationOutcome::Ignored;
         }
         let (Some(channel_id), Some(message_id)) = (
