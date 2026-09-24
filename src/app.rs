@@ -1132,13 +1132,20 @@ impl PapoApp {
         let form = self.workspaces[index].form.clone();
         let old_key = self.workspaces[index].server_key.clone();
         let entry = ServerEntry::new(url);
-        let mut fresh = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
+        let mut fresh = Workspace::open(
+            &entry,
+            &self.settings.server_marks,
+            ctx,
+            &self.cache,
+            &self.notification,
+        );
         fresh.form = AuthForm {
             server_url: entry.url.clone(),
             ..form
         };
         // O endereço velho some de propósito: o cache dele não pode aparecer
         // sob a chave nova só porque o servidor é o mesmo.
+        self.notification.remove_context(&old_key);
         self.cache.clear_server(&old_key);
         self.settings.servers[index] = entry;
         // O servidor na tela devolve o guardado para o substituto, ou a
@@ -1175,7 +1182,13 @@ impl PapoApp {
         // ativo e descartamos este workspace.
         let previous = self.active;
         let entry = ServerEntry::new(DRAFT_SERVER_URL.to_owned());
-        let mut workspace = Workspace::open(&entry, &self.settings.server_marks, ctx, &self.cache);
+        let mut workspace = Workspace::open(
+            &entry,
+            &self.settings.server_marks,
+            ctx,
+            &self.cache,
+            &self.notification,
+        );
         // Não herda o endereço padrão nem a sessão dele. O cartão nasce
         // realmente vazio e só cria conexão com o servidor digitado no envio.
         workspace.form.server_url.clear();
@@ -1200,6 +1213,7 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.notification.remove_context(&key);
         self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
