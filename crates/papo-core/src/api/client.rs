@@ -51,6 +51,7 @@ fn problem_error(status: StatusCode, body: &str) -> ApiError {
             }
         }
         StatusCode::NOT_FOUND => ApiError::NotFound,
+        StatusCode::TOO_MANY_REQUESTS => ApiError::TooManyRequests(problem.message()),
         _ => ApiError::Problem(if problem.status == 0 {
             format!("erro {status}")
         } else {
@@ -72,6 +73,10 @@ pub struct Upload {
 pub enum ApiError {
     #[error("{0}")]
     Problem(String),
+    /// O backend limitou a taxa (HTTP 429). É transitório: a resposta certa é
+    /// esperar e repetir, não tratar como falha definitiva nem como sucesso.
+    #[error("{0}")]
+    TooManyRequests(String),
     #[error("sessão expirada")]
     Unauthorized,
     /// Servidor fechado: falta a senha do servidor (`/auth/login_server`).
@@ -86,6 +91,15 @@ pub enum ApiError {
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
+
+impl ApiError {
+    /// Falha que vale a pena repetir sem mudar a requisição: ritmo (429) ou
+    /// transporte. Um corpo JSON que não decodifica é incompatibilidade, não
+    /// instabilidade — repetir só repete a mesma falha.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::TooManyRequests(_) | Self::Network(_))
+    }
+}
 
 #[derive(Debug)]
 pub enum SendMessageError {
@@ -1045,5 +1059,22 @@ mod tests {
         let session = Arc::new(Session::default());
         let api = Api::new("http://localhost:8080", session).unwrap();
         assert_eq!(api.websocket_url(), "ws://localhost:8080/ws");
+    }
+
+    #[test]
+    fn rate_limit_is_a_transient_error() {
+        let body = r#"{"type":"about:blank","title":"muitas requisições","detail":"tente novamente mais tarde","status":429}"#;
+        let error = problem_error(StatusCode::TOO_MANY_REQUESTS, body);
+        assert!(matches!(error, ApiError::TooManyRequests(_)));
+        assert!(error.is_transient(), "429 precisa poder ser repetido");
+    }
+
+    #[test]
+    fn client_errors_are_not_transient() {
+        let error = problem_error(
+            StatusCode::BAD_REQUEST,
+            r#"{"status":400,"detail":"nome inválido"}"#,
+        );
+        assert!(!error.is_transient());
     }
 }

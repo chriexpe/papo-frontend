@@ -67,6 +67,13 @@ const RECORDING_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// A varredura não o toca para não abortar o download no meio do caminho.
 const PARTIAL_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
+/// Downloads autenticados simultâneos por worker de mídia. O cartão deixou de
+/// baixar sozinho, mas várias miniaturas visíveis ainda podem coincidir — e o
+/// backend castiga rajadas de `/attachments/:id` com 429. Fica na faixa de
+/// 2–4 pedida pela política de mídia; o teste `fetch_gate_limits_...` prova
+/// que o portão impõe o teto.
+const AUTH_FETCH_CONCURRENCY: usize = 3;
+
 /// A limpeza de partida pertence ao processo, não a cada workspace. Sem esta
 /// guarda, dez servidores disparavam dez varreduras concorrentes da mesma raiz.
 static STARTUP_CACHE_SWEEP: Once = Once::new();
@@ -76,12 +83,19 @@ const FULL_MAX: u32 = 4096;
 
 #[derive(Debug, Clone)]
 pub enum Request {
-    /// Miniatura (ou a própria imagem, quando não há miniatura).
-    Thumb { id: String, thumb_id: Option<String> },
+    /// Miniatura do servidor. Só existe quando a listagem anuncia um
+    /// `thumbnail_id`; sem ele o cartão nem chega aqui, e o arquivo inteiro
+    /// nunca é baixado só para virar capa.
+    Thumb { id: String },
     /// Imagem em tamanho cheio, para o visualizador.
     Full { id: String },
     /// Garante o arquivo no cache e devolve o caminho (vídeo, áudio, outros).
     File { id: String, name: String },
+    /// Verifica se o arquivo já está em disco, **sem** baixar. É a única
+    /// consulta que desenhar um cartão pode disparar: uma ida ao disco local
+    /// não é um download, e é assim que mídia guardada por uma sessão anterior
+    /// reaparece.
+    Probe { id: String, name: String },
     /// Copia o anexo para fora do cache.
     Save { id: String, name: String, dest: PathBuf },
     /// Picos do áudio para desenhar a forma de onda.
@@ -104,6 +118,24 @@ pub enum Request {
     },
 }
 
+impl Request {
+    /// Rótulo curto, para o log de diagnóstico saber o que foi pedido.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Thumb { .. } => "thumb",
+            Self::Full { .. } => "full",
+            Self::File { .. } => "file",
+            Self::Probe { .. } => "probe",
+            Self::Save { .. } => "save",
+            Self::Waveform { .. } => "waveform",
+            Self::Poster { .. } => "poster",
+            Self::Emoji { .. } => "emoji",
+            Self::Preview { .. } => "preview",
+            Self::RemoteImage { .. } => "remote-image",
+        }
+    }
+}
+
 pub enum Loaded {
     Image {
         key: String,
@@ -117,6 +149,15 @@ pub enum Loaded {
     File {
         id: String,
         path: PathBuf,
+    },
+    /// O `Probe` não achou o arquivo em disco — e não deve baixá-lo sozinho.
+    Absent {
+        id: String,
+    },
+    /// Ausência já esperada (ex.: vídeo sem miniatura): marca a textura como
+    /// falha sem poluir o log — 404 de miniatura é resposta normal.
+    Missing {
+        key: String,
     },
     Saved {
         name: String,
@@ -210,14 +251,18 @@ async fn worker(
         std::mem::drop(tokio::task::spawn_blocking(|| sweep_cache(&cache_root())));
     });
 
+    let fetch_gate = Arc::new(FetchGate::new(AUTH_FETCH_CONCURRENCY));
+
     while let Some(request) = requests.recv().await {
         let api = api.clone();
         let server_key = server_key.clone();
         let remote_client = remote_client.clone();
         let results = results.clone();
         let repaint = repaint.clone();
+        let fetch_gate = fetch_gate.clone();
         tokio::spawn(async move {
-            let outcome = run(&api, &server_key, remote_client.as_ref(), request).await;
+            let outcome =
+                run(&api, &server_key, remote_client.as_ref(), &fetch_gate, request).await;
             if results.send(outcome).is_ok() {
                 repaint.request_repaint();
             }
@@ -229,29 +274,29 @@ async fn run(
     api: &Api,
     server_key: &str,
     remote_client: Option<&reqwest::Client>,
+    fetch_gate: &FetchGate,
     request: Request,
 ) -> Loaded {
     match request {
-        Request::Thumb { id, thumb_id } => {
+        Request::Thumb { id } => {
+            let _slot = fetch_gate.acquire().await;
             let key = thumb_key(&id);
-            // A miniatura do servidor evita baixar o original inteiro; sem
-            // ela, a própria imagem serve.
-            let path = match &thumb_id {
-                Some(_) => format!("/attachments/{id}/thumbnail"),
-                None => format!("/attachments/{id}"),
-            };
+            // Só o endpoint de miniatura, nunca o arquivo inteiro.
             match cached_fetch(
                 api,
                 &authenticated_cache_path(server_key, "thumbs", &id, ""),
-                &path,
+                &format!("/attachments/{id}/thumbnail"),
             )
             .await
             {
                 Ok(bytes) => decode(key, &bytes, INLINE_MAX),
-                Err(error) => Loaded::Failed { key, error },
+                // Ausência esperada (miniatura some do cache, por exemplo):
+                // não polui o log.
+                Err(_) => Loaded::Missing { key },
             }
         }
         Request::Full { id } => {
+            let _slot = fetch_gate.acquire().await;
             let key = full_key(&id);
             match cached_fetch(
                 api,
@@ -265,6 +310,7 @@ async fn run(
             }
         }
         Request::File { id, name } => {
+            let _slot = fetch_gate.acquire().await;
             let path = authenticated_cache_path(server_key, "files", &id, &name);
             match cached_file(api, &path, &format!("/attachments/{id}")).await {
                 Ok(()) => Loaded::File { id, path },
@@ -274,7 +320,17 @@ async fn run(
                 },
             }
         }
+        // Só olha o disco: nenhum byte sai pela rede por causa disto. É o que
+        // permite um cartão reaproveitar o cache sem pedir o anexo.
+        Request::Probe { id, name } => {
+            let path = authenticated_cache_path(server_key, "files", &id, &name);
+            match tokio::fs::metadata(&path).await {
+                Ok(meta) if meta.len() > 0 => Loaded::File { id, path },
+                _ => Loaded::Absent { id },
+            }
+        }
         Request::Save { id, name, dest } => {
+            let _slot = fetch_gate.acquire().await;
             let source = authenticated_cache_path(server_key, "files", &id, &name);
             match cached_file(api, &source, &format!("/attachments/{id}")).await {
                 // `copy` vai em pedaços: salvar um vídeo grande não precisa
@@ -789,6 +845,29 @@ fn poster_queue() -> &'static tokio::sync::Semaphore {
     QUEUE.get_or_init(|| tokio::sync::Semaphore::new(1))
 }
 
+/// Portão dos downloads autenticados. Um teto explícito evita que uma conversa
+/// cheia de anexos dispare dezenas de `/attachments/:id` de uma vez — que é
+/// justamente o que faz o backend responder 429. Cada worker de mídia tem o
+/// seu, então o limite é por workspace, não global.
+struct FetchGate {
+    slots: tokio::sync::Semaphore,
+}
+
+impl FetchGate {
+    fn new(permits: usize) -> Self {
+        Self {
+            slots: tokio::sync::Semaphore::new(permits),
+        }
+    }
+
+    async fn acquire(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.slots
+            .acquire()
+            .await
+            .expect("o portão de mídia nunca fecha")
+    }
+}
+
 /// Guarda a capa em disco para não decodificar o vídeo de novo amanhã.
 fn save_poster(dest: &Path, image: &ColorImage) {
     let (width, height) = (image.size[0] as u32, image.size[1] as u32);
@@ -901,6 +980,14 @@ pub struct MediaStore {
     /// cru do anexo, então não se cruzam.
     used: HashMap<String, u64>,
     tick: u64,
+    /// Anexos que o usuário mandou tocar antes de o arquivo existir: assim que
+    /// o download chega em `pump`, o player abre e toca. O `bool` diz se é
+    /// vídeo. Sem isto, pedir play só poderia funcionar com o arquivo em mãos.
+    pending_play: HashMap<String, bool>,
+    /// Anexos cujo disco já foi consultado uma vez, para um cartão desenhado
+    /// a cada quadro não repetir a mesma pergunta. Não guarda o resultado:
+    /// quem o tem é o mapa `files`.
+    probed: std::collections::HashSet<String>,
     /// Anexos cuja moderação marcou como sensível e o usuário revelou.
     revealed: std::collections::HashSet<String>,
     /// Último arquivo salvo, para o aviso flutuante.
@@ -935,6 +1022,8 @@ impl MediaStore {
             player_last_used: HashMap::new(),
             used: HashMap::new(),
             tick: 0,
+            pending_play: HashMap::new(),
+            probed: std::collections::HashSet::new(),
             revealed: std::collections::HashSet::new(),
             saved: None,
             emoji_raster: EmojiRaster::new(),
@@ -978,7 +1067,18 @@ impl MediaStore {
                     );
                 }
                 Loaded::File { id, path } => {
-                    self.files.insert(file_key(&id), FileState::Ready(path));
+                    self.files.insert(file_key(&id), FileState::Ready(path.clone()));
+                    // Um play pedido antes do arquivo existir só pode ser
+                    // honrado agora: o clique era o pedido, o download foi o
+                    // caminho.
+                    if let Some(video) = self.pending_play.remove(&id) {
+                        self.toggle_player(&id, &path, video, ctx);
+                        self.solo(&id);
+                    }
+                }
+                Loaded::Absent { .. } => {}
+                Loaded::Missing { key } => {
+                    self.textures.insert(key, Texture::Failed);
                 }
                 Loaded::Saved { name, path } => {
                     self.saved = Some((name, path, ctx.input(|input| input.time)));
@@ -988,7 +1088,8 @@ impl MediaStore {
                 }
                 Loaded::Failed { key, error } => {
                     log::warn!("mídia {key}: {error}");
-                    if key.starts_with("file:") {
+                    if let Some(id) = key.strip_prefix("file:") {
+                        self.pending_play.remove(id);
                         self.files.insert(key, FileState::Failed);
                     } else {
                         self.textures.insert(key, Texture::Failed);
@@ -1135,23 +1236,33 @@ impl MediaStore {
     }
 
     fn ask(&self, request: Request) {
+        log::trace!("media ask kind={}", request.kind());
         if let Some(media) = &self.media {
             media.request(request);
         }
     }
 
-    /// Miniatura do anexo, pedindo o download na primeira vez.
+    /// Miniatura do servidor, pedindo o download na primeira vez. Sem
+    /// `thumbnail_id` não há miniatura: devolve `None` sem pedir nada — o
+    /// cartão desenha o quadro vazio e a imagem inteira só vem no visualizador.
     pub fn thumb(&mut self, attachment: &Attachment) -> Option<&Texture> {
+        attachment.thumbnail_id.as_deref()?;
         let key = thumb_key(&attachment.id);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Thumb {
                 id: attachment.id.clone(),
-                thumb_id: attachment.thumbnail_id.clone(),
             });
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// Textura da miniatura já em memória, **sem disparar pedido**. Deixa o
+    /// cartão medir o espaço antes de decidir buscar — e não pede nada fora
+    /// da área visível.
+    pub fn loaded_thumb(&self, id: &str) -> Option<&Texture> {
+        self.textures.get(&thumb_key(id))
     }
 
     /// Capa do vídeo: um quadro tirado do arquivo já em cache.
@@ -1248,6 +1359,66 @@ impl MediaStore {
             name: name.to_owned(),
         });
         FileState::Loading
+    }
+
+    /// Estado do arquivo **sem pedir nada**. É o que um cartão usa ao ser
+    /// desenhado: renderizar não é pedir o anexo. `None` = nunca pedido.
+    pub fn file_state(&self, id: &str) -> Option<FileState> {
+        self.files.get(&file_key(id)).cloned()
+    }
+
+    /// Pergunta ao disco se o arquivo já existe, **sem baixá-lo**. É o que um
+    /// cartão faz ao ser desenhado: uma ida ao cache local não é download, e é
+    /// assim que uma mídia guardada numa sessão anterior reaparece sozinha.
+    /// Idempotente por anexo.
+    pub fn probe_file(&mut self, id: &str, name: &str) {
+        let key = file_key(id);
+        if self.files.contains_key(&key) || !self.probed.insert(key) {
+            return;
+        }
+        self.ask(Request::Probe {
+            id: id.to_owned(),
+            name: name.to_owned(),
+        });
+    }
+
+    /// Caminho do arquivo se ele já estiver em cache; não dispara download.
+    pub fn file_ready(&self, id: &str) -> Option<PathBuf> {
+        match self.files.get(&file_key(id)) {
+            Some(FileState::Ready(path)) => Some(path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Pedido explícito do usuário para tocar o anexo. Diferente de desenhar o
+    /// cartão: só um clique/tap chega aqui. Com o arquivo em mãos, toca;
+    /// sem ele, baixa e toca assim que chegar — o play é honrado, não perdido.
+    pub fn toggle_play(&mut self, id: &str, name: &str, video: bool, ctx: &egui::Context) {
+        if let Some(path) = self.file_ready(id) {
+            self.toggle_player(id, &path, video, ctx);
+            self.solo(id);
+            return;
+        }
+        let key = file_key(id);
+        // Uma tentativa anterior falhou: deixa pedir de novo.
+        if matches!(self.files.get(&key), Some(FileState::Failed)) {
+            self.files.remove(&key);
+        }
+        let mut need_fetch = false;
+        match self.files.entry(key) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(FileState::Loading);
+                need_fetch = true;
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+        }
+        if need_fetch {
+            self.ask(Request::File {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            });
+        }
+        self.pending_play.insert(id.to_owned(), video);
     }
 
     pub fn waveform(&mut self, id: &str, path: &Path) -> Option<&[f32]> {
@@ -1460,6 +1631,30 @@ mod lifecycle_tests {
         assert_eq!(backend.opens.load(Ordering::SeqCst), 0);
     }
 
+    /// Espiar o estado é o que o cartão faz ao ser desenhado. Não pode virar
+    /// pedido de download — essa era justamente a regressão que enchia o
+    /// backend de `/attachments/:id` a cada rolagem.
+    #[test]
+    fn peeking_file_state_never_starts_a_download() {
+        let backend = Arc::new(FakeBackend::default());
+        let media = store(backend, 4, Duration::from_secs(60));
+        assert!(media.file_state("x").is_none());
+        assert!(media.file_ready("x").is_none());
+    }
+
+    /// Play pedido antes do arquivo existir não inventa um player: registra a
+    /// intenção e espera o download. Quem abre o player é a chegada do arquivo.
+    #[test]
+    fn play_without_file_waits_instead_of_opening_player() {
+        let backend = Arc::new(FakeBackend::default());
+        let mut media = store(Arc::clone(&backend), 4, Duration::from_secs(60));
+        let ctx = egui::Context::default();
+        media.toggle_play("x", "video.mp4", true, &ctx);
+        assert!(media.existing_player("x").is_none());
+        assert_eq!(backend.opens.load(Ordering::SeqCst), 0);
+        assert!(matches!(media.file_state("x"), Some(FileState::Loading)));
+    }
+
     #[test]
     fn explicit_open_is_single_flight_per_resource() {
         let backend = Arc::new(FakeBackend::default());
@@ -1469,6 +1664,37 @@ mod lifecycle_tests {
         assert!(media.start_player("x", path, true, &ctx).is_some());
         assert!(media.start_player("x", path, true, &ctx).is_some());
         assert_eq!(backend.opens.load(Ordering::SeqCst), 1);
+    }
+
+    /// O portão existe para rajada não virar 429: prova que o teto é de fato
+    /// respeitado, em vez de confiar num número escolhido a dedo.
+    #[tokio::test]
+    async fn fetch_gate_limits_concurrent_downloads() {
+        use tokio::task::JoinSet;
+
+        let gate = Arc::new(FetchGate::new(AUTH_FETCH_CONCURRENCY));
+        let live = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut tasks = JoinSet::new();
+        for _ in 0..24 {
+            let gate = Arc::clone(&gate);
+            let live = Arc::clone(&live);
+            let peak = Arc::clone(&peak);
+            tasks.spawn(async move {
+                let _slot = gate.acquire().await;
+                let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                live.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+        while let Some(outcome) = tasks.join_next().await {
+            outcome.unwrap();
+        }
+        assert!(
+            peak.load(Ordering::SeqCst) <= AUTH_FETCH_CONCURRENCY,
+            "o portão deixou passar mais downloads simultâneos do que o teto"
+        );
     }
 
     #[test]
