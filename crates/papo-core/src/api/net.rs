@@ -2239,6 +2239,32 @@ async fn verify_saved_session(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
 ) {
+    if verify_saved_session_once(
+        api,
+        storage_key,
+        storage,
+        session,
+        me,
+        updates,
+        wake,
+    )
+    .await
+        == SavedSessionOutcome::Verified
+    {
+        let id = me.lock().ok().and_then(|slot| slot.clone());
+        let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
+    }
+}
+
+async fn verify_saved_session_once(
+    api: &Api,
+    storage_key: &str,
+    storage: &dyn SecretStore,
+    session: &Arc<Session>,
+    me: &Arc<std::sync::Mutex<Option<String>>>,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) -> SavedSessionOutcome {
     let mut result = api.whoami().await;
 
     // Servidor fechado é um portão separado da conta. Se já conhecemos a
@@ -2248,19 +2274,18 @@ async fn verify_saved_session(
             Ok(true) => result = api.whoami().await,
             Ok(false) | Err(_) => {
                 publish(updates, wake, Update::ServerLocked);
-                return;
+                return SavedSessionOutcome::ServerLocked;
             }
         }
     }
 
     match result {
         Ok(whoami) => {
-            let id = whoami.id.clone();
             if let Ok(mut slot) = me.lock() {
-                *slot = Some(id.clone());
+                *slot = Some(whoami.id.clone());
             }
             publish(updates, wake, Update::Session(Some(Box::new(whoami))));
-            bootstrap(api, storage_key, updates, wake, Some(&id)).await;
+            SavedSessionOutcome::Verified
         }
         Err(ApiError::Unauthorized) => {
             session.set_token(None);
@@ -2269,9 +2294,11 @@ async fn verify_saved_session(
             }
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
+            SavedSessionOutcome::Unauthorized
         }
         Err(ApiError::ServerLocked) => {
             publish(updates, wake, Update::ServerLocked);
+            SavedSessionOutcome::ServerLocked
         }
         Err(error) => {
             log::warn!(
@@ -2284,6 +2311,7 @@ async fn verify_saved_session(
                 wake,
                 Update::Error(error.to_string()),
             );
+            SavedSessionOutcome::Transient
         }
     }
 }
@@ -2828,42 +2856,64 @@ async fn bootstrap(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_id: Option<&str>,
-) {
+) -> bool {
+    let mut complete = true;
     match api.server().await {
         Ok(server) => publish(updates, wake, Update::Server(server.map(Box::new))),
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.channels().await {
         Ok(channels) => publish(updates, wake, Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.users().await {
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            load_profiles(api, storage_key, updates, wake, ids).await;
+            if !load_profiles(api, storage_key, updates, wake, ids).await {
+                complete = false;
+            }
         }
         Err(ApiError::NotFound) => {}
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.roles().await {
         Ok(roles) => publish(updates, wake, Update::Roles(roles)),
-        Err(error) => log::warn!("runtime {storage_key}: cargos: {error}"),
+        Err(error) => {
+            complete = false;
+            log::warn!("runtime {storage_key}: cargos: {error}");
+        }
     }
     match api.emojis().await {
         Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
-        Err(error) => log::warn!("runtime {storage_key}: emojis: {error}"),
+        Err(error) => {
+            complete = false;
+            log::warn!("runtime {storage_key}: emojis: {error}");
+        }
     }
     if let Some(user_id) = user_id {
         match api.notifications(user_id).await {
             Ok(notifications) => {
                 publish(updates, wake, Update::Notifications(notifications))
             }
-            Err(error) => log::warn!("runtime {storage_key}: notificações: {error}"),
+            Err(error) => {
+                complete = false;
+                log::warn!("runtime {storage_key}: notificações: {error}");
+            }
         }
     }
+    complete
 }
 
 /// Busca as fotos de perfil de uma vez só. Uma requisição por pessoa seria
@@ -2874,13 +2924,19 @@ async fn load_profiles(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_ids: Vec<String>,
-) {
+) -> bool {
     if user_ids.is_empty() {
-        return;
+        return true;
     }
     match api.profiles(user_ids).await {
-        Ok(profiles) => publish(updates, wake, Update::Profiles(profiles)),
-        Err(error) => log::warn!("runtime {storage_key}: perfis: {error}"),
+        Ok(profiles) => {
+            publish(updates, wake, Update::Profiles(profiles));
+            true
+        }
+        Err(error) => {
+            log::warn!("runtime {storage_key}: perfis: {error}");
+            false
+        }
     }
 }
 
@@ -2895,7 +2951,7 @@ async fn relist_users(
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            load_profiles(api, storage_key, updates, wake, ids).await;
+            let _ = load_profiles(api, storage_key, updates, wake, ids).await;
         }
         Err(error) => report(storage_key, updates, wake, error),
     }
