@@ -596,6 +596,21 @@ impl PapoApp {
         let runtime_lease = crate::platform::runtime_lease::ForegroundLease::acquire();
 
         #[cfg(target_os = "android")]
+        {
+            let background_servers: Vec<(String, String)> = settings
+                .servers
+                .iter()
+                .map(|entry| (papo_core::server_key(&entry.url), entry.url.clone()))
+                .collect();
+            crate::platform::android_work::sync_periodic(
+                background_servers
+                    .iter()
+                    .map(|(key, url)| (key.as_str(), url.as_str())),
+                settings.notifications,
+            );
+        }
+
+        #[cfg(target_os = "android")]
         if settings.notifications {
             crate::platform::android_message::ensure_permission();
         }
