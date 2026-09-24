@@ -1215,6 +1215,46 @@ fn preview_metadata_survives_clientdb_reopen() {
     assert_eq!(row.state, PreviewCacheState::Ready);
 }
 
+#[test]
+fn preview_negative_and_retry_states_survive_reopen() {
+    let temp = TempDb::new("preview-states");
+    let negative_url = "https://example.com/no-media";
+    let retry_url = "https://example.com/temporary";
+
+    {
+        let db = open(&temp);
+        let mut negative = cached_preview(negative_url, "negative", 1_000);
+        negative.state = PreviewCacheState::Negative;
+        negative.kind = None;
+        negative.image_url = None;
+        negative.failure_class = Some("negative".to_owned());
+        db.store_preview(negative).expect("store negative");
+
+        let mut retry = cached_preview(retry_url, "retry", 2_000);
+        retry.state = PreviewCacheState::RetryAfter;
+        retry.kind = None;
+        retry.image_url = None;
+        retry.retry_after = Some(9_000);
+        retry.failure_class = Some("transient".to_owned());
+        db.store_preview(retry).expect("store retry");
+    }
+
+    let db = open(&temp);
+    assert_eq!(
+        db.load_preview(negative_url)
+            .expect("negative load")
+            .expect("negative row")
+            .state,
+        PreviewCacheState::Negative
+    );
+    let retry = db
+        .load_preview(retry_url)
+        .expect("retry load")
+        .expect("retry row");
+    assert_eq!(retry.state, PreviewCacheState::RetryAfter);
+    assert_eq!(retry.retry_after, Some(9_000));
+}
+
 #[tokio::test]
 async fn preview_retention_is_global_and_hard_bounded() {
     let temp = TempDb::new("preview-bound");
