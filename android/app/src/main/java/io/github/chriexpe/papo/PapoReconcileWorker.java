@@ -53,9 +53,12 @@ public final class PapoReconcileWorker extends Worker {
         }
 
         try {
-            final File dataDir = getApplicationContext().getDataDir();
+            // GameActivity passes getFilesDir() into its native
+            // internalDataPath. The cold Worker must use that exact root so
+            // sessions/ and data/papo-cache.db are shared, not duplicated.
+            final File privateRoot = getApplicationContext().getFilesDir();
             final String raw = nativeRunBackgroundReconcile(
-                    dataDir.getCanonicalPath(),
+                    privateRoot.getCanonicalPath(),
                     serverKey,
                     serverUrl,
                     notificationsEnabled,
