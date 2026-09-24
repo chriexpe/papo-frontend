@@ -1162,6 +1162,13 @@ enum SavedSessionOutcome {
     Transient,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapOutcome {
+    Complete,
+    Transient,
+    Unauthorized,
+}
+
 async fn wait_background_cancel(cancel: Arc<std::sync::atomic::AtomicBool>) {
     while !cancel.load(std::sync::atomic::Ordering::Acquire) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1228,14 +1235,26 @@ async fn background_worker(
             return BackgroundRunResult::TransientFailure;
         }
 
-        let bootstrap_ok = bootstrap(
+        match bootstrap(
             &api,
             &storage_key,
             &updates,
             &wake,
             Some(&owner),
         )
-        .await;
+        .await
+        {
+            BootstrapOutcome::Complete => {}
+            BootstrapOutcome::Unauthorized => {
+                session.set_token(None);
+                remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
+                publish(&updates, &wake, Update::Session(None));
+                return BackgroundRunResult::PermanentAuthFailure;
+            }
+            BootstrapOutcome::Transient => {
+                return BackgroundRunResult::TransientFailure;
+            }
+        }
 
         let mut outgoing = Vec::new();
         restore_outgoing(
@@ -1260,11 +1279,7 @@ async fn background_worker(
         )
         .await;
 
-        if bootstrap_ok {
-            BackgroundRunResult::Completed
-        } else {
-            BackgroundRunResult::TransientFailure
-        }
+        BackgroundRunResult::Completed
     };
 
     let result = tokio::select! {
@@ -2888,11 +2903,14 @@ async fn bootstrap(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_id: Option<&str>,
-) -> bool {
+) -> BootstrapOutcome {
     let mut complete = true;
+    let mut unauthorized = false;
+
     match api.server().await {
         Ok(server) => publish(updates, wake, Update::Server(server.map(Box::new))),
         Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
             report(storage_key, updates, wake, error);
         }
@@ -2901,6 +2919,7 @@ async fn bootstrap(
         Ok(channels) => publish(updates, wake, Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
             report(storage_key, updates, wake, error);
         }
@@ -2909,12 +2928,15 @@ async fn bootstrap(
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            if !load_profiles(api, storage_key, updates, wake, ids).await {
+            if let Err(error) = load_profiles(api, updates, wake, ids).await {
+                unauthorized |= matches!(error, ApiError::Unauthorized);
                 complete = false;
+                log::warn!("runtime {storage_key}: perfis: {error}");
             }
         }
         Err(ApiError::NotFound) => {}
         Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
             report(storage_key, updates, wake, error);
         }
@@ -2922,6 +2944,7 @@ async fn bootstrap(
     match api.roles().await {
         Ok(roles) => publish(updates, wake, Update::Roles(roles)),
         Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
             log::warn!("runtime {storage_key}: cargos: {error}");
         }
@@ -2930,46 +2953,45 @@ async fn bootstrap(
         Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
         Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
             log::warn!("runtime {storage_key}: emojis: {error}");
         }
     }
     if let Some(user_id) = user_id {
         match api.notifications(user_id).await {
-            Ok(notifications) => {
-                publish(updates, wake, Update::Notifications(notifications))
-            }
+            Ok(notifications) => publish(updates, wake, Update::Notifications(notifications)),
             Err(error) => {
+                unauthorized |= matches!(error, ApiError::Unauthorized);
                 complete = false;
                 log::warn!("runtime {storage_key}: notificações: {error}");
             }
         }
     }
-    complete
+
+    if unauthorized {
+        BootstrapOutcome::Unauthorized
+    } else if complete {
+        BootstrapOutcome::Complete
+    } else {
+        BootstrapOutcome::Transient
+    }
 }
 
 /// Busca as fotos de perfil de uma vez só. Uma requisição por pessoa seria
 /// uma rajada a cada entrada; o `profile_batch` existe justamente para isso.
 async fn load_profiles(
     api: &Api,
-    storage_key: &str,
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_ids: Vec<String>,
-) -> bool {
+) -> Result<(), ApiError> {
     if user_ids.is_empty() {
-        return true;
+        return Ok(());
     }
-    match api.profiles(user_ids).await {
-        Ok(profiles) => {
-            publish(updates, wake, Update::Profiles(profiles));
-            true
-        }
-        Err(error) => {
-            log::warn!("runtime {storage_key}: perfis: {error}");
-            false
-        }
-    }
+    let profiles = api.profiles(user_ids).await?;
+    publish(updates, wake, Update::Profiles(profiles));
+    Ok(())
 }
 
 /// Relista as pessoas. Perfil, presença e banimento mudam essa lista.
@@ -2983,7 +3005,9 @@ async fn relist_users(
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            let _ = load_profiles(api, storage_key, updates, wake, ids).await;
+            if let Err(error) = load_profiles(api, updates, wake, ids).await {
+                log::warn!("runtime {storage_key}: perfis: {error}");
+            }
         }
         Err(error) => report(storage_key, updates, wake, error),
     }
