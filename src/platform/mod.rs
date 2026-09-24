@@ -3,6 +3,7 @@ pub mod activate;
 #[cfg(target_os = "linux")]
 pub mod appmenu;
 pub mod autostart;
+pub mod client_db;
 
 /// O Papo está rodando empacotado no Flatpak? Vale para o que o sandbox
 /// muda: o autostart chama o `flatpak run`, e a bandeja abre mão do nome
@@ -25,12 +26,18 @@ pub mod jvm;
 /// testes desktop para validar fanout/registro sem depender de um aparelho.
 #[cfg(any(target_os = "android", test))]
 pub mod android_network;
+/// Process-wide foreground/headless runtime exclusion.
+#[cfg(any(target_os = "android", test))]
+pub mod runtime_lease;
 /// Foreground service, lifecycle e Picture-in-Picture da call.
 #[cfg(target_os = "android")]
 pub mod android_call;
 /// Notificações nativas de mensagens e navegação por toque.
 #[cfg(target_os = "android")]
 pub mod android_message;
+/// Persistent WorkManager scheduling and cold headless JNI entry points.
+#[cfg(target_os = "android")]
+pub mod android_work;
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
 pub mod permission;

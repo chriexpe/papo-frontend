@@ -24,6 +24,23 @@ pub struct NativeNotification {
     pub notification_id: String,
 }
 
+impl NativeNotification {
+    pub fn from_envelope(envelope: NotificationEnvelope) -> Self {
+        let notification_id = envelope
+            .notification_id
+            .clone()
+            .unwrap_or_else(|| envelope.message_id.clone());
+        Self {
+            title: envelope.title,
+            body: envelope.body,
+            server_url: envelope.navigation_server,
+            channel_id: envelope.channel_id,
+            message_id: envelope.message_id,
+            notification_id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Navigation {
     pub server_url: String,
@@ -47,18 +64,7 @@ pub fn ensure_permission() {
 }
 
 pub fn show_envelope(envelope: NotificationEnvelope) {
-    let notification_id = envelope
-        .notification_id
-        .clone()
-        .unwrap_or_else(|| envelope.message_id.clone());
-    show(&NativeNotification {
-        title: envelope.title,
-        body: envelope.body,
-        server_url: envelope.navigation_server,
-        channel_id: envelope.channel_id,
-        message_id: envelope.message_id,
-        notification_id,
-    });
+    show(&NativeNotification::from_envelope(envelope));
 }
 
 fn show(notification: &NativeNotification) {

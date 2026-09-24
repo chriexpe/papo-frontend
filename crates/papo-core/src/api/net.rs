@@ -151,6 +151,32 @@ pub struct NetworkHint {
     pub epoch: u64,
 }
 
+/// Transport lifetime selected by the owning client runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    Interactive,
+    /// One saved-session REST reconciliation. This mode never opens a WebSocket.
+    BackgroundReconcile,
+}
+
+impl TransportMode {
+    pub fn opens_websocket(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
+
+/// Terminal result emitted by a bounded background transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundRunResult {
+    Completed,
+    NoSession,
+    PermanentAuthFailure,
+    ServerLocked,
+    TransientFailure,
+    Deadline,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NetworkAction {
     None,
@@ -439,6 +465,8 @@ pub enum Update {
     },
     Connection(Connection),
     Error(String),
+    /// Terminal marker used only by the bounded background transport.
+    BackgroundFinished(BackgroundRunResult),
 }
 
 const RECONCILE_CONCURRENCY: usize = 2;
@@ -503,6 +531,9 @@ struct ReconcileCompletion {
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
+    mode: TransportMode,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
     event_hook: EventHook,
     message_hook: MessageHook,
     notification_hook: NotificationHook,
@@ -519,6 +550,41 @@ impl Net {
         wake: Wake,
         storage: Arc<dyn SecretStore>,
         cache: Arc<ClientDb>,
+    ) -> Self {
+        Self::spawn_with_mode(
+            base_url,
+            wake,
+            storage,
+            cache,
+            TransportMode::Interactive,
+            std::time::Duration::from_secs(25),
+        )
+    }
+
+    pub fn spawn_background(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        deadline: std::time::Duration,
+    ) -> Self {
+        Self::spawn_with_mode(
+            base_url,
+            wake,
+            storage,
+            cache,
+            TransportMode::BackgroundReconcile,
+            deadline,
+        )
+    }
+
+    fn spawn_with_mode(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        mode: TransportMode,
+        deadline: std::time::Duration,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
@@ -543,8 +609,10 @@ impl Net {
         let worker_storage_key = storage_key.clone();
         let diagnostics = Arc::new(RwLock::new(RuntimeDiagnostics::default()));
         let worker_diagnostics = Arc::clone(&diagnostics);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
 
-        std::thread::Builder::new()
+        let worker_thread = std::thread::Builder::new()
             .name("papo-net".into())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -558,24 +626,42 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(worker(
-                    base_url,
-                    worker_storage_key,
-                    worker_storage,
-                    worker_session,
-                    worker_cache,
-                    commands_rx,
-                    updates_tx,
-                    wake,
-                    worker_hooks,
-                    worker_diagnostics,
-                ));
+                if mode.opens_websocket() {
+                    runtime.block_on(worker(
+                        base_url,
+                        worker_storage_key,
+                        worker_storage,
+                        worker_session,
+                        worker_cache,
+                        commands_rx,
+                        updates_tx,
+                        wake,
+                        worker_hooks,
+                        worker_diagnostics,
+                    ));
+                } else {
+                    runtime.block_on(background_worker(
+                        base_url,
+                        worker_storage_key,
+                        worker_storage,
+                        worker_session,
+                        worker_cache,
+                        updates_tx,
+                        wake,
+                        worker_diagnostics,
+                        worker_cancel,
+                        deadline,
+                    ));
+                }
             })
             .expect("thread de rede");
 
         Self {
             commands: commands_tx,
             updates: updates_rx,
+            mode,
+            cancel,
+            worker_thread: Some(worker_thread),
             event_hook,
             message_hook,
             notification_hook,
@@ -617,6 +703,33 @@ impl Net {
             .unwrap_or_default()
     }
 
+    pub fn mode(&self) -> TransportMode {
+        self.mode
+    }
+
+    pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<Update> {
+        self.updates.recv_timeout(timeout).ok()
+    }
+
+    pub fn cancel_background(&self) {
+        if self.mode == TransportMode::BackgroundReconcile {
+            self.cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Background ownership is not released until this returns. Interactive
+    /// workers retain their historical detached lifetime and stop when their
+    /// command channel closes.
+    pub fn wait_background_shutdown(&mut self) {
+        if self.mode != TransportMode::BackgroundReconcile {
+            return;
+        }
+        self.cancel_background();
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
+    }
+
     /// Esquece sessão e senha deste servidor no backend de persistência
     /// escolhido pelo frontend.
     pub fn forget_credentials(&self) {
@@ -627,6 +740,17 @@ impl Net {
             );
         }
         self.session.set_token(None);
+    }
+}
+
+impl Drop for Net {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
+        if self.mode == TransportMode::BackgroundReconcile
+            && let Some(thread) = self.worker_thread.take()
+        {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -1027,6 +1151,164 @@ fn advance_generation_for_connection(
     } else {
         false
     }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavedSessionOutcome {
+    Verified,
+    Unauthorized,
+    ServerLocked,
+    Transient,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapOutcome {
+    Complete,
+    Transient,
+    Unauthorized,
+}
+
+async fn wait_background_cancel(cancel: Arc<std::sync::atomic::AtomicBool>) {
+    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn background_worker(
+    base_url: String,
+    storage_key: String,
+    storage: Arc<dyn SecretStore>,
+    session: Arc<Session>,
+    cache: Arc<ClientDb>,
+    updates: sync_mpsc::Sender<Update>,
+    wake: Wake,
+    diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    deadline: std::time::Duration,
+) {
+    // A caller with no remaining budget must not begin I/O at all. Besides
+    // making the hard bound explicit, this avoids racing an immediate network
+    // error against a zero-duration Tokio timeout.
+    if deadline.is_zero() {
+        publish(
+            &updates,
+            &wake,
+            Update::BackgroundFinished(BackgroundRunResult::Deadline),
+        );
+        return;
+    }
+
+    // Deliberately separate from worker(): there is no websocket task, heartbeat,
+    // reconnect timer, channel-history scheduler, or media/call path here.
+    let api = match Api::new(&base_url, Arc::clone(&session)) {
+        Ok(api) => api,
+        Err(error) => {
+            log::warn!("background {storage_key}: REST client unavailable: {error}");
+            publish(&updates, &wake, Update::BackgroundFinished(BackgroundRunResult::TransientFailure));
+            return;
+        }
+    };
+
+    if !session.is_authenticated() {
+        log::info!("background {storage_key}: no saved session");
+        publish(&updates, &wake, Update::BackgroundFinished(BackgroundRunResult::NoSession));
+        return;
+    }
+
+    let me: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let work = async {
+        let outcome = verify_saved_session_once(
+            &api,
+            &storage_key,
+            storage.as_ref(),
+            &session,
+            &me,
+            &updates,
+            &wake,
+        )
+        .await;
+        let owner = match outcome {
+            SavedSessionOutcome::Verified => {
+                me.lock().ok().and_then(|slot| slot.clone()).unwrap_or_default()
+            }
+            SavedSessionOutcome::Unauthorized => {
+                return BackgroundRunResult::PermanentAuthFailure;
+            }
+            SavedSessionOutcome::ServerLocked => {
+                return BackgroundRunResult::ServerLocked;
+            }
+            SavedSessionOutcome::Transient => {
+                return BackgroundRunResult::TransientFailure;
+            }
+        };
+        if owner.is_empty() {
+            return BackgroundRunResult::TransientFailure;
+        }
+
+        let bootstrap_outcome = bootstrap(
+            &api,
+            &storage_key,
+            &updates,
+            &wake,
+            Some(&owner),
+        )
+        .await;
+        if bootstrap_outcome == BootstrapOutcome::Unauthorized {
+            session.set_token(None);
+            remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
+            publish(&updates, &wake, Update::Session(None));
+            return BackgroundRunResult::PermanentAuthFailure;
+        }
+
+        // A verified session may still drain safe Queued sends when one
+        // unrelated bootstrap resource is temporarily unavailable. The final
+        // result stays transient so WorkManager can reconcile that missing
+        // state later. UnknownOutcome remains excluded by drive_outgoing().
+        let mut outgoing = Vec::new();
+        restore_outgoing(
+            cache.as_ref(),
+            &storage_key,
+            &owner,
+            &updates,
+            &wake,
+            &mut outgoing,
+        );
+        let mut channel_gate = OutgoingChannelGate::default();
+        drive_outgoing(
+            &api,
+            cache.as_ref(),
+            &storage_key,
+            &owner,
+            false,
+            &mut channel_gate,
+            &updates,
+            &wake,
+            &mut outgoing,
+        )
+        .await;
+
+        if bootstrap_outcome == BootstrapOutcome::Complete {
+            BackgroundRunResult::Completed
+        } else {
+            BackgroundRunResult::TransientFailure
+        }
+    };
+
+    let result = tokio::select! {
+        _ = wait_background_cancel(Arc::clone(&cancel)) => BackgroundRunResult::Cancelled,
+        timed = tokio::time::timeout(deadline, work) => match timed {
+            Ok(result) => result,
+            Err(_) => BackgroundRunResult::Deadline,
+        },
+    };
+
+    if let Ok(mut snapshot) = diagnostics.write() {
+        snapshot.connection = Connection::Offline;
+    }
+    log::info!("background {storage_key}: finished {result:?}");
+    publish(&updates, &wake, Update::BackgroundFinished(result));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2006,6 +2288,32 @@ async fn verify_saved_session(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
 ) {
+    if verify_saved_session_once(
+        api,
+        storage_key,
+        storage,
+        session,
+        me,
+        updates,
+        wake,
+    )
+    .await
+        == SavedSessionOutcome::Verified
+    {
+        let id = me.lock().ok().and_then(|slot| slot.clone());
+        let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
+    }
+}
+
+async fn verify_saved_session_once(
+    api: &Api,
+    storage_key: &str,
+    storage: &dyn SecretStore,
+    session: &Arc<Session>,
+    me: &Arc<std::sync::Mutex<Option<String>>>,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) -> SavedSessionOutcome {
     let mut result = api.whoami().await;
 
     // Servidor fechado é um portão separado da conta. Se já conhecemos a
@@ -2013,21 +2321,40 @@ async fn verify_saved_session(
     if matches!(result, Err(ApiError::ServerLocked)) {
         match unlock_with_saved(api, storage_key, storage).await {
             Ok(true) => result = api.whoami().await,
-            Ok(false) | Err(_) => {
+            Ok(false) => {
                 publish(updates, wake, Update::ServerLocked);
-                return;
+                return SavedSessionOutcome::ServerLocked;
+            }
+            Err(ApiError::Unauthorized) => {
+                // Only a definitive rejection invalidates the saved server
+                // password. A network/server failure must preserve it.
+                remove_secret(storage, storage_key, Secret::ServerPassword);
+                publish(updates, wake, Update::ServerLocked);
+                return SavedSessionOutcome::ServerLocked;
+            }
+            Err(error) => {
+                log::warn!(
+                    "runtime {storage_key}: senha guardada do servidor não pôde ser verificada: {error}"
+                );
+                publish(updates, wake, Update::Connection(Connection::Offline));
+                publish_runtime(
+                    storage_key,
+                    updates,
+                    wake,
+                    Update::Error(error.to_string()),
+                );
+                return SavedSessionOutcome::Transient;
             }
         }
     }
 
     match result {
         Ok(whoami) => {
-            let id = whoami.id.clone();
             if let Ok(mut slot) = me.lock() {
-                *slot = Some(id.clone());
+                *slot = Some(whoami.id.clone());
             }
             publish(updates, wake, Update::Session(Some(Box::new(whoami))));
-            bootstrap(api, storage_key, updates, wake, Some(&id)).await;
+            SavedSessionOutcome::Verified
         }
         Err(ApiError::Unauthorized) => {
             session.set_token(None);
@@ -2036,9 +2363,11 @@ async fn verify_saved_session(
             }
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
+            SavedSessionOutcome::Unauthorized
         }
         Err(ApiError::ServerLocked) => {
             publish(updates, wake, Update::ServerLocked);
+            SavedSessionOutcome::ServerLocked
         }
         Err(error) => {
             log::warn!(
@@ -2051,6 +2380,7 @@ async fn verify_saved_session(
                 wake,
                 Update::Error(error.to_string()),
             );
+            SavedSessionOutcome::Transient
         }
     }
 }
@@ -2065,15 +2395,7 @@ async fn unlock_with_saved(
     let Some(password) = load_secret(storage, storage_key, Secret::ServerPassword) else {
         return Ok(false);
     };
-    match api.login_server(&password).await {
-        Ok(()) => Ok(true),
-        Err(error) => {
-            // A senha do servidor mudou: esquecer é o certo, ou toda entrada
-            // tentaria a senha velha antes de perguntar.
-            remove_secret(storage, storage_key, Secret::ServerPassword);
-            Err(error)
-        }
-    }
+    api.login_server(&password).await.map(|()| true)
 }
 
 fn start_socket(
@@ -2217,7 +2539,7 @@ async fn handle(
         Command::CreateServer { name } => match api.create_server(&name).await {
             Ok(_) => {
                 let id = me.lock().ok().and_then(|slot| slot.clone());
-                bootstrap(api, storage_key, updates, wake, id.as_deref()).await
+                let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
             }
             Err(error) => publish_runtime(
                 storage_key,
@@ -2595,41 +2917,78 @@ async fn bootstrap(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_id: Option<&str>,
-) {
+) -> BootstrapOutcome {
+    let mut complete = true;
+    let mut unauthorized = false;
+
     match api.server().await {
         Ok(server) => publish(updates, wake, Update::Server(server.map(Box::new))),
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.channels().await {
         Ok(channels) => publish(updates, wake, Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.users().await {
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            load_profiles(api, storage_key, updates, wake, ids).await;
+            if let Err(error) = load_profiles(api, updates, wake, ids).await {
+                unauthorized |= matches!(error, ApiError::Unauthorized);
+                complete = false;
+                log::warn!("runtime {storage_key}: perfis: {error}");
+            }
         }
         Err(ApiError::NotFound) => {}
-        Err(error) => report(storage_key, updates, wake, error),
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
     }
     match api.roles().await {
         Ok(roles) => publish(updates, wake, Update::Roles(roles)),
-        Err(error) => log::warn!("runtime {storage_key}: cargos: {error}"),
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            log::warn!("runtime {storage_key}: cargos: {error}");
+        }
     }
     match api.emojis().await {
         Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
-        Err(error) => log::warn!("runtime {storage_key}: emojis: {error}"),
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            log::warn!("runtime {storage_key}: emojis: {error}");
+        }
     }
     if let Some(user_id) = user_id {
         match api.notifications(user_id).await {
-            Ok(notifications) => {
-                publish(updates, wake, Update::Notifications(notifications))
+            Ok(notifications) => publish(updates, wake, Update::Notifications(notifications)),
+            Err(error) => {
+                unauthorized |= matches!(error, ApiError::Unauthorized);
+                complete = false;
+                log::warn!("runtime {storage_key}: notificações: {error}");
             }
-            Err(error) => log::warn!("runtime {storage_key}: notificações: {error}"),
         }
+    }
+
+    if unauthorized {
+        BootstrapOutcome::Unauthorized
+    } else if complete {
+        BootstrapOutcome::Complete
+    } else {
+        BootstrapOutcome::Transient
     }
 }
 
@@ -2637,18 +2996,16 @@ async fn bootstrap(
 /// uma rajada a cada entrada; o `profile_batch` existe justamente para isso.
 async fn load_profiles(
     api: &Api,
-    storage_key: &str,
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
     user_ids: Vec<String>,
-) {
+) -> Result<(), ApiError> {
     if user_ids.is_empty() {
-        return;
+        return Ok(());
     }
-    match api.profiles(user_ids).await {
-        Ok(profiles) => publish(updates, wake, Update::Profiles(profiles)),
-        Err(error) => log::warn!("runtime {storage_key}: perfis: {error}"),
-    }
+    let profiles = api.profiles(user_ids).await?;
+    publish(updates, wake, Update::Profiles(profiles));
+    Ok(())
 }
 
 /// Relista as pessoas. Perfil, presença e banimento mudam essa lista.
@@ -2662,7 +3019,9 @@ async fn relist_users(
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
-            load_profiles(api, storage_key, updates, wake, ids).await;
+            if let Err(error) = load_profiles(api, updates, wake, ids).await {
+                log::warn!("runtime {storage_key}: perfis: {error}");
+            }
         }
         Err(error) => report(storage_key, updates, wake, error),
     }

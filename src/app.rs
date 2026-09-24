@@ -579,6 +579,9 @@ pub struct PapoApp {
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
     /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
+    /// Excludes WorkManager runtimes for the whole lifetime of PapoApp.
+    #[cfg(target_os = "android")]
+    _runtime_lease: crate::platform::runtime_lease::ForegroundLease,
 }
 
 impl PapoApp {
@@ -588,6 +591,24 @@ impl PapoApp {
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
             .unwrap_or_default();
         settings.normalise();
+
+        #[cfg(target_os = "android")]
+        let runtime_lease = crate::platform::runtime_lease::ForegroundLease::acquire();
+
+        #[cfg(target_os = "android")]
+        {
+            let background_servers: Vec<(String, String)> = settings
+                .servers
+                .iter()
+                .map(|entry| (papo_core::server_key(&entry.url), entry.url.clone()))
+                .collect();
+            crate::platform::android_work::sync_periodic(
+                background_servers
+                    .iter()
+                    .map(|(key, url)| (key.as_str(), url.as_str())),
+                settings.notifications,
+            );
+        }
 
         #[cfg(target_os = "android")]
         if settings.notifications {
@@ -620,7 +641,7 @@ impl PapoApp {
 
         // Um banco de cache por processo. Abrir aqui deixa o restore
         // acontecer antes de qualquer worker de rede subir.
-        let cache = std::sync::Arc::new(ClientDb::open(crate::platform::dirs::cache_db()));
+        let cache = crate::platform::client_db::get();
 
         #[cfg(target_os = "linux")]
         let notifier = Notifier::spawn();
@@ -792,6 +813,8 @@ impl PapoApp {
             own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
             add_server_previous: None,
+            #[cfg(target_os = "android")]
+            _runtime_lease: runtime_lease,
         }
     }
 
@@ -1033,6 +1056,7 @@ impl PapoApp {
             fresh.stash.swap(&mut self.ui);
         }
         self.workspaces[index] = fresh;
+        self.sync_notification_contexts();
     }
 
     /// Passa a mostrar outro servidor. Os dois seguem conectados; o que troca
@@ -1100,6 +1124,7 @@ impl PapoApp {
         self.settings.active = self.active;
         self.settings.server_url = self.workspaces[self.active].runtime.url.clone();
         self.workspaces[self.active].stash.swap(&mut self.ui);
+        self.sync_notification_contexts();
         ctx.request_repaint();
     }
 
@@ -1142,6 +1167,7 @@ impl PapoApp {
         if was_active {
             self.workspaces[active].stash.swap(&mut self.ui);
         }
+        self.sync_notification_contexts();
         ctx.request_repaint();
     }
 
@@ -2179,6 +2205,24 @@ impl PapoApp {
             workspace.sync_notification_context(
                 self.settings.notifications,
                 index == self.active,
+            );
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            let draft = self.add_server_previous.map(|_| self.active);
+            crate::platform::android_work::sync_periodic(
+                self.workspaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| Some(*index) != draft)
+                    .map(|(_, workspace)| {
+                        (
+                            workspace.runtime.server_key.as_str(),
+                            workspace.runtime.url.as_str(),
+                        )
+                    }),
+                self.settings.notifications,
             );
         }
     }

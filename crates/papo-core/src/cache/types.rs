@@ -459,3 +459,17 @@ fn millis_to_local(ms: i64) -> DateTime<Local> {
         .map(|at| at.with_timezone(&Local))
         .unwrap_or_else(Local::now)
 }
+
+
+#[cfg(test)]
+mod outgoing_state_tests {
+    use super::OutgoingState;
+
+    #[test]
+    fn queued_is_the_only_automatic_send_state() {
+        assert!(OutgoingState::Queued.may_auto_send());
+        assert!(!OutgoingState::Sending.may_auto_send());
+        assert!(!OutgoingState::UnknownOutcome.may_auto_send());
+        assert!(!OutgoingState::FailedPermanent.may_auto_send());
+    }
+}

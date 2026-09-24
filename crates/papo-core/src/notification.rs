@@ -22,6 +22,8 @@ pub enum CandidateSource {
     Live,
     CacheRestore,
     Reconcile,
+    /// Authoritative backend Notification discovered by bounded background reconciliation.
+    Background,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +220,7 @@ impl NotificationCoordinator {
         notification: &Notification,
         source: CandidateSource,
     ) -> NotificationOutcome {
-        if source != CandidateSource::Live || notification.read {
+        if !matches!(source, CandidateSource::Live | CandidateSource::Background) || notification.read {
             return NotificationOutcome::Ignored;
         }
         let (Some(channel_id), Some(message_id)) = (
@@ -747,7 +749,7 @@ mod tests {
             let temp = TempDb::new(match source {
                 CandidateSource::CacheRestore => "restore",
                 CandidateSource::Reconcile => "reconcile",
-                CandidateSource::Live => unreachable!(),
+                CandidateSource::Live | CandidateSource::Background => unreachable!(),
             });
             let (coordinator, deliveries) = coordinator(temp.db(), false);
             coordinator.sync_context(context("srv", "me", true, true));
@@ -762,6 +764,101 @@ mod tests {
             );
             assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
         }
+    }
+
+    #[test]
+    fn background_backend_notification_delivers_and_later_live_dedupes() {
+        let temp = TempDb::new("background-live");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, false));
+        let item = notification("n1", "m1", "geral", "bia");
+
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Background),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Live),
+            NotificationOutcome::Duplicate
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn prior_live_notification_dedupes_background_rest_result() {
+        let temp = TempDb::new("live-background");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, false));
+        let item = notification("n1", "m1", "geral", "bia");
+
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Live),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Background),
+            NotificationOutcome::Duplicate
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn background_timeline_message_never_notifies_or_claims() {
+        let temp = TempDb::new("background-message");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, false));
+        let msg = message("m1", "geral", "bia", "<@me>");
+
+        assert_eq!(
+            coordinator.handle_message("srv", &msg, CandidateSource::Background),
+            NotificationOutcome::Ignored
+        );
+        assert_eq!(
+            coordinator.handle_message("srv", &msg, CandidateSource::Live),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn disabled_background_candidate_uses_durable_suppression() {
+        let temp = TempDb::new("background-disabled");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", false, false));
+        let item = notification("n1", "m1", "geral", "bia");
+
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Background),
+            NotificationOutcome::Suppressed(SuppressionReason::NotificationsDisabled)
+        );
+        coordinator.sync_context(context("srv", "me", true, false));
+        assert_eq!(
+            coordinator.handle_notification("srv", &item, CandidateSource::Live),
+            NotificationOutcome::Duplicate
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unavailable_background_platform_is_persistently_suppressed() {
+        let temp = TempDb::new("background-no-platform");
+        let db = temp.db();
+        let unavailable = NotificationCoordinator::new(Arc::clone(&db), None);
+        unavailable.sync_context(context("srv", "me", true, false));
+        let item = notification("n1", "m1", "geral", "bia");
+
+        assert_eq!(
+            unavailable.handle_notification("srv", &item, CandidateSource::Background),
+            NotificationOutcome::Suppressed(SuppressionReason::PlatformUnavailable)
+        );
+
+        let (second, deliveries) = coordinator(db, false);
+        second.sync_context(context("srv", "me", true, false));
+        assert_eq!(
+            second.handle_notification("srv", &item, CandidateSource::Live),
+            NotificationOutcome::Duplicate
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
     }
 
     #[test]

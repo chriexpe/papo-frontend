@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use crate::api::models::IceServer;
-use crate::api::net::{Command, Net, NetSender, RuntimeDiagnostics as NetDiagnostics, Update, Wake};
+use crate::api::net::{
+    BackgroundRunResult, Command, Net, NetSender, RuntimeDiagnostics as NetDiagnostics,
+    TransportMode, Update, Wake,
+};
 use crate::api::ws::{Connection, Event};
 use crate::cache::ClientDb;
 use crate::notification::{
@@ -11,6 +14,12 @@ use crate::state::{Phase, Screen, Store};
 use crate::storage::{Secret, SecretStore};
 
 pub const DEFAULT_DRAIN_LIMIT: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeMode {
+    Interactive,
+    BackgroundReconcile,
+}
 
 #[derive(Clone, Debug)]
 pub enum CallRuntimeEffect {
@@ -79,6 +88,9 @@ pub struct ServerRuntime {
     cached_owner: Option<String>,
     notification: Arc<NotificationCoordinator>,
     reconnect_refreshes: u64,
+    mode: RuntimeMode,
+    background_view: Option<RuntimeNotificationView>,
+    background_result: Option<BackgroundRunResult>,
 }
 
 impl ServerRuntime {
@@ -101,11 +113,62 @@ impl ServerRuntime {
 
     pub fn open_with_store(
         url: String,
+        store: Store,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        notification: Arc<NotificationCoordinator>,
+    ) -> Self {
+        Self::open_with_mode(
+            url,
+            store,
+            wake,
+            storage,
+            cache,
+            notification,
+            RuntimeMode::Interactive,
+            None,
+            std::time::Duration::from_secs(25),
+        )
+    }
+
+    pub fn open_background(
+        url: String,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        notification: Arc<NotificationCoordinator>,
+        notifications_enabled: bool,
+        deadline: std::time::Duration,
+    ) -> Self {
+        let view = RuntimeNotificationView {
+            server_label: crate::server_key(&url),
+            visible_server: false,
+            notifications_enabled,
+        };
+        Self::open_with_mode(
+            url,
+            Store::default(),
+            Wake::noop(),
+            storage,
+            cache,
+            notification,
+            RuntimeMode::BackgroundReconcile,
+            Some(view),
+            deadline,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_with_mode(
+        url: String,
         mut store: Store,
         wake: Wake,
         storage: Arc<dyn SecretStore>,
         cache: Arc<ClientDb>,
         notification: Arc<NotificationCoordinator>,
+        mode: RuntimeMode,
+        background_view: Option<RuntimeNotificationView>,
+        deadline: std::time::Duration,
     ) -> Self {
         let server_key = crate::server_key(&url);
 
@@ -138,29 +201,37 @@ impl ServerRuntime {
             }
         }
 
-        let net = Net::spawn(url.clone(), wake, storage, Arc::clone(&cache));
+        let net = match mode {
+            RuntimeMode::Interactive => Net::spawn(url.clone(), wake, storage, Arc::clone(&cache)),
+            RuntimeMode::BackgroundReconcile => {
+                Net::spawn_background(url.clone(), wake, storage, Arc::clone(&cache), deadline)
+            }
+        };
 
-        // Notification candidates remain a transport hook, not an egui-frame
-        // side effect. Runtime/UI draining is deliberately not in this path.
-        let message_coordinator = Arc::clone(&notification);
-        let message_server_key = server_key.clone();
-        net.set_message_callback(Some(Arc::new(move |message| {
-            let _ = message_coordinator.handle_message(
-                &message_server_key,
-                message,
-                CandidateSource::Live,
-            );
-        })));
+        // Live hooks only exist on the interactive transport. Background
+        // notifications are sourced from the authoritative REST Notification
+        // list after Store has consumed the bootstrap metadata.
+        if mode == RuntimeMode::Interactive {
+            let message_coordinator = Arc::clone(&notification);
+            let message_server_key = server_key.clone();
+            net.set_message_callback(Some(Arc::new(move |message| {
+                let _ = message_coordinator.handle_message(
+                    &message_server_key,
+                    message,
+                    CandidateSource::Live,
+                );
+            })));
 
-        let notification_coordinator = Arc::clone(&notification);
-        let notification_server_key = server_key.clone();
-        net.set_notification_callback(Some(Arc::new(move |item| {
-            let _ = notification_coordinator.handle_notification(
-                &notification_server_key,
-                item,
-                CandidateSource::Live,
-            );
-        })));
+            let notification_coordinator = Arc::clone(&notification);
+            let notification_server_key = server_key.clone();
+            net.set_notification_callback(Some(Arc::new(move |item| {
+                let _ = notification_coordinator.handle_notification(
+                    &notification_server_key,
+                    item,
+                    CandidateSource::Live,
+                );
+            })));
+        }
 
         Self {
             url,
@@ -171,6 +242,9 @@ impl ServerRuntime {
             cached_owner,
             notification,
             reconnect_refreshes: 0,
+            mode,
+            background_view,
+            background_result: None,
         }
     }
 
@@ -189,7 +263,11 @@ impl ServerRuntime {
             server_label: view.server_label,
             owner_user_id: self.store.me.clone(),
             owner_name: self.store.my_name.clone(),
-            selected_channel: self.store.selected_channel.clone(),
+            selected_channel: if self.mode == RuntimeMode::BackgroundReconcile {
+                String::new()
+            } else {
+                self.store.selected_channel.clone()
+            },
             visible_server: view.visible_server,
             notifications_enabled: view.notifications_enabled,
             channels: self
@@ -208,6 +286,18 @@ impl ServerRuntime {
     }
 
     pub fn process_update(&mut self, update: Update) -> Vec<RuntimeEffect> {
+        let background_notifications = if self.mode == RuntimeMode::BackgroundReconcile {
+            match &update {
+                Update::Notifications(items) => Some(items.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Update::BackgroundFinished(result) = &update {
+            self.background_result = Some(*result);
+        }
+
         // Ordering is intentional:
         // 1) inspect the still-unconsumed update for presentation-only effects;
         // 2) apply the authoritative runtime transition to Store;
@@ -248,9 +338,28 @@ impl ServerRuntime {
             self.cache.submit(&self.server_key, cache_ops);
         }
 
-        if refresh_after_online {
+        if refresh_after_online && self.mode == RuntimeMode::Interactive {
             self.net.send(Command::Refresh);
             self.reconnect_refreshes = self.reconnect_refreshes.saturating_add(1);
+        }
+
+        if self.mode == RuntimeMode::BackgroundReconcile {
+            if let Some(view) = &mut self.background_view {
+                if let Some(server) = &self.store.server {
+                    view.server_label = server.name.clone();
+                }
+                let view = view.clone();
+                self.sync_notification_context(view);
+            }
+            if let Some(items) = background_notifications {
+                for item in &items {
+                    let _ = self.notification.handle_notification(
+                        &self.server_key,
+                        item,
+                        CandidateSource::Background,
+                    );
+                }
+            }
         }
 
         effects.shrink_to_fit();
@@ -261,6 +370,35 @@ impl ServerRuntime {
         self.net
             .try_recv()
             .map(|update| self.process_update(update))
+    }
+
+    pub fn recv_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Option<Vec<RuntimeEffect>> {
+        self.net
+            .recv_timeout(timeout)
+            .map(|update| self.process_update(update))
+    }
+
+    pub fn mode(&self) -> RuntimeMode {
+        self.mode
+    }
+
+    pub fn transport_mode(&self) -> TransportMode {
+        self.net.mode()
+    }
+
+    pub fn background_result(&self) -> Option<BackgroundRunResult> {
+        self.background_result
+    }
+
+    pub fn cancel_background(&self) {
+        self.net.cancel_background();
+    }
+
+    pub fn wait_background_shutdown(&mut self) {
+        self.net.wait_background_shutdown();
     }
 
     pub fn drain_until_idle(&mut self, max_updates: usize) -> RuntimeDrain {
@@ -366,9 +504,10 @@ impl ServerRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::models::{Server, Whoami};
+    use crate::api::models::{Notification, Server, Whoami};
     use crate::storage::MemorySecretStore;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn disabled_runtime() -> (ServerRuntime, Arc<MemorySecretStore>) {
@@ -386,6 +525,13 @@ mod tests {
             notification,
         );
         (runtime, secrets)
+    }
+
+    fn wait_background(runtime: &mut ServerRuntime) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while runtime.background_result().is_none() && std::time::Instant::now() < deadline {
+            let _ = runtime.recv_timeout(std::time::Duration::from_millis(100));
+        }
     }
 
     fn whoami(id: &str) -> Whoami {
@@ -417,6 +563,179 @@ mod tests {
         let (runtime, _) = disabled_runtime();
         assert!(!runtime.server_key.is_empty());
         assert_eq!(runtime.url, "http://127.0.0.1:9");
+    }
+
+    #[test]
+    fn background_runtime_no_session_is_clean_bounded_noop() {
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let mut runtime = ServerRuntime::open_background(
+            "http://127.0.0.1:9".to_owned(),
+            secrets,
+            cache,
+            notification,
+            true,
+            std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(runtime.mode(), RuntimeMode::BackgroundReconcile);
+        assert_eq!(runtime.transport_mode(), TransportMode::BackgroundReconcile);
+        assert!(!runtime.transport_mode().opens_websocket());
+        wait_background(&mut runtime);
+        assert_eq!(
+            runtime.background_result(),
+            Some(BackgroundRunResult::NoSession)
+        );
+    }
+
+    #[test]
+    fn interactive_runtime_keeps_interactive_transport() {
+        let (runtime, _) = disabled_runtime();
+        assert_eq!(runtime.mode(), RuntimeMode::Interactive);
+        assert_eq!(runtime.transport_mode(), TransportMode::Interactive);
+        assert!(runtime.transport_mode().opens_websocket());
+    }
+
+    #[test]
+    fn background_runtime_honours_hard_deadline() {
+        let cache = Arc::new(ClientDb::open(None));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let url = "http://127.0.0.1:9".to_owned();
+        let key = crate::server_key(&url);
+        secrets
+            .store(&key, Secret::SessionToken, "saved-token")
+            .expect("guardar token");
+        let mut runtime = ServerRuntime::open_background(
+            url,
+            secrets,
+            cache,
+            notification,
+            true,
+            std::time::Duration::ZERO,
+        );
+
+        wait_background(&mut runtime);
+        assert_eq!(
+            runtime.background_result(),
+            Some(BackgroundRunResult::Deadline)
+        );
+    }
+
+    #[test]
+    fn cancelling_background_runtime_does_not_clear_credentials_or_cache() {
+        let path = temp_db_path("background-cancel");
+        let cache = Arc::new(ClientDb::open(Some(path.clone())));
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            None,
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let url = "http://127.0.0.1:9".to_owned();
+        let key = crate::server_key(&url);
+        secrets
+            .store(&key, Secret::SessionToken, "saved-token")
+            .expect("guardar token");
+
+        let mut runtime = ServerRuntime::open_background(
+            url,
+            secrets.clone(),
+            Arc::clone(&cache),
+            notification,
+            true,
+            std::time::Duration::from_secs(5),
+        );
+        runtime.process_update(Update::Server(Some(Box::new(Server {
+            id: "srv".to_owned(),
+            name: "Papo".to_owned(),
+            owner_id: None,
+            owner_username: None,
+            public: false,
+            member_count: 1,
+            channel_count: 1,
+        }))));
+        cache.flush();
+        assert!(
+            cache
+                .load_snapshot(&key)
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+
+        runtime.cancel_background();
+        runtime.wait_background_shutdown();
+        drop(runtime);
+        cache.flush();
+
+        assert_eq!(
+            secrets
+                .load(&key, Secret::SessionToken)
+                .expect("ler token")
+                .as_deref(),
+            Some("saved-token")
+        );
+        assert!(
+            cache
+                .load_snapshot(&key)
+                .is_some_and(|snapshot| !snapshot.is_empty())
+        );
+
+        drop(cache);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn background_runtime_routes_only_backend_notifications_to_coordinator() {
+        let path = temp_db_path("background-notification");
+        let cache = Arc::new(ClientDb::open(Some(path.clone())));
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&deliveries);
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            Some(Arc::new(move |_| {
+                seen.fetch_add(1, Ordering::SeqCst);
+            })),
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let mut runtime = ServerRuntime::open_background(
+            "http://127.0.0.1:9".to_owned(),
+            secrets,
+            Arc::clone(&cache),
+            notification,
+            true,
+            std::time::Duration::from_secs(1),
+        );
+
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        runtime.process_update(Update::Notifications(vec![Notification {
+            id: "n1".to_owned(),
+            message_id: Some("m1".to_owned()),
+            channel_id: Some("general".to_owned()),
+            author_id: Some("bia".to_owned()),
+            message_content: Some("oi".to_owned()),
+            read: false,
+            created_at: None,
+        }]));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+
+        // Arbitrary reconciled Store changes do not pass through the
+        // NotificationCoordinator; only Update::Notifications above does.
+        runtime.process_update(Update::Server(None));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+
+        drop(runtime);
+        drop(cache);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
