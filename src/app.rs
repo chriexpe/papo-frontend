@@ -2215,6 +2215,7 @@ impl PapoApp {
                 store: workspace.store.diagnostics(),
                 cache_enabled: workspace.cache.is_enabled(),
                 cache: workspace.cache.stats(),
+                notification: self.notification.diagnostics(&workspace.server_key),
             })
             .collect();
 
