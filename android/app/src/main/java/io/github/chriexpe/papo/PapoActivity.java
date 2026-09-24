@@ -1,6 +1,7 @@
 package io.github.chriexpe.papo;
 
 import android.Manifest;
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -1312,6 +1313,22 @@ public class PapoActivity extends GameActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleMessageNotificationIntent(intent);
+    }
+
+    /**
+     * A Activity está saindo de cena. O eframe grava aqui (o laço de quadros
+     * para no onPause), então este é o último instante em que um trim
+     * publicado ainda pode ser aplicado antes da suspensão — o onTrimMemory
+     * real do sistema chega junto do onStop, tarde demais para este quadro.
+     * Em multi-janela a Activity continua visível, e aí não se trata como
+     * escondida.
+     */
+    @Override
+    protected void onPause() {
+        if (!isInMultiWindowMode()) {
+            nativeTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
+        }
+        super.onPause();
     }
 
     @Override

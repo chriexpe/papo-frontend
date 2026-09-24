@@ -2337,6 +2337,13 @@ impl eframe::App for PapoApp {
         {
             let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
             if self.focused && !focused {
+                // Indo para segundo plano, este é o **último quadro**: ao
+                // esconder a Activity o laço para de desenhar, então um trim
+                // publicado depois ficaria preso no latch até a volta — e é
+                // justamente atrás que o sistema quer que a gente largue o
+                // que é reconstruível. A política é a mesma (Moderate, que
+                // preserva quem está tocando), só aplicada antes da suspensão.
+                self.trim_all_media(crate::media::TrimLevel::Moderate);
                 if let Some(storage) = frame.storage_mut() {
                     eframe::App::save(self, storage);
                     storage.flush();
@@ -2556,6 +2563,16 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // No Android o eframe grava no `suspend` (onPause), antes de o laço de
+        // quadros parar — é o último ponto no objeto da aplicação em que dá
+        // para soltar mídia reconstruível antes de a Activity sair de cena.
+        // Em primeiro plano o autosave costuma não achar nada: o quadro já
+        // drenou o latch. Aqui é onde o pedido publicado no onPause vira trim.
+        #[cfg(target_os = "android")]
+        if let Some(level) = crate::platform::memory_pressure::take_pending() {
+            self.trim_all_media(level);
+        }
+
         // As marcas de leitura vivem no estado de cada servidor; só o ajuste
         // persiste, e cada servidor guarda as suas sob a própria chave.
         let draft = self.add_server_previous.map(|_| self.active);
