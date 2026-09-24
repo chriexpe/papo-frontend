@@ -33,6 +33,10 @@ const EXPECTED: &[(&str, &str)] = &[
     ("aacparse", "o áudio do .mp4 antes do decodificador"),
     ("opusdec", "os recados de voz"),
     ("openslessink", "a saída de áudio do Android"),
+    // Link direto (RemoteUri): o `souphttpsrc` busca o https sozinho. Sem ele
+    // o GStreamer responde "No URI handler implemented for https" e o vídeo do
+    // link fica em 0:00 — por isso ele é conferido aqui, na abertura.
+    ("souphttpsrc", "busca os links diretos em https"),
     // A call. O motor é o mesmo da área de trabalho; aqui só se confere que
     // as peças dele entraram na ligação.
     ("webrtcbin", "o transporte da call"),
