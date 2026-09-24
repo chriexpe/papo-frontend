@@ -1406,7 +1406,8 @@ fn v4_database_migrates_to_v5_without_reset() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let db = turso::Builder::new_local(path.to_string_lossy().as_ref())
+        let path = path.to_string_lossy().into_owned();
+        let db = turso::Builder::new_local(&path)
             .build()
             .await
             .unwrap();
