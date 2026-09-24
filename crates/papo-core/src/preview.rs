@@ -673,6 +673,8 @@ async fn resolve_url(
         }
     }
 
+    sanitize_preview_targets(&mut preview).await;
+
     if preview.kind == PreviewKind::Link
         && preview.title.is_none()
         && preview.description.is_none()
@@ -682,6 +684,38 @@ async fn resolve_url(
     }
 
     Ok(preview)
+}
+
+async fn sanitize_preview_targets(preview: &mut ResolvedPreview) {
+    for target in [
+        &mut preview.media_url,
+        &mut preview.image_url,
+        &mut preview.embed_url,
+    ] {
+        let Some(raw) = target.as_deref() else {
+            continue;
+        };
+        let valid = match Url::parse(raw) {
+            Ok(url) => validate_destination(&url).await.is_ok(),
+            Err(_) => false,
+        };
+        if !valid {
+            *target = None;
+        }
+    }
+
+    preview.kind = if preview.media_url.is_some() {
+        PreviewKind::Video
+    } else if preview.embed_url.is_some() {
+        PreviewKind::Embed
+    } else if preview.image_url.is_some()
+        && preview.title.is_none()
+        && preview.description.is_none()
+    {
+        PreviewKind::Image
+    } else {
+        PreviewKind::Link
+    };
 }
 
 async fn resolve_oembed(
