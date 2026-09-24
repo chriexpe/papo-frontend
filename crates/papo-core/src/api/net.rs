@@ -533,6 +533,7 @@ pub struct Net {
     updates: sync_mpsc::Receiver<Update>,
     mode: TransportMode,
     cancel: Arc<std::sync::atomic::AtomicBool>,
+    worker_thread: Option<std::thread::JoinHandle<()>>,
     event_hook: EventHook,
     message_hook: MessageHook,
     notification_hook: NotificationHook,
@@ -611,7 +612,7 @@ impl Net {
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
 
-        std::thread::Builder::new()
+        let worker_thread = std::thread::Builder::new()
             .name("papo-net".into())
             .spawn(move || {
                 let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -660,6 +661,7 @@ impl Net {
             updates: updates_rx,
             mode,
             cancel,
+            worker_thread: Some(worker_thread),
             event_hook,
             message_hook,
             notification_hook,
@@ -715,6 +717,19 @@ impl Net {
         }
     }
 
+    /// Background ownership is not released until this returns. Interactive
+    /// workers retain their historical detached lifetime and stop when their
+    /// command channel closes.
+    pub fn wait_background_shutdown(&mut self) {
+        if self.mode != TransportMode::BackgroundReconcile {
+            return;
+        }
+        self.cancel_background();
+        if let Some(thread) = self.worker_thread.take() {
+            let _ = thread.join();
+        }
+    }
+
     /// Esquece sessão e senha deste servidor no backend de persistência
     /// escolhido pelo frontend.
     pub fn forget_credentials(&self) {
@@ -731,6 +746,11 @@ impl Net {
 impl Drop for Net {
     fn drop(&mut self) {
         self.cancel.store(true, std::sync::atomic::Ordering::Release);
+        if self.mode == TransportMode::BackgroundReconcile
+            && let Some(thread) = self.worker_thread.take()
+        {
+            let _ = thread.join();
+        }
     }
 }
 
