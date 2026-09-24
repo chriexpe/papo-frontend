@@ -15,7 +15,7 @@ pub mod prepare;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as sync_mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant, SystemTime};
 
 
@@ -62,6 +62,10 @@ pub enum TrimLevel {
 /// Gravações são do usuário, não mídia baixada, e só saem quando velhas
 /// demais para alguma ainda estar esperando no campo de escrever.
 const RECORDING_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// A limpeza de partida pertence ao processo, não a cada workspace. Sem esta
+/// guarda, dez servidores disparavam dez varreduras concorrentes da mesma raiz.
+static STARTUP_CACHE_SWEEP: Once = Once::new();
 
 const INLINE_MAX: u32 = 1600;
 const FULL_MAX: u32 = 4096;
@@ -131,6 +135,9 @@ pub struct Media {
 
 impl Media {
     pub fn spawn(base_url: String, session: Arc<Session>, repaint: egui::Context) -> Option<Self> {
+        // A URL nunca entra no caminho em disco. Calcula uma vez por worker e
+        // usa a mesma identidade estável que ClientDb/SecretStore já usam.
+        let server_key = papo_core::server_key(&base_url);
         let (requests_tx, requests_rx) = mpsc::unbounded_channel();
         let (results_tx, results_rx) = sync_mpsc::channel();
 
@@ -148,7 +155,14 @@ impl Media {
                         return;
                     }
                 };
-                runtime.block_on(worker(base_url, session, requests_rx, results_tx, repaint));
+                runtime.block_on(worker(
+                    base_url,
+                    server_key,
+                    session,
+                    requests_rx,
+                    results_tx,
+                    repaint,
+                ));
             })
             .ok()?;
 
@@ -169,6 +183,7 @@ impl Media {
 
 async fn worker(
     base_url: String,
+    server_key: String,
     session: Arc<Session>,
     mut requests: mpsc::UnboundedReceiver<Request>,
     results: sync_mpsc::Sender<Loaded>,
@@ -185,17 +200,20 @@ async fn worker(
         .build()
         .ok();
 
-    // O cache em disco não tinha quem o limpasse. Uma varrida na partida,
-    // fora da thread da janela.
-    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    // Uma única varrida por processo. Cada workspace tem seu próprio worker
+    // de mídia, mas todos compartilham a mesma raiz/budget em disco.
+    STARTUP_CACHE_SWEEP.call_once(|| {
+        tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    });
 
     while let Some(request) = requests.recv().await {
         let api = api.clone();
+        let server_key = server_key.clone();
         let remote_client = remote_client.clone();
         let results = results.clone();
         let repaint = repaint.clone();
         tokio::spawn(async move {
-            let outcome = run(&api, remote_client.as_ref(), request).await;
+            let outcome = run(&api, &server_key, remote_client.as_ref(), request).await;
             if results.send(outcome).is_ok() {
                 repaint.request_repaint();
             }
@@ -203,7 +221,12 @@ async fn worker(
     }
 }
 
-async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Request) -> Loaded {
+async fn run(
+    api: &Api,
+    server_key: &str,
+    remote_client: Option<&reqwest::Client>,
+    request: Request,
+) -> Loaded {
     match request {
         Request::Thumb { id, thumb_id } => {
             let key = thumb_key(&id);
@@ -213,21 +236,32 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
                 Some(_) => format!("/attachments/{id}/thumbnail"),
                 None => format!("/attachments/{id}"),
             };
-            match cached_fetch(api, &cache_path("thumbs", &id, ""), &path).await {
+            match cached_fetch(
+                api,
+                &authenticated_cache_path(server_key, "thumbs", &id, ""),
+                &path,
+            )
+            .await
+            {
                 Ok(bytes) => decode(key, &bytes, INLINE_MAX),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
         Request::Full { id } => {
             let key = full_key(&id);
-            match cached_fetch(api, &cache_path("files", &id, ""), &format!("/attachments/{id}")).await
+            match cached_fetch(
+                api,
+                &authenticated_cache_path(server_key, "files", &id, ""),
+                &format!("/attachments/{id}"),
+            )
+            .await
             {
                 Ok(bytes) => decode(key, &bytes, FULL_MAX),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
         Request::File { id, name } => {
-            let path = cache_path("files", &id, &name);
+            let path = authenticated_cache_path(server_key, "files", &id, &name);
             match cached_file(api, &path, &format!("/attachments/{id}")).await {
                 Ok(()) => Loaded::File { id, path },
                 Err(error) => Loaded::Failed {
@@ -237,7 +271,7 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
             }
         }
         Request::Save { id, name, dest } => {
-            let source = cache_path("files", &id, &name);
+            let source = authenticated_cache_path(server_key, "files", &id, &name);
             match cached_file(api, &source, &format!("/attachments/{id}")).await {
                 // `copy` vai em pedaços: salvar um vídeo grande não precisa
                 // dele inteiro na memória.
@@ -266,7 +300,7 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
             // decodificador por vídeo da conversa outra vez — que é
             // justamente o que o cartão de vídeo evita não abrindo player
             // sozinho.
-            let cached = cache_path("thumbs", &id, "capa.png");
+            let cached = authenticated_cache_path(server_key, "thumbs", &id, "capa.png");
             if let Ok(bytes) = tokio::fs::read(&cached).await
                 && !bytes.is_empty()
             {
@@ -281,6 +315,7 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
             match tokio::task::spawn_blocking(move || {
                 let image = player::poster(&path)?;
                 save_poster(&cached, &image);
+                sweep_cache(&cache_root());
                 Some(image)
             })
             .await
@@ -345,7 +380,7 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
         }
         Request::RemoteImage { id, url } => {
             let key = remote_image_key(&id);
-            let path = cache_path("remote", &id, "");
+            let path = public_remote_cache_path(&id);
             if let Ok(bytes) = tokio::fs::read(&path).await
                 && !bytes.is_empty()
             {
@@ -409,7 +444,9 @@ async fn cached_fetch(api: &Api, path: &Path, route: &str) -> Result<Vec<u8>, St
     if let Some(parent) = path.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    let _ = tokio::fs::write(path, &bytes).await;
+    if tokio::fs::write(path, &bytes).await.is_ok() {
+        tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    }
     Ok(bytes)
 }
 
@@ -425,7 +462,9 @@ async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> 
     }
     api.fetch_to_file(route, path)
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    Ok(())
 }
 
 /// Decodifica bytes em textura; GIF vira animação.
@@ -494,9 +533,7 @@ pub fn cache_root() -> PathBuf {
     crate::platform::dirs::cache_dir()
 }
 
-/// `~/.cache/papo/<bucket>/<id>-<nome>`; o nome ajuda o player a adivinhar o
-/// formato e deixa o cache legível para quem for espiar.
-pub fn cache_path(bucket: &str, id: &str, name: &str) -> PathBuf {
+fn cache_file_name(id: &str, name: &str) -> String {
     let mut file = id.to_owned();
     let name: String = name
         .chars()
@@ -507,12 +544,135 @@ pub fn cache_path(bucket: &str, id: &str, name: &str) -> PathBuf {
         file.push('-');
         file.push_str(&name);
     }
-    cache_root().join(bucket).join(file)
+    file
 }
 
-/// Poda o cache em disco: apaga restos de download interrompido, o que está
-/// parado há tempo demais e, se ainda passar do teto, o mais antigo até
-/// caber. Recebe a raiz para poder ser testada fora da pasta do usuário.
+/// Mídia vinda de endpoints autenticados pertence a um servidor. IDs de anexo
+/// só são únicos dentro desse backend e portanto nunca podem ser usados como
+/// identidade global de disco.
+fn authenticated_cache_path_at(
+    root: &Path,
+    server_key: &str,
+    bucket: &str,
+    id: &str,
+    name: &str,
+) -> PathBuf {
+    debug_assert!(matches!(bucket, "files" | "thumbs"));
+    root.join("servers")
+        .join(server_key)
+        .join(bucket)
+        .join(cache_file_name(id, name))
+}
+
+pub fn authenticated_cache_path(server_key: &str, bucket: &str, id: &str, name: &str) -> PathBuf {
+    authenticated_cache_path_at(&cache_root(), server_key, bucket, id, name)
+}
+
+/// Recursos públicos usam a URL canônica como identidade (hash em `id`) e
+/// podem ser compartilhados com segurança entre workspaces.
+fn public_remote_cache_path_at(root: &Path, resource_id: &str) -> PathBuf {
+    root.join("remote").join(resource_id)
+}
+
+fn public_remote_cache_path(resource_id: &str) -> PathBuf {
+    public_remote_cache_path_at(&cache_root(), resource_id)
+}
+
+fn safe_server_key(server_key: &str) -> bool {
+    !server_key.is_empty()
+        && server_key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// Função síncrona/testável. A camada de UI chama o wrapper abaixo em uma
+/// thread separada para não bloquear um frame com muitos arquivos.
+fn clear_server_media_cache_at(root: &Path, server_key: &str) -> std::io::Result<bool> {
+    if !safe_server_key(server_key) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsafe server cache key",
+        ));
+    }
+    match std::fs::remove_dir_all(root.join("servers").join(server_key)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Remoção explícita de servidor é destrutiva para a mídia autenticada daquele
+/// backend. Falha de cache não deve impedir a remoção do workspace.
+pub fn clear_server_media_cache(server_key: &str) {
+    let server_key = server_key.to_owned();
+    let spawn = std::thread::Builder::new()
+        .name("papo-media-clear".into())
+        .spawn(move || match clear_server_media_cache_at(&cache_root(), &server_key) {
+            Ok(true) => log::info!("media cache server namespace cleared server={server_key}"),
+            Ok(false) => {}
+            Err(error) => {
+                log::warn!("media cache server namespace cleanup failed server={server_key}: {error}")
+            }
+        });
+    if let Err(error) = spawn {
+        log::warn!("media cache cleanup worker failed to start: {error}");
+    }
+}
+
+/// Cache autenticado antigo era plano (`files/*`, `thumbs/*`) e não contém
+/// informação suficiente para saber a qual servidor pertencia. Ele é
+/// descartável: nunca o "adotamos" para o primeiro servidor que pedir o ID.
+fn discard_legacy_authenticated_cache(root: &Path) {
+    let mut removed = false;
+    for bucket in ["files", "thumbs"] {
+        let path = root.join(bucket);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => log::warn!("media cache legacy cleanup failed bucket={bucket}: {error}"),
+        }
+    }
+    if removed {
+        log::info!("media cache legacy authenticated entries removed");
+    }
+}
+
+fn collect_cache_bucket(
+    dir: &Path,
+    now: SystemTime,
+    max_age: Duration,
+    kept: &mut Vec<(SystemTime, u64, PathBuf)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        if !kind.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+
+        if path
+            .extension()
+            .is_some_and(|ext| ext == "parcial" || ext == "tmp")
+        {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        let used = meta.accessed().or_else(|_| meta.modified()).unwrap_or(now);
+        if now.duration_since(used).unwrap_or_default() > max_age {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        kept.push((used, meta.len(), path));
+    }
+}
+
+/// Poda somente a árvore conhecida do Papo:
+/// `servers/<server-key>/{files,thumbs}` + `remote`. O teto é um só para
+/// todos os servidores, não um teto por workspace.
 fn sweep_cache(root: &Path) {
     let limits = MediaLimits::default();
     sweep_cache_with(
@@ -524,38 +684,32 @@ fn sweep_cache(root: &Path) {
 }
 
 fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_age: Duration) {
+    discard_legacy_authenticated_cache(root);
+
     let now = SystemTime::now();
     let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
 
-    for bucket in ["thumbs", "files", "remote"] {
-        let Ok(entries) = std::fs::read_dir(root.join(bucket)) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
-            if !meta.is_file() {
+    collect_cache_bucket(&root.join("remote"), now, max_age, &mut kept);
+
+    if let Ok(servers) = std::fs::read_dir(root.join("servers")) {
+        for server in servers.flatten() {
+            let Ok(kind) = server.file_type() else { continue };
+            if !kind.is_dir() {
                 continue;
             }
-            // Sobra de download interrompido: nunca vai ser completada.
-            if path
-                .extension()
-                .is_some_and(|ext| ext == "parcial" || ext == "tmp")
-            {
-                let _ = std::fs::remove_file(&path);
-                continue;
+            let server_root = server.path();
+            for bucket in ["files", "thumbs"] {
+                collect_cache_bucket(&server_root.join(bucket), now, max_age, &mut kept);
             }
-            let used = meta.accessed().or_else(|_| meta.modified()).unwrap_or(now);
-            if now.duration_since(used).unwrap_or_default() > max_age {
-                let _ = std::fs::remove_file(&path);
-                continue;
-            }
-            kept.push((used, meta.len(), path));
         }
     }
 
     if let Ok(entries) = std::fs::read_dir(root.join("recordings")) {
         for entry in entries.flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if !kind.is_file() {
+                continue;
+            }
             let Ok(meta) = entry.metadata() else { continue };
             let used = meta.modified().unwrap_or(now);
             if now.duration_since(used).unwrap_or_default() > recording_max_age {
@@ -568,7 +722,6 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
     if total <= budget {
         return;
     }
-    // Do mais antigo para o mais novo, até caber.
     kept.sort_unstable_by_key(|(used, _, _)| *used);
     for (_, size, path) in kept {
         if total <= budget {
@@ -1505,13 +1658,16 @@ mod limpeza {
     fn raiz(nome: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("papo-teste-{nome}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        for bucket in ["thumbs", "files", "remote", "recordings"] {
+        for bucket in ["servers", "remote", "recordings"] {
             std::fs::create_dir_all(dir.join(bucket)).unwrap();
         }
         dir
     }
 
     fn escreve(path: &Path, bytes: usize, idade: Duration) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(path, vec![0u8; bytes]).unwrap();
         let quando = SystemTime::now() - idade;
         let file = std::fs::File::options().write(true).open(path).unwrap();
@@ -1526,10 +1682,113 @@ mod limpeza {
     const HORA: Duration = Duration::from_secs(3600);
 
     #[test]
+    fn attachment_id_is_isolated_by_server_namespace() {
+        let raiz = raiz("namespace");
+        let a = authenticated_cache_path_at(&raiz, "srv-a", "files", "abc123", "video.mp4");
+        let b = authenticated_cache_path_at(&raiz, "srv-b", "files", "abc123", "video.mp4");
+        let a_again =
+            authenticated_cache_path_at(&raiz, "srv-a", "files", "abc123", "video.mp4");
+
+        assert_ne!(a, b);
+        assert_eq!(a, a_again);
+        assert!(a.starts_with(raiz.join("servers/srv-a/files")));
+        assert!(b.starts_with(raiz.join("servers/srv-b/files")));
+    }
+
+    #[test]
+    fn server_url_characters_never_enter_authenticated_paths() {
+        let key = papo_core::server_key("https://example.com:8443/a/path?x=1");
+        assert!(safe_server_key(&key));
+        assert!(!key.contains("://"));
+        assert!(!key.contains('?'));
+        assert!(!key.contains('/'));
+        assert!(!key.contains(':'));
+
+        let raiz = raiz("safe-key");
+        let path = authenticated_cache_path_at(&raiz, &key, "thumbs", "id", "capa.png");
+        assert!(path.starts_with(raiz.join("servers").join(&key).join("thumbs")));
+    }
+
+    #[test]
+    fn thumbs_files_and_posters_share_the_server_namespace() {
+        let raiz = raiz("buckets");
+        let key = "srv-a";
+        let thumb = authenticated_cache_path_at(&raiz, key, "thumbs", "id", "");
+        let full = authenticated_cache_path_at(&raiz, key, "files", "id", "");
+        let poster = authenticated_cache_path_at(&raiz, key, "thumbs", "id", "capa.png");
+
+        assert!(thumb.starts_with(raiz.join("servers/srv-a/thumbs")));
+        assert!(poster.starts_with(raiz.join("servers/srv-a/thumbs")));
+        assert!(full.starts_with(raiz.join("servers/srv-a/files")));
+    }
+
+    #[test]
+    fn public_remote_cache_stays_global_and_canonical() {
+        let raiz = raiz("remote-global");
+        let a = papo_core::preview::canonical_url("https://EXAMPLE.com:443/image.png?q=1").unwrap();
+        let b = papo_core::preview::canonical_url("https://example.com/image.png?q=1").unwrap();
+        let a = public_remote_cache_path_at(&raiz, &remote_resource_id(&a));
+        let b = public_remote_cache_path_at(&raiz, &remote_resource_id(&b));
+
+        assert_eq!(a, b);
+        assert!(a.starts_with(raiz.join("remote")));
+        assert!(!a.starts_with(raiz.join("servers")));
+    }
+
+    #[test]
+    fn cached_attachment_from_a_cannot_satisfy_b() {
+        let raiz = raiz("collision");
+        let a = authenticated_cache_path_at(&raiz, "srv-a", "files", "same-id", "");
+        let b = authenticated_cache_path_at(&raiz, "srv-b", "files", "same-id", "");
+        escreve(&a, 4, HORA);
+
+        assert!(a.exists());
+        assert!(!b.exists());
+    }
+
+    #[test]
+    fn legacy_flat_authenticated_cache_is_discarded_not_adopted() {
+        let raiz = raiz("legacy");
+        let file = raiz.join("files/same-id");
+        let thumb = raiz.join("thumbs/same-id");
+        escreve(&file, 8, HORA);
+        escreve(&thumb, 8, HORA);
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(!raiz.join("files").exists());
+        assert!(!raiz.join("thumbs").exists());
+    }
+
+    #[test]
+    fn limpar_servidor_remove_so_o_namespace_dele() {
+        let raiz = raiz("clear-server");
+        let a = authenticated_cache_path_at(&raiz, "srv-a", "files", "id", "");
+        let b = authenticated_cache_path_at(&raiz, "srv-b", "files", "id", "");
+        let remoto = public_remote_cache_path_at(&raiz, "public");
+        escreve(&a, 10, HORA);
+        escreve(&b, 10, HORA);
+        escreve(&remoto, 10, HORA);
+
+        assert!(clear_server_media_cache_at(&raiz, "srv-a").unwrap());
+        assert!(!a.exists());
+        assert!(b.exists());
+        assert!(remoto.exists());
+        assert!(!clear_server_media_cache_at(&raiz, "srv-a").unwrap());
+    }
+
+    #[test]
+    fn limpar_servidor_recusa_chave_que_poderia_escapar_da_raiz() {
+        let raiz = raiz("unsafe-clear");
+        assert!(clear_server_media_cache_at(&raiz, "../fora").is_err());
+        assert!(clear_server_media_cache_at(&raiz, "https://example.com").is_err());
+    }
+
+    #[test]
     fn resto_de_download_interrompido_sai() {
         let raiz = raiz("parcial");
-        let sobra = raiz.join("files/video.mp4.parcial");
-        let bom = raiz.join("files/video.mp4");
+        let sobra = raiz.join("servers/srv-a/files/video.mp4.parcial");
+        let bom = raiz.join("servers/srv-a/files/video.mp4");
         escreve(&sobra, 10, HORA);
         escreve(&bom, 10, HORA);
 
@@ -1551,24 +1810,27 @@ mod limpeza {
     }
 
     #[test]
-    fn remoto_entra_no_teto_global_do_cache() {
+    fn remoto_e_servidores_compartilham_um_teto_global() {
         let raiz = raiz("remote-teto");
-        let antigo = raiz.join("remote/antigo");
+        let antigo = raiz.join("servers/srv-a/files/antigo");
+        let medio = raiz.join("servers/srv-b/thumbs/medio");
         let recente = raiz.join("remote/recente");
-        escreve(&antigo, 1000, HORA * 2);
+        escreve(&antigo, 1000, HORA * 3);
+        escreve(&medio, 1000, HORA * 2);
         escreve(&recente, 1000, HORA);
 
-        sweep_cache_with(&raiz, 1000, HORA * 24, HORA * 24);
+        sweep_cache_with(&raiz, 2000, HORA * 24, HORA * 24);
 
         assert!(!antigo.exists());
+        assert!(medio.exists());
         assert!(recente.exists());
     }
 
     #[test]
     fn o_que_esta_parado_ha_tempo_demais_sai() {
         let raiz = raiz("idade");
-        let velho = raiz.join("thumbs/velho");
-        let novo = raiz.join("thumbs/novo");
+        let velho = raiz.join("servers/srv-a/thumbs/velho");
+        let novo = raiz.join("servers/srv-a/thumbs/novo");
         escreve(&velho, 10, HORA * 50);
         escreve(&novo, 10, HORA);
 
@@ -1581,9 +1843,9 @@ mod limpeza {
     #[test]
     fn passando_do_teto_o_mais_antigo_sai_primeiro() {
         let raiz = raiz("teto");
-        let antigo = raiz.join("files/antigo");
-        let medio = raiz.join("files/medio");
-        let recente = raiz.join("files/recente");
+        let antigo = raiz.join("servers/srv-a/files/antigo");
+        let medio = raiz.join("servers/srv-b/files/medio");
+        let recente = raiz.join("servers/srv-b/files/recente");
         escreve(&antigo, 1000, HORA * 3);
         escreve(&medio, 1000, HORA * 2);
         escreve(&recente, 1000, HORA);
@@ -1615,7 +1877,7 @@ mod limpeza {
     #[test]
     fn trim_de_memoria_nao_apaga_o_cache_de_disco() {
         let raiz = raiz("trim-nao-mexe-no-disco");
-        let arquivo = raiz.join("files/baixado");
+        let arquivo = raiz.join("servers/srv-a/files/baixado");
         escreve(&arquivo, 4096, HORA);
 
         let mut media = MediaStore::new(None);
