@@ -1247,27 +1247,25 @@ async fn background_worker(
             return BackgroundRunResult::TransientFailure;
         }
 
-        match bootstrap(
+        let bootstrap_outcome = bootstrap(
             &api,
             &storage_key,
             &updates,
             &wake,
             Some(&owner),
         )
-        .await
-        {
-            BootstrapOutcome::Complete => {}
-            BootstrapOutcome::Unauthorized => {
-                session.set_token(None);
-                remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
-                publish(&updates, &wake, Update::Session(None));
-                return BackgroundRunResult::PermanentAuthFailure;
-            }
-            BootstrapOutcome::Transient => {
-                return BackgroundRunResult::TransientFailure;
-            }
+        .await;
+        if bootstrap_outcome == BootstrapOutcome::Unauthorized {
+            session.set_token(None);
+            remove_secret(storage.as_ref(), &storage_key, Secret::SessionToken);
+            publish(&updates, &wake, Update::Session(None));
+            return BackgroundRunResult::PermanentAuthFailure;
         }
 
+        // A verified session may still drain safe Queued sends when one
+        // unrelated bootstrap resource is temporarily unavailable. The final
+        // result stays transient so WorkManager can reconcile that missing
+        // state later. UnknownOutcome remains excluded by drive_outgoing().
         let mut outgoing = Vec::new();
         restore_outgoing(
             cache.as_ref(),
@@ -1291,7 +1289,11 @@ async fn background_worker(
         )
         .await;
 
-        BackgroundRunResult::Completed
+        if bootstrap_outcome == BootstrapOutcome::Complete {
+            BackgroundRunResult::Completed
+        } else {
+            BackgroundRunResult::TransientFailure
+        }
     };
 
     let result = tokio::select! {
