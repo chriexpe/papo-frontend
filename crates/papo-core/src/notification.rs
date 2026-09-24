@@ -843,12 +843,12 @@ mod tests {
     fn unavailable_background_platform_is_persistently_suppressed() {
         let temp = TempDb::new("background-no-platform");
         let db = temp.db();
-        let coordinator = NotificationCoordinator::new(Arc::clone(&db), None);
-        coordinator.sync_context(context("srv", "me", true, false));
+        let unavailable = NotificationCoordinator::new(Arc::clone(&db), None);
+        unavailable.sync_context(context("srv", "me", true, false));
         let item = notification("n1", "m1", "geral", "bia");
 
         assert_eq!(
-            coordinator.handle_notification("srv", &item, CandidateSource::Background),
+            unavailable.handle_notification("srv", &item, CandidateSource::Background),
             NotificationOutcome::Suppressed(SuppressionReason::PlatformUnavailable)
         );
 
