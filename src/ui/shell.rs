@@ -3482,16 +3482,7 @@ fn rich_links_from_message(
         .collect();
 
     let mut seen = std::collections::HashSet::new();
-    for token in content.split_whitespace() {
-        let raw = token.trim_matches(|ch: char| {
-            matches!(
-                ch,
-                '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';' | '!' | '?' | '"' | '\''
-            )
-        });
-        let Some(url) = papo_core::preview::canonical_url(raw) else {
-            continue;
-        };
+    for url in papo_core::preview::extract_https_urls(content) {
         if backend_urls.contains(&url) || !seen.insert(url.clone()) {
             continue;
         }
