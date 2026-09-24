@@ -69,4 +69,5 @@ android {
 dependencies {
     implementation(libs.games.activity)
     implementation(libs.appcompat)
+    implementation(libs.work.runtime)
 }
