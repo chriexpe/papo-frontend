@@ -2478,7 +2478,7 @@ async fn handle(
         Command::CreateServer { name } => match api.create_server(&name).await {
             Ok(_) => {
                 let id = me.lock().ok().and_then(|slot| slot.clone());
-                bootstrap(api, storage_key, updates, wake, id.as_deref()).await
+                let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
             }
             Err(error) => publish_runtime(
                 storage_key,
