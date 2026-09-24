@@ -1,6 +1,7 @@
 package io.github.chriexpe.papo;
 
 import android.Manifest;
+import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -91,6 +92,9 @@ public class PapoActivity extends GameActivity {
     private static native void nativeNetworkChanged(boolean available, long epoch, String transport);
     private static native void nativeSetPipSurface(Surface surface);
     private static native void nativeMessageNotificationTapped(String payload);
+
+    /** Pressão de memória do sistema. Em `src/platform/memory_pressure.rs`. */
+    private static native void nativeTrimMemory(int level);
 
     /** Envia o documento completo do IME ao Rust. */
     private static native void nativeSetText(
@@ -1311,6 +1315,22 @@ public class PapoActivity extends GameActivity {
         handleMessageNotificationIntent(intent);
     }
 
+    /**
+     * A Activity está saindo de cena. O eframe grava aqui (o laço de quadros
+     * para no onPause), então este é o último instante em que um trim
+     * publicado ainda pode ser aplicado antes da suspensão — o onTrimMemory
+     * real do sistema chega junto do onStop, tarde demais para este quadro.
+     * Em multi-janela a Activity continua visível, e aí não se trata como
+     * escondida.
+     */
+    @Override
+    protected void onPause() {
+        if (!isInMultiWindowMode()) {
+            nativeTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
+        }
+        super.onPause();
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
@@ -1321,6 +1341,24 @@ public class PapoActivity extends GameActivity {
     protected void onStop() {
         nativeLifecycleChanged(false);
         super.onStop();
+    }
+
+    /**
+     * Pressão de memória do sistema.
+     *
+     * O Rust decide a política: aqui só se repassa o inteiro do Android, numa
+     * thread que não pode tocar no MediaStore. O latch coalesce e a thread
+     * normal do Papo aplica no quadro seguinte.
+     *
+     * Do Android 14 em diante só chegam UI_HIDDEN e BACKGROUND (e acima); os
+     * RUNNING_* antigos deixaram de ser enviados de propósito — não são
+     * esperados em aparelho novo. O `onLowMemory` não é usado: o sistema
+     * moderno não o entrega de forma útil e o `onTrimMemory` cobre o caso.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        nativeTrimMemory(level);
     }
 
     @Override

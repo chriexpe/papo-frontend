@@ -1377,6 +1377,95 @@ mod lifecycle_tests {
         assert!(media.players.is_empty());
     }
 
+    fn store_com_budget(budget: usize) -> MediaStore {
+        MediaStore::with_backend_and_limits(
+            None,
+            Arc::new(FakeBackend::default()),
+            MediaLimits {
+                texture_budget: budget,
+                ..MediaLimits::default()
+            },
+        )
+    }
+
+    fn textura(ctx: &egui::Context, key: &str, w: usize, h: usize) -> Texture {
+        let bytes = vec![0u8; w * h * 4];
+        let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &bytes);
+        Texture::Ready(ctx.load_texture(key, image, egui::TextureOptions::NEAREST))
+    }
+
+    fn total_bytes(store: &MediaStore) -> usize {
+        store.textures.values().map(texture_bytes).sum()
+    }
+
+    // Light encolhe na direção de 75% do teto, sem zerar tudo.
+    #[test]
+    fn light_reduz_texturas_a_tres_quartos() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(1000);
+        for key in ["thumb:a", "thumb:b", "thumb:c"] {
+            let t = textura(&ctx, key, 10, 10); // 400 bytes cada
+            media.textures.insert(key.into(), t);
+        }
+        assert_eq!(total_bytes(&media), 1200);
+
+        media.trim(TrimLevel::Light);
+
+        assert!(total_bytes(&media) <= 750, "devia caber em 3/4 do teto");
+        assert!(total_bytes(&media) > 0, "não é para zerar no Light");
+    }
+
+    // Moderate encolhe na direção de metade do teto.
+    #[test]
+    fn moderate_reduz_texturas_a_metade() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(1000);
+        for key in ["thumb:a", "thumb:b", "thumb:c"] {
+            let t = textura(&ctx, key, 10, 10);
+            media.textures.insert(key.into(), t);
+        }
+
+        media.trim(TrimLevel::Moderate);
+
+        assert!(total_bytes(&media) <= 500, "devia caber em metade do teto");
+    }
+
+    // Critical solta todas as texturas decodificadas reconstruíveis.
+    #[test]
+    fn critical_solta_todas_as_texturas() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(1000);
+        for key in ["thumb:a", "full:d", "remote-image:e"] {
+            let t = textura(&ctx, key, 10, 10);
+            media.textures.insert(key.into(), t);
+        }
+
+        media.trim(TrimLevel::Critical);
+
+        assert_eq!(total_bytes(&media), 0);
+    }
+
+    // Uma textura ainda carregando não pode ser descartada: o pedido continua
+    // a caminho e sumir com o marcador faria o quadro seguinte pedir de novo.
+    #[test]
+    fn textura_em_carregamento_sobrevive_ao_trim() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(1000);
+        let pronta = textura(&ctx, "thumb:a", 10, 10);
+        media.textures.insert("thumb:a".into(), pronta);
+        media
+            .textures
+            .insert("thumb:pendente".into(), Texture::Loading);
+
+        media.trim(TrimLevel::Critical);
+
+        assert!(!media.textures.contains_key("thumb:a"));
+        assert!(matches!(
+            media.textures.get("thumb:pendente"),
+            Some(Texture::Loading)
+        ));
+    }
+
     #[test]
     fn remote_video_goes_directly_to_backend_as_uri() {
         let backend = Arc::new(FakeBackend::default());
@@ -1519,6 +1608,20 @@ mod limpeza {
         sweep_cache_with(&raiz, 0, HORA * 24, HORA * 24);
 
         assert!(pendente.exists());
+    }
+
+    // A pressão de memória é de RAM/GPU. O cache em disco tem política própria
+    // (teto/idade) e apagá-lo sob pressão só forçaria mais rede e CPU depois.
+    #[test]
+    fn trim_de_memoria_nao_apaga_o_cache_de_disco() {
+        let raiz = raiz("trim-nao-mexe-no-disco");
+        let arquivo = raiz.join("files/baixado");
+        escreve(&arquivo, 4096, HORA);
+
+        let mut media = MediaStore::new(None);
+        media.trim(TrimLevel::Critical);
+
+        assert!(arquivo.exists(), "o trim de memória não toca no disco");
     }
 
     #[test]

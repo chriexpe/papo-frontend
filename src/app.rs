@@ -1639,6 +1639,36 @@ impl PapoApp {
         }
     }
 
+    /// Aplica o nível a **todos** os `MediaStore` — o da tela e o de cada
+    /// servidor guardado. Um servidor que não está visível não pode escapar
+    /// do trim só porque outro está na frente.
+    #[cfg(target_os = "android")]
+    fn trim_all_media(&mut self, level: crate::media::TrimLevel) {
+        use crate::platform::memory_pressure::TrimTarget;
+        crate::platform::memory_pressure::trim_all(
+            level,
+            std::iter::once(&mut self.ui.media as &mut dyn TrimTarget).chain(
+                self.workspaces
+                    .iter_mut()
+                    .map(|ws| &mut ws.stash.media as &mut dyn TrimTarget),
+            ),
+        );
+    }
+
+    /// Recolhe a pressão de memória publicada pelo `onTrimMemory` e aplica a
+    /// política de mídia do PR36. Roda na thread normal do Papo, nunca na do
+    /// Java, e cobre ativo e guardados de uma vez.
+    #[cfg(target_os = "android")]
+    fn pump_memory_pressure(&mut self, ctx: &egui::Context) {
+        let Some(level) = crate::platform::memory_pressure::take_pending() else {
+            return;
+        };
+        self.trim_all_media(level);
+        // As texturas que saíram ainda estavam na tela deste quadro; o próximo
+        // desenha o estado vazio e reconstrói o que estiver visível.
+        ctx.request_repaint();
+    }
+
     /// Lê o que chegou de cada servidor. Todos são atendidos no mesmo
     /// quadro: um servidor que não está na tela ainda precisa contar as
     /// menções e disparar a notificação.
@@ -2290,6 +2320,9 @@ impl eframe::App for PapoApp {
             if self.settings.notifications {
                 crate::platform::android_message::ensure_permission();
             }
+            // A pressão de memória entra pelo JNI e é aplicada aqui, na thread
+            // normal — não dentro do `shell::draw`.
+            self.pump_memory_pressure(&ctx);
         }
         self.attach_window(frame);
 
@@ -2304,6 +2337,13 @@ impl eframe::App for PapoApp {
         {
             let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
             if self.focused && !focused {
+                // Indo para segundo plano, este é o **último quadro**: ao
+                // esconder a Activity o laço para de desenhar, então um trim
+                // publicado depois ficaria preso no latch até a volta — e é
+                // justamente atrás que o sistema quer que a gente largue o
+                // que é reconstruível. A política é a mesma (Moderate, que
+                // preserva quem está tocando), só aplicada antes da suspensão.
+                self.trim_all_media(crate::media::TrimLevel::Moderate);
                 if let Some(storage) = frame.storage_mut() {
                     eframe::App::save(self, storage);
                     storage.flush();
@@ -2523,6 +2563,16 @@ impl eframe::App for PapoApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // No Android o eframe grava no `suspend` (onPause), antes de o laço de
+        // quadros parar — é o último ponto no objeto da aplicação em que dá
+        // para soltar mídia reconstruível antes de a Activity sair de cena.
+        // Em primeiro plano o autosave costuma não achar nada: o quadro já
+        // drenou o latch. Aqui é onde o pedido publicado no onPause vira trim.
+        #[cfg(target_os = "android")]
+        if let Some(level) = crate::platform::memory_pressure::take_pending() {
+            self.trim_all_media(level);
+        }
+
         // As marcas de leitura vivem no estado de cada servidor; só o ajuste
         // persiste, e cada servidor guarda as suas sob a própria chave.
         let draft = self.add_server_previous.map(|_| self.active);
