@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use super::client::{Api, ApiError, SendMessageError, Session, Upload};
+use super::client::{Api, ApiError, ApiResult, SendMessageError, Session, Upload};
 use crate::cache::{CachedMessage, CachedOutgoing, ClientDb, OutgoingState};
 use super::scheduler::{
     DiagnosticJobState, ReconcileKey, ReconcileKind, ReconcilePriority, ReconcileRequest,
@@ -2200,7 +2200,7 @@ async fn run_reconcile(
     match request.kind {
         ReconcileKind::ChannelHistory { ticket } => {
             let channel_id = ticket.channel_id.clone();
-            match api.messages(&channel_id).await {
+            match with_retry(|| api.messages(&channel_id)).await {
                 Ok(list) => ReconcileCompletion {
                     run_id,
                     success: true,
@@ -2220,13 +2220,25 @@ async fn run_reconcile(
                 },
             }
         }
-        ReconcileKind::ServerMetadata { user_id } => ReconcileCompletion {
-            run_id,
-            success: true,
-            updates: bootstrap_updates(&api, &scope, user_id.as_deref()).await,
-        },
+        ReconcileKind::ServerMetadata { user_id } => {
+            let (updates, complete) = bootstrap_updates(&api, &scope, user_id.as_deref()).await;
+            ReconcileCompletion {
+                run_id,
+                // A carga inicial que só perdeu por ritmo/rede não pode se
+                // declarar pronta: a marcação fica registrada para a próxima
+                // tentativa em vez de deixar cargos/emojis vazios para sempre.
+                success: complete,
+                updates,
+            }
+        }
     }
 }
+
+/// Repete uma requisição transitória (429/rede) com espera crescente antes de
+/// desistir. O backend limita taxa; a partida dispara várias chamadas de uma
+/// vez, e sem isto o 429 virava um aviso que nunca se resolvia. Insistir um
+/// instante depois transforma a rajada em resposta.
+const TRANSIENT_ATTEMPTS: usize = 4;
 
 fn update_for_error(error: ApiError) -> Update {
     match error {
@@ -2235,49 +2247,151 @@ fn update_for_error(error: ApiError) -> Update {
     }
 }
 
-async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> Vec<Update> {
-    let mut updates = Vec::new();
-
-    match api.server().await {
-        Ok(server) => updates.push(Update::Server(server.map(Box::new))),
-        Err(error) => updates.push(update_for_error(error)),
+async fn with_retry<F, Fut, T>(mut work: F) -> ApiResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ApiResult<T>>,
+{
+    let mut wait = transient_backoff();
+    let mut attempt = 1;
+    loop {
+        match work().await {
+            Err(error) if error.is_transient() && attempt < TRANSIENT_ATTEMPTS => {
+                tokio::time::sleep(wait).await;
+                wait = wait.saturating_mul(2);
+                attempt += 1;
+            }
+            outcome => return outcome,
+        }
     }
-    match api.channels().await {
+}
+
+/// Espera base entre tentativas transitórias. Nos testes é mínima para não
+/// arrastar a suíte; em produção dá tempo de o limitador do backend drenar.
+fn transient_backoff() -> std::time::Duration {
+    #[cfg(test)]
+    {
+        std::time::Duration::from_millis(1)
+    }
+    #[cfg(not(test))]
+    {
+        std::time::Duration::from_millis(250)
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn transient_errors_are_retried_until_success() {
+        let calls = AtomicUsize::new(0);
+        let outcome: ApiResult<u8> = with_retry(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(if n < 2 {
+                Err(ApiError::TooManyRequests("devagar".into()))
+            } else {
+                Ok(9)
+            })
+        })
+        .await;
+        assert_eq!(outcome.expect("devia acabar sucedendo"), 9);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn permanent_errors_are_not_retried() {
+        let calls = AtomicUsize::new(0);
+        let outcome: ApiResult<u8> = with_retry(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<u8, _>(ApiError::NotFound))
+        })
+        .await;
+        assert!(matches!(outcome, Err(ApiError::NotFound)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn transient_errors_give_up_after_the_cap() {
+        let calls = AtomicUsize::new(0);
+        let outcome: ApiResult<u8> = with_retry(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<u8, _>(ApiError::TooManyRequests("x".into())))
+        })
+        .await;
+        assert!(matches!(outcome, Err(ApiError::TooManyRequests(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), TRANSIENT_ATTEMPTS);
+    }
+}
+
+/// Devolve `(updates, complete)`. `complete` é falso quando alguma chamada
+/// falhou de forma transitória — o chamador então repete a carga inteira.
+async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Vec<Update>, bool) {
+    let mut updates = Vec::new();
+    let mut complete = true;
+
+    match with_retry(|| api.server()).await {
+        Ok(server) => updates.push(Update::Server(server.map(Box::new))),
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
+    }
+    match with_retry(|| api.channels()).await {
         Ok(channels) => updates.push(Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
-        Err(error) => updates.push(update_for_error(error)),
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
     }
-    match api.users().await {
+    match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
             updates.push(Update::Users(users));
             if !ids.is_empty() {
-                match api.profiles(ids).await {
+                match with_retry(|| api.profiles(ids.clone())).await {
                     Ok(profiles) => updates.push(Update::Profiles(profiles)),
-                    Err(error) => log::warn!("runtime {scope}: perfis: {error}"),
+                    Err(error) => {
+                        complete = false;
+                        log::warn!("runtime {scope}: perfis: {error}");
+                    }
                 }
             }
         }
         Err(ApiError::NotFound) => {}
-        Err(error) => updates.push(update_for_error(error)),
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
     }
-    match api.roles().await {
+    match with_retry(|| api.roles()).await {
         Ok(roles) => updates.push(Update::Roles(roles)),
-        Err(error) => log::warn!("runtime {scope}: cargos: {error}"),
+        Err(error) => {
+            complete = false;
+            log::warn!("runtime {scope}: cargos: {error}");
+        }
     }
-    match api.emojis().await {
+    match with_retry(|| api.emojis()).await {
         Ok(emojis) if !emojis.is_empty() => updates.push(Update::Emojis(emojis)),
         Ok(_) => {}
-        Err(error) => log::warn!("runtime {scope}: emojis: {error}"),
+        Err(error) => {
+            complete = false;
+            log::warn!("runtime {scope}: emojis: {error}");
+        }
     }
     if let Some(user_id) = user_id {
-        match api.notifications(user_id).await {
+        match with_retry(|| api.notifications(user_id)).await {
             Ok(notifications) => updates.push(Update::Notifications(notifications)),
-            Err(error) => log::warn!("runtime {scope}: notificações: {error}"),
+            Err(error) => {
+                complete = false;
+                log::warn!("runtime {scope}: notificações: {error}");
+            }
         }
     }
 
-    updates
+    (updates, complete)
 }
 
 /// Confirma uma sessão persistida sem transformar indisponibilidade em logout.
@@ -2889,7 +3003,7 @@ async fn handle(
 }
 
 async fn fetch_pinned_ids(api: &Api, scope: &str, channel_id: &str) -> Option<Vec<String>> {
-    match api.pinned(channel_id).await {
+    match with_retry(|| api.pinned(channel_id)).await {
         Ok(list) => Some(
             list.pinned
                 .into_iter()
@@ -2927,7 +3041,7 @@ async fn bootstrap(
     let mut complete = true;
     let mut unauthorized = false;
 
-    match api.server().await {
+    match with_retry(|| api.server()).await {
         Ok(server) => publish(updates, wake, Update::Server(server.map(Box::new))),
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);
@@ -2935,7 +3049,7 @@ async fn bootstrap(
             report(storage_key, updates, wake, error);
         }
     }
-    match api.channels().await {
+    match with_retry(|| api.channels()).await {
         Ok(channels) => publish(updates, wake, Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
@@ -2944,7 +3058,7 @@ async fn bootstrap(
             report(storage_key, updates, wake, error);
         }
     }
-    match api.users().await {
+    match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids = users.iter().map(|user| user.id.clone()).collect();
             publish(updates, wake, Update::Users(users));
@@ -2961,7 +3075,7 @@ async fn bootstrap(
             report(storage_key, updates, wake, error);
         }
     }
-    match api.roles().await {
+    match with_retry(|| api.roles()).await {
         Ok(roles) => publish(updates, wake, Update::Roles(roles)),
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);
@@ -2969,7 +3083,7 @@ async fn bootstrap(
             log::warn!("runtime {storage_key}: cargos: {error}");
         }
     }
-    match api.emojis().await {
+    match with_retry(|| api.emojis()).await {
         Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
         Err(error) => {
@@ -2979,7 +3093,7 @@ async fn bootstrap(
         }
     }
     if let Some(user_id) = user_id {
-        match api.notifications(user_id).await {
+        match with_retry(|| api.notifications(user_id)).await {
             Ok(notifications) => publish(updates, wake, Update::Notifications(notifications)),
             Err(error) => {
                 unauthorized |= matches!(error, ApiError::Unauthorized);
