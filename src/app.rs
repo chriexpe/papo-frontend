@@ -1196,6 +1196,7 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].url);
         self.settings.server_marks.remove(&key);
+        self.notification.remove_context(&key);
         self.workspaces[index].cache.clear_server(&key);
         self.workspaces[index].net.forget_credentials();
         self.workspaces.remove(index);
