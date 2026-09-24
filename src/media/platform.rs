@@ -1,4 +1,6 @@
+#[cfg(target_os = "android")]
 use gstreamer as gst;
+#[cfg(target_os = "android")]
 use gstreamer::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
