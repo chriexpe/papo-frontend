@@ -18,6 +18,52 @@ pub const PINNED_RETENTION: i64 = 200;
 pub const OUTGOING_LIMIT: i64 = 500;
 /// Limite duro de mensagens já tratadas por conta/servidor no ledger.
 pub const NOTIFICATION_LEDGER_LIMIT: i64 = 4096;
+/// Limite global de metadados de preview reconstruíveis.
+pub const PREVIEW_CACHE_LIMIT: i64 = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreviewCacheState {
+    Ready,
+    Negative,
+    RetryAfter,
+}
+
+impl PreviewCacheState {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Negative => "negative",
+            Self::RetryAfter => "retry_after",
+        }
+    }
+
+    pub(crate) fn from_db(raw: &str) -> Option<Self> {
+        match raw {
+            "ready" => Some(Self::Ready),
+            "negative" => Some(Self::Negative),
+            "retry_after" => Some(Self::RetryAfter),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedPreview {
+    pub url_key: String,
+    pub source_url: String,
+    pub state: PreviewCacheState,
+    pub kind: Option<String>,
+    pub media_url: Option<String>,
+    pub image_url: Option<String>,
+    pub embed_url: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub provider_name: Option<String>,
+    pub resolved_at: i64,
+    pub retry_after: Option<i64>,
+    pub failure_class: Option<String>,
+    pub last_used_at: i64,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationDecision {
