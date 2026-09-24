@@ -7,6 +7,8 @@
 /// Conferência do GStreamer no Android, escrita no logcat na abertura.
 #[cfg(target_os = "android")]
 pub mod gst_check;
+pub mod backend;
+pub mod platform;
 pub mod player;
 pub mod prepare;
 
@@ -14,7 +16,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as sync_mpsc;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
+
+use sha2::{Digest, Sha256};
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use tokio::sync::mpsc;
@@ -22,24 +26,40 @@ use tokio::sync::mpsc;
 use crate::api::client::{Api, Session};
 use crate::api::models::{Attachment, LinkPreview};
 use crate::ui::emoji_raster::EmojiRaster;
+use backend::{
+    DirectMediaKind, DirectMediaPlayer, DirectMediaSource, GStreamerBackend, PlaybackBackend,
+};
 
-/// Lado maior de uma textura de mensagem; o visualizador pede a versão cheia.
-/// Quantos players ficam vivos ao mesmo tempo. Cada um carrega uma thread,
-/// um decodificador e um contexto de vídeo, e isso não aparece no tamanho do
-/// arquivo: um clipe de meio mega em 1080p custa quase o mesmo que um de
-/// quinze. Guardar pipeline para mídia que ninguém está ouvindo é o
-/// desperdício mais caro que havia aqui.
-const MAX_PLAYERS: usize = 4;
+/// Limites de mídia ficam em uma política única, em vez de constantes
+/// espalhadas pela apresentação. PR37 pode trocar estes defaults por alvo.
+#[derive(Clone, Debug)]
+pub struct MediaLimits {
+    pub max_players: usize,
+    pub player_idle_ttl: Duration,
+    pub texture_budget: usize,
+    pub disk_budget: u64,
+    pub disk_max_age: Duration,
+}
 
-/// Teto do que fica decodificado em textura. O custo é o pixel, não o
-/// arquivo: uma imagem de 1600² ocupa 10 MiB abertos venha ela de 200 KiB
-/// de JPEG ou de 4 MiB de PNG.
-const TEXTURE_BUDGET: usize = 192 * 1024 * 1024;
+impl Default for MediaLimits {
+    fn default() -> Self {
+        Self {
+            max_players: 4,
+            player_idle_ttl: Duration::from_secs(3 * 60),
+            texture_budget: 192 * 1024 * 1024,
+            disk_budget: 512 * 1024 * 1024,
+            disk_max_age: Duration::from_secs(30 * 24 * 60 * 60),
+        }
+    }
+}
 
-/// Teto do cache em disco e idade máxima de um arquivo parado. Nada aqui
-/// era apagado antes: a pasta só crescia, para sempre.
-const CACHE_BUDGET: u64 = 512 * 1024 * 1024;
-const CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrimLevel {
+    Light,
+    Moderate,
+    Critical,
+}
+
 /// Gravações são do usuário, não mídia baixada, e só saem quando velhas
 /// demais para alguma ainda estar esperando no campo de escrever.
 const RECORDING_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -69,7 +89,8 @@ pub enum Request {
         id: String,
         blob: Option<String>,
     },
-    /// Imagem original de um rich embed.
+    /// Imagem pública de preview. A chave é derivada da URL canônica e
+    /// portanto é compartilhada entre mensagens e reinícios.
     RemoteImage {
         id: String,
         url: String,
@@ -167,7 +188,15 @@ async fn worker(
 
     // O cache em disco não tinha quem o limpasse. Uma varrida na partida,
     // fora da thread da janela.
-    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
+    tokio::task::spawn_blocking(|| {
+        let limits = MediaLimits::default();
+        sweep_cache_with(
+            &cache_root(),
+            limits.disk_budget,
+            limits.disk_max_age,
+            RECORDING_MAX_AGE,
+        );
+    });
 
     while let Some(request) = requests.recv().await {
         let api = api.clone();
@@ -325,6 +354,12 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
         }
         Request::RemoteImage { id, url } => {
             let key = remote_image_key(&id);
+            let path = cache_path("remote", &id, "");
+            if let Ok(bytes) = tokio::fs::read(&path).await
+                && !bytes.is_empty()
+            {
+                return decode(key, &bytes, FULL_MAX);
+            }
             let Some(client) = remote_client else {
                 return Loaded::Failed {
                     key,
@@ -332,11 +367,39 @@ async fn run(api: &Api, remote_client: Option<&reqwest::Client>, request: Reques
                 };
             };
             match papo_core::preview::fetch_bounded_remote_bytes(client, &url, 12 << 20).await {
-                Ok(bytes) => decode(key, &bytes, FULL_MAX),
+                Ok(bytes) => {
+                    if let Err(error) = atomic_cache_write(&path, &bytes).await {
+                        log::warn!("remote-media {}: cache write: {error}", safe_resource_id(&id));
+                    }
+                    decode(key, &bytes, FULL_MAX)
+                }
                 Err(error) => Loaded::Failed { key, error },
             }
         }
     }
+}
+
+async fn atomic_cache_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let tmp = path.with_extension("parcial");
+    tokio::fs::write(&tmp, bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    if tokio::fs::rename(&tmp, path).await.is_err() {
+        let _ = tokio::fs::remove_file(path).await;
+        tokio::fs::rename(&tmp, path)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn safe_resource_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
 }
 
 /// Lê do cache quando já existe; senão busca, grava e devolve.
@@ -465,7 +528,7 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
     let now = SystemTime::now();
     let mut kept: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
 
-    for bucket in ["thumbs", "files"] {
+    for bucket in ["thumbs", "files", "remote"] {
         let Ok(entries) = std::fs::read_dir(root.join(bucket)) else {
             continue;
         };
@@ -476,7 +539,10 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
                 continue;
             }
             // Sobra de download interrompido: nunca vai ser completada.
-            if path.extension().is_some_and(|ext| ext == "parcial") {
+            if path
+                .extension()
+                .is_some_and(|ext| ext == "parcial" || ext == "tmp")
+            {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
@@ -512,6 +578,23 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
         if std::fs::remove_file(&path).is_ok() {
             total = total.saturating_sub(size);
         }
+    }
+}
+
+fn remote_resource_id(canonical_url: &str) -> String {
+    let digest = Sha256::digest(canonical_url.as_bytes());
+    format!("{digest:x}")
+}
+
+fn texture_eviction_class(key: &str) -> u8 {
+    if key.starts_with("full:") || key.starts_with("remote:") {
+        0
+    } else if key.starts_with("poster:") {
+        1
+    } else if key.starts_with("thumb:") || key.starts_with("preview:") {
+        2
+    } else {
+        3
     }
 }
 
@@ -632,7 +715,10 @@ pub struct MediaStore {
     textures: HashMap<String, Texture>,
     files: HashMap<String, FileState>,
     waveforms: HashMap<String, Vec<f32>>,
-    players: HashMap<String, player::Player>,
+    players: HashMap<String, DirectMediaPlayer>,
+    playback: Arc<dyn PlaybackBackend>,
+    limits: MediaLimits,
+    player_last_used: HashMap<String, Instant>,
     /// Última vez que alguém pediu cada chave, para saber quem sai quando o
     /// teto aperta. Guarda textura e player no mesmo mapa: as chaves de
     /// textura vêm prefixadas (`thumb:`, `full:`…) e as de player são o id
@@ -649,12 +735,28 @@ pub struct MediaStore {
 
 impl MediaStore {
     pub fn new(media: Option<Media>) -> Self {
+        Self::with_backend_and_limits(
+            media,
+            Arc::new(GStreamerBackend),
+            MediaLimits::default(),
+        )
+    }
+
+    pub(crate) fn with_backend_and_limits(
+        media: Option<Media>,
+        playback: Arc<dyn PlaybackBackend>,
+        limits: MediaLimits,
+    ) -> Self {
+        log::debug!("media backend={}", playback.name());
         Self {
             media,
             textures: HashMap::new(),
             files: HashMap::new(),
             waveforms: HashMap::new(),
             players: HashMap::new(),
+            playback,
+            limits,
+            player_last_used: HashMap::new(),
             used: HashMap::new(),
             tick: 0,
             revealed: std::collections::HashSet::new(),
@@ -718,7 +820,7 @@ impl MediaStore {
                 }
             }
         }
-        self.evict();
+        self.housekeep();
         changed
     }
 
@@ -728,51 +830,130 @@ impl MediaStore {
         self.used.insert(key.to_owned(), self.tick);
     }
 
-    /// Devolve o que ninguém está olhando. Sem isto os mapas só cresciam:
-    /// todo vídeo, áudio e imagem que passasse pela tela ficava carregado
-    /// até o programa fechar.
-    fn evict(&mut self) {
-        // Players primeiro, que são o item caro. Um que esteja tocando nunca
-        // sai — parar o som no meio por causa de uma conta de memória seria
-        // trocar um defeito por outro pior.
-        if self.players.len() > MAX_PLAYERS {
-            let mut idle: Vec<(u64, String)> = self
-                .players
-                .iter()
-                .filter(|(_, player)| !player.is_playing())
-                .map(|(key, _)| (self.used.get(key).copied().unwrap_or(0), key.clone()))
-                .collect();
-            idle.sort_unstable();
-            let excess = self.players.len().saturating_sub(MAX_PLAYERS);
-            for (_, key) in idle.into_iter().take(excess) {
-                self.players.remove(&key);
-                self.used.remove(&key);
-            }
-        }
+    fn touch_player(&mut self, key: &str) {
+        self.touch(key);
+        self.player_last_used.insert(key.to_owned(), Instant::now());
+    }
 
-        // Texturas, do mais antigo para o mais novo. `Loading` fica: tirar a
-        // marca faria o pedido em voo voltar para um mapa que não o espera
-        // mais, e o download recomeçaria do zero.
+    pub fn housekeep(&mut self) {
+        self.housekeep_at(Instant::now());
+    }
+
+    fn housekeep_at(&mut self, now: Instant) {
+        let ttl = self.limits.player_idle_ttl;
+        let stale: Vec<String> = self
+            .players
+            .iter()
+            .filter(|(_, player)| !player.is_playing())
+            .filter_map(|(key, _)| {
+                let last = self.player_last_used.get(key).copied()?;
+                now.checked_duration_since(last)
+                    .filter(|age| *age >= ttl)
+                    .map(|_| key.clone())
+            })
+            .collect();
+        for key in stale {
+            self.remove_player(&key);
+            log::debug!("media evicted_player reason=idle");
+        }
+        self.enforce_player_cap();
+        self.trim_textures_to(self.limits.texture_budget);
+    }
+
+    fn remove_player(&mut self, key: &str) {
+        self.players.remove(key);
+        self.player_last_used.remove(key);
+        self.used.remove(key);
+    }
+
+    fn enforce_player_cap(&mut self) {
+        while self.players.len() > self.limits.max_players {
+            let Some(key) = self.oldest_idle_player() else { break };
+            self.remove_player(&key);
+            log::debug!("media evicted_player reason=cap");
+        }
+    }
+
+    fn oldest_idle_player(&self) -> Option<String> {
+        self.players
+            .iter()
+            .filter(|(_, player)| !player.is_playing())
+            .min_by_key(|(key, _)| self.used.get(*key).copied().unwrap_or(0))
+            .map(|(key, _)| key.clone())
+    }
+
+    fn make_player_room(&mut self) -> bool {
+        self.housekeep();
+        while self.players.len() >= self.limits.max_players {
+            let Some(key) = self.oldest_idle_player() else {
+                return false;
+            };
+            self.remove_player(&key);
+            log::debug!("media evicted_player reason=cap");
+        }
+        true
+    }
+
+    fn trim_textures_to(&mut self, budget: usize) {
         let mut total: usize = self.textures.values().map(texture_bytes).sum();
-        if total <= TEXTURE_BUDGET {
+        if total <= budget {
             return;
         }
-        let mut aged: Vec<(u64, String)> = self
+        let mut aged: Vec<(u8, u64, String)> = self
             .textures
             .iter()
             .filter(|(_, texture)| !matches!(texture, Texture::Loading))
-            .map(|(key, _)| (self.used.get(key).copied().unwrap_or(0), key.clone()))
+            .map(|(key, _)| {
+                (
+                    texture_eviction_class(key),
+                    self.used.get(key).copied().unwrap_or(0),
+                    key.clone(),
+                )
+            })
             .collect();
         aged.sort_unstable();
-        for (_, key) in aged {
-            if total <= TEXTURE_BUDGET {
+        for (_, _, key) in aged {
+            if total <= budget {
                 break;
             }
             if let Some(texture) = self.textures.remove(&key) {
-                // Soltar o `TextureHandle` é o que devolve a memória da
-                // placa de vídeo; o mapa só guardava o identificador.
                 total = total.saturating_sub(texture_bytes(&texture));
                 self.used.remove(&key);
+                log::debug!("media evicted_texture");
+            }
+        }
+    }
+
+    pub fn trim(&mut self, level: TrimLevel) {
+        log::debug!("media trim level={level:?}");
+        match level {
+            TrimLevel::Light => {
+                self.housekeep();
+                self.trim_textures_to(self.limits.texture_budget.saturating_mul(3) / 4);
+            }
+            TrimLevel::Moderate => {
+                let idle: Vec<String> = self
+                    .players
+                    .iter()
+                    .filter(|(_, player)| !player.is_playing())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in idle {
+                    self.remove_player(&key);
+                }
+                self.trim_textures_to(self.limits.texture_budget / 2);
+            }
+            TrimLevel::Critical => {
+                let idle: Vec<String> = self
+                    .players
+                    .iter()
+                    .filter(|(_, player)| !player.is_playing())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                for key in idle {
+                    self.remove_player(&key);
+                }
+                self.trim_textures_to(0);
             }
         }
     }
@@ -867,14 +1048,13 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
-    pub fn remote_image(&mut self, id: &str, url: &str) -> Option<&Texture> {
-        let key = remote_image_key(id);
+    pub fn remote_image(&mut self, _id: &str, url: &str) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let id = remote_resource_id(&canonical);
+        let key = remote_image_key(&id);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
-            self.ask(Request::RemoteImage {
-                id: id.to_owned(),
-                url: url.to_owned(),
-            });
+            self.ask(Request::RemoteImage { id, url: canonical });
         }
         self.touch(&key);
         self.textures.get(&key)
@@ -945,10 +1125,18 @@ impl MediaStore {
         ctx: &egui::Context,
     ) -> Option<&mut player::Player> {
         if !self.players.contains_key(id) {
-            let player = player::Player::open(path, video, ctx.clone())?;
+            if !self.make_player_room() {
+                return None;
+            }
+            let kind = if video { DirectMediaKind::Video } else { DirectMediaKind::Audio };
+            let player = self.playback.open(
+                DirectMediaSource::File(path.to_owned()),
+                kind,
+                ctx.clone(),
+            )?;
             self.players.insert(id.to_owned(), player);
         }
-        self.touch(id);
+        self.touch_player(id);
         self.players.get_mut(id)
     }
 
@@ -977,10 +1165,17 @@ impl MediaStore {
             return None;
         }
         if !self.players.contains_key(id) {
-            let player = player::Player::open_uri(url, true, ctx.clone())?;
+            if !self.make_player_room() {
+                return None;
+            }
+            let player = self.playback.open(
+                DirectMediaSource::RemoteUri(url.to_owned()),
+                DirectMediaKind::Video,
+                ctx.clone(),
+            )?;
             self.players.insert(id.to_owned(), player);
         }
-        self.touch(id);
+        self.touch_player(id);
         self.players.get_mut(id)
     }
 
@@ -1000,7 +1195,7 @@ impl MediaStore {
     /// não ter duração nem quadro antes do primeiro play.
     pub fn existing_player(&mut self, id: &str) -> Option<&mut player::Player> {
         if self.players.contains_key(id) {
-            self.touch(id);
+            self.touch_player(id);
         }
         self.players.get_mut(id)
     }
