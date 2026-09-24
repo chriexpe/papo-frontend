@@ -151,6 +151,32 @@ pub struct NetworkHint {
     pub epoch: u64,
 }
 
+/// Transport lifetime selected by the owning client runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    Interactive,
+    /// One saved-session REST reconciliation. This mode never opens a WebSocket.
+    BackgroundReconcile,
+}
+
+impl TransportMode {
+    pub fn opens_websocket(self) -> bool {
+        matches!(self, Self::Interactive)
+    }
+}
+
+/// Terminal result emitted by a bounded background transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundRunResult {
+    Completed,
+    NoSession,
+    PermanentAuthFailure,
+    ServerLocked,
+    TransientFailure,
+    Deadline,
+    Cancelled,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NetworkAction {
     None,
@@ -439,6 +465,8 @@ pub enum Update {
     },
     Connection(Connection),
     Error(String),
+    /// Terminal marker used only by the bounded background transport.
+    BackgroundFinished(BackgroundRunResult),
 }
 
 const RECONCILE_CONCURRENCY: usize = 2;
@@ -503,6 +531,8 @@ struct ReconcileCompletion {
 pub struct Net {
     commands: mpsc::UnboundedSender<Command>,
     updates: sync_mpsc::Receiver<Update>,
+    mode: TransportMode,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
     event_hook: EventHook,
     message_hook: MessageHook,
     notification_hook: NotificationHook,
@@ -519,6 +549,41 @@ impl Net {
         wake: Wake,
         storage: Arc<dyn SecretStore>,
         cache: Arc<ClientDb>,
+    ) -> Self {
+        Self::spawn_with_mode(
+            base_url,
+            wake,
+            storage,
+            cache,
+            TransportMode::Interactive,
+            std::time::Duration::from_secs(25),
+        )
+    }
+
+    pub fn spawn_background(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        deadline: std::time::Duration,
+    ) -> Self {
+        Self::spawn_with_mode(
+            base_url,
+            wake,
+            storage,
+            cache,
+            TransportMode::BackgroundReconcile,
+            deadline,
+        )
+    }
+
+    fn spawn_with_mode(
+        base_url: String,
+        wake: Wake,
+        storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
+        mode: TransportMode,
+        deadline: std::time::Duration,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
@@ -543,6 +608,8 @@ impl Net {
         let worker_storage_key = storage_key.clone();
         let diagnostics = Arc::new(RwLock::new(RuntimeDiagnostics::default()));
         let worker_diagnostics = Arc::clone(&diagnostics);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
 
         std::thread::Builder::new()
             .name("papo-net".into())
@@ -558,24 +625,41 @@ impl Net {
                         return;
                     }
                 };
-                runtime.block_on(worker(
-                    base_url,
-                    worker_storage_key,
-                    worker_storage,
-                    worker_session,
-                    worker_cache,
-                    commands_rx,
-                    updates_tx,
-                    wake,
-                    worker_hooks,
-                    worker_diagnostics,
-                ));
+                if mode.opens_websocket() {
+                    runtime.block_on(worker(
+                        base_url,
+                        worker_storage_key,
+                        worker_storage,
+                        worker_session,
+                        worker_cache,
+                        commands_rx,
+                        updates_tx,
+                        wake,
+                        worker_hooks,
+                        worker_diagnostics,
+                    ));
+                } else {
+                    runtime.block_on(background_worker(
+                        base_url,
+                        worker_storage_key,
+                        worker_storage,
+                        worker_session,
+                        worker_cache,
+                        updates_tx,
+                        wake,
+                        worker_diagnostics,
+                        worker_cancel,
+                        deadline,
+                    ));
+                }
             })
             .expect("thread de rede");
 
         Self {
             commands: commands_tx,
             updates: updates_rx,
+            mode,
+            cancel,
             event_hook,
             message_hook,
             notification_hook,
@@ -617,6 +701,20 @@ impl Net {
             .unwrap_or_default()
     }
 
+    pub fn mode(&self) -> TransportMode {
+        self.mode
+    }
+
+    pub fn recv_timeout(&self, timeout: std::time::Duration) -> Option<Update> {
+        self.updates.recv_timeout(timeout).ok()
+    }
+
+    pub fn cancel_background(&self) {
+        if self.mode == TransportMode::BackgroundReconcile {
+            self.cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
     /// Esquece sessão e senha deste servidor no backend de persistência
     /// escolhido pelo frontend.
     pub fn forget_credentials(&self) {
@@ -627,6 +725,12 @@ impl Net {
             );
         }
         self.session.set_token(None);
+    }
+}
+
+impl Drop for Net {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1027,6 +1131,135 @@ fn advance_generation_for_connection(
     } else {
         false
     }
+}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavedSessionOutcome {
+    Verified,
+    Unauthorized,
+    ServerLocked,
+    Transient,
+}
+
+async fn wait_background_cancel(cancel: Arc<std::sync::atomic::AtomicBool>) {
+    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn background_worker(
+    base_url: String,
+    storage_key: String,
+    storage: Arc<dyn SecretStore>,
+    session: Arc<Session>,
+    cache: Arc<ClientDb>,
+    updates: sync_mpsc::Sender<Update>,
+    wake: Wake,
+    diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    deadline: std::time::Duration,
+) {
+    // Deliberately separate from worker(): there is no websocket task, heartbeat,
+    // reconnect timer, channel-history scheduler, or media/call path here.
+    let api = match Api::new(&base_url, Arc::clone(&session)) {
+        Ok(api) => api,
+        Err(error) => {
+            log::warn!("background {storage_key}: REST client unavailable: {error}");
+            publish(&updates, &wake, Update::BackgroundFinished(BackgroundRunResult::TransientFailure));
+            return;
+        }
+    };
+
+    if !session.is_authenticated() {
+        log::info!("background {storage_key}: no saved session");
+        publish(&updates, &wake, Update::BackgroundFinished(BackgroundRunResult::NoSession));
+        return;
+    }
+
+    let me: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let work = async {
+        let outcome = verify_saved_session_once(
+            &api,
+            &storage_key,
+            storage.as_ref(),
+            &session,
+            &me,
+            &updates,
+            &wake,
+        )
+        .await;
+        let owner = match outcome {
+            SavedSessionOutcome::Verified => {
+                me.lock().ok().and_then(|slot| slot.clone()).unwrap_or_default()
+            }
+            SavedSessionOutcome::Unauthorized => {
+                return BackgroundRunResult::PermanentAuthFailure;
+            }
+            SavedSessionOutcome::ServerLocked => {
+                return BackgroundRunResult::ServerLocked;
+            }
+            SavedSessionOutcome::Transient => {
+                return BackgroundRunResult::TransientFailure;
+            }
+        };
+        if owner.is_empty() {
+            return BackgroundRunResult::TransientFailure;
+        }
+
+        let bootstrap_ok = bootstrap(
+            &api,
+            &storage_key,
+            &updates,
+            &wake,
+            Some(&owner),
+        )
+        .await;
+
+        let mut outgoing = Vec::new();
+        restore_outgoing(
+            cache.as_ref(),
+            &storage_key,
+            &owner,
+            &updates,
+            &wake,
+            &mut outgoing,
+        );
+        let mut channel_gate = OutgoingChannelGate::default();
+        drive_outgoing(
+            &api,
+            cache.as_ref(),
+            &storage_key,
+            &owner,
+            false,
+            &mut channel_gate,
+            &updates,
+            &wake,
+            &mut outgoing,
+        )
+        .await;
+
+        if bootstrap_ok {
+            BackgroundRunResult::Completed
+        } else {
+            BackgroundRunResult::TransientFailure
+        }
+    };
+
+    let result = tokio::select! {
+        _ = wait_background_cancel(Arc::clone(&cancel)) => BackgroundRunResult::Cancelled,
+        timed = tokio::time::timeout(deadline, work) => match timed {
+            Ok(result) => result,
+            Err(_) => BackgroundRunResult::Deadline,
+        },
+    };
+
+    if let Ok(mut snapshot) = diagnostics.write() {
+        snapshot.connection = Connection::Offline;
+    }
+    log::info!("background {storage_key}: finished {result:?}");
+    publish(&updates, &wake, Update::BackgroundFinished(result));
 }
 
 #[allow(clippy::too_many_arguments)]
