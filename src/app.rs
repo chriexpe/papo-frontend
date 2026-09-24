@@ -254,7 +254,7 @@ fn pump_call(ws: &mut Workspace) {
     // cabe nos seis lugares é a thread da call, que é quem sabe quais estão
     // livres e reaproveita o que vaga.
     let me = ws.runtime.store.me.clone();
-    let mut wanted: Vec<String> = ws
+    let mut wanted: Vec<String> = ws.runtime
         .store
         .call
         .members()
@@ -993,7 +993,7 @@ impl PapoApp {
         }
         self.workspaces[index].runtime.store.busy = true;
         self.workspaces[index].runtime.store.error = None;
-        self.workspaces[index]
+        self.workspaces[index].runtime
             .net
             .send(Command::LoginServer { password });
     }
@@ -1229,7 +1229,7 @@ impl PapoApp {
             }
             #[cfg(target_os = "android")]
             {
-                let title = self.workspaces[self.active]
+                let title = self.workspaces[self.active].runtime
                     .store
                     .channel(&channel_id)
                     .map(|channel| channel.name.clone())
@@ -1334,7 +1334,7 @@ impl PapoApp {
                 emoji,
                 add,
             } => {
-                let channel_id = ws
+                let channel_id = ws.runtime
                     .store
                     .message(&message_id)
                     .map(|message| message.channel_id.clone())
@@ -1349,7 +1349,7 @@ impl PapoApp {
                 });
             }
             ChatAction::Pin { message_id, pin } => {
-                let channel_id = ws
+                let channel_id = ws.runtime
                     .store
                     .message(&message_id)
                     .map(|message| message.channel_id.clone())
@@ -1536,7 +1536,7 @@ impl PapoApp {
                 name,
                 topic,
             } => {
-                if let Some(channel) = ws
+                if let Some(channel) = ws.runtime
                     .store
                     .channels
                     .iter_mut()
@@ -1580,7 +1580,7 @@ impl PapoApp {
             ChatAction::DeleteChannel(id) => {
                 ws.runtime.store.channels.retain(|channel| channel.id != id);
                 if ws.runtime.store.selected_channel == id {
-                    ws.runtime.store.selected_channel = ws
+                    ws.runtime.store.selected_channel = ws.runtime
                         .store
                         .channels
                         .first()
@@ -1666,7 +1666,7 @@ impl PapoApp {
             return;
         };
 
-        let ready = self.workspaces[index]
+        let ready = self.workspaces[index].runtime
             .store
             .channels
             .iter()
@@ -1748,7 +1748,7 @@ impl PapoApp {
         let model = build_menu(&self.settings);
         // O nome do servidor na tela é o que a barra tem de mais útil a
         // dizer; sem sessão, sobra o nome do aplicativo.
-        let title = match &self.ws().store.server {
+        let title = match &self.ws().runtime.store.server {
             Some(server) if !server.name.is_empty() => {
                 format!("Papo — {}", server.name)
             }
@@ -1797,7 +1797,7 @@ impl PapoApp {
                     shrunk,
                 } => match purpose {
                     ImagePick::Avatar => {
-                        self.workspaces[self.active]
+                        self.workspaces[self.active].runtime
                             .net
                             .send(Command::SetAvatar { blob, format });
                     }
@@ -1919,7 +1919,7 @@ impl PapoApp {
                 }
                 self.quit(ctx);
             }
-            MenuCommand::SignOut => self.ws().net.send(Command::Logout),
+            MenuCommand::SignOut => self.ws().runtime.net.send(Command::Logout),
             MenuCommand::Preferences => self
                 .sheet
                 .toggle(crate::ui::settings::Surface::App),
