@@ -698,13 +698,13 @@ impl PapoApp {
                 }
                 workspaces[index].label = label.to_owned();
             }
-            crate::state::demo::seed(&mut workspaces[active].store);
+            crate::state::demo::seed(&mut workspaces[active].runtime.store);
             // Os outros ficam com conversa por ler, para o marcador e o
             // contador aparecerem.
-            crate::state::demo::seed(&mut workspaces[1].store);
-            crate::state::demo::seed(&mut workspaces[2].store);
-            workspaces[1].store.read_marks.clear();
-            workspaces[2].store.read_marks.clear();
+            crate::state::demo::seed(&mut workspaces[1].runtime.store);
+            crate::state::demo::seed(&mut workspaces[2].runtime.store);
+            workspaces[1].runtime.store.read_marks.clear();
+            workspaces[2].runtime.store.read_marks.clear();
         }
 
         // O servidor que está na tela entrega o seu guardado para a interface.
@@ -942,7 +942,7 @@ impl PapoApp {
         // para o endereço interno e faria o login parecer travado.
         if url.is_empty() || url::Url::parse(&url).is_err() {
             let s = self.settings.lang.strings();
-            self.workspaces[index].store.error = Some(s.invalid_server_address.to_owned());
+            self.workspaces[index].runtime.store.error = Some(s.invalid_server_address.to_owned());
             return;
         }
 
@@ -970,7 +970,7 @@ impl PapoApp {
             return;
         }
 
-        if url != self.workspaces[index].url {
+        if url != self.workspaces[index].runtime.url {
             self.reopen(index, url, ctx);
         }
 
@@ -991,8 +991,8 @@ impl PapoApp {
         if password.is_empty() {
             return;
         }
-        self.workspaces[index].store.busy = true;
-        self.workspaces[index].store.error = None;
+        self.workspaces[index].runtime.store.busy = true;
+        self.workspaces[index].runtime.store.error = None;
         self.workspaces[index]
             .net
             .send(Command::LoginServer { password });
@@ -1001,7 +1001,7 @@ impl PapoApp {
     /// Reabre um servidor num endereço novo, jogando fora a conexão antiga.
     fn reopen(&mut self, index: usize, url: String, ctx: &egui::Context) {
         let form = self.workspaces[index].form.clone();
-        let old_key = self.workspaces[index].server_key.clone();
+        let old_key = self.workspaces[index].runtime.server_key.clone();
         let entry = ServerEntry::new(url);
         let mut fresh = Workspace::open(
             &entry,
@@ -1040,7 +1040,7 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         self.active = index;
         self.settings.active = index;
-        self.settings.server_url = self.workspaces[index].url.clone();
+        self.settings.server_url = self.workspaces[index].runtime.url.clone();
         self.sync_notification_contexts();
         // A mídia do servidor que saiu para de tocar junto com ele.
         self.workspaces[previous].stash.media.pause_all();
@@ -1083,17 +1083,15 @@ impl PapoApp {
         // Recolhe o estado visual do rascunho, remove-o e devolve o estado
         // visual do servidor que estava aberto antes do +.
         self.workspaces[index].stash.swap(&mut self.ui);
-        let key = crate::state::server_key(&self.workspaces[index].url);
+        let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
-        self.notification.remove_context(&key);
-        self.workspaces[index].cache.clear_server(&key);
-        self.workspaces[index].net.forget_credentials();
+        self.workspaces[index].runtime.forget_server();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 
         self.active = previous.min(self.workspaces.len() - 1);
         self.settings.active = self.active;
-        self.settings.server_url = self.workspaces[self.active].url.clone();
+        self.settings.server_url = self.workspaces[self.active].runtime.url.clone();
         self.workspaces[self.active].stash.swap(&mut self.ui);
         ctx.request_repaint();
     }
@@ -1120,11 +1118,9 @@ impl PapoApp {
         if was_active {
             self.workspaces[index].stash.swap(&mut self.ui);
         }
-        let key = crate::state::server_key(&self.workspaces[index].url);
+        let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
-        self.notification.remove_context(&key);
-        self.workspaces[index].cache.clear_server(&key);
-        self.workspaces[index].net.forget_credentials();
+        self.workspaces[index].runtime.forget_server();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
 
@@ -1135,7 +1131,7 @@ impl PapoApp {
         };
         self.active = active;
         self.settings.active = active;
-        self.settings.server_url = self.workspaces[active].url.clone();
+        self.settings.server_url = self.workspaces[active].runtime.url.clone();
         if was_active {
             self.workspaces[active].stash.swap(&mut self.ui);
         }
@@ -1197,13 +1193,13 @@ impl PapoApp {
                 return;
             }
             ChatAction::EditChannel(id) => {
-                if let Some(channel) = self.workspaces[self.active].store.channel(id).cloned() {
+                if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
                     self.sheet.open_edit_channel(&channel);
                 }
                 return;
             }
             ChatAction::RequestDeleteChannel(id) => {
-                if let Some(channel) = self.workspaces[self.active].store.channel(id).cloned() {
+                if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
                     self.sheet.open_delete_channel(&channel);
                 }
                 return;
@@ -1702,7 +1698,7 @@ impl PapoApp {
             return;
         }
         #[cfg(not(target_os = "android"))]
-        if !self.workspaces[active].store.call.popped_out {
+        if !self.workspaces[active].runtime.store.call.popped_out {
             return;
         }
         let t = self.tokens;
@@ -1993,7 +1989,7 @@ impl PapoApp {
             AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
             AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
         };
-        self.workspaces[self.active].net.send(command);
+        self.workspaces[self.active].runtime.net.send(command);
     }
 
     fn handle_role(&mut self, action: crate::ui::roles::RoleAction) {
@@ -2024,7 +2020,7 @@ impl PapoApp {
             RoleAction::Assign { user_id, role_id } => Command::AssignRole { user_id, role_id },
             RoleAction::Unassign { user_id, role_id } => Command::UnassignRole { user_id, role_id },
         };
-        self.workspaces[self.active].net.send(command);
+        self.workspaces[self.active].runtime.net.send(command);
     }
 
     /// A folha de ajustes, ancorada na pastilha que a abriu. É a única
@@ -2297,7 +2293,7 @@ impl eframe::App for PapoApp {
 
             let call_index = self.workspaces.iter().position(|ws| ws.runtime.store.call.active());
             let has_video = call_index
-                .is_some_and(|index| self.workspaces[index].store.call.has_video());
+                .is_some_and(|index| self.workspaces[index].runtime.store.call.has_video());
 
             let (muted, camera, members, speaker_name) = if let Some(index) = call_index {
                 let ws = &self.workspaces[index];
@@ -2353,7 +2349,7 @@ impl eframe::App for PapoApp {
         self.draw_header(ui);
 
         let compact_chat = matches!(
-            self.workspaces[self.active].store.screen,
+            self.workspaces[self.active].runtime.store.screen,
             Screen::Chat
         ) && crate::ui::shell::is_compact(ctx.content_rect());
         let add_server_modal = self.add_server_previous.is_some();
@@ -2362,7 +2358,7 @@ impl eframe::App for PapoApp {
         }
 
         let active = self.active;
-        match self.workspaces[active].store.screen {
+        match self.workspaces[active].runtime.store.screen {
             Screen::Starting => auth::starting(ui, &self.tokens, strings),
             Screen::Auth => {
                 let response = {
