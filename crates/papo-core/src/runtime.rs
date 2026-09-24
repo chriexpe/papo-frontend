@@ -500,9 +500,10 @@ impl ServerRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::models::{Server, Whoami};
+    use crate::api::models::{Notification, Server, Whoami};
     use crate::storage::MemorySecretStore;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn disabled_runtime() -> (ServerRuntime, Arc<MemorySecretStore>) {
@@ -650,6 +651,52 @@ mod tests {
                 .as_deref(),
             Some("saved-token")
         );
+    }
+
+    #[test]
+    fn background_runtime_routes_only_backend_notifications_to_coordinator() {
+        let path = temp_db_path("background-notification");
+        let cache = Arc::new(ClientDb::open(Some(path.clone())));
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&deliveries);
+        let notification = Arc::new(NotificationCoordinator::new(
+            Arc::clone(&cache),
+            Some(Arc::new(move |_| {
+                seen.fetch_add(1, Ordering::SeqCst);
+            })),
+        ));
+        let secrets = Arc::new(MemorySecretStore::default());
+        let mut runtime = ServerRuntime::open_background(
+            "http://127.0.0.1:9".to_owned(),
+            secrets,
+            Arc::clone(&cache),
+            notification,
+            true,
+            std::time::Duration::from_secs(1),
+        );
+
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        runtime.process_update(Update::Notifications(vec![Notification {
+            id: "n1".to_owned(),
+            message_id: Some("m1".to_owned()),
+            channel_id: Some("general".to_owned()),
+            author_id: Some("bia".to_owned()),
+            message_content: Some("oi".to_owned()),
+            read: false,
+            created_at: None,
+        }]));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+
+        // Arbitrary reconciled Store changes do not pass through the
+        // NotificationCoordinator; only Update::Notifications above does.
+        runtime.process_update(Update::Server(None));
+        assert_eq!(deliveries.load(Ordering::SeqCst), 1);
+
+        drop(runtime);
+        drop(cache);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
