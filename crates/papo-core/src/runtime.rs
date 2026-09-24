@@ -20,7 +20,7 @@ pub enum CallRuntimeEffect {
         servers: Vec<IceServer>,
     },
     Event {
-        event: Event,
+        event: Box<Event>,
         me_before: String,
         phase_before: Phase,
         store_error_before: Option<String>,
@@ -43,7 +43,7 @@ pub enum RuntimeEffect {
         reply_to: Option<String>,
         notify_reply: bool,
     },
-    Call(CallRuntimeEffect),
+    Call(Box<CallRuntimeEffect>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -324,39 +324,39 @@ impl ServerRuntime {
                 channel_id,
                 attempt,
                 servers,
-            } => effects.push(RuntimeEffect::Call(CallRuntimeEffect::VoiceReady {
+            } => effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::VoiceReady {
                 channel_id: channel_id.clone(),
                 attempt: *attempt,
                 servers: servers.clone(),
-            })),
+            }))),
             Update::Event(event)
                 if matches!(
                     &**event,
                     Event::VoiceLeft { .. } | Event::Failure { .. }
                 ) =>
             {
-                effects.push(RuntimeEffect::Call(CallRuntimeEffect::Event {
-                    event: (**event).clone(),
+                effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::Event {
+                    event: Box::new((**event).clone()),
                     me_before: self.store.me.clone(),
                     phase_before: self.store.call.phase,
                     store_error_before: self.store.error.clone(),
                     call_error_before: self.store.call.error.clone(),
-                }));
+                })));
             }
             Update::Connection(Connection::Offline) => {
-                effects.push(RuntimeEffect::Call(
+                effects.push(RuntimeEffect::Call(Box::new(
                     CallRuntimeEffect::ConnectionOffline,
-                ));
+                )));
             }
             Update::VoiceFailed {
                 channel_id,
                 attempt,
                 ..
-            } => effects.push(RuntimeEffect::Call(CallRuntimeEffect::VoiceFailed {
+            } => effects.push(RuntimeEffect::Call(Box::new(CallRuntimeEffect::VoiceFailed {
                 channel_id: channel_id.clone(),
                 attempt: *attempt,
                 was_current: self.store.call.current(channel_id, *attempt),
-            })),
+            }))),
             _ => {}
         }
         effects
