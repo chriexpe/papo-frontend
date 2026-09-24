@@ -28,8 +28,7 @@ pub fn init() -> bool {
     static READY: OnceLock<bool> = OnceLock::new();
     *READY.get_or_init(|| match gst::init() {
         Ok(()) => {
-            #[cfg(target_os = "android")]
-            demote_broken_decoders();
+            super::platform::initialize_platform();
             true
         }
         Err(error) => {
@@ -37,42 +36,6 @@ pub fn init() -> bool {
             false
         }
     })
-}
-
-/// Tira a preferência dos decodificadores do aparelho que não entregam.
-///
-/// O OMX é o caminho antigo do Android — o Codec2 o substituiu na versão 10
-/// — e no aparelho de teste o decodificador de vídeo dele recusa o H.264 na
-/// primeira tentativa, com "Failed to query component interface for required
-/// system resources". O problema é que ele vem com prioridade **acima** de
-/// todos os que funcionam: o decodebin o escolhe, ele falha, e o vídeo não
-/// abre. Era isso o 0:00/0:00 eterno.
-///
-/// Baixando a prioridade dele, a escolha volta para quem funciona: o Codec2
-/// onde houver, e o `openh264` como piso. Só o vídeo é mexido — o áudio do
-/// aparelho decodifica bem, inclusive o Opus dos recados.
-#[cfg(target_os = "android")]
-fn demote_broken_decoders() {
-    let registry = gst::Registry::get();
-    let mut demoted = 0;
-    for feature in registry.features(gst::ElementFactory::static_type()).iter() {
-        let name = feature.name();
-        // Vídeo: o caminho OMX, que o Codec2 substituiu na versão 10 do
-        // Android. Áudio: o decodificador de Opus do aparelho, que abre,
-        // não reclama e não entrega quadro nenhum — o som dos recados de
-        // voz nunca chegava ao sink. Nos dois casos o substituto em
-        // software existe e funciona (`c2androidavcdecoder`, `opusdec`), e
-        // o que faltava era só a preferência, que vinha um degrau acima.
-        let broken = name.starts_with("amcviddec-omx")
-            || (name.starts_with("amcauddec-") && name.contains("opus"));
-        if broken && feature.rank() > gst::Rank::MARGINAL {
-            feature.set_rank(gst::Rank::NONE);
-            demoted += 1;
-        }
-    }
-    if demoted > 0 {
-        log::info!("{demoted} decodificador(es) do aparelho despriorizado(s)");
-    }
 }
 
 struct Frame {
@@ -464,13 +427,9 @@ fn audio_sink() -> Option<gst::Element> {
             Err(error) => log::warn!("saída de áudio {forced} não existe: {error}"),
         }
     }
-    // A única diferença de plataforma da reprodução mora aqui. Todo o
-    // resto — o `playbin`, o `appsink` que vira textura, posição, duração,
-    // busca — é o mesmo nos dois lados, e por isso o arquivo é um só.
-    #[cfg(target_os = "android")]
-    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
-    #[cfg(not(target_os = "android"))]
-    const SINKS: &[&str] = &["autoaudiosink", "pipewiresink", "pulsesink", "alsasink"];
+    // A escolha de factories é política de plataforma; o pipeline e o
+    // appsink continuam comuns em todos os alvos.
+    let sinks = super::platform::audio_sink_candidates();
 
     // ABERTO: no Android o som sai, mas picotado. Três tentativas foram
     // feitas no aparelho e nenhuma mudou nada — nenhuma ficou no código:
@@ -485,7 +444,7 @@ fn audio_sink() -> Option<gst::Element> {
     // decodificação. O próximo passo não é tentar outra peça no pipeline, é
     // medir onde o tempo se perde — a thread de mídia também extrai capas e
     // formas de onda, e essas sim são caras.
-    for name in SINKS {
+    for name in sinks {
         if let Ok(sink) = gst::ElementFactory::make(name).build() {
             log::debug!("saída de áudio: {name}");
             return Some(sink);
