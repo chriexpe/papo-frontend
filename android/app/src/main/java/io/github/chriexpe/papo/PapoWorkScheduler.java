@@ -80,7 +80,7 @@ final class PapoWorkScheduler {
                     workManager.cancelUniqueWork(old);
                 }
             }
-            prefs.edit().putStringSet(KEY_NAMES, wanted).apply();
+            prefs.edit().putStringSet(KEY_NAMES, wanted).commit();
         } catch (Exception error) {
             Log.e("papo-background", "falha ao sincronizar WorkManager", error);
         }
