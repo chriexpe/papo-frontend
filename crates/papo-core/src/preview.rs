@@ -663,16 +663,14 @@ async fn resolve_url(
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
     // em vez de codificar YouTube/TikTok/etc. no cliente.
     let declared_oembed = oembed_endpoint(&html, &final_url).or(header_oembed);
-    let registry_fallback = declared_oembed.is_none()
-        && (page_wants_player(&html)
-            || (preview.title.is_none()
-                && preview.description.is_none()
-                && preview.image_url.is_none()));
     let oembed = if let Some(endpoint) = declared_oembed {
         resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
             .await
             .ok()
-    } else if registry_fallback {
+    } else {
+        // A registry oficial é a tabela de capacidades, não uma allowlist
+        // codificada pelo Papo. Consultá-la mesmo quando já existe OG permite
+        // promover páginas como Instagram de "card rico" para "embed rico".
         match registry_oembed_endpoint(client, oembed_registry, source_url).await {
             Some(endpoint) => resolve_oembed(
                 client,
@@ -685,8 +683,6 @@ async fn resolve_url(
             .ok(),
             None => None,
         }
-    } else {
-        None
     };
     if let Some(oembed) = oembed {
         merge_preview(&mut preview, oembed);
