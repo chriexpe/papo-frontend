@@ -618,8 +618,6 @@ pub struct PapoApp {
     #[cfg(target_os = "linux")]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
-    notifier: Option<Notifier>,
-    #[cfg(target_os = "linux")]
     launcher: Option<Launcher>,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
     dialogs: Dialogs,
@@ -798,8 +796,6 @@ impl PapoApp {
             ui: ui_state,
             #[cfg(target_os = "linux")]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
-            #[cfg(target_os = "linux")]
-            notifier,
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
             dialogs: Dialogs::default(),
