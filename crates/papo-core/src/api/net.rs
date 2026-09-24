@@ -2272,9 +2272,29 @@ async fn verify_saved_session_once(
     if matches!(result, Err(ApiError::ServerLocked)) {
         match unlock_with_saved(api, storage_key, storage).await {
             Ok(true) => result = api.whoami().await,
-            Ok(false) | Err(_) => {
+            Ok(false) => {
                 publish(updates, wake, Update::ServerLocked);
                 return SavedSessionOutcome::ServerLocked;
+            }
+            Err(ApiError::Unauthorized) => {
+                // Only a definitive rejection invalidates the saved server
+                // password. A network/server failure must preserve it.
+                remove_secret(storage, storage_key, Secret::ServerPassword);
+                publish(updates, wake, Update::ServerLocked);
+                return SavedSessionOutcome::ServerLocked;
+            }
+            Err(error) => {
+                log::warn!(
+                    "runtime {storage_key}: senha guardada do servidor não pôde ser verificada: {error}"
+                );
+                publish(updates, wake, Update::Connection(Connection::Offline));
+                publish_runtime(
+                    storage_key,
+                    updates,
+                    wake,
+                    Update::Error(error.to_string()),
+                );
+                return SavedSessionOutcome::Transient;
             }
         }
     }
@@ -2326,15 +2346,7 @@ async fn unlock_with_saved(
     let Some(password) = load_secret(storage, storage_key, Secret::ServerPassword) else {
         return Ok(false);
     };
-    match api.login_server(&password).await {
-        Ok(()) => Ok(true),
-        Err(error) => {
-            // A senha do servidor mudou: esquecer é o certo, ou toda entrada
-            // tentaria a senha velha antes de perguntar.
-            remove_secret(storage, storage_key, Secret::ServerPassword);
-            Err(error)
-        }
-    }
+    api.login_server(&password).await.map(|()| true)
 }
 
 fn start_socket(
