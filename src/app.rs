@@ -508,28 +508,25 @@ impl Workspace {
         let network_registration =
             crate::platform::android_network::register(net.sender());
 
-        #[cfg(target_os = "android")]
-        let notification_context = {
-            let context = crate::platform::android_message::Context::new(
-                entry.url.clone(),
-                entry.label.clone(),
+        let message_coordinator = std::sync::Arc::clone(notification);
+        let message_server_key = server_key.clone();
+        net.set_message_callback(Some(std::sync::Arc::new(move |message| {
+            let _ = message_coordinator.handle_message(
+                &message_server_key,
+                message,
+                CandidateSource::Live,
             );
+        })));
 
-            let message_context = std::sync::Arc::clone(&context);
-            net.set_message_callback(Some(std::sync::Arc::new(move |message| {
-                crate::platform::android_message::received_message(&message_context, message);
-            })));
-
-            let notification_context = std::sync::Arc::clone(&context);
-            net.set_notification_callback(Some(std::sync::Arc::new(move |notification| {
-                crate::platform::android_message::received(
-                    &notification_context,
-                    notification,
-                );
-            })));
-
-            context
-        };
+        let notification_coordinator = std::sync::Arc::clone(notification);
+        let notification_server_key = server_key.clone();
+        net.set_notification_callback(Some(std::sync::Arc::new(move |item| {
+            let _ = notification_coordinator.handle_notification(
+                &notification_server_key,
+                item,
+                CandidateSource::Live,
+            );
+        })));
 
         // A mídia usa o cookie da sessão deste servidor para baixar anexos.
         let media = Media::spawn(
@@ -556,8 +553,6 @@ impl Workspace {
             watching: Vec::new(),
             camera_revision: 0,
             #[cfg(target_os = "android")]
-            notification_context,
-            #[cfg(target_os = "android")]
             _network_registration: network_registration,
         }
     }
@@ -570,25 +565,23 @@ impl Workspace {
         self.net.send(Command::LoadMessages { ticket });
     }
 
-    #[cfg(target_os = "android")]
-    fn sync_notification_context(&self, enabled: bool, active: bool) {
-        crate::platform::android_message::sync_context(
-            &self.notification_context,
-            enabled,
-            active,
-            &self.label,
-            &self.store.selected_channel,
-            &self.store.me,
-            &self.store.my_name,
-            self.store
-                .channels
-                .iter()
-                .map(|channel| (channel.id.clone(), channel.name.clone())),
-            self.store
-                .members
-                .iter()
-                .map(|member| (member.id.clone(), member.name.clone())),
-        );
+    fn notification_context(&self, enabled: bool, visible_server: bool) -> NotificationContext {
+        NotificationContext {
+            server_key: self.server_key.clone(),
+            navigation_server: self.url.clone(),
+            server_label: self.label.clone(),
+            owner_user_id: self.store.me.clone(),
+            owner_name: self.store.my_name.clone(),
+            selected_channel: self.store.selected_channel.clone(),
+            visible_server,
+            notifications_enabled: enabled,
+            channels: self.store.channels.iter()
+                .map(|channel| (channel.id.clone(), channel.name.clone()))
+                .collect(),
+            members: self.store.members.iter()
+                .map(|member| (member.id.clone(), member.name.clone()))
+                .collect(),
+        }
     }
 
     /// Como o trilho vê este servidor.
