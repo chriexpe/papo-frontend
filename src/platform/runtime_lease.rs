@@ -84,15 +84,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn foreground_blocks_new_headless_lease() {
+    fn ownership_is_exclusive_in_both_directions() {
         let foreground = ForegroundLease::acquire();
         assert!(try_acquire_headless("a").is_none());
         drop(foreground);
-        assert!(try_acquire_headless("a").is_some());
-    }
 
-    #[test]
-    fn same_server_has_only_one_headless_owner() {
         let first = try_acquire_headless("server-b").expect("first worker");
         assert!(try_acquire_headless("server-b").is_none());
         drop(first);
