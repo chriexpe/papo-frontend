@@ -1158,6 +1158,40 @@ fn public_v6(ip: Ipv6Addr) -> bool {
     true
 }
 
+/// Extrai candidatos HTTPS do texto sem assumir que o link ocupa o token
+/// inteiro (markdown e pontuação ao redor são comuns em mensagens).
+pub fn extract_https_urls(text: &str) -> Vec<String> {
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0usize;
+    let mut urls = Vec::new();
+
+    while let Some(relative) = lower[from..].find("https://") {
+        let start = from + relative;
+        let tail = &text[start..];
+        let end = tail
+            .char_indices()
+            .find_map(|(index, ch)| {
+                (ch.is_whitespace() || matches!(ch, '<' | '>' | '"' | '\''))
+                    .then_some(index)
+            })
+            .unwrap_or(tail.len());
+        let raw = tail[..end].trim_end_matches(|ch: char| {
+            matches!(ch, ')' | ']' | '}' | ',' | ';' | '!' | '?' | '.')
+        });
+
+        if let Some(url) = canonical_url(raw) {
+            urls.push(url);
+        }
+
+        from = start.saturating_add("https://".len());
+        if from >= text.len() {
+            break;
+        }
+    }
+
+    urls
+}
+
 pub fn canonical_url(raw: &str) -> Option<String> {
     let mut url = Url::parse(raw).ok()?;
     if !safe_remote_url(url.as_str()) {
@@ -1446,6 +1480,19 @@ mod tests {
         assert_eq!(
             canonical_url("https://EXAMPLE.com:443/a?token=1").as_deref(),
             Some("https://example.com/a?token=1")
+        );
+    }
+
+    #[test]
+    fn extracts_links_from_markdown_and_punctuation() {
+        assert_eq!(
+            extract_https_urls(
+                "veja [repo](https://example.com/a?x=1), e <HTTPS://example.org/b>."
+            ),
+            vec![
+                "https://example.com/a?x=1".to_owned(),
+                "https://example.org/b".to_owned(),
+            ]
         );
     }
 
