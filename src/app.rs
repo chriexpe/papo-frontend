@@ -131,7 +131,7 @@ fn route_call_effect(ws: &mut Workspace, effect: CallRuntimeEffect, ctx: &egui::
             let Some(call) = &ws.call else { return };
             let mut over = false;
             let mut tell_server = false;
-            match event {
+            match *event {
                 Event::VoiceLeft {
                     channel_id,
                     user_id,
@@ -1652,7 +1652,7 @@ impl PapoApp {
                             self.ui.reply_notify = notify_reply;
                         }
                         RuntimeEffect::OutgoingRejected { .. } => {}
-                        RuntimeEffect::Call(effect) => route_call_effect(ws, effect, ctx),
+                        RuntimeEffect::Call(effect) => route_call_effect(ws, *effect, ctx),
                     }
                 }
             }
