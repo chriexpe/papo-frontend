@@ -915,15 +915,6 @@ async fn parse_html_preview(
     Ok(preview)
 }
 
-fn page_wants_player(html: &str) -> bool {
-    meta_content(html, &["og:type"]).is_some_and(|kind| {
-        kind.to_ascii_lowercase().starts_with("video")
-    }) || meta_content(html, &["twitter:card"]).is_some_and(|card| {
-        card.eq_ignore_ascii_case("player")
-    }) || html.to_ascii_lowercase().contains("\"@type\":\"videoobject\"")
-        || html.to_ascii_lowercase().contains("\"@type\": \"videoobject\"")
-}
-
 fn is_video_content_type(content_type: &str) -> bool {
     content_type.starts_with("video/")
         || matches!(
