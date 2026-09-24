@@ -1188,6 +1188,18 @@ async fn background_worker(
     cancel: Arc<std::sync::atomic::AtomicBool>,
     deadline: std::time::Duration,
 ) {
+    // A caller with no remaining budget must not begin I/O at all. Besides
+    // making the hard bound explicit, this avoids racing an immediate network
+    // error against a zero-duration Tokio timeout.
+    if deadline.is_zero() {
+        publish(
+            &updates,
+            &wake,
+            Update::BackgroundFinished(BackgroundRunResult::Deadline),
+        );
+        return;
+    }
+
     // Deliberately separate from worker(): there is no websocket task, heartbeat,
     // reconnect timer, channel-history scheduler, or media/call path here.
     let api = match Api::new(&base_url, Arc::clone(&session)) {
