@@ -264,7 +264,7 @@ impl ServerRuntime {
     pub fn drain_until_idle(&mut self, max_updates: usize) -> RuntimeDrain {
         let mut drain = RuntimeDrain::default();
         if max_updates == 0 {
-            drain.limit_reached = self.net.try_recv().is_some();
+            drain.limit_reached = true;
             return drain;
         }
 
