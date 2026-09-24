@@ -1,0 +1,36 @@
+name: pr12-android-rust-check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  android-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Ensure project NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370"
+      - name: Check Android Rust cfg/JNI
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/30.0.16248370"
+          mkdir -p /tmp/papo-gst
+          touch /tmp/papo-gst/libgstreamer_android.so
+          for dep in GSTREAMER_1_0 GSTREAMER_APP_1_0 GSTREAMER_VIDEO_1_0 \
+                     GSTREAMER_AUDIO_1_0 GSTREAMER_BASE_1_0 \
+                     GSTREAMER_WEBRTC_1_0 GSTREAMER_SDP_1_0 GSTREAMER_RTP_1_0 \
+                     GLIB_2_0 GOBJECT_2_0 GIO_2_0; do
+            export "SYSTEM_DEPS_${dep}_NO_PKG_CONFIG=1"
+            export "SYSTEM_DEPS_${dep}_LIB=gstreamer_android"
+            export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=/tmp/papo-gst"
+          done
+          cargo ndk -t arm64-v8a --platform 24 check --lib
