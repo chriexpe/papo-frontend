@@ -1074,7 +1074,11 @@ impl PapoApp {
         self.persist_active_drafts(true);
         // Nunca materializa um rascunho guardado de outra conta, nem por um
         // quadro enquanto o load da conta atual ainda não aconteceu.
-        let target_owner = self.workspaces[index].runtime.store.me.clone();
+        let target_owner = self.workspaces[index]
+            .runtime
+            .verified_owner()
+            .unwrap_or_default()
+            .to_owned();
         if target_owner.is_empty()
             || self.workspaces[index].stash.drafts.owner() != Some(target_owner.as_str())
         {
@@ -1736,9 +1740,6 @@ impl PapoApp {
                             reply_to,
                             notify_reply,
                         } => {
-                            if ws.runtime.store.me != owner_user_id {
-                                continue;
-                            }
                             let (visible, bindings) =
                                 ws.runtime.store.display_mentions_with_bindings(&content);
                             let draft = crate::ui::shell::DraftState {
@@ -1748,6 +1749,15 @@ impl PapoApp {
                                 notify_reply,
                             };
                             let server_key = ws.runtime.server_key.clone();
+                            if ws.runtime.verified_owner() != Some(owner_user_id.as_str()) {
+                                if index == self.active && self.ui.last_channel == channel_id {
+                                    self.ui.composer = draft.text;
+                                    self.ui.composer_mentions = draft.mentions;
+                                    self.ui.replying = draft.reply_to;
+                                    self.ui.reply_notify = draft.notify_reply;
+                                }
+                                continue;
+                            }
                             if index == self.active {
                                 if self.ui.drafts.owner() != Some(owner_user_id.as_str()) {
                                     self.ui.drafts.reset_owner(&owner_user_id);
@@ -2313,7 +2323,11 @@ impl PapoApp {
 impl PapoApp {
     fn ensure_active_drafts_loaded(&mut self) {
         let index = self.active;
-        let owner = self.workspaces[index].runtime.store.me.clone();
+        let owner = self.workspaces[index]
+            .runtime
+            .verified_owner()
+            .unwrap_or_default()
+            .to_owned();
         if owner.is_empty() {
             if self.ui.drafts.owner().is_some() {
                 self.ui.drafts = Default::default();
@@ -2362,7 +2376,11 @@ impl PapoApp {
         if self.workspaces.is_empty() {
             return;
         }
-        let owner = self.workspaces[self.active].runtime.store.me.clone();
+        let owner = self.workspaces[self.active]
+            .runtime
+            .verified_owner()
+            .unwrap_or_default()
+            .to_owned();
         if owner.is_empty() {
             return;
         }
@@ -2383,7 +2401,7 @@ impl PapoApp {
             if index == self.active {
                 continue;
             }
-            let owner = workspace.runtime.store.me.clone();
+            let owner = workspace.runtime.verified_owner().unwrap_or_default().to_owned();
             if owner.is_empty() {
                 continue;
             }
