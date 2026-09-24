@@ -1116,8 +1116,10 @@ pub fn safe_remote_url(raw: &str) -> bool {
             let host = host.trim_end_matches('.').to_ascii_lowercase();
             host != "localhost" && !host.ends_with(".localhost") && !host.ends_with(".local")
         }
-        Some(Host::Ipv4(ip)) => public_v4(ip),
-        Some(Host::Ipv6(ip)) => public_v6(ip),
+        // Mantemos a política histórica mais estrita: mesmo um IP literal
+        // público não é origem válida de preview. Hostnames passam por DNS
+        // validation imediatamente antes de cada fetch.
+        Some(Host::Ipv4(_)) | Some(Host::Ipv6(_)) => false,
         None => false,
     }
 }
@@ -1455,6 +1457,7 @@ mod tests {
             "https://router.local/x",
             "https://127.0.0.1/x",
             "https://10.0.0.1/x",
+            "https://8.8.8.8/x",
             "https://[::1]/x",
         ] {
             assert!(!safe_remote_url(url), "{url}");
