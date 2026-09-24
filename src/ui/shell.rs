@@ -345,6 +345,194 @@ pub struct Popup {
     pub opened: f64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DraftState {
+    pub text: String,
+    pub mentions: Vec<MentionBinding>,
+    pub reply_to: Option<String>,
+    pub notify_reply: bool,
+}
+
+impl DraftState {
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.reply_to.is_none()
+    }
+
+    fn from_ui(ui: &UiState) -> Self {
+        Self {
+            text: ui.composer.clone(),
+            mentions: ui.composer_mentions.clone(),
+            reply_to: ui.replying.clone(),
+            notify_reply: ui.reply_notify,
+        }
+    }
+
+    fn apply_to(self, ui: &mut UiState) {
+        ui.composer = self.text;
+        ui.composer_mentions = self.mentions;
+        ui.replying = self.reply_to;
+        ui.reply_notify = self.notify_reply;
+    }
+
+    fn from_cached(draft: papo_core::cache::CachedDraft) -> Self {
+        let text = draft.text;
+        let chars: Vec<char> = text.chars().collect();
+        let mentions = draft
+            .mentions
+            .into_iter()
+            .filter_map(|binding| {
+                if binding.user_id.is_empty() || binding.label.is_empty() || binding.start >= chars.len() {
+                    return None;
+                }
+                if chars[binding.start] != '@' {
+                    return None;
+                }
+                let label: Vec<char> = binding.label.chars().collect();
+                let end = binding.start + 1 + label.len();
+                if end > chars.len() || chars[binding.start + 1..end] != label[..] {
+                    return None;
+                }
+                Some(MentionBinding {
+                    start: binding.start,
+                    label: binding.label,
+                    user_id: binding.user_id,
+                })
+            })
+            .collect();
+        Self {
+            text,
+            mentions,
+            reply_to: draft.reply_to,
+            notify_reply: draft.notify_reply,
+        }
+    }
+
+    fn to_cached(
+        &self,
+        owner_user_id: &str,
+        channel_id: &str,
+    ) -> papo_core::cache::CachedDraft {
+        papo_core::cache::CachedDraft {
+            owner_user_id: owner_user_id.to_owned(),
+            channel_id: channel_id.to_owned(),
+            text: self.text.clone(),
+            mentions: self
+                .mentions
+                .iter()
+                .map(|binding| papo_core::cache::CachedMentionBinding {
+                    start: binding.start,
+                    label: binding.label.clone(),
+                    user_id: binding.user_id.clone(),
+                })
+                .collect(),
+            reply_to: self.reply_to.clone(),
+            notify_reply: self.notify_reply,
+            updated_at: papo_core::cache::now_millis(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DraftBook {
+    owner_user_id: Option<String>,
+    loaded: bool,
+    by_channel: std::collections::HashMap<String, DraftState>,
+    dirty: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl DraftBook {
+    pub fn owner(&self) -> Option<&str> {
+        self.owner_user_id.as_deref()
+    }
+
+    pub fn is_loaded_for(&self, owner_user_id: &str) -> bool {
+        self.loaded && self.owner() == Some(owner_user_id)
+    }
+
+    pub fn reset_owner(&mut self, owner_user_id: &str) {
+        if self.owner() == Some(owner_user_id) {
+            return;
+        }
+        self.owner_user_id = Some(owner_user_id.to_owned());
+        self.loaded = false;
+        self.by_channel.clear();
+        self.dirty.clear();
+    }
+
+    pub fn load(&mut self, owner_user_id: &str, drafts: Vec<papo_core::cache::CachedDraft>) {
+        self.owner_user_id = Some(owner_user_id.to_owned());
+        self.loaded = true;
+        self.by_channel.clear();
+        self.dirty.clear();
+        for draft in drafts {
+            if draft.owner_user_id != owner_user_id {
+                continue;
+            }
+            let channel_id = draft.channel_id.clone();
+            let state = DraftState::from_cached(draft);
+            if !state.is_empty() {
+                self.by_channel.insert(channel_id, state);
+            }
+        }
+    }
+
+    pub fn capture(&mut self, channel_id: &str, state: DraftState) {
+        if channel_id.is_empty() {
+            return;
+        }
+        let changed = self.by_channel.get(channel_id) != Some(&state);
+        if !changed {
+            return;
+        }
+        if state.is_empty() {
+            self.by_channel.remove(channel_id);
+        } else {
+            self.by_channel.insert(channel_id.to_owned(), state);
+        }
+        self.dirty.insert(channel_id.to_owned(), std::time::Instant::now());
+    }
+
+    pub fn put(&mut self, channel_id: &str, state: DraftState) {
+        self.capture(channel_id, state);
+    }
+
+    pub fn get(&self, channel_id: &str) -> Option<DraftState> {
+        self.by_channel.get(channel_id).cloned()
+    }
+
+    pub fn take_persistence_ops(
+        &mut self,
+        owner_user_id: &str,
+        force: bool,
+    ) -> Vec<papo_core::cache::CacheOp> {
+        if self.owner() != Some(owner_user_id) {
+            return Vec::new();
+        }
+        let now = std::time::Instant::now();
+        let due: Vec<String> = self
+            .dirty
+            .iter()
+            .filter(|(_, changed)| force || now.duration_since(**changed) >= std::time::Duration::from_millis(750))
+            .map(|(channel_id, _)| channel_id.clone())
+            .collect();
+        let mut ops = Vec::with_capacity(due.len());
+        for channel_id in due {
+            self.dirty.remove(&channel_id);
+            if let Some(draft) = self.by_channel.get(&channel_id) {
+                ops.push(papo_core::cache::CacheOp::UpsertDraft(
+                    draft.to_cached(owner_user_id, &channel_id),
+                ));
+            } else {
+                ops.push(papo_core::cache::CacheOp::DeleteDraft {
+                    owner_user_id: owner_user_id.to_owned(),
+                    channel_id,
+                });
+            }
+        }
+        ops
+    }
+}
+
 /// Estado que pertence à interface, não ao servidor.
 /// O pedaço da interface que pertence a um servidor.
 ///
@@ -356,6 +544,7 @@ pub struct Stash {
     pub media: MediaStore,
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
     pub reply_notify: bool,
@@ -376,6 +565,7 @@ impl Stash {
             media,
             composer: String::new(),
             composer_mentions: Vec::new(),
+            drafts: DraftBook::default(),
             attachments: Vec::new(),
             replying: None,
             reply_notify: true,
@@ -395,6 +585,7 @@ impl Stash {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
         std::mem::swap(&mut self.composer_mentions, &mut ui.composer_mentions);
+        std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
@@ -412,6 +603,7 @@ impl Stash {
 pub struct UiState {
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    pub drafts: DraftBook,
     pub show_members: bool,
     /// Layout estreito ativo neste quadro.
     pub compact: bool,
@@ -496,6 +688,7 @@ impl Default for UiState {
         Self {
             composer: String::new(),
             composer_mentions: Vec::new(),
+            drafts: DraftBook::default(),
             show_members: true,
             compact: false,
             mobile_surface: MobileSurface::Chat,
@@ -542,6 +735,35 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn draft_state(&self) -> DraftState {
+        DraftState::from_ui(self)
+    }
+
+    pub fn capture_draft(&mut self, channel_id: &str) {
+        let state = DraftState::from_ui(self);
+        self.drafts.capture(channel_id, state);
+    }
+
+    pub fn restore_draft(&mut self, channel_id: &str) {
+        if let Some(draft) = self.drafts.get(channel_id) {
+            draft.apply_to(self);
+        } else {
+            self.composer.clear();
+            self.composer_mentions.clear();
+            self.replying = None;
+            self.reply_notify = self.reply_notify_default;
+        }
+    }
+
+    pub fn switch_draft_channel(&mut self, channel_id: &str) {
+        let previous = self.last_channel.clone();
+        if !previous.is_empty() {
+            self.capture_draft(&previous);
+        }
+        self.restore_draft(channel_id);
+        self.last_channel = channel_id.to_owned();
+    }
+
     fn start_reply(&mut self, message_id: String) {
         self.replying = Some(message_id);
         self.reply_notify = self.reply_notify_default;
@@ -591,13 +813,14 @@ pub fn draw(
     // Trocou de canal: a descrição reaparece e a mídia que estava tocando
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
-        state.last_channel = store.selected_channel.clone();
+        let next_channel = store.selected_channel.clone();
+        state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
         state.media.saved = None;
         state.editing = None;
+        state.editing_mentions.clear();
         state.edit_focus_pending = false;
-        state.replying = None;
         state.close_popup();
 
         // Mudar de canal também muda a apresentação da call:
@@ -5888,5 +6111,107 @@ mod mobile_tests {
             egui::Pos2::ZERO,
             Vec2::new(COMPACT_BREAKPOINT, 700.0),
         )));
+    }
+}
+
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    fn state(text: &str, reply: Option<&str>, notify: bool) -> DraftState {
+        DraftState {
+            text: text.to_owned(),
+            mentions: Vec::new(),
+            reply_to: reply.map(str::to_owned),
+            notify_reply: notify,
+        }
+    }
+
+    #[test]
+    fn canais_guardam_e_restauram_rascunhos_independentes() {
+        let mut ui = UiState::default();
+        ui.drafts.reset_owner("owner");
+        ui.last_channel = "A".to_owned();
+        ui.composer = "alpha".to_owned();
+        ui.replying = Some("m-a".to_owned());
+        ui.reply_notify = false;
+
+        ui.switch_draft_channel("B");
+        assert!(ui.composer.is_empty());
+        assert!(ui.replying.is_none());
+        assert_eq!(ui.reply_notify, ui.reply_notify_default);
+
+        ui.composer = "beta".to_owned();
+        ui.switch_draft_channel("A");
+        assert_eq!(ui.composer, "alpha");
+        assert_eq!(ui.replying.as_deref(), Some("m-a"));
+        assert!(!ui.reply_notify);
+
+        ui.switch_draft_channel("B");
+        assert_eq!(ui.composer, "beta");
+    }
+
+    #[test]
+    fn mencao_exata_sobrevive_round_trip_e_binding_ruim_e_descartado() {
+        let cached = papo_core::cache::CachedDraft {
+            owner_user_id: "owner".to_owned(),
+            channel_id: "general".to_owned(),
+            text: "oi @Alex".to_owned(),
+            mentions: vec![
+                papo_core::cache::CachedMentionBinding {
+                    start: 3,
+                    label: "Alex".to_owned(),
+                    user_id: "id-exato".to_owned(),
+                },
+                papo_core::cache::CachedMentionBinding {
+                    start: 1,
+                    label: "Alex".to_owned(),
+                    user_id: "id-errado".to_owned(),
+                },
+            ],
+            reply_to: None,
+            notify_reply: true,
+            updated_at: 1,
+        };
+        let restored = DraftState::from_cached(cached);
+        assert_eq!(restored.mentions.len(), 1);
+        assert_eq!(restored.mentions[0].user_id, "id-exato");
+        assert_eq!(restored.mentions[0].start, 3);
+    }
+
+    #[test]
+    fn coalescencia_grava_apenas_o_ultimo_valor_do_canal() {
+        let mut book = DraftBook::default();
+        book.reset_owner("owner");
+        book.capture("general", state("h", None, true));
+        book.capture("general", state("he", None, true));
+        book.capture("general", state("hello", None, true));
+
+        let ops = book.take_persistence_ops("owner", true);
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            papo_core::cache::CacheOp::UpsertDraft(draft) => {
+                assert_eq!(draft.text, "hello");
+                assert_eq!(draft.channel_id, "general");
+            }
+            _ => panic!("esperava upsert de draft"),
+        }
+    }
+
+    #[test]
+    fn limpar_um_canal_nao_apaga_o_outro_e_owner_reset_isola_contas() {
+        let mut book = DraftBook::default();
+        book.reset_owner("owner-a");
+        book.capture("A", state("um", None, true));
+        book.capture("B", state("dois", Some("m2"), false));
+        book.capture("A", DraftState::default());
+
+        assert!(book.get("A").is_none());
+        assert_eq!(book.get("B").unwrap().text, "dois");
+
+        book.reset_owner("owner-b");
+        assert!(book.get("B").is_none());
+        assert_eq!(book.owner(), Some("owner-b"));
     }
 }

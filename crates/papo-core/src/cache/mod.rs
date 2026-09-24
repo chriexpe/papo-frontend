@@ -13,8 +13,9 @@ mod tests;
 
 pub use store::TursoCache;
 pub use types::{
-    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedMember, CachedMessage,
-    CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp,
+    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedMember,
+    CachedMentionBinding, CachedMessage, CachedOutgoing, CachedPreview, CachedReaction, CachedServer,
+    CachedServerSnapshot, CacheOp,
     ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
     OutgoingState, PreviewCacheState, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
     OUTGOING_LIMIT, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,
@@ -91,6 +92,11 @@ enum WorkerMsg {
         server_key: String,
         owner_user_id: String,
         reply: std::sync::mpsc::Sender<Result<Vec<CachedOutgoing>, String>>,
+    },
+    LoadDrafts {
+        server_key: String,
+        owner_user_id: String,
+        reply: std::sync::mpsc::Sender<Result<Vec<CachedDraft>, String>>,
     },
     TransitionOutgoing {
         server_key: String,
@@ -351,6 +357,22 @@ impl ClientDb {
         let (reply, recv) = std::sync::mpsc::channel();
         self.wait_result(
             WorkerMsg::LoadOutgoing {
+                server_key: server_key.to_owned(),
+                owner_user_id: owner_user_id.to_owned(),
+                reply,
+            },
+            recv,
+        )
+    }
+
+    pub fn load_drafts(
+        &self,
+        server_key: &str,
+        owner_user_id: &str,
+    ) -> Result<Vec<CachedDraft>, String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_result(
+            WorkerMsg::LoadDrafts {
                 server_key: server_key.to_owned(),
                 owner_user_id: owner_user_id.to_owned(),
                 reply,
@@ -668,6 +690,17 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         } => {
             let result = cache
                 .load_outgoing(&server_key, &owner_user_id)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadDrafts {
+            server_key,
+            owner_user_id,
+            reply,
+        } => {
+            let result = cache
+                .load_drafts(&server_key, &owner_user_id)
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);

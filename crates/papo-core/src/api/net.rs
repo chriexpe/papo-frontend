@@ -430,6 +430,8 @@ pub enum Update {
     OutgoingRestored(Vec<CachedOutgoing>),
     OutgoingRemoved(String),
     OutgoingRejected {
+        owner_user_id: String,
+        channel_id: String,
         content: String,
         reply_to: Option<String>,
         notify_reply: bool,
@@ -1591,6 +1593,8 @@ async fn worker(
                                 &updates,
                                 &wake,
                                 Update::OutgoingRejected {
+                                    owner_user_id,
+                                    channel_id,
                                     content,
                                     reply_to,
                                     notify_reply,
@@ -1646,6 +1650,8 @@ async fn worker(
                                     &updates,
                                     &wake,
                                     Update::OutgoingRejected {
+                                        owner_user_id: item.owner_user_id.clone(),
+                                        channel_id: item.channel_id.clone(),
                                         content,
                                         reply_to,
                                         notify_reply,
