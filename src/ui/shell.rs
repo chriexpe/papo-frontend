@@ -3567,7 +3567,10 @@ fn preview_card(
     ui.add_space(space::SM);
     let card_width = width.clamp(160.0, MAX_W);
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let player_id = format!("link-preview-player:{id}");
+    let player_id = video_url
+        .as_deref()
+        .and_then(crate::media::remote_player_key)
+        .unwrap_or_else(|| format!("link-preview-player:{id}"));
 
     let (frame, aspect, playing, position, duration) = if video_url.is_some() {
         match state.media.existing_player(&player_id) {
