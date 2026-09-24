@@ -1174,3 +1174,84 @@ fn dismiss_removes_only_the_selected_outgoing_row_durably() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].local_id, "local-b");
 }
+
+
+fn cached_preview(url: &str, title: &str, used: i64) -> CachedPreview {
+    CachedPreview {
+        url_key: url.to_owned(),
+        source_url: url.to_owned(),
+        state: PreviewCacheState::Ready,
+        kind: Some("link".to_owned()),
+        media_url: None,
+        image_url: Some(format!("{url}/cover.png")),
+        embed_url: None,
+        title: Some(title.to_owned()),
+        description: Some("rich metadata".to_owned()),
+        provider_name: Some("example".to_owned()),
+        resolved_at: used,
+        retry_after: None,
+        failure_class: None,
+        last_used_at: used,
+    }
+}
+
+#[test]
+fn preview_metadata_survives_clientdb_reopen() {
+    let temp = TempDb::new("preview-reopen");
+    let url = "https://example.com/project";
+    {
+        let db = open(&temp);
+        db.store_preview(cached_preview(url, "Papo", 1_000))
+            .expect("store preview");
+    }
+
+    let db = open(&temp);
+    let row = db
+        .load_preview(url)
+        .expect("load preview")
+        .expect("persisted preview");
+    assert_eq!(row.title.as_deref(), Some("Papo"));
+    assert_eq!(row.image_url.as_deref(), Some("https://example.com/project/cover.png"));
+    assert_eq!(row.state, PreviewCacheState::Ready);
+}
+
+#[tokio::test]
+async fn preview_retention_is_global_and_hard_bounded() {
+    let temp = TempDb::new("preview-bound");
+    let path = temp.path().to_string_lossy().into_owned();
+    let mut cache = TursoCache::open(&path).await.expect("open cache");
+
+    for (url, used) in [
+        ("https://one.example/a", 1_i64),
+        ("https://two.example/b", 2_i64),
+        ("https://three.example/c", 3_i64),
+    ] {
+        cache
+            .store_preview_for_test(&cached_preview(url, url, used), 2)
+            .await
+            .expect("store preview");
+    }
+
+    assert!(
+        cache
+            .load_preview("https://one.example/a")
+            .await
+            .expect("load oldest")
+            .is_none(),
+        "oldest metadata must be pruned"
+    );
+    assert!(
+        cache
+            .load_preview("https://two.example/b")
+            .await
+            .expect("load second")
+            .is_some()
+    );
+    assert!(
+        cache
+            .load_preview("https://three.example/c")
+            .await
+            .expect("load newest")
+            .is_some()
+    );
+}
