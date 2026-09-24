@@ -31,6 +31,16 @@ static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// Guarda a pasta privada do aplicativo, que só a Activity sabe qual é.
 #[cfg(target_os = "android")]
 pub fn set_root(root: PathBuf) {
+    if let Some(existing) = ROOT.get() {
+        if existing != &root {
+            log::error!(
+                "app-private root divergiu: existente={} novo={}",
+                existing.display(),
+                root.display()
+            );
+        }
+        return;
+    }
     let _ = ROOT.set(root);
 }
 
