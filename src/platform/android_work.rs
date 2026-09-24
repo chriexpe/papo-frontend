@@ -63,11 +63,12 @@ pub fn sync_periodic<'a>(
     {
         return;
     }
-    if super::jvm::call_activity(
+    if super::jvm::call_activity_bool(
         "syncBackgroundReconcile",
-        "(Ljava/lang/String;)V",
+        "(Ljava/lang/String;)Z",
         Some(&payload),
-    ) && let Ok(mut last) = LAST_SCHEDULE.lock()
+    ) == Some(true)
+        && let Ok(mut last) = LAST_SCHEDULE.lock()
     {
         *last = Some(payload);
     }
