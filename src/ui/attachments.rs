@@ -21,6 +21,20 @@ const CONTROLS_H: f32 = 32.0;
 const AUDIO_H: f32 = 54.0;
 const FILE_H: f32 = 56.0;
 
+/// Folga de pré-busca em volta da área visível. Fora dela o cartão não pede
+/// nada: nem disco, nem rede. A margem cobre perto de uma tela, então rolagem
+/// rápida ainda encontra o conteúdo a caminho em vez de esperar.
+const VIEWPORT_MARGIN: f32 = 600.0;
+
+/// O próximo cartão está perto o bastante da área visível para valer um
+/// pedido? É o que deixa a lista de mensagens preguiçosa por viewport sem
+/// virtualizar cada linha.
+fn near_viewport(ui: &egui::Ui) -> bool {
+    let clip = ui.clip_rect();
+    let top = ui.cursor().top();
+    top <= clip.max.y + VIEWPORT_MARGIN && top >= clip.min.y - VIEWPORT_MARGIN
+}
+
 #[derive(Debug, Clone)]
 pub enum MediaAction {
     /// Abre a imagem ou o vídeo em tela cheia.
@@ -83,16 +97,27 @@ fn image(
     let limit = Vec2::new(width.min(IMAGE_MAX_W), IMAGE_MAX_H);
     let hidden = attachment.sensitive() && media.sensitive_hidden(&attachment.id);
 
-    let texture = media
-        .thumb(attachment)
+    // Mede com o que já está em memória e só pede a miniatura se o cartão
+    // estiver perto da tela e o servidor anunciar uma. Sem `thumbnail_id` não
+    // há miniatura, e a imagem inteira nunca é baixada só para desenhar.
+    let visible = near_viewport(ui);
+    let cached = media
+        .loaded_thumb(&attachment.id)
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
-
-    let size = match &texture {
+    let size = match &cached {
         Some(texture) => fit(texture.size_vec2(), limit),
         None => Vec2::new(limit.x.min(260.0), 150.0),
     };
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let texture = if cached.is_some() || !visible {
+        cached
+    } else {
+        media
+            .thumb(attachment)
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned()
+    };
     let corner = CornerRadius::same(radius::CARD);
 
     match &texture {
@@ -181,10 +206,11 @@ fn video(
     seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
-    // Desenhar o cartão não é pedir o vídeo: só com o arquivo já em cache é
-    // que dá para mostrar quadro/capa. Sem ele, um cartão de espera — o play
-    // é que dispara o download. A sondagem é só no disco local.
-    media.probe_file(&attachment.id, attachment.name());
+    // Fora da área visível nem toca o disco: o cartão fica no quadro vazio
+    // até chegar perto da tela.
+    if near_viewport(ui) {
+        media.probe_file(&attachment.id, attachment.name());
+    }
     let Some(path) = media.file_ready(&attachment.id) else {
         return video_placeholder(ui, t, s, media, attachment, card_width);
     };
@@ -317,9 +343,12 @@ fn audio(
     _seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let card_width = width.min(VIDEO_MAX_W);
-    // O cartão não baixa o áudio só por estar à vista. Sem arquivo, a onda é
-    // uma linha reta e o play é quem pede o download. A sondagem é só no disco.
-    media.probe_file(&attachment.id, attachment.name());
+    // O cartão não baixa o áudio só por estar à vista, e nem sonda o disco se
+    // estiver fora da tela. Sem arquivo, a onda é uma linha reta; o play é
+    // quem pede o download.
+    if near_viewport(ui) {
+        media.probe_file(&attachment.id, attachment.name());
+    }
     let path = media.file_ready(&attachment.id);
     let state = media.file_state(&attachment.id);
     let loading = matches!(state, Some(FileState::Loading));
@@ -585,6 +614,7 @@ fn video_placeholder(
     attachment: &Attachment,
     card_width: f32,
 ) -> Option<MediaAction> {
+    let visible = near_viewport(ui);
     let frame_size = Vec2::new(card_width, (card_width / (16.0 / 9.0)).min(320.0));
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(card_width, frame_size.y + CONTROLS_H),
@@ -595,8 +625,13 @@ fn video_placeholder(
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
 
     // Miniatura do servidor, se houver: é barata e não baixa o vídeo inteiro.
-    let thumb = media
-        .video_thumb(attachment)
+    // Fora da tela, mostra só o que já está em memória.
+    let source = if visible {
+        media.thumb(attachment)
+    } else {
+        media.loaded_thumb(&attachment.id)
+    };
+    let thumb = source
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| (texture.id(), texture.size_vec2()));
     match thumb {

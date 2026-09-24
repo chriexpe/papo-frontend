@@ -83,13 +83,10 @@ const FULL_MAX: u32 = 4096;
 
 #[derive(Debug, Clone)]
 pub enum Request {
-    /// Miniatura (ou a própria imagem, quando não há miniatura).
-    Thumb { id: String, thumb_id: Option<String> },
-    /// Miniatura de vídeo, **sempre** pela rota `/attachments/:id/thumbnail` e
-    /// sem cair para o arquivo inteiro. O servidor pode servir a miniatura sem
-    /// anunciar um `thumbnail_id`; se não houver, a resposta é um erro barato
-    /// e o cartão fica no quadro vazio. Nunca baixa o vídeo para ter uma capa.
-    ThumbStrict { id: String },
+    /// Miniatura do servidor. Só existe quando a listagem anuncia um
+    /// `thumbnail_id`; sem ele o cartão nem chega aqui, e o arquivo inteiro
+    /// nunca é baixado só para virar capa.
+    Thumb { id: String },
     /// Imagem em tamanho cheio, para o visualizador.
     Full { id: String },
     /// Garante o arquivo no cache e devolve o caminho (vídeo, áudio, outros).
@@ -119,6 +116,24 @@ pub enum Request {
         id: String,
         url: String,
     },
+}
+
+impl Request {
+    /// Rótulo curto, para o log de diagnóstico saber o que foi pedido.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Thumb { .. } => "thumb",
+            Self::Full { .. } => "full",
+            Self::File { .. } => "file",
+            Self::Probe { .. } => "probe",
+            Self::Save { .. } => "save",
+            Self::Waveform { .. } => "waveform",
+            Self::Poster { .. } => "poster",
+            Self::Emoji { .. } => "emoji",
+            Self::Preview { .. } => "preview",
+            Self::RemoteImage { .. } => "remote-image",
+        }
+    }
 }
 
 pub enum Loaded {
@@ -263,29 +278,10 @@ async fn run(
     request: Request,
 ) -> Loaded {
     match request {
-        Request::Thumb { id, thumb_id } => {
+        Request::Thumb { id } => {
             let _slot = fetch_gate.acquire().await;
             let key = thumb_key(&id);
-            // A miniatura do servidor evita baixar o original inteiro; sem
-            // ela, a própria imagem serve.
-            let path = match &thumb_id {
-                Some(_) => format!("/attachments/{id}/thumbnail"),
-                None => format!("/attachments/{id}"),
-            };
-            match cached_fetch(
-                api,
-                &authenticated_cache_path(server_key, "thumbs", &id, ""),
-                &path,
-            )
-            .await
-            {
-                Ok(bytes) => decode(key, &bytes, INLINE_MAX),
-                Err(error) => Loaded::Failed { key, error },
-            }
-        }
-        Request::ThumbStrict { id } => {
-            let _slot = fetch_gate.acquire().await;
-            let key = thumb_key(&id);
+            // Só o endpoint de miniatura, nunca o arquivo inteiro.
             match cached_fetch(
                 api,
                 &authenticated_cache_path(server_key, "thumbs", &id, ""),
@@ -294,6 +290,8 @@ async fn run(
             .await
             {
                 Ok(bytes) => decode(key, &bytes, INLINE_MAX),
+                // Ausência esperada (miniatura some do cache, por exemplo):
+                // não polui o log.
                 Err(_) => Loaded::Missing { key },
             }
         }
@@ -1238,39 +1236,33 @@ impl MediaStore {
     }
 
     fn ask(&self, request: Request) {
+        log::trace!("media ask kind={}", request.kind());
         if let Some(media) = &self.media {
             media.request(request);
         }
     }
 
-    /// Miniatura do anexo, pedindo o download na primeira vez.
+    /// Miniatura do servidor, pedindo o download na primeira vez. Sem
+    /// `thumbnail_id` não há miniatura: devolve `None` sem pedir nada — o
+    /// cartão desenha o quadro vazio e a imagem inteira só vem no visualizador.
     pub fn thumb(&mut self, attachment: &Attachment) -> Option<&Texture> {
+        attachment.thumbnail_id.as_deref()?;
         let key = thumb_key(&attachment.id);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Thumb {
                 id: attachment.id.clone(),
-                thumb_id: attachment.thumbnail_id.clone(),
             });
         }
         self.touch(&key);
         self.textures.get(&key)
     }
 
-    /// Miniatura de vídeo pela rota dedicada: tenta `/attachments/:id/thumbnail`
-    /// mesmo sem `thumbnail_id` e **nunca** cai para o arquivo inteiro. Se o
-    /// servidor não tiver a miniatura, o erro é barato e o cartão fica no
-    /// quadro vazio — um vídeo jamais é baixado só para render uma capa.
-    pub fn video_thumb(&mut self, attachment: &Attachment) -> Option<&Texture> {
-        let key = thumb_key(&attachment.id);
-        if !self.textures.contains_key(&key) {
-            self.textures.insert(key.clone(), Texture::Loading);
-            self.ask(Request::ThumbStrict {
-                id: attachment.id.clone(),
-            });
-        }
-        self.touch(&key);
-        self.textures.get(&key)
+    /// Textura da miniatura já em memória, **sem disparar pedido**. Deixa o
+    /// cartão medir o espaço antes de decidir buscar — e não pede nada fora
+    /// da área visível.
+    pub fn loaded_thumb(&self, id: &str) -> Option<&Texture> {
+        self.textures.get(&thumb_key(id))
     }
 
     /// Capa do vídeo: um quadro tirado do arquivo já em cache.
