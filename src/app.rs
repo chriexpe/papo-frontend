@@ -605,6 +605,8 @@ pub struct PapoApp {
     workspaces: Vec<Workspace>,
     /// Um banco de cache por processo, compartilhado pelos servidores.
     cache: std::sync::Arc<ClientDb>,
+    /// Política e deduplicação durável de notificações do processo.
+    notification: std::sync::Arc<NotificationCoordinator>,
     /// Índice do servidor na tela.
     active: usize,
     ui: UiState,
@@ -689,14 +691,65 @@ impl PapoApp {
         // acontecer antes de qualquer worker de rede subir.
         let cache = std::sync::Arc::new(ClientDb::open(crate::platform::dirs::cache_db()));
 
+        #[cfg(target_os = "linux")]
+        let notifier = Notifier::spawn();
+
+        #[cfg(target_os = "linux")]
+        let notification_sink: Option<NotificationSink> = notifier.as_ref().map(|notifier| {
+            let notifier = notifier.clone();
+            std::sync::Arc::new(move |envelope: papo_core::notification::NotificationEnvelope| {
+                notifier.show(Notification {
+                    summary: envelope.title,
+                    body: envelope.body,
+                    tag: Some(format!("{}\n{}", envelope.server_key, envelope.channel_id)),
+                });
+            }) as NotificationSink
+        });
+
+        #[cfg(target_os = "android")]
+        let notification_sink: Option<NotificationSink> = Some(std::sync::Arc::new(
+            |envelope: papo_core::notification::NotificationEnvelope| {
+                crate::platform::android_message::show_envelope(envelope);
+            },
+        ));
+
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let notification_sink: Option<NotificationSink> = None;
+
+        #[cfg(target_os = "android")]
+        let notification = std::sync::Arc::new(NotificationCoordinator::with_foreground_probe(
+            std::sync::Arc::clone(&cache),
+            notification_sink,
+            std::sync::Arc::new(crate::platform::android_call::is_foreground),
+        ));
+        #[cfg(not(target_os = "android"))]
+        let notification = std::sync::Arc::new(NotificationCoordinator::new(
+            std::sync::Arc::clone(&cache),
+            notification_sink,
+        ));
+
         // Todos os servidores sobem juntos: o que chega num deles enquanto
         // outro está na tela ainda conta para o contador e a notificação.
         let mut workspaces: Vec<Workspace> = settings
             .servers
             .iter()
-            .map(|entry| Workspace::open(entry, &settings.server_marks, &cc.egui_ctx, &cache))
+            .map(|entry| {
+                Workspace::open(
+                    entry,
+                    &settings.server_marks,
+                    &cc.egui_ctx,
+                    &cache,
+                    &notification,
+                )
+            })
             .collect();
         let active = settings.active.min(workspaces.len() - 1);
+        for (index, workspace) in workspaces.iter().enumerate() {
+            notification.sync_context(workspace.notification_context(
+                settings.notifications,
+                index == active,
+            ));
+        }
 
         let demo = std::env::var("PAPO_DEMO").is_ok();
         if demo {
@@ -709,7 +762,13 @@ impl PapoApp {
                         label: label.to_owned(),
                     };
                     workspaces
-                        .push(Workspace::open(&entry, &settings.server_marks, &cc.egui_ctx, &cache));
+                        .push(Workspace::open(
+                            &entry,
+                            &settings.server_marks,
+                            &cc.egui_ctx,
+                            &cache,
+                            &notification,
+                        ));
                 }
                 workspaces[index].label = label.to_owned();
             }
@@ -734,12 +793,13 @@ impl PapoApp {
         Self {
             workspaces,
             cache,
+            notification,
             active,
             ui: ui_state,
             #[cfg(target_os = "linux")]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
-            notifier: Notifier::spawn(),
+            notifier,
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
             dialogs: Dialogs::default(),
