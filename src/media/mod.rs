@@ -63,6 +63,10 @@ pub enum TrimLevel {
 /// demais para alguma ainda estar esperando no campo de escrever.
 const RECORDING_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
+/// Um `.parcial`/`.tmp` mais novo que isto ainda pode estar sendo baixado.
+/// A varredura não o toca para não abortar o download no meio do caminho.
+const PARTIAL_MAX_AGE: Duration = Duration::from_secs(60 * 60);
+
 /// A limpeza de partida pertence ao processo, não a cada workspace. Sem esta
 /// guarda, dez servidores disparavam dez varreduras concorrentes da mesma raiz.
 static STARTUP_CACHE_SWEEP: Once = Once::new();
@@ -653,15 +657,23 @@ fn collect_cache_bucket(
         }
         let path = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
+        let used = meta.accessed().or_else(|_| meta.modified()).unwrap_or(now);
 
+        // `.parcial`/`.tmp` é o rascunho de um download em andamento: o
+        // arquivo é escrito nele e só então renomeado. Apagá-lo entre a
+        // escrita e o rename faz o download falhar com ENOENT — e como cada
+        // download bem-sucedido dispara uma varredura, uma conversa com
+        // vários anexos à vista derrubava os que ainda estavam baixando.
+        // Só some depois que já não pode estar em curso.
         if path
             .extension()
             .is_some_and(|ext| ext == "parcial" || ext == "tmp")
         {
-            let _ = std::fs::remove_file(&path);
+            if now.duration_since(used).unwrap_or_default() > PARTIAL_MAX_AGE {
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
-        let used = meta.accessed().or_else(|_| meta.modified()).unwrap_or(now);
         if now.duration_since(used).unwrap_or_default() > max_age {
             let _ = std::fs::remove_file(&path);
             continue;
@@ -1789,7 +1801,8 @@ mod limpeza {
         let raiz = raiz("parcial");
         let sobra = raiz.join("servers/srv-a/files/video.mp4.parcial");
         let bom = raiz.join("servers/srv-a/files/video.mp4");
-        escreve(&sobra, 10, HORA);
+        // Velho o bastante para não poder mais estar em curso.
+        escreve(&sobra, 10, PARTIAL_MAX_AGE + HORA);
         escreve(&bom, 10, HORA);
 
         sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
@@ -1798,11 +1811,24 @@ mod limpeza {
         assert!(bom.exists(), "o arquivo inteiro devia ter ficado");
     }
 
+    /// Um `.parcial` recém-escrito pode ser um download em andamento: se a
+    /// varredura o apagasse, o rename seguinte falhava com ENOENT.
+    #[test]
+    fn parcial_em_curso_sobrevive_a_varredura() {
+        let raiz = raiz("parcial-em-curso");
+        let em_curso = raiz.join("servers/srv-a/files/video.mp4.parcial");
+        escreve(&em_curso, 10, Duration::from_secs(1));
+
+        sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
+
+        assert!(em_curso.exists(), "não pode apagar download em andamento");
+    }
+
     #[test]
     fn remoto_parcial_nunca_vira_objeto_valido() {
         let raiz = raiz("remote-parcial");
         let parcial = raiz.join("remote/abc.parcial");
-        escreve(&parcial, 128, HORA);
+        escreve(&parcial, 128, PARTIAL_MAX_AGE + HORA);
 
         sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
 
