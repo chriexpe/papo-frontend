@@ -397,6 +397,10 @@ impl ServerRuntime {
         self.net.cancel_background();
     }
 
+    pub fn wait_background_shutdown(&mut self) {
+        self.net.wait_background_shutdown();
+    }
+
     pub fn drain_until_idle(&mut self, max_updates: usize) -> RuntimeDrain {
         let mut drain = RuntimeDrain::default();
         if max_updates == 0 {
