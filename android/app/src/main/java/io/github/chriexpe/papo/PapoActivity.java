@@ -832,8 +832,8 @@ public class PapoActivity extends GameActivity {
     }
 
     /** Synchronizes persistent periodic work with the current Rust settings. */
-    public void syncBackgroundReconcile(String payload) {
-        PapoWorkScheduler.sync(this, payload);
+    public boolean syncBackgroundReconcile(String payload) {
+        return PapoWorkScheduler.sync(this, payload);
     }
 
     private void handleMessageNotificationIntent(Intent intent) {
