@@ -9,10 +9,11 @@ use turso::{Builder, Connection, Value};
 
 use super::schema::apply_migrations;
 use super::types::{
-    CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedReaction,
-    CachedServer, CachedServerSnapshot, CacheOp, ClaimResult, NotificationLedgerEntry,
-    NotificationLedgerStats, OutgoingState, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
-    OUTGOING_LIMIT, PINNED_RETENTION,
+    CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedPreview,
+    CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
+    NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
+    MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
+    PREVIEW_CACHE_LIMIT,
 };
 
 /// Conexão de trabalho do cache. Uma só por processo, dona de um worker.
@@ -714,6 +715,101 @@ impl TursoCache {
                 [server_key, owner_user_id, local_id],
             )
             .await?;
+        Ok(())
+    }
+
+    /// Lê metadados globais de preview pelo URL canônico.
+    pub async fn load_preview(
+        &self,
+        url_key: &str,
+    ) -> Result<Option<CachedPreview>, turso::Error> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT source_url, state, kind, media_url, image_url, embed_url,
+                        title, description, provider_name, resolved_at, retry_after,
+                        failure_class, last_used_at
+                 FROM preview_cache WHERE url_key = ?1",
+                [url_key],
+            )
+            .await?;
+        let Some(row) = rows.next().await? else {
+            return Ok(None);
+        };
+        let raw_state: String = row.get(1)?;
+        let Some(state) = PreviewCacheState::from_db(&raw_state) else {
+            return Ok(None);
+        };
+        Ok(Some(CachedPreview {
+            url_key: url_key.to_owned(),
+            source_url: row.get(0)?,
+            state,
+            kind: row.get(2)?,
+            media_url: row.get(3)?,
+            image_url: row.get(4)?,
+            embed_url: row.get(5)?,
+            title: row.get(6)?,
+            description: row.get(7)?,
+            provider_name: row.get(8)?,
+            resolved_at: row.get(9)?,
+            retry_after: row.get(10)?,
+            failure_class: row.get(11)?,
+            last_used_at: row.get(12)?,
+        }))
+    }
+
+    /// Grava um preview e poda a tabela global na mesma transação.
+    pub async fn store_preview(&mut self, preview: &CachedPreview) -> Result<(), turso::Error> {
+        let tx = self.conn.transaction().await?;
+        tx.execute(
+            "INSERT INTO preview_cache (
+                 url_key, source_url, state, kind, media_url, image_url, embed_url,
+                 title, description, provider_name, resolved_at, retry_after,
+                 failure_class, last_used_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+             ON CONFLICT(url_key) DO UPDATE SET
+                 source_url = excluded.source_url,
+                 state = excluded.state,
+                 kind = excluded.kind,
+                 media_url = excluded.media_url,
+                 image_url = excluded.image_url,
+                 embed_url = excluded.embed_url,
+                 title = excluded.title,
+                 description = excluded.description,
+                 provider_name = excluded.provider_name,
+                 resolved_at = excluded.resolved_at,
+                 retry_after = excluded.retry_after,
+                 failure_class = excluded.failure_class,
+                 last_used_at = excluded.last_used_at",
+            vec![
+                text(&preview.url_key),
+                text(&preview.source_url),
+                text(preview.state.as_db()),
+                opt_text(preview.kind.as_deref()),
+                opt_text(preview.media_url.as_deref()),
+                opt_text(preview.image_url.as_deref()),
+                opt_text(preview.embed_url.as_deref()),
+                opt_text(preview.title.as_deref()),
+                opt_text(preview.description.as_deref()),
+                opt_text(preview.provider_name.as_deref()),
+                integer(preview.resolved_at),
+                preview.retry_after.map(Value::Integer).unwrap_or(Value::Null),
+                opt_text(preview.failure_class.as_deref()),
+                integer(preview.last_used_at),
+            ],
+        )
+        .await?;
+        tx.execute(
+            "DELETE FROM preview_cache
+             WHERE url_key NOT IN (
+                 SELECT url_key FROM preview_cache
+                 ORDER BY last_used_at DESC, url_key DESC
+                 LIMIT ?1
+             )",
+            [PREVIEW_CACHE_LIMIT],
+        )
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
