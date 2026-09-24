@@ -125,6 +125,8 @@ fn route_call_effect(ws: &mut Workspace, effect: CallRuntimeEffect, ctx: &egui::
             event,
             me_before,
             phase_before,
+            store_error_before,
+            call_error_before,
         } => {
             let Some(call) = &ws.call else { return };
             let mut over = false;
@@ -151,6 +153,11 @@ fn route_call_effect(ws: &mut Workspace, effect: CallRuntimeEffect, ctx: &egui::
                         r#"{{"type":"voice_leave","channel_id":"{}"}}"#,
                         channel_id
                     )));
+                    // Before the runtime split, this teardown happened before
+                    // Store::apply. Restore the pre-update error projection so
+                    // a structural refactor does not change call UX.
+                    ws.runtime.store.error = store_error_before;
+                    ws.runtime.store.call.error = call_error_before;
                     ws.camera_revision = 0;
                 }
                 ws.runtime.net.set_event_callback(None);
