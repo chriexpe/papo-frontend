@@ -23,6 +23,8 @@ pub enum CallRuntimeEffect {
         event: Event,
         me_before: String,
         phase_before: Phase,
+        store_error_before: Option<String>,
+        call_error_before: Option<String>,
     },
     ConnectionOffline,
     VoiceFailed {
@@ -337,6 +339,8 @@ impl ServerRuntime {
                     event: (**event).clone(),
                     me_before: self.store.me.clone(),
                     phase_before: self.store.call.phase,
+                    store_error_before: self.store.error.clone(),
+                    call_error_before: self.store.call.error.clone(),
                 }));
             }
             Update::Connection(Connection::Offline) => {
