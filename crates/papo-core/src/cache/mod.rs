@@ -391,18 +391,7 @@ impl ClientDb {
     ) -> Result<(), String> {
         let (reply, recv) = std::sync::mpsc::channel();
         self.wait_durable_result(
-            WorkerMsg::LoadDrafts {
-            server_key,
-            owner_user_id,
-            reply,
-        } => {
-            let result = cache
-                .load_drafts(&server_key, &owner_user_id)
-                .await
-                .map_err(|error| error.to_string());
-            let _ = reply.send(result);
-        }
-        WorkerMsg::TransitionOutgoing {
+            WorkerMsg::TransitionOutgoing {
                 server_key: server_key.to_owned(),
                 owner_user_id: owner_user_id.to_owned(),
                 local_id: local_id.to_owned(),
@@ -701,6 +690,17 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         } => {
             let result = cache
                 .load_outgoing(&server_key, &owner_user_id)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadDrafts {
+            server_key,
+            owner_user_id,
+            reply,
+        } => {
+            let result = cache
+                .load_drafts(&server_key, &owner_user_id)
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);
