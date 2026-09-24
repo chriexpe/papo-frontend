@@ -609,10 +609,13 @@ impl Api {
         }
 
         let error = problem_error(status, &body);
-        if status.is_client_error() {
-            Err(SendMessageError::FailedPermanent(error))
-        } else {
-            Err(SendMessageError::UnknownOutcome(error))
+        // CreateMessageHandler só chega à criação depois de autenticação,
+        // parsing, validação de canal/reply e permissão. Estes códigos são
+        // rejeições documentadas antes de storage.CreateMessage; para outros
+        // status não fabricamos essa garantia.
+        match status.as_u16() {
+            400 | 401 | 403 | 404 => Err(SendMessageError::FailedPermanent(error)),
+            _ => Err(SendMessageError::UnknownOutcome(error)),
         }
     }
 
