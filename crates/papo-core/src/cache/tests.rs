@@ -78,6 +78,19 @@ fn outgoing(local_id: &str, owner: &str, content: &str, state: OutgoingState) ->
     }
 }
 
+fn draft(owner: &str, channel: &str, text: &str) -> CachedDraft {
+    CachedDraft {
+        owner_user_id: owner.to_owned(),
+        channel_id: channel.to_owned(),
+        text: text.to_owned(),
+        mentions: Vec::new(),
+        reply_to: None,
+        notify_reply: true,
+        updated_at: now_millis(),
+    }
+}
+
+
 #[test]
 fn open_apply_reopen_round_trip() {
     let temp = TempDb::new("roundtrip");
@@ -1294,4 +1307,132 @@ async fn preview_retention_is_global_and_hard_bounded() {
             .expect("load newest")
             .is_some()
     );
+}
+
+
+#[test]
+fn drafts_round_trip_replace_and_partition_by_owner_server_channel() {
+    let temp = TempDb::new("draft-partition");
+    let db = open(&temp);
+
+    let mut general = draft("owner-a", "general", "oi @Alex");
+    general.mentions.push(CachedMentionBinding {
+        start: 3,
+        label: "Alex".to_owned(),
+        user_id: "stable-a".to_owned(),
+    });
+    general.reply_to = Some("m-1".to_owned());
+    general.notify_reply = false;
+
+    db.submit(
+        "srv-a",
+        vec![
+            CacheOp::UpsertDraft(general.clone()),
+            CacheOp::UpsertDraft(draft("owner-a", "rust", "cargo")),
+            CacheOp::UpsertDraft(draft("owner-b", "general", "outra conta")),
+        ],
+    );
+    db.submit(
+        "srv-b",
+        vec![CacheOp::UpsertDraft(draft("owner-a", "general", "outro servidor"))],
+    );
+    db.flush();
+
+    let a = db.load_drafts("srv-a", "owner-a").expect("drafts owner a");
+    assert_eq!(a.len(), 2);
+    let restored = a.iter().find(|d| d.channel_id == "general").unwrap();
+    assert_eq!(restored.text, "oi @Alex");
+    assert_eq!(restored.mentions, general.mentions);
+    assert_eq!(restored.reply_to.as_deref(), Some("m-1"));
+    assert!(!restored.notify_reply);
+
+    let b = db.load_drafts("srv-a", "owner-b").expect("drafts owner b");
+    assert_eq!(b.len(), 1);
+    assert_eq!(b[0].text, "outra conta");
+    let other_server = db.load_drafts("srv-b", "owner-a").expect("other server");
+    assert_eq!(other_server.len(), 1);
+    assert_eq!(other_server[0].text, "outro servidor");
+
+    let mut replacement = draft("owner-a", "general", "substituído");
+    replacement.notify_reply = true;
+    db.submit("srv-a", vec![CacheOp::UpsertDraft(replacement)]);
+    db.flush();
+    let a = db.load_drafts("srv-a", "owner-a").unwrap();
+    assert_eq!(a.len(), 2);
+    assert_eq!(
+        a.iter().find(|d| d.channel_id == "general").unwrap().text,
+        "substituído"
+    );
+}
+
+#[test]
+fn drafts_survive_reconstructible_clear_but_not_delete_or_server_removal() {
+    let temp = TempDb::new("draft-clear");
+    let db = open(&temp);
+
+    db.submit(
+        "srv",
+        vec![CacheOp::UpsertDraft(draft("owner", "general", "fica"))],
+    );
+    db.clear_cached_data("srv");
+    db.flush();
+    assert_eq!(db.load_drafts("srv", "owner").unwrap().len(), 1);
+
+    db.submit(
+        "srv",
+        vec![CacheOp::DeleteDraft {
+            owner_user_id: "owner".to_owned(),
+            channel_id: "general".to_owned(),
+        }],
+    );
+    db.flush();
+    assert!(db.load_drafts("srv", "owner").unwrap().is_empty());
+
+    db.submit(
+        "srv",
+        vec![CacheOp::UpsertDraft(draft("owner", "general", "some"))],
+    );
+    db.clear_server("srv");
+    db.flush();
+    assert!(db.load_drafts("srv", "owner").unwrap().is_empty());
+}
+
+#[test]
+fn v4_database_migrates_to_v5_without_reset() {
+    let temp = TempDb::new("draft-v4-migration");
+    let path = temp.path();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let db = turso::Builder::new_local(path.to_string_lossy().as_ref())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('schema_version', '4')",
+            (),
+        )
+        .await
+        .unwrap();
+    });
+
+    let db = open(&temp);
+    assert!(db.is_enabled());
+    db.submit(
+        "srv",
+        vec![CacheOp::UpsertDraft(draft("owner", "general", "migrado"))],
+    );
+    db.flush();
+    let rows = db.load_drafts("srv", "owner").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text, "migrado");
 }
