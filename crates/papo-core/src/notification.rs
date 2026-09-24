@@ -835,4 +835,80 @@ mod tests {
         assert_eq!(envelopes[0].notification_id, None);
         assert_eq!(envelopes[0].body, "oi @Ana");
     }
+
+    #[test]
+    fn duplicate_remains_suppressed_after_clientdb_reopen() {
+        let temp = TempDb::new("reopen");
+        {
+            let (coordinator, deliveries) = coordinator(temp.db(), false);
+            coordinator.sync_context(context("srv", "me", true, true));
+            assert_eq!(
+                coordinator.handle_message(
+                    "srv",
+                    &message("m1", "geral", "bia", "<@me>"),
+                    CandidateSource::Live,
+                ),
+                NotificationOutcome::Delivered
+            );
+            assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+        }
+
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, true));
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m1", "geral", "bia", "<@me>"),
+                CandidateSource::Live,
+            ),
+            NotificationOutcome::Duplicate
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn atomic_concurrent_candidates_deliver_exactly_once() {
+        let temp = TempDb::new("concurrent");
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::clone(&deliveries);
+        let coordinator = Arc::new(NotificationCoordinator::new(
+            temp.db(),
+            Some(Arc::new(move |_| {
+                seen.fetch_add(1, AtomicOrdering::SeqCst);
+            })),
+        ));
+        coordinator.sync_context(context("srv", "me", true, true));
+
+        let mut threads = Vec::new();
+        for _ in 0..16 {
+            let coordinator = Arc::clone(&coordinator);
+            threads.push(std::thread::spawn(move || {
+                coordinator.handle_message(
+                    "srv",
+                    &message("m1", "geral", "bia", "<@me>"),
+                    CandidateSource::Live,
+                )
+            }));
+        }
+        let outcomes: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().expect("notification thread"))
+            .collect();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == NotificationOutcome::Delivered)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == NotificationOutcome::Duplicate)
+                .count(),
+            15
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+    }
+
 }
