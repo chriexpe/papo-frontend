@@ -21,6 +21,8 @@ use crate::cache::{now_millis, CachedPreview, ClientDb, PreviewCacheState};
 
 const HTML_MAX: usize = 2 << 20;
 const OEMBED_MAX: usize = 512 << 10;
+const OEMBED_REGISTRY_MAX: usize = 2 << 20;
+const OEMBED_REGISTRY_URL: &str = "https://oembed.com/providers.json";
 const MAX_REDIRECTS: usize = 5;
 const READY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const NEGATIVE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
@@ -253,6 +255,7 @@ fn preview_worker(inner: Arc<Inner>, mut queue: mpsc::Receiver<String>) {
             }
         };
         let permits = Arc::new(Semaphore::new(RESOLVER_CONCURRENCY));
+        let oembed_registry = Arc::new(tokio::sync::OnceCell::new());
 
         while let Some(key) = queue.recv().await {
             let Ok(permit) = Arc::clone(&permits).acquire_owned().await else {
@@ -260,15 +263,21 @@ fn preview_worker(inner: Arc<Inner>, mut queue: mpsc::Receiver<String>) {
             };
             let task_inner = Arc::clone(&inner);
             let task_client = Arc::clone(&client);
+            let task_registry = Arc::clone(&oembed_registry);
             tokio::spawn(async move {
-                process_request(task_inner, task_client, key).await;
+                process_request(task_inner, task_client, task_registry, key).await;
                 drop(permit);
             });
         }
     });
 }
 
-async fn process_request(inner: Arc<Inner>, client: Arc<reqwest::Client>, key: String) {
+async fn process_request(
+    inner: Arc<Inner>,
+    client: Arc<reqwest::Client>,
+    oembed_registry: Arc<tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>>,
+    key: String,
+) {
     let cached = {
         let db = Arc::clone(&inner.db);
         let lookup_key = key.clone();
@@ -355,7 +364,7 @@ async fn process_request(inner: Arc<Inner>, client: Arc<reqwest::Client>, key: S
         .network_resolves
         .fetch_add(1, Ordering::Relaxed);
 
-    match resolve_url(&client, &key, 0).await {
+    match resolve_url(&client, &oembed_registry, &key, 0).await {
         Ok(preview) => {
             let row = preview_row(&key, &preview, now);
             persist(&inner, row).await;
@@ -589,6 +598,7 @@ impl ResolveError {
 
 async fn resolve_url(
     client: &reqwest::Client,
+    oembed_registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
     source_url: &str,
     depth: usize,
 ) -> Result<ResolvedPreview, ResolveError> {
@@ -648,10 +658,23 @@ async fn resolve_url(
     let html = read_limited(response, HTML_MAX, "página").await?;
     let mut preview = parse_html_preview(source_url, &final_url, &html).await?;
 
-    // oEmbed é descoberto pela própria página, não por uma tabela de hosts.
-    if let Some(endpoint) = oembed_endpoint(&html, &final_url)
-        && let Ok(oembed) = resolve_oembed(client, source_url, endpoint, depth).await
+    // Preferimos discovery publicado pela própria página. Quando ela não
+    // publica, usamos a registry oficial do oEmbed como fallback de dados,
+    // em vez de codificar YouTube/TikTok/etc. no cliente.
+    let oembed = if let Some(endpoint) = oembed_endpoint(&html, &final_url) {
+        resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
+            .await
+            .ok()
+    } else if let Some(endpoint) =
+        registry_oembed_endpoint(client, oembed_registry, source_url).await
     {
+        resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
+            .await
+            .ok()
+    } else {
+        None
+    };
+    if let Some(oembed) = oembed {
         merge_preview(&mut preview, oembed);
     }
 
@@ -662,7 +685,7 @@ async fn resolve_url(
         && let Some(embed) = preview.embed_url.clone()
         && canonical_url(&embed).as_deref() != canonical_url(source_url).as_deref()
         && depth < 2
-        && let Ok(nested) = Box::pin(resolve_url(client, &embed, depth + 1)).await
+        && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
     {
         if nested.media_url.is_some() {
             preview.media_url = nested.media_url;
@@ -720,6 +743,7 @@ async fn sanitize_preview_targets(preview: &mut ResolvedPreview) {
 
 async fn resolve_oembed(
     client: &reqwest::Client,
+    oembed_registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
     source_url: &str,
     endpoint: Url,
     depth: usize,
@@ -760,6 +784,12 @@ async fn resolve_oembed(
                 } else if let Some(embed) = html_embed_url(html, source_url) {
                     preview.kind = PreviewKind::Embed;
                     preview.embed_url = Some(embed);
+                } else if !html.trim().is_empty() {
+                    // Alguns oEmbed (ex.: blockquote + script) não oferecem
+                    // iframe URL. Registramos a página original como alvo do
+                    // futuro web player sem persistir HTML executável.
+                    preview.kind = PreviewKind::Embed;
+                    preview.embed_url = canonical_url(source_url);
                 }
             }
         }
@@ -769,7 +799,7 @@ async fn resolve_oembed(
     if preview.media_url.is_none()
         && let Some(embed) = preview.embed_url.clone()
         && depth < 2
-        && let Ok(nested) = Box::pin(resolve_url(client, &embed, depth + 1)).await
+        && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
         && nested.media_url.is_some()
     {
         preview.kind = nested.kind;
@@ -1295,6 +1325,135 @@ fn retry_after(value: Option<&reqwest::header::HeaderValue>) -> Option<i64> {
     Some(now_millis() + (seconds * 1000).clamp(RETRY_BASE_MS, RETRY_MAX_MS))
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct OEmbedRegistryProvider {
+    provider_name: String,
+    #[serde(default)]
+    endpoints: Vec<OEmbedRegistryRawEndpoint>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OEmbedRegistryRawEndpoint {
+    url: String,
+    #[serde(default)]
+    schemes: Vec<String>,
+    #[serde(default)]
+    formats: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct OEmbedRegistryEndpoint {
+    provider_name: String,
+    url: String,
+    schemes: Vec<String>,
+}
+
+async fn registry_oembed_endpoint(
+    client: &reqwest::Client,
+    registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
+    source_url: &str,
+) -> Option<Url> {
+    let entries = registry
+        .get_or_try_init(|| async { load_oembed_registry(client).await })
+        .await
+        .ok()?;
+    let source = canonical_url(source_url)?;
+
+    for entry in entries {
+        if !entry
+            .schemes
+            .iter()
+            .any(|scheme| wildcard_url_match(scheme, &source))
+        {
+            continue;
+        }
+
+        let raw_endpoint = entry.url.replace("{format}", "json");
+        let mut endpoint = Url::parse(&raw_endpoint).ok()?;
+        if !safe_remote_url(endpoint.as_str()) {
+            continue;
+        }
+        {
+            let mut query = endpoint.query_pairs_mut();
+            query.append_pair("url", &source);
+            if !endpoint.as_str().contains("format=") && !raw_endpoint.contains(".json") {
+                query.append_pair("format", "json");
+            }
+        }
+        log::debug!("preview oembed registry: provider={}", entry.provider_name);
+        return Some(endpoint);
+    }
+    None
+}
+
+async fn load_oembed_registry(
+    client: &reqwest::Client,
+) -> Result<Vec<OEmbedRegistryEndpoint>, ResolveError> {
+    let url = Url::parse(OEMBED_REGISTRY_URL)
+        .map_err(|error| ResolveError::negative(error.to_string()))?;
+    let response = get_following_safe_redirects(client, url).await?;
+    let bytes = read_limited_bytes(response, OEMBED_REGISTRY_MAX, "oEmbed registry").await?;
+    let providers: Vec<OEmbedRegistryProvider> = serde_json::from_slice(&bytes)
+        .map_err(|error| ResolveError::negative(format!("oEmbed registry inválida: {error}")))?;
+
+    let mut entries = Vec::new();
+    for provider in providers {
+        for endpoint in provider.endpoints {
+            if endpoint.schemes.is_empty()
+                || (!endpoint.formats.is_empty()
+                    && !endpoint
+                        .formats
+                        .iter()
+                        .any(|format| format.eq_ignore_ascii_case("json")))
+            {
+                continue;
+            }
+            let endpoint_url = endpoint.url.replace("{format}", "json");
+            if !safe_remote_url(&endpoint_url) {
+                continue;
+            }
+            entries.push(OEmbedRegistryEndpoint {
+                provider_name: provider.provider_name.clone(),
+                url: endpoint.url,
+                schemes: endpoint.schemes,
+            });
+        }
+    }
+    Ok(entries)
+}
+
+fn wildcard_url_match(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let candidate = candidate.to_ascii_lowercase();
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return candidate == pattern;
+    }
+
+    let mut cursor = 0usize;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index == 0 && !pattern.starts_with('*') {
+            if !candidate[cursor..].starts_with(part) {
+                return false;
+            }
+            cursor += part.len();
+            continue;
+        }
+        let Some(found) = candidate[cursor..].find(part) else {
+            return false;
+        };
+        cursor += found + part.len();
+    }
+
+    pattern.ends_with('*')
+        || parts
+            .last()
+            .is_none_or(|last| candidate.ends_with(last))
+}
+
 fn oembed_endpoint(html: &str, base: &Url) -> Option<Url> {
     for raw in html.split('<').skip(1) {
         let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
@@ -1698,6 +1857,22 @@ mod tests {
             Some(PreviewState::RetryLater { .. })
         ));
         assert_eq!(queue.try_recv().unwrap(), url);
+    }
+
+    #[test]
+    fn oembed_registry_matching_is_data_driven() {
+        assert!(wildcard_url_match(
+            "https://*.example.com/watch*",
+            "https://video.example.com/watch?v=123"
+        ));
+        assert!(wildcard_url_match(
+            "https://example.com/v/*",
+            "https://example.com/v/abc"
+        ));
+        assert!(!wildcard_url_match(
+            "https://example.com/v/*",
+            "https://example.com/other/abc"
+        ));
     }
 
     #[test]
