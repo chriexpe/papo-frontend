@@ -3,6 +3,9 @@ use gstreamer as gst;
 #[cfg(target_os = "android")]
 use gstreamer::prelude::*;
 
+// All variants are intentionally represented on every target so host CI can
+// test the complete policy matrix without cross-compiling each OS.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GstPlatform {
     Android,
