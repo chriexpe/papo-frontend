@@ -9,8 +9,8 @@ use turso::{Builder, Connection, Value};
 
 use super::schema::apply_migrations;
 use super::types::{
-    CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedPreview,
-    CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
+    CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
     MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
@@ -306,6 +306,36 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             }
             statements
         }
+        CacheOp::UpsertDraft(draft) => vec![Stmt {
+            sql: "INSERT INTO drafts (
+                      server_key, owner_user_id, channel_id, text, mentions,
+                      reply_to, notify_reply, updated_at
+                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+                  ON CONFLICT(server_key, owner_user_id, channel_id) DO UPDATE SET
+                      text = excluded.text,
+                      mentions = excluded.mentions,
+                      reply_to = excluded.reply_to,
+                      notify_reply = excluded.notify_reply,
+                      updated_at = excluded.updated_at",
+            params: vec![
+                text(server_key),
+                text(&draft.owner_user_id),
+                text(&draft.channel_id),
+                text(&draft.text),
+                text(&encode_json(&draft.mentions)),
+                opt_text(draft.reply_to.as_deref()),
+                boolean(draft.notify_reply),
+                integer(draft.updated_at),
+            ],
+        }],
+        CacheOp::DeleteDraft {
+            owner_user_id,
+            channel_id,
+        } => vec![Stmt {
+            sql: "DELETE FROM drafts
+                  WHERE server_key = ?1 AND owner_user_id = ?2 AND channel_id = ?3",
+            params: vec![text(server_key), text(owner_user_id), text(channel_id)],
+        }],
         CacheOp::ClearCachedData => vec![
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
@@ -329,6 +359,10 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
         ],
         CacheOp::ClearServer => vec![
+            Stmt {
+                sql: "DELETE FROM drafts WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
             Stmt {
                 sql: "DELETE FROM notification_ledger WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -575,6 +609,44 @@ impl TursoCache {
             },
             stats,
         ))
+    }
+
+    pub async fn load_drafts(
+        &self,
+        server_key: &str,
+        owner_user_id: &str,
+    ) -> Result<Vec<CachedDraft>, turso::Error> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT channel_id, text, mentions, reply_to, notify_reply, updated_at
+                 FROM drafts
+                 WHERE server_key = ?1 AND owner_user_id = ?2
+                 ORDER BY updated_at, channel_id",
+                [server_key, owner_user_id],
+            )
+            .await?;
+        let mut drafts = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let mentions: String = row.get(2)?;
+            let mentions = serde_json::from_str::<serde_json::Value>(&mentions)
+                .ok()
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| serde_json::from_value::<CachedMentionBinding>(value).ok())
+                .collect();
+            drafts.push(CachedDraft {
+                owner_user_id: owner_user_id.to_owned(),
+                channel_id: row.get(0)?,
+                text: row.get(1)?,
+                mentions,
+                reply_to: row.get(3)?,
+                notify_reply: row.get(4)?,
+                updated_at: row.get(5)?,
+            });
+        }
+        Ok(drafts)
     }
 
     /// Carrega somente a fila da conta informada. Qualquer envio que estava
