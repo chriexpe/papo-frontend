@@ -13,8 +13,9 @@ mod tests;
 
 pub use store::TursoCache;
 pub use types::{
-    now_millis, CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedReaction,
-    CachedServer, CachedServerSnapshot, CacheOp, MESSAGE_RETENTION, PINNED_RETENTION,
+    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedMember, CachedMessage,
+    CachedOutgoing, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, OutgoingState,
+    MESSAGE_RETENTION, OUTGOING_LIMIT, PINNED_RETENTION,
 };
 
 use std::collections::VecDeque;
@@ -78,6 +79,36 @@ enum WorkerMsg {
     Load {
         server_key: String,
         reply: std::sync::mpsc::Sender<Result<CachedServerSnapshot, String>>,
+    },
+    EnqueueOutgoing {
+        server_key: String,
+        outgoing: CachedOutgoing,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    LoadOutgoing {
+        server_key: String,
+        owner_user_id: String,
+        reply: std::sync::mpsc::Sender<Result<Vec<CachedOutgoing>, String>>,
+    },
+    TransitionOutgoing {
+        server_key: String,
+        owner_user_id: String,
+        local_id: String,
+        state: OutgoingState,
+        last_error: Option<String>,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    ConfirmOutgoing {
+        server_key: String,
+        local_id: String,
+        message: CachedMessage,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
+    },
+    RemoveOutgoing {
+        server_key: String,
+        owner_user_id: String,
+        local_id: String,
+        reply: std::sync::mpsc::Sender<Result<(), String>>,
     },
     Flush(std::sync::mpsc::Sender<()>),
     /// Só em testes: prende o worker até o teste liberar, para saturar a fila
@@ -229,6 +260,16 @@ impl ClientDb {
         }
     }
 
+    pub fn clear_cached_data(&self, server_key: &str) {
+        let msg = WorkerMsg::Write {
+            server_key: server_key.to_owned(),
+            ops: vec![CacheOp::ClearCachedData],
+        };
+        if !self.enqueue(msg, false) {
+            log::warn!("cache: não foi possível limpar dados reconstruíveis de {server_key}");
+        }
+    }
+
     pub fn clear_server(&self, server_key: &str) {
         let msg = WorkerMsg::Write {
             server_key: server_key.to_owned(),
@@ -237,6 +278,126 @@ impl ClientDb {
         if !self.enqueue(msg, false) {
             log::warn!("cache: não foi possível enfileirar o clear de {server_key}");
         }
+    }
+
+    fn wait_result<T>(
+        &self,
+        msg: WorkerMsg,
+        reply_rx: std::sync::mpsc::Receiver<Result<T, String>>,
+    ) -> Result<T, String> {
+        if !self.enqueue(msg, false) {
+            return Err("ClientDb indisponível".to_owned());
+        }
+        reply_rx
+            .recv_timeout(LOAD_TIMEOUT)
+            .map_err(|_| "ClientDb não respondeu a tempo".to_owned())?
+    }
+
+    /// Escritas da fila de saída não podem transformar "timeout esperando o
+    /// ack" em "a escrita falhou": o worker poderia confirmar a transação um
+    /// instante depois. O chamador é o worker de rede, nunca a thread egui, e
+    /// portanto espera o resultado definitivo antes de permitir um POST.
+    fn wait_durable_result<T>(
+        &self,
+        msg: WorkerMsg,
+        reply_rx: std::sync::mpsc::Receiver<Result<T, String>>,
+    ) -> Result<T, String> {
+        if !self.enqueue(msg, false) {
+            return Err("ClientDb indisponível".to_owned());
+        }
+        reply_rx
+            .recv()
+            .map_err(|_| "worker do ClientDb encerrou antes do ack".to_owned())?
+    }
+
+    pub fn enqueue_outgoing(
+        &self,
+        server_key: &str,
+        outgoing: CachedOutgoing,
+    ) -> Result<(), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_durable_result(
+            WorkerMsg::EnqueueOutgoing {
+                server_key: server_key.to_owned(),
+                outgoing,
+                reply,
+            },
+            recv,
+        )
+    }
+
+    pub fn load_outgoing(
+        &self,
+        server_key: &str,
+        owner_user_id: &str,
+    ) -> Result<Vec<CachedOutgoing>, String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_result(
+            WorkerMsg::LoadOutgoing {
+                server_key: server_key.to_owned(),
+                owner_user_id: owner_user_id.to_owned(),
+                reply,
+            },
+            recv,
+        )
+    }
+
+    pub fn transition_outgoing(
+        &self,
+        server_key: &str,
+        owner_user_id: &str,
+        local_id: &str,
+        state: OutgoingState,
+        last_error: Option<String>,
+    ) -> Result<(), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_durable_result(
+            WorkerMsg::TransitionOutgoing {
+                server_key: server_key.to_owned(),
+                owner_user_id: owner_user_id.to_owned(),
+                local_id: local_id.to_owned(),
+                state,
+                last_error,
+                reply,
+            },
+            recv,
+        )
+    }
+
+    pub fn confirm_outgoing(
+        &self,
+        server_key: &str,
+        local_id: &str,
+        message: CachedMessage,
+    ) -> Result<(), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_durable_result(
+            WorkerMsg::ConfirmOutgoing {
+                server_key: server_key.to_owned(),
+                local_id: local_id.to_owned(),
+                message,
+                reply,
+            },
+            recv,
+        )
+    }
+
+    pub fn remove_outgoing(
+        &self,
+        server_key: &str,
+        owner_user_id: &str,
+        local_id: &str,
+    ) -> Result<(), String> {
+        let (reply, recv) = std::sync::mpsc::channel();
+        self.wait_durable_result(
+            WorkerMsg::RemoveOutgoing {
+                server_key: server_key.to_owned(),
+                owner_user_id: owner_user_id.to_owned(),
+                local_id: local_id.to_owned(),
+                reply,
+            },
+            recv,
+        )
     }
 
     /// Espera tudo que já foi enfileirado ser aplicado. É barreira: como só há
@@ -428,6 +589,72 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         WorkerMsg::Load { server_key, reply } => {
             let result = cache
                 .load_snapshot(&server_key)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::EnqueueOutgoing {
+            server_key,
+            outgoing,
+            reply,
+        } => {
+            let result = cache
+                .enqueue_outgoing(&server_key, &outgoing)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadOutgoing {
+            server_key,
+            owner_user_id,
+            reply,
+        } => {
+            let result = cache
+                .load_outgoing(&server_key, &owner_user_id)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::TransitionOutgoing {
+            server_key,
+            owner_user_id,
+            local_id,
+            state,
+            last_error,
+            reply,
+        } => {
+            let result = cache
+                .transition_outgoing(
+                    &server_key,
+                    &owner_user_id,
+                    &local_id,
+                    state,
+                    last_error.as_deref(),
+                )
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::ConfirmOutgoing {
+            server_key,
+            local_id,
+            message,
+            reply,
+        } => {
+            let result = cache
+                .confirm_outgoing(&server_key, &local_id, &message)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::RemoveOutgoing {
+            server_key,
+            owner_user_id,
+            local_id,
+            reply,
+        } => {
+            let result = cache
+                .remove_outgoing(&server_key, &owner_user_id, &local_id)
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);

@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -71,6 +71,27 @@ const MIGRATIONS: &[Migration] = &[Migration {
              cached_at INTEGER NOT NULL,
              PRIMARY KEY (server_key, channel_id)
          )",
+    ],
+}, Migration {
+    version: 2,
+    statements: &[
+        "CREATE TABLE send_queue (
+             server_key TEXT NOT NULL,
+             local_id TEXT NOT NULL,
+             owner_user_id TEXT NOT NULL,
+             channel_id TEXT NOT NULL,
+             content TEXT NOT NULL,
+             reply_to TEXT,
+             notify_reply INTEGER NOT NULL,
+             created_at INTEGER NOT NULL,
+             state TEXT NOT NULL,
+             attempt_count INTEGER NOT NULL DEFAULT 0,
+             last_attempt_at INTEGER,
+             last_error TEXT,
+             PRIMARY KEY (server_key, local_id)
+         )",
+        "CREATE INDEX send_queue_owner_idx
+             ON send_queue(server_key, owner_user_id, created_at)",
     ],
 }];
 

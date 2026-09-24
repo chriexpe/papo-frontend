@@ -9,8 +9,9 @@ use turso::{Builder, Connection, Value};
 
 use super::schema::apply_migrations;
 use super::types::{
-    CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedReaction,
-    CachedServer, CachedServerSnapshot, CacheOp, MESSAGE_RETENTION, PINNED_RETENTION,
+    CachedAttachment, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedReaction,
+    CachedServer, CachedServerSnapshot, CacheOp, OutgoingState, MESSAGE_RETENTION,
+    OUTGOING_LIMIT, PINNED_RETENTION,
 };
 
 /// Conexão de trabalho do cache. Uma só por processo, dona de um worker.
@@ -303,7 +304,33 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             }
             statements
         }
+        CacheOp::ClearCachedData => vec![
+            Stmt {
+                sql: "DELETE FROM messages WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM channels WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM members WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM channel_cache_state WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM server_cache WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+        ],
         CacheOp::ClearServer => vec![
+            Stmt {
+                sql: "DELETE FROM send_queue WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -378,6 +405,200 @@ impl TursoCache {
             tx.execute(statement.sql, statement.params.clone()).await?;
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Insere uma intenção de envio de forma transacional e aplica o limite
+    /// duro por conta/servidor. O worker é o único escritor.
+    pub async fn enqueue_outgoing(
+        &mut self,
+        server_key: &str,
+        outgoing: &CachedOutgoing,
+    ) -> Result<(), turso::Error> {
+        let tx = self.conn.transaction().await?;
+        let mut rows = tx
+            .query(
+                "SELECT COUNT(*) FROM send_queue
+                 WHERE server_key = ?1 AND owner_user_id = ?2",
+                [server_key, outgoing.owner_user_id.as_str()],
+            )
+            .await?;
+        let count = rows
+            .next()
+            .await?
+            .map(|row| row.get::<i64>(0))
+            .transpose()?
+            .unwrap_or(0);
+        drop(rows);
+        if count >= OUTGOING_LIMIT {
+            return Err(turso::Error::Misuse(format!(
+                "outgoing queue full ({OUTGOING_LIMIT})"
+            )));
+        }
+        tx.execute(
+            "INSERT INTO send_queue (
+                 server_key, local_id, owner_user_id, channel_id, content,
+                 reply_to, notify_reply, created_at, state, attempt_count,
+                 last_attempt_at, last_error
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            vec![
+                text(server_key),
+                text(&outgoing.local_id),
+                text(&outgoing.owner_user_id),
+                text(&outgoing.channel_id),
+                text(&outgoing.content),
+                opt_text(outgoing.reply_to.as_deref()),
+                boolean(outgoing.notify_reply),
+                integer(outgoing.created_at),
+                text(outgoing.state.as_db()),
+                integer(outgoing.attempt_count as i64),
+                outgoing.last_attempt_at.map(Value::Integer).unwrap_or(Value::Null),
+                opt_text(outgoing.last_error.as_deref()),
+            ],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Carrega somente a fila da conta informada. Qualquer envio que estava
+    /// em Sending quando o processo morreu vira UnknownOutcome antes da
+    /// leitura; reinício nunca transforma uma transmissão possivelmente
+    /// concluída em retry automático.
+    pub async fn load_outgoing(
+        &mut self,
+        server_key: &str,
+        owner_user_id: &str,
+    ) -> Result<Vec<CachedOutgoing>, turso::Error> {
+        self.conn
+            .execute(
+                "UPDATE send_queue
+                 SET state = 'unknown_outcome',
+                     last_error = COALESCE(last_error, 'process interrupted while sending')
+                 WHERE server_key = ?1 AND owner_user_id = ?2 AND state = 'sending'",
+                [server_key, owner_user_id],
+            )
+            .await?;
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT local_id, owner_user_id, channel_id, content, reply_to,
+                        notify_reply, created_at, state, attempt_count,
+                        last_attempt_at, last_error
+                 FROM send_queue
+                 WHERE server_key = ?1 AND owner_user_id = ?2
+                 ORDER BY created_at, local_id",
+                [server_key, owner_user_id],
+            )
+            .await?;
+        let mut outgoing = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let raw_state: String = row.get(7)?;
+            let Some(state) = OutgoingState::from_db(&raw_state) else {
+                return Err(turso::Error::Misuse(format!(
+                    "unknown outgoing state {raw_state:?}"
+                )));
+            };
+            outgoing.push(CachedOutgoing {
+                local_id: row.get(0)?,
+                owner_user_id: row.get(1)?,
+                channel_id: row.get(2)?,
+                content: row.get(3)?,
+                reply_to: row.get(4)?,
+                notify_reply: row.get(5)?,
+                created_at: row.get(6)?,
+                state,
+                attempt_count: row.get::<i64>(8)?.max(0) as u32,
+                last_attempt_at: row.get(9)?,
+                last_error: row.get(10)?,
+            });
+        }
+        Ok(outgoing)
+    }
+
+    pub async fn transition_outgoing(
+        &mut self,
+        server_key: &str,
+        owner_user_id: &str,
+        local_id: &str,
+        state: OutgoingState,
+        last_error: Option<&str>,
+    ) -> Result<(), turso::Error> {
+        let now = super::types::now_millis();
+        if state == OutgoingState::Sending {
+            self.conn
+                .execute(
+                    "UPDATE send_queue
+                     SET state = ?1,
+                         attempt_count = attempt_count + 1,
+                         last_attempt_at = ?2,
+                         last_error = NULL
+                     WHERE server_key = ?3 AND owner_user_id = ?4 AND local_id = ?5",
+                    vec![
+                        text(state.as_db()),
+                        integer(now),
+                        text(server_key),
+                        text(owner_user_id),
+                        text(local_id),
+                    ],
+                )
+                .await?;
+        } else {
+            self.conn
+                .execute(
+                    "UPDATE send_queue
+                     SET state = ?1, last_error = ?2
+                     WHERE server_key = ?3 AND owner_user_id = ?4 AND local_id = ?5",
+                    vec![
+                        text(state.as_db()),
+                        opt_text(last_error),
+                        text(server_key),
+                        text(owner_user_id),
+                        text(local_id),
+                    ],
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Confirma uma única intenção. A mensagem de servidor entra no cache e a
+    /// linha de saída some na mesma transação.
+    pub async fn confirm_outgoing(
+        &mut self,
+        server_key: &str,
+        local_id: &str,
+        message: &CachedMessage,
+    ) -> Result<(), turso::Error> {
+        let tx = self.conn.transaction().await?;
+        tx.execute(UPSERT_MESSAGE, message_params(server_key, message))
+            .await?;
+        for statement in retention_statements(server_key, &message.channel_id) {
+            tx.execute(statement.sql, statement.params).await?;
+        }
+        tx.execute(
+            "DELETE FROM send_queue WHERE server_key = ?1 AND local_id = ?2",
+            [server_key, local_id],
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn remove_outgoing(
+        &mut self,
+        server_key: &str,
+        owner_user_id: &str,
+        local_id: &str,
+    ) -> Result<(), turso::Error> {
+        self.conn
+            .execute(
+                "DELETE FROM send_queue
+                 WHERE server_key = ?1 AND owner_user_id = ?2 AND local_id = ?3",
+                [server_key, owner_user_id, local_id],
+            )
+            .await?;
         Ok(())
     }
 

@@ -2,14 +2,15 @@
 //! (assíncrona). A janela envia comandos e lê atualizações sem nunca
 //! bloquear um quadro; o runtime tokio vive numa thread própria.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc as sync_mpsc;
 use std::sync::{Arc, RwLock};
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
-use super::client::{Api, ApiError, Session, Upload};
+use super::client::{Api, ApiError, SendMessageError, Session, Upload};
+use crate::cache::{CachedMessage, CachedOutgoing, ClientDb, OutgoingState};
 use super::scheduler::{
     DiagnosticJobState, ReconcileKey, ReconcileKind, ReconcilePriority, ReconcileRequest,
     ReconcileScheduler, StartedReconcile, TaskOwner,
@@ -297,6 +298,27 @@ pub enum Command {
         emoji_id: String,
     },
     LoadAuditLogs,
+    /// Envio de texto durável. A UI fornece o owner que já estava verificado
+    /// na projeção; o worker recusa se ele divergir da sessão verificada.
+    QueueMessage {
+        local_id: String,
+        owner_user_id: String,
+        channel_id: String,
+        content: String,
+        reply_to: Option<String>,
+        notify_reply: bool,
+        created_at: i64,
+    },
+    /// Reenvio deliberado pelo usuário. Pode duplicar uma mensagem cujo
+    /// resultado anterior era ambíguo; nunca é disparado automaticamente.
+    RetryOutgoing {
+        local_id: String,
+        owner_user_id: String,
+    },
+    DismissOutgoing {
+        local_id: String,
+        owner_user_id: String,
+    },
     SendMessage {
         channel_id: String,
         content: String,
@@ -377,6 +399,20 @@ pub enum Update {
     },
     /// A carga de histórico falhou; a Store libera a tentativa correspondente.
     MessagesFailed(RefreshTicket),
+    /// Projeção durável local, criada/restaurada antes de qualquer POST.
+    Outgoing(Box<CachedOutgoing>),
+    OutgoingRestored(Vec<CachedOutgoing>),
+    OutgoingRemoved(String),
+    OutgoingRejected {
+        content: String,
+        reply_to: Option<String>,
+        notify_reply: bool,
+        message: String,
+    },
+    SendConfirmed {
+        local_id: String,
+        message: Box<Message>,
+    },
     Sent(Box<Message>),
     Edited(Box<Message>),
     Deleted(String),
@@ -482,6 +518,7 @@ impl Net {
         base_url: String,
         wake: Wake,
         storage: Arc<dyn SecretStore>,
+        cache: Arc<ClientDb>,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
         let (updates_tx, updates_rx) = sync_mpsc::channel();
@@ -502,6 +539,7 @@ impl Net {
         ));
         let worker_session = Arc::clone(&session);
         let worker_storage = Arc::clone(&storage);
+        let worker_cache = Arc::clone(&cache);
         let worker_storage_key = storage_key.clone();
         let diagnostics = Arc::new(RwLock::new(RuntimeDiagnostics::default()));
         let worker_diagnostics = Arc::clone(&diagnostics);
@@ -525,6 +563,7 @@ impl Net {
                     worker_storage_key,
                     worker_storage,
                     worker_session,
+                    worker_cache,
                     commands_rx,
                     updates_tx,
                     wake,
@@ -614,6 +653,340 @@ fn publish_runtime(
     publish(tx, wake, update);
 }
 
+const OUTGOING_CHANNEL_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Default)]
+struct OutgoingChannelGate {
+    ids: HashSet<String>,
+    refreshed_at: Option<std::time::Instant>,
+}
+
+impl OutgoingChannelGate {
+    fn invalidate(&mut self) {
+        self.refreshed_at = None;
+    }
+
+    async fn refresh_if_needed(&mut self, api: &Api) -> Result<(), ApiError> {
+        if self
+            .refreshed_at
+            .is_some_and(|at| at.elapsed() < OUTGOING_CHANNEL_TTL)
+        {
+            return Ok(());
+        }
+        let channels = api.channels().await?;
+        self.ids = channels.into_iter().map(|channel| channel.id).collect();
+        self.refreshed_at = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    fn contains(&self, channel_id: &str) -> bool {
+        self.ids.contains(channel_id)
+    }
+}
+
+fn short_local_id(local_id: &str) -> &str {
+    local_id.get(local_id.len().saturating_sub(12)..).unwrap_or(local_id)
+}
+
+fn publish_outgoing(
+    scope: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &CachedOutgoing,
+) {
+    log::info!(
+        "outgoing {scope}: {:?} local={}",
+        outgoing.state,
+        short_local_id(&outgoing.local_id)
+    );
+    publish(updates, wake, Update::Outgoing(Box::new(outgoing.clone())));
+}
+
+fn restore_outgoing(
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+) {
+    match cache.load_outgoing(scope, owner) {
+        Ok(mut restored) => {
+            restored.sort_by_key(|item| (item.created_at, item.local_id.clone()));
+            *outgoing = restored.clone();
+            publish(updates, wake, Update::OutgoingRestored(restored));
+        }
+        Err(error) => {
+            log::warn!("outgoing {scope}: restore falhou: {error}");
+            publish_runtime(
+                scope,
+                updates,
+                wake,
+                Update::Error(format!("fila de envio indisponível: {error}")),
+            );
+        }
+    }
+}
+
+fn outgoing_match(
+    outgoing: &[CachedOutgoing],
+    owner: &str,
+    message: &Message,
+) -> Option<usize> {
+    const WINDOW_MS: i64 = 120_000;
+    let content = message.content.as_deref().unwrap_or_default();
+    let created_at = message.created_at.timestamp_millis();
+    let mut matches = outgoing
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.owner_user_id == owner
+                && message.author_id == owner
+                && matches!(
+                    item.state,
+                    OutgoingState::Sending | OutgoingState::UnknownOutcome
+                )
+                && item.channel_id == message.channel_id
+                && item.content == content
+                && item.reply_to == message.reply_to
+                && item.created_at.abs_diff(created_at) <= WINDOW_MS as u64
+        })
+        .map(|(index, _)| index);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+fn reconcile_outgoing_message(
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+    message: &Message,
+) -> bool {
+    let Some(index) = outgoing_match(outgoing, owner, message) else {
+        return false;
+    };
+    let local_id = outgoing[index].local_id.clone();
+    match cache.confirm_outgoing(scope, &local_id, CachedMessage::from_api(message)) {
+        Ok(()) => {
+            log::info!(
+                "outgoing {scope}: reconciled local={} server_message={}",
+                short_local_id(&local_id),
+                message.id
+            );
+            outgoing.remove(index);
+            publish(
+                updates,
+                wake,
+                Update::SendConfirmed {
+                    local_id,
+                    message: Box::new(message.clone()),
+                },
+            );
+            true
+        }
+        Err(error) => {
+            log::warn!(
+                "outgoing {scope}: reconciliação durável falhou local={}: {error}",
+                short_local_id(&local_id)
+            );
+            false
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn drive_outgoing(
+    api: &Api,
+    cache: &ClientDb,
+    scope: &str,
+    owner: &str,
+    network_unavailable: bool,
+    channel_gate: &mut OutgoingChannelGate,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+    outgoing: &mut Vec<CachedOutgoing>,
+) {
+    if network_unavailable {
+        return;
+    }
+
+    if !outgoing
+        .iter()
+        .any(|item| item.owner_user_id == owner && item.state.may_auto_send())
+    {
+        return;
+    }
+
+    if let Err(error) = channel_gate.refresh_if_needed(api).await {
+        log::debug!(
+            "outgoing {scope}: channel validation unavailable; keeping queue parked: {error}"
+        );
+        return;
+    }
+
+    while let Some(index) = outgoing
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| item.owner_user_id == owner && item.state.may_auto_send())
+        .min_by_key(|(_, item)| (item.created_at, item.local_id.as_str()))
+        .map(|(index, _)| index)
+    {
+        let local_id = outgoing[index].local_id.clone();
+        if !channel_gate.contains(&outgoing[index].channel_id) {
+            let reason = "channel no longer exists or is not usable".to_owned();
+            if let Err(error) = cache.transition_outgoing(
+                scope,
+                owner,
+                &local_id,
+                OutgoingState::FailedPermanent,
+                Some(reason.clone()),
+            ) {
+                log::warn!(
+                    "outgoing {scope}: could not persist missing-channel failure local={}: {error}",
+                    short_local_id(&local_id)
+                );
+                break;
+            }
+            outgoing[index].state = OutgoingState::FailedPermanent;
+            outgoing[index].last_error = Some(reason);
+            publish_outgoing(scope, updates, wake, &outgoing[index]);
+            continue;
+        }
+
+        if let Err(error) = cache.transition_outgoing(
+            scope,
+            owner,
+            &local_id,
+            OutgoingState::Sending,
+            None,
+        ) {
+            log::warn!("outgoing {scope}: não marcou Sending local={}: {error}", short_local_id(&local_id));
+            publish_runtime(
+                scope,
+                updates,
+                wake,
+                Update::Error(format!("não foi possível preparar a mensagem para envio: {error}")),
+            );
+            break;
+        }
+
+        outgoing[index].state = OutgoingState::Sending;
+        outgoing[index].attempt_count = outgoing[index].attempt_count.saturating_add(1);
+        outgoing[index].last_attempt_at = Some(crate::cache::now_millis());
+        outgoing[index].last_error = None;
+        publish_outgoing(scope, updates, wake, &outgoing[index]);
+
+        let attempt = outgoing[index].clone();
+        match api
+            .send_queued_message(
+                &attempt.channel_id,
+                &attempt.content,
+                attempt.reply_to.as_deref(),
+                attempt.notify_reply,
+            )
+            .await
+        {
+            Ok(message) => {
+                let cached = CachedMessage::from_api(&message);
+                if let Err(error) = cache.confirm_outgoing(scope, &local_id, cached) {
+                    log::warn!(
+                        "outgoing {scope}: confirmação durável falhou local={}: {error}",
+                        short_local_id(&local_id)
+                    );
+                    let _ = cache.transition_outgoing(
+                        scope,
+                        owner,
+                        &local_id,
+                        OutgoingState::UnknownOutcome,
+                        Some(format!("servidor confirmou, persistência local falhou: {error}")),
+                    );
+                }
+                log::info!(
+                    "outgoing {scope}: confirmed local={} server_message={}",
+                    short_local_id(&local_id),
+                    message.id
+                );
+                outgoing.remove(index);
+                publish(
+                    updates,
+                    wake,
+                    Update::SendConfirmed {
+                        local_id,
+                        message: Box::new(message),
+                    },
+                );
+            }
+            Err(SendMessageError::SafeToRetry(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::Queued,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao devolver local={} para Queued: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                    outgoing[index].state = OutgoingState::UnknownOutcome;
+                    outgoing[index].last_error = Some(db_error);
+                    publish_outgoing(scope, updates, wake, &outgoing[index]);
+                    break;
+                }
+                outgoing[index].state = OutgoingState::Queued;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                // Não gira em loop contra DNS/servidor fora: o timer ou uma
+                // mudança de conectividade tentará novamente.
+                break;
+            }
+            Err(SendMessageError::UnknownOutcome(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::UnknownOutcome,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao persistir UnknownOutcome local={}: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                }
+                outgoing[index].state = OutgoingState::UnknownOutcome;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                // O item ambíguo não bloqueia mensagens posteriores.
+                continue;
+            }
+            Err(SendMessageError::FailedPermanent(error)) => {
+                let message = error.to_string();
+                if let Err(db_error) = cache.transition_outgoing(
+                    scope,
+                    owner,
+                    &local_id,
+                    OutgoingState::FailedPermanent,
+                    Some(message.clone()),
+                ) {
+                    log::warn!(
+                        "outgoing {scope}: falhou ao persistir FailedPermanent local={}: {db_error}",
+                        short_local_id(&local_id)
+                    );
+                }
+                outgoing[index].state = OutgoingState::FailedPermanent;
+                outgoing[index].last_error = Some(message);
+                publish_outgoing(scope, updates, wake, &outgoing[index]);
+                continue;
+            }
+        }
+    }
+}
+
 fn reset_socket_channels(
     outbound_tx: &mut mpsc::UnboundedSender<String>,
     outbound_rx: &mut Option<mpsc::UnboundedReceiver<String>>,
@@ -656,11 +1029,13 @@ fn advance_generation_for_connection(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn worker(
     base_url: String,
     storage_key: String,
     storage: Arc<dyn SecretStore>,
     session: Arc<Session>,
+    cache: Arc<ClientDb>,
     mut commands: mpsc::UnboundedReceiver<Command>,
     updates: sync_mpsc::Sender<Update>,
     wake: Wake,
@@ -698,6 +1073,12 @@ async fn worker(
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
     let mut network_gate = NetworkGate::default();
+    let mut outgoing: Vec<CachedOutgoing> = Vec::new();
+    let mut outgoing_owner: Option<String> = None;
+    let mut outgoing_channels = OutgoingChannelGate::default();
+    let mut outgoing_retry = tokio::time::interval(std::time::Duration::from_secs(5));
+    outgoing_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    outgoing_retry.tick().await;
     let mut diagnostics_dirty = false;
     update_runtime_diagnostics(
         &diagnostics,
@@ -743,7 +1124,25 @@ async fn worker(
     loop {
         // O socket acompanha a sessão: abre quando há cookie válido e fecha
         // quando ele some.
-        let verified = me.lock().ok().and_then(|slot| slot.clone()).is_some();
+        let verified_owner = me.lock().ok().and_then(|slot| slot.clone());
+        let verified = verified_owner.is_some();
+        if verified_owner != outgoing_owner {
+            outgoing.clear();
+            outgoing_channels.invalidate();
+            outgoing_owner = verified_owner.clone();
+            if let Some(owner) = verified_owner.as_deref() {
+                restore_outgoing(
+                    cache.as_ref(),
+                    &storage_key,
+                    owner,
+                    &updates,
+                    &wake,
+                    &mut outgoing,
+                );
+            } else {
+                publish(&updates, &wake, Update::OutgoingRestored(Vec::new()));
+            }
+        }
         match (session.is_authenticated() && verified, socket.is_some()) {
             (true, false) if !network_gate.explicitly_unavailable() => {
                 if let (Some(receiver), Some(probes)) = (outbound_rx.take(), probe_rx.take()) {
@@ -802,6 +1201,9 @@ async fn worker(
                 if let Command::NetworkHint(hint) = &command {
                     let action = network_gate.apply(*hint);
                     diagnostics_dirty = true;
+                    if !matches!(action, NetworkAction::None) {
+                        outgoing_channels.invalidate();
+                    }
                     match action {
                         NetworkAction::None => {}
                         NetworkAction::Probe => {
@@ -850,6 +1252,22 @@ async fn worker(
                             );
                         }
                     }
+                    if !network_gate.explicitly_unavailable()
+                        && let Some(owner) = outgoing_owner.as_deref()
+                    {
+                        drive_outgoing(
+                            &api,
+                            cache.as_ref(),
+                            &storage_key,
+                            owner,
+                            false,
+                            &mut outgoing_channels,
+                            &updates,
+                            &wake,
+                            &mut outgoing,
+                        )
+                        .await;
+                    }
                     continue;
                 }
 
@@ -873,6 +1291,206 @@ async fn worker(
                 }
 
                 match command {
+                    Command::QueueMessage {
+                        local_id,
+                        owner_user_id,
+                        channel_id,
+                        content,
+                        reply_to,
+                        notify_reply,
+                        created_at,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if !session.is_authenticated()
+                            || verified_owner.as_deref() != Some(owner_user_id.as_str())
+                        {
+                            publish(
+                                &updates,
+                                &wake,
+                                Update::OutgoingRejected {
+                                    content,
+                                    reply_to,
+                                    notify_reply,
+                                    message: "sessão não disponível para enfileirar a mensagem"
+                                        .to_owned(),
+                                },
+                            );
+                            continue;
+                        }
+
+                        let item = CachedOutgoing {
+                            local_id,
+                            owner_user_id: owner_user_id.clone(),
+                            channel_id,
+                            content: content.clone(),
+                            reply_to: reply_to.clone(),
+                            notify_reply,
+                            created_at,
+                            state: OutgoingState::Queued,
+                            attempt_count: 0,
+                            last_attempt_at: None,
+                            last_error: None,
+                        };
+                        match cache.enqueue_outgoing(&storage_key, item.clone()) {
+                            Ok(()) => {
+                                if outgoing_owner.as_deref() != Some(owner_user_id.as_str()) {
+                                    outgoing_owner = Some(owner_user_id.clone());
+                                    outgoing.clear();
+                                }
+                                outgoing.push(item.clone());
+                                outgoing.sort_by_key(|row| (row.created_at, row.local_id.clone()));
+                                publish_outgoing(&storage_key, &updates, &wake, &item);
+                                drive_outgoing(
+                                    &api,
+                                    cache.as_ref(),
+                                    &storage_key,
+                                    &owner_user_id,
+                                    network_gate.explicitly_unavailable(),
+                                    &mut outgoing_channels,
+                                    &updates,
+                                    &wake,
+                                    &mut outgoing,
+                                )
+                                .await;
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "outgoing {}: enqueue falhou local={}: {error}",
+                                    storage_key,
+                                    short_local_id(&item.local_id)
+                                );
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::OutgoingRejected {
+                                        content,
+                                        reply_to,
+                                        notify_reply,
+                                        message: format!(
+                                            "não foi possível salvar a mensagem antes do envio: {error}"
+                                        ),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    Command::RetryOutgoing {
+                        local_id,
+                        owner_user_id,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if !session.is_authenticated()
+                            || verified_owner.as_deref() != Some(owner_user_id.as_str())
+                        {
+                            publish_runtime(
+                                &storage_key,
+                                &updates,
+                                &wake,
+                                Update::Error(
+                                    "sessão não disponível para reenviar a mensagem".to_owned(),
+                                ),
+                            );
+                            continue;
+                        }
+                        let Some(index) = outgoing.iter().position(|item| {
+                            item.local_id == local_id
+                                && item.owner_user_id == owner_user_id
+                                && matches!(
+                                    item.state,
+                                    OutgoingState::UnknownOutcome
+                                        | OutgoingState::FailedPermanent
+                                )
+                        }) else {
+                            continue;
+                        };
+                        match cache.transition_outgoing(
+                            &storage_key,
+                            &owner_user_id,
+                            &local_id,
+                            OutgoingState::Queued,
+                            None,
+                        ) {
+                            Ok(()) => {
+                                outgoing[index].state = OutgoingState::Queued;
+                                outgoing[index].last_error = None;
+                                publish_outgoing(
+                                    &storage_key,
+                                    &updates,
+                                    &wake,
+                                    &outgoing[index],
+                                );
+                                drive_outgoing(
+                                    &api,
+                                    cache.as_ref(),
+                                    &storage_key,
+                                    &owner_user_id,
+                                    network_gate.explicitly_unavailable(),
+                                    &mut outgoing_channels,
+                                    &updates,
+                                    &wake,
+                                    &mut outgoing,
+                                )
+                                .await;
+                            }
+                            Err(error) => publish_runtime(
+                                &storage_key,
+                                &updates,
+                                &wake,
+                                Update::Error(format!(
+                                    "não foi possível preparar o reenvio: {error}"
+                                )),
+                            ),
+                        }
+                    }
+                    Command::DismissOutgoing {
+                        local_id,
+                        owner_user_id,
+                    } => {
+                        let verified_owner =
+                            me.lock().ok().and_then(|slot| slot.clone());
+                        if verified_owner.as_deref() != Some(owner_user_id.as_str()) {
+                            continue;
+                        }
+                        if let Some(index) = outgoing.iter().position(|item| {
+                            item.local_id == local_id
+                                && item.owner_user_id == owner_user_id
+                                && matches!(
+                                    item.state,
+                                    OutgoingState::UnknownOutcome
+                                        | OutgoingState::FailedPermanent
+                                )
+                        }) {
+                            match cache.remove_outgoing(
+                                &storage_key,
+                                &owner_user_id,
+                                &local_id,
+                            ) {
+                                Ok(()) => {
+                                    outgoing.remove(index);
+                                    log::info!(
+                                        "outgoing {}: dismissed local={}",
+                                        storage_key,
+                                        short_local_id(&local_id)
+                                    );
+                                    publish(
+                                        &updates,
+                                        &wake,
+                                        Update::OutgoingRemoved(local_id),
+                                    );
+                                }
+                                Err(error) => publish_runtime(
+                                    &storage_key,
+                                    &updates,
+                                    &wake,
+                                    Update::Error(format!(
+                                        "não foi possível descartar a mensagem: {error}"
+                                    )),
+                                ),
+                            }
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -937,6 +1555,17 @@ async fn worker(
                 hooks.event.emit(&event);
 
                 if let Event::Message(message) = &event {
+                    if let Some(owner) = outgoing_owner.as_deref() {
+                        let _ = reconcile_outgoing_message(
+                            cache.as_ref(),
+                            &storage_key,
+                            owner,
+                            &updates,
+                            &wake,
+                            &mut outgoing,
+                            message,
+                        );
+                    }
                     recent_message_channels
                         .insert(message.id.clone(), message.channel_id.clone());
                     if recent_message_channels.len() > 256 {
@@ -1067,6 +1696,21 @@ async fn worker(
                                 );
                             }
                             for update in completion.updates {
+                                if let Update::Messages { messages, .. } = &update
+                                    && let Some(owner) = outgoing_owner.as_deref()
+                                {
+                                    for message in messages {
+                                        let _ = reconcile_outgoing_message(
+                                            cache.as_ref(),
+                                            &storage_key,
+                                            owner,
+                                            &updates,
+                                            &wake,
+                                            &mut outgoing,
+                                            message,
+                                        );
+                                    }
+                                }
                                 publish_runtime(&storage_key, &updates, &wake, update);
                             }
                         }
@@ -1089,6 +1733,22 @@ async fn worker(
                 }
             } => {}
 
+            _ = outgoing_retry.tick() => {
+                if let Some(owner) = outgoing_owner.as_deref() {
+                    drive_outgoing(
+                        &api,
+                        cache.as_ref(),
+                        &storage_key,
+                        owner,
+                        network_gate.explicitly_unavailable(),
+                        &mut outgoing_channels,
+                        &updates,
+                        &wake,
+                        &mut outgoing,
+                    )
+                    .await;
+                }
+            }
             _ = verification.tick() => {
                 if network_gate.explicitly_unavailable() {
                     continue;
@@ -1742,6 +2402,11 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
+        Command::QueueMessage { .. }
+        | Command::RetryOutgoing { .. }
+        | Command::DismissOutgoing { .. } => {
+            unreachable!("comando de fila é interceptado pelo worker antes do handler legado")
+        }
         Command::SendMessage {
             channel_id,
             content,
@@ -2190,5 +2855,80 @@ mod network_hint_tests {
             &mut generation,
         ));
         assert_eq!(generation, 7);
+    }
+
+    fn outgoing_row(id: &str, content: &str, state: OutgoingState) -> CachedOutgoing {
+        CachedOutgoing {
+            local_id: id.to_owned(),
+            owner_user_id: "me".to_owned(),
+            channel_id: "general".to_owned(),
+            content: content.to_owned(),
+            reply_to: None,
+            notify_reply: false,
+            created_at: crate::cache::now_millis(),
+            state,
+            attempt_count: 1,
+            last_attempt_at: None,
+            last_error: None,
+        }
+    }
+
+    fn server_message(content: &str) -> Message {
+        Message {
+            id: "server-message".to_owned(),
+            channel_id: "general".to_owned(),
+            author_id: "me".to_owned(),
+            content: Some(content.to_owned()),
+            created_at: chrono::Utc::now(),
+            edited_at: None,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            user_reactions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn strong_unique_outgoing_match_can_reconcile() {
+        let rows = vec![outgoing_row(
+            "local-a",
+            "hello",
+            OutgoingState::UnknownOutcome,
+        )];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), Some(0));
+    }
+
+    #[test]
+    fn identical_outgoing_candidates_are_left_ambiguous() {
+        let rows = vec![
+            outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome),
+            outgoing_row("local-b", "hello", OutgoingState::Sending),
+        ];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), None);
+    }
+
+    #[test]
+    fn queued_item_is_never_consumed_by_server_reconciliation() {
+        let rows = vec![outgoing_row("local-a", "hello", OutgoingState::Queued)];
+        assert_eq!(outgoing_match(&rows, "me", &server_message("hello")), None);
+    }
+
+    #[test]
+    fn content_alone_is_not_enough_for_outgoing_match() {
+        let mut row = outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome);
+        row.channel_id = "other".to_owned();
+        assert_eq!(
+            outgoing_match(&[row], "me", &server_message("hello")),
+            None
+        );
+    }
+
+    #[test]
+    fn another_authors_identical_message_never_resolves_outgoing() {
+        let row = outgoing_row("local-a", "hello", OutgoingState::UnknownOutcome);
+        let mut message = server_message("hello");
+        message.author_id = "someone-else".to_owned();
+        assert_eq!(outgoing_match(&[row], "me", &message), None);
     }
 }

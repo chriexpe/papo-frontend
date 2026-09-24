@@ -14,6 +14,85 @@ use crate::state::{Channel, ChannelKind, Emoji, Member, Message, Reaction, Serve
 pub const MESSAGE_RETENTION: i64 = 500;
 /// Limite de mensagens fixadas guardadas por canal, além das recentes.
 pub const PINNED_RETENTION: i64 = 200;
+/// Limite duro de intenções de envio ainda não resolvidas por conta/servidor.
+pub const OUTGOING_LIMIT: i64 = 500;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutgoingState {
+    Queued,
+    Sending,
+    UnknownOutcome,
+    FailedPermanent,
+}
+
+impl OutgoingState {
+    pub(crate) fn as_db(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Sending => "sending",
+            Self::UnknownOutcome => "unknown_outcome",
+            Self::FailedPermanent => "failed_permanent",
+        }
+    }
+
+    pub(crate) fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "sending" => Some(Self::Sending),
+            "unknown_outcome" => Some(Self::UnknownOutcome),
+            "failed_permanent" => Some(Self::FailedPermanent),
+            _ => None,
+        }
+    }
+
+    pub fn may_auto_send(self) -> bool {
+        matches!(self, Self::Queued)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedOutgoing {
+    pub local_id: String,
+    pub owner_user_id: String,
+    pub channel_id: String,
+    pub content: String,
+    pub reply_to: Option<String>,
+    pub notify_reply: bool,
+    pub created_at: i64,
+    pub state: OutgoingState,
+    pub attempt_count: u32,
+    pub last_attempt_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+/// Identidade local persistente e client-only. Dois hashers com seeds
+/// aleatórias independentes produzem 128 bits sem adicionar uma dependência
+/// só para UUID; timestamp+contador entram como material extra e preservam
+/// unicidade mesmo sob rajadas dentro do mesmo processo. O backend nunca vê
+/// este valor e ele não é uma chave de idempotência.
+pub fn new_local_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    fn half(nanos: u128, sequence: u64) -> u64 {
+        let state = std::collections::hash_map::RandomState::new();
+        let mut hasher = state.build_hasher();
+        hasher.write_u128(nanos);
+        hasher.write_u64(sequence);
+        hasher.finish()
+    }
+
+    let high = half(nanos, sequence);
+    let low = half(nanos ^ u128::from(sequence), sequence.rotate_left(29));
+    format!("local-{high:016x}{low:016x}")
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedServer {
@@ -173,6 +252,44 @@ impl CachedMessage {
         }
     }
 
+    /// Converte diretamente a resposta confirmada do backend para que a
+    /// confirmação e a remoção da fila possam ser uma única transação.
+    pub fn from_api(message: &crate::api::models::Message) -> Self {
+        Self {
+            id: message.id.clone(),
+            channel_id: message.channel_id.clone(),
+            author_id: message.author_id.clone(),
+            content: message.content.clone().unwrap_or_default(),
+            created_at: message.created_at.timestamp_millis(),
+            edited: message.edited_at.is_some(),
+            reply_to: message.reply_to.clone(),
+            pinned: false,
+            attachments: message
+                .attachments
+                .iter()
+                .map(|attachment| CachedAttachment {
+                    id: attachment.id.clone(),
+                    mime_type: attachment.mime_type.clone(),
+                    original_file_name: attachment.original_file_name.clone(),
+                    size_bytes: attachment.size_bytes,
+                    thumbnail_id: attachment.thumbnail_id.clone(),
+                    created_at: attachment.created_at.map(|at| at.timestamp_millis()),
+                    moderation_status: attachment.moderation_status.clone(),
+                })
+                .collect(),
+            reactions: message
+                .reactions
+                .iter()
+                .map(|reaction| CachedReaction {
+                    emoji_unicode: reaction.unicode.clone(),
+                    emoji_custom: reaction.emoji_id.clone(),
+                    count: reaction.count,
+                    mine: false,
+                })
+                .collect(),
+        }
+    }
+
     /// Reconstrói a projeção da Store. Previews ficam vazias de propósito:
     /// elas pertencem a uma fase posterior e se repovoam na reconciliação.
     pub fn to_store(&self) -> Message {
@@ -271,7 +388,11 @@ pub enum CacheOp {
         channel_id: String,
         ids: Vec<String>,
     },
-    /// Apaga tudo deste servidor: conta trocada, logout ou remoção.
+    /// Apaga somente estado reconstruível do servidor, preservando intenções
+    /// de envio particionadas por conta.
+    ClearCachedData,
+    /// Apaga tudo deste servidor, inclusive intenções de envio (remoção do
+    /// servidor/endereço local).
     ClearServer,
 }
 
@@ -280,7 +401,10 @@ impl CacheOp {
     /// deixaria a conversa da conta anterior no lugar. Dados reconstruíveis
     /// continuam best-effort.
     pub fn is_control(&self) -> bool {
-        matches!(self, CacheOp::ClearServer | CacheOp::SetOwner { .. })
+        matches!(
+            self,
+            CacheOp::ClearServer | CacheOp::ClearCachedData | CacheOp::SetOwner { .. }
+        )
     }
 }
 

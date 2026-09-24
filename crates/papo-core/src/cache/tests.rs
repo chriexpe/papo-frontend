@@ -62,6 +62,22 @@ fn channel(id: &str, position: i32) -> CachedChannel {
     }
 }
 
+fn outgoing(local_id: &str, owner: &str, content: &str, state: OutgoingState) -> CachedOutgoing {
+    CachedOutgoing {
+        local_id: local_id.to_owned(),
+        owner_user_id: owner.to_owned(),
+        channel_id: "geral".to_owned(),
+        content: content.to_owned(),
+        reply_to: None,
+        notify_reply: false,
+        created_at: now_millis(),
+        state,
+        attempt_count: 0,
+        last_attempt_at: None,
+        last_error: None,
+    }
+}
+
 #[test]
 fn open_apply_reopen_round_trip() {
     let temp = TempDb::new("roundtrip");
@@ -882,4 +898,279 @@ fn restart_produces_deterministic_store_projection() {
     assert_eq!(store.channels.len(), 1);
     assert_eq!(store.me, "user-1");
     assert_eq!(store.timeline_status("geral"), TimelineStatus::Stale);
+}
+
+
+#[test]
+fn local_ids_are_unique() {
+    let mut ids = std::collections::HashSet::new();
+    for _ in 0..1_000 {
+        assert!(ids.insert(new_local_id()), "local id duplicado");
+    }
+}
+
+#[test]
+fn queued_outgoing_survives_reopen() {
+    let temp = TempDb::new("outgoing-reopen");
+    {
+        let db = open(&temp);
+        db.enqueue_outgoing(
+            "srv",
+            outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
+        )
+        .expect("enqueue");
+    }
+
+    let db = open(&temp);
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_id, "local-a");
+    assert_eq!(rows[0].state, OutgoingState::Queued);
+}
+
+#[test]
+fn sending_becomes_unknown_after_process_reopen() {
+    let temp = TempDb::new("outgoing-sending-reopen");
+    {
+        let db = open(&temp);
+        db.enqueue_outgoing(
+            "srv",
+            outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
+        )
+        .expect("enqueue");
+        db.transition_outgoing(
+            "srv",
+            "user-a",
+            "local-a",
+            OutgoingState::Sending,
+            None,
+        )
+        .expect("sending");
+    }
+
+    let db = open(&temp);
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state, OutgoingState::UnknownOutcome);
+    assert!(!rows[0].state.may_auto_send());
+}
+
+#[test]
+fn unknown_outcome_never_restores_as_retryable() {
+    let temp = TempDb::new("outgoing-unknown-reopen");
+    {
+        let db = open(&temp);
+        db.enqueue_outgoing(
+            "srv",
+            outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
+        )
+        .expect("enqueue");
+        db.transition_outgoing(
+            "srv",
+            "user-a",
+            "local-a",
+            OutgoingState::UnknownOutcome,
+            Some("ambiguous".to_owned()),
+        )
+        .expect("unknown");
+    }
+
+    let db = open(&temp);
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows[0].state, OutgoingState::UnknownOutcome);
+    assert!(!rows[0].state.may_auto_send());
+}
+
+#[test]
+fn identical_outgoing_messages_keep_distinct_local_ids() {
+    let temp = TempDb::new("outgoing-identical");
+    let db = open(&temp);
+    for id in ["local-a", "local-b"] {
+        db.enqueue_outgoing(
+            "srv",
+            outgoing(id, "user-a", "hello", OutgoingState::Queued),
+        )
+        .expect("enqueue");
+    }
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].local_id, rows[1].local_id);
+    assert!(rows.iter().all(|row| row.content == "hello"));
+}
+
+#[test]
+fn outgoing_rows_are_partitioned_by_owner_and_server() {
+    let temp = TempDb::new("outgoing-partition");
+    let db = open(&temp);
+    db.enqueue_outgoing(
+        "srv-a",
+        outgoing("local-a", "user-a", "a", OutgoingState::Queued),
+    )
+    .expect("a");
+    db.enqueue_outgoing(
+        "srv-a",
+        outgoing("local-b", "user-b", "b", OutgoingState::Queued),
+    )
+    .expect("b");
+    db.enqueue_outgoing(
+        "srv-b",
+        outgoing("local-c", "user-a", "c", OutgoingState::Queued),
+    )
+    .expect("c");
+
+    let a = db.load_outgoing("srv-a", "user-a").expect("a");
+    let b = db.load_outgoing("srv-a", "user-b").expect("b");
+    let other_server = db.load_outgoing("srv-b", "user-a").expect("other");
+    assert_eq!(a.iter().map(|row| row.local_id.as_str()).collect::<Vec<_>>(), vec!["local-a"]);
+    assert_eq!(b.iter().map(|row| row.local_id.as_str()).collect::<Vec<_>>(), vec!["local-b"]);
+    assert_eq!(
+        other_server
+            .iter()
+            .map(|row| row.local_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["local-c"]
+    );
+}
+
+#[test]
+fn confirming_one_outgoing_keeps_the_other_and_caches_server_message() {
+    let temp = TempDb::new("outgoing-confirm-one");
+    let db = open(&temp);
+    for id in ["local-a", "local-b"] {
+        db.enqueue_outgoing(
+            "srv",
+            outgoing(id, "user-a", "hello", OutgoingState::Queued),
+        )
+        .expect("enqueue");
+    }
+
+    db.confirm_outgoing(
+        "srv",
+        "local-a",
+        message("server-a", "geral", "hello", now_millis()),
+    )
+    .expect("confirm");
+
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_id, "local-b");
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert!(snapshot.messages.iter().any(|row| row.id == "server-a"));
+}
+
+#[test]
+fn rebuildable_cache_clear_preserves_outgoing_but_server_clear_removes_it() {
+    let temp = TempDb::new("outgoing-clear-policy");
+    let db = open(&temp);
+    db.enqueue_outgoing(
+        "srv",
+        outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
+    )
+    .expect("enqueue");
+    db.clear_cached_data("srv");
+    db.flush();
+    assert_eq!(
+        db.load_outgoing("srv", "user-a").expect("preserved").len(),
+        1
+    );
+
+    db.clear_server("srv");
+    db.flush();
+    assert!(
+        db.load_outgoing("srv", "user-a")
+            .expect("cleared")
+            .is_empty()
+    );
+}
+
+#[test]
+fn disabled_clientdb_rejects_durable_enqueue() {
+    let db = ClientDb::open(None);
+    let result = db.enqueue_outgoing(
+        "srv",
+        outgoing("local-a", "user-a", "oi", OutgoingState::Queued),
+    );
+    assert!(result.is_err(), "sem ClientDb não pode existir envio indurável");
+}
+
+#[test]
+fn outgoing_queue_hard_bound_rejects_excess_without_discarding_old_rows() {
+    let temp = TempDb::new("outgoing-bound");
+    let db = open(&temp);
+    for index in 0..OUTGOING_LIMIT {
+        db.enqueue_outgoing(
+            "srv",
+            outgoing(
+                &format!("local-{index}"),
+                "user-a",
+                "x",
+                OutgoingState::Queued,
+            ),
+        )
+        .expect("dentro do limite");
+    }
+    let excess = db.enqueue_outgoing(
+        "srv",
+        outgoing("local-excess", "user-a", "x", OutgoingState::Queued),
+    );
+    assert!(excess.is_err(), "o item 501 precisa ser rejeitado");
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len() as i64, OUTGOING_LIMIT);
+    assert!(rows.iter().all(|row| row.local_id != "local-excess"));
+}
+
+
+#[test]
+fn deliberate_retry_is_a_durable_explicit_transition_back_to_queued() {
+    let temp = TempDb::new("outgoing-explicit-retry");
+    let db = open(&temp);
+    db.enqueue_outgoing(
+        "srv",
+        outgoing("local-a", "user-a", "hello", OutgoingState::Queued),
+    )
+    .expect("enqueue");
+    db.transition_outgoing(
+        "srv",
+        "user-a",
+        "local-a",
+        OutgoingState::UnknownOutcome,
+        Some("ambiguous".to_owned()),
+    )
+    .expect("unknown");
+    assert_eq!(
+        db.load_outgoing("srv", "user-a").expect("load")[0].state,
+        OutgoingState::UnknownOutcome
+    );
+
+    db.transition_outgoing(
+        "srv",
+        "user-a",
+        "local-a",
+        OutgoingState::Queued,
+        None,
+    )
+    .expect("explicit retry");
+    assert_eq!(
+        db.load_outgoing("srv", "user-a").expect("load")[0].state,
+        OutgoingState::Queued
+    );
+}
+
+#[test]
+fn dismiss_removes_only_the_selected_outgoing_row_durably() {
+    let temp = TempDb::new("outgoing-dismiss");
+    let db = open(&temp);
+    for id in ["local-a", "local-b"] {
+        db.enqueue_outgoing(
+            "srv",
+            outgoing(id, "user-a", "hello", OutgoingState::UnknownOutcome),
+        )
+        .expect("enqueue");
+    }
+
+    db.remove_outgoing("srv", "user-a", "local-a")
+        .expect("dismiss");
+    let rows = db.load_outgoing("srv", "user-a").expect("load");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].local_id, "local-b");
 }
