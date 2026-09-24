@@ -2189,6 +2189,24 @@ impl PapoApp {
                 index == self.active,
             );
         }
+
+        #[cfg(target_os = "android")]
+        {
+            let draft = self.add_server_previous.map(|_| self.active);
+            crate::platform::android_work::sync_periodic(
+                self.workspaces
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| Some(*index) != draft)
+                    .map(|(_, workspace)| {
+                        (
+                            workspace.runtime.server_key.as_str(),
+                            workspace.runtime.url.as_str(),
+                        )
+                    }),
+                self.settings.notifications,
+            );
+        }
     }
 }
 
