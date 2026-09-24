@@ -35,6 +35,9 @@ pub mod android_call;
 /// Notificações nativas de mensagens e navegação por toque.
 #[cfg(target_os = "android")]
 pub mod android_message;
+/// Persistent WorkManager scheduling and cold headless JNI entry points.
+#[cfg(target_os = "android")]
+pub mod android_work;
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
 pub mod permission;
