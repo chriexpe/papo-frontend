@@ -1162,7 +1162,6 @@ fn channels_sidebar(
                                         SIDEBAR_WIDTH - indent * 2.0,
                                     );
                                     if row.clicked() {
-                                        state.switch_draft_channel(&channel.id);
                                         store.selected_channel = channel.id.clone();
                                         if state.compact {
                                             state.mobile_surface = MobileSurface::Chat;
