@@ -53,6 +53,16 @@ fn encode_json<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[]".to_owned())
 }
 
+fn decode_draft_mentions(raw: &str) -> Vec<CachedMentionBinding> {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<CachedMentionBinding>(value).ok())
+        .collect()
+}
+
 const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         server_key, message_id, channel_id, author_id, content, created_at,
         edited, reply_to, pinned, attachments, reactions
@@ -629,13 +639,7 @@ impl TursoCache {
         let mut drafts = Vec::new();
         while let Some(row) = rows.next().await? {
             let mentions: String = row.get(2)?;
-            let mentions = serde_json::from_str::<serde_json::Value>(&mentions)
-                .ok()
-                .and_then(|value| value.as_array().cloned())
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|value| serde_json::from_value::<CachedMentionBinding>(value).ok())
-                .collect();
+            let mentions = decode_draft_mentions(&mentions);
             drafts.push(CachedDraft {
                 owner_user_id: owner_user_id.to_owned(),
                 channel_id: row.get(0)?,
@@ -1025,5 +1029,25 @@ impl TursoCache {
         snapshot.cached_channels = cached;
 
         Ok(snapshot)
+    }
+}
+
+
+#[cfg(test)]
+mod draft_decode_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_draft_mentions_fail_gracefully_and_individually() {
+        assert!(decode_draft_mentions("not-json").is_empty());
+        let mixed = r#"[
+            {"start":3,"label":"Alex","user_id":"id-a"},
+            {"start":"bad","label":"Alex","user_id":"id-b"},
+            {"start":9,"label":"Bia","user_id":"id-c"}
+        ]"#;
+        let mentions = decode_draft_mentions(mixed);
+        assert_eq!(mentions.len(), 2);
+        assert_eq!(mentions[0].user_id, "id-a");
+        assert_eq!(mentions[1].user_id, "id-c");
     }
 }
