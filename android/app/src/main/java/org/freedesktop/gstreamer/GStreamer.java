@@ -20,7 +20,7 @@ public class GStreamer {
 
     public static void init(Context context) throws Exception {
         //copyFonts(context);
-        //copyCaCertificates(context);
+        copyCaCertificates(context);
         nativeInit(context);
     }
 
@@ -59,6 +59,16 @@ public class GStreamer {
             /* Copy the certificates file */
             copyFile (assetManager, "ssl/certs/ca-certificates.crt", certs);
         } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        /* O carregador nativo lê o feixe por esta variável (ver
+           gst_android_load_certificates). Sem ela o TLS do GIO fica sem banco
+           de CAs e o https do link direto morre em "stream error". Tem de ser
+           antes do nativeInit. */
+        try {
+            Os.setenv("CA_CERTIFICATES", certs.getAbsolutePath(), true);
+        } catch (Exception e) {
             e.printStackTrace();
         }
     }

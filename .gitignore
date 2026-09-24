@@ -12,5 +12,7 @@
 /android/local.properties
 /android/app/build/
 /android/app/src/main/jniLibs/
+# Gerado pelo CMake do GStreamer (o feixe de CAs do TLS).
+/android/app/src/main/assets/ssl/
 /android/gstreamer/build/
 /android/tmp/
