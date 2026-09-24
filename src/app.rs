@@ -579,6 +579,9 @@ pub struct PapoApp {
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
     /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
+    /// Excludes WorkManager runtimes for the whole lifetime of PapoApp.
+    #[cfg(target_os = "android")]
+    _runtime_lease: crate::platform::runtime_lease::ForegroundLease,
 }
 
 impl PapoApp {
@@ -588,6 +591,9 @@ impl PapoApp {
             .and_then(|s| eframe::get_value(s, eframe::APP_KEY))
             .unwrap_or_default();
         settings.normalise();
+
+        #[cfg(target_os = "android")]
+        let runtime_lease = crate::platform::runtime_lease::ForegroundLease::acquire();
 
         #[cfg(target_os = "android")]
         if settings.notifications {
@@ -620,7 +626,7 @@ impl PapoApp {
 
         // Um banco de cache por processo. Abrir aqui deixa o restore
         // acontecer antes de qualquer worker de rede subir.
-        let cache = std::sync::Arc::new(ClientDb::open(crate::platform::dirs::cache_db()));
+        let cache = crate::platform::client_db::get();
 
         #[cfg(target_os = "linux")]
         let notifier = Notifier::spawn();
@@ -792,6 +798,8 @@ impl PapoApp {
             own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
             header: crate::ui::headerbar::HeaderState::default(),
             add_server_previous: None,
+            #[cfg(target_os = "android")]
+            _runtime_lease: runtime_lease,
         }
     }
 
