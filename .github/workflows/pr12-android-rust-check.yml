@@ -5,6 +5,18 @@ on:
     branches: [main]
 
 jobs:
+  android-java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Compile Android Java
+        working-directory: android
+        run: ./gradlew :app:compileDebugJavaWithJavac --no-daemon
+
   android-rust:
     runs-on: ubuntu-latest
     steps:
