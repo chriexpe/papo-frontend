@@ -88,9 +88,6 @@ pub struct ServerRuntime {
     pub store: Store,
     pub cache: Arc<ClientDb>,
     cached_owner: Option<String>,
-    /// Conta confirmada pela sessão desta execução. Diferente de cached_owner:
-    /// nunca é preenchida apenas por hidratação do disco.
-    verified_owner: Option<String>,
     notification: Arc<NotificationCoordinator>,
     reconnect_refreshes: u64,
     mode: RuntimeMode,
@@ -245,7 +242,6 @@ impl ServerRuntime {
             store,
             cache,
             cached_owner,
-            verified_owner: None,
             notification,
             reconnect_refreshes: 0,
             mode,
@@ -260,10 +256,6 @@ impl ServerRuntime {
 
     pub fn cached_owner(&self) -> Option<&str> {
         self.cached_owner.as_deref()
-    }
-
-    pub fn verified_owner(&self) -> Option<&str> {
-        self.verified_owner.as_deref()
     }
 
     pub fn sync_notification_context(&self, view: RuntimeNotificationView) {
@@ -337,12 +329,10 @@ impl ServerRuntime {
                 self.cache.clear_cached_data(&self.server_key);
                 self.store.clear_cached_state();
             }
-            self.cached_owner = Some(me_id.clone());
-            self.verified_owner = Some(me_id);
+            self.cached_owner = Some(me_id);
         }
         if session_ended {
             self.cached_owner = None;
-            self.verified_owner = None;
         }
 
         let cache_ops = self.store.take_cache_ops();
