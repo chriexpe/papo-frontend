@@ -1115,6 +1115,7 @@ impl PapoApp {
         self.active = index;
         self.settings.active = index;
         self.settings.server_url = self.workspaces[index].url.clone();
+        self.sync_notification_contexts();
         // A mídia do servidor que saiu para de tocar junto com ele.
         self.workspaces[previous].stash.media.pause_all();
         ctx.request_repaint();
@@ -2567,6 +2568,9 @@ impl eframe::App for PapoApp {
         for command in pending {
             self.handle(&ctx, command);
         }
+        // Captura seleção/toggles ocorridos durante este próprio quadro; a
+        // thread de rede pode consultar o snapshot sem esperar outro repaint.
+        self.sync_notification_contexts();
 
         #[cfg(target_os = "android")]
         {
