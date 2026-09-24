@@ -141,7 +141,7 @@ impl ServerRuntime {
         deadline: std::time::Duration,
     ) -> Self {
         let view = RuntimeNotificationView {
-            server_label: url.clone(),
+            server_label: crate::server_key(&url),
             visible_server: false,
             notifications_enabled,
         };
