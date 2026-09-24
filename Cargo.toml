@@ -60,6 +60,7 @@ egui-phosphor = { version = "0.14", features = ["regular"] }
 fontdb = { version = "0.23", default-features = false, features = ["fs"] }
 base64 = "0.22"
 swash = "0.2"
+sha2 = "0.10"
 
 # ---------------------------------------------------------------------------
 # Área de trabalho
