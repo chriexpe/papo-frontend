@@ -1370,7 +1370,9 @@ async fn registry_oembed_endpoint(
         }
 
         let raw_endpoint = entry.url.replace("{format}", "json");
-        let mut endpoint = Url::parse(&raw_endpoint).ok()?;
+        let Ok(mut endpoint) = Url::parse(&raw_endpoint) else {
+            continue;
+        };
         if !safe_remote_url(endpoint.as_str()) {
             continue;
         }
