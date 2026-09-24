@@ -114,11 +114,10 @@ public class PapoActivity extends GameActivity {
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
 
-    private static final String MESSAGE_CHANNEL_ID = "messages";
-    private static final String EXTRA_MESSAGE_SERVER = "papo.message.server";
-    private static final String EXTRA_MESSAGE_CHANNEL = "papo.message.channel";
-    private static final String EXTRA_MESSAGE_ID = "papo.message.id";
-    private static final String EXTRA_NOTIFICATION_ID = "papo.notification.id";
+    private static final String EXTRA_MESSAGE_SERVER = MessageNotifications.EXTRA_SERVER;
+    private static final String EXTRA_MESSAGE_CHANNEL = MessageNotifications.EXTRA_CHANNEL;
+    private static final String EXTRA_MESSAGE_ID = MessageNotifications.EXTRA_MESSAGE_ID;
+    private static final String EXTRA_NOTIFICATION_ID = MessageNotifications.EXTRA_NOTIFICATION_ID;
 
     private static final int NATIVE_EDITOR_COMPOSER = 0;
     private static final int NATIVE_EDITOR_EDIT = 1;
@@ -799,19 +798,7 @@ public class PapoActivity extends GameActivity {
      * só para tratar, em vez de dois.
      */
     private void ensureMessageNotificationChannel() {
-        final NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager == null) {
-            return;
-        }
-        if (manager.getNotificationChannel(MESSAGE_CHANNEL_ID) != null) {
-            return;
-        }
-        final NotificationChannel channel = new NotificationChannel(
-                MESSAGE_CHANNEL_ID,
-                "Mensagens",
-                NotificationManager.IMPORTANCE_DEFAULT);
-        channel.setDescription("Mensagens e menções recebidas no Papo");
-        manager.createNotificationChannel(channel);
+        MessageNotifications.ensureChannel(this);
     }
 
     /** Garante o canal e, no Android 13+, pede a permissão de notificações. */
@@ -836,84 +823,17 @@ public class PapoActivity extends GameActivity {
      * evento já recebido em notificação nativa.
      */
     public void showMessageNotification(String payload) {
-        runOnUiThread(() -> {
-            try {
-                ensureMessageNotificationChannel();
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-                        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    return;
-                }
-
-                final JSONObject json = new JSONObject(payload);
-                final String title = json.optString("title", "Papo");
-                final String body = json.optString("body", "");
-                final String serverUrl = json.getString("server_url");
-                final String channelId = json.getString("channel_id");
-                final String messageId = json.getString("message_id");
-                final String notificationId = json.getString("notification_id");
-
-                final Intent openIntent = new Intent(this, PapoActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        .putExtra(EXTRA_MESSAGE_SERVER, serverUrl)
-                        .putExtra(EXTRA_MESSAGE_CHANNEL, channelId)
-                        .putExtra(EXTRA_MESSAGE_ID, messageId)
-                        .putExtra(EXTRA_NOTIFICATION_ID, notificationId);
-
-                final int requestCode = (serverUrl + "\n" + notificationId).hashCode() & 0x7fffffff;
-                final PendingIntent open = PendingIntent.getActivity(
-                        this,
-                        requestCode,
-                        openIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
-                final Notification notification = new Notification.Builder(this, MESSAGE_CHANNEL_ID)
-                        .setSmallIcon(R.drawable.ic_message_notification)
-                        .setContentTitle(title)
-                        .setContentText(body.isBlank() ? "Nova mensagem" : body)
-                        .setStyle(new Notification.BigTextStyle()
-                                .bigText(body.isBlank() ? "Nova mensagem" : body))
-                        .setCategory(Notification.CATEGORY_MESSAGE)
-                        .setAutoCancel(true)
-                        .setContentIntent(open)
-                        .setGroup("papo:" + serverUrl + ":" + channelId)
-                        .build();
-
-                final NotificationManager manager = getSystemService(NotificationManager.class);
-                if (manager != null) {
-                    manager.notify(
-                            "papo-message:" + serverUrl,
-                            notificationId.hashCode(),
-                            notification);
-                }
-            } catch (Exception error) {
-                Log.e("papo-notify", "falha ao publicar notificação", error);
-            }
-        });
+        runOnUiThread(() -> MessageNotifications.show(this, payload));
     }
 
     /** Remove da gaveta as notificações do canal que acabou de ser lido. */
     public void clearMessageNotifications(String payload) {
-        runOnUiThread(() -> {
-            try {
-                final JSONObject json = new JSONObject(payload);
-                final String group = "papo:"
-                        + json.getString("server_url")
-                        + ":"
-                        + json.getString("channel_id");
-                final NotificationManager manager = getSystemService(NotificationManager.class);
-                if (manager == null) {
-                    return;
-                }
-                for (StatusBarNotification active : manager.getActiveNotifications()) {
-                    if (group.equals(active.getNotification().getGroup())) {
-                        manager.cancel(active.getTag(), active.getId());
-                    }
-                }
-            } catch (Exception error) {
-                Log.e("papo-notify", "falha ao limpar notificações do canal", error);
-            }
-        });
+        runOnUiThread(() -> MessageNotifications.clear(this, payload));
+    }
+
+    /** Synchronizes persistent periodic work with the current Rust settings. */
+    public void syncBackgroundReconcile(String payload) {
+        PapoWorkScheduler.sync(this, payload);
     }
 
     private void handleMessageNotificationIntent(Intent intent) {
