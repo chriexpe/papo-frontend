@@ -1076,7 +1076,7 @@ impl PapoApp {
         // quadro enquanto o load da conta atual ainda não aconteceu.
         let target_owner = self.workspaces[index]
             .runtime
-            .verified_owner()
+            .cached_owner()
             .unwrap_or_default()
             .to_owned();
         if target_owner.is_empty()
@@ -1749,7 +1749,7 @@ impl PapoApp {
                                 notify_reply,
                             };
                             let server_key = ws.runtime.server_key.clone();
-                            if ws.runtime.verified_owner() != Some(owner_user_id.as_str()) {
+                            if ws.runtime.cached_owner() != Some(owner_user_id.as_str()) {
                                 if index == self.active && self.ui.last_channel == channel_id {
                                     self.ui.composer = draft.text;
                                     self.ui.composer_mentions = draft.mentions;
@@ -2325,7 +2325,7 @@ impl PapoApp {
         let index = self.active;
         let owner = self.workspaces[index]
             .runtime
-            .verified_owner()
+            .cached_owner()
             .unwrap_or_default()
             .to_owned();
         if owner.is_empty() {
@@ -2378,7 +2378,7 @@ impl PapoApp {
         }
         let owner = self.workspaces[self.active]
             .runtime
-            .verified_owner()
+            .cached_owner()
             .unwrap_or_default()
             .to_owned();
         if owner.is_empty() {
@@ -2401,7 +2401,7 @@ impl PapoApp {
             if index == self.active {
                 continue;
             }
-            let owner = workspace.runtime.verified_owner().unwrap_or_default().to_owned();
+            let owner = workspace.runtime.cached_owner().unwrap_or_default().to_owned();
             if owner.is_empty() {
                 continue;
             }
