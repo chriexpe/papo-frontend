@@ -187,15 +187,7 @@ async fn worker(
 
     // O cache em disco não tinha quem o limpasse. Uma varrida na partida,
     // fora da thread da janela.
-    tokio::task::spawn_blocking(|| {
-        let limits = MediaLimits::default();
-        sweep_cache_with(
-            &cache_root(),
-            limits.disk_budget,
-            limits.disk_max_age,
-            RECORDING_MAX_AGE,
-        );
-    });
+    tokio::task::spawn_blocking(|| sweep_cache(&cache_root()));
 
     while let Some(request) = requests.recv().await {
         let api = api.clone();
