@@ -1,17 +1,24 @@
-//! Process-wide ClientDb owner shared by the UI runtime and Android headless work.
+//! ClientDb construction policy.
 //!
-//! Android WorkManager can create the process before GameActivity. Whichever
-//! entry point arrives first opens the single cache worker; later callers clone
-//! the same Arc instead of opening another connection to papo-cache.db.
+//! Android needs a process-wide owner because WorkManager may create the
+//! process before GameActivity and the Activity can start later in that same
+//! process. Desktop retains the normal PapoApp-owned lifetime.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use papo_core::cache::ClientDb;
 
-static CLIENT_DB: OnceLock<Arc<ClientDb>> = OnceLock::new();
-
+#[cfg(target_os = "android")]
 pub fn get() -> Arc<ClientDb> {
+    use std::sync::OnceLock;
+
+    static CLIENT_DB: OnceLock<Arc<ClientDb>> = OnceLock::new();
     Arc::clone(CLIENT_DB.get_or_init(|| {
         Arc::new(ClientDb::open(super::dirs::cache_db()))
     }))
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn get() -> Arc<ClientDb> {
+    Arc::new(ClientDb::open(super::dirs::cache_db()))
 }
