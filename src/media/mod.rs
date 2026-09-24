@@ -578,6 +578,11 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
     }
 }
 
+pub fn remote_player_key(url: &str) -> Option<String> {
+    let canonical = papo_core::preview::canonical_url(url)?;
+    Some(format!("remote-player:{}", remote_resource_id(&canonical)))
+}
+
 fn remote_resource_id(canonical_url: &str) -> String {
     // FNV-1a 128: deterministic across processes/platforms and sufficient for
     // cache identity. Correctness never depends on a file extension or raw URL.
