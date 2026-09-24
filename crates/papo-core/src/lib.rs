@@ -6,6 +6,7 @@
 pub mod api;
 pub mod cache;
 pub mod core;
+pub mod notification;
 pub mod state;
 pub mod storage;
 
