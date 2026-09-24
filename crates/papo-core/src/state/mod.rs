@@ -3138,6 +3138,24 @@ mod tests {
     }
 
     #[test]
+    fn dismissing_one_outgoing_removes_only_that_local_echo() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            me: "me".to_owned(),
+            ..Store::default()
+        };
+        let a = store.push_pending("geral", "a", None);
+        let b = store.push_pending("geral", "b", None);
+
+        store.apply(Update::OutgoingRemoved(a.clone()));
+
+        assert!(store.message(&a).is_none());
+        assert!(store.outgoing_state(&a).is_none());
+        assert!(store.message(&b).is_some_and(|message| message.pending));
+        assert_eq!(store.outgoing_state(&b), Some(OutgoingState::Queued));
+    }
+
+    #[test]
     fn confirming_one_local_id_does_not_clear_another() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
