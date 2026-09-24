@@ -619,6 +619,7 @@ async fn resolve_url(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let header_oembed = oembed_header_endpoint(response.headers(), &final_url);
 
     if is_video_content_type(&content_type) {
         return Ok(ResolvedPreview {
@@ -661,7 +662,7 @@ async fn resolve_url(
     // Preferimos discovery publicado pela própria página. Quando ela não
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
     // em vez de codificar YouTube/TikTok/etc. no cliente.
-    let oembed = if let Some(endpoint) = oembed_endpoint(&html, &final_url) {
+    let oembed = if let Some(endpoint) = oembed_endpoint(&html, &final_url).or(header_oembed) {
         resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
             .await
             .ok()
@@ -1458,6 +1459,36 @@ fn wildcard_url_match(pattern: &str, candidate: &str) -> bool {
             .is_none_or(|last| candidate.ends_with(last))
 }
 
+fn oembed_header_endpoint(headers: &reqwest::header::HeaderMap, base: &Url) -> Option<Url> {
+    for value in headers.get_all(reqwest::header::LINK) {
+        let Ok(value) = value.to_str() else {
+            continue;
+        };
+        for item in value.split(',') {
+            let lower = item.to_ascii_lowercase();
+            if !lower.contains("rel=\"alternate\"")
+                || !lower.contains("application/json+oembed")
+            {
+                continue;
+            }
+            let Some(start) = item.find('<') else {
+                continue;
+            };
+            let Some(end_rel) = item[start + 1..].find('>') else {
+                continue;
+            };
+            let href = &item[start + 1..start + 1 + end_rel];
+            let Ok(url) = base.join(href) else {
+                continue;
+            };
+            if safe_remote_url(url.as_str()) {
+                return Some(url);
+            }
+        }
+    }
+    None
+}
+
 fn oembed_endpoint(html: &str, base: &Url) -> Option<Url> {
     for raw in html.split('<').skip(1) {
         let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
@@ -1877,6 +1908,24 @@ mod tests {
             "https://example.com/v/*",
             "https://example.com/other/abc"
         ));
+    }
+
+    #[test]
+    fn discovers_oembed_from_http_link_header() {
+        let base = Url::parse("https://video.example/watch/1").unwrap();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::LINK,
+            reqwest::header::HeaderValue::from_static(
+                "</oembed?url=x>; rel=\"alternate\"; type=\"application/json+oembed\"",
+            ),
+        );
+        assert_eq!(
+            oembed_header_endpoint(&headers, &base)
+                .map(|url| url.to_string())
+                .as_deref(),
+            Some("https://video.example/oembed?url=x")
+        );
     }
 
     #[test]
