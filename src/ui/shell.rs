@@ -638,6 +638,8 @@ pub struct UiState {
     pub webembed_behavior: crate::webembed::OffscreenBehavior,
     /// Até onde um WebEmbed flutuante acompanha a navegação.
     pub webembed_scope: crate::webembed::FloatScope,
+    /// Largura lembrada do player flutuante em desktop. Mobile é edge-to-edge.
+    pub webembed_float_width: f32,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -715,6 +717,7 @@ impl Default for UiState {
             webembed: crate::webembed::WebEmbedManager::default(),
             webembed_behavior: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
+            webembed_float_width: 360.0,
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -4159,15 +4162,27 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     }
 
     let screen = ui.ctx().content_rect();
-    let margin = space::LG;
-    let width = (screen.width() * if state.compact { 0.72 } else { 0.34 })
-        .clamp(220.0, 380.0);
+    let margin = if state.compact { 0.0 } else { space::LG };
+    let max_desktop_width = (screen.width() - margin * 2.0).max(260.0);
+    let width = if state.compact {
+        // On phones the floating player belongs to the screen, not to a
+        // narrow desktop-style card: it touches both horizontal edges.
+        screen.width()
+    } else {
+        state
+            .webembed_float_width
+            .clamp(260.0, max_desktop_width.min(720.0))
+    };
     let video_h = width * 9.0 / 16.0;
     let controls_h = 32.0;
     let bottom_clearance = if state.compact { 84.0 } else { margin };
     let outer = Rect::from_min_size(
         egui::pos2(
-            screen.max.x - width - margin,
+            if state.compact {
+                screen.min.x
+            } else {
+                screen.max.x - width - margin
+            },
             (screen.max.y - video_h - controls_h - bottom_clearance)
                 .max(screen.min.y + margin),
         ),
@@ -4190,6 +4205,44 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     );
 
     let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+
+    // Desktop resize handle: anchored bottom/right, so dragging the top-left
+    // corner changes only width (and therefore 16:9 height). The width is
+    // process-global/persisted and becomes the default for every later embed.
+    if !state.compact {
+        let resize_rect = Rect::from_min_size(
+            header.min,
+            Vec2::new(controls_h, controls_h),
+        );
+        let resize = top.interact(
+            resize_rect,
+            Id::new("webembed-floating-resize"),
+            Sense::drag(),
+        );
+        if resize.dragged() {
+            let dx = ui.input(|input| input.pointer.delta().x);
+            state.webembed_float_width =
+                (state.webembed_float_width - dx).clamp(260.0, max_desktop_width.min(720.0));
+            ui.ctx().request_repaint();
+        }
+        if resize.hovered() || resize.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+        }
+        top.painter().line_segment(
+            [
+                egui::pos2(resize_rect.min.x + 8.0, resize_rect.min.y + 20.0),
+                egui::pos2(resize_rect.min.x + 20.0, resize_rect.min.y + 8.0),
+            ],
+            Stroke::new(1.5, t.label_tertiary),
+        );
+        top.painter().line_segment(
+            [
+                egui::pos2(resize_rect.min.x + 13.0, resize_rect.min.y + 22.0),
+                egui::pos2(resize_rect.min.x + 22.0, resize_rect.min.y + 13.0),
+            ],
+            Stroke::new(1.5, t.label_tertiary),
+        );
+    }
     top.painter().text(
         egui::pos2(header.min.x + space::SM, header.center().y),
         egui::Align2::LEFT_CENTER,
