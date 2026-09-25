@@ -3756,17 +3756,6 @@ fn rich_links_from_message(
     }
 }
 
-fn preview_card_fallback_click(
-    rect: Rect,
-    pointer: Option<egui::Pos2>,
-    primary_clicked: bool,
-    media_clicked: bool,
-) -> bool {
-    primary_clicked
-        && !media_clicked
-        && pointer.is_some_and(|position| rect.contains(position))
-}
-
 fn preview_card(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -3861,7 +3850,11 @@ fn preview_card(
     };
 
     let mut media_clicked = false;
-    let inner = ui.scope(|ui| {
+    // The preview itself is a real click target, registered before its media
+    // children. egui gives overlapping clicks to the later child widget, so
+    // image/video/play controls still win; otherwise the card wins instead
+    // of the surrounding message row.
+    let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_width(card_width);
 
         if let Some(remote) = video_url.as_deref() {
@@ -4104,11 +4097,10 @@ fn preview_card(
 
     let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
 
-    // O cartão é só hover aqui. Um Sense::click() registrado depois dos
-    // filhos fica por cima deles no hit-test do egui e rouba o clique do
-    // vídeo/imagem. O clique de fundo é decidido pelo evento bruto *depois*
-    // que os filhos tiveram a chance de marcar media_clicked.
-    let hover = ui.interact(rect, Id::new(("link-preview", id)), Sense::hover());
+    // The scope response owns background clicks. Do not add another click
+    // interaction here: anything registered after the media children would
+    // steal their taps.
+    let hover = ui.interact(rect, Id::new(("link-preview-hover", id)), Sense::hover());
     let fill = if hover.hovered() {
         t.fill_medium
     } else {
@@ -4128,15 +4120,7 @@ fn preview_card(
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let open_original = ui.input(|input| {
-        preview_card_fallback_click(
-            rect,
-            input.pointer.interact_pos(),
-            input.pointer.primary_clicked(),
-            media_clicked,
-        )
-    });
-    if open_original {
+    if inner.response.clicked() && !media_clicked {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
     ui.add_space(space::XS);
@@ -6138,44 +6122,7 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
     }
 }
 
-#[cfg(test)]
-mod preview_card_tests {
-    use super::*;
 
-    fn card() -> Rect {
-        Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(210.0, 220.0))
-    }
-
-    #[test]
-    fn clique_de_midia_tem_prioridade_sobre_link_do_cartao() {
-        assert!(!preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(50.0, 60.0)),
-            true,
-            true,
-        ));
-    }
-
-    #[test]
-    fn fundo_do_cartao_abre_o_link_original() {
-        assert!(preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(50.0, 60.0)),
-            true,
-            false,
-        ));
-    }
-
-    #[test]
-    fn clique_fora_do_cartao_nao_abre_nada() {
-        assert!(!preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(500.0, 600.0)),
-            true,
-            false,
-        ));
-    }
-}
 
 #[cfg(test)]
 mod sugestao {
