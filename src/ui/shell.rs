@@ -3530,34 +3530,11 @@ fn message_body(
             .iter()
             .all(|token| matches!(token, emoji::Token::Text(_)));
 
-        if plain {
-            // Sem emoji, uma passada só de texto — é o caminho rápido.
-            let mut job = egui::text::LayoutJob::default();
-            job.append(
-                &shown_content,
-                0.0,
-                egui::TextFormat {
-                    font_id: text::message(),
-                    color,
-                    ..Default::default()
-                },
-            );
-            if message.edited {
-                job.append(
-                    &format!("  ({})", s.edited),
-                    0.0,
-                    egui::TextFormat {
-                        font_id: text::footnote(),
-                        color: t.label_tertiary,
-                        ..Default::default()
-                    },
-                );
-            }
-            job.wrap.max_width = width;
-            ui.label(job);
-        } else {
-            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
-        }
+        // URL hit-testing needs individual widgets even for otherwise plain
+        // text. Keeping a separate LayoutJob fast path made normal messages
+        // skip the hyperlink path entirely.
+        let _ = plain;
+        rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
     }
 
     if message.pending {
@@ -3733,7 +3710,7 @@ fn rich_body(
                                 egui::Label::new(
                                     RichText::new(visible)
                                         .font(font.clone())
-                                        .color(t.accent)
+                                        .color(ui.visuals().hyperlink_color)
                                         .underline(),
                                 )
                                 .sense(Sense::click()),
@@ -3934,6 +3911,7 @@ fn preview_card(
     };
 
     let mut media_clicked = false;
+    let mut media_rect: Option<Rect> = None;
     // The preview itself is a real click target, registered before its media
     // children. egui gives overlapping clicks to the later child widget, so
     // image/video/play controls still win; otherwise the card wins instead
@@ -3958,6 +3936,7 @@ fn preview_card(
                 Vec2::new(card_width, frame_size.y + controls_h),
                 Sense::click(),
             );
+            media_rect = Some(rect);
             let video_rect = Rect::from_min_size(rect.min, frame_size);
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
@@ -4048,6 +4027,7 @@ fn preview_card(
                 (source.y * scale).max(1.0),
             );
             let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
+            media_rect = Some(image_rect);
             ui.painter().image(
                 texture.id(),
                 image_rect,
@@ -4105,6 +4085,7 @@ fn preview_card(
         } else if let Some(embed) = embed_url.as_deref() {
             let frame_size = Vec2::new(card_width, (card_width * 9.0 / 16.0).min(260.0));
             let (rect, response) = ui.allocate_exact_size(frame_size, Sense::click());
+            media_rect = Some(rect);
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::same(radius::CARD),
@@ -4207,7 +4188,46 @@ fn preview_card(
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if inner.response.clicked() && !media_clicked {
+
+    // The card background is a link, but the actual media surface is not:
+    // video/image/WebEmbed keeps its own interaction. Register only the
+    // rectangles around that media so we never steal its tap from a child.
+    let mut open_card = false;
+    let mut zones = Vec::new();
+    if let Some(media) = media_rect {
+        if rect.min.y < media.min.y {
+            zones.push(Rect::from_min_max(rect.min, egui::pos2(rect.max.x, media.min.y)));
+        }
+        if media.max.y < rect.max.y {
+            zones.push(Rect::from_min_max(
+                egui::pos2(rect.min.x, media.max.y),
+                rect.max,
+            ));
+        }
+        if rect.min.x < media.min.x {
+            zones.push(Rect::from_min_max(
+                egui::pos2(rect.min.x, media.min.y),
+                egui::pos2(media.min.x, media.max.y),
+            ));
+        }
+        if media.max.x < rect.max.x {
+            zones.push(Rect::from_min_max(
+                egui::pos2(media.max.x, media.min.y),
+                egui::pos2(rect.max.x, media.max.y),
+            ));
+        }
+    } else {
+        zones.push(rect);
+    }
+    for (index, zone) in zones.into_iter().filter(|zone| zone.is_positive()).enumerate() {
+        let response = ui.interact(
+            zone,
+            Id::new(("link-preview-open", embed_id, index)),
+            Sense::click(),
+        );
+        open_card |= response.clicked();
+    }
+    if open_card && !media_clicked {
         state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
@@ -4280,7 +4300,12 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     let x_lo = screen.min.x;
     let x_hi = (screen.max.x - size.x).max(x_lo);
     let y_lo = screen.min.y + top_band;
-    let y_hi = (screen.max.y - size.y).max(y_lo);
+
+    // A native Android WebView always composites above egui. Layer ordering
+    // cannot save the composer if the native rectangle overlaps it, so the
+    // floating viewport itself must stay inside the chat-content band.
+    let bottom_band = composer_height(ui, state, screen) + PILL_MARGIN * 2.0;
+    let y_hi = (screen.max.y - bottom_band - size.y).max(y_lo);
     min.x = min.x.clamp(x_lo, x_hi);
     min.y = min.y.clamp(y_lo, y_hi);
 
