@@ -4196,6 +4196,7 @@ fn preview_card(
                         ui.ctx().pixels_per_point(),
                         allowed,
                     );
+                    webembed_paint_and_input(ui, state, embed_id, image_rect, "inline-image");
                 } else {
                     ui.painter().circle_filled(
                         image_rect.center(),
@@ -4211,7 +4212,7 @@ fn preview_card(
                     );
                 }
 
-                if response.clicked() {
+                if response.clicked() && !state.webembed.is_active(embed_id) {
                     if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                         state.media.pause_all();
                         ui.ctx().request_repaint();
@@ -4259,6 +4260,7 @@ fn preview_card(
                     ui.ctx().pixels_per_point(),
                     allowed,
                 );
+                webembed_paint_and_input(ui, state, embed_id, rect, "inline");
             } else {
                 ui.painter()
                     .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
@@ -4270,7 +4272,7 @@ fn preview_card(
                     Color32::WHITE,
                 );
             }
-            if response.clicked() {
+            if response.clicked() && !state.webembed.is_active(embed_id) {
                 if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                     state.media.pause_all();
                     ui.ctx().request_repaint();
@@ -4412,6 +4414,75 @@ fn webembed_floating_allowed(state: &UiState) -> bool {
         && state.viewer.is_none()
         && state.link_viewer.is_none()
         && state.external_link_prompt.is_none()
+}
+
+/// Paints an offscreen browser texture and forwards desktop input. Native
+/// browser surfaces (Android) return no texture and therefore skip this path.
+fn webembed_paint_and_input(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    embed_id: &str,
+    rect: Rect,
+    tag: &str,
+) {
+    use crate::webembed::{WebEmbedButton, WebEmbedInput};
+
+    let Some(texture) = state.webembed.texture_id() else {
+        return;
+    };
+
+    // DMA-BUF is copied from an OpenGL framebuffer, whose origin is bottom-left.
+    // Flip V while presenting it in egui's top-left coordinate system.
+    ui.painter().image(
+        texture,
+        rect,
+        Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0)),
+        Color32::WHITE,
+    );
+
+    let response = ui.interact(
+        rect,
+        Id::new(("webembed-input", embed_id, tag)),
+        Sense::click_and_drag(),
+    );
+    let local = |position: egui::Pos2| {
+        (
+            (position.x - rect.min.x).clamp(0.0, rect.width()),
+            (position.y - rect.min.y).clamp(0.0, rect.height()),
+        )
+    };
+
+    let pointer = ui.input(|input| input.pointer.interact_pos());
+    if let Some(position) = pointer.filter(|position| rect.contains(*position)) {
+        let (x, y) = local(position);
+        state.webembed.input(WebEmbedInput::Move { x, y });
+
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > 0.5 {
+            state
+                .webembed
+                .input(WebEmbedInput::Wheel { x, y, delta_y: scroll });
+        }
+
+        let pressed = ui.input(|input| input.pointer.primary_pressed());
+        if pressed {
+            state.webembed.input(WebEmbedInput::Down {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            });
+        }
+        let released = ui.input(|input| input.pointer.primary_released());
+        if released {
+            state.webembed.input(WebEmbedInput::Up {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            });
+        }
+    } else if !response.dragged() {
+        state.webembed.input(WebEmbedInput::Leave);
+    }
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
@@ -4574,6 +4645,9 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
         ui.ctx().pixels_per_point(),
         true,
     );
+    if let Some(id) = state.webembed.active_id().map(str::to_owned) {
+        webembed_paint_and_input(&top, state, &id, browser_rect, "float");
+    }
 }
 
 fn reaction_chip(
