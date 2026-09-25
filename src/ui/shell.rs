@@ -696,6 +696,10 @@ pub struct UiState {
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
     pub jump: Option<Jump>,
+    /// Pastilha desktop atualmente "possuída" por uma mensagem. Guardar o
+    /// retângulo permite atravessar da linha para a metade que flutua sobre a
+    /// mensagem anterior sem perder o hover.
+    pub hover_actions: Option<(String, Rect)>,
     /// Sugestão contextual de figurinha ou pessoa no compositor.
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
@@ -798,6 +802,7 @@ impl Default for UiState {
             popup: None,
             panel: None,
             jump: None,
+            hover_actions: None,
             suggest: None,
             suggest_muted: false,
             suggest_start: None,
@@ -3275,10 +3280,24 @@ fn message_list(
             }
         }
         // Mensagem que cita você fica marcada, com ou sem o ponteiro em cima.
+        // A pastilha desktop fica metade fora da linha. Se o ponteiro saiu da
+        // linha mas ainda está dentro da pastilha que ela abriu, essa mensagem
+        // continua dona do hover; sem isto a metade de cima era inalcançável.
+        let pointer = ui.ctx().pointer_hover_pos();
+        let held_by_pill = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
+            id == &message.id && pointer.is_some_and(|position| rect.contains(position))
+        });
+        let another_pill_owns_pointer = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
+            id != &message.id && pointer.is_some_and(|position| rect.contains(position))
+        });
         let mentions_me = store.mentions_me(message);
         let hovered = match &focused_message {
             Some(id) => id == &message.id,
-            None => interactive && ui.rect_contains_pointer(row),
+            None => {
+                interactive
+                    && !another_pill_owns_pointer
+                    && (held_by_pill || ui.rect_contains_pointer(row))
+            }
         };
         if mentions_me {
             let band = row.expand2(Vec2::new(0.0, ROW_PADDING));
@@ -3327,6 +3346,9 @@ fn message_list(
         }
         if hovered {
             if focused_message.is_none() && !state.compact {
+                if let Some(rect) = hover_pill_rect(message, row, store) {
+                    state.hover_actions = Some((message.id.clone(), rect));
+                }
                 hover_pill(ui, state, t, s, message, row, store);
             }
 
@@ -3347,6 +3369,10 @@ fn message_list(
 
         last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
+    }
+
+    if ui.ctx().pointer_hover_pos().is_none() {
+        state.hover_actions = None;
     }
 }
 
@@ -4500,6 +4526,23 @@ fn reaction_chip(
     response.clicked()
 }
 
+fn hover_pill_rect(message: &Message, row: Rect, store: &Store) -> Option<Rect> {
+    if message.pending {
+        return None;
+    }
+    let count = if message.mine(&store.me) { 4.0 } else { 3.0 };
+    let height = 30.0;
+    let button = 26.0;
+    let width = button * count + space::XS * 2.0;
+    Some(Rect::from_min_size(
+        egui::pos2(
+            row.max.x - width - space::MD,
+            row.min.y - ROW_PADDING - height / 2.0,
+        ),
+        Vec2::new(width, height),
+    ))
+}
+
 /// Pastilha de ações que aparece no alto da linha ao passar o mouse.
 fn hover_pill(
     ui: &mut egui::Ui,
@@ -4531,14 +4574,9 @@ fn hover_pill(
 
     let height = 30.0;
     let button = 26.0;
-    let width = button * buttons.len() as f32 + space::XS * 2.0;
-    let rect = Rect::from_min_size(
-        egui::pos2(
-            row.max.x - width - space::MD,
-            row.min.y - ROW_PADDING - height / 2.0,
-        ),
-        Vec2::new(width, height),
-    );
+    let Some(rect) = hover_pill_rect(message, row, store) else {
+        return;
+    };
 
     glass_backdrop(ui, state, rect, radius::CARD as f32);
     ui.painter().rect(
