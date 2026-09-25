@@ -53,6 +53,23 @@ pub enum WebEmbedEvent {
     ScrollTimeline { id: String, delta_y_px: f32 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebEmbedButton {
+    Left,
+}
+
+/// Pointer/wheel input for a browser embed, in embed-local points. Native
+/// backends (Android) get their input from the platform; offscreen backends
+/// (Linux/Servo) receive it from the shell instead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WebEmbedInput {
+    Move { x: f32, y: f32 },
+    Down { x: f32, y: f32, button: WebEmbedButton },
+    Up { x: f32, y: f32, button: WebEmbedButton },
+    Wheel { x: f32, y: f32, delta_y: f32 },
+    Leave,
+}
+
 pub trait WebEmbedBackend {
     fn create(&mut self, id: &str, url: &str) -> Result<(), String>;
     fn present(&mut self, id: &str, viewport: &EmbedViewport);
@@ -60,6 +77,16 @@ pub trait WebEmbedBackend {
     fn resume(&mut self, id: &str);
     fn destroy(&mut self, id: &str);
     fn poll_events(&mut self) -> Vec<WebEmbedEvent>;
+
+    /// Latest offscreen frame, for backends that render into an egui texture
+    /// (Linux/Servo). Native-surface backends return `None`.
+    fn frame(&mut self) -> Option<egui::TextureHandle> {
+        None
+    }
+
+    /// Forward pointer/wheel input to the live browser. A no-op on native
+    /// surfaces, which receive platform input directly.
+    fn input(&mut self, _id: &str, _input: WebEmbedInput) {}
 }
 
 struct ActiveEmbed {
@@ -329,6 +356,26 @@ impl WebEmbedManager {
         delta / pixels_per_point.max(0.1)
     }
 
+    /// Hand the egui context to offscreen backends so they can upload frames
+    /// and wake the UI. Cheap; the shell calls it every frame.
+    pub fn set_context(&self, ctx: &egui::Context) {
+        crate::platform::webembed_context(ctx.clone());
+    }
+
+    /// Latest rendered frame of the active embed, for backends that draw into
+    /// an egui texture (Linux/Servo).
+    pub fn frame(&mut self) -> Option<egui::TextureHandle> {
+        self.backend.frame()
+    }
+
+    /// Forward pointer/wheel input to the active embed.
+    pub fn input(&mut self, input: WebEmbedInput) {
+        if let Some(active) = self.active.as_ref() {
+            let id = active.id.clone();
+            self.backend.input(&id, input);
+        }
+    }
+
     pub fn take_external_urls(&mut self) -> Vec<String> {
         std::mem::take(&mut self.external_urls)
     }
@@ -345,15 +392,20 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(crate::platform::android_webembed::AndroidWebEmbedBackend)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "linux")]
+fn platform_backend() -> Box<dyn WebEmbedBackend> {
+    Box::new(crate::platform::linux_webembed::LinuxWebEmbedBackend::new())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(UnavailableBackend)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 struct UnavailableBackend;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 impl WebEmbedBackend for UnavailableBackend {
     fn create(&mut self, _id: &str, _url: &str) -> Result<(), String> {
         Err("WebEmbed ainda não tem backend nesta plataforma".to_owned())

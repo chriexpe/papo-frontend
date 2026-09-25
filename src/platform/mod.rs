@@ -44,6 +44,15 @@ pub mod android_work;
 /// Browser surface nativa para embeds ricos.
 #[cfg(target_os = "android")]
 pub mod android_webembed;
+/// Servo renderizado fora da tela para embeds ricos no Linux (Wayland/X11).
+#[cfg(target_os = "linux")]
+pub mod linux_webembed;
+/// Entrega o contexto do egui ao backend offscreen de WebEmbed. No-op nas
+/// plataformas que usam superfície nativa.
+#[cfg(target_os = "linux")]
+pub use linux_webembed::set_context as webembed_context;
+#[cfg(not(target_os = "linux"))]
+pub fn webembed_context(_ctx: egui::Context) {}
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
 pub mod permission;

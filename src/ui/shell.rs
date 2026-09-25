@@ -4196,6 +4196,7 @@ fn preview_card(
                         ui.ctx().pixels_per_point(),
                         allowed,
                     );
+                    webembed_paint_and_input(ui, state, embed_id, image_rect, "inline");
                 } else {
                     ui.painter().circle_filled(
                         image_rect.center(),
@@ -4211,7 +4212,7 @@ fn preview_card(
                     );
                 }
 
-                if response.clicked() {
+                if response.clicked() && !state.webembed.is_active(embed_id) {
                     if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                         state.media.pause_all();
                         ui.ctx().request_repaint();
@@ -4259,6 +4260,7 @@ fn preview_card(
                     ui.ctx().pixels_per_point(),
                     allowed,
                 );
+                webembed_paint_and_input(ui, state, embed_id, rect, "inline");
             } else {
                 ui.painter()
                     .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
@@ -4270,7 +4272,7 @@ fn preview_card(
                     Color32::WHITE,
                 );
             }
-            if response.clicked() {
+            if response.clicked() && !state.webembed.is_active(embed_id) {
                 if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                     state.media.pause_all();
                     ui.ctx().request_repaint();
@@ -4412,6 +4414,62 @@ fn webembed_floating_allowed(state: &UiState) -> bool {
         && state.viewer.is_none()
         && state.link_viewer.is_none()
         && state.external_link_prompt.is_none()
+}
+
+/// Paints the live browser frame (offscreen backends only) into `rect` and
+/// forwards pointer/wheel input to Servo. Native-surface platforms return no
+/// frame and receive input from the platform, so this is a no-op there.
+fn webembed_paint_and_input(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    embed_id: &str,
+    rect: Rect,
+    tag: &str,
+) {
+    use crate::webembed::{WebEmbedButton, WebEmbedInput};
+
+    let texture = state.webembed.frame();
+    if let Some(texture) = texture {
+        ui.painter().image(
+            texture.id(),
+            rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
+    let response = ui.interact(
+        rect,
+        Id::new(("webembed-input", embed_id, tag)),
+        Sense::click_and_drag(),
+    );
+    let local = |position: egui::Pos2| (position.x - rect.min.x, position.y - rect.min.y);
+
+    if let Some(position) = response.hover_pos() {
+        let (x, y) = local(position);
+        state.webembed.input(WebEmbedInput::Move { x, y });
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > 0.5 {
+            state.webembed.input(WebEmbedInput::Wheel { x, y, delta_y: scroll });
+        }
+    }
+    if response.clicked()
+        && let Some(position) = response.interact_pointer_pos()
+    {
+        let (x, y) = local(position);
+        state
+            .webembed
+            .input(WebEmbedInput::Down { x, y, button: WebEmbedButton::Left });
+        state
+            .webembed
+            .input(WebEmbedInput::Up { x, y, button: WebEmbedButton::Left });
+    }
+    if response.dragged()
+        && let Some(position) = response.interact_pointer_pos()
+    {
+        let (x, y) = local(position);
+        state.webembed.input(WebEmbedInput::Move { x, y });
+    }
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
@@ -4570,10 +4628,13 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     state.webembed_float_rect = Some(outer);
     state.webembed.present_floating(
         browser_rect,
-        safe,
+        screen,
         ui.ctx().pixels_per_point(),
         true,
     );
+    if let Some(id) = state.webembed.active_id().map(str::to_owned) {
+        webembed_paint_and_input(&top, state, &id, browser_rect, "float");
+    }
 }
 
 fn reaction_chip(

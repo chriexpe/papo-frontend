@@ -98,6 +98,9 @@ x11rb = { version = "0.13", default-features = false }
 # Servo revision uses a compatible SpiderMonkey/ICU graph. Note: on 0.5 the
 # "bundled" convenience feature does not exist; it is spelled out here.
 servo = { version = "=0.5.0", default-features = false, features = ["baked-in-resources", "bundled_freetype", "js_jit", "media-gstreamer"] }
+euclid = "0.22"
+dpi = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12", "logging"] }
 
 # ---------------------------------------------------------------------------
 # Android
