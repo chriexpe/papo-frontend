@@ -18,6 +18,7 @@
 #include <gio/gio.h>
 #include <glib-object.h>
 #include <glib.h>
+#include <libsoup/soup.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -548,24 +549,20 @@ void water_wpe_page_load_uri(WaterWpePage *page, const char *uri)
 {
     g_assert(page != NULL);
     g_assert(uri != NULL);
-    // Google requires an embedded player request to be identified by the
-    // embedding app. The WPE headers expose no per-request header setter, so we
-    // serve an iframe from the app identity: the subframe request then carries
-    // `Referer: https://io.github.chriexpe.papo/`. A bare top-level load has no
-    // referrer and fails with "video player configuration error" (153), the
-    // same failure Android hit.
-    gchar *escaped = g_markup_escape_text(uri, -1);
-    gchar *html = g_strdup_printf(
-        "<!doctype html><html><head><meta charset=\"utf-8\">"
-        "<style>html,body{margin:0;height:100%%;background:#000;overflow:hidden}"
-        "iframe{border:0;width:100%%;height:100%%;display:block}</style></head>"
-        "<body><iframe src=\"%s\" allow=\"autoplay; encrypted-media; "
-        "picture-in-picture; fullscreen\" allowfullscreen></iframe></body></html>",
-        escaped);
-    webkit_web_view_load_html(
-        page->web_view, html, "https://io.github.chriexpe.papo/");
-    g_free(html);
-    g_free(escaped);
+
+    // Load the real embed directly, just like a normal browser frame. YouTube
+    // requires the embedding app identity in Referer; WebKitURIRequest exposes
+    // the mutable HTTP headers, so there is no need for a synthetic wrapper
+    // page, iframe scaling or viewport tricks.
+    WebKitURIRequest *request = webkit_uri_request_new(uri);
+    SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
+    if (headers)
+        soup_message_headers_replace(
+            headers,
+            "Referer",
+            "https://io.github.chriexpe.papo/");
+    webkit_web_view_load_request(page->web_view, request);
+    g_object_unref(request);
 }
 
 void water_wpe_page_stop(WaterWpePage *page)
@@ -597,6 +594,12 @@ void water_wpe_page_set_focus(WaterWpePage *page, bool focused)
         wpe_view_focus_in(page->view);
     else
         wpe_view_focus_out(page->view);
+}
+
+bool water_wpe_page_is_playing_audio(WaterWpePage *page)
+{
+    g_assert(page != NULL);
+    return webkit_web_view_is_playing_audio(page->web_view);
 }
 
 void water_wpe_page_pointer_button(
