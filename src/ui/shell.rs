@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Datelike, Local};
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
-    TextEdit, UiBuilder, Vec2,
+    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder,
+    Vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -3585,12 +3585,12 @@ fn message_body(
             let save = {
                 let edit_id = Id::new(("editar-mensagem", id));
                 let response = ui.add(
-                    TextEdit::multiline(&mut buffer_copy)
+                    egui::TextEdit::multiline(&mut buffer_copy)
                         .id(edit_id)
                         .font(text::message())
                         .desired_width(width)
                         .desired_rows(1)
-                        .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
+                        .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
                 );
                 if std::mem::take(&mut state.edit_focus_pending) {
                     response.request_focus();
@@ -6055,7 +6055,7 @@ fn composer(
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         ui.set_min_height(viewport_h);
-                        TextEdit::multiline(&mut state.composer)
+                        egui::TextEdit::multiline(&mut state.composer)
                             .id(edit_id)
                             .hint_text(RichText::new(hint).color(t.label_tertiary))
                             .frame(Frame::NONE)
@@ -6064,7 +6064,7 @@ fn composer(
                             .vertical_align(Align::Center)
                             .min_size(Vec2::new(0.0, viewport_h))
                             .desired_width(f32::INFINITY)
-                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
+                            .margin(egui::Margin::symmetric(space::XS as i8, space::SM as i8))
                             .show(ui)
                             .response
                             .response
@@ -6135,6 +6135,7 @@ fn composer(
 }
 
 /// Posição do cursor na caixa de mensagem, em caracteres.
+#[cfg(not(target_os = "android"))]
 fn caret_of(ctx: &egui::Context, id: Id) -> Option<usize> {
     egui::TextEdit::load_state(ctx, id)?
         .cursor

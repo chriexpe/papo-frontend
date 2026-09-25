@@ -1918,13 +1918,10 @@ impl PapoApp {
     /// A call numa janela só dela. É uma viewport de verdade, não um
     /// diálogo dentro da janela: o pedido era poder jogá-la noutro monitor,
     /// e para isso ela precisa ser uma janela que o compositor conheça.
+    /// No Android não existe: a call fica no overlay dentro da Activity.
+    #[cfg(not(target_os = "android"))]
     fn call_window(&mut self, ctx: &egui::Context) {
         let active = self.active;
-        #[cfg(target_os = "android")]
-        {
-            return;
-        }
-        #[cfg(not(target_os = "android"))]
         if !self.workspaces[active].runtime.store.call.popped_out {
             return;
         }
@@ -2816,6 +2813,7 @@ impl eframe::App for PapoApp {
                 if let Some(action) = rail_action {
                     self.handle_rail_action(action, &ctx);
                 }
+                #[cfg(not(target_os = "android"))]
                 self.call_window(&ctx);
                 self.pump_chat();
                 let actions = std::mem::take(&mut self.ui.actions);

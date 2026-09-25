@@ -385,6 +385,7 @@ pub fn sheet(
     );
 
     let mut x = header.max.x - space::LG - 13.0;
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut header_actions = vec![
         (icon::ARROWS_IN, s.call_overlay, ChatAction::FloatCall(true)),
     ];

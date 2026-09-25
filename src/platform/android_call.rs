@@ -82,7 +82,7 @@ static PIP_TARGET: Mutex<Option<String>> = Mutex::new(None);
 static PIP_LOCAL_ID: Mutex<Option<String>> = Mutex::new(None);
 static PIP_HAS_VIDEO: AtomicBool = AtomicBool::new(false);
 
-pub fn bind(
+pub(crate) fn bind(
     commands: mpsc::Sender<CallCommand>,
     net: NetSender,
     channel_id: String,
