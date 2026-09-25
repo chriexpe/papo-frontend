@@ -4175,7 +4175,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     );
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("webembed-floating"));
-    let mut top = ui.new_child(
+    let top = ui.new_child(
         UiBuilder::new()
             .layer_id(layer)
             .max_rect(outer)
