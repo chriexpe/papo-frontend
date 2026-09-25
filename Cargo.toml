@@ -92,6 +92,7 @@ wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", default-features = false }
+servo = { version = "0.6.0", default-features = false, features = ["bundled", "js_jit", "media-gstreamer"] }
 
 # ---------------------------------------------------------------------------
 # Android
