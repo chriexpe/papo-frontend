@@ -654,6 +654,10 @@ pub struct UiState {
     /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
     /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
     pub webembed_float_rect: Option<Rect>,
+    /// Faixa realmente disponível para browser nativo dentro da conversa.
+    /// O ScrollArea corre por baixo das pastilhas/compositor, mas uma WebView
+    /// nativa não pode fazer isso: ela precisa ser recortada antes do chrome.
+    pub webembed_chat_clip: Option<Rect>,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -765,6 +769,7 @@ impl Default for UiState {
             webembed_float_width: 360.0,
             webembed_float_pos: None,
             webembed_float_rect: None,
+            webembed_chat_clip: None,
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -1988,6 +1993,7 @@ fn conversation(
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
+            state.webembed_chat_clip = None;
             if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
                 crate::ui::call::dock(ui, store, state, call.as_deref_mut(), t, s);
             } else {
@@ -2021,6 +2027,10 @@ fn conversation(
         let composer_height = composer_height(ui, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
+        state.webembed_chat_clip = Some(Rect::from_min_max(
+            egui::pos2(full.min.x, full.min.y + top_inset),
+            egui::pos2(full.max.x, full.max.y - bottom_inset),
+        ));
 
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
@@ -3526,14 +3536,9 @@ fn message_body(
             t.label
         };
         let tokens = emoji::tokenize(&shown_content, &store.emojis);
-        let plain = tokens
-            .iter()
-            .all(|token| matches!(token, emoji::Token::Text(_)));
-
         // URL hit-testing needs individual widgets even for otherwise plain
         // text. Keeping a separate LayoutJob fast path made normal messages
         // skip the hyperlink path entirely.
-        let _ = plain;
         rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
     }
 
@@ -4038,10 +4043,13 @@ fn preview_card(
             if let Some(embed) = embed_url.as_deref() {
                 if state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
+                    let clip = state
+                        .webembed_chat_clip
+                        .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
                     state.webembed.present_inline(
                         embed_id,
                         image_rect,
-                        ui.clip_rect(),
+                        clip,
                         ui.ctx().pixels_per_point(),
                         allowed,
                     );
@@ -4094,10 +4102,13 @@ fn preview_card(
 
             if state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
+                let clip = state
+                    .webembed_chat_clip
+                    .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
                 state.webembed.present_inline(
                     embed_id,
                     rect,
-                    ui.clip_rect(),
+                    clip,
                     ui.ctx().pixels_per_point(),
                     allowed,
                 );
@@ -4267,11 +4278,8 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     }
 
     let screen = ui.ctx().content_rect();
+    let safe = state.webembed_chat_clip.unwrap_or(screen);
     let controls_h = 32.0;
-    // The pill row (channel name, search, pinned, members) sits at the top of
-    // the chat and must never be covered by the player. That band is reserved,
-    // and every position is clamped below it.
-    let top_band = PILL_MARGIN * 2.0 + PILL_HEIGHT;
     let margin = if state.compact { 0.0 } else { space::LG };
     let max_width = (screen.width() - margin * 2.0).clamp(200.0, 720.0);
 
@@ -4287,25 +4295,19 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 
     let default_min = egui::pos2(
         if state.compact {
-            screen.min.x
+            safe.min.x
         } else {
-            screen.max.x - width - margin
+            safe.max.x - width - margin
         },
-        (screen.max.y - size.y - if state.compact { 84.0 } else { margin })
-            .max(screen.min.y + top_band + margin),
+        (safe.max.y - size.y - margin).max(safe.min.y + margin),
     );
     let mut min = state
         .webembed_float_pos
         .map_or(default_min, |(x, y)| egui::pos2(x, y));
-    let x_lo = screen.min.x;
-    let x_hi = (screen.max.x - size.x).max(x_lo);
-    let y_lo = screen.min.y + top_band;
-
-    // A native Android WebView always composites above egui. Layer ordering
-    // cannot save the composer if the native rectangle overlaps it, so the
-    // floating viewport itself must stay inside the chat-content band.
-    let bottom_band = composer_height(ui, state, screen) + PILL_MARGIN * 2.0;
-    let y_hi = (screen.max.y - bottom_band - size.y).max(y_lo);
+    let x_lo = safe.min.x;
+    let x_hi = (safe.max.x - size.x).max(x_lo);
+    let y_lo = safe.min.y;
+    let y_hi = (safe.max.y - size.y).max(y_lo);
     min.x = min.x.clamp(x_lo, x_hi);
     min.y = min.y.clamp(y_lo, y_hi);
 
@@ -4421,7 +4423,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     state.webembed_float_rect = Some(outer);
     state.webembed.present_floating(
         browser_rect,
-        screen,
+        safe,
         ui.ctx().pixels_per_point(),
         true,
     );
