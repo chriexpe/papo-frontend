@@ -44,15 +44,14 @@ use super::{Command, Frame, Shared, Tile};
 /// Tamanho da imagem que sai da câmera. 360p a 30 quadros cabe folgado no
 /// que um SFU de sala pequena aguenta e é o que a grade mostra.
 ///
-/// No celular o quadro é em pé, e na proporção do sensor: 3:4, que é o que
-/// a câmera de verdade entrega. Forçar 16:9 aqui significava cortar mais da
-/// metade da altura para caber — o que aparecia era um rosto gigante, sem
-/// ombro nem cabeça.
+/// No celular o quadro é 3:4, a proporção de foto das câmeras de celular,
+/// em pé enquanto a tela está em pé. Com o celular deitado as medidas
+/// trocam (640x480) — ver `Turn`.
 ///
-/// Os dois lados têm de andar juntos: este mesmo par descreve o `appsrc` da
-/// linha de vídeo, que anuncia o tamanho uma vez por call. Um quadro de
-/// tamanho diferente do anunciado tem o mesmo número de bytes se as medidas
-/// forem trocadas, passa despercebido, e derruba o codificador.
+/// O `appsrc` da linha de vídeo nasce com este par, mas depois segue as
+/// caps de cada quadro que chega: um quadro de tamanho diferente do
+/// anunciado tem o mesmo número de bytes se as medidas forem trocadas,
+/// passa despercebido, e derruba o codificador.
 #[cfg(target_os = "android")]
 const CAMERA_WIDTH: i32 = 480;
 #[cfg(target_os = "android")]
@@ -69,6 +68,9 @@ const CAMERA_BITRATE: i32 = 600_000;
 /// Espera entre voltas do laço quando não há comando nenhum — é também de
 /// quanto em quanto tempo o barramento do GStreamer é lido.
 const TICK: Duration = Duration::from_millis(50);
+/// De quanto em quanto tempo perguntar à tela se o celular girou.
+#[cfg(target_os = "android")]
+const ROTATION_POLL: Duration = Duration::from_millis(300);
 const SUBSCRIBE_RETRY_MIN: Duration = Duration::from_millis(500);
 const SUBSCRIBE_RETRY_MAX: Duration = Duration::from_secs(4);
 
@@ -143,6 +145,95 @@ struct Engine {
 /// na sessão WebRTC.
 struct Camera {
     pipeline: gst::Pipeline,
+    #[cfg(target_os = "android")]
+    turn: Turn,
+}
+
+/// O que muda na captura quando o celular gira: o sentido do giro e as
+/// medidas do quadro. O resto do pipeline acompanha renegociando.
+#[cfg(target_os = "android")]
+struct Turn {
+    flip: gst::Element,
+    filter: gst::Element,
+    /// Graus entre o sensor e a posição natural do aparelho, como o `ahcsrc`
+    /// informa em `device-orientation`.
+    mount: i32,
+    /// A rotação da tela aplicada por último, em graus.
+    display: i32,
+    checked: Instant,
+}
+
+#[cfg(target_os = "android")]
+impl Turn {
+    fn follow(&mut self) {
+        if self.checked.elapsed() < ROTATION_POLL {
+            return;
+        }
+        self.checked = Instant::now();
+        let Some(display) = crate::platform::jvm::call_activity_int("displayRotation") else {
+            return;
+        };
+        if display != self.display {
+            self.display = display;
+            self.apply();
+        }
+    }
+
+    fn apply(&self) {
+        let degrees = upright(self.mount, self.display);
+        let (width, height) = sized(degrees);
+        log::info!(
+            "call: sensor a {}°, tela a {}°: girando {degrees}°, quadro {width}x{height}",
+            self.mount,
+            self.display
+        );
+        self.flip.set_property_from_str("method", flip_method(degrees));
+        self.filter.set_property("caps", frame_caps(width, height));
+    }
+}
+
+/// Quanto girar, em graus no sentido horário, o quadro da câmera da frente
+/// para ele sair em pé com a tela girada `display` graus. É a conta do
+/// `Camera.setDisplayOrientation` do Android, sem o espelho — o quadro que
+/// vai para os outros não é espelhado.
+///
+/// Girar o sensor de volta é girar no mesmo sentido em que ele está
+/// montado, não no contrário — foi o engano que deixou a imagem de cabeça
+/// para baixo, que é o erro de 180° entre um e outro.
+#[cfg(target_os = "android")]
+fn upright(mount: i32, display: i32) -> i32 {
+    (mount + display).rem_euclid(360)
+}
+
+#[cfg(target_os = "android")]
+fn flip_method(degrees: i32) -> &'static str {
+    match degrees {
+        90 => "clockwise",
+        180 => "rotate-180",
+        270 => "counterclockwise",
+        _ => "none",
+    }
+}
+
+/// As medidas do quadro enviado para um giro. O sensor é deitado (4:3
+/// depois do corte), então um giro de um quarto de volta o deixa em pé.
+#[cfg(target_os = "android")]
+fn sized(degrees: i32) -> (i32, i32) {
+    if degrees % 180 == 90 {
+        (CAMERA_WIDTH, CAMERA_HEIGHT)
+    } else {
+        (CAMERA_HEIGHT, CAMERA_WIDTH)
+    }
+}
+
+fn frame_caps(width: i32, height: i32) -> gst::Caps {
+    gst::Caps::builder("video/x-raw")
+        .field("format", "I420")
+        .field("width", width)
+        .field("height", height)
+        .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
+        .field("framerate", gst::Fraction::new(30, 1))
+        .build()
 }
 
 impl Drop for Camera {
@@ -301,6 +392,10 @@ impl Engine {
             // dispositivo. Sem ler o barramento dela, a call ficaria com a
             // câmera "ligada" e sem quadro nenhum, sem dizer por quê.
             self.watch_camera();
+            #[cfg(target_os = "android")]
+            if let Some(camera) = &mut self.camera {
+                camera.turn.follow();
+            }
             self.retry_video_subscriptions();
         }
         self.camera = None;
@@ -692,14 +787,7 @@ impl Engine {
     /// `appsrc` por onde os quadros entram.
     fn open_camera_line(&mut self) -> Option<(gst_webrtc::WebRTCRTPTransceiver, gst_app::AppSrc)> {
         let src = gst_app::AppSrc::builder()
-            .caps(
-                &gst::Caps::builder("video/x-raw")
-                    .field("format", "I420")
-                    .field("width", CAMERA_WIDTH)
-                    .field("height", CAMERA_HEIGHT)
-                    .field("framerate", gst::Fraction::new(30, 1))
-                    .build(),
-            )
+            .caps(&frame_caps(CAMERA_WIDTH, CAMERA_HEIGHT))
             .format(gst::Format::Time)
             .is_live(true)
             .do_timestamp(true)
@@ -1557,15 +1645,22 @@ fn capture(
     let scale = make("videoscale")?;
     let rate = make("videorate")?;
     let filter = make("capsfilter")?;
-    filter.set_property(
-        "caps",
-        gst::Caps::builder("video/x-raw")
-            .field("format", "I420")
-            .field("width", CAMERA_WIDTH)
-            .field("height", CAMERA_HEIGHT)
-            .field("framerate", gst::Fraction::new(30, 1))
-            .build(),
-    );
+    filter.set_property("caps", frame_caps(CAMERA_WIDTH, CAMERA_HEIGHT));
+
+    // Cada câmera entrega a proporção que quiser: o sensor de um celular
+    // pode sair 2176x1080, quase 2:1; uma webcam, 4:3. Encaixar isso direto
+    // no quadro de destino punha tarja preta dentro do próprio vídeo. O
+    // `aspectratiocrop` corta o meio na proporção certa antes de reduzir.
+    // Se faltar o elemento a câmera ainda abre, só que com tarja.
+    let crop = make("aspectratiocrop");
+    if let Some(crop) = &crop {
+        // No Android o corte vem antes do giro, com o sensor ainda deitado:
+        // 4:3 serve para as duas posições do celular e nunca muda.
+        #[cfg(target_os = "android")]
+        crop.set_property("aspect-ratio", gst::Fraction::new(4, 3));
+        #[cfg(not(target_os = "android"))]
+        crop.set_property("aspect-ratio", gst::Fraction::new(CAMERA_WIDTH, CAMERA_HEIGHT));
+    }
 
     let feed = gst_app::AppSink::builder().max_buffers(2).drop(true).sync(false).build();
     let preview_queue = make("queue")?;
@@ -1576,6 +1671,10 @@ fn capture(
             &gst::Caps::builder("video/x-raw")
                 .field("format", "RGBA")
                 .field("width", 320i32)
+                // Sem isto o `videoscale` mantém a altura de entrada e
+                // compensa no pixel: 480x640 virava 320x640 com pixel 3:2,
+                // que a janela desenha quadrado — o rosto espremido.
+                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
                 .build(),
         )
         .max_buffers(1)
@@ -1585,74 +1684,39 @@ fn capture(
 
     // O sensor do celular não está de pé: a imagem sai deitada. Quanto
     // depende do aparelho, e o `ahcsrc` sabe dizer — `device-orientation` é
-    // o giro em graus entre o sensor e a tela.
+    // o giro em graus entre o sensor e a posição natural do aparelho. A
+    // isso se soma a rotação da tela, que muda com a call no ar.
     //
     // `method=automatic` não serve aqui: ele espera uma etiqueta de
     // orientação junto dos quadros, e o `ahcsrc` não manda nenhuma. Por
-    // isso o giro é escolhido na mão, a partir do que a câmera informou.
+    // isso o giro é escolhido na mão.
     #[cfg(target_os = "android")]
-    let main = {
-        let degrees: i32 = if source.has_property("device-orientation") {
+    let (main, turn) = {
+        let mount: i32 = if source.has_property("device-orientation") {
             source.property("device-orientation")
         } else {
             0
         };
-        // Girar o sensor de volta é girar no mesmo sentido em que ele está
-        // montado, não no contrário — foi o engano que deixou a imagem de
-        // cabeça para baixo, que é o erro de 180° entre um e outro.
-        let method = match degrees {
-            90 => "clockwise",
-            180 => "rotate-180",
-            270 => "counterclockwise",
-            _ => "none",
-        };
-        log::info!("call: câmera a {degrees}°, endireitando com {method}");
-        if let Some(pad) = source.static_pad("src") {
-            // Só depois de abrir é que o sensor diz o que sabe fazer; aqui
-            // ainda pode vir vazio, e então o que vale é o log do appsink.
-            if let Some(caps) = pad.current_caps() {
-                log::info!("call: o sensor entrega {caps}");
-            }
-        }
-
         let flip = make("videoflip")?;
-        flip.set_property_from_str("method", method);
+        let turn = Turn {
+            flip: flip.clone(),
+            filter: filter.clone(),
+            mount,
+            display: crate::platform::jvm::call_activity_int("displayRotation").unwrap_or(0),
+            checked: Instant::now(),
+        };
+        turn.apply();
 
-        // O sensor, sozinho, entrega 2176x1080 — quase 2:1, nem 4:3 nem
-        // 16:9. Girado, vira uma tira alta e estreita; encaixá-la no quadro
-        // de destino punha tarja preta dentro do próprio vídeo e deixava o
-        // rosto espremido. O aplicativo de câmera do aparelho não sofre
-        // disso porque **pede** um modo 4:3 à câmera, em vez de aceitar o
-        // que vier.
-        //
-        // Aqui é a mesma coisa: pedido 640x480, que girado dá exatamente o
-        // 480x640 que a linha de vídeo anuncia. Sem sobra, sem corte.
+        // Um teto para o modo do sensor, não um tamanho: cada aparelho tem
+        // a sua lista, e pedir um tamanho exato é não abrir a câmera no
+        // aparelho que não o tem. O teto só evita converter e girar 4K a
+        // 30 quadros para depois jogar quase tudo fora.
         let sensor_caps = make("capsfilter")?;
         sensor_caps.set_property(
             "caps",
             gst::Caps::builder("video/x-raw")
-                .field("width", CAMERA_HEIGHT)
-                .field("height", CAMERA_WIDTH)
-                .build(),
-        );
-
-        // O quadro continua com o tamanho declarado, e não trocado pela
-        // rotação: quem recebe é o `appsrc` da linha de vídeo, que anuncia
-        // 640x360 de uma vez por call. Mandar 360x640 para lá tem o mesmo
-        // número de bytes e passa despercebido — até o codificador ler as
-        // linhas com a largura errada, andar para fora do plano e derrubar
-        // o aplicativo. Foi o que aconteceu.
-        //
-        // Sem corte nem tarja: o quadro já sai na proporção do destino,
-        // porque o destino é a proporção do sensor.
-        filter.set_property(
-            "caps",
-            gst::Caps::builder("video/x-raw")
-                .field("format", "I420")
-                .field("width", CAMERA_WIDTH)
-                .field("height", CAMERA_HEIGHT)
-                .field("pixel-aspect-ratio", gst::Fraction::new(1, 1))
-                .field("framerate", gst::Fraction::new(30, 1))
+                .field("width", gst::IntRange::new(1, 1920))
+                .field("height", gst::IntRange::new(1, 1920))
                 .build(),
         );
 
@@ -1661,26 +1725,18 @@ fn capture(
         // sabe girar. Ligado direto ao `ahcsrc` ele não negocia, e o
         // pipeline fica de pé sem nunca entregar quadro — a câmera acende
         // no aparelho e a tela do Papo fica vazia.
-        vec![
-            source,
-            sensor_caps,
-            convert,
-            flip,
-            scale,
-            rate,
-            filter,
-            tee.clone(),
-        ]
+        let mut main = vec![source, sensor_caps, convert];
+        main.extend(crop);
+        main.extend([flip, scale, rate, filter, tee.clone()]);
+        (main, turn)
     };
     #[cfg(not(target_os = "android"))]
-    let main = vec![
-        source,
-        convert,
-        scale,
-        rate,
-        filter,
-        tee.clone(),
-    ];
+    let main = {
+        let mut main = vec![source, convert];
+        main.extend(crop);
+        main.extend([scale, rate, filter, tee.clone()]);
+        main
+    };
     pipeline.add_many(&main).ok()?;
     gst::Element::link_many(&main).ok()?;
 
@@ -1727,6 +1783,16 @@ fn capture(
                             log::info!("call: o sensor entrega {caps}");
                         }
                     });
+                }
+                // O quadro muda de medidas quando o celular gira. O `appsrc`
+                // passa a anunciar as caps novas antes do próximo buffer, e o
+                // codificador recomeça no tamanho certo em vez de ler as
+                // linhas com a largura antiga.
+                if let Some(caps) = sample.caps()
+                    && target.caps().is_none_or(|current| current.as_ref() != caps)
+                {
+                    log::info!("call: o quadro enviado passou a ser {caps}");
+                    target.set_caps(Some(&caps.to_owned()));
                 }
                 let Some(buffer) = sample.buffer_owned() else {
                     return Ok(gst::FlowSuccess::Ok);
@@ -1779,7 +1845,11 @@ fn capture(
         let _ = pipeline.set_state(gst::State::Null);
         return None;
     }
-    Some(Camera { pipeline })
+    Some(Camera {
+        pipeline,
+        #[cfg(target_os = "android")]
+        turn,
+    })
 }
 
 /// Copia o quadro RGBA para a memória da janela, linha a linha: o passo de

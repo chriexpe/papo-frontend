@@ -258,6 +258,19 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /**
+     * Quantos graus a tela está girada em relação ao natural do aparelho:
+     * 0, 90, 180 ou 270. A câmera da call soma isto à montagem do sensor
+     * para mandar o quadro em pé também com o celular deitado.
+     */
+    public int displayRotation() {
+        try {
+            return getDisplay().getRotation() * 90;
+        } catch (RuntimeException error) {
+            return 0;
+        }
+    }
+
     public void closeCallPictureInPicture() {
         runOnUiThread(() -> {
             callPresentation = "off";
