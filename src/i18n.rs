@@ -141,6 +141,8 @@ pub struct Strings {
     pub role_members: &'static str,
     pub role_members_hint: &'static str,
     pub close: &'static str,
+    pub viewer_download: &'static str,
+    pub viewer_fit: &'static str,
     pub no_pinned: &'static str,
 
     // Painéis da folha de ajustes
@@ -421,6 +423,8 @@ pub static PT_BR: Strings = Strings {
     role_members: "Quem tem este cargo",
     role_members_hint: "Salve o cargo primeiro; depois dá para atribuí-lo.",
     close: "Fechar",
+    viewer_download: "Baixar",
+    viewer_fit: "Ajustar à tela",
     no_pinned: "Nenhuma mensagem fixada neste canal.",
     pane_account: "Conta",
     pane_alerts: "Avisos",
@@ -690,6 +694,8 @@ pub static EN: Strings = Strings {
     role_members: "Who has this role",
     role_members_hint: "Save the role first, then you can assign it.",
     close: "Close",
+    viewer_download: "Download",
+    viewer_fit: "Fit to screen",
     no_pinned: "No pinned messages in this channel.",
     pane_account: "Account",
     pane_alerts: "Alerts",
