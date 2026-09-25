@@ -599,12 +599,6 @@ void water_wpe_page_set_focus(WaterWpePage *page, bool focused)
         wpe_view_focus_out(page->view);
 }
 
-void water_wpe_page_set_zoom(WaterWpePage *page, double zoom)
-{
-    g_assert(page != NULL);
-    webkit_web_view_set_zoom_level(page->web_view, MAX(zoom, 0.1));
-}
-
 void water_wpe_page_pointer_button(
     WaterWpePage *page,
     bool pressed,
