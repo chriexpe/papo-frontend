@@ -294,11 +294,7 @@ impl LinuxWebEmbedBackend {
         }
         let paths = RuntimePaths::discover()?;
         let runtime = Runtime::open(&paths)?;
-        log::info!(
-            "webembed(wpe): runtime {} em {}",
-            crate::platform::linux_wpe::WPE_WEBKIT_VERSION,
-            paths.root().display()
-        );
+        log::info!("webembed(wpe): runtime em {}", paths.root().display());
         self.runtime = Some(runtime.clone());
         Ok(runtime)
     }
