@@ -555,6 +555,8 @@ pub struct Stash {
     pub media: MediaStore,
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    /// Cursor a aplicar depois de uma edição programática do compositor.
+    pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
@@ -576,6 +578,7 @@ impl Stash {
             media,
             composer: String::new(),
             composer_mentions: Vec::new(),
+            composer_caret_pending: None,
             drafts: DraftBook::default(),
             attachments: Vec::new(),
             replying: None,
@@ -596,6 +599,10 @@ impl Stash {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
         std::mem::swap(&mut self.composer_mentions, &mut ui.composer_mentions);
+        std::mem::swap(
+            &mut self.composer_caret_pending,
+            &mut ui.composer_caret_pending,
+        );
         std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
@@ -614,6 +621,7 @@ impl Stash {
 pub struct UiState {
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub show_members: bool,
     /// Layout estreito ativo neste quadro.
@@ -750,6 +758,7 @@ impl Default for UiState {
         Self {
             composer: String::new(),
             composer_mentions: Vec::new(),
+            composer_caret_pending: None,
             drafts: DraftBook::default(),
             show_members: true,
             compact: false,
@@ -3682,6 +3691,18 @@ fn message_body(
 /// Texto entremeado de emoji: cada emoji vira imagem, o resto é palavra
 /// solta para o egui quebrar a linha onde precisar.
 #[allow(clippy::too_many_arguments)]
+fn muted_link_color(ui: &egui::Ui, t: &Tokens) -> Color32 {
+    let blue = ui.visuals().hyperlink_color;
+    let neutral = t.label_secondary;
+    // Keep the conventional blue cue, but pull it strongly toward the
+    // surrounding text so links don't dominate the timeline.
+    Color32::from_rgb(
+        ((u16::from(blue.r()) + u16::from(neutral.r()) * 2) / 3) as u8,
+        ((u16::from(blue.g()) + u16::from(neutral.g()) * 2) / 3) as u8,
+        ((u16::from(blue.b()) + u16::from(neutral.b()) * 2) / 3) as u8,
+    )
+}
+
 fn rich_body(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -3719,7 +3740,7 @@ fn rich_body(
                                 egui::Label::new(
                                     RichText::new(visible)
                                         .font(font.clone())
-                                        .color(ui.visuals().hyperlink_color)
+                                        .color(muted_link_color(ui, t))
                                         .underline(),
                                 )
                                 .sense(Sense::click()),
@@ -5916,6 +5937,13 @@ fn composer(
                     if events.submit && state.suggest.is_some() {
                         accept_suggestion(store, state, ui.ctx(), edit_id);
                     }
+                    if let Some(after) = state.composer_caret_pending.take() {
+                        crate::platform::native_text::set_selection(
+                            "composer",
+                            &state.composer,
+                            after,
+                        );
+                    }
                     (events.focused, events.caret)
                 } else {
                     // Durante edição de mensagem ou enquanto uma gaveta cobre
@@ -5976,6 +6004,14 @@ fn composer(
                     crate::platform::ime::Kind::Multiline,
                 );
                 state.typed = response.changed() || ime_changed;
+                if let Some(after) = state.composer_caret_pending.take()
+                    && let Some(mut edit) = egui::TextEdit::load_state(ui.ctx(), edit_id)
+                {
+                    edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(after),
+                    )));
+                    edit.store(ui.ctx(), edit_id);
+                }
                 (response.has_focus(), caret_of(ui.ctx(), edit_id))
             };
 
@@ -6232,17 +6268,12 @@ fn accept_suggestion(
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
+    state.composer_caret_pending = Some(after);
 
-    #[cfg(target_os = "android")]
-    crate::platform::native_text::set_selection("composer", &state.composer, after);
-
-    #[cfg(not(target_os = "android"))]
-    if let Some(mut edit) = egui::TextEdit::load_state(ctx, id) {
-        edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
-            egui::text::CCursor::new(after),
-        )));
-        edit.store(ctx, id);
-    }
+    // The editor widget/native View may still synchronize its old selection
+    // later in this same frame. Apply the new caret after that synchronization
+    // instead of racing it here.
+    let _ = (ctx, id);
 }
 
 /// Lista de sugestões do compositor, logo acima da caixa de mensagem.
@@ -6270,7 +6301,7 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
         egui::Order::Foreground,
         Id::new("sugestoes-do-compositor"),
     );
-    let mut overlay = ui.new_child(
+    let overlay = ui.new_child(
         UiBuilder::new()
             .layer_id(layer)
             .max_rect(rect)
@@ -6398,6 +6429,7 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
         }
         let edit_id = Id::new("caixa-de-mensagem");
         accept_suggestion(store, state, &ctx, edit_id);
+        ctx.request_repaint();
         // Desktop TextEdit lost focus to the popup; Android's native editor
         // keeps its own focus and ignores this egui request harmlessly.
         ctx.memory_mut(|memory| memory.request_focus(edit_id));
