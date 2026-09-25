@@ -308,6 +308,9 @@ pub struct Suggest {
     pub kind: SuggestKind,
     /// Onde está o caractere que abriu a sugestão, em caracteres.
     pub start: usize,
+    /// Fim exato do fragmento que originou esta lista. A aceitação substitui
+    /// start..end em vez de anexar a escolha ao texto parcial.
+    pub end: usize,
     /// Ids de emoji ou de membro, conforme `kind`.
     pub matches: Vec<String>,
     /// Qual delas está marcada.
@@ -5991,7 +5994,7 @@ fn composer(
             }
             let accepted = keys.accept && state.suggest.is_some();
             if accepted {
-                accept_suggestion(store, state, ui.ctx(), edit_id, caret);
+                accept_suggestion(store, state, ui.ctx(), edit_id);
             }
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
@@ -6102,6 +6105,7 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
     state.suggest = Some(Suggest {
         kind,
         start,
+        end: caret,
         matches,
         index: index.min(7),
     });
@@ -6160,22 +6164,33 @@ fn typing_shortcode(text: &str, caret: usize) -> Option<(usize, String)> {
     None
 }
 
-/// Troca o `:alguma` pelo `:nome:` inteiro e põe o cursor depois dele.
+fn replace_char_range(text: &str, start: usize, end: usize, replacement: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if start > end || end > chars.len() {
+        return None;
+    }
+    let mut next: String = chars[..start].iter().collect();
+    next.push_str(replacement);
+    next.extend(chars[end..].iter());
+    Some(next)
+}
+
+/// Troca o fragmento ativo pelo valor escolhido e põe o cursor depois dele.
 fn accept_suggestion(
     store: &Store,
     state: &mut UiState,
     ctx: &egui::Context,
     id: Id,
-    caret: Option<usize>,
 ) {
     #[cfg(target_os = "android")]
     let _ = (ctx, id);
     let Some(suggest) = state.suggest.take() else {
         return;
     };
-    let (Some(caret), Some(chosen)) = (caret, suggest.matches.get(suggest.index)) else {
+    let Some(chosen) = suggest.matches.get(suggest.index) else {
         return;
     };
+    let caret = suggest.end;
 
     let replacement = match suggest.kind {
         SuggestKind::Sticker => {
@@ -6192,14 +6207,10 @@ fn accept_suggestion(
         }
     };
 
-    let chars: Vec<char> = state.composer.chars().collect();
-    if suggest.start > chars.len() || caret > chars.len() || suggest.start > caret {
+    let Some(next) = replace_char_range(&state.composer, suggest.start, caret, &replacement)
+    else {
         return;
-    }
-    let mut next: String = chars[..suggest.start].iter().collect();
-    next.push_str(&replacement);
-    let tail: String = chars[caret..].iter().collect();
-    next.push_str(&tail);
+    };
     state.composer = next;
     if suggest.kind == SuggestKind::Mention
         && let Some(member) = store.member(chosen)
@@ -6246,152 +6257,144 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
         Vec2::new(width, height),
     );
 
+    // Use an actual foreground UI whose max_rect is the visible popup.
+    // Painting in an Area while interacting with absolute rects made the
+    // visuals appear in one place and the hit targets live somewhere else.
     let ctx = ui.ctx().clone();
+    let layer = egui::LayerId::new(
+        egui::Order::Foreground,
+        Id::new("sugestoes-do-compositor"),
+    );
+    let mut overlay = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(rect)
+            .sense(Sense::click()),
+    );
+    pill_surface(&mut overlay, state, t, rect);
+
     let mut chosen = None;
-    egui::Area::new(Id::new("sugestoes-do-compositor"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.min)
-        .show(&ctx, |ui| {
-            pill_surface(ui, state, t, rect);
-            for (index, id) in suggest.matches.iter().enumerate() {
-                let slot = Rect::from_min_size(
-                    egui::pos2(
-                        rect.min.x + space::SM,
-                        rect.min.y + space::SM + index as f32 * row,
-                    ),
-                    Vec2::new(rect.width() - space::SM * 2.0, row),
+    for (index, id) in suggest.matches.iter().enumerate() {
+        let slot = Rect::from_min_size(
+            egui::pos2(
+                rect.min.x + space::SM,
+                rect.min.y + space::SM + index as f32 * row,
+            ),
+            Vec2::new(rect.width() - space::SM * 2.0, row),
+        );
+        let response = overlay.interact(slot, Id::new(("sugestao", id)), Sense::click());
+        if index == suggest.index || response.hovered() {
+            overlay.painter().rect_filled(
+                slot,
+                CornerRadius::same(radius::CONTROL),
+                if index == suggest.index {
+                    t.accent.gamma_multiply(0.22)
+                } else {
+                    t.fill_soft
+                },
+            );
+        }
+        if response.hovered() {
+            overlay.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        let art = Rect::from_center_size(
+            egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
+            Vec2::splat(20.0),
+        );
+        match suggest.kind {
+            SuggestKind::Sticker => {
+                let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
+                    continue;
+                };
+                let texture = state
+                    .media
+                    .emoji(&emoji.id, emoji.blob.as_deref())
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                if let Some(texture) = texture {
+                    let mut mesh = egui::Mesh::with_texture(texture);
+                    mesh.add_rect_with_uv(
+                        art,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    overlay.painter().add(egui::Shape::mesh(mesh));
+                }
+                overlay.painter().text(
+                    egui::pos2(art.max.x + space::MD, slot.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!(":{}:", emoji.name),
+                    text::body(),
+                    if index == suggest.index { t.label } else { t.label_secondary },
                 );
-                let response = ui.interact(slot, Id::new(("sugestao", id)), Sense::click());
-                if index == suggest.index || response.hovered() {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        if index == suggest.index {
-                            t.accent.gamma_multiply(0.22)
-                        } else {
-                            t.fill_soft
-                        },
+            }
+            SuggestKind::Mention => {
+                let Some(member) = store.member(id) else {
+                    continue;
+                };
+                let avatar = state
+                    .media
+                    .avatar(&member.id, store.avatars.get(&member.id).map(String::as_str))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                if let Some(texture) = avatar {
+                    let mut mesh = egui::Mesh::with_texture(texture);
+                    mesh.add_rect_with_uv(
+                        art,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    overlay.painter().add(egui::Shape::mesh(mesh));
+                } else {
+                    overlay.painter().circle_filled(
+                        art.center(),
+                        art.width() / 2.0,
+                        t.accent.gamma_multiply(0.28),
+                    );
+                    overlay.painter().text(
+                        art.center(),
+                        egui::Align2::CENTER_CENTER,
+                        member.initials(),
+                        text::footnote(),
+                        t.label,
                     );
                 }
-                if response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                let art = Rect::from_center_size(
-                    egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
-                    Vec2::splat(20.0),
+                let x = art.max.x + space::MD;
+                overlay.painter().text(
+                    egui::pos2(x, slot.center().y - 4.0),
+                    egui::Align2::LEFT_CENTER,
+                    &member.name,
+                    text::body(),
+                    if index == suggest.index { t.label } else { t.label_secondary },
                 );
-                match suggest.kind {
-                    SuggestKind::Sticker => {
-                        let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
-                            continue;
-                        };
-                        let texture = state
-                            .media
-                            .emoji(&emoji.id, emoji.blob.as_deref())
-                            .and_then(|texture| texture.frame(&ctx))
-                            .map(|handle| handle.id());
-                        if let Some(texture) = texture {
-                            let mut mesh = egui::Mesh::with_texture(texture);
-                            mesh.add_rect_with_uv(
-                                art,
-                                Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
-                            ui.painter().add(egui::Shape::mesh(mesh));
-                        }
-                        ui.painter().text(
-                            egui::pos2(art.max.x + space::MD, slot.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            format!(":{}:", emoji.name),
-                            text::body(),
-                            if index == suggest.index {
-                                t.label
-                            } else {
-                                t.label_secondary
-                            },
-                        );
-                    }
-                    SuggestKind::Mention => {
-                        let Some(member) = store.member(id) else {
-                            continue;
-                        };
-                        let avatar = state
-                            .media
-                            .avatar(
-                                &member.id,
-                                store.avatars.get(&member.id).map(String::as_str),
-                            )
-                            .and_then(|texture| texture.frame(&ctx))
-                            .map(|handle| handle.id());
-                        if let Some(texture) = avatar {
-                            let mut mesh = egui::Mesh::with_texture(texture);
-                            mesh.add_rect_with_uv(
-                                art,
-                                Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
-                            ui.painter().add(egui::Shape::mesh(mesh));
-                        } else {
-                            ui.painter().circle_filled(
-                                art.center(),
-                                art.width() / 2.0,
-                                t.accent.gamma_multiply(0.28),
-                            );
-                            ui.painter().text(
-                                art.center(),
-                                egui::Align2::CENTER_CENTER,
-                                member.initials(),
-                                text::footnote(),
-                                t.label,
-                            );
-                        }
-                        let x = art.max.x + space::MD;
-                        ui.painter().text(
-                            egui::pos2(x, slot.center().y - 4.0),
-                            egui::Align2::LEFT_CENTER,
-                            &member.name,
-                            text::body(),
-                            if index == suggest.index {
-                                t.label
-                            } else {
-                                t.label_secondary
-                            },
-                        );
-                        ui.painter().text(
-                            egui::pos2(x, slot.center().y + 8.0),
-                            egui::Align2::LEFT_CENTER,
-                            format!("@{}", member.username),
-                            text::footnote(),
-                            t.label_tertiary,
-                        );
-                        ui.painter().circle_filled(
-                            egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
-                            3.0,
-                            presence_color(t, member.presence),
-                        );
-                    }
-                }
-                if response.clicked() {
-                    chosen = Some(index);
-                }
+                overlay.painter().text(
+                    egui::pos2(x, slot.center().y + 8.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("@{}", member.username),
+                    text::footnote(),
+                    t.label_tertiary,
+                );
+                overlay.painter().circle_filled(
+                    egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
+                    3.0,
+                    presence_color(t, member.presence),
+                );
             }
-        });
+        }
+        if response.clicked() {
+            chosen = Some(index);
+        }
+    }
 
     if let Some(index) = chosen {
         if let Some(suggest) = state.suggest.as_mut() {
             suggest.index = index;
         }
         let edit_id = Id::new("caixa-de-mensagem");
-        let caret = caret_of(&ctx, edit_id);
-        accept_suggestion(store, state, &ctx, edit_id, caret);
-        // O clique tirou o foco da caixa; devolvê-lo é o que deixa
-        // continuar escrevendo sem ter de clicar de novo.
+        accept_suggestion(store, state, &ctx, edit_id);
+        // Desktop TextEdit lost focus to the popup; Android's native editor
+        // keeps its own focus and ignores this egui request harmlessly.
         ctx.memory_mut(|memory| memory.request_focus(edit_id));
     }
 }
@@ -6477,6 +6480,26 @@ mod sugestao {
         assert_eq!(
             typing_shortcode(text, text.chars().count()),
             Some((5, "co".to_owned()))
+        );
+    }
+
+    #[test]
+    fn aceitar_mencao_substitui_fragmento_parcial() {
+        assert_eq!(
+            super::replace_char_range("@chr", 0, 4, "@chris "),
+            Some("@chris ".to_owned())
+        );
+        assert_eq!(
+            super::replace_char_range("oi @chr tudo", 3, 7, "@chris "),
+            Some("oi @chris  tudo".to_owned())
+        );
+    }
+
+    #[test]
+    fn aceitar_shortcode_substitui_fragmento_parcial() {
+        assert_eq!(
+            super::replace_char_range("usa :gat agora", 4, 8, ":gato:"),
+            Some("usa :gato: agora".to_owned())
         );
     }
 }
