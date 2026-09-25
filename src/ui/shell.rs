@@ -201,6 +201,7 @@ pub enum PopupKind {
 pub enum PanelKind {
     Search,
     Pinned,
+    Topic,
 }
 
 /// Superfície que ocupa a frente no layout estreito.
@@ -2438,8 +2439,15 @@ fn channel_pill(
     let painter = ui.painter();
     let glyph = painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
     let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
-    let topic = channel.topic.as_ref().filter(|topic| !topic.is_empty()).map(|topic| {
-        painter.layout_no_wrap(topic.clone(), text::callout(), t.label_tertiary)
+    let topic_text = channel.topic.as_deref().map(str::trim).filter(|topic| !topic.is_empty());
+    let topic = topic_text.map(|topic| {
+        const TOPIC_SNIPPET_CHARS: usize = 80;
+        let mut chars = topic.chars();
+        let mut snippet: String = chars.by_ref().take(TOPIC_SNIPPET_CHARS).collect();
+        if chars.next().is_some() {
+            snippet.push('…');
+        }
+        painter.layout_no_wrap(snippet, text::callout(), t.label_tertiary)
     });
 
     // Quanto da descrição ainda está na tela: 1 inteira, 0 recolhida.
@@ -2480,6 +2488,13 @@ fn channel_pill(
         Vec2::new(width, PILL_HEIGHT),
     );
     pill_surface(ui, state, t, rect);
+    let response = ui.interact(rect, Id::new("channel-topic-pill"), Sense::click());
+    if topic_text.is_some() && response.clicked() {
+        toggle_panel(state, PanelKind::Topic);
+    }
+    if topic_text.is_some() && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     let mid = rect.center().y;
     let mut x = rect.min.x + space::LG;
@@ -2613,6 +2628,7 @@ fn actions_pill(
         |ui| match kind {
             PanelKind::Search => search_panel(ui, store, state, t, s),
             PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+            PanelKind::Topic => topic_panel(ui, store, t),
         },
     );
 
@@ -2680,6 +2696,35 @@ fn pill_toggle(ui: &mut egui::Ui, t: &Tokens, glyph: &str, tip: &str, active: bo
         );
     }
     response.clicked()
+}
+
+/// Descrição completa do canal. A pastilha mostra apenas o resumo; aqui o
+/// mesmo `topic` pode ocupar quantas linhas precisar e rolar sem mexer na
+/// conversa atrás.
+fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
+    let topic = store
+        .channel(&store.selected_channel)
+        .and_then(|channel| channel.topic.as_deref())
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty());
+
+    let Some(topic) = topic else {
+        return;
+    };
+
+    egui::ScrollArea::vertical()
+        .id_salt("descricao-do-canal")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(topic)
+                        .font(text::body())
+                        .color(t.label),
+                )
+                .wrap(),
+            );
+        });
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
