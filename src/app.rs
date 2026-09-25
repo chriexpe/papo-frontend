@@ -2578,8 +2578,10 @@ impl eframe::App for PapoApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.ui.webembed.set_context(&ctx);
         self.ui.webembed.begin_frame();
         self.ui.webembed.pump_events(&ctx);
+        self.ui.webembed.prepare_render(frame);
         let external_urls = self.ui.webembed.take_external_urls();
         for url in external_urls {
             self.ui.request_external_url(&ctx, url);
