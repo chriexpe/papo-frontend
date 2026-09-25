@@ -19,7 +19,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 const ABI_VERSION: u32 = 3;
-pub const WPE_WEBKIT_VERSION: &str = "2.52.5";
 pub const RUNTIME_ENV: &str = "PAPO_WPE_RUNTIME";
 
 #[repr(C)]
@@ -193,7 +192,7 @@ impl RuntimePaths {
             Ok(())
         } else {
             Err(format!(
-                "runtime WPE WebKit {WPE_WEBKIT_VERSION} não encontrado em {} (rode scripts/wpe-runtime.sh ou defina {RUNTIME_ENV})",
+                "ponte WPE WebKit não encontrada em {} (rode scripts/wpe-runtime.sh ou defina {RUNTIME_ENV})",
                 self.root.display()
             ))
         }
