@@ -4202,7 +4202,7 @@ fn preview_card(
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
-                        name: preview.title.clone().unwrap_or_else(|| "image".to_owned()),
+                        name: title.clone().unwrap_or_else(|| "image".to_owned()),
                         zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
