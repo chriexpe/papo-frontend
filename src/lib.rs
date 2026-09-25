@@ -14,6 +14,7 @@ pub mod state;
 pub mod storage;
 pub mod ui;
 pub mod voice;
+pub mod webembed;
 
 #[cfg(target_os = "android")]
 mod android;
