@@ -268,6 +268,7 @@ pub struct LinuxWebEmbedBackend {
     texture_size: (u32, u32),
     started: Instant,
     last_pointer: Option<(f32, f32)>,
+    pointer_modifiers: u32,
 }
 
 impl LinuxWebEmbedBackend {
@@ -285,6 +286,7 @@ impl LinuxWebEmbedBackend {
             texture_size: (0, 0),
             started: Instant::now(),
             last_pointer: None,
+            pointer_modifiers: 0,
         }
     }
 
@@ -350,6 +352,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.page = Some(page);
         self.pending_frame = None;
         self.last_pointer = None;
+        self.pointer_modifiers = 0;
         Ok(())
     }
 
@@ -397,6 +400,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.current_id = None;
         self.pending_frame = None;
         self.last_pointer = None;
+        self.pointer_modifiers = 0;
         // Keep Papo's registered texture around and reuse it for the next
         // embed; eframe owns and eventually deletes it.
     }
@@ -507,15 +511,30 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                     f64::from(y),
                     f64::from(dx),
                     f64::from(dy),
+                    self.pointer_modifiers,
                     time,
                 );
             }
             WebEmbedInput::Down { x, y, button: WebEmbedButton::Left } => {
                 page.set_focus(true);
-                page.pointer_button(true, f64::from(x), f64::from(y), time);
+                self.pointer_modifiers |= 1 << 8;
+                page.pointer_button(
+                    true,
+                    f64::from(x),
+                    f64::from(y),
+                    self.pointer_modifiers,
+                    time,
+                );
             }
             WebEmbedInput::Up { x, y, button: WebEmbedButton::Left } => {
-                page.pointer_button(false, f64::from(x), f64::from(y), time);
+                self.pointer_modifiers &= !(1 << 8);
+                page.pointer_button(
+                    false,
+                    f64::from(x),
+                    f64::from(y),
+                    self.pointer_modifiers,
+                    time,
+                );
             }
             WebEmbedInput::Wheel { x, y, delta_y } => {
                 page.scroll(
@@ -523,6 +542,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                     f64::from(y),
                     0.0,
                     f64::from(-delta_y),
+                    self.pointer_modifiers,
                     time,
                 );
             }
