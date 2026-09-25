@@ -1086,6 +1086,9 @@ impl PapoApp {
             return;
         }
         self.persist_active_drafts(true);
+        if self.settings.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
+            self.ui.webembed.destroy_active();
+        }
         // Nunca materializa um rascunho guardado de outra conta, nem por um
         // quadro enquanto o load da conta atual ainda não aconteceu.
         let target_owner = self.workspaces[index]
