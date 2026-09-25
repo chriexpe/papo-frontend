@@ -707,6 +707,9 @@ pub struct UiState {
     /// Canto superior esquerdo do player flutuante, em pontos. `None` usa o
     /// canto inferior padrão; um arrasto grava a posição escolhida.
     pub webembed_float_pos: Option<(f32, f32)>,
+    /// Retângulo do WebEmbed inline ativo neste quadro. O ponteiro aqui
+    /// pertence ao browser, não ao hover/clique/gesto da mensagem.
+    pub webembed_inline_rect: Option<Rect>,
     /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
     /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
     pub webembed_float_rect: Option<Rect>,
@@ -829,6 +832,7 @@ impl Default for UiState {
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
             webembed_float_pos: None,
+            webembed_inline_rect: None,
             webembed_float_rect: None,
             webembed_chat_clip: None,
             webembed_blocked: false,
@@ -917,6 +921,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.webembed_inline_rect = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
@@ -3376,6 +3381,9 @@ fn message_list(
         // linha mas ainda está dentro da pastilha que ela abriu, essa mensagem
         // continua dona do hover; sem isto a metade de cima era inalcançável.
         let pointer = ui.ctx().pointer_hover_pos();
+        let webembed_owns_pointer = state
+            .webembed_inline_rect
+            .is_some_and(|rect| pointer.is_some_and(|position| rect.contains(position)));
         let held_by_pill = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
             id == &message.id && pointer.is_some_and(|position| rect.contains(position))
         });
@@ -3387,6 +3395,7 @@ fn message_list(
             Some(id) => id == &message.id,
             None => {
                 interactive
+                    && !webembed_owns_pointer
                     && !another_pill_owns_pointer
                     && (held_by_pill || ui.rect_contains_pointer(row))
             }
@@ -4431,14 +4440,18 @@ fn webembed_paint_and_input(
         return;
     };
 
-    // DMA-BUF is copied from an OpenGL framebuffer, whose origin is bottom-left.
-    // Flip V while presenting it in egui's top-left coordinate system.
+    // The WPE DMA-BUF arrives in the orientation egui expects after the
+    // EGL/FBO copy. Do not flip V here; doing so mirrors the browser vertically.
     ui.painter().image(
         texture,
         rect,
-        Rect::from_min_max(egui::pos2(0.0, 1.0), egui::pos2(1.0, 0.0)),
+        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
         Color32::WHITE,
     );
+
+    if tag.starts_with("inline") {
+        state.webembed_inline_rect = Some(rect);
+    }
 
     let response = ui.interact(
         rect,
