@@ -83,6 +83,9 @@ pub trait WebEmbedBackend {
     fn texture_size(&self) -> Option<(u32, u32)> {
         None
     }
+    fn is_playing(&self, _id: &str) -> Option<bool> {
+        None
+    }
     fn input(&mut self, _id: &str, _input: WebEmbedInput) {}
 }
 
@@ -212,8 +215,12 @@ impl WebEmbedManager {
     /// In CurrentChannel mode the owner card must still exist in this frame;
     /// Global deliberately lets the same browser survive channel/server moves.
     pub fn should_float(&self, behavior: OffscreenBehavior, scope: FloatScope) -> bool {
+        let Some(active) = self.active.as_ref() else {
+            return false;
+        };
+        let playing = self.backend.is_playing(&active.id).unwrap_or(true);
         behavior == OffscreenBehavior::Float
-            && self.active.is_some()
+            && playing
             && !self.inline_visible
             && (self.owner_seen || scope == FloatScope::Global)
     }
