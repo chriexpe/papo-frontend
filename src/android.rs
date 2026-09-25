@@ -30,6 +30,8 @@ fn android_main(app: AndroidApp) {
     crate::platform::native_text::install(app.clone());
     // Campos nativos comuns possuem Views e estado independentes do chat.
     crate::platform::native_field::install(app.clone());
+    // WebEmbed usa WebView Android real sobre a superfície do egui.
+    crate::platform::android_webembed::install(app.clone());
     // A ponte de volta: permissão e seletor de arquivos partem daqui.
     crate::platform::jvm::install(app.clone());
 
