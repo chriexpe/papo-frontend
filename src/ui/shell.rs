@@ -562,10 +562,6 @@ pub struct Stash {
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
-    /// Hosts explicitly trusted by the user for opening links without asking.
-    /// This is window/global state and is mirrored to persisted Settings.
-    pub trusted_link_hosts: std::collections::BTreeSet<String>,
-    pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
     pub last_channel: String,
     pub topic_since: Option<f64>,
@@ -586,8 +582,6 @@ impl Stash {
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
-            trusted_link_hosts: std::collections::BTreeSet::new(),
-            external_link_prompt: None,
             popup: None,
             last_channel: String::new(),
             topic_since: None,
@@ -678,6 +672,10 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
+    /// Hosts explicitly trusted by the user for opening links without asking.
+    /// This is window/global state and is mirrored to persisted Settings.
+    pub trusted_link_hosts: std::collections::BTreeSet<String>,
+    pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
     /// Pastilha de ações esticada em busca ou fixadas.
     pub panel: Option<Panel>,
@@ -778,6 +776,8 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
+            trusted_link_hosts: std::collections::BTreeSet::new(),
+            external_link_prompt: None,
             popup: None,
             panel: None,
             jump: None,
