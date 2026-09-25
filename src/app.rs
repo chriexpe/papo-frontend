@@ -2236,7 +2236,7 @@ impl PapoApp {
         // que vale é o arquivo em disco, então ele é lido e escrito à parte.
         let autostart_before = crate::platform::autostart::is_enabled();
         let mut autostart = autostart_before;
-        let before = (
+        let before_primary = (
             self.settings.lang,
             self.settings.theme,
             self.settings.translucency,
@@ -2245,6 +2245,8 @@ impl PapoApp {
             self.settings.reply_notifications,
             self.settings.close_to_tray,
             self.settings.badge,
+        );
+        let before_secondary = (
             self.settings.topic_reveal,
             self.settings.record_button,
             self.settings.webembed_offscreen,
@@ -2302,7 +2304,7 @@ impl PapoApp {
         };
 
         // Um ajuste local mudou: grava e reflete na janela na hora.
-        let after = (
+        let after_primary = (
             self.settings.lang,
             self.settings.theme,
             self.settings.translucency,
@@ -2311,14 +2313,16 @@ impl PapoApp {
             self.settings.reply_notifications,
             self.settings.close_to_tray,
             self.settings.badge,
+        );
+        let after_secondary = (
             self.settings.topic_reveal,
             self.settings.record_button,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
         );
-        if before != after {
-            if ask_download != before.12 {
+        if before_primary != after_primary || before_secondary != after_secondary {
+            if ask_download != before_secondary.4 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
