@@ -323,6 +323,9 @@ pub struct Settings {
     /// canto inferior padrão; um arrasto grava a posição escolhida.
     #[serde(default)]
     pub webembed_float_pos: Option<(f32, f32)>,
+    /// HTTPS hosts the user explicitly chose to open without another prompt.
+    #[serde(default)]
+    pub trusted_link_hosts: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub downloads: DownloadMode,
     /// Marcas de leitura de quando havia um servidor só; migradas na
@@ -370,6 +373,7 @@ impl Default for Settings {
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: default_webembed_float_width(),
             webembed_float_pos: None,
+            trusted_link_hosts: std::collections::BTreeSet::new(),
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -382,6 +386,11 @@ impl Settings {
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
         self.server_url = normalise_server_url(&self.server_url);
+        self.trusted_link_hosts = std::mem::take(&mut self.trusted_link_hosts)
+            .into_iter()
+            .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
+            .filter(|host| !host.is_empty())
+            .collect();
 
         // Um servidor é identificado pelo endereço normalizado. Versões
         // anteriores deixavam o botão + criar outra entrada com o endereço
@@ -775,6 +784,7 @@ impl PapoApp {
         ui_state.webembed_scope = settings.webembed_scope;
         ui_state.webembed_float_width = settings.webembed_float_width;
         ui_state.webembed_float_pos = settings.webembed_float_pos;
+        ui_state.trusted_link_hosts = settings.trusted_link_hosts.clone();
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -2529,6 +2539,10 @@ impl eframe::App for PapoApp {
         let ctx = ui.ctx().clone();
         self.ui.webembed.begin_frame();
         self.ui.webembed.pump_events(&ctx);
+        let external_urls = self.ui.webembed.take_external_urls();
+        for url in external_urls {
+            self.ui.request_external_url(&ctx, url);
+        }
         #[cfg(target_os = "android")]
         {
             crate::platform::native_text::begin_frame();
@@ -2729,6 +2743,7 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_scope = self.settings.webembed_scope;
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
+                self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
                 self.ui.webembed_blocked = self.sheet.open.is_some();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
@@ -2748,6 +2763,7 @@ impl eframe::App for PapoApp {
                 };
                 self.settings.webembed_float_width = self.ui.webembed_float_width;
                 self.settings.webembed_float_pos = self.ui.webembed_float_pos;
+                self.settings.trusted_link_hosts = self.ui.trusted_link_hosts.clone();
                 let draft_channel_after = self.ui.last_channel.clone();
                 if !draft_channel_after.is_empty() {
                     self.ui.capture_draft(&draft_channel_after);
