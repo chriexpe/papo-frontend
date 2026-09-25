@@ -193,7 +193,7 @@ impl EglDmaBuf {
                 gl.copy_tex_image_2d(
                     glow::TEXTURE_2D,
                     0,
-                    glow::RGBA as i32,
+                    glow::RGBA,
                     0,
                     0,
                     source.width as i32,
