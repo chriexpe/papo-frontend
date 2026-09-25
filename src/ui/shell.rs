@@ -6276,7 +6276,7 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
             .max_rect(rect)
             .sense(Sense::click()),
     );
-    pill_surface(&mut overlay, state, t, rect);
+    pill_surface(&overlay, state, t, rect);
 
     let mut chosen = None;
     for (index, id) in suggest.matches.iter().enumerate() {
