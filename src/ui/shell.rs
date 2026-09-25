@@ -333,6 +333,14 @@ pub struct LinkViewer {
     pub opened: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExternalLinkPrompt {
+    pub url: String,
+    pub host: String,
+    pub remember: bool,
+    pub opened: f64,
+}
+
 /// Popup ancorado a uma mensagem (seletor de emoji ou menu de contexto).
 #[derive(Clone, Debug)]
 pub struct Popup {
@@ -554,6 +562,10 @@ pub struct Stash {
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
+    /// Hosts explicitly trusted by the user for opening links without asking.
+    /// This is window/global state and is mirrored to persisted Settings.
+    pub trusted_link_hosts: std::collections::BTreeSet<String>,
+    pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
     pub last_channel: String,
     pub topic_since: Option<f64>,
@@ -574,6 +586,8 @@ impl Stash {
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
+            trusted_link_hosts: std::collections::BTreeSet::new(),
+            external_link_prompt: None,
             popup: None,
             last_channel: String::new(),
             topic_since: None,
@@ -697,6 +711,33 @@ pub struct UiState {
     /// Evita descartar vários quadros seguidos quando várias mídias terminam
     /// quase juntas; egui mostra um PERF WARNING depois de três consecutivos.
     last_relayout_discard: f64,
+}
+
+impl UiState {
+    pub fn request_external_url(&mut self, ctx: &egui::Context, raw_url: impl Into<String>) {
+        let url = raw_url.into();
+        if !papo_core::preview::safe_remote_url(&url) {
+            return;
+        }
+        let Some(host) = url::Url::parse(&url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        else {
+            return;
+        };
+
+        if self.trusted_link_hosts.contains(&host) {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+            return;
+        }
+
+        self.external_link_prompt = Some(ExternalLinkPrompt {
+            url,
+            host,
+            remember: false,
+            opened: ctx.input(|input| input.time),
+        });
+    }
 }
 
 impl Default for UiState {
@@ -3680,7 +3721,39 @@ fn rich_body(
                         if word.trim().is_empty() && word != " " {
                             continue;
                         }
-                        ui.label(RichText::new(word).font(font.clone()).color(color));
+
+                        let visible = word.trim_end();
+                        let trailing = &word[visible.len()..];
+                        let url = papo_core::preview::extract_https_urls(visible)
+                            .into_iter()
+                            .next();
+
+                        if let Some(url) = url {
+                            let response = ui.add(
+                                egui::Label::new(
+                                    RichText::new(visible)
+                                        .font(font.clone())
+                                        .color(t.accent)
+                                        .underline(),
+                                )
+                                .sense(Sense::click()),
+                            );
+                            if response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if response.clicked() {
+                                state.request_external_url(ui.ctx(), url);
+                            }
+                            if !trailing.is_empty() {
+                                ui.label(
+                                    RichText::new(trailing)
+                                        .font(font.clone())
+                                        .color(color),
+                                );
+                            }
+                        } else {
+                            ui.label(RichText::new(word).font(font.clone()).color(color));
+                        }
                     }
                 }
                 emoji::Token::Unicode(glyph) => {
@@ -4012,7 +4085,7 @@ fn preview_card(
                         state.media.pause_all();
                         ui.ctx().request_repaint();
                     } else {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                        state.request_external_url(ui.ctx(), url.to_owned());
                     }
                     media_clicked = true;
                 }
@@ -4024,7 +4097,7 @@ fn preview_card(
                         opened: ui.input(|input| input.time),
                     });
                 } else {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    state.request_external_url(ui.ctx(), url.to_owned());
                 }
                 media_clicked = true;
             }
@@ -4063,7 +4136,7 @@ fn preview_card(
                     state.media.pause_all();
                     ui.ctx().request_repaint();
                 } else {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                    state.request_external_url(ui.ctx(), url.to_owned());
                 }
                 media_clicked = true;
             }
@@ -4135,7 +4208,7 @@ fn preview_card(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     if inner.response.clicked() && !media_clicked {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
 }
@@ -4148,6 +4221,7 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
         && state.popup.is_none()
         && state.viewer.is_none()
         && state.link_viewer.is_none()
+        && state.external_link_prompt.is_none()
 }
 
 /// A floating player is PiP-like: it stays on top while drawers, panels and
@@ -4156,7 +4230,10 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
 /// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
 /// takes it away, and even then it is suspended, not destroyed.
 fn webembed_floating_allowed(state: &UiState) -> bool {
-    !state.webembed_blocked && state.viewer.is_none() && state.link_viewer.is_none()
+    !state.webembed_blocked
+        && state.viewer.is_none()
+        && state.link_viewer.is_none()
+        && state.external_link_prompt.is_none()
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
@@ -4491,6 +4568,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
 
     saved_toast(&mut top, state, t, s);
 
+    if state.external_link_prompt.is_some() {
+        external_link_prompt(&mut top, state, t, s);
+    }
+
     if let Some(popup) = state.popup.clone() {
         match popup.kind {
             PopupKind::Emoji | PopupKind::ComposerEmoji | PopupKind::ComposerSticker => {
@@ -4517,6 +4598,123 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             }
             None => state.viewer = Some(viewer),
         }
+    }
+}
+
+fn external_link_prompt(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let Some(mut prompt) = state.external_link_prompt.take() else {
+        return;
+    };
+
+    let screen = ui.ctx().content_rect();
+    let backdrop = ui.interact(
+        screen,
+        Id::new("external-link-backdrop"),
+        Sense::click(),
+    );
+    ui.painter()
+        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(150));
+
+    let width = 440.0_f32.min((screen.width() - space::XXL * 2.0).max(260.0));
+    let height = 188.0;
+    let rect = Rect::from_center_size(screen.center(), Vec2::new(width, height));
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::SHEET),
+        t.elevated_bg,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut body = ui.new_child(
+        UiBuilder::new()
+            .max_rect(rect.shrink(space::XL))
+            .layout(Layout::top_down(Align::Min)),
+    );
+    body.label(
+        RichText::new(s.external_link_title)
+            .font(text::headline())
+            .color(t.label),
+    );
+    body.add_space(space::SM);
+    body.label(
+        RichText::new(s.external_link_body)
+            .font(text::body())
+            .color(t.label_secondary),
+    );
+    body.add_space(space::XS);
+    body.label(
+        RichText::new(&prompt.url)
+            .font(text::footnote())
+            .color(t.label),
+    );
+    body.add_space(space::MD);
+    body.checkbox(
+        &mut prompt.remember,
+        format!("{} {}", s.external_link_trust_host, prompt.host),
+    );
+
+    let button_h = 32.0;
+    let open_w = 112.0;
+    let cancel_w = 88.0;
+    let y = rect.max.y - space::XL - button_h;
+    let open_rect = Rect::from_min_size(
+        egui::pos2(rect.max.x - space::XL - open_w, y),
+        Vec2::new(open_w, button_h),
+    );
+    let cancel_rect = Rect::from_min_size(
+        egui::pos2(open_rect.min.x - space::SM - cancel_w, y),
+        Vec2::new(cancel_w, button_h),
+    );
+
+    let cancel = ui.interact(cancel_rect, Id::new("external-link-cancel"), Sense::click());
+    ui.painter().rect_filled(
+        cancel_rect,
+        CornerRadius::same((button_h / 2.0) as u8),
+        if cancel.hovered() { t.fill_medium } else { t.fill_soft },
+    );
+    ui.painter().text(
+        cancel_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        s.cancel,
+        text::body(),
+        t.label,
+    );
+
+    let open = ui.interact(open_rect, Id::new("external-link-open"), Sense::click());
+    ui.painter().rect_filled(
+        open_rect,
+        CornerRadius::same((button_h / 2.0) as u8),
+        if open.hovered() { t.accent } else { t.accent.gamma_multiply(0.88) },
+    );
+    ui.painter().text(
+        open_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        s.external_link_open,
+        text::body(),
+        t.accent_label,
+    );
+
+    let now = ui.input(|input| input.time);
+    let outside = now > prompt.opened + 0.05
+        && backdrop.clicked()
+        && backdrop
+            .interact_pointer_pos()
+            .is_some_and(|position| !rect.contains(position));
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+
+    if open.clicked() {
+        if prompt.remember {
+            state.trusted_link_hosts.insert(prompt.host.clone());
+        }
+        ui.ctx().open_url(egui::OpenUrl::new_tab(prompt.url));
+    } else if !(cancel.clicked() || outside || escape) {
+        state.external_link_prompt = Some(prompt);
     }
 }
 
