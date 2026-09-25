@@ -632,6 +632,12 @@ pub struct UiState {
     pub previews: Option<std::sync::Arc<papo_core::preview::PreviewCoordinator>>,
     /// Mídia baixada, decodificada e tocando.
     pub media: MediaStore,
+    /// Browser rico é estado da janela/processo, nunca entra no Stash de servidor.
+    pub webembed: crate::webembed::WebEmbedManager,
+    /// O que fazer quando o cartão dono sai da viewport.
+    pub webembed_behavior: crate::webembed::OffscreenBehavior,
+    /// Superfície egui que deve ficar por cima de qualquer browser nativo.
+    pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
     pub attachments: Vec<Upload>,
     /// Mensagem sendo respondida.
@@ -704,6 +710,9 @@ impl Default for UiState {
             typed: false,
             previews: None,
             media: MediaStore::new(None),
+            webembed: crate::webembed::WebEmbedManager::default(),
+            webembed_behavior: crate::webembed::OffscreenBehavior::default(),
+            webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
             reply_notify: true,
@@ -817,6 +826,7 @@ pub fn draw(
         state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
+        state.webembed.destroy_active();
         state.media.saved = None;
         state.editing = None;
         state.editing_mentions.clear();
@@ -878,6 +888,7 @@ pub fn draw(
             shell_rect,
         );
         overlays(ui, store, state, t, s);
+        webembed_floating(ui, state, t);
         rail_action
     } else {
         state.mobile_surface = MobileSurface::Chat;
@@ -892,6 +903,7 @@ pub fn draw(
         }
         conversation(ui, store, state, call, t, s, stage);
         overlays(ui, store, state, t, s);
+        webembed_floating(ui, state, t);
         None
     }
 }
@@ -1959,6 +1971,12 @@ fn conversation(
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
+                    let web_scroll = state
+                        .webembed
+                        .take_scroll_delta_points(ui.ctx().pixels_per_point());
+                    if web_scroll.abs() > f32::EPSILON {
+                        ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
+                    }
                     ui.add_space(top_inset);
                     message_list(ui, store, state, t, s, full);
                     ui.add_space(bottom_inset);
@@ -3549,12 +3567,13 @@ fn message_body(
     }
 
     if !message.previews.is_empty() {
-        link_previews(ui, state, t, &message.previews, width);
+        link_previews(ui, state, t, &message.id, &message.previews, width);
     }
     rich_links_from_message(
         ui,
         state,
         t,
+        &message.id,
         &message.content,
         &message.previews,
         width,
@@ -3679,6 +3698,7 @@ fn link_previews(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
+    message_id: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
 ) {
@@ -3686,7 +3706,8 @@ fn link_previews(
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
             continue;
         };
-        preview_card(ui, state, t, &preview.id, url, Some(preview), width);
+        let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
+        preview_card(ui, state, t, &preview.id, &embed_id, url, Some(preview), width);
     }
 }
 
@@ -3694,6 +3715,7 @@ fn rich_links_from_message(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
+    message_id: &str,
     content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
@@ -3715,7 +3737,8 @@ fn rich_links_from_message(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
-        preview_card(ui, state, t, &id, &url, None, width);
+        let embed_id = format!("embed:{message_id}:{id}");
+        preview_card(ui, state, t, &id, &embed_id, &url, None, width);
     }
 }
 
@@ -3735,6 +3758,7 @@ fn preview_card(
     state: &mut UiState,
     t: &Tokens,
     id: &str,
+    embed_id: &str,
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
@@ -3914,6 +3938,7 @@ fn preview_card(
 
             if response.clicked() {
                 let ctx = ui.ctx().clone();
+                state.webembed.destroy_active();
                 state.media.toggle_remote_player(&player_id, remote, &ctx);
                 state.media.solo(&player_id);
                 media_clicked = true;
@@ -3939,25 +3964,40 @@ fn preview_card(
                 Color32::WHITE,
             );
 
-            if embed_url.is_some() {
-                ui.painter().circle_filled(
-                    image_rect.center(),
-                    24.0,
-                    Color32::from_black_alpha(170),
-                );
-                ui.painter().text(
-                    image_rect.center() + Vec2::new(1.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PLAY,
-                    text::icon(19.0),
-                    Color32::WHITE,
-                );
-            }
+            if let Some(embed) = embed_url.as_deref() {
+                if state.webembed.is_active(embed_id) {
+                    let allowed = webembed_inline_allowed(state);
+                    state.webembed.present_inline(
+                        embed_id,
+                        image_rect,
+                        ui.clip_rect(),
+                        ui.ctx().pixels_per_point(),
+                        allowed,
+                    );
+                } else {
+                    ui.painter().circle_filled(
+                        image_rect.center(),
+                        24.0,
+                        Color32::from_black_alpha(170),
+                    );
+                    ui.painter().text(
+                        image_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(19.0),
+                        Color32::WHITE,
+                    );
+                }
 
-            if response.clicked() {
-                if let Some(embed) = embed_url.as_deref() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
-                } else if let Some(remote) = image_url.as_ref() {
+                if response.clicked() {
+                    if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+                        state.media.pause_all();
+                        ui.ctx().request_repaint();
+                    }
+                    media_clicked = true;
+                }
+            } else if response.clicked() {
+                if let Some(remote) = image_url.as_ref() {
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
@@ -3977,17 +4017,32 @@ fn preview_card(
                 CornerRadius::same(radius::CARD),
                 Color32::from_black_alpha(225),
             );
-            ui.painter()
-                .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
-            ui.painter().text(
-                rect.center() + Vec2::new(1.0, 0.0),
-                egui::Align2::CENTER_CENTER,
-                icon::PLAY,
-                text::icon(22.0),
-                Color32::WHITE,
-            );
+
+            if state.webembed.is_active(embed_id) {
+                let allowed = webembed_inline_allowed(state);
+                state.webembed.present_inline(
+                    embed_id,
+                    rect,
+                    ui.clip_rect(),
+                    ui.ctx().pixels_per_point(),
+                    allowed,
+                );
+            } else {
+                ui.painter()
+                    .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
+                ui.painter().text(
+                    rect.center() + Vec2::new(1.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon::PLAY,
+                    text::icon(22.0),
+                    Color32::WHITE,
+                );
+            }
             if response.clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+                    state.media.pause_all();
+                    ui.ctx().request_repaint();
+                }
                 media_clicked = true;
             }
             ui.add_space(space::SM);
@@ -4067,6 +4122,93 @@ fn preview_card(
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
     ui.add_space(space::XS);
+}
+
+
+fn webembed_inline_allowed(state: &UiState) -> bool {
+    !state.webembed_blocked
+        && state.mobile_surface == MobileSurface::Chat
+        && state.panel.is_none()
+        && state.popup.is_none()
+        && state.viewer.is_none()
+        && state.link_viewer.is_none()
+}
+
+fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
+    if !state.webembed.should_float(state.webembed_behavior)
+        || !webembed_inline_allowed(state)
+    {
+        return;
+    }
+
+    let screen = ui.ctx().content_rect();
+    let margin = space::LG;
+    let width = (screen.width() * if state.compact { 0.72 } else { 0.34 })
+        .clamp(220.0, 380.0);
+    let video_h = width * 9.0 / 16.0;
+    let controls_h = 32.0;
+    let bottom_clearance = if state.compact { 84.0 } else { margin };
+    let outer = Rect::from_min_size(
+        egui::pos2(
+            screen.max.x - width - margin,
+            (screen.max.y - video_h - controls_h - bottom_clearance)
+                .max(screen.min.y + margin),
+        ),
+        Vec2::new(width, video_h + controls_h),
+    );
+
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("webembed-floating"));
+    let mut top = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(outer)
+            .sense(Sense::hover()),
+    );
+    top.painter().rect(
+        outer,
+        CornerRadius::same(radius::CARD),
+        t.fill_medium,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+    top.painter().text(
+        egui::pos2(header.min.x + space::SM, header.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Web",
+        text::caption(),
+        t.label_secondary,
+    );
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
+        Vec2::splat(controls_h),
+    );
+    if top
+        .interact(close_rect, Id::new("webembed-floating-close"), Sense::click())
+        .clicked()
+    {
+        state.webembed.destroy_active();
+        return;
+    }
+    top.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        text::icon(14.0),
+        t.label,
+    );
+
+    let browser_rect = Rect::from_min_max(
+        egui::pos2(outer.min.x, header.max.y),
+        outer.max,
+    );
+    state.webembed.present_floating(
+        browser_rect,
+        screen,
+        ui.ctx().pixels_per_point(),
+        true,
+    );
 }
 
 fn reaction_chip(
