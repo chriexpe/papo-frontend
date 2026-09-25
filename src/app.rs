@@ -1489,6 +1489,24 @@ impl PapoApp {
                     self.ui.media.save(&id, &name, dest);
                 }
             },
+            ChatAction::SaveCachedImage { path, name } => match self.settings.downloads.clone() {
+                DownloadMode::Ask => self.dialogs.save_cached_as(
+                    ctx.clone(),
+                    path,
+                    name,
+                    files::downloads_dir(),
+                ),
+                DownloadMode::Folder(dir) => {
+                    let dir = if dir.is_dir() { dir } else { files::downloads_dir() };
+                    let dest = files::unique_path(&dir, &name);
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(error) = std::fs::copy(&path, &dest) {
+                        log::warn!("não deu para salvar imagem de link: {error}");
+                    }
+                }
+            },
             ChatAction::NewChannel
             | ChatAction::EditChannel(_)
             | ChatAction::RequestDeleteChannel(_) => unreachable!("tratadas antes do match"),
@@ -1616,6 +1634,24 @@ impl PapoApp {
                     let dir = if dir.is_dir() { dir } else { files::downloads_dir() };
                     let dest = files::unique_path(&dir, &name);
                     self.ui.media.save(&id, &name, dest);
+                }
+            },
+            ChatAction::SaveCachedImage { path, name } => match self.settings.downloads.clone() {
+                DownloadMode::Ask => self.dialogs.save_cached_as(
+                    ctx.clone(),
+                    path,
+                    name,
+                    files::downloads_dir(),
+                ),
+                DownloadMode::Folder(dir) => {
+                    let dir = if dir.is_dir() { dir } else { files::downloads_dir() };
+                    let dest = files::unique_path(&dir, &name);
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(error) = std::fs::copy(&path, &dest) {
+                        log::warn!("não deu para salvar imagem de link: {error}");
+                    }
                 }
             },
             ChatAction::NewChannel
@@ -1981,6 +2017,14 @@ impl PapoApp {
                 Chosen::Files(uploads) => self.ui.attachments.extend(uploads),
                 Chosen::Folder(path) => self.settings.downloads = DownloadMode::Folder(path),
                 Chosen::SaveAs { id, name, dest } => self.ui.media.save(&id, &name, dest),
+                Chosen::SaveCached { source, dest } => {
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(error) = std::fs::copy(source, dest) {
+                        log::warn!("não deu para salvar imagem de link: {error}");
+                    }
+                }
                 Chosen::Image {
                     purpose,
                     blob,
