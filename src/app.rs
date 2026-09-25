@@ -310,6 +310,9 @@ pub struct Settings {
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
+    /// Ao rolar um WebEmbed ativo para fora da timeline: encerrar ou flutuar.
+    #[serde(default)]
+    pub webembed_offscreen: crate::webembed::OffscreenBehavior,
     #[serde(default)]
     pub downloads: DownloadMode,
     /// Marcas de leitura de quando havia um servidor só; migradas na
@@ -349,6 +352,7 @@ impl Default for Settings {
             badge: true,
             topic_reveal: true,
             record_button: true,
+            webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -750,6 +754,7 @@ impl PapoApp {
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.show_record = settings.record_button;
+        ui_state.webembed_behavior = settings.webembed_offscreen;
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -1690,6 +1695,7 @@ impl PapoApp {
                     .map(|ws| &mut ws.stash.media as &mut dyn TrimTarget),
             ),
         );
+        self.ui.webembed.trim(level);
     }
 
     /// Recolhe a pressão de memória publicada pelo `onTrimMemory` e aplica a
@@ -2224,6 +2230,7 @@ impl PapoApp {
             self.settings.badge,
             self.settings.topic_reveal,
             self.settings.record_button,
+            self.settings.webembed_offscreen,
             ask_download,
         );
 
@@ -2263,6 +2270,7 @@ impl PapoApp {
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
                 record_button: &mut self.settings.record_button,
+                webembed_offscreen: &mut self.settings.webembed_offscreen,
                 ask_download: &mut ask_download,
                 download_dir: match &self.settings.downloads {
                     DownloadMode::Folder(dir) => Some(dir.display().to_string()),
@@ -2286,10 +2294,11 @@ impl PapoApp {
             self.settings.badge,
             self.settings.topic_reveal,
             self.settings.record_button,
+            self.settings.webembed_offscreen,
             ask_download,
         );
         if before != after {
-            if ask_download != before.10 {
+            if ask_download != before.11 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -2488,6 +2497,8 @@ impl eframe::App for PapoApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.ui.webembed.begin_frame();
+        self.ui.webembed.pump_events(&ctx);
         #[cfg(target_os = "android")]
         {
             crate::platform::native_text::begin_frame();
@@ -2518,6 +2529,7 @@ impl eframe::App for PapoApp {
                 // justamente atrás que o sistema quer que a gente largue o
                 // que é reconstruível. A política é a mesma (Moderate, que
                 // preserva quem está tocando), só aplicada antes da suspensão.
+                self.ui.webembed.suspend_active();
                 self.trim_all_media(crate::media::TrimLevel::Moderate);
                 if let Some(storage) = frame.storage_mut() {
                     eframe::App::save(self, storage);
@@ -2606,6 +2618,7 @@ impl eframe::App for PapoApp {
             );
 
             if crate::platform::android_call::is_in_pip() {
+                self.ui.webembed.suspend_active();
                 ctx.request_repaint();
                 if let Some(index) = call_index {
                     let strings = self.settings.lang.strings();
@@ -2682,6 +2695,8 @@ impl eframe::App for PapoApp {
                         .collect::<Vec<_>>()
                 });
                 self.ui.reply_notify_default = self.settings.reply_notifications;
+                self.ui.webembed_behavior = self.settings.webembed_offscreen;
+                self.ui.webembed_blocked = self.sheet.open.is_some();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -2729,6 +2744,13 @@ impl eframe::App for PapoApp {
         // thread de rede pode consultar o snapshot sem esperar outro repaint.
         self.sync_notification_contexts();
 
+        // O browser é uma superfície nativa: qualquer frame que não declare
+        // um dono/retângulo válido precisa suspendê-lo ou destruí-lo.
+        self.ui.webembed.end_frame(
+            self.settings.webembed_offscreen,
+            self.sheet.open.is_some(),
+        );
+
         #[cfg(target_os = "android")]
         {
             crate::platform::native_field::end_frame();
@@ -2738,6 +2760,7 @@ impl eframe::App for PapoApp {
 
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         self.flush_all_drafts();
+        self.ui.webembed.destroy_active();
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
         {
