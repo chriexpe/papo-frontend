@@ -463,10 +463,12 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
             self.texture_id = Some(texture_id);
         }
 
-        let egl = self.egl.get_or_insert_with(EglDmaBuf::load);
-        let Ok(egl) = egl else {
-            log::error!("webembed(wpe): {}", egl.as_ref().unwrap_err());
-            return;
+        let egl = match self.egl.get_or_insert_with(EglDmaBuf::load) {
+            Ok(egl) => egl,
+            Err(error) => {
+                log::error!("webembed(wpe): {error}");
+                return;
+            }
         };
         let texture = self
             .native_texture
