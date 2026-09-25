@@ -18,6 +18,7 @@
 #include <gio/gio.h>
 #include <glib-object.h>
 #include <glib.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <wpe/headless/wpe-headless.h>
@@ -547,7 +548,24 @@ void water_wpe_page_load_uri(WaterWpePage *page, const char *uri)
 {
     g_assert(page != NULL);
     g_assert(uri != NULL);
-    webkit_web_view_load_uri(page->web_view, uri);
+    // Google requires an embedded player request to be identified by the
+    // embedding app. The WPE headers expose no per-request header setter, so we
+    // serve an iframe from the app identity: the subframe request then carries
+    // `Referer: https://io.github.chriexpe.papo/`. A bare top-level load has no
+    // referrer and fails with "video player configuration error" (153), the
+    // same failure Android hit.
+    gchar *escaped = g_markup_escape_text(uri, -1);
+    gchar *html = g_strdup_printf(
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<style>html,body{margin:0;height:100%%;background:#000;overflow:hidden}"
+        "iframe{border:0;width:100%%;height:100%%;display:block}</style></head>"
+        "<body><iframe src=\"%s\" allow=\"autoplay; encrypted-media; "
+        "picture-in-picture; fullscreen\" allowfullscreen></iframe></body></html>",
+        escaped);
+    webkit_web_view_load_html(
+        page->web_view, html, "https://io.github.chriexpe.papo/");
+    g_free(html);
+    g_free(escaped);
 }
 
 void water_wpe_page_stop(WaterWpePage *page)
@@ -592,8 +610,12 @@ void water_wpe_page_pointer_button(
 {
     WPEEventType type =
         pressed ? WPE_EVENT_POINTER_DOWN : WPE_EVENT_POINTER_UP;
-    guint press_count =
-        wpe_view_compute_press_count(page->view, x, y, button, time_ms);
+    // WPE only accepts a non-zero press count on POINTER_DOWN; every other
+    // type must carry zero. Passing the computed count on UP made the
+    // constructor return NULL and the following wpe_view_event() abort.
+    guint press_count = pressed
+        ? wpe_view_compute_press_count(page->view, x, y, button, time_ms)
+        : 0;
     WPEEvent *event = wpe_event_pointer_button_new(
         type,
         page->view,
@@ -604,6 +626,8 @@ void water_wpe_page_pointer_button(
         x,
         y,
         press_count);
+    if (event == NULL)
+        return;
     wpe_view_event(page->view, event);
     wpe_event_unref(event);
 }
