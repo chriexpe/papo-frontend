@@ -92,7 +92,12 @@ wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", default-features = false }
-servo = { version = "0.6.0", default-features = false, features = ["bundled", "js_jit", "media-gstreamer"] }
+# Servo 0.5 is intentionally pinned: Servo 0.6's mozjs 153 requires
+# `icu_locale ~2.1.1`, while Turso 0.8-pre requires `icu_locale ^2.2`, which
+# makes the workspace dependency graph unsatisfiable. Revisit once a newer
+# Servo revision uses a compatible SpiderMonkey/ICU graph. Note: on 0.5 the
+# "bundled" convenience feature does not exist; it is spelled out here.
+servo = { version = "=0.5.0", default-features = false, features = ["baked-in-resources", "bundled_freetype", "js_jit", "media-gstreamer"] }
 
 # ---------------------------------------------------------------------------
 # Android
