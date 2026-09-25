@@ -444,12 +444,56 @@ public class PapoActivity extends GameActivity {
         settings.setSupportMultipleWindows(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
+        // The stock WebView UA carries "; wv", which YouTube's player treats
+        // as an unsupported browser and refuses to play (error 152). Present
+        // as ordinary Chrome instead.
+        settings.setUserAgentString(
+                "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 "
+                        + "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36");
 
         view.setBackgroundColor(Color.BLACK);
         view.setSaveEnabled(false);
         view.setWebViewClient(webEmbedClient(id));
         view.setWebChromeClient(webEmbedChrome(id));
-        CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
+        // Player providers (YouTube in particular) keep their session in
+        // third-party cookies and fail with a playback error without them.
+        // This is scoped to the isolated embed WebView; the rest of the app
+        // never talks to these origins.
+        CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
+    }
+
+    /**
+     * The origin the embed is served from, used as the document's base URL so
+     * the player runs with a real referrer. YouTube's embedded player rejects
+     * a document loaded with no referrer (error 153).
+     */
+    private String webEmbedBaseUrl(String url) {
+        try {
+            final Uri uri = Uri.parse(url);
+            final String scheme = uri.getScheme();
+            final String authority = uri.getAuthority();
+            if (scheme != null && authority != null) {
+                return scheme + "://" + authority + "/";
+            }
+        } catch (RuntimeException ignored) {
+        }
+        return url;
+    }
+
+    /**
+     * Wraps the embed URL in an iframe. Player providers expect to be embedded
+     * by a page on their own origin; loading the embed URL as the top-level
+     * document breaks that assumption — which is exactly YouTube's error 153.
+     */
+    private String webEmbedFrameHtml(String url) {
+        final String escaped = url.replace("&", "&amp;").replace("\"", "&quot;");
+        return "<!doctype html><html><head>"
+                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+                + "<style>html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}"
+                + "iframe{border:0;width:100%;height:100%;display:block}</style></head>"
+                + "<body><iframe src=\"" + escaped + "\" "
+                + "allow=\"autoplay; encrypted-media; picture-in-picture; fullscreen\" "
+                + "allowfullscreen></iframe></body></html>";
     }
 
     public void createWebEmbed(String id, String url) {
@@ -467,7 +511,12 @@ public class PapoActivity extends GameActivity {
             webEmbedView = new TimelineWebView(this);
             configureWebEmbed(webEmbedView, id);
             webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
-            webEmbedView.loadUrl(url);
+            webEmbedView.loadDataWithBaseURL(
+                    webEmbedBaseUrl(url),
+                    webEmbedFrameHtml(url),
+                    "text/html",
+                    "utf-8",
+                    null);
             webEmbedLayer.setVisibility(View.GONE);
         });
     }
