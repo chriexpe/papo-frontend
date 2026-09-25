@@ -148,6 +148,7 @@ public class PapoActivity extends GameActivity {
     private NativeEditText nativeEditor;
     private String nativeEditorKey;
     private int nativeEditorMode = NATIVE_EDITOR_COMPOSER;
+    private boolean nativeEditorAutocomplete;
     private boolean mutatingNativeEditor;
     private boolean imeWasVisible;
     private String callPresentation = "off";
@@ -654,7 +655,7 @@ public class PapoActivity extends GameActivity {
                     | EditorInfo.IME_FLAG_NO_ENTER_ACTION);
             outAttrs.imeOptions |= EditorInfo.IME_FLAG_NO_EXTRACT_UI
                     | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                    | (nativeEditorMode == NATIVE_EDITOR_EDIT
+                    | (nativeEditorMode == NATIVE_EDITOR_EDIT || nativeEditorAutocomplete
                             ? EditorInfo.IME_ACTION_DONE
                             : EditorInfo.IME_ACTION_NONE);
             return connection;
@@ -719,7 +720,8 @@ public class PapoActivity extends GameActivity {
         });
 
         nativeEditor.setOnEditorActionListener((view, actionId, event) -> {
-            if (nativeEditorMode != NATIVE_EDITOR_EDIT || nativeEditorKey == null) {
+            if ((nativeEditorMode != NATIVE_EDITOR_EDIT && !nativeEditorAutocomplete)
+                    || nativeEditorKey == null) {
                 return false;
             }
             final boolean done = actionId == EditorInfo.IME_ACTION_DONE;
@@ -757,14 +759,17 @@ public class PapoActivity extends GameActivity {
             int hintColor,
             int mode,
             int maxLines,
+            boolean autocomplete,
             boolean focus) {
         runOnUiThread(() -> {
             ensureNativeEditor();
 
             final boolean keyChanged = !key.equals(nativeEditorKey);
             final boolean modeChanged = nativeEditorMode != mode;
+            final boolean autocompleteChanged = nativeEditorAutocomplete != autocomplete;
             nativeEditorKey = key;
             nativeEditorMode = mode;
+            nativeEditorAutocomplete = autocomplete;
 
             nativeEditor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
             nativeEditor.setTextColor(textColor);
@@ -775,7 +780,7 @@ public class PapoActivity extends GameActivity {
             nativeEditor.setImeOptions(
                     EditorInfo.IME_FLAG_NO_EXTRACT_UI
                             | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                            | (mode == NATIVE_EDITOR_EDIT
+                            | (mode == NATIVE_EDITOR_EDIT || autocomplete
                                     ? EditorInfo.IME_ACTION_DONE
                                     : EditorInfo.IME_ACTION_NONE));
 
@@ -804,7 +809,8 @@ public class PapoActivity extends GameActivity {
 
             final InputMethodManager imm =
                     (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-            if (imm != null && (keyChanged || modeChanged) && nativeEditor.hasFocus()) {
+            if (imm != null && (keyChanged || modeChanged || autocompleteChanged)
+                    && nativeEditor.hasFocus()) {
                 imm.restartInput(nativeEditor);
             }
 
