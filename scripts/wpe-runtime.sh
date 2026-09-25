@@ -51,6 +51,7 @@ output="$destination/lib/libwaterui_wpe.so"
 
 cc \
     -std=c11 \
+    -D_GNU_SOURCE \
     -O2 \
     -fPIC \
     -shared \
