@@ -79,7 +79,17 @@ const COMPOSER_LINE_H: f32 = 52.0;
 /// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
 /// quatro linhas. Depois disso a própria área de texto rola internamente.
 const COMPOSER_MAX_ROWS: usize = 4;
-const TOAST_SECONDS: f64 = 6.0;
+const TOAST_SECONDS: f64 = 4.0;
+const TOAST_MOBILE_MAX_WIDTH: f32 = 300.0;
+const TOAST_DESKTOP_MAX_WIDTH: f32 = 420.0;
+
+fn toast_max_width(ctx: &egui::Context) -> f32 {
+    if ctx.content_rect().width() < COMPACT_BREAKPOINT {
+        TOAST_MOBILE_MAX_WIDTH
+    } else {
+        TOAST_DESKTOP_MAX_WIDTH
+    }
+}
 
 /// O que a conversa pede para a camada de cima fazer.
 #[derive(Debug, Clone)]
@@ -5133,7 +5143,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                 t,
                 state.translucent,
                 space::XXXL * 2.0,
-                420.0,
+                toast_max_width(ui.ctx()),
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
@@ -5176,7 +5186,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
         t,
         state.translucent,
         space::XXXL * 2.0,
-        420.0,
+        toast_max_width(ui.ctx()),
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -5193,14 +5203,16 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                         )
                         .wrap(),
                     );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(path.display().to_string())
-                                .font(text::footnote())
-                                .color(t.label_tertiary),
-                        )
-                        .wrap(),
-                    );
+                    if ui.ctx().content_rect().width() >= COMPACT_BREAKPOINT {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(path.display().to_string())
+                                    .font(text::footnote())
+                                    .color(t.label_tertiary),
+                            )
+                            .wrap(),
+                        );
+                    }
                 });
                 if ui.button(s.open).clicked() {
                     open_clicked = true;
