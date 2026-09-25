@@ -5919,6 +5919,7 @@ fn composer(
             let (field_focused, caret) =
                 if state.editing.is_none() && android_chat_editor_visible {
                     let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
+                    let pending_before = state.composer_caret_pending;
                     let events = crate::platform::native_text::show(
                         ui.ctx(),
                         "composer",
@@ -5934,15 +5935,18 @@ fn composer(
                         text::message().size,
                     );
                     state.typed = events.changed;
-                    if events.submit && state.suggest.is_some() {
-                        accept_suggestion(store, state, ui.ctx(), edit_id);
-                    }
-                    if let Some(after) = state.composer_caret_pending.take() {
+                    if let Some(after) = pending_before
+                        && state.composer_caret_pending == Some(after)
+                    {
+                        state.composer_caret_pending = None;
                         crate::platform::native_text::set_selection(
                             "composer",
                             &state.composer,
                             after,
                         );
+                    }
+                    if events.submit && state.suggest.is_some() {
+                        accept_suggestion(store, state, ui.ctx(), edit_id);
                     }
                     (events.focused, events.caret)
                 } else {
