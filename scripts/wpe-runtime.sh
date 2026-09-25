@@ -21,6 +21,7 @@ done
 packages=(
     wpe-webkit-2.0
     wpe-platform-2.0
+    libsoup-3.0
     libdrm
 )
 
@@ -35,7 +36,7 @@ if (( ${#missing[@]} )); then
     echo "missing WPE development packages: ${missing[*]}" >&2
     if command -v pacman >/dev/null 2>&1; then
         echo "On Arch/CachyOS:" >&2
-        echo "  sudo pacman -S --needed wpewebkit libdrm pkgconf" >&2
+        echo "  sudo pacman -S --needed wpewebkit libsoup3 libdrm pkgconf" >&2
     else
         echo "Install your distribution's WPE WebKit 2.x development packages." >&2
     fi
