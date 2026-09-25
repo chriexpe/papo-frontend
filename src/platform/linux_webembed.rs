@@ -269,8 +269,6 @@ pub struct LinuxWebEmbedBackend {
     started: Instant,
     last_pointer: Option<(f32, f32)>,
     pointer_modifiers: u32,
-    /// egui points -> WPE logical/CSS coordinates.
-    input_scale: (f32, f32),
 }
 
 impl LinuxWebEmbedBackend {
@@ -289,7 +287,6 @@ impl LinuxWebEmbedBackend {
             started: Instant::now(),
             last_pointer: None,
             pointer_modifiers: 0,
-            input_scale: (1.0, 1.0),
         }
     }
 
@@ -356,7 +353,6 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.pending_frame = None;
         self.last_pointer = None;
         self.pointer_modifiers = 0;
-        self.input_scale = (1.0, 1.0);
         Ok(())
     }
 
@@ -367,30 +363,12 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         let Some(page) = self.page.clone() else {
             return;
         };
-        // Keep WebKit's *layout* viewport compact, Discord-style, even when
-        // the egui surface is large. YouTube then selects its compact-player
-        // chrome instead of a wide desktop layout with physically tiny
-        // controls. WPE's scale factor supplies the actual render density, so
-        // the final DMA-BUF remains sharp rather than being a blown-up bitmap.
-        const MAX_LAYOUT_WIDTH: f32 = 420.0;
-        let display_width = viewport.rect.width().max(1.0);
-        let display_height = viewport.rect.height().max(1.0);
-        let layout_width = display_width.min(MAX_LAYOUT_WIDTH).round().max(1.0);
-        let layout_height = (display_height * layout_width / display_width)
-            .round()
-            .max(1.0);
-
-        self.input_scale = (
-            layout_width / display_width,
-            layout_height / display_height,
-        );
-
-        let render_scale =
-            viewport.pixels_per_point.max(0.1) * (display_width / layout_width);
+        let width = viewport.rect.width().round().max(1.0) as u32;
+        let height = viewport.rect.height().round().max(1.0) as u32;
         page.resize(
-            layout_width as u32,
-            layout_height as u32,
-            f64::from(render_scale),
+            width,
+            height,
+            f64::from(viewport.pixels_per_point.max(0.1)),
         );
         self.pump_page();
         if let Some(ctx) = &self.egui {
@@ -427,7 +405,6 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.pending_frame = None;
         self.last_pointer = None;
         self.pointer_modifiers = 0;
-        self.input_scale = (1.0, 1.0);
         // Keep Papo's registered texture around and reuse it for the next
         // embed; eframe owns and eventually deletes it.
     }
@@ -523,6 +500,13 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         (self.texture_size.0 > 0 && self.texture_size.1 > 0).then_some(self.texture_size)
     }
 
+    fn is_playing(&self, id: &str) -> Option<bool> {
+        if self.current_id.as_deref() != Some(id) {
+            return None;
+        }
+        self.page.as_ref().map(Page::is_playing_audio)
+    }
+
     fn input(&mut self, id: &str, input: WebEmbedInput) {
         if self.current_id.as_deref() != Some(id) {
             return;
@@ -531,12 +515,8 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
             return;
         };
         let time = self.time_ms();
-        let map_point = |x: f32, y: f32| {
-            (x * self.input_scale.0, y * self.input_scale.1)
-        };
         match input {
             WebEmbedInput::Move { x, y } => {
-                let (x, y) = map_point(x, y);
                 let (dx, dy) = self
                     .last_pointer
                     .map_or((0.0, 0.0), |(old_x, old_y)| (x - old_x, y - old_y));
@@ -551,7 +531,6 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                 );
             }
             WebEmbedInput::Down { x, y, button: WebEmbedButton::Left } => {
-                let (x, y) = map_point(x, y);
                 page.set_focus(true);
                 self.pointer_modifiers |= 1 << 8;
                 page.pointer_button(
@@ -563,7 +542,6 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                 );
             }
             WebEmbedInput::Up { x, y, button: WebEmbedButton::Left } => {
-                let (x, y) = map_point(x, y);
                 self.pointer_modifiers &= !(1 << 8);
                 page.pointer_button(
                     false,
@@ -574,12 +552,11 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                 );
             }
             WebEmbedInput::Wheel { x, y, delta_y } => {
-                let (x, y) = map_point(x, y);
                 page.scroll(
                     f64::from(x),
                     f64::from(y),
                     0.0,
-                    f64::from(-delta_y * self.input_scale.1),
+                    f64::from(-delta_y),
                     self.pointer_modifiers,
                     time,
                 );
