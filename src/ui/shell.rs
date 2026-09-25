@@ -4176,7 +4176,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     // and every position is clamped below it.
     let top_band = PILL_MARGIN * 2.0 + PILL_HEIGHT;
     let margin = if state.compact { 0.0 } else { space::LG };
-    let max_width = (screen.width() - margin * 2.0).max(200.0).min(720.0);
+    let max_width = (screen.width() - margin * 2.0).clamp(200.0, 720.0);
 
     // Phones start edge-to-edge; once the player has been moved or resized,
     // the remembered width wins.
