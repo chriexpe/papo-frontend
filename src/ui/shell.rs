@@ -2242,9 +2242,14 @@ fn handle_mobile_gesture(
         #[cfg(not(target_os = "android"))]
         let media_seek = false;
 
+        // A settings sheet is rendered by App after the shell, so it cannot
+        // participate in this hit-test directly. App marks native/egui modal
+        // surfaces through webembed_blocked before drawing us; those surfaces
+        // must also own horizontal drags instead of leaking them to chat.
         let blocked = state.popup.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
+            || state.webembed_blocked
             || media_seek
             || state
                 .webembed_float_rect
