@@ -110,6 +110,11 @@ pub enum ChatAction {
         id: String,
         name: String,
     },
+    /// Salva uma imagem pública de link/embed que já está no cache local.
+    SaveCachedImage {
+        path: std::path::PathBuf,
+        name: String,
+    },
     /// Abre o seletor de arquivos do sistema.
     PickFiles,
     /// O mesmo seletor, filtrado em imagens animadas.
@@ -332,6 +337,10 @@ pub struct Jump {
 pub struct LinkViewer {
     pub id: String,
     pub url: String,
+    pub name: String,
+    pub zoom: f32,
+    pub offset: Vec2,
+    pub fitted: bool,
     /// O clique que abriu o overlay não pode fechá-lo no mesmo quadro.
     pub opened: f64,
 }
@@ -4133,6 +4142,10 @@ fn preview_card(
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
+                        name: preview.title.clone().unwrap_or_else(|| "image".to_owned()),
+                        zoom: 1.0,
+                        offset: Vec2::ZERO,
+                        fitted: true,
                         opened: ui.input(|input| input.time),
                     });
                 } else {
@@ -4672,7 +4685,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if state.link_viewer.is_some() {
-        link_image_viewer(ui, state, t);
+        link_image_viewer(ui, state, t, s);
     }
 
     if let Some(mut viewer) = state.viewer.take() {
@@ -4808,77 +4821,34 @@ fn external_link_prompt(
     }
 }
 
-fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
-    let Some(viewer) = state.link_viewer.clone() else {
+fn link_image_viewer(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let Some(mut link) = state.link_viewer.take() else {
         return;
     };
-    let screen = ui.ctx().content_rect();
-    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-link-viewer"));
-    let top = ui.new_child(
-        UiBuilder::new()
-            .layer_id(layer)
-            .max_rect(screen)
-            .sense(Sense::click()),
-    );
-
-    top.painter()
-        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
-
-    let texture = state
-        .media
-        .remote_image(&viewer.id, &viewer.url)
-        .and_then(|texture| texture.frame(top.ctx()))
-        .cloned();
-
-    let mut content = Rect::NOTHING;
-    if let Some(texture) = texture {
-        let stage = screen.shrink2(Vec2::new(space::XXXL, 64.0));
-        let natural = texture.size_vec2();
-        let scale = (stage.width() / natural.x)
-            .min(stage.height() / natural.y)
-            .min(1.0);
-        let size = natural * scale;
-        content = Rect::from_center_size(stage.center(), size);
-        top.painter().image(
-            texture.id(),
-            content,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    } else {
-        top.painter().text(
-            screen.center(),
-            egui::Align2::CENTER_CENTER,
-            "Carregando imagem…",
-            text::body(),
-            t.label_secondary,
-        );
-        top.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(150));
-    }
-
-    let close_rect = Rect::from_center_size(
-        egui::pos2(screen.max.x - 28.0, screen.min.y + 28.0),
-        Vec2::splat(36.0),
-    );
-    let close = top.interact(close_rect, Id::new("link-viewer-close"), Sense::click());
-    top.painter().text(
-        close_rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon::X,
-        text::icon(20.0),
-        Color32::WHITE,
-    );
-
-    let backdrop = top.interact(screen, Id::new("link-viewer-backdrop"), Sense::click());
-    let escape = top.input(|input| input.key_pressed(egui::Key::Escape));
-    let outside = top.input(|input| input.time) > viewer.opened + 0.05
-        && backdrop.clicked()
-        && backdrop
-            .interact_pointer_pos()
-            .is_some_and(|position| !content.expand(space::MD).contains(position));
-    if close.clicked() || escape || outside {
-        state.link_viewer = None;
+    match viewer::draw_remote_image(
+        ui,
+        t,
+        s,
+        &mut state.media,
+        &link.id,
+        &link.url,
+        &link.name,
+        link.opened,
+        &mut link.zoom,
+        &mut link.offset,
+        &mut link.fitted,
+    ) {
+        Some(viewer::RemoteViewerAction::Close) => {}
+        Some(viewer::RemoteViewerAction::Download { path, name }) => {
+            state.actions.push(ChatAction::SaveCachedImage { path, name });
+            state.link_viewer = Some(link);
+        }
+        None => state.link_viewer = Some(link),
     }
 }
 
