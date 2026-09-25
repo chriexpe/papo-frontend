@@ -23,6 +23,22 @@ pub enum OffscreenBehavior {
     Float,
 }
 
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+pub enum FloatScope {
+    #[default]
+    CurrentChannel,
+    Global,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbedViewport {
     pub rect: Rect,
@@ -164,14 +180,14 @@ impl WebEmbedManager {
         self.presented = true;
     }
 
-    /// Off-screen floating playback is allowed only while the original card
-    /// still belongs to the current channel/frame. Channel/server switches
-    /// therefore never teleport a player into an unrelated conversation.
-    pub fn should_float(&self, behavior: OffscreenBehavior) -> bool {
+    /// Decides whether the live browser should occupy the egui floating slot.
+    /// In CurrentChannel mode the owner card must still exist in this frame;
+    /// Global deliberately lets the same browser survive channel/server moves.
+    pub fn should_float(&self, behavior: OffscreenBehavior, scope: FloatScope) -> bool {
         behavior == OffscreenBehavior::Float
             && self.active.is_some()
-            && self.owner_seen
             && !self.inline_visible
+            && (self.owner_seen || scope == FloatScope::Global)
     }
 
     pub fn present_floating(
@@ -208,13 +224,20 @@ impl WebEmbedManager {
     }
 
     /// Called after egui has had a chance to draw the floating slot.
-    pub fn end_frame(&mut self, behavior: OffscreenBehavior, occluded: bool) {
+    pub fn end_frame(
+        &mut self,
+        behavior: OffscreenBehavior,
+        scope: FloatScope,
+        occluded: bool,
+    ) {
         if self.active.is_none() {
             return;
         }
 
-        // The owning card disappeared entirely: channel/server/auth switch.
-        if !self.owner_seen {
+        // CurrentChannel intentionally ties the browser lifetime to the
+        // message occurrence that created it. Global keeps it alive so the
+        // shell can re-home it into the floating slot after navigation.
+        if !self.owner_seen && scope == FloatScope::CurrentChannel {
             self.destroy_active();
             return;
         }
@@ -415,7 +438,7 @@ mod tests {
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
         manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
-        manager.end_frame(OffscreenBehavior::Stop, false);
+        manager.end_frame(OffscreenBehavior::Stop, FloatScope::CurrentChannel, false);
         assert_eq!(
             calls.lock().unwrap().last(),
             Some(&Call::Destroy("a".into()))
@@ -428,9 +451,9 @@ mod tests {
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
         manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
-        assert!(manager.should_float(OffscreenBehavior::Float));
+        assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel));
         manager.present_floating(rect(), rect(), 1.0, true);
-        manager.end_frame(OffscreenBehavior::Float, false);
+        manager.end_frame(OffscreenBehavior::Float, FloatScope::CurrentChannel, false);
         let calls = calls.lock().unwrap();
         assert!(!matches!(calls.last(), Some(Call::Destroy(_))));
         assert!(calls.contains(&Call::Present("a".into())));
@@ -441,11 +464,26 @@ mod tests {
         let (mut manager, calls) = manager();
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.end_frame(OffscreenBehavior::Float, false);
+        manager.end_frame(
+            OffscreenBehavior::Float,
+            FloatScope::CurrentChannel,
+            false,
+        );
         assert_eq!(
             calls.lock().unwrap().last(),
             Some(&Call::Destroy("a".into()))
         );
+    }
+
+    #[test]
+    fn global_scope_keeps_browser_alive_without_owner_card() {
+        let (mut manager, calls) = manager();
+        manager.activate("a".into(), "https://example.com/a".into());
+        manager.begin_frame();
+        assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::Global));
+        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.end_frame(OffscreenBehavior::Float, FloatScope::Global, false);
+        assert!(!matches!(calls.lock().unwrap().last(), Some(Call::Destroy(_))));
     }
 
     #[test]
