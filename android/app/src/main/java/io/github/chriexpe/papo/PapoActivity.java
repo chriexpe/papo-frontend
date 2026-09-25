@@ -444,12 +444,6 @@ public class PapoActivity extends GameActivity {
         settings.setSupportMultipleWindows(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
-        // The stock WebView UA carries "; wv", which YouTube's player treats
-        // as an unsupported browser and refuses to play (error 152). Present
-        // as ordinary Chrome instead.
-        settings.setUserAgentString(
-                "Mozilla/5.0 (Linux; Android 13; SM-S901B) AppleWebKit/537.36 "
-                        + "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36");
 
         view.setBackgroundColor(Color.BLACK);
         view.setSaveEnabled(false);
@@ -511,12 +505,9 @@ public class PapoActivity extends GameActivity {
             webEmbedView = new TimelineWebView(this);
             configureWebEmbed(webEmbedView, id);
             webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
-            webEmbedView.loadDataWithBaseURL(
-                    webEmbedBaseUrl(url),
-                    webEmbedFrameHtml(url),
-                    "text/html",
-                    "utf-8",
-                    null);
+            final Map<String, String> headers = new HashMap<>();
+            headers.put("Referer", webEmbedReferrer());
+            webEmbedView.loadUrl(url, headers);
             webEmbedLayer.setVisibility(View.GONE);
         });
     }
