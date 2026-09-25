@@ -449,45 +449,17 @@ public class PapoActivity extends GameActivity {
         view.setSaveEnabled(false);
         view.setWebViewClient(webEmbedClient(id));
         view.setWebChromeClient(webEmbedChrome(id));
-        // Player providers (YouTube in particular) keep their session in
-        // third-party cookies and fail with a playback error without them.
-        // This is scoped to the isolated embed WebView; the rest of the app
-        // never talks to these origins.
-        CookieManager.getInstance().setAcceptThirdPartyCookies(view, true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
     }
 
     /**
-     * The origin the embed is served from, used as the document's base URL so
-     * the player runs with a real referrer. YouTube's embedded player rejects
-     * a document loaded with no referrer (error 153).
+     * The app's own web identity, used as the embed's `Referer`. Google
+     * requires an embedded player request to be identified; naming the app
+     * (package id) matches what Android WebView attests via Media Integrity,
+     * instead of pretending to be the provider.
      */
-    private String webEmbedBaseUrl(String url) {
-        try {
-            final Uri uri = Uri.parse(url);
-            final String scheme = uri.getScheme();
-            final String authority = uri.getAuthority();
-            if (scheme != null && authority != null) {
-                return scheme + "://" + authority + "/";
-            }
-        } catch (RuntimeException ignored) {
-        }
-        return url;
-    }
-
-    /**
-     * Wraps the embed URL in an iframe. Player providers expect to be embedded
-     * by a page on their own origin; loading the embed URL as the top-level
-     * document breaks that assumption — which is exactly YouTube's error 153.
-     */
-    private String webEmbedFrameHtml(String url) {
-        final String escaped = url.replace("&", "&amp;").replace("\"", "&quot;");
-        return "<!doctype html><html><head>"
-                + "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-                + "<style>html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden}"
-                + "iframe{border:0;width:100%;height:100%;display:block}</style></head>"
-                + "<body><iframe src=\"" + escaped + "\" "
-                + "allow=\"autoplay; encrypted-media; picture-in-picture; fullscreen\" "
-                + "allowfullscreen></iframe></body></html>";
+    private String webEmbedReferrer() {
+        return "https://" + getPackageName() + "/";
     }
 
     public void createWebEmbed(String id, String url) {
