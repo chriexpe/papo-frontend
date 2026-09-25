@@ -25,6 +25,8 @@ pub enum Chosen {
     Folder(PathBuf),
     /// Destino de um anexo que estava esperando o "salvar como".
     SaveAs { id: String, name: String, dest: PathBuf },
+    /// Destino escolhido para uma imagem de link/embed que já existe no cache.
+    SaveCached { source: PathBuf, dest: PathBuf },
     Cancelled,
 }
 
@@ -143,6 +145,30 @@ impl Dialogs {
                 Some(handle) => Chosen::SaveAs {
                     id,
                     name,
+                    dest: handle.path().to_path_buf(),
+                },
+                None => Chosen::Cancelled,
+            }
+        });
+    }
+
+    pub fn save_cached_as(
+        &mut self,
+        repaint: egui::Context,
+        source: PathBuf,
+        name: String,
+        start: PathBuf,
+    ) {
+        self.spawn(repaint, move |dialog| async move {
+            match dialog
+                .set_directory(start)
+                .set_file_name(&name)
+                .set_title("Salvar como")
+                .save_file()
+                .await
+            {
+                Some(handle) => Chosen::SaveCached {
+                    source,
                     dest: handle.path().to_path_buf(),
                 },
                 None => Chosen::Cancelled,
@@ -326,6 +352,16 @@ impl Dialogs {
     }
 
     pub fn pick_image(&mut self, repaint: egui::Context, _purpose: ImagePick) {
+        self.unavailable(repaint);
+    }
+
+    pub fn save_cached_as(
+        &mut self,
+        repaint: egui::Context,
+        _source: PathBuf,
+        _name: String,
+        _start: PathBuf,
+    ) {
         self.unavailable(repaint);
     }
 }
