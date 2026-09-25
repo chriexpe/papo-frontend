@@ -80,6 +80,9 @@ pub trait WebEmbedBackend {
     fn texture_id(&self) -> Option<egui::TextureId> {
         None
     }
+    fn texture_size(&self) -> Option<(u32, u32)> {
+        None
+    }
     fn input(&mut self, _id: &str, _input: WebEmbedInput) {}
 }
 
@@ -362,6 +365,10 @@ impl WebEmbedManager {
 
     pub fn texture_id(&self) -> Option<egui::TextureId> {
         self.backend.texture_id()
+    }
+
+    pub fn texture_size(&self) -> Option<(u32, u32)> {
+        self.backend.texture_size()
     }
 
     pub fn input(&mut self, input: WebEmbedInput) {
