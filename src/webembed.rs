@@ -53,6 +53,20 @@ pub enum WebEmbedEvent {
     ScrollTimeline { id: String, delta_y_px: f32 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebEmbedButton {
+    Left,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WebEmbedInput {
+    Move { x: f32, y: f32 },
+    Down { x: f32, y: f32, button: WebEmbedButton },
+    Up { x: f32, y: f32, button: WebEmbedButton },
+    Wheel { x: f32, y: f32, delta_y: f32 },
+    Leave,
+}
+
 pub trait WebEmbedBackend {
     fn create(&mut self, id: &str, url: &str) -> Result<(), String>;
     fn present(&mut self, id: &str, viewport: &EmbedViewport);
@@ -60,6 +74,13 @@ pub trait WebEmbedBackend {
     fn resume(&mut self, id: &str);
     fn destroy(&mut self, id: &str);
     fn poll_events(&mut self) -> Vec<WebEmbedEvent>;
+
+    fn set_context(&mut self, _ctx: &egui::Context) {}
+    fn prepare_render(&mut self, _frame: &mut eframe::Frame) {}
+    fn texture_id(&self) -> Option<egui::TextureId> {
+        None
+    }
+    fn input(&mut self, _id: &str, _input: WebEmbedInput) {}
 }
 
 struct ActiveEmbed {
@@ -116,6 +137,7 @@ impl WebEmbedManager {
             .is_some_and(|active| active.id == id && active.url == url)
         {
             self.resume_active();
+            self.owner_seen = true;
             return true;
         }
 
@@ -130,6 +152,7 @@ impl WebEmbedManager {
             url,
             suspended: false,
         });
+        self.owner_seen = true;
         true
     }
 
@@ -329,6 +352,24 @@ impl WebEmbedManager {
         delta / pixels_per_point.max(0.1)
     }
 
+    pub fn set_context(&mut self, ctx: &egui::Context) {
+        self.backend.set_context(ctx);
+    }
+
+    pub fn prepare_render(&mut self, frame: &mut eframe::Frame) {
+        self.backend.prepare_render(frame);
+    }
+
+    pub fn texture_id(&self) -> Option<egui::TextureId> {
+        self.backend.texture_id()
+    }
+
+    pub fn input(&mut self, input: WebEmbedInput) {
+        if let Some(active) = self.active.as_ref() {
+            self.backend.input(&active.id, input);
+        }
+    }
+
     pub fn take_external_urls(&mut self) -> Vec<String> {
         std::mem::take(&mut self.external_urls)
     }
@@ -345,15 +386,20 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(crate::platform::android_webembed::AndroidWebEmbedBackend)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "linux")]
+fn platform_backend() -> Box<dyn WebEmbedBackend> {
+    Box::new(crate::platform::linux_webembed::LinuxWebEmbedBackend::new())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(UnavailableBackend)
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 struct UnavailableBackend;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
 impl WebEmbedBackend for UnavailableBackend {
     fn create(&mut self, _id: &str, _url: &str) -> Result<(), String> {
         Err("WebEmbed ainda não tem backend nesta plataforma".to_owned())
