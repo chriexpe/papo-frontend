@@ -124,7 +124,7 @@ impl CallState {
     pub fn stage(&self) -> Stage {
         if self.popped_out {
             Stage::Window
-        } else if self.floating {
+        } else if self.floating && self.has_video() {
             Stage::Floating
         } else if self.has_video() && !self.collapsed {
             Stage::Sheet
@@ -227,6 +227,15 @@ mod tests {
         assert_eq!(call.stage(), Stage::Sheet);
 
         call.floating = true;
+        assert_eq!(call.stage(), Stage::Floating);
+
+        // O overlay é apresentação de vídeo, não um retângulo vazio. Se a
+        // última câmera some ele volta à forma de voz, mas deixa a intenção
+        // de flutuar armada para reaparecer quando o vídeo voltar.
+        call.update("c1", member("ana", false));
+        assert_eq!(call.stage(), Stage::Docked);
+        assert!(call.floating);
+        call.update("c1", member("ana", true));
         assert_eq!(call.stage(), Stage::Floating);
         call.floating = false;
 
