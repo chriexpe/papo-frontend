@@ -14,7 +14,7 @@ profile="${1:-debug}"
 destination="${2:-target/${profile}/waterui-browser/wpe}"
 work="${XDG_CACHE_HOME:-$HOME/.cache}/papo/wpe-bridge/${waterui_commit}"
 
-required_commands=(cc curl pkg-config)
+required_commands=(cc curl pkg-config python3)
 for command in "${required_commands[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "missing build tool: $command" >&2
