@@ -643,6 +643,9 @@ pub struct UiState {
     /// Canto superior esquerdo do player flutuante, em pontos. `None` usa o
     /// canto inferior padrão; um arrasto grava a posição escolhida.
     pub webembed_float_pos: Option<(f32, f32)>,
+    /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
+    /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
+    pub webembed_float_rect: Option<Rect>,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -722,6 +725,7 @@ impl Default for UiState {
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
             webembed_float_pos: None,
+            webembed_float_rect: None,
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -2154,6 +2158,9 @@ fn handle_mobile_gesture(
             || state.viewer.is_some()
             || state.panel.is_some()
             || media_seek
+            || state
+                .webembed_float_rect
+                .is_some_and(|rect| rect.contains(origin))
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
@@ -4104,7 +4111,10 @@ fn preview_card(
     // The scope response owns background clicks. Do not add another click
     // interaction here: anything registered after the media children would
     // steal their taps.
-    let hover = ui.interact(rect, Id::new(("link-preview-hover", id)), Sense::hover());
+    // Keyed by card occurrence, not by preview id: one preview can back
+    // several messages, and a sliding row moves to another layer, which made
+    // egui see the same id in two layers in one frame (debug assert).
+    let hover = ui.interact(rect, Id::new(("link-preview-hover", embed_id)), Sense::hover());
     let fill = if hover.hovered() {
         t.fill_medium
     } else {
@@ -4140,12 +4150,22 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
         && state.link_viewer.is_none()
 }
 
+/// A floating player is PiP-like: it stays on top while drawers, panels and
+/// menus come and go, so it is not hidden just because the chat is covered —
+/// suspending it there is what made the browser reload and lose its position.
+/// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
+/// takes it away, and even then it is suspended, not destroyed.
+fn webembed_floating_allowed(state: &UiState) -> bool {
+    !state.webembed_blocked && state.viewer.is_none() && state.link_viewer.is_none()
+}
+
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     if !state
         .webembed
         .should_float(state.webembed_behavior, state.webembed_scope)
-        || !webembed_inline_allowed(state)
+        || !webembed_floating_allowed(state)
     {
+        state.webembed_float_rect = None;
         return;
     }
 
@@ -4189,7 +4209,10 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 
     let outer = Rect::from_min_size(min, size);
 
-    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("webembed-floating"));
+    // Above the navigation/members drawers and action panels, all of which
+    // live in Order::Foreground. The float is PiP-like: while it is up, the
+    // pointer over it belongs to it, not to whatever it overlaps.
+    let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("webembed-floating"));
     let top = ui.new_child(
         UiBuilder::new()
             .layer_id(layer)
@@ -4293,6 +4316,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
         egui::pos2(outer.min.x, header.max.y),
         outer.max,
     );
+    state.webembed_float_rect = Some(outer);
     state.webembed.present_floating(
         browser_rect,
         screen,
