@@ -1677,6 +1677,15 @@ public class PapoActivity extends GameActivity {
     }
 
     @Override
+    public void onBackPressed() {
+        if (webEmbedFullscreenView != null) {
+            hideWebEmbedFullscreen();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    @Override
     protected void onDestroy() {
         unregisterNetworkCallback();
         destroyWebEmbedNow();
@@ -1724,6 +1733,12 @@ public class PapoActivity extends GameActivity {
     @Override
     protected void onStop() {
         nativeLifecycleChanged(false);
+        if (webEmbedView != null) {
+            webEmbedView.onPause();
+            if (webEmbedLayer != null) {
+                webEmbedLayer.setVisibility(View.GONE);
+            }
+        }
         super.onStop();
     }
 
