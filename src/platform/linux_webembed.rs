@@ -365,7 +365,21 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         };
         let width = viewport.rect.width().round().max(1.0) as u32;
         let height = viewport.rect.height().round().max(1.0) as u32;
-        page.resize(width, height, f64::from(viewport.pixels_per_point.max(0.1)));
+        let scale = f64::from(viewport.pixels_per_point.max(0.1));
+        page.resize(width, height, scale);
+
+        // Low-DPI desktop embeds otherwise expose browser chrome sized for
+        // ~96-DPI CSS pixels, which is physically tiny on a 1440p/27" class
+        // display. WebKit layout zoom keeps controls readable without scaling
+        // the final texture (which would desync input coordinates).
+        let zoom = if viewport.pixels_per_point < 1.25 {
+            1.35
+        } else if viewport.pixels_per_point < 1.6 {
+            1.20
+        } else {
+            1.0
+        };
+        page.set_zoom(zoom);
         self.pump_page();
         if let Some(ctx) = &self.egui {
             ctx.request_repaint();
@@ -490,6 +504,10 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
 
     fn texture_id(&self) -> Option<egui::TextureId> {
         self.texture_id
+    }
+
+    fn texture_size(&self) -> Option<(u32, u32)> {
+        (self.texture_size.0 > 0 && self.texture_size.1 > 0).then_some(self.texture_size)
     }
 
     fn input(&mut self, id: &str, input: WebEmbedInput) {
