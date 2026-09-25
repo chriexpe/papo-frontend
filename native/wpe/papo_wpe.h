@@ -81,7 +81,6 @@ void water_wpe_page_resize(
     uint32_t height,
     double scale);
 void water_wpe_page_set_focus(WaterWpePage *page, bool focused);
-void water_wpe_page_set_zoom(WaterWpePage *page, double zoom);
 void water_wpe_page_pointer_button(
     WaterWpePage *page,
     bool pressed,
