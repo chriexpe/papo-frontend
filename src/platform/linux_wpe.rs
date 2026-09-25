@@ -362,7 +362,14 @@ impl Page {
         unsafe { (self.inner.state.api.api.page_set_focus)(self.inner.raw.as_ptr(), focused) };
     }
 
-    pub fn pointer_button(&self, pressed: bool, x: f64, y: f64, time_ms: u32) {
+    pub fn pointer_button(
+        &self,
+        pressed: bool,
+        x: f64,
+        y: f64,
+        modifiers: u32,
+        time_ms: u32,
+    ) {
         // WPEPlatform button 1 is primary/left.
         // SAFETY: live page.
         unsafe {
@@ -372,13 +379,21 @@ impl Page {
                 1,
                 x,
                 y,
-                0,
+                modifiers,
                 time_ms,
             )
         };
     }
 
-    pub fn pointer_move(&self, x: f64, y: f64, dx: f64, dy: f64, time_ms: u32) {
+    pub fn pointer_move(
+        &self,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        modifiers: u32,
+        time_ms: u32,
+    ) {
         // SAFETY: live page.
         unsafe {
             (self.inner.state.api.api.page_pointer_move)(
@@ -387,13 +402,21 @@ impl Page {
                 y,
                 dx,
                 dy,
-                0,
+                modifiers,
                 time_ms,
             )
         };
     }
 
-    pub fn scroll(&self, x: f64, y: f64, dx: f64, dy: f64, time_ms: u32) {
+    pub fn scroll(
+        &self,
+        x: f64,
+        y: f64,
+        dx: f64,
+        dy: f64,
+        modifiers: u32,
+        time_ms: u32,
+    ) {
         // SAFETY: live page.
         unsafe {
             (self.inner.state.api.api.page_scroll)(
@@ -404,7 +427,7 @@ impl Page {
                 dy,
                 true,
                 false,
-                0,
+                modifiers,
                 time_ms,
             )
         };
