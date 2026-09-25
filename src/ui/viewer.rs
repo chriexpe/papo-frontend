@@ -536,7 +536,7 @@ pub enum RemoteViewerAction {
 #[allow(clippy::too_many_arguments)]
 pub fn draw_remote_image(
     ui: &mut egui::Ui,
-    t: &Tokens,
+    _t: &Tokens,
     s: &Strings,
     media: &mut MediaStore,
     id: &str,
