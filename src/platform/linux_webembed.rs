@@ -141,12 +141,20 @@ impl Default for LinuxWebEmbedBackend {
 
 impl WebEmbedBackend for LinuxWebEmbedBackend {
     fn create(&mut self, _id: &str, url: &str) -> Result<(), String> {
+        log::info!("webembed(linux): create id={_id} url={url}");
         let servo = self.ensure_servo();
-        let parsed = url::Url::parse(url).map_err(|error| error.to_string())?;
+        let parsed = url::Url::parse(url)
+            .map_err(|error| {
+                log::error!("webembed(linux): url parse failed: {error}");
+                error.to_string()
+            })?;
 
         let context = Rc::new(
-            SoftwareRenderingContext::new(dpi::PhysicalSize::new(16, 16))
-                .map_err(|error| format!("{error:?}"))?,
+            SoftwareRenderingContext::new(dpi::PhysicalSize::new(16, 16)).map_err(|error| {
+                let message = format!("{error:?}");
+                log::error!("webembed(linux): SoftwareRenderingContext::new failed: {message}");
+                message
+            })?,
         );
         let delegate = Rc::new(Delegate {
             frame_ready: Cell::new(false),
@@ -163,6 +171,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.webview = Some(webview);
         self.texture = None;
         self.size = (0, 0);
+        log::info!("webembed(linux): create ok");
         Ok(())
     }
 
@@ -181,6 +190,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
 
         if (width, height) != self.size {
             let size = dpi::PhysicalSize::new(width, height);
+            log::info!("webembed(linux): resize {width}x{height} ppp={ppp}");
             context.resize(size);
             webview.resize(size);
             self.size = (width, height);
@@ -193,13 +203,22 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         servo.spin_event_loop();
 
         if frame_ready.replace(false) {
+            log::info!("webembed(linux): frame ready -> paint + readback");
             webview.paint();
             let rect = DeviceIntRect::from_origin_and_size(
                 DeviceIntPoint::new(0, 0),
                 DeviceIntSize::new(width as i32, height as i32),
             );
-            if let Some(image) = context.read_to_image(rect) {
-                self.upload(&image);
+            match context.read_to_image(rect) {
+                Some(image) => {
+                    log::info!(
+                        "webembed(linux): read {}x{} -> upload",
+                        image.width(),
+                        image.height()
+                    );
+                    self.upload(&image);
+                }
+                None => log::warn!("webembed(linux): read_to_image returned None"),
             }
         }
     }
@@ -232,6 +251,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
     }
 
     fn input(&mut self, _id: &str, input: WebEmbedInput) {
+        log::debug!("webembed(linux): input {input:?}");
         let Some((servo, _context, webview, _delegate)) = self.active() else {
             return;
         };

@@ -143,6 +143,7 @@ impl WebEmbedManager {
             .is_some_and(|active| active.id == id && active.url == url)
         {
             self.resume_active();
+            self.owner_seen = true;
             return true;
         }
 
@@ -157,6 +158,10 @@ impl WebEmbedManager {
             url,
             suspended: false,
         });
+        // The card that asked for activation is the owner for this frame, even
+        // though its `present_inline` has not run yet (it fired after the
+        // click). Without this, `end_frame` would destroy the fresh browser.
+        self.owner_seen = true;
         true
     }
 
