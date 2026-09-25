@@ -92,6 +92,9 @@ wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
 x11rb = { version = "0.13", default-features = false }
+# WPE WebKit is loaded from a staged runtime at run time; Papo does not link
+# GTK/WebKit at build time. The bridge ABI is the narrow Rust-facing contract.
+libloading = "0.9"
 
 # ---------------------------------------------------------------------------
 # Android
