@@ -3469,6 +3469,7 @@ fn message_body(
                     crate::platform::native_text::Mode::Edit,
                     6,
                     focus,
+                    false,
                     t.label,
                     t.label_tertiary,
                     text::message().size,
@@ -5906,11 +5907,15 @@ fn composer(
                         crate::platform::native_text::Mode::Composer,
                         COMPOSER_MAX_ROWS,
                         android_composer_tap,
+                        state.suggest.is_some(),
                         t.label,
                         t.label_tertiary,
                         text::message().size,
                     );
                     state.typed = events.changed;
+                    if events.submit && state.suggest.is_some() {
+                        accept_suggestion(store, state, ui.ctx(), edit_id);
+                    }
                     (events.focused, events.caret)
                 } else {
                     // Durante edição de mensagem ou enquanto uma gaveta cobre
