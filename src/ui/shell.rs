@@ -4440,33 +4440,51 @@ fn webembed_paint_and_input(
         return;
     };
 
+    // A resize/floating transition can leave one old WPE frame in flight.
+    // Never stretch that frame to the new browser rectangle: preserve its
+    // actual aspect until WebKit hands us a frame at the requested size.
+    let painted = state.webembed.texture_size().map_or(rect, |(width, height)| {
+        let source = Vec2::new(width as f32, height as f32);
+        if source.x <= 0.0 || source.y <= 0.0 {
+            return rect;
+        }
+        let scale = (rect.width() / source.x).min(rect.height() / source.y);
+        Rect::from_center_size(rect.center(), source * scale)
+    });
+
+    // Black bars are preferable to deforming browser UI while a resized frame
+    // is arriving.
+    if painted != rect {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
+    }
+
     // The WPE DMA-BUF arrives in the orientation egui expects after the
     // EGL/FBO copy. Do not flip V here; doing so mirrors the browser vertically.
     ui.painter().image(
         texture,
-        rect,
+        painted,
         Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
         Color32::WHITE,
     );
 
     if tag.starts_with("inline") {
-        state.webembed_inline_rect = Some(rect);
+        state.webembed_inline_rect = Some(painted);
     }
 
     let response = ui.interact(
-        rect,
+        painted,
         Id::new(("webembed-input", embed_id, tag)),
         Sense::click_and_drag(),
     );
     let local = |position: egui::Pos2| {
         (
-            (position.x - rect.min.x).clamp(0.0, rect.width()),
-            (position.y - rect.min.y).clamp(0.0, rect.height()),
+            (position.x - painted.min.x).clamp(0.0, painted.width()),
+            (position.y - painted.min.y).clamp(0.0, painted.height()),
         )
     };
 
     let pointer = ui.input(|input| input.pointer.interact_pos());
-    if let Some(position) = pointer.filter(|position| rect.contains(*position)) {
+    if let Some(position) = pointer.filter(|position| painted.contains(*position)) {
         let (x, y) = local(position);
         state.webembed.input(WebEmbedInput::Move { x, y });
 
