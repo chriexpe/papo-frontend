@@ -59,6 +59,9 @@ pub struct CallState {
     pub floating: bool,
     /// A call foi jogada numa janela do sistema só dela.
     pub popped_out: bool,
+    /// `has_video` no quadro anterior. Vídeo que aparece ou some com a
+    /// pessoa noutro canal muda a apresentação tanto quanto trocar de canal.
+    pub had_video: bool,
     pub error: Option<String>,
     /// Qual tentativa de entrada é a atual. O canal não basta para
     /// identificar uma: sair e entrar de novo no mesmo canal dá duas, e a

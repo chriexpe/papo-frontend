@@ -287,6 +287,31 @@ struct ReplyDrag {
     dragging: bool,
 }
 
+/// A call vista de outro canal: com vídeo, o overlay flutuante; só voz, a
+/// pastilha.
+fn place_away_call(store: &mut Store) {
+    store.call.floating = store.call.has_video();
+    store.call.collapsed = true;
+}
+
+/// A mesma regra vale quando o vídeo aparece ou some sem trocar de canal:
+/// ligar a câmera pela pastilha, noutro canal, tem de abrir o overlay na
+/// hora, e a última câmera desligando o fecha. Uma call numa janela própria
+/// fica onde está.
+fn follow_away_video(store: &mut Store) {
+    let has_video = store.call.has_video();
+    if store.call.had_video == has_video {
+        return;
+    }
+    store.call.had_video = has_video;
+    if store.call.active()
+        && store.selected_channel != store.call.channel_id
+        && !store.call.popped_out
+    {
+        place_away_call(store);
+    }
+}
+
 /// Retorna se a largura pede a navegação de uma coluna.
 pub fn is_compact(rect: Rect) -> bool {
     rect.width() < COMPACT_BREAKPOINT
@@ -940,16 +965,14 @@ pub fn draw(
             if store.selected_channel == store.call.channel_id {
                 store.call.floating = false;
                 store.call.collapsed = false;
-            } else if store.call.has_video() {
-                store.call.floating = true;
-                store.call.collapsed = true;
-                store.call.popped_out = false;
             } else {
-                store.call.floating = false;
-                store.call.collapsed = true;
+                store.call.popped_out = false;
+                place_away_call(store);
             }
         }
     }
+
+    follow_away_video(store);
 
     // A altura da lista mudou no quadro anterior (uma reação a mais, por
     // exemplo): a rolagem ainda está no lugar antigo e a conversa daria um
@@ -6693,6 +6716,46 @@ mod mobile_tests {
     }
 }
 
+#[cfg(test)]
+mod away_call_tests {
+    use super::*;
+    use papo_core::state::call::Phase;
+
+    fn away_voice_call() -> Store {
+        let mut store = Store::default();
+        store.call.phase = Phase::In;
+        store.call.channel_id = "voz".to_owned();
+        store.selected_channel = "texto".to_owned();
+        store.call.collapsed = true;
+        store
+    }
+
+    #[test]
+    fn camera_ligada_de_outro_canal_abre_o_overlay() {
+        let mut store = away_voice_call();
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+
+        store.call.camera = true;
+        follow_away_video(&mut store);
+        assert!(store.call.floating);
+
+        store.call.camera = false;
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+        assert!(store.call.collapsed);
+    }
+
+    #[test]
+    fn camera_nao_mexe_na_call_em_janela_propria() {
+        let mut store = away_voice_call();
+        store.call.popped_out = true;
+        store.call.camera = true;
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+        assert!(store.call.popped_out);
+    }
+}
 
 #[cfg(test)]
 mod draft_tests {
