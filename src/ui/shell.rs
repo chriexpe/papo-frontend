@@ -3999,6 +3999,8 @@ fn preview_card(
                     if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                         state.media.pause_all();
                         ui.ctx().request_repaint();
+                    } else {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
                     }
                     media_clicked = true;
                 }
@@ -4048,6 +4050,8 @@ fn preview_card(
                 if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                     state.media.pause_all();
                     ui.ctx().request_repaint();
+                } else {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
                 }
                 media_clicked = true;
             }
