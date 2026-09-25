@@ -41,6 +41,9 @@ pub mod android_message;
 /// Persistent WorkManager scheduling and cold headless JNI entry points.
 #[cfg(target_os = "android")]
 pub mod android_work;
+/// Browser surface nativa para embeds ricos.
+#[cfg(target_os = "android")]
+pub mod android_webembed;
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
 pub mod permission;

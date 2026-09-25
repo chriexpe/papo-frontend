@@ -35,6 +35,8 @@ import android.util.Rational;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
+import android.view.ViewConfiguration;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -47,6 +49,17 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.webkit.CookieManager;
+import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -118,6 +131,11 @@ public class PapoActivity extends GameActivity {
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
 
+    /** Eventos estreitos do browser embed. Não existe ponte JS para o Papo. */
+    private static native void nativeWebEmbedExternal(String id, String url);
+    private static native void nativeWebEmbedFailed(String id);
+    private static native void nativeWebEmbedScroll(String id, float deltaYPx);
+
     private static final String EXTRA_MESSAGE_SERVER = MessageNotifications.EXTRA_SERVER;
     private static final String EXTRA_MESSAGE_CHANNEL = MessageNotifications.EXTRA_CHANNEL;
     private static final String EXTRA_MESSAGE_ID = MessageNotifications.EXTRA_MESSAGE_ID;
@@ -142,6 +160,17 @@ public class PapoActivity extends GameActivity {
     private FrameLayout pipLayer;
     private SurfaceView pipSurface;
     private TextView pipSpeaker;
+
+    // Browser rico: uma única superfície viva. O Rust decide identidade,
+    // geometria, floating/stop e ciclo de vida; a Activity só hospeda a View.
+    private FrameLayout webEmbedLayer;
+    private FrameLayout webEmbedClip;
+    private TimelineWebView webEmbedView;
+    private String webEmbedId;
+    private String webEmbedInitialUrl;
+    private FrameLayout webEmbedFullscreenLayer;
+    private View webEmbedFullscreenView;
+    private WebChromeClient.CustomViewCallback webEmbedFullscreenCallback;
 
     private void ensurePipLayer() {
         if (pipLayer != null) {
@@ -238,6 +267,363 @@ public class PapoActivity extends GameActivity {
                 finish();
             }
         });
+    }
+
+
+    private final class TimelineWebView extends WebView {
+        private final int touchSlop;
+        private float downX;
+        private float downY;
+        private float lastY;
+        private boolean timelineDrag;
+
+        TimelineWebView(Context context) {
+            super(context);
+            touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = event.getX();
+                    downY = event.getY();
+                    lastY = downY;
+                    timelineDrag = false;
+                    break;
+                case MotionEvent.ACTION_MOVE:
+                    final float dx = event.getX() - downX;
+                    final float dy = event.getY() - downY;
+                    if (!timelineDrag
+                            && Math.abs(dy) > touchSlop
+                            && Math.abs(dy) > Math.abs(dx) * 1.25f) {
+                        timelineDrag = true;
+                        final MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        super.onTouchEvent(cancel);
+                        cancel.recycle();
+                    }
+                    if (timelineDrag) {
+                        final float delta = event.getY() - lastY;
+                        lastY = event.getY();
+                        if (webEmbedId != null && Math.abs(delta) >= 0.5f) {
+                            nativeWebEmbedScroll(webEmbedId, delta);
+                        }
+                        return true;
+                    }
+                    lastY = event.getY();
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (timelineDrag) {
+                        timelineDrag = false;
+                        return true;
+                    }
+                    timelineDrag = false;
+                    break;
+                default:
+                    break;
+            }
+            return super.onTouchEvent(event);
+        }
+    }
+
+    private void ensureWebEmbedLayer() {
+        if (webEmbedLayer != null) {
+            return;
+        }
+        webEmbedLayer = new FrameLayout(this);
+        webEmbedLayer.setClipChildren(true);
+        webEmbedLayer.setClipToPadding(true);
+        webEmbedLayer.setClickable(false);
+        webEmbedLayer.setVisibility(View.GONE);
+        addContentView(
+                webEmbedLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+
+        webEmbedClip = new FrameLayout(this);
+        webEmbedClip.setClipChildren(true);
+        webEmbedClip.setClipToPadding(true);
+        webEmbedClip.setClickable(false);
+        webEmbedLayer.addView(webEmbedClip, new FrameLayout.LayoutParams(1, 1));
+    }
+
+    private boolean isHttps(String raw) {
+        if (raw == null) {
+            return false;
+        }
+        try {
+            return "https".equalsIgnoreCase(Uri.parse(raw).getScheme());
+        } catch (RuntimeException error) {
+            return false;
+        }
+    }
+
+    private WebViewClient webEmbedClient(final String id) {
+        return new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                final Uri uri = request.getUrl();
+                final String url = uri == null ? null : uri.toString();
+                if (!isHttps(url)) {
+                    return true;
+                }
+                // Redirects/player navigation stay in the isolated browser.
+                // A main-frame navigation caused by an actual user gesture is
+                // a request to leave the player and belongs in the system browser.
+                if (request.isForMainFrame() && request.hasGesture()) {
+                    nativeWebEmbedExternal(id, url);
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public void onReceivedError(
+                    WebView view,
+                    WebResourceRequest request,
+                    WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                if (request.isForMainFrame()) {
+                    nativeWebEmbedFailed(id);
+                }
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                nativeWebEmbedFailed(id);
+                return true;
+            }
+        };
+    }
+
+    private WebChromeClient webEmbedChrome(final String id) {
+        return new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(PermissionRequest request) {
+                request.deny();
+            }
+
+            @Override
+            public void onGeolocationPermissionsShowPrompt(
+                    String origin,
+                    GeolocationPermissions.Callback callback) {
+                callback.invoke(origin, false, false);
+            }
+
+            @Override
+            public boolean onShowFileChooser(
+                    WebView webView,
+                    ValueCallback<Uri[]> filePathCallback,
+                    FileChooserParams fileChooserParams) {
+                return false;
+            }
+
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                runOnUiThread(() -> showWebEmbedFullscreen(view, callback));
+            }
+
+            @Override
+            public void onHideCustomView() {
+                runOnUiThread(PapoActivity.this::hideWebEmbedFullscreen);
+            }
+        };
+    }
+
+    private void configureWebEmbed(TimelineWebView view, String id) {
+        final WebSettings settings = view.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setGeolocationEnabled(false);
+        settings.setSupportMultipleWindows(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setMediaPlaybackRequiresUserGesture(true);
+
+        view.setBackgroundColor(Color.BLACK);
+        view.setSaveEnabled(false);
+        view.setWebViewClient(webEmbedClient(id));
+        view.setWebChromeClient(webEmbedChrome(id));
+        CookieManager.getInstance().setAcceptThirdPartyCookies(view, false);
+    }
+
+    /**
+     * The app's own web identity, used as the embed's `Referer`. Google
+     * requires an embedded player request to be identified; naming the app
+     * (package id) matches what Android WebView attests via Media Integrity,
+     * instead of pretending to be the provider.
+     */
+    private String webEmbedReferrer() {
+        return "https://" + getPackageName() + "/";
+    }
+
+    public void createWebEmbed(String id, String url) {
+        if (id == null || id.isBlank() || !isHttps(url)) {
+            return;
+        }
+        runOnUiThread(() -> {
+            ensureWebEmbedLayer();
+            if (webEmbedView != null) {
+                destroyWebEmbedNow();
+            }
+
+            webEmbedId = id;
+            webEmbedInitialUrl = url;
+            webEmbedView = new TimelineWebView(this);
+            configureWebEmbed(webEmbedView, id);
+            webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
+            final Map<String, String> headers = new HashMap<>();
+            headers.put("Referer", webEmbedReferrer());
+            webEmbedView.loadUrl(url, headers);
+            webEmbedLayer.setVisibility(View.GONE);
+        });
+    }
+
+    public void presentWebEmbed(
+            String id,
+            int left,
+            int top,
+            int width,
+            int height,
+            int clipLeft,
+            int clipTop,
+            int clipWidth,
+            int clipHeight) {
+        runOnUiThread(() -> {
+            if (webEmbedView == null || webEmbedId == null || !webEmbedId.equals(id)) {
+                return;
+            }
+
+            final FrameLayout.LayoutParams clipParams =
+                    (FrameLayout.LayoutParams) webEmbedClip.getLayoutParams();
+            clipParams.width = Math.max(1, clipWidth);
+            clipParams.height = Math.max(1, clipHeight);
+            clipParams.leftMargin = clipLeft;
+            clipParams.topMargin = clipTop;
+            webEmbedClip.setLayoutParams(clipParams);
+
+            final FrameLayout.LayoutParams viewParams =
+                    (FrameLayout.LayoutParams) webEmbedView.getLayoutParams();
+            viewParams.width = Math.max(1, width);
+            viewParams.height = Math.max(1, height);
+            viewParams.leftMargin = left - clipLeft;
+            viewParams.topMargin = top - clipTop;
+            webEmbedView.setLayoutParams(viewParams);
+
+            webEmbedView.onResume();
+            webEmbedView.setVisibility(View.VISIBLE);
+            webEmbedClip.setVisibility(View.VISIBLE);
+            webEmbedLayer.setVisibility(View.VISIBLE);
+            webEmbedLayer.bringToFront();
+            webEmbedView.bringToFront();
+
+            // Native text is intentionally above the browser when both exist.
+            if (nativeEditorLayer != null && nativeEditor != null
+                    && nativeEditor.getVisibility() == View.VISIBLE) {
+                nativeEditorLayer.bringToFront();
+                nativeEditor.bringToFront();
+            }
+            if (nativeFieldLayer != null) {
+                nativeFieldLayer.bringToFront();
+            }
+            if (pipLayer != null && isInPictureInPictureMode()) {
+                pipLayer.bringToFront();
+            }
+        });
+    }
+
+    public void suspendWebEmbed(String id) {
+        runOnUiThread(() -> {
+            if (webEmbedView == null || webEmbedId == null || !webEmbedId.equals(id)) {
+                return;
+            }
+            webEmbedView.onPause();
+            webEmbedLayer.setVisibility(View.GONE);
+        });
+    }
+
+    public void resumeWebEmbed(String id) {
+        runOnUiThread(() -> {
+            if (webEmbedView == null || webEmbedId == null || !webEmbedId.equals(id)) {
+                return;
+            }
+            webEmbedView.onResume();
+        });
+    }
+
+    public void destroyWebEmbed(String id) {
+        runOnUiThread(() -> {
+            if (webEmbedId == null || !webEmbedId.equals(id)) {
+                return;
+            }
+            destroyWebEmbedNow();
+        });
+    }
+
+    private void destroyWebEmbedNow() {
+        hideWebEmbedFullscreen();
+        if (webEmbedView != null) {
+            webEmbedView.stopLoading();
+            webEmbedView.onPause();
+            if (webEmbedClip != null) {
+                webEmbedClip.removeView(webEmbedView);
+            }
+            webEmbedView.destroy();
+        }
+        webEmbedView = null;
+        webEmbedId = null;
+        webEmbedInitialUrl = null;
+        if (webEmbedLayer != null) {
+            webEmbedLayer.setVisibility(View.GONE);
+        }
+    }
+
+    private void showWebEmbedFullscreen(View view, WebChromeClient.CustomViewCallback callback) {
+        if (view == null || webEmbedFullscreenView != null) {
+            if (callback != null) {
+                callback.onCustomViewHidden();
+            }
+            return;
+        }
+        webEmbedFullscreenView = view;
+        webEmbedFullscreenCallback = callback;
+        webEmbedFullscreenLayer = new FrameLayout(this);
+        webEmbedFullscreenLayer.setBackgroundColor(Color.BLACK);
+        webEmbedFullscreenLayer.addView(
+                view,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+        addContentView(
+                webEmbedFullscreenLayer,
+                new ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT));
+        webEmbedFullscreenLayer.bringToFront();
+    }
+
+    private void hideWebEmbedFullscreen() {
+        if (webEmbedFullscreenView == null) {
+            return;
+        }
+        if (webEmbedFullscreenLayer != null) {
+            webEmbedFullscreenLayer.removeView(webEmbedFullscreenView);
+            final ViewGroup parent = (ViewGroup) webEmbedFullscreenLayer.getParent();
+            if (parent != null) {
+                parent.removeView(webEmbedFullscreenLayer);
+            }
+        }
+        webEmbedFullscreenView = null;
+        webEmbedFullscreenLayer = null;
+        if (webEmbedFullscreenCallback != null) {
+            webEmbedFullscreenCallback.onCustomViewHidden();
+            webEmbedFullscreenCallback = null;
+        }
     }
 
     /**
@@ -1303,8 +1689,18 @@ public class PapoActivity extends GameActivity {
     }
 
     @Override
+    public void onBackPressed() {
+        if (webEmbedFullscreenView != null) {
+            hideWebEmbedFullscreen();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    @Override
     protected void onDestroy() {
         unregisterNetworkCallback();
+        destroyWebEmbedNow();
         super.onDestroy();
     }
 
@@ -1327,6 +1723,12 @@ public class PapoActivity extends GameActivity {
     protected void onPause() {
         if (!isInMultiWindowMode()) {
             nativeTrimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN);
+            if (webEmbedView != null) {
+                webEmbedView.onPause();
+                if (webEmbedLayer != null) {
+                    webEmbedLayer.setVisibility(View.GONE);
+                }
+            }
         }
         super.onPause();
     }
@@ -1335,11 +1737,20 @@ public class PapoActivity extends GameActivity {
     protected void onStart() {
         super.onStart();
         nativeLifecycleChanged(true);
+        if (webEmbedView != null) {
+            webEmbedView.onResume();
+        }
     }
 
     @Override
     protected void onStop() {
         nativeLifecycleChanged(false);
+        if (webEmbedView != null) {
+            webEmbedView.onPause();
+            if (webEmbedLayer != null) {
+                webEmbedLayer.setVisibility(View.GONE);
+            }
+        }
         super.onStop();
     }
 

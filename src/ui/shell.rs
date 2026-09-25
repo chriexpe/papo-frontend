@@ -632,6 +632,22 @@ pub struct UiState {
     pub previews: Option<std::sync::Arc<papo_core::preview::PreviewCoordinator>>,
     /// Mídia baixada, decodificada e tocando.
     pub media: MediaStore,
+    /// Browser rico é estado da janela/processo, nunca entra no Stash de servidor.
+    pub webembed: crate::webembed::WebEmbedManager,
+    /// O que fazer quando o cartão dono sai da viewport.
+    pub webembed_behavior: crate::webembed::OffscreenBehavior,
+    /// Até onde um WebEmbed flutuante acompanha a navegação.
+    pub webembed_scope: crate::webembed::FloatScope,
+    /// Largura lembrada do player flutuante em desktop. Mobile é edge-to-edge.
+    pub webembed_float_width: f32,
+    /// Canto superior esquerdo do player flutuante, em pontos. `None` usa o
+    /// canto inferior padrão; um arrasto grava a posição escolhida.
+    pub webembed_float_pos: Option<(f32, f32)>,
+    /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
+    /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
+    pub webembed_float_rect: Option<Rect>,
+    /// Superfície egui que deve ficar por cima de qualquer browser nativo.
+    pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
     pub attachments: Vec<Upload>,
     /// Mensagem sendo respondida.
@@ -704,6 +720,13 @@ impl Default for UiState {
             typed: false,
             previews: None,
             media: MediaStore::new(None),
+            webembed: crate::webembed::WebEmbedManager::default(),
+            webembed_behavior: crate::webembed::OffscreenBehavior::default(),
+            webembed_scope: crate::webembed::FloatScope::default(),
+            webembed_float_width: 360.0,
+            webembed_float_pos: None,
+            webembed_float_rect: None,
+            webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
             reply_notify: true,
@@ -817,6 +840,9 @@ pub fn draw(
         state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
+        if state.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
+            state.webembed.destroy_active();
+        }
         state.media.saved = None;
         state.editing = None;
         state.editing_mentions.clear();
@@ -878,6 +904,10 @@ pub fn draw(
             shell_rect,
         );
         overlays(ui, store, state, t, s);
+        if state.media.any_playing() {
+            state.webembed.destroy_active();
+        }
+        webembed_floating(ui, state, t);
         rail_action
     } else {
         state.mobile_surface = MobileSurface::Chat;
@@ -892,6 +922,10 @@ pub fn draw(
         }
         conversation(ui, store, state, call, t, s, stage);
         overlays(ui, store, state, t, s);
+        if state.media.any_playing() {
+            state.webembed.destroy_active();
+        }
+        webembed_floating(ui, state, t);
         None
     }
 }
@@ -1959,6 +1993,12 @@ fn conversation(
                 .auto_shrink([false, false])
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
+                    let web_scroll = state
+                        .webembed
+                        .take_scroll_delta_points(ui.ctx().pixels_per_point());
+                    if web_scroll.abs() > f32::EPSILON {
+                        ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
+                    }
                     ui.add_space(top_inset);
                     message_list(ui, store, state, t, s, full);
                     ui.add_space(bottom_inset);
@@ -2118,6 +2158,9 @@ fn handle_mobile_gesture(
             || state.viewer.is_some()
             || state.panel.is_some()
             || media_seek
+            || state
+                .webembed_float_rect
+                .is_some_and(|rect| rect.contains(origin))
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
@@ -3549,12 +3592,13 @@ fn message_body(
     }
 
     if !message.previews.is_empty() {
-        link_previews(ui, state, t, &message.previews, width);
+        link_previews(ui, state, t, &message.id, &message.previews, width);
     }
     rich_links_from_message(
         ui,
         state,
         t,
+        &message.id,
         &message.content,
         &message.previews,
         width,
@@ -3679,6 +3723,7 @@ fn link_previews(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
+    message_id: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
 ) {
@@ -3686,7 +3731,8 @@ fn link_previews(
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
             continue;
         };
-        preview_card(ui, state, t, &preview.id, url, Some(preview), width);
+        let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
+        preview_card(ui, state, t, &preview.id, &embed_id, url, Some(preview), width);
     }
 }
 
@@ -3694,6 +3740,7 @@ fn rich_links_from_message(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
+    message_id: &str,
     content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
@@ -3715,19 +3762,9 @@ fn rich_links_from_message(
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
-        preview_card(ui, state, t, &id, &url, None, width);
+        let embed_id = format!("embed:{message_id}:{id}");
+        preview_card(ui, state, t, &id, &embed_id, &url, None, width);
     }
-}
-
-fn preview_card_fallback_click(
-    rect: Rect,
-    pointer: Option<egui::Pos2>,
-    primary_clicked: bool,
-    media_clicked: bool,
-) -> bool {
-    primary_clicked
-        && !media_clicked
-        && pointer.is_some_and(|position| rect.contains(position))
 }
 
 fn preview_card(
@@ -3735,6 +3772,7 @@ fn preview_card(
     state: &mut UiState,
     t: &Tokens,
     id: &str,
+    embed_id: &str,
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
@@ -3823,7 +3861,11 @@ fn preview_card(
     };
 
     let mut media_clicked = false;
-    let inner = ui.scope(|ui| {
+    // The preview itself is a real click target, registered before its media
+    // children. egui gives overlapping clicks to the later child widget, so
+    // image/video/play controls still win; otherwise the card wins instead
+    // of the surrounding message row.
+    let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_width(card_width);
 
         if let Some(remote) = video_url.as_deref() {
@@ -3914,6 +3956,7 @@ fn preview_card(
 
             if response.clicked() {
                 let ctx = ui.ctx().clone();
+                state.webembed.destroy_active();
                 state.media.toggle_remote_player(&player_id, remote, &ctx);
                 state.media.solo(&player_id);
                 media_clicked = true;
@@ -3939,25 +3982,42 @@ fn preview_card(
                 Color32::WHITE,
             );
 
-            if embed_url.is_some() {
-                ui.painter().circle_filled(
-                    image_rect.center(),
-                    24.0,
-                    Color32::from_black_alpha(170),
-                );
-                ui.painter().text(
-                    image_rect.center() + Vec2::new(1.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PLAY,
-                    text::icon(19.0),
-                    Color32::WHITE,
-                );
-            }
+            if let Some(embed) = embed_url.as_deref() {
+                if state.webembed.is_active(embed_id) {
+                    let allowed = webembed_inline_allowed(state);
+                    state.webembed.present_inline(
+                        embed_id,
+                        image_rect,
+                        ui.clip_rect(),
+                        ui.ctx().pixels_per_point(),
+                        allowed,
+                    );
+                } else {
+                    ui.painter().circle_filled(
+                        image_rect.center(),
+                        24.0,
+                        Color32::from_black_alpha(170),
+                    );
+                    ui.painter().text(
+                        image_rect.center() + Vec2::new(1.0, 0.0),
+                        egui::Align2::CENTER_CENTER,
+                        icon::PLAY,
+                        text::icon(19.0),
+                        Color32::WHITE,
+                    );
+                }
 
-            if response.clicked() {
-                if let Some(embed) = embed_url.as_deref() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
-                } else if let Some(remote) = image_url.as_ref() {
+                if response.clicked() {
+                    if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+                        state.media.pause_all();
+                        ui.ctx().request_repaint();
+                    } else {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                    }
+                    media_clicked = true;
+                }
+            } else if response.clicked() {
+                if let Some(remote) = image_url.as_ref() {
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
@@ -3977,17 +4037,34 @@ fn preview_card(
                 CornerRadius::same(radius::CARD),
                 Color32::from_black_alpha(225),
             );
-            ui.painter()
-                .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
-            ui.painter().text(
-                rect.center() + Vec2::new(1.0, 0.0),
-                egui::Align2::CENTER_CENTER,
-                icon::PLAY,
-                text::icon(22.0),
-                Color32::WHITE,
-            );
+
+            if state.webembed.is_active(embed_id) {
+                let allowed = webembed_inline_allowed(state);
+                state.webembed.present_inline(
+                    embed_id,
+                    rect,
+                    ui.clip_rect(),
+                    ui.ctx().pixels_per_point(),
+                    allowed,
+                );
+            } else {
+                ui.painter()
+                    .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
+                ui.painter().text(
+                    rect.center() + Vec2::new(1.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon::PLAY,
+                    text::icon(22.0),
+                    Color32::WHITE,
+                );
+            }
             if response.clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+                    state.media.pause_all();
+                    ui.ctx().request_repaint();
+                } else {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                }
                 media_clicked = true;
             }
             ui.add_space(space::SM);
@@ -4031,11 +4108,13 @@ fn preview_card(
 
     let rect = inner.response.rect.expand2(Vec2::new(space::MD, space::SM));
 
-    // O cartão é só hover aqui. Um Sense::click() registrado depois dos
-    // filhos fica por cima deles no hit-test do egui e rouba o clique do
-    // vídeo/imagem. O clique de fundo é decidido pelo evento bruto *depois*
-    // que os filhos tiveram a chance de marcar media_clicked.
-    let hover = ui.interact(rect, Id::new(("link-preview", id)), Sense::hover());
+    // The scope response owns background clicks. Do not add another click
+    // interaction here: anything registered after the media children would
+    // steal their taps.
+    // Keyed by card occurrence, not by preview id: one preview can back
+    // several messages, and a sliding row moves to another layer, which made
+    // egui see the same id in two layers in one frame (debug assert).
+    let hover = ui.interact(rect, Id::new(("link-preview-hover", embed_id)), Sense::hover());
     let fill = if hover.hovered() {
         t.fill_medium
     } else {
@@ -4055,18 +4134,195 @@ fn preview_card(
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let open_original = ui.input(|input| {
-        preview_card_fallback_click(
-            rect,
-            input.pointer.interact_pos(),
-            input.pointer.primary_clicked(),
-            media_clicked,
-        )
-    });
-    if open_original {
+    if inner.response.clicked() && !media_clicked {
         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
     }
     ui.add_space(space::XS);
+}
+
+
+fn webembed_inline_allowed(state: &UiState) -> bool {
+    !state.webembed_blocked
+        && state.mobile_surface == MobileSurface::Chat
+        && state.panel.is_none()
+        && state.popup.is_none()
+        && state.viewer.is_none()
+        && state.link_viewer.is_none()
+}
+
+/// A floating player is PiP-like: it stays on top while drawers, panels and
+/// menus come and go, so it is not hidden just because the chat is covered —
+/// suspending it there is what made the browser reload and lose its position.
+/// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
+/// takes it away, and even then it is suspended, not destroyed.
+fn webembed_floating_allowed(state: &UiState) -> bool {
+    !state.webembed_blocked && state.viewer.is_none() && state.link_viewer.is_none()
+}
+
+fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
+    if !state
+        .webembed
+        .should_float(state.webembed_behavior, state.webembed_scope)
+        || !webembed_floating_allowed(state)
+    {
+        state.webembed_float_rect = None;
+        return;
+    }
+
+    let screen = ui.ctx().content_rect();
+    let controls_h = 32.0;
+    // The pill row (channel name, search, pinned, members) sits at the top of
+    // the chat and must never be covered by the player. That band is reserved,
+    // and every position is clamped below it.
+    let top_band = PILL_MARGIN * 2.0 + PILL_HEIGHT;
+    let margin = if state.compact { 0.0 } else { space::LG };
+    let max_width = (screen.width() - margin * 2.0).clamp(200.0, 720.0);
+
+    // Phones start edge-to-edge; once the player has been moved or resized,
+    // the remembered width wins.
+    let customized = state.webembed_float_pos.is_some();
+    let width = if state.compact && !customized {
+        screen.width()
+    } else {
+        state.webembed_float_width.clamp(200.0, max_width)
+    };
+    let size = Vec2::new(width, width * 9.0 / 16.0 + controls_h);
+
+    let default_min = egui::pos2(
+        if state.compact {
+            screen.min.x
+        } else {
+            screen.max.x - width - margin
+        },
+        (screen.max.y - size.y - if state.compact { 84.0 } else { margin })
+            .max(screen.min.y + top_band + margin),
+    );
+    let mut min = state
+        .webembed_float_pos
+        .map_or(default_min, |(x, y)| egui::pos2(x, y));
+    let x_lo = screen.min.x;
+    let x_hi = (screen.max.x - size.x).max(x_lo);
+    let y_lo = screen.min.y + top_band;
+    let y_hi = (screen.max.y - size.y).max(y_lo);
+    min.x = min.x.clamp(x_lo, x_hi);
+    min.y = min.y.clamp(y_lo, y_hi);
+
+    let outer = Rect::from_min_size(min, size);
+
+    // Above the navigation/members drawers and action panels, all of which
+    // live in Order::Foreground. The float is PiP-like: while it is up, the
+    // pointer over it belongs to it, not to whatever it overlaps.
+    let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("webembed-floating"));
+    let top = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(screen)
+            .sense(Sense::hover()),
+    );
+
+    // The header is the drag handle; its top-left corner resizes and the close
+    // button sits at the right. Interactions are registered from this frame's
+    // rect, then the origin is applied before anything is painted.
+    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+    let resize_rect = Rect::from_min_size(header.min, Vec2::splat(controls_h));
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
+        Vec2::splat(controls_h),
+    );
+    let drag_rect = Rect::from_min_max(
+        egui::pos2(resize_rect.max.x, header.min.y),
+        egui::pos2(close_rect.min.x, header.max.y),
+    );
+
+    let drag = top.interact(drag_rect, Id::new("webembed-floating-drag"), Sense::drag());
+    if drag.dragged() {
+        let delta = ui.input(|input| input.pointer.delta());
+        min += delta;
+        min.x = min.x.clamp(x_lo, x_hi);
+        min.y = min.y.clamp(y_lo, y_hi);
+        state.webembed_float_pos = Some((min.x, min.y));
+        ui.ctx().request_repaint();
+    }
+    if drag.hovered() || drag.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    let resize = top.interact(resize_rect, Id::new("webembed-floating-resize"), Sense::drag());
+    if resize.dragged() {
+        let dx = ui.input(|input| input.pointer.delta().x);
+        state.webembed_float_width = (state.webembed_float_width - dx).clamp(200.0, max_width);
+        state.webembed_float_pos = Some((min.x, min.y));
+        ui.ctx().request_repaint();
+    }
+    if resize.hovered() || resize.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+
+    // Repaint from the (possibly moved) origin.
+    let outer = Rect::from_min_size(min, size);
+    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+    let resize_rect = Rect::from_min_size(header.min, Vec2::splat(controls_h));
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
+        Vec2::splat(controls_h),
+    );
+
+    top.painter().rect(
+        outer,
+        CornerRadius::same(radius::CARD),
+        t.fill_medium,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    // Resize glyph at the top-left corner.
+    top.painter().line_segment(
+        [
+            egui::pos2(resize_rect.min.x + 8.0, resize_rect.min.y + 20.0),
+            egui::pos2(resize_rect.min.x + 20.0, resize_rect.min.y + 8.0),
+        ],
+        Stroke::new(1.5, t.label_tertiary),
+    );
+    top.painter().line_segment(
+        [
+            egui::pos2(resize_rect.min.x + 13.0, resize_rect.min.y + 22.0),
+            egui::pos2(resize_rect.min.x + 22.0, resize_rect.min.y + 13.0),
+        ],
+        Stroke::new(1.5, t.label_tertiary),
+    );
+    top.painter().text(
+        egui::pos2(header.min.x + space::SM, header.center().y),
+        egui::Align2::LEFT_CENTER,
+        "Web",
+        text::caption(),
+        t.label_secondary,
+    );
+    if top
+        .interact(close_rect, Id::new("webembed-floating-close"), Sense::click())
+        .clicked()
+    {
+        state.webembed.destroy_active();
+        return;
+    }
+    top.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        text::icon(14.0),
+        t.label,
+    );
+
+    let browser_rect = Rect::from_min_max(
+        egui::pos2(outer.min.x, header.max.y),
+        outer.max,
+    );
+    state.webembed_float_rect = Some(outer);
+    state.webembed.present_floating(
+        browser_rect,
+        screen,
+        ui.ctx().pixels_per_point(),
+        true,
+    );
 }
 
 fn reaction_chip(
@@ -5926,44 +6182,7 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
     }
 }
 
-#[cfg(test)]
-mod preview_card_tests {
-    use super::*;
 
-    fn card() -> Rect {
-        Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(210.0, 220.0))
-    }
-
-    #[test]
-    fn clique_de_midia_tem_prioridade_sobre_link_do_cartao() {
-        assert!(!preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(50.0, 60.0)),
-            true,
-            true,
-        ));
-    }
-
-    #[test]
-    fn fundo_do_cartao_abre_o_link_original() {
-        assert!(preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(50.0, 60.0)),
-            true,
-            false,
-        ));
-    }
-
-    #[test]
-    fn clique_fora_do_cartao_nao_abre_nada() {
-        assert!(!preview_card_fallback_click(
-            card(),
-            Some(egui::pos2(500.0, 600.0)),
-            true,
-            false,
-        ));
-    }
-}
 
 #[cfg(test)]
 mod sugestao {

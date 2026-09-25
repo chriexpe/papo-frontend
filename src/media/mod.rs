@@ -1562,6 +1562,12 @@ impl MediaStore {
             player.pause();
         }
     }
+
+    /// Há mídia comum produzindo áudio/vídeo agora. WebEmbed consulta isto
+    /// para manter a mesma exclusividade de `solo()` entre os dois motores.
+    pub fn any_playing(&self) -> bool {
+        self.players.values().any(|player| player.is_playing())
+    }
 }
 
 #[cfg(test)]
