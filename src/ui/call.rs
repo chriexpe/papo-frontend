@@ -31,6 +31,10 @@ pub const BAR_HEIGHT: f32 = 52.0;
 /// Assim que chega vídeo, a textura é a fonte de verdade: Android pode
 /// publicar 3:4 enquanto uma webcam de desktop continua em 16:9.
 const TILE_RATIO: f32 = 16.0 / 9.0;
+/// Portrait video may keep its natural shape until it becomes taller than
+/// 2:3. Taller sources are center-cropped to 2:3 instead of making a compact
+/// overlay grow with an arbitrarily narrow camera frame.
+const MIN_PORTRAIT_RATIO: f32 = 2.0 / 3.0;
 
 /// O que a grade precisa saber de cada pessoa na sala.
 struct Face {
@@ -381,6 +385,7 @@ pub fn sheet(
     );
 
     let mut x = header.max.x - space::LG - 13.0;
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut header_actions = vec![
         (icon::ARROWS_IN, s.call_overlay, ChatAction::FloatCall(true)),
     ];
@@ -666,23 +671,42 @@ pub fn floating(
     };
     // O painel desce o suficiente para não encostar nas duas pastilhas
     // vizinhas. O espaço entre ele e a cápsula fica limpo, sem ornamentos.
-    let width = (area.width() - space::XXL * 2.0).clamp(220.0, 420.0);
+    let mut width = (area.width() - space::XXL * 2.0).clamp(220.0, 420.0);
     let columns = if limit == 1 { 1 } else { 2 };
     let rows = limit.div_ceil(columns);
     let gap = space::SM;
-    let cell_width = (width - gap * (columns as f32 - 1.0)) / columns as f32;
-    // O overlay compacto precisa reservar altura suficiente para câmera
-    // em pé. O tile em si usa a proporção real da textura; aqui usamos a
-    // proporção mais alta que o Android publica como reserva, para não
-    // obrigar um quadro 3:4 a caber numa faixa 16:9 antes mesmo de ser
-    // desenhado.
-    #[cfg(target_os = "android")]
-    let panel_ratio = 3.0 / 4.0;
-    #[cfg(not(target_os = "android"))]
-    let panel_ratio = TILE_RATIO;
-    let height = rows as f32 * (cell_width / panel_ratio)
-        + gap * (rows as f32 - 1.0)
-        + space::SM * 2.0;
+
+    // Reserve for the tallest presentation we allow (2:3), then cap the
+    // whole floating video block against the viewport. A portrait phone
+    // camera must not be allowed to turn the compact call into half a screen.
+    let panel_ratio = MIN_PORTRAIT_RATIO;
+    let panel_height_for = |panel_width: f32| {
+        let cell_width =
+            (panel_width - gap * (columns as f32 - 1.0)) / columns as f32;
+        rows as f32 * (cell_width / panel_ratio)
+            + gap * (rows as f32 - 1.0)
+            + space::SM * 2.0
+    };
+    let max_height = {
+        #[cfg(target_os = "android")]
+        {
+            (area.height() * 0.40).clamp(150.0, 360.0)
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            (area.height() * 0.60).clamp(180.0, 520.0)
+        }
+    };
+    let desired_height = panel_height_for(width);
+    if desired_height > max_height {
+        let chrome = gap * (rows as f32 - 1.0) + space::SM * 2.0;
+        let usable_h = (max_height - chrome).max(1.0);
+        let cell_h = usable_h / rows as f32;
+        let cell_w = cell_h * panel_ratio;
+        width = (cell_w * columns as f32 + gap * (columns as f32 - 1.0))
+            .clamp(180.0, width);
+    }
+    let height = panel_height_for(width);
     let bridge_gap = 18.0;
     let rect = Rect::from_min_size(
         egui::pos2(area.center().x - width / 2.0, pill.max.y + bridge_gap),
@@ -869,12 +893,13 @@ fn draw_faces(
         } else {
             None
         };
-        let ratio = texture
+        let source_ratio = texture
             .as_ref()
             .map(|texture| texture.size_vec2())
             .filter(|size| size.x > 0.0 && size.y > 0.0)
             .map(|size| size.x / size.y)
             .unwrap_or(TILE_RATIO);
+        let ratio = presentation_ratio(source_ratio);
 
         let column = index % columns;
         let row = index / columns;
@@ -919,6 +944,35 @@ fn layout(count: usize, area: Rect) -> (usize, usize) {
     best
 }
 
+fn presentation_ratio(source_ratio: f32) -> f32 {
+    if source_ratio < 1.0 {
+        source_ratio.max(MIN_PORTRAIT_RATIO)
+    } else {
+        source_ratio
+    }
+}
+
+/// UV rectangle for an undistorted center-cover crop from `source_ratio`
+/// into `target_ratio`. In practice this only crops unusually tall portrait
+/// cameras, but keeping it generic makes the geometry testable.
+fn cover_uv(source_ratio: f32, target_ratio: f32) -> Rect {
+    if (source_ratio - target_ratio).abs() < f32::EPSILON {
+        return Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    }
+
+    if source_ratio < target_ratio {
+        // Source is taller/narrower: crop top and bottom.
+        let visible = (source_ratio / target_ratio).clamp(0.0, 1.0);
+        let margin = (1.0 - visible) / 2.0;
+        Rect::from_min_max(egui::pos2(0.0, margin), egui::pos2(1.0, 1.0 - margin))
+    } else {
+        // Source is wider: crop the sides.
+        let visible = (target_ratio / source_ratio).clamp(0.0, 1.0);
+        let margin = (1.0 - visible) / 2.0;
+        Rect::from_min_max(egui::pos2(margin, 0.0), egui::pos2(1.0 - margin, 1.0))
+    }
+}
+
 /// O maior retângulo com a proporção pedida que cabe na célula, com uma
 /// folga para o vão entre retratos.
 fn fit(cell: Vec2, ratio: f32) -> Vec2 {
@@ -948,15 +1002,13 @@ fn tile(
 
     match &video {
         Some(texture) => {
-            // O retângulo já foi dimensionado com a proporção da própria
-            // textura. Usa o quadro inteiro: nada de "cover" escondendo FOV
-            // para forçar um Android 3:4 dentro de um tile 16:9.
+            let source = texture.size_vec2();
+            let source_ratio = source.x / source.y;
+            let display_ratio = presentation_ratio(source_ratio);
+            let uv = cover_uv(source_ratio, display_ratio);
+
             let mut mesh = egui::Mesh::with_texture(texture.id());
-            mesh.add_rect_with_uv(
-                rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
+            mesh.add_rect_with_uv(rect, uv, Color32::WHITE);
             ui.painter()
                 .with_clip_rect(rect)
                 .add(egui::Shape::mesh(mesh));

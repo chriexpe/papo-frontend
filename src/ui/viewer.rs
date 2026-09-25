@@ -70,6 +70,9 @@ pub fn draw(
 
     ui.painter()
         .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
+    // Register the backdrop first. Header buttons, stage controls and arrows
+    // are added afterwards and therefore own overlapping clicks.
+    let background = ui.interact(screen, ui.id().with("viewer-backdrop"), Sense::click());
 
     let Some(attachment) = attachments.get(viewer.index) else {
         return Some(ViewerAction::Close);
@@ -147,7 +150,13 @@ pub fn draw(
         (icon::ARROWS_IN, "fit"),
     ] {
         let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
-        let response = ui.interact(rect, ui.id().with(("viewer", tag)), Sense::click());
+        let response = ui
+            .interact(rect, ui.id().with(("viewer", tag)), Sense::click())
+            .on_hover_text(match tag {
+                "close" => s.close,
+                "download" => s.viewer_download,
+                _ => s.viewer_fit,
+            });
         if response.hovered() {
             ui.painter().rect_filled(
                 rect,
@@ -194,7 +203,6 @@ pub fn draw(
     }
 
     // Clique no vazio ao redor da mídia fecha, como em qualquer visualizador.
-    let background = ui.interact(screen, ui.id().with("viewer-backdrop"), Sense::click());
     if background.clicked() && action.is_none() {
         let pointer = background.interact_pointer_pos().unwrap_or_default();
         let on_content = content.expand(space::MD).contains(pointer);
@@ -515,6 +523,213 @@ fn stage_player(
         ui.ctx().request_repaint();
     }
     None
+}
+
+
+pub enum RemoteViewerAction {
+    Close,
+    Download { path: std::path::PathBuf, name: String },
+}
+
+/// Same fullscreen image UI used for attachment images, backed by a public
+/// rich-preview image instead of a server attachment.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_remote_image(
+    ui: &mut egui::Ui,
+    _t: &Tokens,
+    s: &Strings,
+    media: &mut MediaStore,
+    id: &str,
+    url: &str,
+    name: &str,
+    opened: f64,
+    zoom: &mut f32,
+    offset: &mut Vec2,
+    fitted: &mut bool,
+) -> Option<RemoteViewerAction> {
+    let screen = ui.ctx().viewport_rect();
+    let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("papo-viewer"));
+    let top = ui.new_child(
+        egui::UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(screen)
+            .sense(Sense::click_and_drag()),
+    );
+
+    top.painter()
+        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
+    let background =
+        top.interact(screen, top.id().with("viewer-backdrop"), Sense::click());
+
+    if top.ctx().input(|input| input.key_pressed(Key::Escape)) {
+        return Some(RemoteViewerAction::Close);
+    }
+
+    let stage = Rect::from_min_max(
+        egui::pos2(screen.min.x + space::XXXL, screen.min.y + 64.0),
+        egui::pos2(screen.max.x - space::XXXL, screen.max.y - 64.0),
+    );
+    let texture = media
+        .remote_image(id, url)
+        .and_then(|texture| texture.frame(top.ctx()))
+        .cloned();
+
+    let mut content = Rect::NOTHING;
+    if let Some(texture) = texture {
+        let natural = texture.size_vec2();
+        let base = (stage.width() / natural.x)
+            .min(stage.height() / natural.y)
+            .min(1.0);
+        let scale = if *fitted { base } else { *zoom };
+        let response = top.interact(
+            stage,
+            top.id().with("viewer-stage"),
+            Sense::click_and_drag(),
+        );
+
+        let pinch = top.ctx().input(|input| input.zoom_delta());
+        if (pinch - 1.0).abs() > 0.001 {
+            let previous = scale;
+            let next = (previous * pinch).clamp(ZOOM_MIN, ZOOM_MAX);
+            let anchor = top
+                .ctx()
+                .input(|input| input.multi_touch().map(|touch| touch.center_pos))
+                .or_else(|| top.ctx().pointer_latest_pos());
+            if let Some(anchor) = anchor {
+                let centre = stage.center() + *offset;
+                *offset -= (anchor - centre) * (next / previous - 1.0);
+            }
+            *zoom = next;
+            *fitted = false;
+        }
+
+        let scroll = top.ctx().input(|input| input.smooth_scroll_delta.y);
+        if response.hovered() && scroll.abs() > 0.1 {
+            let previous = scale;
+            let next = (previous * (1.0 + scroll * 0.0015)).clamp(ZOOM_MIN, ZOOM_MAX);
+            if let Some(pointer) = top.ctx().pointer_latest_pos() {
+                let centre = stage.center() + *offset;
+                *offset -= (pointer - centre) * (next / previous - 1.0);
+            }
+            *zoom = next;
+            *fitted = false;
+        }
+        if response.dragged() {
+            *offset += response.drag_delta();
+            if *fitted {
+                *zoom = base;
+                *fitted = false;
+            }
+        }
+        if response.double_clicked() {
+            if *fitted {
+                *zoom = 1.0;
+                *fitted = false;
+                *offset = Vec2::ZERO;
+            } else {
+                *zoom = 1.0;
+                *offset = Vec2::ZERO;
+                *fitted = true;
+            }
+        }
+
+        let size = natural * scale;
+        content = Rect::from_center_size(stage.center() + *offset, size);
+        top.painter().image(
+            texture.id(),
+            content,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        top.painter().text(
+            stage.center(),
+            egui::Align2::CENTER_CENTER,
+            s.downloading,
+            text::body(),
+            Color32::from_white_alpha(160),
+        );
+        top.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(150));
+    }
+
+    let header = Rect::from_min_size(screen.min, Vec2::new(screen.width(), 56.0));
+    top.painter().text(
+        egui::pos2(header.min.x + space::XXL, header.center().y),
+        egui::Align2::LEFT_CENTER,
+        elide(name, 60),
+        text::headline(),
+        Color32::WHITE,
+    );
+    top.painter().text(
+        egui::pos2(header.min.x + space::XXL, header.center().y + 16.0),
+        egui::Align2::LEFT_CENTER,
+        url,
+        text::footnote(),
+        Color32::from_white_alpha(170),
+    );
+
+    let mut action = None;
+    let mut x = header.max.x - space::XXL - 16.0;
+    for (glyph, tag) in [
+        (icon::X, "close"),
+        (icon::DOWNLOAD_SIMPLE, "download"),
+        (icon::ARROWS_IN, "fit"),
+    ] {
+        let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
+        let response = top
+            .interact(rect, top.id().with(("remote-viewer", tag)), Sense::click())
+            .on_hover_text(match tag {
+                "close" => s.close,
+                "download" => s.viewer_download,
+                _ => s.viewer_fit,
+            });
+        if response.hovered() {
+            top.painter().rect_filled(
+                rect,
+                CornerRadius::same(radius::CONTROL),
+                Color32::from_white_alpha(28),
+            );
+        }
+        top.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(17.0),
+            Color32::WHITE,
+        );
+        if response.clicked() {
+            match tag {
+                "close" => action = Some(RemoteViewerAction::Close),
+                "download" => {
+                    if let Some(path) = crate::media::remote_image_cached_path(url) {
+                        action = Some(RemoteViewerAction::Download {
+                            path,
+                            name: name.to_owned(),
+                        });
+                    }
+                }
+                _ => {
+                    *zoom = 1.0;
+                    *offset = Vec2::ZERO;
+                    *fitted = true;
+                }
+            }
+        }
+        x -= 38.0;
+    }
+
+    if background.clicked() && action.is_none() {
+        let now = top.input(|input| input.time);
+        let pointer = background.interact_pointer_pos().unwrap_or_default();
+        let on_content = content.expand(space::MD).contains(pointer);
+        let on_header = pointer.y < screen.min.y + 56.0;
+        if now > opened + 0.05 && !on_content && !on_header {
+            action = Some(RemoteViewerAction::Close);
+        }
+    }
+
+    action
 }
 
 fn arrow(ui: &mut egui::Ui, t: &Tokens, centre: egui::Pos2, glyph: &str) -> bool {

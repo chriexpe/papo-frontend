@@ -75,7 +75,8 @@ pub fn main() -> eframe::Result<()> {
                         platform::files::Chosen::Image { format, blob, .. } => {
                             format!("imagem {format}, {} bytes em base64", blob.len())
                         }
-                        platform::files::Chosen::SaveAs { dest, .. } => {
+                        platform::files::Chosen::SaveAs { dest, .. }
+                        | platform::files::Chosen::SaveCached { dest, .. } => {
                             format!("salvar em {}", dest.display())
                         }
                         platform::files::Chosen::Cancelled => "cancelado".to_owned(),

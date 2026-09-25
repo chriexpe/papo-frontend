@@ -1,6 +1,6 @@
 //! Telas de entrada: sessão e primeiro uso da instância.
 
-use egui::{Align, Align2, CornerRadius, Rect, RichText, Sense, Stroke, TextEdit, Vec2};
+use egui::{Align2, CornerRadius, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::i18n::Strings;
 use crate::state::Store;
@@ -288,12 +288,12 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
         let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
         let response = ui.put(
             rect.shrink2(Vec2::new(space::MD, space::XXS)),
-            TextEdit::singleline(value)
+            egui::TextEdit::singleline(value)
                 .id(edit_id)
                 .password(secret)
                 .frame(egui::Frame::NONE)
                 .font(text::body())
-                .vertical_align(Align::Center)
+                .vertical_align(egui::Align::Center)
                 .desired_width(f32::INFINITY),
         );
         let _ = crate::platform::ime::sync_text_edit(

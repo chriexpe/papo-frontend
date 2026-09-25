@@ -59,6 +59,9 @@ pub struct CallState {
     pub floating: bool,
     /// A call foi jogada numa janela do sistema só dela.
     pub popped_out: bool,
+    /// `has_video` no quadro anterior. Vídeo que aparece ou some com a
+    /// pessoa noutro canal muda a apresentação tanto quanto trocar de canal.
+    pub had_video: bool,
     pub error: Option<String>,
     /// Qual tentativa de entrada é a atual. O canal não basta para
     /// identificar uma: sair e entrar de novo no mesmo canal dá duas, e a
@@ -124,7 +127,7 @@ impl CallState {
     pub fn stage(&self) -> Stage {
         if self.popped_out {
             Stage::Window
-        } else if self.floating {
+        } else if self.floating && self.has_video() {
             Stage::Floating
         } else if self.has_video() && !self.collapsed {
             Stage::Sheet
@@ -227,6 +230,15 @@ mod tests {
         assert_eq!(call.stage(), Stage::Sheet);
 
         call.floating = true;
+        assert_eq!(call.stage(), Stage::Floating);
+
+        // O overlay é apresentação de vídeo, não um retângulo vazio. Se a
+        // última câmera some ele volta à forma de voz, mas deixa a intenção
+        // de flutuar armada para reaparecer quando o vídeo voltar.
+        call.update("c1", member("ana", false));
+        assert_eq!(call.stage(), Stage::Docked);
+        assert!(call.floating);
+        call.update("c1", member("ana", true));
         assert_eq!(call.stage(), Stage::Floating);
         call.floating = false;
 

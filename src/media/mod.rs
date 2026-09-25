@@ -806,6 +806,13 @@ pub fn remote_player_key(url: &str) -> Option<String> {
     Some(format!("remote-player:{}", remote_resource_id(&canonical)))
 }
 
+pub fn remote_image_cached_path(url: &str) -> Option<std::path::PathBuf> {
+    let canonical = papo_core::preview::canonical_url(url)?;
+    let id = remote_resource_id(&canonical);
+    let path = public_remote_cache_path(&id);
+    path.is_file().then_some(path)
+}
+
 fn remote_resource_id(canonical_url: &str) -> String {
     // FNV-1a 128: deterministic across processes/platforms and sufficient for
     // cache identity. Correctness never depends on a file extension or raw URL.

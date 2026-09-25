@@ -41,6 +41,7 @@ struct Spec {
     hint_color: i32,
     mode: i32,
     max_lines: i32,
+    autocomplete: bool,
 }
 
 struct State {
@@ -136,6 +137,7 @@ pub fn show(
     mode: Mode,
     max_lines: usize,
     request_focus: bool,
+    autocomplete: bool,
     text_color: egui::Color32,
     hint_color: egui::Color32,
     font_size_points: f32,
@@ -192,6 +194,7 @@ pub fn show(
             hint_color: android_color(hint_color),
             mode: mode.java(),
             max_lines: max_lines.max(1) as i32,
+            autocomplete,
         };
 
         let send = request_focus || state.last.as_ref() != Some(&spec);
@@ -263,13 +266,14 @@ fn call_show(spec: &Spec, focus: bool) {
         jni::objects::JValue::Int(spec.hint_color),
         jni::objects::JValue::Int(spec.mode),
         jni::objects::JValue::Int(spec.max_lines),
+        jni::objects::JValue::Bool(u8::from(spec.autocomplete)),
         jni::objects::JValue::Bool(u8::from(focus)),
     ];
 
     if let Err(error) = env.call_method(
         &activity,
         "showNativeEditor",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFIIIIZ)V",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IIIIFIIIIZZ)V",
         &args,
     ) {
         let _ = env.exception_clear();

@@ -30,18 +30,27 @@ pub fn install(app: AndroidApp) {
 /// O texto é criado dentro da chamada porque só aqui existe o `JNIEnv` que
 /// sabe fabricá-lo.
 pub fn call_activity(method: &str, signature: &str, text: Option<&str>) -> bool {
-    call(method, signature, text).is_some()
+    call(method, signature, text, |_| ()).is_some()
 }
 
 /// Chama um método da Activity que devolve `boolean`.
 pub fn call_activity_bool(method: &str, signature: &str, text: Option<&str>) -> Option<bool> {
-    call(method, signature, text)
+    call(method, signature, text, |value| value.z().unwrap_or(false))
 }
 
-/// `None` quer dizer que a chamada não aconteceu. Para um método sem
-/// retorno, o `false` de dentro não significa nada — o que importa é ter
-/// voltado `Some`.
-fn call(method: &str, signature: &str, text: Option<&str>) -> Option<bool> {
+/// Chama um método da Activity sem argumentos que devolve `int`.
+pub fn call_activity_int(method: &str) -> Option<i32> {
+    call(method, "()I", None, |value| value.i().ok()).flatten()
+}
+
+/// `None` quer dizer que a chamada não aconteceu. `read` tira do retorno o
+/// tipo que o método promete; ele roda enquanto o `JNIEnv` ainda existe.
+fn call<T>(
+    method: &str,
+    signature: &str,
+    text: Option<&str>,
+    read: impl FnOnce(jni::objects::JValueOwned<'_>) -> T,
+) -> Option<T> {
     let Some(app) = APP.get() else {
         log::error!("sem Activity para chamar {method}");
         return None;
@@ -79,7 +88,7 @@ fn call(method: &str, signature: &str, text: Option<&str>) -> Option<bool> {
     };
 
     match outcome {
-        Ok(value) => Some(value.z().unwrap_or(false)),
+        Ok(value) => Some(read(value)),
         Err(error) => {
             // Uma exceção pendente trava qualquer chamada seguinte; limpar
             // é o que mantém a ponte utilizável depois de um erro.

@@ -75,6 +75,7 @@ pub struct WebEmbedManager {
     inline_visible: bool,
     presented: bool,
     scroll_delta_px: f32,
+    external_urls: Vec<String>,
 }
 
 impl Default for WebEmbedManager {
@@ -92,6 +93,7 @@ impl WebEmbedManager {
             inline_visible: false,
             presented: false,
             scroll_delta_px: 0.0,
+            external_urls: Vec::new(),
         }
     }
 
@@ -300,11 +302,13 @@ impl WebEmbedManager {
 
     /// Drain platform events. Navigation is deliberately externalized here;
     /// vertical touch hand-off is accumulated for the chat ScrollArea.
-    pub fn pump_events(&mut self, ctx: &egui::Context) {
+    pub fn pump_events(&mut self, _ctx: &egui::Context) {
         for event in self.backend.poll_events() {
             match event {
                 WebEmbedEvent::OpenExternal { url, .. } => {
-                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                    if papo_core::preview::safe_remote_url(&url) {
+                        self.external_urls.push(url);
+                    }
                 }
                 WebEmbedEvent::Failed { id } => {
                     if self.is_active(&id) {
@@ -323,6 +327,10 @@ impl WebEmbedManager {
     pub fn take_scroll_delta_points(&mut self, pixels_per_point: f32) -> f32 {
         let delta = std::mem::take(&mut self.scroll_delta_px);
         delta / pixels_per_point.max(0.1)
+    }
+
+    pub fn take_external_urls(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.external_urls)
     }
 }
 

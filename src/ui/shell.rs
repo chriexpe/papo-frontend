@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Datelike, Local};
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Layout, Margin, Rect, RichText, Sense, Stroke,
-    TextEdit, UiBuilder, Vec2,
+    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder,
+    Vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -79,7 +79,17 @@ const COMPOSER_LINE_H: f32 = 52.0;
 /// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
 /// quatro linhas. Depois disso a própria área de texto rola internamente.
 const COMPOSER_MAX_ROWS: usize = 4;
-const TOAST_SECONDS: f64 = 6.0;
+const TOAST_SECONDS: f64 = 4.0;
+const TOAST_MOBILE_MAX_WIDTH: f32 = 300.0;
+const TOAST_DESKTOP_MAX_WIDTH: f32 = 420.0;
+
+fn toast_max_width(ctx: &egui::Context) -> f32 {
+    if ctx.content_rect().width() < COMPACT_BREAKPOINT {
+        TOAST_MOBILE_MAX_WIDTH
+    } else {
+        TOAST_DESKTOP_MAX_WIDTH
+    }
+}
 
 /// O que a conversa pede para a camada de cima fazer.
 #[derive(Debug, Clone)]
@@ -108,6 +118,11 @@ pub enum ChatAction {
     },
     Download {
         id: String,
+        name: String,
+    },
+    /// Salva uma imagem pública de link/embed que já está no cache local.
+    SaveCachedImage {
+        path: std::path::PathBuf,
         name: String,
     },
     /// Abre o seletor de arquivos do sistema.
@@ -186,6 +201,7 @@ pub enum PopupKind {
 pub enum PanelKind {
     Search,
     Pinned,
+    Topic,
 }
 
 /// Superfície que ocupa a frente no layout estreito.
@@ -271,6 +287,31 @@ struct ReplyDrag {
     dragging: bool,
 }
 
+/// A call vista de outro canal: com vídeo, o overlay flutuante; só voz, a
+/// pastilha.
+fn place_away_call(store: &mut Store) {
+    store.call.floating = store.call.has_video();
+    store.call.collapsed = true;
+}
+
+/// A mesma regra vale quando o vídeo aparece ou some sem trocar de canal:
+/// ligar a câmera pela pastilha, noutro canal, tem de abrir o overlay na
+/// hora, e a última câmera desligando o fecha. Uma call numa janela própria
+/// fica onde está.
+fn follow_away_video(store: &mut Store) {
+    let has_video = store.call.has_video();
+    if store.call.had_video == has_video {
+        return;
+    }
+    store.call.had_video = has_video;
+    if store.call.active()
+        && store.selected_channel != store.call.channel_id
+        && !store.call.popped_out
+    {
+        place_away_call(store);
+    }
+}
+
 /// Retorna se a largura pede a navegação de uma coluna.
 pub fn is_compact(rect: Rect) -> bool {
     rect.width() < COMPACT_BREAKPOINT
@@ -308,6 +349,9 @@ pub struct Suggest {
     pub kind: SuggestKind,
     /// Onde está o caractere que abriu a sugestão, em caracteres.
     pub start: usize,
+    /// Fim exato do fragmento que originou esta lista. A aceitação substitui
+    /// start..end em vez de anexar a escolha ao texto parcial.
+    pub end: usize,
     /// Ids de emoji ou de membro, conforme `kind`.
     pub matches: Vec<String>,
     /// Qual delas está marcada.
@@ -329,7 +373,19 @@ pub struct Jump {
 pub struct LinkViewer {
     pub id: String,
     pub url: String,
+    pub name: String,
+    pub zoom: f32,
+    pub offset: Vec2,
+    pub fitted: bool,
     /// O clique que abriu o overlay não pode fechá-lo no mesmo quadro.
+    pub opened: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExternalLinkPrompt {
+    pub url: String,
+    pub host: String,
+    pub remember: bool,
     pub opened: f64,
 }
 
@@ -544,6 +600,8 @@ pub struct Stash {
     pub media: MediaStore,
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    /// Cursor a aplicar depois de uma edição programática do compositor.
+    pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
     pub replying: Option<String>,
@@ -565,6 +623,7 @@ impl Stash {
             media,
             composer: String::new(),
             composer_mentions: Vec::new(),
+            composer_caret_pending: None,
             drafts: DraftBook::default(),
             attachments: Vec::new(),
             replying: None,
@@ -585,6 +644,10 @@ impl Stash {
         std::mem::swap(&mut self.media, &mut ui.media);
         std::mem::swap(&mut self.composer, &mut ui.composer);
         std::mem::swap(&mut self.composer_mentions, &mut ui.composer_mentions);
+        std::mem::swap(
+            &mut self.composer_caret_pending,
+            &mut ui.composer_caret_pending,
+        );
         std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
         std::mem::swap(&mut self.replying, &mut ui.replying);
@@ -603,6 +666,7 @@ impl Stash {
 pub struct UiState {
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
+    pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub show_members: bool,
     /// Layout estreito ativo neste quadro.
@@ -646,6 +710,10 @@ pub struct UiState {
     /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
     /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
     pub webembed_float_rect: Option<Rect>,
+    /// Faixa realmente disponível para browser nativo dentro da conversa.
+    /// O ScrollArea corre por baixo das pastilhas/compositor, mas uma WebView
+    /// nativa não pode fazer isso: ela precisa ser recortada antes do chrome.
+    pub webembed_chat_clip: Option<Rect>,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -664,11 +732,19 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
+    /// Hosts explicitly trusted by the user for opening links without asking.
+    /// This is window/global state and is mirrored to persisted Settings.
+    pub trusted_link_hosts: std::collections::BTreeSet<String>,
+    pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
     /// Pastilha de ações esticada em busca ou fixadas.
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
     pub jump: Option<Jump>,
+    /// Pastilha desktop atualmente "possuída" por uma mensagem. Guardar o
+    /// retângulo permite atravessar da linha para a metade que flutua sobre a
+    /// mensagem anterior sem perder o hover.
+    pub hover_actions: Option<(String, Rect)>,
     /// Sugestão contextual de figurinha ou pessoa no compositor.
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
@@ -699,11 +775,39 @@ pub struct UiState {
     last_relayout_discard: f64,
 }
 
+impl UiState {
+    pub fn request_external_url(&mut self, ctx: &egui::Context, raw_url: impl Into<String>) {
+        let url = raw_url.into();
+        if !papo_core::preview::safe_remote_url(&url) {
+            return;
+        }
+        let Some(host) = url::Url::parse(&url)
+            .ok()
+            .and_then(|parsed| parsed.host_str().map(|host| host.to_ascii_lowercase()))
+        else {
+            return;
+        };
+
+        if self.trusted_link_hosts.contains(&host) {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+            return;
+        }
+
+        self.external_link_prompt = Some(ExternalLinkPrompt {
+            url,
+            host,
+            remember: false,
+            opened: ctx.input(|input| input.time),
+        });
+    }
+}
+
 impl Default for UiState {
     fn default() -> Self {
         Self {
             composer: String::new(),
             composer_mentions: Vec::new(),
+            composer_caret_pending: None,
             drafts: DraftBook::default(),
             show_members: true,
             compact: false,
@@ -726,6 +830,7 @@ impl Default for UiState {
             webembed_float_width: 360.0,
             webembed_float_pos: None,
             webembed_float_rect: None,
+            webembed_chat_clip: None,
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -737,9 +842,12 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
+            trusted_link_hosts: std::collections::BTreeSet::new(),
+            external_link_prompt: None,
             popup: None,
             panel: None,
             jump: None,
+            hover_actions: None,
             suggest: None,
             suggest_muted: false,
             suggest_start: None,
@@ -857,16 +965,14 @@ pub fn draw(
             if store.selected_channel == store.call.channel_id {
                 store.call.floating = false;
                 store.call.collapsed = false;
-            } else if store.call.has_video() {
-                store.call.floating = true;
-                store.call.collapsed = true;
-                store.call.popped_out = false;
             } else {
-                store.call.floating = false;
-                store.call.collapsed = true;
+                store.call.popped_out = false;
+                place_away_call(store);
             }
         }
     }
+
+    follow_away_video(store);
 
     // A altura da lista mudou no quadro anterior (uma reação a mais, por
     // exemplo): a rolagem ainda está no lugar antigo e a conversa daria um
@@ -1947,6 +2053,7 @@ fn conversation(
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
+            state.webembed_chat_clip = None;
             if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
                 crate::ui::call::dock(ui, store, state, call.as_deref_mut(), t, s);
             } else {
@@ -1980,6 +2087,10 @@ fn conversation(
         let composer_height = composer_height(ui, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
+        state.webembed_chat_clip = Some(Rect::from_min_max(
+            egui::pos2(full.min.x, full.min.y + top_inset),
+            egui::pos2(full.max.x, full.max.y - bottom_inset),
+        ));
 
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
@@ -2154,9 +2265,14 @@ fn handle_mobile_gesture(
         #[cfg(not(target_os = "android"))]
         let media_seek = false;
 
+        // A settings sheet is rendered by App after the shell, so it cannot
+        // participate in this hit-test directly. App marks native/egui modal
+        // surfaces through webembed_blocked before drawing us; those surfaces
+        // must also own horizontal drags instead of leaking them to chat.
         let blocked = state.popup.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
+            || state.webembed_blocked
             || media_seek
             || state
                 .webembed_float_rect
@@ -2351,8 +2467,15 @@ fn channel_pill(
     let painter = ui.painter();
     let glyph = painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
     let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
-    let topic = channel.topic.as_ref().filter(|topic| !topic.is_empty()).map(|topic| {
-        painter.layout_no_wrap(topic.clone(), text::callout(), t.label_tertiary)
+    let topic_text = channel.topic.as_deref().map(str::trim).filter(|topic| !topic.is_empty());
+    let topic = topic_text.map(|topic| {
+        const TOPIC_SNIPPET_CHARS: usize = 80;
+        let mut chars = topic.chars();
+        let mut snippet: String = chars.by_ref().take(TOPIC_SNIPPET_CHARS).collect();
+        if chars.next().is_some() {
+            snippet.push('…');
+        }
+        painter.layout_no_wrap(snippet, text::callout(), t.label_tertiary)
     });
 
     // Quanto da descrição ainda está na tela: 1 inteira, 0 recolhida.
@@ -2393,6 +2516,13 @@ fn channel_pill(
         Vec2::new(width, PILL_HEIGHT),
     );
     pill_surface(ui, state, t, rect);
+    let response = ui.interact(rect, Id::new("channel-topic-pill"), Sense::click());
+    if topic_text.is_some() && response.clicked() {
+        toggle_panel(state, PanelKind::Topic);
+    }
+    if topic_text.is_some() && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     let mid = rect.center().y;
     let mut x = rect.min.x + space::LG;
@@ -2526,6 +2656,7 @@ fn actions_pill(
         |ui| match kind {
             PanelKind::Search => search_panel(ui, store, state, t, s),
             PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+            PanelKind::Topic => topic_panel(ui, store, t),
         },
     );
 
@@ -2593,6 +2724,35 @@ fn pill_toggle(ui: &mut egui::Ui, t: &Tokens, glyph: &str, tip: &str, active: bo
         );
     }
     response.clicked()
+}
+
+/// Descrição completa do canal. A pastilha mostra apenas o resumo; aqui o
+/// mesmo `topic` pode ocupar quantas linhas precisar e rolar sem mexer na
+/// conversa atrás.
+fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
+    let topic = store
+        .channel(&store.selected_channel)
+        .and_then(|channel| channel.topic.as_deref())
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty());
+
+    let Some(topic) = topic else {
+        return;
+    };
+
+    egui::ScrollArea::vertical()
+        .id_salt("descricao-do-canal")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(topic)
+                        .font(text::body())
+                        .color(t.label),
+                )
+                .wrap(),
+            );
+        });
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
@@ -3212,10 +3372,24 @@ fn message_list(
             }
         }
         // Mensagem que cita você fica marcada, com ou sem o ponteiro em cima.
+        // A pastilha desktop fica metade fora da linha. Se o ponteiro saiu da
+        // linha mas ainda está dentro da pastilha que ela abriu, essa mensagem
+        // continua dona do hover; sem isto a metade de cima era inalcançável.
+        let pointer = ui.ctx().pointer_hover_pos();
+        let held_by_pill = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
+            id == &message.id && pointer.is_some_and(|position| rect.contains(position))
+        });
+        let another_pill_owns_pointer = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
+            id != &message.id && pointer.is_some_and(|position| rect.contains(position))
+        });
         let mentions_me = store.mentions_me(message);
         let hovered = match &focused_message {
             Some(id) => id == &message.id,
-            None => interactive && ui.rect_contains_pointer(row),
+            None => {
+                interactive
+                    && !another_pill_owns_pointer
+                    && (held_by_pill || ui.rect_contains_pointer(row))
+            }
         };
         if mentions_me {
             let band = row.expand2(Vec2::new(0.0, ROW_PADDING));
@@ -3264,6 +3438,9 @@ fn message_list(
         }
         if hovered {
             if focused_message.is_none() && !state.compact {
+                if let Some(rect) = hover_pill_rect(message, row, store) {
+                    state.hover_actions = Some((message.id.clone(), rect));
+                }
                 hover_pill(ui, state, t, s, message, row, store);
             }
 
@@ -3284,6 +3461,10 @@ fn message_list(
 
         last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
+    }
+
+    if ui.ctx().pointer_hover_pos().is_none() {
+        state.hover_actions = None;
     }
 }
 
@@ -3415,6 +3596,7 @@ fn message_body(
                     crate::platform::native_text::Mode::Edit,
                     6,
                     focus,
+                    false,
                     t.label,
                     t.label_tertiary,
                     text::message().size,
@@ -3426,12 +3608,12 @@ fn message_body(
             let save = {
                 let edit_id = Id::new(("editar-mensagem", id));
                 let response = ui.add(
-                    TextEdit::multiline(&mut buffer_copy)
+                    egui::TextEdit::multiline(&mut buffer_copy)
                         .id(edit_id)
                         .font(text::message())
                         .desired_width(width)
                         .desired_rows(1)
-                        .margin(Margin::symmetric(space::MD as i8, space::SM as i8)),
+                        .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
                 );
                 if std::mem::take(&mut state.edit_focus_pending) {
                     response.request_focus();
@@ -3485,38 +3667,10 @@ fn message_body(
             t.label
         };
         let tokens = emoji::tokenize(&shown_content, &store.emojis);
-        let plain = tokens
-            .iter()
-            .all(|token| matches!(token, emoji::Token::Text(_)));
-
-        if plain {
-            // Sem emoji, uma passada só de texto — é o caminho rápido.
-            let mut job = egui::text::LayoutJob::default();
-            job.append(
-                &shown_content,
-                0.0,
-                egui::TextFormat {
-                    font_id: text::message(),
-                    color,
-                    ..Default::default()
-                },
-            );
-            if message.edited {
-                job.append(
-                    &format!("  ({})", s.edited),
-                    0.0,
-                    egui::TextFormat {
-                        font_id: text::footnote(),
-                        color: t.label_tertiary,
-                        ..Default::default()
-                    },
-                );
-            }
-            job.wrap.max_width = width;
-            ui.label(job);
-        } else {
-            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
-        }
+        // URL hit-testing needs individual widgets even for otherwise plain
+        // text. Keeping a separate LayoutJob fast path made normal messages
+        // skip the hyperlink path entirely.
+        rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
     }
 
     if message.pending {
@@ -3655,6 +3809,18 @@ fn message_body(
 /// Texto entremeado de emoji: cada emoji vira imagem, o resto é palavra
 /// solta para o egui quebrar a linha onde precisar.
 #[allow(clippy::too_many_arguments)]
+fn muted_link_color(ui: &egui::Ui, t: &Tokens) -> Color32 {
+    let blue = ui.visuals().hyperlink_color;
+    let neutral = t.label_secondary;
+    // Keep the conventional blue cue, but pull it strongly toward the
+    // surrounding text so links don't dominate the timeline.
+    Color32::from_rgb(
+        ((u16::from(blue.r()) + u16::from(neutral.r()) * 2) / 3) as u8,
+        ((u16::from(blue.g()) + u16::from(neutral.g()) * 2) / 3) as u8,
+        ((u16::from(blue.b()) + u16::from(neutral.b()) * 2) / 3) as u8,
+    )
+}
+
 fn rich_body(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -3680,7 +3846,39 @@ fn rich_body(
                         if word.trim().is_empty() && word != " " {
                             continue;
                         }
-                        ui.label(RichText::new(word).font(font.clone()).color(color));
+
+                        let visible = word.trim_end();
+                        let trailing = &word[visible.len()..];
+                        let url = papo_core::preview::extract_https_urls(visible)
+                            .into_iter()
+                            .next();
+
+                        if let Some(url) = url {
+                            let response = ui.add(
+                                egui::Label::new(
+                                    RichText::new(visible)
+                                        .font(font.clone())
+                                        .color(muted_link_color(ui, t))
+                                        .underline(),
+                                )
+                                .sense(Sense::click()),
+                            );
+                            if response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if response.clicked() {
+                                state.request_external_url(ui.ctx(), url);
+                            }
+                            if !trailing.is_empty() {
+                                ui.label(
+                                    RichText::new(trailing)
+                                        .font(font.clone())
+                                        .color(color),
+                                );
+                            }
+                        } else {
+                            ui.label(RichText::new(word).font(font.clone()).color(color));
+                        }
                     }
                 }
                 emoji::Token::Unicode(glyph) => {
@@ -3861,6 +4059,7 @@ fn preview_card(
     };
 
     let mut media_clicked = false;
+    let mut media_rect: Option<Rect> = None;
     // The preview itself is a real click target, registered before its media
     // children. egui gives overlapping clicks to the later child widget, so
     // image/video/play controls still win; otherwise the card wins instead
@@ -3885,6 +4084,7 @@ fn preview_card(
                 Vec2::new(card_width, frame_size.y + controls_h),
                 Sense::click(),
             );
+            media_rect = Some(rect);
             let video_rect = Rect::from_min_size(rect.min, frame_size);
             ui.painter()
                 .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
@@ -3975,6 +4175,7 @@ fn preview_card(
                 (source.y * scale).max(1.0),
             );
             let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
+            media_rect = Some(image_rect);
             ui.painter().image(
                 texture.id(),
                 image_rect,
@@ -3985,10 +4186,13 @@ fn preview_card(
             if let Some(embed) = embed_url.as_deref() {
                 if state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
+                    let clip = state
+                        .webembed_chat_clip
+                        .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
                     state.webembed.present_inline(
                         embed_id,
                         image_rect,
-                        ui.clip_rect(),
+                        clip,
                         ui.ctx().pixels_per_point(),
                         allowed,
                     );
@@ -4012,7 +4216,7 @@ fn preview_card(
                         state.media.pause_all();
                         ui.ctx().request_repaint();
                     } else {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                        state.request_external_url(ui.ctx(), url.to_owned());
                     }
                     media_clicked = true;
                 }
@@ -4021,10 +4225,14 @@ fn preview_card(
                     state.link_viewer = Some(LinkViewer {
                         id: id.to_owned(),
                         url: remote.clone(),
+                        name: title.unwrap_or("image").to_owned(),
+                        zoom: 1.0,
+                        offset: Vec2::ZERO,
+                        fitted: true,
                         opened: ui.input(|input| input.time),
                     });
                 } else {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    state.request_external_url(ui.ctx(), url.to_owned());
                 }
                 media_clicked = true;
             }
@@ -4032,6 +4240,7 @@ fn preview_card(
         } else if let Some(embed) = embed_url.as_deref() {
             let frame_size = Vec2::new(card_width, (card_width * 9.0 / 16.0).min(260.0));
             let (rect, response) = ui.allocate_exact_size(frame_size, Sense::click());
+            media_rect = Some(rect);
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::same(radius::CARD),
@@ -4040,10 +4249,13 @@ fn preview_card(
 
             if state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
+                let clip = state
+                    .webembed_chat_clip
+                    .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
                 state.webembed.present_inline(
                     embed_id,
                     rect,
-                    ui.clip_rect(),
+                    clip,
                     ui.ctx().pixels_per_point(),
                     allowed,
                 );
@@ -4063,7 +4275,7 @@ fn preview_card(
                     state.media.pause_all();
                     ui.ctx().request_repaint();
                 } else {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(embed));
+                    state.request_external_url(ui.ctx(), url.to_owned());
                 }
                 media_clicked = true;
             }
@@ -4134,8 +4346,47 @@ fn preview_card(
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if inner.response.clicked() && !media_clicked {
-        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+
+    // The card background is a link, but the actual media surface is not:
+    // video/image/WebEmbed keeps its own interaction. Register only the
+    // rectangles around that media so we never steal its tap from a child.
+    let mut open_card = false;
+    let mut zones = Vec::new();
+    if let Some(media) = media_rect {
+        if rect.min.y < media.min.y {
+            zones.push(Rect::from_min_max(rect.min, egui::pos2(rect.max.x, media.min.y)));
+        }
+        if media.max.y < rect.max.y {
+            zones.push(Rect::from_min_max(
+                egui::pos2(rect.min.x, media.max.y),
+                rect.max,
+            ));
+        }
+        if rect.min.x < media.min.x {
+            zones.push(Rect::from_min_max(
+                egui::pos2(rect.min.x, media.min.y),
+                egui::pos2(media.min.x, media.max.y),
+            ));
+        }
+        if media.max.x < rect.max.x {
+            zones.push(Rect::from_min_max(
+                egui::pos2(media.max.x, media.min.y),
+                egui::pos2(rect.max.x, media.max.y),
+            ));
+        }
+    } else {
+        zones.push(rect);
+    }
+    for (index, zone) in zones.into_iter().filter(|zone| zone.is_positive()).enumerate() {
+        let response = ui.interact(
+            zone,
+            Id::new(("link-preview-open", embed_id, index)),
+            Sense::click(),
+        );
+        open_card |= response.clicked();
+    }
+    if open_card && !media_clicked {
+        state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
 }
@@ -4148,6 +4399,7 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
         && state.popup.is_none()
         && state.viewer.is_none()
         && state.link_viewer.is_none()
+        && state.external_link_prompt.is_none()
 }
 
 /// A floating player is PiP-like: it stays on top while drawers, panels and
@@ -4156,7 +4408,10 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
 /// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
 /// takes it away, and even then it is suspended, not destroyed.
 fn webembed_floating_allowed(state: &UiState) -> bool {
-    !state.webembed_blocked && state.viewer.is_none() && state.link_viewer.is_none()
+    !state.webembed_blocked
+        && state.viewer.is_none()
+        && state.link_viewer.is_none()
+        && state.external_link_prompt.is_none()
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
@@ -4170,11 +4425,8 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     }
 
     let screen = ui.ctx().content_rect();
+    let safe = state.webembed_chat_clip.unwrap_or(screen);
     let controls_h = 32.0;
-    // The pill row (channel name, search, pinned, members) sits at the top of
-    // the chat and must never be covered by the player. That band is reserved,
-    // and every position is clamped below it.
-    let top_band = PILL_MARGIN * 2.0 + PILL_HEIGHT;
     let margin = if state.compact { 0.0 } else { space::LG };
     let max_width = (screen.width() - margin * 2.0).clamp(200.0, 720.0);
 
@@ -4190,20 +4442,19 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 
     let default_min = egui::pos2(
         if state.compact {
-            screen.min.x
+            safe.min.x
         } else {
-            screen.max.x - width - margin
+            safe.max.x - width - margin
         },
-        (screen.max.y - size.y - if state.compact { 84.0 } else { margin })
-            .max(screen.min.y + top_band + margin),
+        (safe.max.y - size.y - margin).max(safe.min.y + margin),
     );
     let mut min = state
         .webembed_float_pos
         .map_or(default_min, |(x, y)| egui::pos2(x, y));
-    let x_lo = screen.min.x;
-    let x_hi = (screen.max.x - size.x).max(x_lo);
-    let y_lo = screen.min.y + top_band;
-    let y_hi = (screen.max.y - size.y).max(y_lo);
+    let x_lo = safe.min.x;
+    let x_hi = (safe.max.x - size.x).max(x_lo);
+    let y_lo = safe.min.y;
+    let y_hi = (safe.max.y - size.y).max(y_lo);
     min.x = min.x.clamp(x_lo, x_hi);
     min.y = min.y.clamp(y_lo, y_hi);
 
@@ -4319,7 +4570,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     state.webembed_float_rect = Some(outer);
     state.webembed.present_floating(
         browser_rect,
-        screen,
+        safe,
         ui.ctx().pixels_per_point(),
         true,
     );
@@ -4371,6 +4622,23 @@ fn reaction_chip(
     response.clicked()
 }
 
+fn hover_pill_rect(message: &Message, row: Rect, store: &Store) -> Option<Rect> {
+    if message.pending {
+        return None;
+    }
+    let count = if message.mine(&store.me) { 4.0 } else { 3.0 };
+    let height = 30.0;
+    let button = 26.0;
+    let width = button * count + space::XS * 2.0;
+    Some(Rect::from_min_size(
+        egui::pos2(
+            row.max.x - width - space::MD,
+            row.min.y - ROW_PADDING - height / 2.0,
+        ),
+        Vec2::new(width, height),
+    ))
+}
+
 /// Pastilha de ações que aparece no alto da linha ao passar o mouse.
 fn hover_pill(
     ui: &mut egui::Ui,
@@ -4402,14 +4670,9 @@ fn hover_pill(
 
     let height = 30.0;
     let button = 26.0;
-    let width = button * buttons.len() as f32 + space::XS * 2.0;
-    let rect = Rect::from_min_size(
-        egui::pos2(
-            row.max.x - width - space::MD,
-            row.min.y - ROW_PADDING - height / 2.0,
-        ),
-        Vec2::new(width, height),
-    );
+    let Some(rect) = hover_pill_rect(message, row, store) else {
+        return;
+    };
 
     glass_backdrop(ui, state, rect, radius::CARD as f32);
     ui.painter().rect(
@@ -4491,6 +4754,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
 
     saved_toast(&mut top, state, t, s);
 
+    if state.external_link_prompt.is_some() {
+        external_link_prompt(&mut top, state, t, s);
+    }
+
     if let Some(popup) = state.popup.clone() {
         match popup.kind {
             PopupKind::Emoji | PopupKind::ComposerEmoji | PopupKind::ComposerSticker => {
@@ -4501,7 +4768,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if state.link_viewer.is_some() {
-        link_image_viewer(ui, state, t);
+        link_image_viewer(ui, state, t, s);
     }
 
     if let Some(mut viewer) = state.viewer.take() {
@@ -4520,77 +4787,151 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 }
 
-fn link_image_viewer(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
-    let Some(viewer) = state.link_viewer.clone() else {
+fn external_link_prompt(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let Some(mut prompt) = state.external_link_prompt.take() else {
         return;
     };
+
     let screen = ui.ctx().content_rect();
-    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-link-viewer"));
-    let top = ui.new_child(
+    let backdrop = ui.interact(
+        screen,
+        Id::new("external-link-backdrop"),
+        Sense::click(),
+    );
+    ui.painter()
+        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(150));
+
+    let width = 440.0_f32.min((screen.width() - space::XXL * 2.0).max(260.0));
+    let height = 188.0;
+    let rect = Rect::from_center_size(screen.center(), Vec2::new(width, height));
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(radius::SHEET),
+        t.elevated_bg,
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut body = ui.new_child(
         UiBuilder::new()
-            .layer_id(layer)
-            .max_rect(screen)
-            .sense(Sense::click()),
+            .max_rect(rect.shrink(space::XL))
+            .layout(Layout::top_down(Align::Min)),
+    );
+    body.label(
+        RichText::new(s.external_link_title)
+            .font(text::headline())
+            .color(t.label),
+    );
+    body.add_space(space::SM);
+    body.label(
+        RichText::new(s.external_link_body)
+            .font(text::body())
+            .color(t.label_secondary),
+    );
+    body.add_space(space::XS);
+    body.label(
+        RichText::new(&prompt.url)
+            .font(text::footnote())
+            .color(t.label),
+    );
+    body.add_space(space::MD);
+    body.checkbox(
+        &mut prompt.remember,
+        format!("{} {}", s.external_link_trust_host, prompt.host),
     );
 
-    top.painter()
-        .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
-
-    let texture = state
-        .media
-        .remote_image(&viewer.id, &viewer.url)
-        .and_then(|texture| texture.frame(top.ctx()))
-        .cloned();
-
-    let mut content = Rect::NOTHING;
-    if let Some(texture) = texture {
-        let stage = screen.shrink2(Vec2::new(space::XXXL, 64.0));
-        let natural = texture.size_vec2();
-        let scale = (stage.width() / natural.x)
-            .min(stage.height() / natural.y)
-            .min(1.0);
-        let size = natural * scale;
-        content = Rect::from_center_size(stage.center(), size);
-        top.painter().image(
-            texture.id(),
-            content,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
-    } else {
-        top.painter().text(
-            screen.center(),
-            egui::Align2::CENTER_CENTER,
-            "Carregando imagem…",
-            text::body(),
-            t.label_secondary,
-        );
-        top.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(150));
-    }
-
-    let close_rect = Rect::from_center_size(
-        egui::pos2(screen.max.x - 28.0, screen.min.y + 28.0),
-        Vec2::splat(36.0),
+    let button_h = 32.0;
+    let open_w = 112.0;
+    let cancel_w = 88.0;
+    let y = rect.max.y - space::XL - button_h;
+    let open_rect = Rect::from_min_size(
+        egui::pos2(rect.max.x - space::XL - open_w, y),
+        Vec2::new(open_w, button_h),
     );
-    let close = top.interact(close_rect, Id::new("link-viewer-close"), Sense::click());
-    top.painter().text(
-        close_rect.center(),
+    let cancel_rect = Rect::from_min_size(
+        egui::pos2(open_rect.min.x - space::SM - cancel_w, y),
+        Vec2::new(cancel_w, button_h),
+    );
+
+    let cancel = ui.interact(cancel_rect, Id::new("external-link-cancel"), Sense::click());
+    ui.painter().rect_filled(
+        cancel_rect,
+        CornerRadius::same((button_h / 2.0) as u8),
+        if cancel.hovered() { t.fill_medium } else { t.fill_soft },
+    );
+    ui.painter().text(
+        cancel_rect.center(),
         egui::Align2::CENTER_CENTER,
-        icon::X,
-        text::icon(20.0),
-        Color32::WHITE,
+        s.cancel,
+        text::body(),
+        t.label,
     );
 
-    let backdrop = top.interact(screen, Id::new("link-viewer-backdrop"), Sense::click());
-    let escape = top.input(|input| input.key_pressed(egui::Key::Escape));
-    let outside = top.input(|input| input.time) > viewer.opened + 0.05
+    let open = ui.interact(open_rect, Id::new("external-link-open"), Sense::click());
+    ui.painter().rect_filled(
+        open_rect,
+        CornerRadius::same((button_h / 2.0) as u8),
+        if open.hovered() { t.accent } else { t.accent.gamma_multiply(0.88) },
+    );
+    ui.painter().text(
+        open_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        s.external_link_open,
+        text::body(),
+        t.accent_label,
+    );
+
+    let now = ui.input(|input| input.time);
+    let outside = now > prompt.opened + 0.05
         && backdrop.clicked()
         && backdrop
             .interact_pointer_pos()
-            .is_some_and(|position| !content.expand(space::MD).contains(position));
-    if close.clicked() || escape || outside {
-        state.link_viewer = None;
+            .is_some_and(|position| !rect.contains(position));
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+
+    if open.clicked() {
+        if prompt.remember {
+            state.trusted_link_hosts.insert(prompt.host.clone());
+        }
+        ui.ctx().open_url(egui::OpenUrl::new_tab(prompt.url));
+    } else if !(cancel.clicked() || outside || escape) {
+        state.external_link_prompt = Some(prompt);
+    }
+}
+
+fn link_image_viewer(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let Some(mut link) = state.link_viewer.take() else {
+        return;
+    };
+    match viewer::draw_remote_image(
+        ui,
+        t,
+        s,
+        &mut state.media,
+        &link.id,
+        &link.url,
+        &link.name,
+        link.opened,
+        &mut link.zoom,
+        &mut link.offset,
+        &mut link.fitted,
+    ) {
+        Some(viewer::RemoteViewerAction::Close) => {}
+        Some(viewer::RemoteViewerAction::Download { path, name }) => {
+            state.actions.push(ChatAction::SaveCachedImage { path, name });
+            state.link_viewer = Some(link);
+        }
+        None => state.link_viewer = Some(link),
     }
 }
 
@@ -4875,7 +5216,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                 t,
                 state.translucent,
                 space::XXXL * 2.0,
-                420.0,
+                toast_max_width(ui.ctx()),
                 |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
@@ -4918,7 +5259,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
         t,
         state.translucent,
         space::XXXL * 2.0,
-        420.0,
+        toast_max_width(ui.ctx()),
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -4935,14 +5276,16 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                         )
                         .wrap(),
                     );
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(path.display().to_string())
-                                .font(text::footnote())
-                                .color(t.label_tertiary),
-                        )
-                        .wrap(),
-                    );
+                    if ui.ctx().content_rect().width() >= COMPACT_BREAKPOINT {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(path.display().to_string())
+                                    .font(text::footnote())
+                                    .color(t.label_tertiary),
+                            )
+                            .wrap(),
+                        );
+                    }
                 });
                 if ui.button(s.open).clicked() {
                     open_clicked = true;
@@ -5669,6 +6012,7 @@ fn composer(
             let (field_focused, caret) =
                 if state.editing.is_none() && android_chat_editor_visible {
                     let native_rect = field.shrink2(Vec2::new(space::XS, 0.0));
+                    let pending_before = state.composer_caret_pending;
                     let events = crate::platform::native_text::show(
                         ui.ctx(),
                         "composer",
@@ -5678,11 +6022,25 @@ fn composer(
                         crate::platform::native_text::Mode::Composer,
                         COMPOSER_MAX_ROWS,
                         android_composer_tap,
+                        state.suggest.is_some(),
                         t.label,
                         t.label_tertiary,
                         text::message().size,
                     );
                     state.typed = events.changed;
+                    if let Some(after) = pending_before
+                        && state.composer_caret_pending == Some(after)
+                    {
+                        state.composer_caret_pending = None;
+                        crate::platform::native_text::set_selection(
+                            "composer",
+                            &state.composer,
+                            after,
+                        );
+                    }
+                    if events.submit && state.suggest.is_some() {
+                        accept_suggestion(store, state, ui.ctx(), edit_id);
+                    }
                     (events.focused, events.caret)
                 } else {
                     // Durante edição de mensagem ou enquanto uma gaveta cobre
@@ -5720,7 +6078,7 @@ fn composer(
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         ui.set_min_height(viewport_h);
-                        TextEdit::multiline(&mut state.composer)
+                        egui::TextEdit::multiline(&mut state.composer)
                             .id(edit_id)
                             .hint_text(RichText::new(hint).color(t.label_tertiary))
                             .frame(Frame::NONE)
@@ -5729,7 +6087,7 @@ fn composer(
                             .vertical_align(Align::Center)
                             .min_size(Vec2::new(0.0, viewport_h))
                             .desired_width(f32::INFINITY)
-                            .margin(Margin::symmetric(space::XS as i8, space::SM as i8))
+                            .margin(egui::Margin::symmetric(space::XS as i8, space::SM as i8))
                             .show(ui)
                             .response
                             .response
@@ -5743,6 +6101,14 @@ fn composer(
                     crate::platform::ime::Kind::Multiline,
                 );
                 state.typed = response.changed() || ime_changed;
+                if let Some(after) = state.composer_caret_pending.take()
+                    && let Some(mut edit) = egui::TextEdit::load_state(ui.ctx(), edit_id)
+                {
+                    edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(after),
+                    )));
+                    edit.store(ui.ctx(), edit_id);
+                }
                 (response.has_focus(), caret_of(ui.ctx(), edit_id))
             };
 
@@ -5766,7 +6132,7 @@ fn composer(
             }
             let accepted = keys.accept && state.suggest.is_some();
             if accepted {
-                accept_suggestion(store, state, ui.ctx(), edit_id, caret);
+                accept_suggestion(store, state, ui.ctx(), edit_id);
             }
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
@@ -5792,6 +6158,7 @@ fn composer(
 }
 
 /// Posição do cursor na caixa de mensagem, em caracteres.
+#[cfg(not(target_os = "android"))]
 fn caret_of(ctx: &egui::Context, id: Id) -> Option<usize> {
     egui::TextEdit::load_state(ctx, id)?
         .cursor
@@ -5877,6 +6244,7 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
     state.suggest = Some(Suggest {
         kind,
         start,
+        end: caret,
         matches,
         index: index.min(7),
     });
@@ -5935,22 +6303,33 @@ fn typing_shortcode(text: &str, caret: usize) -> Option<(usize, String)> {
     None
 }
 
-/// Troca o `:alguma` pelo `:nome:` inteiro e põe o cursor depois dele.
+fn replace_char_range(text: &str, start: usize, end: usize, replacement: &str) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if start > end || end > chars.len() {
+        return None;
+    }
+    let mut next: String = chars[..start].iter().collect();
+    next.push_str(replacement);
+    next.extend(chars[end..].iter());
+    Some(next)
+}
+
+/// Troca o fragmento ativo pelo valor escolhido e põe o cursor depois dele.
 fn accept_suggestion(
     store: &Store,
     state: &mut UiState,
     ctx: &egui::Context,
     id: Id,
-    caret: Option<usize>,
 ) {
     #[cfg(target_os = "android")]
     let _ = (ctx, id);
     let Some(suggest) = state.suggest.take() else {
         return;
     };
-    let (Some(caret), Some(chosen)) = (caret, suggest.matches.get(suggest.index)) else {
+    let Some(chosen) = suggest.matches.get(suggest.index) else {
         return;
     };
+    let caret = suggest.end;
 
     let replacement = match suggest.kind {
         SuggestKind::Sticker => {
@@ -5967,14 +6346,10 @@ fn accept_suggestion(
         }
     };
 
-    let chars: Vec<char> = state.composer.chars().collect();
-    if suggest.start > chars.len() || caret > chars.len() || suggest.start > caret {
+    let Some(next) = replace_char_range(&state.composer, suggest.start, caret, &replacement)
+    else {
         return;
-    }
-    let mut next: String = chars[..suggest.start].iter().collect();
-    next.push_str(&replacement);
-    let tail: String = chars[caret..].iter().collect();
-    next.push_str(&tail);
+    };
     state.composer = next;
     if suggest.kind == SuggestKind::Mention
         && let Some(member) = store.member(chosen)
@@ -5991,17 +6366,12 @@ fn accept_suggestion(
     state.typed = true;
 
     let after = suggest.start + replacement.chars().count();
+    state.composer_caret_pending = Some(after);
 
-    #[cfg(target_os = "android")]
-    crate::platform::native_text::set_selection("composer", &state.composer, after);
-
-    #[cfg(not(target_os = "android"))]
-    if let Some(mut edit) = egui::TextEdit::load_state(ctx, id) {
-        edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
-            egui::text::CCursor::new(after),
-        )));
-        edit.store(ctx, id);
-    }
+    // The editor widget/native View may still synchronize its old selection
+    // later in this same frame. Apply the new caret after that synchronization
+    // instead of racing it here.
+    let _ = (ctx, id);
 }
 
 /// Lista de sugestões do compositor, logo acima da caixa de mensagem.
@@ -6021,152 +6391,145 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
         Vec2::new(width, height),
     );
 
+    // Use an actual foreground UI whose max_rect is the visible popup.
+    // Painting in an Area while interacting with absolute rects made the
+    // visuals appear in one place and the hit targets live somewhere else.
     let ctx = ui.ctx().clone();
+    let layer = egui::LayerId::new(
+        egui::Order::Foreground,
+        Id::new("sugestoes-do-compositor"),
+    );
+    let overlay = ui.new_child(
+        UiBuilder::new()
+            .layer_id(layer)
+            .max_rect(rect)
+            .sense(Sense::click()),
+    );
+    pill_surface(&overlay, state, t, rect);
+
     let mut chosen = None;
-    egui::Area::new(Id::new("sugestoes-do-compositor"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.min)
-        .show(&ctx, |ui| {
-            pill_surface(ui, state, t, rect);
-            for (index, id) in suggest.matches.iter().enumerate() {
-                let slot = Rect::from_min_size(
-                    egui::pos2(
-                        rect.min.x + space::SM,
-                        rect.min.y + space::SM + index as f32 * row,
-                    ),
-                    Vec2::new(rect.width() - space::SM * 2.0, row),
+    for (index, id) in suggest.matches.iter().enumerate() {
+        let slot = Rect::from_min_size(
+            egui::pos2(
+                rect.min.x + space::SM,
+                rect.min.y + space::SM + index as f32 * row,
+            ),
+            Vec2::new(rect.width() - space::SM * 2.0, row),
+        );
+        let response = overlay.interact(slot, Id::new(("sugestao", id)), Sense::click());
+        if index == suggest.index || response.hovered() {
+            overlay.painter().rect_filled(
+                slot,
+                CornerRadius::same(radius::CONTROL),
+                if index == suggest.index {
+                    t.accent.gamma_multiply(0.22)
+                } else {
+                    t.fill_soft
+                },
+            );
+        }
+        if response.hovered() {
+            overlay.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        let art = Rect::from_center_size(
+            egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
+            Vec2::splat(20.0),
+        );
+        match suggest.kind {
+            SuggestKind::Sticker => {
+                let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
+                    continue;
+                };
+                let texture = state
+                    .media
+                    .emoji(&emoji.id, emoji.blob.as_deref())
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                if let Some(texture) = texture {
+                    let mut mesh = egui::Mesh::with_texture(texture);
+                    mesh.add_rect_with_uv(
+                        art,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    overlay.painter().add(egui::Shape::mesh(mesh));
+                }
+                overlay.painter().text(
+                    egui::pos2(art.max.x + space::MD, slot.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!(":{}:", emoji.name),
+                    text::body(),
+                    if index == suggest.index { t.label } else { t.label_secondary },
                 );
-                let response = ui.interact(slot, Id::new(("sugestao", id)), Sense::click());
-                if index == suggest.index || response.hovered() {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        if index == suggest.index {
-                            t.accent.gamma_multiply(0.22)
-                        } else {
-                            t.fill_soft
-                        },
+            }
+            SuggestKind::Mention => {
+                let Some(member) = store.member(id) else {
+                    continue;
+                };
+                let avatar = state
+                    .media
+                    .avatar(&member.id, store.avatars.get(&member.id).map(String::as_str))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                if let Some(texture) = avatar {
+                    let mut mesh = egui::Mesh::with_texture(texture);
+                    mesh.add_rect_with_uv(
+                        art,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                    overlay.painter().add(egui::Shape::mesh(mesh));
+                } else {
+                    overlay.painter().circle_filled(
+                        art.center(),
+                        art.width() / 2.0,
+                        t.accent.gamma_multiply(0.28),
+                    );
+                    overlay.painter().text(
+                        art.center(),
+                        egui::Align2::CENTER_CENTER,
+                        member.initials(),
+                        text::footnote(),
+                        t.label,
                     );
                 }
-                if response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-                let art = Rect::from_center_size(
-                    egui::pos2(slot.min.x + space::SM + 10.0, slot.center().y),
-                    Vec2::splat(20.0),
+                let x = art.max.x + space::MD;
+                overlay.painter().text(
+                    egui::pos2(x, slot.center().y - 4.0),
+                    egui::Align2::LEFT_CENTER,
+                    &member.name,
+                    text::body(),
+                    if index == suggest.index { t.label } else { t.label_secondary },
                 );
-                match suggest.kind {
-                    SuggestKind::Sticker => {
-                        let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == id) else {
-                            continue;
-                        };
-                        let texture = state
-                            .media
-                            .emoji(&emoji.id, emoji.blob.as_deref())
-                            .and_then(|texture| texture.frame(&ctx))
-                            .map(|handle| handle.id());
-                        if let Some(texture) = texture {
-                            let mut mesh = egui::Mesh::with_texture(texture);
-                            mesh.add_rect_with_uv(
-                                art,
-                                Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
-                            ui.painter().add(egui::Shape::mesh(mesh));
-                        }
-                        ui.painter().text(
-                            egui::pos2(art.max.x + space::MD, slot.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            format!(":{}:", emoji.name),
-                            text::body(),
-                            if index == suggest.index {
-                                t.label
-                            } else {
-                                t.label_secondary
-                            },
-                        );
-                    }
-                    SuggestKind::Mention => {
-                        let Some(member) = store.member(id) else {
-                            continue;
-                        };
-                        let avatar = state
-                            .media
-                            .avatar(
-                                &member.id,
-                                store.avatars.get(&member.id).map(String::as_str),
-                            )
-                            .and_then(|texture| texture.frame(&ctx))
-                            .map(|handle| handle.id());
-                        if let Some(texture) = avatar {
-                            let mut mesh = egui::Mesh::with_texture(texture);
-                            mesh.add_rect_with_uv(
-                                art,
-                                Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
-                            ui.painter().add(egui::Shape::mesh(mesh));
-                        } else {
-                            ui.painter().circle_filled(
-                                art.center(),
-                                art.width() / 2.0,
-                                t.accent.gamma_multiply(0.28),
-                            );
-                            ui.painter().text(
-                                art.center(),
-                                egui::Align2::CENTER_CENTER,
-                                member.initials(),
-                                text::footnote(),
-                                t.label,
-                            );
-                        }
-                        let x = art.max.x + space::MD;
-                        ui.painter().text(
-                            egui::pos2(x, slot.center().y - 4.0),
-                            egui::Align2::LEFT_CENTER,
-                            &member.name,
-                            text::body(),
-                            if index == suggest.index {
-                                t.label
-                            } else {
-                                t.label_secondary
-                            },
-                        );
-                        ui.painter().text(
-                            egui::pos2(x, slot.center().y + 8.0),
-                            egui::Align2::LEFT_CENTER,
-                            format!("@{}", member.username),
-                            text::footnote(),
-                            t.label_tertiary,
-                        );
-                        ui.painter().circle_filled(
-                            egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
-                            3.0,
-                            presence_color(t, member.presence),
-                        );
-                    }
-                }
-                if response.clicked() {
-                    chosen = Some(index);
-                }
+                overlay.painter().text(
+                    egui::pos2(x, slot.center().y + 8.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("@{}", member.username),
+                    text::footnote(),
+                    t.label_tertiary,
+                );
+                overlay.painter().circle_filled(
+                    egui::pos2(art.max.x - 2.0, art.max.y - 2.0),
+                    3.0,
+                    presence_color(t, member.presence),
+                );
             }
-        });
+        }
+        if response.clicked() {
+            chosen = Some(index);
+        }
+    }
 
     if let Some(index) = chosen {
         if let Some(suggest) = state.suggest.as_mut() {
             suggest.index = index;
         }
         let edit_id = Id::new("caixa-de-mensagem");
-        let caret = caret_of(&ctx, edit_id);
-        accept_suggestion(store, state, &ctx, edit_id, caret);
-        // O clique tirou o foco da caixa; devolvê-lo é o que deixa
-        // continuar escrevendo sem ter de clicar de novo.
+        accept_suggestion(store, state, &ctx, edit_id);
+        ctx.request_repaint();
+        // Desktop TextEdit lost focus to the popup; Android's native editor
+        // keeps its own focus and ignores this egui request harmlessly.
         ctx.memory_mut(|memory| memory.request_focus(edit_id));
     }
 }
@@ -6254,6 +6617,26 @@ mod sugestao {
             Some((5, "co".to_owned()))
         );
     }
+
+    #[test]
+    fn aceitar_mencao_substitui_fragmento_parcial() {
+        assert_eq!(
+            super::replace_char_range("@chr", 0, 4, "@chris "),
+            Some("@chris ".to_owned())
+        );
+        assert_eq!(
+            super::replace_char_range("oi @chr tudo", 3, 7, "@chris "),
+            Some("oi @chris  tudo".to_owned())
+        );
+    }
+
+    #[test]
+    fn aceitar_shortcode_substitui_fragmento_parcial() {
+        assert_eq!(
+            super::replace_char_range("usa :gat agora", 4, 8, ":gato:"),
+            Some("usa :gato: agora".to_owned())
+        );
+    }
 }
 
 
@@ -6333,6 +6716,46 @@ mod mobile_tests {
     }
 }
 
+#[cfg(test)]
+mod away_call_tests {
+    use super::*;
+    use papo_core::state::call::Phase;
+
+    fn away_voice_call() -> Store {
+        let mut store = Store::default();
+        store.call.phase = Phase::In;
+        store.call.channel_id = "voz".to_owned();
+        store.selected_channel = "texto".to_owned();
+        store.call.collapsed = true;
+        store
+    }
+
+    #[test]
+    fn camera_ligada_de_outro_canal_abre_o_overlay() {
+        let mut store = away_voice_call();
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+
+        store.call.camera = true;
+        follow_away_video(&mut store);
+        assert!(store.call.floating);
+
+        store.call.camera = false;
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+        assert!(store.call.collapsed);
+    }
+
+    #[test]
+    fn camera_nao_mexe_na_call_em_janela_propria() {
+        let mut store = away_voice_call();
+        store.call.popped_out = true;
+        store.call.camera = true;
+        follow_away_video(&mut store);
+        assert!(!store.call.floating);
+        assert!(store.call.popped_out);
+    }
+}
 
 #[cfg(test)]
 mod draft_tests {
