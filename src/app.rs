@@ -313,6 +313,9 @@ pub struct Settings {
     /// Ao rolar um WebEmbed ativo para fora da timeline: encerrar ou flutuar.
     #[serde(default)]
     pub webembed_offscreen: crate::webembed::OffscreenBehavior,
+    /// Se flutuando, limita ao canal atual ou acompanha toda a navegação.
+    #[serde(default)]
+    pub webembed_scope: crate::webembed::FloatScope,
     #[serde(default)]
     pub downloads: DownloadMode,
     /// Marcas de leitura de quando havia um servidor só; migradas na
@@ -353,6 +356,7 @@ impl Default for Settings {
             topic_reveal: true,
             record_button: true,
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
+            webembed_scope: crate::webembed::FloatScope::default(),
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -755,6 +759,7 @@ impl PapoApp {
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.show_record = settings.record_button;
         ui_state.webembed_behavior = settings.webembed_offscreen;
+        ui_state.webembed_scope = settings.webembed_scope;
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -2231,6 +2236,7 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.record_button,
             self.settings.webembed_offscreen,
+            self.settings.webembed_scope,
             ask_download,
         );
 
@@ -2271,6 +2277,7 @@ impl PapoApp {
                 topic_reveal: &mut self.settings.topic_reveal,
                 record_button: &mut self.settings.record_button,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
+                webembed_scope: &mut self.settings.webembed_scope,
                 ask_download: &mut ask_download,
                 download_dir: match &self.settings.downloads {
                     DownloadMode::Folder(dir) => Some(dir.display().to_string()),
@@ -2295,10 +2302,11 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.record_button,
             self.settings.webembed_offscreen,
+            self.settings.webembed_scope,
             ask_download,
         );
         if before != after {
-            if ask_download != before.11 {
+            if ask_download != before.12 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -2696,6 +2704,7 @@ impl eframe::App for PapoApp {
                 });
                 self.ui.reply_notify_default = self.settings.reply_notifications;
                 self.ui.webembed_behavior = self.settings.webembed_offscreen;
+                self.ui.webembed_scope = self.settings.webembed_scope;
                 self.ui.webembed_blocked = self.sheet.open.is_some();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
@@ -2748,6 +2757,7 @@ impl eframe::App for PapoApp {
         // um dono/retângulo válido precisa suspendê-lo ou destruí-lo.
         self.ui.webembed.end_frame(
             self.settings.webembed_offscreen,
+            self.settings.webembed_scope,
             self.sheet.open.is_some(),
         );
 
