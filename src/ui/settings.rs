@@ -882,6 +882,7 @@ pub struct Context<'a> {
     pub badge: &'a mut bool,
     pub topic_reveal: &'a mut bool,
     pub record_button: &'a mut bool,
+    pub webembed_offscreen: &'a mut crate::webembed::OffscreenBehavior,
     pub ask_download: &'a mut bool,
     pub download_dir: Option<String>,
     pub diagnostics: &'a [WorkspaceDiagnostics],
@@ -1279,6 +1280,21 @@ fn app_pane(
                 rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
                     switch(ui, t, data.record_button);
                 });
+                rows.row(
+                    s.webembed_offscreen,
+                    Some(s.webembed_offscreen_hint),
+                    |ui, t| {
+                        segmented(
+                            ui,
+                            t,
+                            data.webembed_offscreen,
+                            &[
+                                (crate::webembed::OffscreenBehavior::Stop, s.webembed_stop),
+                                (crate::webembed::OffscreenBehavior::Float, s.webembed_float),
+                            ],
+                        );
+                    },
+                );
             });
         }
 
