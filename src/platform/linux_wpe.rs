@@ -82,6 +82,7 @@ struct Api {
     page_stop: unsafe extern "C" fn(*mut WaterWpePage),
     page_resize: unsafe extern "C" fn(*mut WaterWpePage, c_uint, c_uint, c_double),
     page_set_focus: unsafe extern "C" fn(*mut WaterWpePage, bool),
+    page_is_playing_audio: unsafe extern "C" fn(*mut WaterWpePage) -> bool,
     page_pointer_button:
         unsafe extern "C" fn(*mut WaterWpePage, bool, c_uint, c_double, c_double, c_uint, c_uint),
     page_pointer_move: unsafe extern "C" fn(
@@ -135,6 +136,7 @@ impl Api {
                 page_stop: symbol(library, b"water_wpe_page_stop\0")?,
                 page_resize: symbol(library, b"water_wpe_page_resize\0")?,
                 page_set_focus: symbol(library, b"water_wpe_page_set_focus\0")?,
+                page_is_playing_audio: symbol(library, b"water_wpe_page_is_playing_audio\0")?,
                 page_pointer_button: symbol(library, b"water_wpe_page_pointer_button\0")?,
                 page_pointer_move: symbol(library, b"water_wpe_page_pointer_move\0")?,
                 page_scroll: symbol(library, b"water_wpe_page_scroll\0")?,
@@ -360,6 +362,11 @@ impl Page {
     pub fn set_focus(&self, focused: bool) {
         // SAFETY: live page.
         unsafe { (self.inner.state.api.api.page_set_focus)(self.inner.raw.as_ptr(), focused) };
+    }
+
+    pub fn is_playing_audio(&self) -> bool {
+        // SAFETY: pure query on a live WebKitWebView.
+        unsafe { (self.inner.state.api.api.page_is_playing_audio)(self.inner.raw.as_ptr()) }
     }
 
     pub fn pointer_button(
