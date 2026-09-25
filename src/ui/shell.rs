@@ -640,6 +640,9 @@ pub struct UiState {
     pub webembed_scope: crate::webembed::FloatScope,
     /// Largura lembrada do player flutuante em desktop. Mobile é edge-to-edge.
     pub webembed_float_width: f32,
+    /// Canto superior esquerdo do player flutuante, em pontos. `None` usa o
+    /// canto inferior padrão; um arrasto grava a posição escolhida.
+    pub webembed_float_pos: Option<(f32, f32)>,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -718,6 +721,7 @@ impl Default for UiState {
             webembed_behavior: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
+            webembed_float_pos: None,
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -4146,40 +4150,100 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
     }
 
     let screen = ui.ctx().content_rect();
+    let controls_h = 32.0;
+    // The pill row (channel name, search, pinned, members) sits at the top of
+    // the chat and must never be covered by the player. That band is reserved,
+    // and every position is clamped below it.
+    let top_band = PILL_MARGIN * 2.0 + PILL_HEIGHT;
     let margin = if state.compact { 0.0 } else { space::LG };
-    let max_desktop_width = (screen.width() - margin * 2.0).max(260.0);
-    let width = if state.compact {
-        // On phones the floating player belongs to the screen, not to a
-        // narrow desktop-style card: it touches both horizontal edges.
+    let max_width = (screen.width() - margin * 2.0).max(200.0).min(720.0);
+
+    // Phones start edge-to-edge; once the player has been moved or resized,
+    // the remembered width wins.
+    let customized = state.webembed_float_pos.is_some();
+    let width = if state.compact && !customized {
         screen.width()
     } else {
-        state
-            .webembed_float_width
-            .clamp(260.0, max_desktop_width.min(720.0))
+        state.webembed_float_width.clamp(200.0, max_width)
     };
-    let video_h = width * 9.0 / 16.0;
-    let controls_h = 32.0;
-    let bottom_clearance = if state.compact { 84.0 } else { margin };
-    let outer = Rect::from_min_size(
-        egui::pos2(
-            if state.compact {
-                screen.min.x
-            } else {
-                screen.max.x - width - margin
-            },
-            (screen.max.y - video_h - controls_h - bottom_clearance)
-                .max(screen.min.y + margin),
-        ),
-        Vec2::new(width, video_h + controls_h),
+    let size = Vec2::new(width, width * 9.0 / 16.0 + controls_h);
+
+    let default_min = egui::pos2(
+        if state.compact {
+            screen.min.x
+        } else {
+            screen.max.x - width - margin
+        },
+        (screen.max.y - size.y - if state.compact { 84.0 } else { margin })
+            .max(screen.min.y + top_band + margin),
     );
+    let mut min = state
+        .webembed_float_pos
+        .map_or(default_min, |(x, y)| egui::pos2(x, y));
+    let x_lo = screen.min.x;
+    let x_hi = (screen.max.x - size.x).max(x_lo);
+    let y_lo = screen.min.y + top_band;
+    let y_hi = (screen.max.y - size.y).max(y_lo);
+    min.x = min.x.clamp(x_lo, x_hi);
+    min.y = min.y.clamp(y_lo, y_hi);
+
+    let outer = Rect::from_min_size(min, size);
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("webembed-floating"));
     let top = ui.new_child(
         UiBuilder::new()
             .layer_id(layer)
-            .max_rect(outer)
+            .max_rect(screen)
             .sense(Sense::hover()),
     );
+
+    // The header is the drag handle; its top-left corner resizes and the close
+    // button sits at the right. Interactions are registered from this frame's
+    // rect, then the origin is applied before anything is painted.
+    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+    let resize_rect = Rect::from_min_size(header.min, Vec2::splat(controls_h));
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
+        Vec2::splat(controls_h),
+    );
+    let drag_rect = Rect::from_min_max(
+        egui::pos2(resize_rect.max.x, header.min.y),
+        egui::pos2(close_rect.min.x, header.max.y),
+    );
+
+    let drag = top.interact(drag_rect, Id::new("webembed-floating-drag"), Sense::drag());
+    if drag.dragged() {
+        let delta = ui.input(|input| input.pointer.delta());
+        min += delta;
+        min.x = min.x.clamp(x_lo, x_hi);
+        min.y = min.y.clamp(y_lo, y_hi);
+        state.webembed_float_pos = Some((min.x, min.y));
+        ui.ctx().request_repaint();
+    }
+    if drag.hovered() || drag.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    let resize = top.interact(resize_rect, Id::new("webembed-floating-resize"), Sense::drag());
+    if resize.dragged() {
+        let dx = ui.input(|input| input.pointer.delta().x);
+        state.webembed_float_width = (state.webembed_float_width - dx).clamp(200.0, max_width);
+        state.webembed_float_pos = Some((min.x, min.y));
+        ui.ctx().request_repaint();
+    }
+    if resize.hovered() || resize.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+
+    // Repaint from the (possibly moved) origin.
+    let outer = Rect::from_min_size(min, size);
+    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
+    let resize_rect = Rect::from_min_size(header.min, Vec2::splat(controls_h));
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
+        Vec2::splat(controls_h),
+    );
+
     top.painter().rect(
         outer,
         CornerRadius::same(radius::CARD),
@@ -4188,55 +4252,27 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
         egui::StrokeKind::Inside,
     );
 
-    let header = Rect::from_min_size(outer.min, Vec2::new(outer.width(), controls_h));
-
-    // Desktop resize handle: anchored bottom/right, so dragging the top-left
-    // corner changes only width (and therefore 16:9 height). The width is
-    // process-global/persisted and becomes the default for every later embed.
-    if !state.compact {
-        let resize_rect = Rect::from_min_size(
-            header.min,
-            Vec2::new(controls_h, controls_h),
-        );
-        let resize = top.interact(
-            resize_rect,
-            Id::new("webembed-floating-resize"),
-            Sense::drag(),
-        );
-        if resize.dragged() {
-            let dx = ui.input(|input| input.pointer.delta().x);
-            state.webembed_float_width =
-                (state.webembed_float_width - dx).clamp(260.0, max_desktop_width.min(720.0));
-            ui.ctx().request_repaint();
-        }
-        if resize.hovered() || resize.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
-        }
-        top.painter().line_segment(
-            [
-                egui::pos2(resize_rect.min.x + 8.0, resize_rect.min.y + 20.0),
-                egui::pos2(resize_rect.min.x + 20.0, resize_rect.min.y + 8.0),
-            ],
-            Stroke::new(1.5, t.label_tertiary),
-        );
-        top.painter().line_segment(
-            [
-                egui::pos2(resize_rect.min.x + 13.0, resize_rect.min.y + 22.0),
-                egui::pos2(resize_rect.min.x + 22.0, resize_rect.min.y + 13.0),
-            ],
-            Stroke::new(1.5, t.label_tertiary),
-        );
-    }
+    // Resize glyph at the top-left corner.
+    top.painter().line_segment(
+        [
+            egui::pos2(resize_rect.min.x + 8.0, resize_rect.min.y + 20.0),
+            egui::pos2(resize_rect.min.x + 20.0, resize_rect.min.y + 8.0),
+        ],
+        Stroke::new(1.5, t.label_tertiary),
+    );
+    top.painter().line_segment(
+        [
+            egui::pos2(resize_rect.min.x + 13.0, resize_rect.min.y + 22.0),
+            egui::pos2(resize_rect.min.x + 22.0, resize_rect.min.y + 13.0),
+        ],
+        Stroke::new(1.5, t.label_tertiary),
+    );
     top.painter().text(
         egui::pos2(header.min.x + space::SM, header.center().y),
         egui::Align2::LEFT_CENTER,
         "Web",
         text::caption(),
         t.label_secondary,
-    );
-    let close_rect = Rect::from_center_size(
-        egui::pos2(header.max.x - controls_h / 2.0, header.center().y),
-        Vec2::splat(controls_h),
     );
     if top
         .interact(close_rect, Id::new("webembed-floating-close"), Sense::click())
