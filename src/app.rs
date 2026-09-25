@@ -316,6 +316,9 @@ pub struct Settings {
     /// Se flutuando, limita ao canal atual ou acompanha toda a navegação.
     #[serde(default)]
     pub webembed_scope: crate::webembed::FloatScope,
+    /// Largura em pontos do player flutuante no desktop.
+    #[serde(default = "default_webembed_float_width")]
+    pub webembed_float_width: f32,
     #[serde(default)]
     pub downloads: DownloadMode,
     /// Marcas de leitura de quando havia um servidor só; migradas na
@@ -339,6 +342,10 @@ fn enabled() -> bool {
     true
 }
 
+fn default_webembed_float_width() -> f32 {
+    360.0
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -357,6 +364,7 @@ impl Default for Settings {
             record_button: true,
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
+            webembed_float_width: default_webembed_float_width(),
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -760,6 +768,7 @@ impl PapoApp {
         ui_state.show_record = settings.record_button;
         ui_state.webembed_behavior = settings.webembed_offscreen;
         ui_state.webembed_scope = settings.webembed_scope;
+        ui_state.webembed_float_width = settings.webembed_float_width;
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -2708,6 +2717,7 @@ impl eframe::App for PapoApp {
                 self.ui.reply_notify_default = self.settings.reply_notifications;
                 self.ui.webembed_behavior = self.settings.webembed_offscreen;
                 self.ui.webembed_scope = self.settings.webembed_scope;
+                self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_blocked = self.sheet.open.is_some();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
@@ -2725,6 +2735,7 @@ impl eframe::App for PapoApp {
                         }),
                     )
                 };
+                self.settings.webembed_float_width = self.ui.webembed_float_width;
                 let draft_channel_after = self.ui.last_channel.clone();
                 if !draft_channel_after.is_empty() {
                     self.ui.capture_draft(&draft_channel_after);
