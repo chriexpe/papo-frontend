@@ -636,6 +636,8 @@ pub struct UiState {
     pub webembed: crate::webembed::WebEmbedManager,
     /// O que fazer quando o cartão dono sai da viewport.
     pub webembed_behavior: crate::webembed::OffscreenBehavior,
+    /// Até onde um WebEmbed flutuante acompanha a navegação.
+    pub webembed_scope: crate::webembed::FloatScope,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -712,6 +714,7 @@ impl Default for UiState {
             media: MediaStore::new(None),
             webembed: crate::webembed::WebEmbedManager::default(),
             webembed_behavior: crate::webembed::OffscreenBehavior::default(),
+            webembed_scope: crate::webembed::FloatScope::default(),
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -826,7 +829,9 @@ pub fn draw(
         state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
-        state.webembed.destroy_active();
+        if state.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
+            state.webembed.destroy_active();
+        }
         state.media.saved = None;
         state.editing = None;
         state.editing_mentions.clear();
@@ -4145,7 +4150,9 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
-    if !state.webembed.should_float(state.webembed_behavior)
+    if !state
+        .webembed
+        .should_float(state.webembed_behavior, state.webembed_scope)
         || !webembed_inline_allowed(state)
     {
         return;
