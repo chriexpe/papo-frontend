@@ -14,7 +14,7 @@ profile="${1:-debug}"
 destination="${2:-target/${profile}/waterui-browser/wpe}"
 work="${XDG_CACHE_HOME:-$HOME/.cache}/papo/wpe-bridge/${waterui_commit}"
 
-required_commands=(cc curl pkg-config python3)
+required_commands=(cc curl pkg-config sed)
 for command in "${required_commands[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "missing build tool: $command" >&2
@@ -67,22 +67,30 @@ cp "$work/waterui_wpe.c" "$source"
 # The upstream self-contained bundle rewrites WebKit/GStreamer helper paths to
 # files adjacent to libwaterui_wpe.so.  Papo's development bridge deliberately
 # uses the distro runtime, so those overrides would point at nonexistent files.
-python3 - "$source" <<'PY'
-from pathlib import Path
-import sys
+if ! grep -q '^[[:space:]]*water_wpe_configure_runtime_paths();[[:space:]]*
+output="$destination/lib/libwaterui_wpe.so"
+cc \
+    -std=c11 \
+    -O2 \
+    -fPIC \
+    -shared \
+    -D_GNU_SOURCE \
+    -I"$work" \
+    "$source" \
+    -o "$output" \
+    $(pkg-config --cflags --libs "${packages[@]}") \
+    -ldl
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-needle = "    water_wpe_configure_runtime_paths();\n"
-if needle not in text:
-    raise SystemExit("pinned WaterUI bridge changed: runtime-path call not found")
-text = text.replace(
-    needle,
-    "    /* Papo uses the system WPE runtime; do not override its helper paths. */\n",
-    1,
-)
-path.write_text(text, encoding="utf-8")
-PY
+echo "WPE bridge staged at $output"
+echo "Papo will load the distro WPE runtime through that bridge."
+echo "If Papo is elsewhere: export PAPO_WPE_RUNTIME=$(realpath "$destination")"
+ "$source"; then
+    echo "pinned WaterUI bridge changed: runtime-path call not found" >&2
+    exit 1
+fi
+sed -i \
+    '0,/^[[:space:]]*water_wpe_configure_runtime_paths();[[:space:]]*$/s//    \/\* Papo uses the system WPE runtime; do not override its helper paths. *\// ' \
+    "$source"
 
 output="$destination/lib/libwaterui_wpe.so"
 cc \
