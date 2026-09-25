@@ -888,6 +888,9 @@ pub fn draw(
             shell_rect,
         );
         overlays(ui, store, state, t, s);
+        if state.media.any_playing() {
+            state.webembed.destroy_active();
+        }
         webembed_floating(ui, state, t);
         rail_action
     } else {
@@ -903,6 +906,9 @@ pub fn draw(
         }
         conversation(ui, store, state, call, t, s, stage);
         overlays(ui, store, state, t, s);
+        if state.media.any_playing() {
+            state.webembed.destroy_active();
+        }
         webembed_floating(ui, state, t);
         None
     }
