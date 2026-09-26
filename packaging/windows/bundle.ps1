@@ -24,6 +24,39 @@ New-Item -ItemType Directory -Force (Join-Path $OutputDir 'gio-modules') | Out-N
 Copy-Item $exe (Join-Path $OutputDir 'papo.exe')
 Copy-Item (Join-Path $PSScriptRoot '..\..\LICENSE') (Join-Path $OutputDir 'LICENSE')
 
+# GStreamer and some of its native dependencies are built with MSVC and can
+# require the VC++ v14 runtime even when papo.exe itself does not. Keep the
+# portable ZIP genuinely prerequisite-free by deploying the redistributable
+# CRT DLLs app-local beside the executable.
+$crtDirs = @()
+if ($env:VCToolsRedistDir) {
+    $crtDirs += (Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT')
+}
+
+$programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+$vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (Test-Path $vswhere) {
+    $vsInstall = & $vswhere -latest -products '*' -property installationPath
+    if ($vsInstall) {
+        $redistRoot = Join-Path $vsInstall 'VC\Redist\MSVC'
+        if (Test-Path $redistRoot) {
+            $latestRedist = Get-ChildItem $redistRoot -Directory |
+                Sort-Object Name -Descending |
+                Select-Object -First 1
+            if ($latestRedist) {
+                $crtDirs += (Join-Path $latestRedist.FullName 'x64\Microsoft.VC143.CRT')
+            }
+        }
+    }
+}
+
+$crtDir = $crtDirs | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $crtDir) {
+    throw 'Visual C++ x64 redistributable DLL directory not found'
+}
+Get-ChildItem $crtDir -Filter '*.dll' -File |
+    Copy-Item -Destination $OutputDir
+
 # DLL lookup on Windows checks the executable directory first. Shipping all
 # runtime DLLs from GStreamer's bin makes the Papo folder independent from a
 # machine-wide GStreamer installation and also covers transitive plugin DLLs.
@@ -64,7 +97,9 @@ foreach ($name in @('COPYING', 'COPYING.LIB', 'LICENSE', 'LICENSE.txt')) {
 $required = @(
     'papo.exe',
     'gstreamer-1.0',
-    'gst-plugin-scanner.exe'
+    'gst-plugin-scanner.exe',
+    'VCRUNTIME140.dll',
+    'MSVCP140.dll'
 )
 foreach ($item in $required) {
     if (-not (Test-Path (Join-Path $OutputDir $item))) {
