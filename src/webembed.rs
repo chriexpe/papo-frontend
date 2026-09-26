@@ -413,15 +413,32 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(crate::platform::linux_webembed::LinuxWebEmbedBackend::new())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn platform_backend() -> Box<dyn WebEmbedBackend> {
+    Box::new(crate::platform::windows_webembed::WindowsWebEmbedBackend::new())
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(UnavailableBackend)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 struct UnavailableBackend;
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 impl WebEmbedBackend for UnavailableBackend {
     fn create(&mut self, _id: &str, _url: &str) -> Result<(), String> {
         Err("WebEmbed ainda não tem backend nesta plataforma".to_owned())
