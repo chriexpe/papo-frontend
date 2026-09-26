@@ -112,3 +112,6 @@ pub mod tray;
 #[cfg(target_os = "windows")]
 #[path = "windows/notify.rs"]
 pub mod notify;
+#[cfg(target_os = "windows")]
+#[path = "windows/update.rs"]
+pub mod update;
