@@ -864,6 +864,8 @@ pub enum SettingsAction {
     Menu(crate::platform::menu::MenuCommand),
     /// Abre o seletor de pasta do sistema para os downloads.
     PickDownloadFolder,
+    #[cfg(target_os = "windows")]
+    CheckUpdates,
 }
 
 /// Tudo que a folha precisa do resto do programa.
@@ -888,6 +890,8 @@ pub struct Context<'a> {
     pub download_dir: Option<String>,
     pub diagnostics: &'a [WorkspaceDiagnostics],
     pub preview: papo_core::preview::PreviewStatsSnapshot,
+    #[cfg(target_os = "windows")]
+    pub update_status: Option<&'a str>,
 }
 
 /// Desenha a folha, ancorada na pastilha que a abriu.
@@ -1560,6 +1564,16 @@ fn app_pane(
                             .color(t.label_secondary),
                     );
                 });
+                #[cfg(target_os = "windows")]
+                rows.row(
+                    s.check_updates,
+                    data.update_status,
+                    |ui, t| {
+                        if row_button(ui, t, s.check_updates, Emphasis::Quiet) {
+                            actions.push(SettingsAction::CheckUpdates);
+                        }
+                    },
+                );
             });
         }
     }
