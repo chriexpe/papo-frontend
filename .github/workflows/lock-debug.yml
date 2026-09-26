@@ -4,6 +4,9 @@ on:
   push:
     branches: [feat/windows-runtime-bundle]
 
+permissions:
+  contents: write
+
 jobs:
   resolve:
     runs-on: ubuntu-24.04
@@ -18,3 +21,13 @@ jobs:
         with:
           name: resolved-cargo-lock
           path: Cargo.lock
+      - name: Commit resolved lockfile
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: resolve wgpu lockfile"
+          git push
