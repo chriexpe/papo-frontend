@@ -169,7 +169,7 @@ impl Tray {
 
 /// O ícone do aplicativo em alguns tamanhos, em ARGB32.
 fn load_icons() -> Vec<Icon> {
-    let Ok(source) = image::load_from_memory(include_bytes!("../../assets/icon.png")) else {
+    let Ok(source) = image::load_from_memory(include_bytes!("../../../assets/icon.png")) else {
         return Vec::new();
     };
     [22u32, 32, 64]
