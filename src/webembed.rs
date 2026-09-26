@@ -497,13 +497,13 @@ mod tests {
         }
     }
 
-    fn manager_with_playing(
-        playing: Option<bool>,
-    ) -> (
+    type FakeManager = (
         WebEmbedManager,
         Arc<Mutex<Vec<Call>>>,
         Arc<Mutex<Option<bool>>>,
-    ) {
+    );
+
+    fn manager_with_playing(playing: Option<bool>) -> FakeManager {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let playing = Arc::new(Mutex::new(playing));
         let backend = FakeBackend {
