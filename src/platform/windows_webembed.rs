@@ -29,14 +29,16 @@ use windows::{
 };
 use webview2_com::{
     CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
-    ContainsFullScreenElementChangedEventHandler,
+    ContainsFullScreenElementChangedEventHandler, DownloadStartingEventHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    TrySuspendCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2Environment,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
-        ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_8,
+        ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
+        ICoreWebView2_4, ICoreWebView2_8,
     },
 };
 
@@ -232,6 +234,32 @@ impl LiveWebView {
             let _ = ShowWindow(self.host, if visible { SW_SHOW } else { SW_HIDE });
         }
         Ok(())
+    }
+
+    fn suspend(&self) {
+        if self.set_visible(false).is_err() {
+            return;
+        }
+        let Ok(webview) = self.webview.cast::<ICoreWebView2_3>() else {
+            return;
+        };
+        let handler = TrySuspendCompletedHandler::create(Box::new(
+            |_error_code, _successful| Ok(()),
+        ));
+        // SAFETY: controller visibility was set false above, which WebView2
+        // requires before TrySuspend. This is best-effort by design.
+        if let Err(error) = unsafe { webview.TrySuspend(&handler) } {
+            log::debug!("webembed(webview2): TrySuspend ignorado: {error}");
+        }
+    }
+
+    fn resume(&self) {
+        if let Ok(webview) = self.webview.cast::<ICoreWebView2_3>() {
+            // SAFETY: live WebView2 on its owning STA thread.
+            if let Err(error) = unsafe { webview.Resume() } {
+                log::debug!("webembed(webview2): Resume ignorado: {error}");
+            }
+        }
     }
 
     fn is_playing(&self) -> Option<bool> {
@@ -434,6 +462,15 @@ fn install_security_and_navigation_handlers(
         Ok(())
     }));
 
+    let download = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
+        if let Some(args) = args {
+            // WebEmbed is playback/preview surface, not a download surface.
+            // Attachments/downloads go through Papo's explicit file flow.
+            unsafe { args.SetCancel(true)? };
+        }
+        Ok(())
+    }));
+
     let fullscreen_state = Rc::clone(fullscreen);
     let fullscreen_events = Rc::clone(events);
     let fullscreen_changed =
@@ -471,6 +508,12 @@ fn install_security_and_navigation_handlers(
         webview
             .add_PermissionRequested(&permission, &mut token)
             .map_err(|error| format!("PermissionRequested WebView2: {error}"))?;
+        let webview4: ICoreWebView2_4 = webview
+            .cast()
+            .map_err(|error| format!("WebView2 v4 indisponível: {error}"))?;
+        webview4
+            .add_DownloadStarting(&download, &mut token)
+            .map_err(|error| format!("DownloadStarting WebView2: {error}"))?;
         webview
             .add_ContainsFullScreenElementChanged(&fullscreen_changed, &mut token)
             .map_err(|error| format!("Fullscreen WebView2: {error}"))?;
@@ -598,11 +641,16 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if self.current_id.as_deref() == Some(id)
             && let Some(live) = &self.live
         {
-            let _ = live.set_visible(false);
+            live.suspend();
         }
     }
 
-    fn resume(&mut self, _id: &str) {
+    fn resume(&mut self, id: &str) {
+        if self.current_id.as_deref() == Some(id)
+            && let Some(live) = &self.live
+        {
+            live.resume();
+        }
         // The next present() restores visibility at authoritative geometry,
         // never for a frame at stale coordinates.
     }
