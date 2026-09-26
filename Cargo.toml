@@ -135,7 +135,7 @@ gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 jni = "0.21"
 
 [build-dependencies]
-winresource = "0.1"
+embed-resource = "3"
 
 [profile.release]
 # Binário de distribuição: um arquivo só, sem símbolos de depuração.
