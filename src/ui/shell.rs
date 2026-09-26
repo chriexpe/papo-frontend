@@ -4483,8 +4483,12 @@ fn webembed_paint_and_input(
         )
     };
 
+    // A press that started on the browser keeps owning the pointer until it
+    // is released, so dragging the seek/volume slider past the edge still
+    // moves it and the page always receives the matching button-up.
+    let captured = response.dragged() || response.drag_stopped();
     let pointer = ui.input(|input| input.pointer.interact_pos());
-    if let Some(position) = pointer.filter(|position| painted.contains(*position)) {
+    if let Some(position) = pointer.filter(|position| captured || painted.contains(*position)) {
         let (x, y) = local(position);
         state.webembed.input(WebEmbedInput::Move { x, y });
 

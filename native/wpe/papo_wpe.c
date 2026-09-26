@@ -231,12 +231,30 @@ static void water_toplevel_constructed(GObject *object)
         WPE_TOPLEVEL_STATE_ACTIVE);
 }
 
+static gboolean water_view_resize_to_toplevel(
+    WPEToplevel *toplevel,
+    WPEView *view,
+    gpointer user_data)
+{
+    (void)user_data;
+    int width = 0;
+    int height = 0;
+    wpe_toplevel_get_size(toplevel, &width, &height);
+    if (width > 0 && height > 0)
+        wpe_view_resized(view, width, height);
+    return FALSE;
+}
+
 static gboolean water_toplevel_resize(
     WPEToplevel *toplevel,
     int width,
     int height)
 {
     wpe_toplevel_resized(toplevel, width, height);
+    // A custom toplevel does not resize its views by itself: without this
+    // the WebView keeps WPE's default 1024x768 viewport, which shrinks the
+    // page into Papo's rectangle and misplaces every pointer event.
+    wpe_toplevel_foreach_view(toplevel, water_view_resize_to_toplevel, NULL);
     return TRUE;
 }
 
@@ -444,6 +462,16 @@ WaterWpeRuntime *water_wpe_runtime_new(char **error)
         DRM_FORMAT_MOD_LINEAR);
     display->formats = wpe_buffer_formats_builder_end(builder);
     wpe_buffer_formats_builder_unref(builder);
+
+    // Papo forwards a desktop mouse and keyboard. Without this WebKit reports
+    // (hover: none) / (pointer: none) and YouTube falls back to its touch
+    // player, where hover controls such as the volume slider never appear.
+    // WebKit reads these capabilities from the primary display, not from the
+    // WebView's own display, so Papo's display must also become primary.
+    wpe_display_set_available_input_devices(
+        WPE_DISPLAY(display),
+        WPE_AVAILABLE_INPUT_DEVICE_MOUSE | WPE_AVAILABLE_INPUT_DEVICE_KEYBOARD);
+    wpe_display_set_primary(WPE_DISPLAY(display));
 
     runtime->display = WPE_DISPLAY(display);
     return runtime;
