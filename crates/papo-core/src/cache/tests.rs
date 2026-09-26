@@ -377,6 +377,21 @@ fn attachment_metadata_survives() {
 }
 
 #[test]
+fn open_creates_missing_parent_directory() {
+    let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "papo-cache-parent-{}-{serial}",
+        std::process::id()
+    ));
+    let path = root.join("nested").join("papo-cache.db");
+    let db = ClientDb::open(Some(path.clone()));
+    assert!(db.is_enabled(), "cache deve criar a pasta de dados ausente");
+    db.flush();
+    assert!(path.parent().is_some_and(Path::exists));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn missing_directory_means_disabled_not_dead() {
     let path = Path::new("/proc/definitely-not-writable/papo-cache.db").to_path_buf();
     let db = ClientDb::open(Some(path));
