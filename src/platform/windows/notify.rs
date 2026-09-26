@@ -2,6 +2,7 @@
 
 #![cfg(target_os = "windows")]
 
+use std::collections::HashMap;
 use std::sync::mpsc;
 
 use windows::core::HSTRING;
@@ -48,9 +49,13 @@ impl Notifier {
                         }
                     };
 
+                let mut live = HashMap::<String, ToastNotification>::new();
                 while let Ok(notification) = rx.recv() {
-                    if let Err(error) = show(&notifier, &notification, &repaint) {
-                        log::warn!("notificação do Windows recusada: {error}");
+                    match show(&notifier, &notification, &repaint) {
+                        Ok((tag, toast)) => {
+                            live.insert(tag, toast);
+                        }
+                        Err(error) => log::warn!("notificação do Windows recusada: {error}"),
                     }
                 }
             })
@@ -68,7 +73,7 @@ fn show(
     notifier: &windows::UI::Notifications::ToastNotifier,
     notification: &Notification,
     repaint: &egui::Context,
-) -> windows::core::Result<()> {
+) -> windows::core::Result<(String, ToastNotification)> {
     let document = XmlDocument::new()?;
     document.LoadXml(&HSTRING::from(
         r#"<toast><visual><binding template="ToastGeneric"><text/><text/></binding></visual></toast>"#,
@@ -81,12 +86,12 @@ fn show(
     body.AppendChild(&document.CreateTextNode(&HSTRING::from(&notification.body))?)?;
 
     let toast = ToastNotification::CreateToastNotification(&document)?;
-    if let Some(tag) = &notification.tag {
-        // Windows limits tags to 64 characters. The core tag is already
-        // stable, but trim defensively instead of losing the notification.
-        let tag: String = tag.chars().take(64).collect();
-        let _ = toast.SetTag(&HSTRING::from(tag));
-    }
+    let tag = notification
+        .tag
+        .as_deref()
+        .map(stable_tag)
+        .unwrap_or_else(|| "papo".to_owned());
+    toast.SetTag(&HSTRING::from(&tag))?;
 
     let repaint = repaint.clone();
     toast.Activated(&TypedEventHandler::new(move |_, _| {
@@ -97,7 +102,17 @@ fn show(
         Ok(())
     }))?;
 
-    notifier.Show(&toast)
+    notifier.Show(&toast)?;
+    Ok((tag, toast))
+}
+
+fn stable_tag(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("papo-{hash:016x}")
 }
 
 /// Register enough per-user identity for unpackaged Win32 toast delivery.
