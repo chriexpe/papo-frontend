@@ -38,7 +38,7 @@ use webview2_com::{
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
-        ICoreWebView2EnvironmentOptions,
+        ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
         ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
         ICoreWebView2_4, ICoreWebView2_8,
     },
@@ -134,6 +134,14 @@ impl LiveWebView {
             settings
                 .SetIsStatusBarEnabled(false)
                 .map_err(|error| format!("desativar status bar WebView2: {error}"))?;
+            if let Ok(settings4) = settings.cast::<ICoreWebView2Settings4>() {
+                settings4
+                    .SetIsPasswordAutosaveEnabled(false)
+                    .map_err(|error| format!("desativar password save WebView2: {error}"))?;
+                settings4
+                    .SetIsGeneralAutofillEnabled(false)
+                    .map_err(|error| format!("desativar autofill WebView2: {error}"))?;
+            }
             controller
                 .SetIsVisible(false)
                 .map_err(|error| format!("ocultar WebView2 inicial: {error}"))?;
