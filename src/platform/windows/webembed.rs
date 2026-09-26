@@ -34,9 +34,11 @@ use webview2_com::{
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    WebResourceRequestedEventHandler,
     TrySuspendCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2EnvironmentWithOptions,
+        COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+        CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
         ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
         ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
@@ -502,6 +504,25 @@ fn install_security_and_navigation_handlers(
         Ok(())
     }));
 
+    // YouTube error 153 means the embedded player did not receive a usable
+    // HTTP Referer. NavigateWithWebResourceRequest covers the top-level load,
+    // but Chromium can issue subsequent YouTube document/resource requests
+    // without carrying that custom header forward. WebView2 explicitly allows
+    // request headers to be modified from WebResourceRequested, so keep Papo's
+    // app identity attached to every YouTube request made by this isolated
+    // browser surface.
+    let web_resource = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        let request = unsafe { args.Request()? };
+        let headers = unsafe { request.Headers()? };
+        unsafe {
+            headers.SetHeader(w!("Referer"), w!("https://io.github.chriexpe.papo/"))?;
+        }
+        Ok(())
+    }));
+
     let permission = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             // Embedded third-party content never receives camera, microphone,
@@ -545,6 +566,21 @@ fn install_security_and_navigation_handlers(
 
     let mut token = 0;
     unsafe {
+        webview
+            .AddWebResourceRequestedFilter(
+                w!("https://*.youtube.com/*"),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )
+            .map_err(|error| format!("filtro YouTube WebView2: {error}"))?;
+        webview
+            .AddWebResourceRequestedFilter(
+                w!("https://*.youtube-nocookie.com/*"),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )
+            .map_err(|error| format!("filtro YouTube nocookie WebView2: {error}"))?;
+        webview
+            .add_WebResourceRequested(&web_resource, &mut token)
+            .map_err(|error| format!("WebResourceRequested WebView2: {error}"))?;
         webview
             .add_NavigationStarting(&navigation, &mut token)
             .map_err(|error| format!("NavigationStarting WebView2: {error}"))?;
