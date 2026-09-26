@@ -28,15 +28,17 @@ use windows::{
     core::{Interface as _, PWSTR, w},
 };
 use webview2_com::{
-    CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
+    CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler,
     ContainsFullScreenElementChangedEventHandler, DownloadStartingEventHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler,
     TrySuspendCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2Environment,
+        COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2EnvironmentWithOptions,
         ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        ICoreWebView2EnvironmentOptions,
         ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
         ICoreWebView2_4, ICoreWebView2_8,
     },
@@ -311,11 +313,38 @@ fn create_clip_host(parent: HWND) -> Result<HWND, String> {
 }
 
 fn create_environment() -> Result<ICoreWebView2Environment, String> {
+    let profile = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Papo")
+        .join("WebView2");
+    std::fs::create_dir_all(&profile)
+        .map_err(|error| format!("criar perfil WebView2 {}: {error}", profile.display()))?;
+    let profile = profile
+        .to_str()
+        .ok_or_else(|| "perfil WebView2 não é UTF-8".to_owned())?
+        .to_owned();
+
+    let options: ICoreWebView2EnvironmentOptions =
+        CoreWebView2EnvironmentOptions::default().into();
+    unsafe {
+        options
+            .SetAllowSingleSignOnUsingOSPrimaryAccount(false)
+            .map_err(|error| format!("desativar SSO WebView2: {error}"))?;
+    }
+
+    let profile = CoTaskMemPWSTR::from(profile.as_str());
     let (tx, rx) = mpsc::channel();
 
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
-        Box::new(|handler| unsafe {
-            CreateCoreWebView2Environment(&handler).map_err(webview2_com::Error::WindowsError)
+        Box::new(move |handler| unsafe {
+            CreateCoreWebView2EnvironmentWithOptions(
+                windows::core::PCWSTR::null(),
+                *profile.as_ref().as_pcwstr(),
+                &options,
+                &handler,
+            )
+            .map_err(webview2_com::Error::WindowsError)
         }),
         Box::new(move |error_code, environment| {
             error_code?;
