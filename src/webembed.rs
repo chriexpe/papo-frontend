@@ -101,6 +101,7 @@ pub struct WebEmbedManager {
     owner_seen: bool,
     inline_visible: bool,
     presented: bool,
+    floating: bool,
     scroll_delta_px: f32,
     external_urls: Vec<String>,
 }
@@ -119,6 +120,7 @@ impl WebEmbedManager {
             owner_seen: false,
             inline_visible: false,
             presented: false,
+            floating: false,
             scroll_delta_px: 0.0,
             external_urls: Vec::new(),
         }
@@ -195,6 +197,7 @@ impl WebEmbedManager {
         if !visible {
             return;
         }
+        self.floating = false;
 
         if active.suspended {
             self.backend.resume(id);
@@ -218,9 +221,12 @@ impl WebEmbedManager {
         let Some(active) = self.active.as_ref() else {
             return false;
         };
-        let playing = self.backend.is_playing(&active.id).unwrap_or(true);
+        // Playback gates *entering* PiP. Once the browser has been re-homed
+        // into the floating slot, pausing it there must not make the controls
+        // disappear under the pointer.
+        let may_enter = self.floating || self.backend.is_playing(&active.id).unwrap_or(true);
         behavior == OffscreenBehavior::Float
-            && playing
+            && may_enter
             && !self.inline_visible
             && (self.owner_seen || scope == FloatScope::Global)
     }
@@ -256,6 +262,7 @@ impl WebEmbedManager {
             },
         );
         self.presented = true;
+        self.floating = true;
     }
 
     /// Called after egui has had a chance to draw the floating slot.
@@ -319,6 +326,7 @@ impl WebEmbedManager {
         self.owner_seen = false;
         self.inline_visible = false;
         self.presented = false;
+        self.floating = false;
     }
 
     pub fn trim(&mut self, level: crate::media::TrimLevel) {
