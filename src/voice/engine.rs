@@ -967,7 +967,6 @@ pub fn check() {
         ("vp8dec", "a câmera dos outros chegando"),
         ("rtpvp8pay", "vídeo em RTP"),
         ("rtpvp8depay", "vídeo de volta do RTP"),
-        ("v4l2src", "a câmera"),
         ("appsrc", "a ponte da câmera"),
         ("appsink", "os quadros para a janela"),
     ] {
@@ -976,17 +975,19 @@ pub fn check() {
     }
 
     println!("\nmicrofone (o primeiro que abrir é o usado):");
-    for factory in ["pipewiresrc", "pulsesrc", "alsasrc"] {
+    for factory in crate::media::platform::audio_source_candidates() {
         report(factory, probe(factory, "audioconvert", "fakesink"));
     }
 
     println!("\nalto-falante:");
-    for factory in ["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"] {
+    for factory in crate::media::platform::audio_sink_candidates() {
         report(factory, probe("audiotestsrc", "audioconvert", factory));
     }
 
     println!("\ncâmera:");
-    report("v4l2src", probe("v4l2src", "videoconvert", "fakesink"));
+    for factory in crate::media::platform::camera_source_candidates() {
+        report(factory, probe(factory, "videoconvert", "fakesink"));
+    }
 
     println!("\ntransporte:");
     let transport = match gst::ElementFactory::make("webrtcbin")
@@ -1101,14 +1102,9 @@ fn microphone(
     webrtc: &gst::Element,
     shared: &Arc<Shared>,
 ) -> Option<gst::Element> {
-    // No Android o caminho é um só: o OpenSL ES. Na área de trabalho
-    // tenta-se do mais moderno para o mais antigo.
-    #[cfg(target_os = "android")]
-    const MICS: &[&str] = &["openslessrc"];
-    #[cfg(not(target_os = "android"))]
-    const MICS: &[&str] = &["pipewiresrc", "pulsesrc", "alsasrc"];
-
-    for factory in MICS {
+    // A ordem das fontes pertence à política de plataforma. Cada candidata
+    // ainda precisa abrir de verdade antes de ser aceita.
+    for factory in crate::media::platform::audio_source_candidates() {
         let Some((elements, volume)) = mic_chain(factory) else {
             continue;
         };
@@ -1639,7 +1635,9 @@ fn capture(
         source
     };
     #[cfg(not(target_os = "android"))]
-    let source = make("v4l2src")?;
+    let source = crate::media::platform::camera_source_candidates()
+        .iter()
+        .find_map(|factory| make(factory))?;
     let tee = make("tee")?;
     let convert = make("videoconvert")?;
     let scale = make("videoscale")?;

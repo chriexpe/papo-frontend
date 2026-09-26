@@ -66,6 +66,10 @@ pub mod safe_area;
 /// Toolkit-free WPE WebKit runtime/page bridge for Linux WebEmbed.
 #[cfg(target_os = "linux")]
 pub mod linux_wpe;
+
+/// Native Edge WebView2 child-window backend for Windows WebEmbed.
+#[cfg(target_os = "windows")]
+pub mod windows_webembed;
 /// WPE WebKit WebEmbed backend and DMA-BUF → Glow importer.
 #[cfg(target_os = "linux")]
 pub mod linux_webembed;

@@ -413,15 +413,32 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(crate::platform::linux_webembed::LinuxWebEmbedBackend::new())
 }
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+fn platform_backend() -> Box<dyn WebEmbedBackend> {
+    Box::new(crate::platform::windows_webembed::WindowsWebEmbedBackend::new())
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(UnavailableBackend)
 }
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 struct UnavailableBackend;
 
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "windows"
+)))]
 impl WebEmbedBackend for UnavailableBackend {
     fn create(&mut self, _id: &str, _url: &str) -> Result<(), String> {
         Err("WebEmbed ainda não tem backend nesta plataforma".to_owned())
@@ -451,6 +468,7 @@ mod tests {
 
     struct FakeBackend {
         calls: Arc<Mutex<Vec<Call>>>,
+        playing: Arc<Mutex<Option<bool>>>,
     }
 
     impl WebEmbedBackend for FakeBackend {
@@ -473,14 +491,31 @@ mod tests {
         fn poll_events(&mut self) -> Vec<WebEmbedEvent> {
             Vec::new()
         }
+
+        fn is_playing(&self, _id: &str) -> Option<bool> {
+            *self.playing.lock().unwrap()
+        }
+    }
+
+    type FakeManager = (
+        WebEmbedManager,
+        Arc<Mutex<Vec<Call>>>,
+        Arc<Mutex<Option<bool>>>,
+    );
+
+    fn manager_with_playing(playing: Option<bool>) -> FakeManager {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let playing = Arc::new(Mutex::new(playing));
+        let backend = FakeBackend {
+            calls: calls.clone(),
+            playing: playing.clone(),
+        };
+        (WebEmbedManager::new(Box::new(backend)), calls, playing)
     }
 
     fn manager() -> (WebEmbedManager, Arc<Mutex<Vec<Call>>>) {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let backend = FakeBackend {
-            calls: calls.clone(),
-        };
-        (WebEmbedManager::new(Box::new(backend)), calls)
+        let (manager, calls, _) = manager_with_playing(None);
+        (manager, calls)
     }
 
     fn rect() -> Rect {
@@ -560,6 +595,38 @@ mod tests {
         manager.present_floating(rect(), rect(), 1.0, true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::Global, false);
         assert!(!matches!(calls.lock().unwrap().last(), Some(Call::Destroy(_))));
+    }
+
+    #[test]
+    fn paused_browser_does_not_enter_float() {
+        let (mut manager, _calls, _playing) = manager_with_playing(Some(false));
+        manager.activate("a".into(), "https://example.com/a".into());
+        manager.begin_frame();
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+
+        assert!(!manager.should_float(
+            OffscreenBehavior::Float,
+            FloatScope::CurrentChannel,
+        ));
+    }
+
+    #[test]
+    fn pausing_after_float_does_not_dismiss_float() {
+        let (mut manager, _calls, playing) = manager_with_playing(Some(true));
+        manager.activate("a".into(), "https://example.com/a".into());
+        manager.begin_frame();
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        assert!(manager.should_float(
+            OffscreenBehavior::Float,
+            FloatScope::CurrentChannel,
+        ));
+        manager.present_floating(rect(), rect(), 1.0, true);
+
+        *playing.lock().unwrap() = Some(false);
+        assert!(manager.should_float(
+            OffscreenBehavior::Float,
+            FloatScope::CurrentChannel,
+        ));
     }
 
     #[test]

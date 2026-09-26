@@ -38,6 +38,54 @@ fn audio_sink_candidates_for(platform: GstPlatform) -> &'static [&'static str] {
     }
 }
 
+
+fn audio_source_candidates_for(platform: GstPlatform) -> &'static [&'static str] {
+    match platform {
+        GstPlatform::Android => &["openslessrc"],
+        GstPlatform::Linux => &["pipewiresrc", "pulsesrc", "alsasrc"],
+        GstPlatform::Windows => &["wasapi2src", "wasapisrc"],
+        GstPlatform::Macos => &["osxaudiosrc"],
+        GstPlatform::Other => &["autoaudiosrc"],
+    }
+}
+
+fn camera_source_candidates_for(platform: GstPlatform) -> &'static [&'static str] {
+    match platform {
+        GstPlatform::Android => &["ahcsrc"],
+        GstPlatform::Linux => &["v4l2src"],
+        GstPlatform::Windows => &["mfvideosrc", "ksvideosrc"],
+        GstPlatform::Macos => &["avfvideosrc"],
+        GstPlatform::Other => &["autovideosrc"],
+    }
+}
+
+pub fn prepare_environment() {
+    #[cfg(target_os = "windows")]
+    {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let Some(root) = exe.parent() else { return };
+
+        let plugins = root.join("gstreamer-1.0");
+        if plugins.is_dir() {
+            // SAFETY: called once before gst::init() starts GStreamer threads.
+            unsafe {
+                std::env::set_var("GST_PLUGIN_PATH_1_0", &plugins);
+                std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
+            }
+        }
+
+        let scanner = root.join("gst-plugin-scanner.exe");
+        if scanner.is_file() {
+            unsafe { std::env::set_var("GST_PLUGIN_SCANNER", &scanner) };
+        }
+
+        let gio = root.join("gio-modules");
+        if gio.is_dir() {
+            unsafe { std::env::set_var("GIO_EXTRA_MODULES", &gio) };
+        }
+    }
+}
+
 pub fn initialize_platform() {
     #[cfg(target_os = "android")]
     demote_broken_decoders();
@@ -45,6 +93,14 @@ pub fn initialize_platform() {
 
 pub fn audio_sink_candidates() -> &'static [&'static str] {
     audio_sink_candidates_for(current_platform())
+}
+
+pub fn audio_source_candidates() -> &'static [&'static str] {
+    audio_source_candidates_for(current_platform())
+}
+
+pub fn camera_source_candidates() -> &'static [&'static str] {
+    camera_source_candidates_for(current_platform())
 }
 
 #[cfg(target_os = "android")]
@@ -84,6 +140,15 @@ mod tests {
         assert!(sinks.contains(&"wasapisink"));
         assert!(!sinks.contains(&"pipewiresink"));
         assert!(!sinks.contains(&"pulsesink"));
+
+        assert_eq!(
+            audio_source_candidates_for(GstPlatform::Windows),
+            &["wasapi2src", "wasapisrc"]
+        );
+        assert_eq!(
+            camera_source_candidates_for(GstPlatform::Windows),
+            &["mfvideosrc", "ksvideosrc"]
+        );
     }
 
     #[test]

@@ -98,6 +98,19 @@ libloading = "0.8"
 libc = "0.2"
 
 # ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+[target.'cfg(target_os = "windows")'.dependencies]
+# Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
+# the child HWND, browser rendering and pointer/keyboard interaction.
+webview2-com = "0.39.1"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# ---------------------------------------------------------------------------
 # Android
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "android")'.dependencies]
