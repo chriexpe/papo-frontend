@@ -36,24 +36,36 @@ if ($env:VCToolsRedistDir) {
 $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
 $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (Test-Path $vswhere) {
-    $vsInstall = & $vswhere -latest -products '*' -property installationPath
-    if ($vsInstall) {
+    # Do not assume the newest VS installation has the C++ workload. Hosted
+    # runners can have several VS/Build Tools installations side by side.
+    $vsInstalls = & $vswhere -all -products '*' -property installationPath
+    foreach ($vsInstall in $vsInstalls) {
+        if (-not $vsInstall) { continue }
         $redistRoot = Join-Path $vsInstall 'VC\Redist\MSVC'
-        if (Test-Path $redistRoot) {
-            $latestRedist = Get-ChildItem $redistRoot -Directory |
-                Sort-Object Name -Descending |
-                Select-Object -First 1
-            if ($latestRedist) {
-                $crtDirs += (Join-Path $latestRedist.FullName 'x64\Microsoft.VC143.CRT')
-            }
+        if (-not (Test-Path $redistRoot)) { continue }
+
+        foreach ($redist in (Get-ChildItem $redistRoot -Directory | Sort-Object Name -Descending)) {
+            $x64 = Join-Path $redist.FullName 'x64'
+            if (-not (Test-Path $x64)) { continue }
+            Get-ChildItem $x64 -Directory -Filter 'Microsoft.VC*.CRT' |
+                ForEach-Object { $crtDirs += $_.FullName }
         }
     }
 }
 
-$crtDir = $crtDirs | Where-Object { Test-Path $_ } | Select-Object -First 1
+$crtDir = $crtDirs |
+    Where-Object {
+        (Test-Path (Join-Path $_ 'VCRUNTIME140.dll')) -and
+        (Test-Path (Join-Path $_ 'VCRUNTIME140_1.dll')) -and
+        (Test-Path (Join-Path $_ 'MSVCP140.dll'))
+    } |
+    Select-Object -First 1
 if (-not $crtDir) {
+    Write-Host 'VC runtime candidates checked:'
+    $crtDirs | ForEach-Object { Write-Host "  $_" }
     throw 'Visual C++ x64 redistributable DLL directory not found'
 }
+Write-Host "Using app-local VC runtime from $crtDir"
 Get-ChildItem $crtDir -Filter '*.dll' -File |
     Copy-Item -Destination $OutputDir
 
