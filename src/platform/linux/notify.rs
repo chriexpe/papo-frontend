@@ -79,7 +79,7 @@ fn image_data() -> Option<zvariant::Value<'static>> {
     static ICON: std::sync::OnceLock<Option<(i32, i32, Vec<u8>)>> = std::sync::OnceLock::new();
     let (width, height, pixels) = ICON
         .get_or_init(|| {
-            let image = image::load_from_memory(include_bytes!("../../assets/icon.png")).ok()?;
+            let image = image::load_from_memory(include_bytes!("../../../assets/icon.png")).ok()?;
             let image = image
                 .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
                 .to_rgba8();
