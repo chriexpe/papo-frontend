@@ -133,6 +133,19 @@ pub fn main() -> eframe::Result<()> {
         return Ok(());
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+        let app_id: Vec<u16> = APP_ID.encode_utf16().chain(std::iter::once(0)).collect();
+        if let Err(error) = unsafe {
+            SetCurrentProcessExplicitAppUserModelID(PCWSTR(app_id.as_ptr()))
+        } {
+            log::warn!("não foi possível definir AppUserModelID do Windows: {error}");
+        }
+    }
+
     // Onde não há menu global, a janela ganha a barra que desenhamos; onde
     // há (Plasma), quem desenha é o compositor.
     let own_chrome = !platform::desktop::uses_global_menu();
