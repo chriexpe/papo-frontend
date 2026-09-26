@@ -44,7 +44,40 @@ use crate::webembed::{EmbedViewport, WebEmbedBackend, WebEmbedEvent};
 
 const APP_REFERER: &str = "https://io.github.chriexpe.papo/";
 
-type EventQueue = Rc<RefCell<Vec<WebEmbedEvent>>>;
+struct EventSink {
+    events: RefCell<Vec<WebEmbedEvent>>,
+    egui: RefCell<Option<egui::Context>>,
+}
+
+impl EventSink {
+    fn new() -> Self {
+        Self {
+            events: RefCell::new(Vec::new()),
+            egui: RefCell::new(None),
+        }
+    }
+
+    fn set_context(&self, ctx: &egui::Context) {
+        self.egui.replace(Some(ctx.clone()));
+    }
+
+    fn wake(&self) {
+        if let Some(ctx) = self.egui.borrow().as_ref() {
+            ctx.request_repaint();
+        }
+    }
+
+    fn push(&self, event: WebEmbedEvent) {
+        self.events.borrow_mut().push(event);
+        self.wake();
+    }
+
+    fn drain(&self) -> Vec<WebEmbedEvent> {
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
+}
+
+type EventQueue = Rc<EventSink>;
 
 struct LiveWebView {
     parent: HWND,
@@ -348,12 +381,10 @@ fn install_security_and_navigation_handlers(
         if navigation_done.get() && user_initiated.as_bool() {
             unsafe { args.SetCancel(true)? };
             if papo_core::preview::safe_remote_url(&url) {
-                navigation_events
-                    .borrow_mut()
-                    .push(WebEmbedEvent::OpenExternal {
-                        id: navigation_id.clone(),
-                        url,
-                    });
+                navigation_events.push(WebEmbedEvent::OpenExternal {
+                    id: navigation_id.clone(),
+                    url,
+                });
             }
         }
         Ok(())
@@ -386,12 +417,10 @@ fn install_security_and_navigation_handlers(
             && let Some(url) = pwstr_string(uri)
             && papo_core::preview::safe_remote_url(&url)
         {
-            window_events
-                .borrow_mut()
-                .push(WebEmbedEvent::OpenExternal {
-                    id: window_id.clone(),
-                    url,
-                });
+            window_events.push(WebEmbedEvent::OpenExternal {
+                id: window_id.clone(),
+                url,
+            });
         }
         Ok(())
     }));
@@ -406,6 +435,7 @@ fn install_security_and_navigation_handlers(
     }));
 
     let fullscreen_state = Rc::clone(fullscreen);
+    let fullscreen_events = Rc::clone(events);
     let fullscreen_changed =
         ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _args| {
             let Some(sender) = sender else {
@@ -414,17 +444,16 @@ fn install_security_and_navigation_handlers(
             let mut contains = BOOL(0);
             unsafe { sender.ContainsFullScreenElement(&mut contains)? };
             fullscreen_state.set(contains.as_bool());
+            fullscreen_events.wake();
             Ok(())
         }));
 
     let failure_events = Rc::clone(events);
     let failure_id = id.to_owned();
     let process_failed = ProcessFailedEventHandler::create(Box::new(move |_sender, _args| {
-        failure_events
-            .borrow_mut()
-            .push(WebEmbedEvent::Failed {
-                id: failure_id.clone(),
-            });
+        failure_events.push(WebEmbedEvent::Failed {
+            id: failure_id.clone(),
+        });
         Ok(())
     }));
 
@@ -475,7 +504,7 @@ impl WindowsWebEmbedBackend {
             pending: None,
             live: None,
             current_id: None,
-            events: Rc::new(RefCell::new(Vec::new())),
+            events: Rc::new(EventSink::new()),
             com_initialized: false,
         }
     }
@@ -553,7 +582,6 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if let Err(error) = self.ensure_live() {
             log::warn!("webembed(webview2): {error}");
             self.events
-                .borrow_mut()
                 .push(WebEmbedEvent::Failed { id: id.to_owned() });
             return;
         }
@@ -562,7 +590,6 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         {
             log::warn!("webembed(webview2): {error}");
             self.events
-                .borrow_mut()
                 .push(WebEmbedEvent::Failed { id: id.to_owned() });
         }
     }
@@ -592,7 +619,11 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
     }
 
     fn poll_events(&mut self) -> Vec<WebEmbedEvent> {
-        std::mem::take(&mut *self.events.borrow_mut())
+        self.events.drain()
+    }
+
+    fn set_context(&mut self, ctx: &egui::Context) {
+        self.events.set_context(ctx);
     }
 
     fn prepare_render(&mut self, frame: &mut eframe::Frame) {
