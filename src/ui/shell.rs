@@ -707,6 +707,9 @@ pub struct UiState {
     /// Canto superior esquerdo do player flutuante, em pontos. `None` usa o
     /// canto inferior padrão; um arrasto grava a posição escolhida.
     pub webembed_float_pos: Option<(f32, f32)>,
+    /// Retângulo do WebEmbed inline ativo neste quadro. O ponteiro aqui
+    /// pertence ao browser, não ao hover/clique/gesto da mensagem.
+    pub webembed_inline_rect: Option<Rect>,
     /// Retângulo do player flutuante no quadro anterior. Uma pressão aqui
     /// pertence ao player, não a um gesto de gaveta/resposta por baixo.
     pub webembed_float_rect: Option<Rect>,
@@ -829,6 +832,7 @@ impl Default for UiState {
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
             webembed_float_pos: None,
+            webembed_inline_rect: None,
             webembed_float_rect: None,
             webembed_chat_clip: None,
             webembed_blocked: false,
@@ -917,6 +921,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.webembed_inline_rect = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens.
     if state.media.pump(ui.ctx()) {
@@ -3376,6 +3381,9 @@ fn message_list(
         // linha mas ainda está dentro da pastilha que ela abriu, essa mensagem
         // continua dona do hover; sem isto a metade de cima era inalcançável.
         let pointer = ui.ctx().pointer_hover_pos();
+        let webembed_owns_pointer = state
+            .webembed_inline_rect
+            .is_some_and(|rect| pointer.is_some_and(|position| rect.contains(position)));
         let held_by_pill = state.hover_actions.as_ref().is_some_and(|(id, rect)| {
             id == &message.id && pointer.is_some_and(|position| rect.contains(position))
         });
@@ -3387,6 +3395,7 @@ fn message_list(
             Some(id) => id == &message.id,
             None => {
                 interactive
+                    && !webembed_owns_pointer
                     && !another_pill_owns_pointer
                     && (held_by_pill || ui.rect_contains_pointer(row))
             }
@@ -4196,6 +4205,7 @@ fn preview_card(
                         ui.ctx().pixels_per_point(),
                         allowed,
                     );
+                    webembed_paint_and_input(ui, state, embed_id, image_rect, "inline-image");
                 } else {
                     ui.painter().circle_filled(
                         image_rect.center(),
@@ -4211,7 +4221,7 @@ fn preview_card(
                     );
                 }
 
-                if response.clicked() {
+                if response.clicked() && !state.webembed.is_active(embed_id) {
                     if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                         state.media.pause_all();
                         ui.ctx().request_repaint();
@@ -4259,6 +4269,7 @@ fn preview_card(
                     ui.ctx().pixels_per_point(),
                     allowed,
                 );
+                webembed_paint_and_input(ui, state, embed_id, rect, "inline");
             } else {
                 ui.painter()
                     .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
@@ -4270,7 +4281,7 @@ fn preview_card(
                     Color32::WHITE,
                 );
             }
-            if response.clicked() {
+            if response.clicked() && !state.webembed.is_active(embed_id) {
                 if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
                     state.media.pause_all();
                     ui.ctx().request_repaint();
@@ -4412,6 +4423,101 @@ fn webembed_floating_allowed(state: &UiState) -> bool {
         && state.viewer.is_none()
         && state.link_viewer.is_none()
         && state.external_link_prompt.is_none()
+}
+
+/// Paints an offscreen browser texture and forwards desktop input. Native
+/// browser surfaces (Android) return no texture and therefore skip this path.
+fn webembed_paint_and_input(
+    ui: &egui::Ui,
+    state: &mut UiState,
+    embed_id: &str,
+    rect: Rect,
+    tag: &str,
+) {
+    use crate::webembed::{WebEmbedButton, WebEmbedInput};
+
+    let Some(texture) = state.webembed.texture_id() else {
+        return;
+    };
+
+    // A resize/floating transition can leave one old WPE frame in flight.
+    // Never stretch that frame to the new browser rectangle: preserve its
+    // actual aspect until WebKit hands us a frame at the requested size.
+    let painted = state.webembed.texture_size().map_or(rect, |(width, height)| {
+        let source = Vec2::new(width as f32, height as f32);
+        if source.x <= 0.0 || source.y <= 0.0 {
+            return rect;
+        }
+        let scale = (rect.width() / source.x).min(rect.height() / source.y);
+        Rect::from_center_size(rect.center(), source * scale)
+    });
+
+    // Black bars are preferable to deforming browser UI while a resized frame
+    // is arriving.
+    if painted != rect {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
+    }
+
+    // The WPE DMA-BUF arrives in the orientation egui expects after the
+    // EGL/FBO copy. Do not flip V here; doing so mirrors the browser vertically.
+    ui.painter().image(
+        texture,
+        painted,
+        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+
+    if tag.starts_with("inline") {
+        state.webembed_inline_rect = Some(painted);
+    }
+
+    let response = ui.interact(
+        painted,
+        Id::new(("webembed-input", embed_id, tag)),
+        Sense::click_and_drag(),
+    );
+    let local = |position: egui::Pos2| {
+        (
+            (position.x - painted.min.x).clamp(0.0, painted.width()),
+            (position.y - painted.min.y).clamp(0.0, painted.height()),
+        )
+    };
+
+    // A press that started on the browser keeps owning the pointer until it
+    // is released, so dragging the seek/volume slider past the edge still
+    // moves it and the page always receives the matching button-up.
+    let captured = response.dragged() || response.drag_stopped();
+    let pointer = ui.input(|input| input.pointer.interact_pos());
+    if let Some(position) = pointer.filter(|position| captured || painted.contains(*position)) {
+        let (x, y) = local(position);
+        state.webembed.input(WebEmbedInput::Move { x, y });
+
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > 0.5 {
+            state
+                .webembed
+                .input(WebEmbedInput::Wheel { x, y, delta_y: scroll });
+        }
+
+        let pressed = ui.input(|input| input.pointer.primary_pressed());
+        if pressed {
+            state.webembed.input(WebEmbedInput::Down {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            });
+        }
+        let released = ui.input(|input| input.pointer.primary_released());
+        if released {
+            state.webembed.input(WebEmbedInput::Up {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            });
+        }
+    } else if !response.dragged() {
+        state.webembed.input(WebEmbedInput::Leave);
+    }
 }
 
 fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
@@ -4574,6 +4680,9 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
         ui.ctx().pixels_per_point(),
         true,
     );
+    if let Some(id) = state.webembed.active_id().map(str::to_owned) {
+        webembed_paint_and_input(&top, state, &id, browser_rect, "float");
+    }
 }
 
 fn reaction_chip(

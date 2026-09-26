@@ -3576,6 +3576,8 @@ dependencies = [
  "image",
  "jni 0.21.1",
  "ksni",
+ "libc",
+ "libloading",
  "log",
  "papo-core",
  "raw-window-handle",

@@ -63,6 +63,12 @@ pub mod native_field;
 /// Bordas do sistema no Android (barra de status, navegação, recorte).
 #[cfg(target_os = "android")]
 pub mod safe_area;
+/// Toolkit-free WPE WebKit runtime/page bridge for Linux WebEmbed.
+#[cfg(target_os = "linux")]
+pub mod linux_wpe;
+/// WPE WebKit WebEmbed backend and DMA-BUF → Glow importer.
+#[cfg(target_os = "linux")]
+pub mod linux_webembed;
 #[cfg(target_os = "linux")]
 pub mod kwin;
 #[cfg(target_os = "linux")]

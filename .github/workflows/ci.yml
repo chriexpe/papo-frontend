@@ -95,6 +95,10 @@ jobs:
           sudo apt-get update
           ./scripts/deps.sh --command \
             | sed 's/install -y/install -y --dry-run/' | sh
+      - name: Validar scripts de shell
+        run: |
+          bash -n scripts/deps.sh
+          bash -n scripts/wpe-runtime.sh
 
   metadata:
     runs-on: ubuntu-24.04
