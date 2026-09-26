@@ -120,6 +120,18 @@ impl LiveWebView {
             settings
                 .SetAreDefaultContextMenusEnabled(false)
                 .map_err(|error| format!("desativar menu WebView2: {error}"))?;
+            settings
+                .SetAreHostObjectsAllowed(false)
+                .map_err(|error| format!("desativar host objects WebView2: {error}"))?;
+            settings
+                .SetIsWebMessageEnabled(false)
+                .map_err(|error| format!("desativar web messages WebView2: {error}"))?;
+            settings
+                .SetAreDefaultScriptDialogsEnabled(false)
+                .map_err(|error| format!("desativar dialogs WebView2: {error}"))?;
+            settings
+                .SetIsStatusBarEnabled(false)
+                .map_err(|error| format!("desativar status bar WebView2: {error}"))?;
             controller
                 .SetIsVisible(false)
                 .map_err(|error| format!("ocultar WebView2 inicial: {error}"))?;
