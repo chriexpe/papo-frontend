@@ -82,7 +82,7 @@ impl Tray {
         let menu_tx = tx.clone();
         let menu_repaint = repaint.clone();
         let menu_quit = Arc::clone(&quit_requested);
-        MenuEvent::set_event_handler(Some(move |event| {
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if event.id == open_id {
                 let _ = menu_tx.send(TrayCommand::Show);
                 menu_repaint.request_repaint();
@@ -97,7 +97,7 @@ impl Tray {
 
         let tray_tx = tx;
         let tray_repaint = repaint;
-        TrayIconEvent::set_event_handler(Some(move |event| {
+        TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             if matches!(
                 event,
                 TrayIconEvent::Click {
@@ -158,8 +158,8 @@ impl Tray {
 
 impl Drop for Tray {
     fn drop(&mut self) {
-        MenuEvent::set_event_handler(None);
-        TrayIconEvent::set_event_handler(None);
+        MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
+        TrayIconEvent::set_event_handler::<fn(TrayIconEvent)>(None);
         let _ = self.icon.set_visible(false);
     }
 }
