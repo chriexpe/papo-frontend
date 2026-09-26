@@ -20,8 +20,8 @@ use windows::{
             COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
         },
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
-            SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN,
+            CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN,
             WS_CLIPSIBLINGS,
         },
     },
@@ -29,6 +29,7 @@ use windows::{
 };
 use webview2_com::{
     CoTaskMemPWSTR, CreateCoreWebView2ControllerCompletedHandler,
+    ContainsFullScreenElementChangedEventHandler,
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler,
@@ -46,9 +47,11 @@ const APP_REFERER: &str = "https://io.github.chriexpe.papo/";
 type EventQueue = Rc<RefCell<Vec<WebEmbedEvent>>>;
 
 struct LiveWebView {
+    parent: HWND,
     host: HWND,
     controller: ICoreWebView2Controller,
     webview: ICoreWebView2,
+    fullscreen: Rc<Cell<bool>>,
 }
 
 impl LiveWebView {
@@ -87,17 +90,56 @@ impl LiveWebView {
                 .map_err(|error| format!("ocultar WebView2 inicial: {error}"))?;
         }
 
-        install_security_and_navigation_handlers(&webview, id, events)?;
+        let fullscreen = Rc::new(Cell::new(false));
+        install_security_and_navigation_handlers(&webview, id, events, &fullscreen)?;
         navigate_with_referer(&environment, &webview, url)?;
 
         Ok(Self {
+            parent,
             host,
             controller,
             webview,
+            fullscreen,
         })
     }
 
     fn set_bounds(&self, viewport: &EmbedViewport) -> Result<(), String> {
+        if self.fullscreen.get() {
+            let mut client = RECT::default();
+            unsafe {
+                GetClientRect(self.parent, &mut client)
+                    .map_err(|error| format!("medir janela para fullscreen WebView2: {error}"))?;
+                let width = (client.right - client.left).max(1);
+                let height = (client.bottom - client.top).max(1);
+                SetWindowPos(
+                    self.host,
+                    None,
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )
+                .map_err(|error| format!("posicionar fullscreen WebView2: {error}"))?;
+                self.controller
+                    .SetBounds(RECT {
+                        left: 0,
+                        top: 0,
+                        right: width,
+                        bottom: height,
+                    })
+                    .map_err(|error| format!("redimensionar fullscreen WebView2: {error}"))?;
+                self.controller
+                    .NotifyParentWindowPositionChanged()
+                    .map_err(|error| format!("notificar fullscreen WebView2: {error}"))?;
+                let _ = ShowWindow(self.host, SW_SHOW);
+                self.controller
+                    .SetIsVisible(true)
+                    .map_err(|error| format!("mostrar fullscreen WebView2: {error}"))?;
+            }
+            return Ok(());
+        }
+
         let clipped = viewport.rect.intersect(viewport.clip_rect);
         if clipped.width() <= 0.5 || clipped.height() <= 0.5 {
             return self.set_visible(false);
@@ -277,6 +319,7 @@ fn install_security_and_navigation_handlers(
     webview: &ICoreWebView2,
     id: &str,
     events: &EventQueue,
+    fullscreen: &Rc<Cell<bool>>,
 ) -> Result<(), String> {
     let initial_navigation_done = Rc::new(Cell::new(false));
 
@@ -362,6 +405,18 @@ fn install_security_and_navigation_handlers(
         Ok(())
     }));
 
+    let fullscreen_state = Rc::clone(fullscreen);
+    let fullscreen_changed =
+        ContainsFullScreenElementChangedEventHandler::create(Box::new(move |sender, _args| {
+            let Some(sender) = sender else {
+                return Ok(());
+            };
+            let mut contains = BOOL(0);
+            unsafe { sender.ContainsFullScreenElement(&mut contains)? };
+            fullscreen_state.set(contains.as_bool());
+            Ok(())
+        }));
+
     let failure_events = Rc::clone(events);
     let failure_id = id.to_owned();
     let process_failed = ProcessFailedEventHandler::create(Box::new(move |_sender, _args| {
@@ -387,6 +442,9 @@ fn install_security_and_navigation_handlers(
         webview
             .add_PermissionRequested(&permission, &mut token)
             .map_err(|error| format!("PermissionRequested WebView2: {error}"))?;
+        webview
+            .add_ContainsFullScreenElementChanged(&fullscreen_changed, &mut token)
+            .map_err(|error| format!("Fullscreen WebView2: {error}"))?;
         webview
             .add_ProcessFailed(&process_failed, &mut token)
             .map_err(|error| format!("ProcessFailed WebView2: {error}"))?;
