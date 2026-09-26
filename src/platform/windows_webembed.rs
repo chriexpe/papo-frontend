@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use windows::{
     Win32::{
-        Foundation::{BOOL, E_POINTER, HWND, RECT},
+        Foundation::{E_POINTER, HWND, RECT},
         System::Com::{
             COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
         },
@@ -25,7 +25,7 @@ use windows::{
             WS_CLIPSIBLINGS,
         },
     },
-    core::{Interface as _, PWSTR, w},
+    core::{BOOL, Interface as _, PWSTR, w},
 };
 use webview2_com::{
     CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
