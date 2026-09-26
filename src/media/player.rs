@@ -26,7 +26,9 @@ const TICK: std::time::Duration = std::time::Duration::from_millis(40);
 pub fn init() -> bool {
     use std::sync::OnceLock;
     static READY: OnceLock<bool> = OnceLock::new();
-    *READY.get_or_init(|| match gst::init() {
+    *READY.get_or_init(|| {
+        super::platform::prepare_environment();
+        match gst::init() {
         Ok(()) => {
             super::platform::initialize_platform();
             true
@@ -35,6 +37,7 @@ pub fn init() -> bool {
             log::warn!("GStreamer indisponível: {error}");
             false
         }
+    }
     })
 }
 
