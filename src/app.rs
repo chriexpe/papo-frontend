@@ -9,7 +9,7 @@ use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
 use crate::platform::activate::Activator;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::platform::notify::{Notification, Notifier};
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
@@ -680,8 +680,10 @@ impl PapoApp {
 
         #[cfg(target_os = "linux")]
         let notifier = Notifier::spawn();
+        #[cfg(target_os = "windows")]
+        let notifier = Notifier::spawn(cc.egui_ctx.clone());
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         let notification_sink: Option<NotificationSink> = notifier.as_ref().map(|notifier| {
             let notifier = notifier.clone();
             std::sync::Arc::new(move |envelope: papo_core::notification::NotificationEnvelope| {
@@ -700,7 +702,7 @@ impl PapoApp {
             },
         ));
 
-        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "android")))]
         let notification_sink: Option<NotificationSink> = None;
 
         #[cfg(target_os = "android")]
