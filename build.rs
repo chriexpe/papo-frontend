@@ -56,8 +56,9 @@ fn main() {
     // The package also builds a cdylib for Android. Linking the resource
     // globally makes it collide with Turso's VERSION resource in papo.dll.
     // Keep the application icon strictly on the Windows executable.
-    let result = embed_resource::compile_for(&rc, ["papo"], embed_resource::NONE);
-    if result.is_err() {
-        panic!("compile Windows application icon: {result:?}");
+    if let Err(error) =
+        embed_resource::compile_for(&rc, ["papo"], embed_resource::NONE).manifest_required()
+    {
+        panic!("compile Windows application icon: {error}");
     }
 }
