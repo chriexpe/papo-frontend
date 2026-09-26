@@ -37,9 +37,10 @@ use webview2_com::{
     WebResourceRequestedEventHandler,
     TrySuspendCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_PERMISSION_STATE_DENY, COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-        CreateCoreWebView2EnvironmentWithOptions,
-        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, COREWEBVIEW2_PERMISSION_STATE_DENY,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, CreateCoreWebView2EnvironmentWithOptions,
+        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Controller3,
+        ICoreWebView2Environment,
         ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
         ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
         ICoreWebView2_4, ICoreWebView2_8,
@@ -113,6 +114,21 @@ impl LiveWebView {
         };
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|error| format!("CoreWebView2 indisponível: {error}"))?;
+
+        // Papo supplies WebView2 geometry in the same physical-pixel space as
+        // the Win32 clipping HWND. Do not let WebView2 reinterpret SetBounds
+        // through an independently detected monitor scale.
+        let controller3: ICoreWebView2Controller3 = controller
+            .cast()
+            .map_err(|error| format!("WebView2 Controller3 indisponível: {error}"))?;
+        unsafe {
+            controller3
+                .SetShouldDetectMonitorScaleChanges(false)
+                .map_err(|error| format!("fixar escala WebView2: {error}"))?;
+            controller3
+                .SetBoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS)
+                .map_err(|error| format!("bounds em pixels WebView2: {error}"))?;
+        }
 
         unsafe {
             let settings = webview
@@ -219,7 +235,18 @@ impl LiveWebView {
         // WebView keeps its full logical size and is translated inside that
         // child window, so scrolling never causes YouTube/other providers to
         // relayout merely because part of the card is offscreen.
+        // Keep Chromium's CSS/device scale synchronized with the exact scale
+        // eframe used to convert the egui rectangle into Win32 pixels.
+        let controller3: ICoreWebView2Controller3 = self
+            .controller
+            .cast()
+            .map_err(|error| format!("WebView2 Controller3 indisponível: {error}"))?;
+
         unsafe {
+            controller3
+                .SetRasterizationScale(scale as f64)
+                .map_err(|error| format!("escala WebView2: {error}"))?;
+
             SetWindowPos(
                 self.host,
                 None,
