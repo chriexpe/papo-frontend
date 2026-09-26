@@ -120,7 +120,7 @@ fn stable_tag(value: &str) -> String {
 fn register_identity() -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyW,
+        HKEY, HKEY_CURRENT_USER, REG_SZ, RegCloseKey, RegCreateKeyW,
         RegSetValueExW,
     };
 
