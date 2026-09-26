@@ -37,11 +37,15 @@ try {
     }
 
     $resolvedOutput = (Resolve-Path $OutputDir).Path
+    $icon = Join-Path $payload 'papo.ico'
+    & (Join-Path $scriptDir 'make-icon.ps1') -OutputPath $icon
+
     $iss = Join-Path $scriptDir 'papo.iss'
     & $iscc `
         "/DMyAppVersion=$Version" `
         "/DPayloadDir=$payload" `
         "/DOutputDir=$resolvedOutput" `
+        "/DAppIcon=$icon" `
         $iss
 
     if ($LASTEXITCODE -ne 0) {
