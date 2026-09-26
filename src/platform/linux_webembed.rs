@@ -377,18 +377,18 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
     }
 
     fn suspend(&mut self, id: &str) {
-        if self.current_id.as_deref() == Some(id) {
-            if let Some(page) = &self.page {
-                page.set_focus(false);
-            }
+        if self.current_id.as_deref() == Some(id)
+            && let Some(page) = &self.page
+        {
+            page.set_focus(false);
         }
     }
 
     fn resume(&mut self, id: &str) {
-        if self.current_id.as_deref() == Some(id) {
-            if let Some(ctx) = &self.egui {
-                ctx.request_repaint();
-            }
+        if self.current_id.as_deref() == Some(id)
+            && let Some(ctx) = &self.egui
+        {
+            ctx.request_repaint();
         }
     }
 
