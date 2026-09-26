@@ -50,9 +50,10 @@ impl Tray {
 
         let menu = Menu::new();
         let open = MenuItem::new(&labels.open, true, None);
+        let separator = PredefinedMenuItem::separator();
         let quit = MenuItem::new(&labels.quit, true, None);
         if menu
-            .append_items(&[&open, &PredefinedMenuItem::separator(), &quit])
+            .append_items(&[&open, &separator, &quit])
             .is_err()
         {
             return None;
