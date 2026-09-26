@@ -137,6 +137,8 @@ pub fn main() -> eframe::Result<()> {
     // há (Plasma), quem desenha é o compositor.
     let own_chrome = !platform::desktop::uses_global_menu();
     let options = eframe::NativeOptions {
+        #[cfg(target_os = "windows")]
+        renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("Papo")
             .with_app_id(APP_ID)
