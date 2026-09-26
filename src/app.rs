@@ -582,6 +582,12 @@ pub struct PapoApp {
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
     launcher: Option<Launcher>,
+    #[cfg(target_os = "windows")]
+    updater: crate::platform::update::Updater,
+    #[cfg(target_os = "windows")]
+    update_available: Option<crate::platform::update::Available>,
+    #[cfg(target_os = "windows")]
+    update_status: Option<String>,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
     dialogs: Dialogs,
     /// A janela tem foco neste quadro.
@@ -800,6 +806,12 @@ impl PapoApp {
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
+            #[cfg(target_os = "windows")]
+            updater: crate::platform::update::Updater::new(),
+            #[cfg(target_os = "windows")]
+            update_available: None,
+            #[cfg(target_os = "windows")]
+            update_status: None,
             dialogs: Dialogs::default(),
             focused: true,
             quitting: false,
@@ -1011,6 +1023,91 @@ impl PapoApp {
                 count: mentions,
                 urgent: unread && mentions == 0,
             });
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn pump_updater(&mut self, ctx: &egui::Context) {
+        use crate::platform::update::Event;
+
+        while let Some(event) = self.updater.poll() {
+            match event {
+                Event::Current => {
+                    self.update_status =
+                        Some(self.settings.lang.strings().update_current.to_owned());
+                }
+                Event::Available(release) => {
+                    self.update_status =
+                        Some(format!("{} {}", self.settings.lang.strings().update_available, release.version));
+                    self.update_available = Some(release);
+                }
+                Event::Ready { installer, .. } => {
+                    match crate::platform::update::launch(&installer) {
+                        Ok(()) => {
+                            self.update_status = None;
+                            self.quit(ctx);
+                        }
+                        Err(error) => {
+                            log::warn!("não foi possível iniciar a atualização: {error}");
+                            self.update_status = Some(format!(
+                                "{} {error}",
+                                self.settings.lang.strings().update_failed
+                            ));
+                        }
+                    }
+                }
+                Event::Error(error) => {
+                    log::warn!("atualização do Windows: {error}");
+                    self.update_status = Some(format!(
+                        "{} {error}",
+                        self.settings.lang.strings().update_failed
+                    ));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn update_prompt(&mut self, ctx: &egui::Context) {
+        let Some(release) = self.update_available.clone() else {
+            return;
+        };
+        let s = self.settings.lang.strings();
+        let mut keep = true;
+        egui::Window::new(format!("{} {}", s.update_available, release.version))
+            .id(egui::Id::new("papo-update-prompt"))
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .max_width(680.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(s.update_release_notes)
+                        .strong()
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        ui.label(&release.notes);
+                    });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button(s.update_now).clicked() {
+                        self.update_status = Some(s.update_downloading.to_owned());
+                        self.updater.download(release.clone());
+                        keep = false;
+                    }
+                    if ui.button(s.update_later).clicked() {
+                        keep = false;
+                    }
+                    if ui.button(s.update_open_release).clicked() {
+                        ctx.open_url(egui::OpenUrl::new_tab(release.release_url.clone()));
+                    }
+                });
+            });
+        if !keep {
+            self.update_available = None;
         }
     }
 
@@ -2370,6 +2467,8 @@ impl PapoApp {
                 },
                 diagnostics: &diagnostics,
                 preview: preview_diagnostics,
+                #[cfg(target_os = "windows")]
+                update_status: self.update_status.as_deref(),
             };
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
@@ -2418,6 +2517,11 @@ impl PapoApp {
                         DownloadMode::Ask => files::downloads_dir(),
                     };
                     self.dialogs.pick_folder(ctx.clone(), start);
+                }
+                #[cfg(target_os = "windows")]
+                SettingsAction::CheckUpdates => {
+                    self.update_status = Some(self.settings.lang.strings().update_checking.to_owned());
+                    self.updater.check();
                 }
                 SettingsAction::Chat(chat) => self.handle_chat(ctx, chat),
                 SettingsAction::Admin(admin) => self.handle_admin(ctx, admin),
@@ -2612,6 +2716,9 @@ impl eframe::App for PapoApp {
             self.pump_memory_pressure(&ctx);
         }
         self.attach_window(frame);
+
+        #[cfg(target_os = "windows")]
+        self.pump_updater(&ctx);
 
         #[cfg(target_os = "android")]
         self.handle_android_notification_navigation(&ctx);
@@ -2839,6 +2946,8 @@ impl eframe::App for PapoApp {
             }
         }
         self.settings_sheet(&ctx);
+        #[cfg(target_os = "windows")]
+        self.update_prompt(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {
