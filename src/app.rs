@@ -954,6 +954,14 @@ impl PapoApp {
     fn handle_window_lifecycle(&mut self, ctx: &egui::Context) {
         self.focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
 
+        if self
+            .tray
+            .as_ref()
+            .is_some_and(Tray::take_quit_requested)
+        {
+            self.quitting = true;
+        }
+
         while let Some(command) = self.tray.as_ref().and_then(Tray::try_recv) {
             match command {
                 TrayCommand::Toggle => {
