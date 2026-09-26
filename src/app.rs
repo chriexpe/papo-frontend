@@ -11,7 +11,7 @@ use crate::platform::desktop;
 use crate::platform::activate::Activator;
 #[cfg(target_os = "linux")]
 use crate::platform::notify::{Notification, Notifier};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use crate::platform::tray::{Tray, TrayCommand, TrayLabels};
 #[cfg(target_os = "linux")]
 use crate::platform::launcher::{Badge, Launcher};
@@ -578,7 +578,7 @@ pub struct PapoApp {
     tokens: Tokens,
     roles: crate::ui::roles::RolesState,
     sheet: crate::ui::settings::SettingsState,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
     launcher: Option<Launcher>,
@@ -794,7 +794,7 @@ impl PapoApp {
             notification,
             active,
             ui: ui_state,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
@@ -946,11 +946,14 @@ impl PapoApp {
     #[cfg_attr(target_os = "android", allow(dead_code))]
     fn hide_window(&mut self, ctx: &egui::Context) {
         self.minimized = true;
+        #[cfg(target_os = "windows")]
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        #[cfg(not(target_os = "windows"))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
     }
 
     /// Fechar a janela só encerra quando a bandeja não está no caminho.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn handle_window_lifecycle(&mut self, ctx: &egui::Context) {
         self.focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
 
@@ -1000,6 +1003,7 @@ impl PapoApp {
             tray.set_badge(mentions, unread);
             tray.set_labels(tray_labels(&self.settings));
         }
+        #[cfg(target_os = "linux")]
         if let Some(launcher) = &self.launcher {
             launcher.set(Badge {
                 count: mentions,
@@ -2152,7 +2156,7 @@ impl PapoApp {
             }
             // O X da nossa barra faz o que o X do sistema faria.
             MenuCommand::CloseWindow => {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
                 if self.settings.close_to_tray && self.tray.is_some() {
                     self.hide_window(ctx);
                     return;
@@ -2639,7 +2643,7 @@ impl eframe::App for PapoApp {
             self.sync_menu();
             self.sync_blur_regions(&ctx);
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             self.handle_window_lifecycle(&ctx);
             self.notification
@@ -3086,7 +3090,7 @@ fn default_server_url() -> String {
     "https://papo-backend.onrender.com".to_owned()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn tray_labels(settings: &Settings) -> TrayLabels {
     let s = settings.lang.strings();
     TrayLabels {
