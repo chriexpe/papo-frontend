@@ -6,7 +6,9 @@ param(
     [string]$PapoExe,
 
     [Parameter(Mandatory = $true)]
-    [string]$OutputDir
+    [string]$OutputDir,
+
+    [bool]$IncludeVCRuntime = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,50 +26,53 @@ New-Item -ItemType Directory -Force (Join-Path $OutputDir 'gio-modules') | Out-N
 Copy-Item $exe (Join-Path $OutputDir 'papo.exe')
 Copy-Item (Join-Path $PSScriptRoot '..\..\LICENSE') (Join-Path $OutputDir 'LICENSE')
 
-# GStreamer and some of its native dependencies are built with MSVC and can
-# require the VC++ v14 runtime even when papo.exe itself does not. Keep the
-# portable ZIP genuinely prerequisite-free by deploying the redistributable
-# CRT DLLs app-local beside the executable.
-$crtDirs = @()
-if ($env:VCToolsRedistDir) {
-    $crtDirs += (Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT')
-}
+if ($IncludeVCRuntime) {
+    # GStreamer and some of its native dependencies are built with MSVC and can
+    # require the VC++ v14 runtime even when papo.exe itself does not. Keep the
+    # portable ZIP genuinely prerequisite-free by deploying the redistributable
+    # CRT DLLs app-local beside the executable.
+    $crtDirs = @()
+    if ($env:VCToolsRedistDir) {
+        $crtDirs += (Join-Path $env:VCToolsRedistDir 'x64\Microsoft.VC143.CRT')
+    }
 
-$programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
-$vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
-if (Test-Path $vswhere) {
-    # Do not assume the newest VS installation has the C++ workload. Hosted
-    # runners can have several VS/Build Tools installations side by side.
-    $vsInstalls = & $vswhere -all -products '*' -property installationPath
-    foreach ($vsInstall in $vsInstalls) {
-        if (-not $vsInstall) { continue }
-        $redistRoot = Join-Path $vsInstall 'VC\Redist\MSVC'
-        if (-not (Test-Path $redistRoot)) { continue }
+    $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+    $vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path $vswhere) {
+        # Do not assume the newest VS installation has the C++ workload. Hosted
+        # runners can have several VS/Build Tools installations side by side.
+        $vsInstalls = & $vswhere -all -products '*' -property installationPath
+        foreach ($vsInstall in $vsInstalls) {
+            if (-not $vsInstall) { continue }
+            $redistRoot = Join-Path $vsInstall 'VC\Redist\MSVC'
+            if (-not (Test-Path $redistRoot)) { continue }
 
-        foreach ($redist in (Get-ChildItem $redistRoot -Directory | Sort-Object Name -Descending)) {
-            $x64 = Join-Path $redist.FullName 'x64'
-            if (-not (Test-Path $x64)) { continue }
-            Get-ChildItem $x64 -Directory -Filter 'Microsoft.VC*.CRT' |
-                ForEach-Object { $crtDirs += $_.FullName }
+            foreach ($redist in (Get-ChildItem $redistRoot -Directory | Sort-Object Name -Descending)) {
+                $x64 = Join-Path $redist.FullName 'x64'
+                if (-not (Test-Path $x64)) { continue }
+                Get-ChildItem $x64 -Directory -Filter 'Microsoft.VC*.CRT' |
+                    ForEach-Object { $crtDirs += $_.FullName }
+            }
         }
     }
-}
 
-$crtDir = $crtDirs |
-    Where-Object {
-        (Test-Path (Join-Path $_ 'VCRUNTIME140.dll')) -and
-        (Test-Path (Join-Path $_ 'VCRUNTIME140_1.dll')) -and
-        (Test-Path (Join-Path $_ 'MSVCP140.dll'))
-    } |
-    Select-Object -First 1
-if (-not $crtDir) {
-    Write-Host 'VC runtime candidates checked:'
-    $crtDirs | ForEach-Object { Write-Host "  $_" }
-    throw 'Visual C++ x64 redistributable DLL directory not found'
+    $crtDir = $crtDirs |
+        Where-Object {
+            (Test-Path (Join-Path $_ 'VCRUNTIME140.dll')) -and
+            (Test-Path (Join-Path $_ 'VCRUNTIME140_1.dll')) -and
+            (Test-Path (Join-Path $_ 'MSVCP140.dll'))
+        } |
+        Select-Object -First 1
+    if (-not $crtDir) {
+        Write-Host 'VC runtime candidates checked:'
+        $crtDirs | ForEach-Object { Write-Host "  $_" }
+        throw 'Visual C++ x64 redistributable DLL directory not found'
+    }
+    Write-Host "Using app-local VC runtime from $crtDir"
+    Get-ChildItem $crtDir -Filter '*.dll' -File |
+        Copy-Item -Destination $OutputDir
+
 }
-Write-Host "Using app-local VC runtime from $crtDir"
-Get-ChildItem $crtDir -Filter '*.dll' -File |
-    Copy-Item -Destination $OutputDir
 
 # DLL lookup on Windows checks the executable directory first. Shipping all
 # runtime DLLs from GStreamer's bin makes the Papo folder independent from a
@@ -109,11 +114,15 @@ foreach ($name in @('COPYING', 'COPYING.LIB', 'LICENSE', 'LICENSE.txt')) {
 $required = @(
     'papo.exe',
     'gstreamer-1.0',
-    'gst-plugin-scanner.exe',
-    'VCRUNTIME140.dll',
-    'VCRUNTIME140_1.dll',
-    'MSVCP140.dll'
+    'gst-plugin-scanner.exe'
 )
+if ($IncludeVCRuntime) {
+    $required += @(
+        'VCRUNTIME140.dll',
+        'VCRUNTIME140_1.dll',
+        'MSVCP140.dll'
+    )
+}
 foreach ($item in $required) {
     if (-not (Test-Path (Join-Path $OutputDir $item))) {
         throw "Bundle incomplete: missing $item"
