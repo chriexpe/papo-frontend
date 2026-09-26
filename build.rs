@@ -48,9 +48,16 @@ fn main() {
     }
     std::fs::write(&ico, data).expect("write Windows icon");
 
-    let mut resource = winresource::WindowsResource::new();
-    resource.set_icon(ico.to_str().expect("UTF-8 icon path"));
-    resource
-        .compile()
-        .expect("compile Windows application resources");
+    let rc = out.join("papo.rc");
+    let escaped_icon = ico.display().to_string().replace('\\', "\\\\");
+    std::fs::write(&rc, format!("1 ICON \"{escaped_icon}\"\n"))
+        .expect("write Windows resource script");
+
+    // The package also builds a cdylib for Android. Linking the resource
+    // globally makes it collide with Turso's VERSION resource in papo.dll.
+    // Keep the application icon strictly on the Windows executable.
+    let result = embed_resource::compile_for(&rc, ["papo"], embed_resource::NONE);
+    if result.is_err() {
+        panic!("compile Windows application icon: {result:?}");
+    }
 }
