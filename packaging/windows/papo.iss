@@ -7,6 +7,9 @@
 #ifndef OutputDir
   #define OutputDir "."
 #endif
+#ifndef AppIcon
+  #error AppIcon must point at the generated Windows ICO
+#endif
 
 #define MyAppName "Papo"
 #define MyAppExeName "papo.exe"
@@ -34,6 +37,7 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
+SetupIconFile={#AppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 RestartApplications=no
