@@ -500,6 +500,16 @@ WaterWpePage *water_wpe_page_new(
         "display", runtime->display,
         NULL));
 
+    // Equibop/Discord runs embeds under Chromium and explicitly presents a
+    // Chrome-style Linux UA. Match that browser capability identity rather
+    // than altering iframe geometry or page zoom.
+    WebKitSettings *settings = webkit_web_view_get_settings(page->web_view);
+    webkit_settings_set_user_agent(
+        settings,
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/150.0.0.0 Safari/537.36");
+
     page->view = webkit_web_view_get_wpe_view(page->web_view);
     if (!WATER_IS_VIEW(page->view)) {
         *error = g_strdup("WPE WebView did not create the Papo WPEView");
