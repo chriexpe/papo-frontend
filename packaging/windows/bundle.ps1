@@ -99,6 +99,7 @@ $required = @(
     'gstreamer-1.0',
     'gst-plugin-scanner.exe',
     'VCRUNTIME140.dll',
+    'VCRUNTIME140_1.dll',
     'MSVCP140.dll'
 )
 foreach ($item in $required) {
