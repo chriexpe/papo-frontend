@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
+#[path = "linux/activate.rs"]
 pub mod activate;
 #[cfg(target_os = "linux")]
+#[path = "linux/appmenu.rs"]
 pub mod appmenu;
 pub mod autostart;
 pub mod client_db;
@@ -12,72 +14,95 @@ pub fn in_flatpak() -> bool {
     std::path::Path::new("/.flatpak-info").exists()
 }
 #[cfg(target_os = "linux")]
+#[path = "linux/blur.rs"]
 pub mod blur;
 pub mod desktop;
 /// Onde ficam sessão e cache em cada plataforma.
 pub mod dirs;
 pub mod files;
 #[cfg(target_os = "linux")]
+#[path = "linux/global_menu.rs"]
 pub mod global_menu;
 /// Chamar a Activity a partir do Rust (Android).
 #[cfg(target_os = "android")]
+#[path = "android/jvm.rs"]
 pub mod jvm;
 /// ConnectivityManager/lifecycle -> runtimes de rede. Também compila em
 /// testes desktop para validar fanout/registro sem depender de um aparelho.
 #[cfg(any(target_os = "android", test))]
+#[path = "android/network.rs"]
 pub mod android_network;
 /// Process-wide foreground/headless runtime exclusion.
 #[cfg(any(target_os = "android", test))]
+#[path = "android/runtime_lease.rs"]
 pub mod runtime_lease;
 /// `onTrimMemory` -> latch coalescido -> política de mídia do PR36.
 #[cfg(any(target_os = "android", test))]
+#[path = "android/memory_pressure.rs"]
 pub mod memory_pressure;
 /// Foreground service, lifecycle e Picture-in-Picture da call.
 #[cfg(target_os = "android")]
+#[path = "android/call.rs"]
 pub mod android_call;
 /// Notificações nativas de mensagens e navegação por toque.
 #[cfg(target_os = "android")]
+#[path = "android/message.rs"]
 pub mod android_message;
 /// Persistent WorkManager scheduling and cold headless JNI entry points.
 #[cfg(target_os = "android")]
+#[path = "android/work.rs"]
 pub mod android_work;
 /// Browser surface nativa para embeds ricos.
 #[cfg(target_os = "android")]
+#[path = "android/webembed.rs"]
 pub mod android_webembed;
 /// Permissões do Android, pedidas quando fazem falta.
 #[cfg(target_os = "android")]
+#[path = "android/permission.rs"]
 pub mod permission;
 pub mod menu;
 /// Acordar a janela de fora do laço de quadros (Android).
 #[cfg(target_os = "android")]
+#[path = "android/wake.rs"]
 pub mod wake;
 /// A ponte legada entre o teclado do Android e TextEdit. Continua servindo
 /// campos simples enquanto compositor/edição usam um EditText nativo.
+#[path = "android/ime.rs"]
 pub mod ime;
 /// Editor Android de verdade, sobreposto à superfície do egui.
 #[cfg(target_os = "android")]
+#[path = "android/native_text.rs"]
 pub mod native_text;
 /// Campos Android comuns, cada um com EditText e estado próprios.
 #[cfg(target_os = "android")]
+#[path = "android/native_field.rs"]
 pub mod native_field;
 /// Bordas do sistema no Android (barra de status, navegação, recorte).
 #[cfg(target_os = "android")]
+#[path = "android/safe_area.rs"]
 pub mod safe_area;
 /// Toolkit-free WPE WebKit runtime/page bridge for Linux WebEmbed.
 #[cfg(target_os = "linux")]
+#[path = "linux/wpe.rs"]
 pub mod linux_wpe;
 
 /// Native Edge WebView2 child-window backend for Windows WebEmbed.
 #[cfg(target_os = "windows")]
+#[path = "windows/webembed.rs"]
 pub mod windows_webembed;
 /// WPE WebKit WebEmbed backend and DMA-BUF → Glow importer.
 #[cfg(target_os = "linux")]
+#[path = "linux/webembed.rs"]
 pub mod linux_webembed;
 #[cfg(target_os = "linux")]
+#[path = "linux/kwin.rs"]
 pub mod kwin;
 #[cfg(target_os = "linux")]
+#[path = "linux/launcher.rs"]
 pub mod launcher;
 #[cfg(target_os = "linux")]
+#[path = "linux/notify.rs"]
 pub mod notify;
 #[cfg(target_os = "linux")]
+#[path = "linux/tray.rs"]
 pub mod tray;
