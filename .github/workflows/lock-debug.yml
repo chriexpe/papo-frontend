@@ -1,0 +1,16 @@
+name: lock-debug
+
+on:
+  push:
+    branches: [feat/windows-runtime-bundle]
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve manifest and print lockfile delta
+        run: |
+          cargo metadata --format-version 1 >/dev/null
+          git diff -- Cargo.lock
