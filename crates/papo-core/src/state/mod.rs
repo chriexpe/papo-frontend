@@ -860,7 +860,7 @@ impl Store {
                 position: channel.position,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
-                parent_id: None,
+                parent_id: channel.parent_id,
                 unread: channel.unread,
                 mentions: channel.mentions,
             })
