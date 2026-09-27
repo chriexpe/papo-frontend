@@ -1425,10 +1425,15 @@ impl PapoApp {
         // pontos de entrada convergem para Ajustes do servidor → Canais.
         match &action {
             ChatAction::NewChannel => {
-                self.sheet.open_new_channel();
+                if self.workspaces[self.active].runtime.store.can_manage_channels() {
+                    self.sheet.open_new_channel();
+                }
                 return;
             }
             ChatAction::EditChannel(id) => {
+                if !self.workspaces[self.active].runtime.store.can_manage_channels() {
+                    return;
+                }
                 if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
                     self.sheet.open_edit_channel(&channel);
                     let net = &self.workspaces[self.active].runtime.net;
@@ -1440,6 +1445,9 @@ impl PapoApp {
                 return;
             }
             ChatAction::RequestDeleteChannel(id) => {
+                if !self.workspaces[self.active].runtime.store.can_manage_channels() {
+                    return;
+                }
                 if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
                     self.sheet.open_delete_channel(&channel);
                 }
@@ -1682,10 +1690,21 @@ impl PapoApp {
             ChatAction::ChannelNotifications {
                 channel_id,
                 setting,
-            } => ws.runtime.net.send(Command::SetChannelNotifications {
-                channel_id,
-                setting: setting.to_owned(),
-            }),
+            } => {
+                if let Some(channel) = ws
+                    .runtime
+                    .store
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.notification_settings = setting.to_owned();
+                }
+                ws.runtime.net.send(Command::SetChannelNotifications {
+                    channel_id,
+                    setting: setting.to_owned(),
+                });
+            }
             ChatAction::MoveChannel {
                 channel_id,
                 old_position,
@@ -1832,6 +1851,7 @@ impl PapoApp {
                     topic,
                     position,
                     permissions: Vec::new(),
+                    notification_settings: "only_mentions".to_owned(),
                     unread: false,
                     mentions: 0,
                 });
@@ -1932,9 +1952,22 @@ impl PapoApp {
                         .unwrap_or_default();
                 }
             }
+            ChatAction::ChannelNotifications {
+                channel_id,
+                setting,
+            } => {
+                if let Some(channel) = self.workspaces[self.active]
+                    .runtime
+                    .store
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.notification_settings = setting.to_owned();
+                }
+            }
             // Sem rede na demonstração: estas ações não têm efeito local.
-            ChatAction::ChannelNotifications { .. }
-            | ChatAction::MoveChannel { .. }
+            ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
@@ -2177,7 +2210,7 @@ impl PapoApp {
         if !self.own_chrome {
             return;
         }
-        let model = build_menu(&self.settings);
+        let model = build_menu(&self.settings, &self.workspaces[self.active].runtime.store);
         // O nome do servidor na tela é o que a barra tem de mais útil a
         // dizer; sem sessão, sobra o nome do aplicativo.
         let title = match &self.ws().runtime.store.server {
@@ -2326,7 +2359,7 @@ impl PapoApp {
     /// Mantém o menu do painel em dia com o estado da aplicação.
     #[cfg(target_os = "linux")]
     fn sync_menu(&mut self) {
-        let model = build_menu(&self.settings);
+        let model = build_menu(&self.settings, &self.workspaces[self.active].runtime.store);
         if let Some(menu) = &mut self.menu {
             menu.set_model(model);
             while let Some(command) = menu.try_recv() {
@@ -2437,13 +2470,26 @@ impl PapoApp {
                 self.sheet.toggle(crate::ui::settings::Surface::App);
                 self.sheet.app_pane = crate::ui::settings::AppPane::Sessions;
             }
-            // Cargos e o resto do servidor moram na folha do servidor.
-            MenuCommand::Roles | MenuCommand::ServerSettings => {
-                self.sheet.toggle(crate::ui::settings::Surface::Server);
-                if self.sheet.open.is_some() {
-                    let ws = &self.workspaces[self.active];
+            MenuCommand::ServerOverview => {
+                self.sheet.open_server_overview();
+            }
+            MenuCommand::Roles => {
+                let ws = &self.workspaces[self.active];
+                if !ws.runtime.store.can_manage_roles() {
+                    return;
+                }
+                self.sheet.open = Some(crate::ui::settings::Surface::Server);
+                self.sheet.server_pane = crate::ui::settings::ServerPane::Roles;
+                self.sheet.opened_by_click = true;
+                ws.runtime.net.send(Command::LoadRoles);
+            }
+            MenuCommand::ServerSettings => {
+                let ws = &self.workspaces[self.active];
+                if self.sheet.open_server_admin(&ws.runtime.store) {
                     ws.runtime.net.send(Command::LoadRoles);
-                    ws.runtime.net.send(Command::LoadAuditLogs);
+                    if ws.runtime.store.can_manage_server() {
+                        ws.runtime.net.send(Command::LoadAuditLogs);
+                    }
                 }
             }
         }
@@ -2645,6 +2691,7 @@ impl PapoApp {
             let ws = &self.workspaces[self.active];
             let mut data = crate::ui::settings::Context {
                 store: &ws.runtime.store,
+                server_url: &ws.runtime.url,
                 media: &mut self.ui.media,
                 roles: &mut self.roles,
                 lang: &mut self.settings.lang,
@@ -3264,7 +3311,7 @@ fn appearance_for(settings: &Settings, system: &SystemTheme) -> Appearance {
 }
 
 /// Árvore do menu global, montada a partir do estado atual.
-fn build_menu(settings: &Settings) -> MenuModel {
+fn build_menu(settings: &Settings, store: &Store) -> MenuModel {
     let s = settings.lang.strings();
     MenuModel::new(vec![
         MenuNode::submenu(
@@ -3274,8 +3321,10 @@ fn build_menu(settings: &Settings) -> MenuModel {
                 MenuNode::separator(),
                 MenuNode::item(s.menu_preferences, MenuCommand::Preferences)
                     .accel(&["Control", "comma"]),
-                MenuNode::item(s.menu_roles, MenuCommand::Roles),
-                MenuNode::item(s.menu_server, MenuCommand::ServerSettings),
+                MenuNode::item(s.menu_roles, MenuCommand::Roles)
+                    .enabled(store.can_manage_roles()),
+                MenuNode::item(s.menu_server, MenuCommand::ServerSettings)
+                    .enabled(store.can_open_server_admin()),
                 MenuNode::separator(),
                 MenuNode::item(s.sign_out, MenuCommand::SignOut),
                 MenuNode::separator(),
@@ -3286,6 +3335,7 @@ fn build_menu(settings: &Settings) -> MenuModel {
             s.menu_file,
             vec![
                 MenuNode::item(s.menu_new_channel, MenuCommand::NewChannel)
+                    .enabled(store.can_manage_channels())
                     .accel(&["Control", "n"]),
                 MenuNode::item(s.menu_search, MenuCommand::Search).accel(&["Control", "f"]),
                 MenuNode::separator(),
