@@ -2289,6 +2289,13 @@ fn conversation(
                     Some((channel_id.clone(), anchor_offset + delta));
                 state.history_scroll_anchor = None;
                 ui.ctx().request_discard("histórico antigo inserido acima da viewport");
+            } else if state.history_scroll_anchor.is_some()
+                && !request_older
+                && !store.loading_older(&channel_id)
+            {
+                // Falhou, chegou uma página vazia ou acabou o histórico sem
+                // alterar a geometria. Libera a âncora para permitir retry.
+                state.history_scroll_anchor = None;
             }
 
             if let Some((anchor_channel, anchor_offset, old_height)) =
