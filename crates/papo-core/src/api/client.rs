@@ -479,6 +479,26 @@ impl Api {
             .await
     }
 
+    pub async fn channel_permissions(
+        &self,
+        channel_id: &str,
+    ) -> ApiResult<ChannelPermissionsResponse> {
+        self.get(&format!("/channels/{channel_id}/permissions")).await
+    }
+
+    pub async fn update_channel_permissions(
+        &self,
+        channel_id: &str,
+        role_id: &str,
+        permissions: ChannelPermissions,
+    ) -> ApiResult<serde_json::Value> {
+        self.put(
+            &format!("/channels/{channel_id}/permissions/{role_id}"),
+            &UpdateChannelPermissionsRequest { permissions },
+        )
+        .await
+    }
+
     pub async fn messages(&self, channel_id: &str) -> ApiResult<MessageList> {
         self.get(&format!("/channels/{channel_id}/messages")).await
     }

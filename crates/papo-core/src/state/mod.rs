@@ -39,6 +39,9 @@ pub struct Channel {
     pub kind: ChannelKind,
     pub topic: Option<String>,
     pub position: i32,
+    /// Overrides por cargo. Vetor vazio significa canal sem restrição
+    /// específica no backend.
+    pub permissions: Vec<models::ChannelPermissionEntry>,
     /// Chegou coisa nova desde a última vez que o canal foi visto.
     pub unread: bool,
     /// Quantas dessas citam você.
@@ -1425,6 +1428,7 @@ impl Store {
                             kind: ChannelKind::parse(&channel.kind),
                             topic: channel.topic,
                             position: channel.position,
+                            permissions: channel.permissions,
                             mentions,
                         }
                     })
@@ -1455,6 +1459,19 @@ impl Store {
             }
             Update::Roles(roles) => {
                 self.roles = roles;
+                self.busy = false;
+            }
+            Update::ChannelPermissions {
+                channel_id,
+                permissions,
+            } => {
+                if let Some(channel) = self
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.permissions = permissions;
+                }
                 self.busy = false;
             }
             // Perfis completam a listagem leve de usuários e também são o

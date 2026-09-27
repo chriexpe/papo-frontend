@@ -149,6 +149,12 @@ pub enum ChatAction {
         name: String,
         topic: Option<String>,
     },
+    /// Salva as permissões de uma role neste canal.
+    SetChannelPermissions {
+        channel_id: String,
+        role_id: String,
+        permissions: crate::api::models::ChannelPermissions,
+    },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
     /// Busca no servidor, a partir da pastilha.

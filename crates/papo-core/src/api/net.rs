@@ -254,6 +254,14 @@ pub enum Command {
         name: String,
         topic: Option<String>,
     },
+    LoadChannelPermissions {
+        channel_id: String,
+    },
+    SetChannelPermissions {
+        channel_id: String,
+        role_id: String,
+        permissions: crate::api::models::ChannelPermissions,
+    },
     DeleteChannel {
         channel_id: String,
     },
@@ -419,6 +427,10 @@ pub enum Update {
     ChannelCreated(String),
     SearchResults(Vec<crate::api::models::SearchResult>),
     Roles(Vec<crate::api::models::Role>),
+    ChannelPermissions {
+        channel_id: String,
+        permissions: Vec<crate::api::models::ChannelPermissionEntry>,
+    },
     Devices(Vec<crate::api::models::ConnectionInfo>),
     AuditLogs(Vec<crate::api::models::AuditLogEntry>),
     Profiles(Vec<crate::api::models::UserProfile>),
@@ -2737,6 +2749,42 @@ async fn handle(
             Ok(()) => relist_channels(api, storage_key, updates, wake).await,
             Err(error) => report(storage_key, updates, wake, error),
         },
+        Command::LoadChannelPermissions { channel_id } => {
+            match api.channel_permissions(&channel_id).await {
+                Ok(response) => publish(
+                    updates,
+                    wake,
+                    Update::ChannelPermissions {
+                        channel_id: response.channel_id,
+                        permissions: response.permissions,
+                    },
+                ),
+                Err(error) => report(storage_key, updates, wake, error),
+            }
+        }
+        Command::SetChannelPermissions {
+            channel_id,
+            role_id,
+            permissions,
+        } => {
+            match api
+                .update_channel_permissions(&channel_id, &role_id, permissions)
+                .await
+            {
+                Ok(_) => match api.channel_permissions(&channel_id).await {
+                    Ok(response) => publish(
+                        updates,
+                        wake,
+                        Update::ChannelPermissions {
+                            channel_id: response.channel_id,
+                            permissions: response.permissions,
+                        },
+                    ),
+                    Err(error) => report(storage_key, updates, wake, error),
+                },
+                Err(error) => report(storage_key, updates, wake, error),
+            }
+        }
         Command::Search { text } => match api.search(&text).await {
             Ok(found) => publish(updates, wake, Update::SearchResults(found.results)),
             Err(error) => report(storage_key, updates, wake, error),
