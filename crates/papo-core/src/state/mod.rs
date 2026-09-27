@@ -405,6 +405,10 @@ pub struct Store {
     outgoing_states: HashMap<String, OutgoingState>,
     /// Refresh aceito atualmente por canal, incluindo o barrier local.
     loading_channels: HashMap<String, ActiveRefresh>,
+    /// Se ainda há páginas mais antigas no backend, por canal.
+    history_has_more: HashMap<String, bool>,
+    /// Evita disparar duas páginas antigas do mesmo canal ao mesmo tempo.
+    history_loading: HashSet<String>,
     /// Mutações live recebidas durante refreshes REST.
     mutation_journals: HashMap<String, ChannelMutationJournal>,
     next_refresh_request_id: u64,
@@ -464,6 +468,8 @@ impl Default for Store {
             pending_cache: Vec::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
+            history_has_more: HashMap::new(),
+            history_loading: HashSet::new(),
             mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
             typing: HashMap::new(),
@@ -797,6 +803,8 @@ impl Store {
         self.members.clear();
         self.messages.clear();
         self.cached_channels.clear();
+        self.history_has_more.clear();
+        self.history_loading.clear();
         self.pending_cache.clear();
         self.outgoing_states.clear();
         self.selected_channel.clear();
@@ -884,6 +892,29 @@ impl Store {
             outgoing_oldest_age_ms: oldest
                 .map(|created| now_millis().saturating_sub(created).max(0)),
         }
+    }
+
+    pub fn can_load_older(&self, channel_id: &str) -> bool {
+        self.connection == Connection::Online
+            && self.history_has_more.get(channel_id).copied().unwrap_or(false)
+            && !self.history_loading.contains(channel_id)
+    }
+
+    /// Marca uma página antiga como em voo e devolve seu cursor.
+    pub fn begin_load_older(
+        &mut self,
+        channel_id: &str,
+    ) -> Option<(DateTime<Utc>, String)> {
+        if !self.can_load_older(channel_id) {
+            return None;
+        }
+        let oldest = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+        let cursor = (oldest.at.with_timezone(&Utc), oldest.id.clone());
+        self.history_loading.insert(channel_id.to_owned());
+        Some(cursor)
     }
 
     /// Canal que ainda precisa ter as mensagens buscadas.
@@ -1600,6 +1631,29 @@ impl Store {
                     self.pending_cache.push(CacheOp::ReplaceMembers(cached));
                 }
             }
+            Update::OlderMessages {
+                channel_id,
+                messages,
+                has_more,
+            } => {
+                let me = self.me.clone();
+                for message in messages {
+                    let message = convert(message, &me);
+                    self.apply_mutation(
+                        MutationSource::Reconcile,
+                        StoreMutation::Timeline {
+                            channel_id: Some(channel_id.clone()),
+                            mutation: TimelineMutation::MessageUpsert(message),
+                        },
+                    );
+                }
+                self.sort_messages();
+                self.history_has_more.insert(channel_id.clone(), has_more);
+                self.history_loading.remove(&channel_id);
+            }
+            Update::OlderMessagesFailed { channel_id } => {
+                self.history_loading.remove(&channel_id);
+            }
             Update::Devices(devices) => {
                 self.devices = devices;
                 self.busy = false;
@@ -1656,6 +1710,7 @@ impl Store {
             Update::Messages {
                 ticket,
                 messages,
+                has_more,
                 pinned_ids,
             } => {
                 if self.refresh_ticket_is_current(&ticket) {
@@ -1713,6 +1768,8 @@ impl Store {
                     self.sort_messages();
 
                     self.loading_channels.remove(&channel_id);
+                    self.history_has_more.insert(channel_id.clone(), has_more);
+                    self.history_loading.remove(&channel_id);
                     self.channel_freshness
                         .insert(channel_id.clone(), ticket.generation);
                     self.mutation_journals.remove(&channel_id);
@@ -3001,6 +3058,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: vec![wire_message("m1", "geral", "base")],
+            has_more: false,
             pinned_ids: Some(Vec::new()),
         });
 
@@ -3701,6 +3759,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: Vec::new(),
+            has_more: false,
             pinned_ids: Some(vec!["x".to_owned()]),
         });
         let ops = store.take_cache_ops();
@@ -3715,6 +3774,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: Vec::new(),
+            has_more: false,
             pinned_ids: None,
         });
         let ops = store.take_cache_ops();
