@@ -56,6 +56,7 @@ fn channel(id: &str, position: i32) -> CachedChannel {
         name: format!("canal-{id}"),
         kind: "text".to_owned(),
         topic: None,
+        parent_id: None,
         position,
         unread: false,
         mentions: 0,
