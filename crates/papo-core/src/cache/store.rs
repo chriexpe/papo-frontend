@@ -187,13 +187,14 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             for channel in channels {
                 statements.push(Stmt {
                     sql: "INSERT INTO channels (
-                              server_key, channel_id, name, kind, topic, position,
+                              server_key, channel_id, name, kind, topic, parent_id, position,
                               unread, mentions, updated_at
-                          ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                          ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
                           ON CONFLICT(server_key, channel_id) DO UPDATE SET
                               name = excluded.name,
                               kind = excluded.kind,
                               topic = excluded.topic,
+                              parent_id = excluded.parent_id,
                               position = excluded.position,
                               unread = excluded.unread,
                               mentions = excluded.mentions,
@@ -204,6 +205,7 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                         text(&channel.name),
                         text(&channel.kind),
                         opt_text(channel.topic.as_deref()),
+                        opt_text(channel.parent_id.as_deref()),
                         integer(channel.position as i64),
                         boolean(channel.unread),
                         integer(channel.mentions as i64),
@@ -971,7 +973,7 @@ impl TursoCache {
         let mut rows = self
             .conn
             .query(
-                "SELECT channel_id, name, kind, topic, position, unread, mentions
+                "SELECT channel_id, name, kind, topic, parent_id, position, unread, mentions
                  FROM channels WHERE server_key = ?1 ORDER BY position",
                 [server_key],
             )
@@ -982,9 +984,10 @@ impl TursoCache {
                 name: row.get(1)?,
                 kind: row.get(2)?,
                 topic: row.get(3)?,
-                position: row.get::<i64>(4)? as i32,
-                unread: row.get(5)?,
-                mentions: row.get::<i64>(6)? as u32,
+                parent_id: row.get(4)?,
+                position: row.get::<i64>(5)? as i32,
+                unread: row.get(6)?,
+                mentions: row.get::<i64>(7)? as u32,
             });
         }
         drop(rows);
@@ -1120,7 +1123,7 @@ impl TursoCache {
         let mut rows = self
             .conn
             .query(
-                "SELECT channel_id, name, kind, topic, position, unread, mentions
+                "SELECT channel_id, name, kind, topic, parent_id, position, unread, mentions
                  FROM channels WHERE server_key = ?1 ORDER BY position",
                 [server_key],
             )
@@ -1131,9 +1134,10 @@ impl TursoCache {
                 name: row.get(1)?,
                 kind: row.get(2)?,
                 topic: row.get(3)?,
-                position: row.get::<i64>(4)? as i32,
-                unread: row.get(5)?,
-                mentions: row.get::<i64>(6)? as u32,
+                parent_id: row.get(4)?,
+                position: row.get::<i64>(5)? as i32,
+                unread: row.get(6)?,
+                mentions: row.get::<i64>(7)? as u32,
             });
         }
         drop(rows);
