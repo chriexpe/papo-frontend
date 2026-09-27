@@ -48,11 +48,37 @@ pub enum AppPane {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerPane {
+    Overview,
     General,
     Channels,
     Roles,
     Emojis,
     Audit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelNotifyMode {
+    All,
+    Mentions,
+    Off,
+}
+
+impl ChannelNotifyMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "all" => Self::All,
+            "off" => Self::Off,
+            _ => Self::Mentions,
+        }
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mentions => "only_mentions",
+            Self::Off => "off",
+        }
+    }
 }
 
 impl AppPane {
@@ -80,7 +106,8 @@ impl AppPane {
 }
 
 impl ServerPane {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
+        Self::Overview,
         Self::General,
         Self::Channels,
         Self::Roles,
@@ -92,6 +119,7 @@ impl ServerPane {
     /// do painel, na legenda da seção.
     fn title(self, s: &Strings) -> &'static str {
         match self {
+            Self::Overview => s.pane_overview,
             Self::General => s.pane_identity,
             Self::Channels => s.pane_channels,
             Self::Roles => s.roles,
@@ -125,7 +153,7 @@ impl Default for SettingsState {
             modal_above: false,
             opened_by_click: false,
             app_pane: AppPane::Account,
-            server_pane: ServerPane::General,
+            server_pane: ServerPane::Overview,
             draft: Draft::default(),
         }
     }
@@ -244,6 +272,41 @@ impl SettingsState {
         self.app_pane = AppPane::Account;
         self.draft.loaded_account = false;
         self.opened_by_click = true;
+    }
+
+    /// Visão do servidor disponível a qualquer membro.
+    pub fn open_server_overview(&mut self) {
+        if self.open == Some(Surface::Server) && self.server_pane == ServerPane::Overview {
+            self.open = None;
+            return;
+        }
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Overview;
+        self.opened_by_click = true;
+    }
+
+    /// Abre a primeira área administrativa que esta conta pode gerir.
+    pub fn open_server_admin(&mut self, store: &Store) -> bool {
+        let pane = if store.can_manage_server() {
+            ServerPane::General
+        } else if store.can_manage_channels() {
+            ServerPane::Channels
+        } else if store.can_manage_roles() {
+            ServerPane::Roles
+        } else {
+            return false;
+        };
+
+        if self.open == Some(Surface::Server) && self.server_pane != ServerPane::Overview {
+            self.open = None;
+            return false;
+        }
+        self.open = Some(Surface::Server);
+        self.server_pane = pane;
+        self.draft.loaded_server = false;
+        self.draft.loaded_audit = false;
+        self.opened_by_click = true;
+        true
     }
 
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
@@ -934,6 +997,8 @@ pub enum SettingsAction {
 /// Tudo que a folha precisa do resto do programa.
 pub struct Context<'a> {
     pub store: &'a Store,
+    /// Endpoint local deste workspace; não é uma propriedade administrativa.
+    pub server_url: &'a str,
     /// As figurinhas viram textura pelo mesmo caminho da conversa.
     pub media: &'a mut crate::media::MediaStore,
     pub roles: &'a mut super::roles::RolesState,
@@ -974,6 +1039,9 @@ pub fn sheet(
     let Some(surface) = state.open else {
         return actions;
     };
+    if surface == Surface::Server && !server_pane_allowed(data.store, state.server_pane) {
+        state.server_pane = ServerPane::Overview;
+    }
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
     // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
@@ -1034,7 +1102,7 @@ pub fn sheet(
 
             let rail_rect =
                 Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
-            rail(ui, state, t, s, rail_rect, surface);
+            rail(ui, state, data.store, t, s, rail_rect, surface);
             ui.painter().line_segment(
                 [
                     egui::pos2(rail_rect.max.x, body.min.y + space::SM),
@@ -1101,6 +1169,7 @@ fn header(
         egui::Align2::LEFT_CENTER,
         match surface {
             Surface::App => s.settings,
+            Surface::Server if state.server_pane == ServerPane::Overview => s.server,
             Surface::Server => s.server_settings,
         },
         text::title3(),
@@ -1112,6 +1181,7 @@ fn header(
         .layout_no_wrap(
             match surface {
                 Surface::App => s.settings.to_owned(),
+                Surface::Server if state.server_pane == ServerPane::Overview => s.server.to_owned(),
                 Surface::Server => s.server_settings.to_owned(),
             },
             text::title3(),
@@ -1159,6 +1229,7 @@ fn header(
 fn rail(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
+    store: &Store,
     t: &Tokens,
     s: &Strings,
     rect: Rect,
@@ -1211,6 +1282,9 @@ fn rail(
                 }
                 Surface::Server => {
                     for pane in ServerPane::ALL {
+                        if !server_pane_allowed(store, pane) {
+                            continue;
+                        }
                         if entry(ui, pane.title(s), state.server_pane == pane) {
                             state.server_pane = pane;
                         }
@@ -1729,6 +1803,15 @@ fn app_pane(
 // Painéis do servidor
 // ---------------------------------------------------------------------------
 
+fn server_pane_allowed(store: &Store, pane: ServerPane) -> bool {
+    match pane {
+        ServerPane::Overview => true,
+        ServerPane::General | ServerPane::Emojis | ServerPane::Audit => store.can_manage_server(),
+        ServerPane::Channels => store.can_manage_channels(),
+        ServerPane::Roles => store.can_manage_roles(),
+    }
+}
+
 fn server_pane(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
@@ -1742,6 +1825,65 @@ fn server_pane(
     use super::shell::ChatAction;
 
     match state.server_pane {
+        ServerPane::Overview => {
+            section(ui, t, s.server);
+            group(ui, t, |rows| {
+                rows.row(s.server_address, None, |ui, t| {
+                    ui.label(
+                        RichText::new(data.server_url)
+                            .font(text::callout())
+                            .color(t.label_secondary),
+                    );
+                });
+                rows.row(s.members, None, |ui, t| {
+                    ui.label(
+                        RichText::new(data.store.members.len().to_string())
+                            .font(text::callout())
+                            .color(t.label_secondary),
+                    );
+                });
+            });
+
+            section(ui, t, s.channel_notifications);
+            let channels: Vec<_> = data
+                .store
+                .channels
+                .iter()
+                .filter(|channel| channel.kind != crate::state::ChannelKind::Category)
+                .map(|channel| {
+                    (
+                        channel.id.clone(),
+                        channel.name.clone(),
+                        channel.notification_settings.clone(),
+                    )
+                })
+                .collect();
+            group(ui, t, |rows| {
+                if channels.is_empty() {
+                    rows.row(s.no_channels_yet, None, |_, _| {});
+                }
+                for (channel_id, channel_name, setting) in &channels {
+                    let mut mode = ChannelNotifyMode::parse(setting);
+                    rows.row(channel_name, None, |ui, t| {
+                        if segmented(
+                            ui,
+                            t,
+                            &mut mode,
+                            &[
+                                (ChannelNotifyMode::All, s.notify_all),
+                                (ChannelNotifyMode::Mentions, s.notify_mentions),
+                                (ChannelNotifyMode::Off, s.notify_off),
+                            ],
+                        ) {
+                            actions.push(SettingsAction::Chat(ChatAction::ChannelNotifications {
+                                channel_id: channel_id.clone(),
+                                setting: mode.wire(),
+                            }));
+                        }
+                    });
+                }
+            });
+        }
         ServerPane::General => {
             if !state.draft.loaded_server {
                 state.draft.loaded_server = true;
