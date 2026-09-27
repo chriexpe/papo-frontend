@@ -391,6 +391,8 @@ pub struct Store {
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
     pub my_username: String,
+    /// Preferências portáteis da conta deste servidor.
+    pub user_settings: Option<models::UserSettings>,
     pub selected_channel: String,
     /// Geração da continuidade atual do WebSocket.
     sync_generation: u64,
@@ -468,6 +470,7 @@ impl Default for Store {
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
+            user_settings: None,
             selected_channel: String::new(),
             sync_generation: 0,
             channel_freshness: HashMap::new(),
@@ -1496,6 +1499,12 @@ impl Store {
                 self.me = me.id.clone();
                 self.my_name = me.display_name().to_owned();
                 self.my_username = me.username.clone();
+                self.user_settings = Some(models::UserSettings {
+                    user_id: me.id.clone(),
+                    version: me.settings.version,
+                    config: me.settings.config.clone(),
+                    updated_at: None,
+                });
                 self.screen = Screen::Chat;
                 self.error = None;
                 self.busy = false;
@@ -1729,6 +1738,9 @@ impl Store {
             }
             Update::OlderMessagesFailed { channel_id } => {
                 self.history_loading.remove(&channel_id);
+            }
+            Update::UserSettings(settings) => {
+                self.user_settings = Some(*settings);
             }
             Update::Devices(devices) => {
                 self.devices = devices;
