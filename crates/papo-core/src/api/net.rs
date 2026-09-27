@@ -1908,6 +1908,36 @@ async fn worker(
                     }
                 }
 
+                let profile_user_id = match &event {
+                    Event::UserJoined { user_id }
+                    | Event::AvatarUpdated { user_id }
+                    | Event::RoleAdded { user_id, .. }
+                    | Event::RoleRemoved { user_id, .. } => Some(user_id.clone()),
+                    _ => None,
+                };
+                if let Some(user_id) = profile_user_id {
+                    let api = api.clone();
+                    let updates = updates.clone();
+                    let wake = wake.clone();
+                    let scope = storage_key.clone();
+                    tokio::spawn(async move {
+                        match api.profile(&user_id).await {
+                            Ok(profile) => {
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::Profiles(vec![profile]),
+                                );
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "runtime {scope}: perfil live {user_id} não convergiu: {error}"
+                                );
+                            }
+                        }
+                    });
+                }
+
                 // new_preview traz só o id porque o crawl termina depois da
                 // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
                 // para a Store receber o mesmo formato das mensagens listadas.

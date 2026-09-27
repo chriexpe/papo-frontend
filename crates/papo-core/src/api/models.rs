@@ -220,8 +220,16 @@ pub struct UserProfile {
     pub banner_media: Option<String>,
     pub description: Option<String>,
     pub status: Option<String>,
+    pub status_message: Option<String>,
+    pub typing: Option<String>,
     #[serde(default)]
     pub roles: Vec<RoleSummary>,
+}
+
+impl UserProfile {
+    pub fn display_name(&self) -> &str {
+        self.nickname.as_deref().unwrap_or(&self.username)
+    }
 }
 
 /// O campo é `ids`, não `user_ids`, e o backend aceita no máximo 50 por
@@ -574,6 +582,7 @@ pub struct UserSummary {
     pub nickname: Option<String>,
     pub status: Option<String>,
     pub status_message: Option<String>,
+    pub typing: Option<String>,
     #[serde(default)]
     pub roles: Vec<RoleSummary>,
 }

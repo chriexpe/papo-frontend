@@ -73,9 +73,22 @@ pub enum Event {
     Presence {
         user_id: String,
         status: String,
+        status_message: Option<String>,
+        typing: Option<String>,
         nickname: Option<String>,
     },
-    PresenceSync(Vec<(String, String)>),
+    PresenceSync(Vec<PresenceMember>),
+    AvatarUpdated {
+        user_id: String,
+    },
+    RoleAdded {
+        user_id: String,
+        role_id: String,
+    },
+    RoleRemoved {
+        user_id: String,
+        role_id: String,
+    },
     ChannelCreated {
         id: String,
         name: String,
@@ -194,16 +207,18 @@ struct Envelope {
     kind: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct PresenceMemberPayload {
-    user_id: String,
-    status: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct PresenceMember {
+    pub user_id: String,
+    pub status: String,
+    #[serde(default)]
+    pub status_message: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PresenceSyncPayload {
     #[serde(default)]
-    members: Vec<PresenceMemberPayload>,
+    members: Vec<PresenceMember>,
 }
 
 /// Mantém a conexão viva até o canal de saída fechar.
@@ -407,18 +422,25 @@ fn parse(text: &str) -> Option<Event> {
         "presence_update" => Some(Event::Presence {
             user_id: string("user_id")?,
             status: string("status").unwrap_or_else(|| "offline".to_owned()),
+            status_message: string("status_message"),
+            typing: string("typing"),
             nickname: string("nickname"),
         }),
         "presence_sync" => {
             let payload: PresenceSyncPayload = serde_json::from_str(text).ok()?;
-            Some(Event::PresenceSync(
-                payload
-                    .members
-                    .into_iter()
-                    .map(|member| (member.user_id, member.status))
-                    .collect(),
-            ))
+            Some(Event::PresenceSync(payload.members))
         }
+        "avatar_update" => Some(Event::AvatarUpdated {
+            user_id: string("user_id")?,
+        }),
+        "role_add" => Some(Event::RoleAdded {
+            user_id: string("user_id")?,
+            role_id: string("role_id")?,
+        }),
+        "role_remove" => Some(Event::RoleRemoved {
+            user_id: string("user_id")?,
+            role_id: string("role_id")?,
+        }),
         "channel_create" => Some(Event::ChannelCreated {
             id: string("channel_id")?,
             name: string("name").unwrap_or_default(),
@@ -537,6 +559,43 @@ mod tests {
                 is_typing: true,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn le_presence_com_metadados_completos() {
+        let event = parse(r#"{"type":"presence_update","user_id":"u1","status":"away","status_message":"almoço","typing":"digitando…","nickname":"Ana"}"#);
+        assert!(matches!(
+            event,
+            Some(Event::Presence {
+                ref user_id,
+                ref status,
+                ref status_message,
+                ref typing,
+                ref nickname,
+            }) if user_id == "u1"
+                && status == "away"
+                && status_message.as_deref() == Some("almoço")
+                && typing.as_deref() == Some("digitando…")
+                && nickname.as_deref() == Some("Ana")
+        ));
+    }
+
+    #[test]
+    fn le_eventos_de_identidade_e_cargo() {
+        assert!(matches!(
+            parse(r#"{"type":"avatar_update","user_id":"u1"}"#),
+            Some(Event::AvatarUpdated { ref user_id }) if user_id == "u1"
+        ));
+        assert!(matches!(
+            parse(r#"{"type":"role_add","user_id":"u1","role_id":"r1"}"#),
+            Some(Event::RoleAdded { ref user_id, ref role_id })
+                if user_id == "u1" && role_id == "r1"
+        ));
+        assert!(matches!(
+            parse(r#"{"type":"role_remove","user_id":"u1","role_id":"r1"}"#),
+            Some(Event::RoleRemoved { ref user_id, ref role_id })
+                if user_id == "u1" && role_id == "r1"
         ));
     }
 

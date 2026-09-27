@@ -478,6 +478,8 @@ fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>)
         username: name.to_lowercase().replace(' ', "."),
         name: name.into(),
         presence,
+        status_message: None,
+        typing_label: None,
         role_color: color.map(|(r, g, b)| [r, g, b]),
         roles: Vec::new(),
     }

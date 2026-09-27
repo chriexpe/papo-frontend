@@ -72,6 +72,8 @@ pub struct Member {
     pub username: String,
     pub name: String,
     pub presence: Presence,
+    pub status_message: Option<String>,
+    pub typing_label: Option<String>,
     pub role_color: Option<[u8; 3]>,
     /// Ids dos cargos que a pessoa tem; é o que a tela de cargos marca.
     pub roles: Vec<String>,
@@ -675,6 +677,8 @@ impl Store {
                 username: member.username,
                 name: member.name,
                 presence: Presence::Offline,
+                status_message: None,
+                typing_label: None,
                 role_color: member.role_color,
                 roles: member.roles,
             })
@@ -1387,18 +1391,54 @@ impl Store {
                 self.roles = roles;
                 self.busy = false;
             }
-            // A foto chega em base64 junto com o perfil; guardá-la aqui deixa
-            // a lista de pessoas desenhá-la sem pedir de novo.
+            // Perfis completam a listagem leve de usuários e também são o
+            // caminho de convergência para user_join/avatar_update/role_*.
             Update::Profiles(profiles) => {
+                let mut members_changed = false;
                 for profile in profiles {
-                    match profile.avatar_blob.filter(|blob| !blob.is_empty()) {
+                    let id = profile.id.clone();
+                    match profile.avatar_blob.clone().filter(|blob| !blob.is_empty()) {
                         Some(blob) => {
-                            self.avatars.insert(profile.id, blob);
+                            self.avatars.insert(id.clone(), blob);
                         }
                         None => {
-                            self.avatars.remove(&profile.id);
+                            self.avatars.remove(&id);
                         }
                     }
+
+                    let roles: Vec<String> =
+                        profile.roles.iter().map(|role| role.id.clone()).collect();
+                    let color = role_color(&profile.roles);
+                    let username = profile.username.clone();
+                    let name = profile.display_name().to_owned();
+                    let status_message = profile.status_message.clone();
+                    let typing_label = profile.typing.clone();
+                    if let Some(member) = self.members.iter_mut().find(|member| member.id == id) {
+                        member.username = username;
+                        member.name = name;
+                        member.status_message = status_message;
+                        member.typing_label = typing_label;
+                        member.roles = roles;
+                        member.role_color = color;
+                    } else {
+                        self.members.push(Member {
+                            id,
+                            username,
+                            name,
+                            presence: Presence::Offline,
+                            status_message,
+                            typing_label,
+                            role_color: color,
+                            roles,
+                        });
+                    }
+                    members_changed = true;
+                }
+                if members_changed {
+                    self.sort_members();
+                    let cached: Vec<CachedMember> =
+                        self.members.iter().map(CachedMember::from).collect();
+                    self.pending_cache.push(CacheOp::ReplaceMembers(cached));
                 }
             }
             Update::Devices(devices) => {
@@ -1429,16 +1469,24 @@ impl Store {
                     .collect();
                 self.members = users
                     .into_iter()
-                    .map(|user| Member {
-                        presence: presence
+                    .map(|user| {
+                        let name = user.display_name().to_owned();
+                        let presence = presence
                             .get(&user.id)
                             .copied()
-                            .unwrap_or(Presence::Offline),
-                        role_color: role_color(&user.roles),
-                        roles: user.roles.iter().map(|role| role.id.clone()).collect(),
-                        name: user.display_name().to_owned(),
-                        username: user.username,
-                        id: user.id,
+                            .unwrap_or(Presence::Offline);
+                        let role_color = role_color(&user.roles);
+                        let roles = user.roles.iter().map(|role| role.id.clone()).collect();
+                        Member {
+                            presence,
+                            status_message: user.status_message,
+                            typing_label: user.typing,
+                            role_color,
+                            roles,
+                            name,
+                            username: user.username,
+                            id: user.id,
+                        }
                     })
                     .collect();
                 self.sort_members();
@@ -1810,30 +1858,47 @@ impl Store {
             Event::Presence {
                 user_id,
                 status,
+                status_message,
+                typing,
                 nickname,
             } => {
+                let offline = status == "offline";
                 if let Some(member) = self
                     .members
                     .iter_mut()
                     .find(|member| member.id == user_id)
                 {
                     member.presence = Presence::parse(&status);
+                    if offline {
+                        member.status_message = None;
+                        member.typing_label = None;
+                    } else {
+                        member.status_message = status_message;
+                        member.typing_label = typing;
+                    }
                     if let Some(nickname) = nickname {
                         member.name = nickname;
                     }
+                    let cached: Vec<CachedMember> =
+                        self.members.iter().map(CachedMember::from).collect();
+                    self.pending_cache.push(CacheOp::ReplaceMembers(cached));
                 }
                 self.sort_members();
             }
             Event::PresenceSync(members) => {
-                let online: HashMap<String, Presence> = members
+                let online: HashMap<String, crate::api::ws::PresenceMember> = members
                     .into_iter()
-                    .map(|(id, status)| (id, Presence::parse(&status)))
+                    .map(|member| (member.user_id.clone(), member))
                     .collect();
                 for member in &mut self.members {
-                    member.presence = online
-                        .get(&member.id)
-                        .copied()
-                        .unwrap_or(Presence::Offline);
+                    if let Some(live) = online.get(&member.id) {
+                        member.presence = Presence::parse(&live.status);
+                        member.status_message = live.status_message.clone();
+                    } else {
+                        member.presence = Presence::Offline;
+                        member.status_message = None;
+                        member.typing_label = None;
+                    }
                 }
                 self.sort_members();
             }
@@ -1880,7 +1945,12 @@ impl Store {
                         .unwrap_or_default();
                 }
             }
-            Event::UserJoined { .. } => {}
+            Event::UserJoined { .. }
+            | Event::AvatarUpdated { .. }
+            | Event::RoleAdded { .. }
+            | Event::RoleRemoved { .. } => {
+                // O worker de rede resolve estes eventos para Update::Profiles.
+            }
             Event::VoiceJoined {
                 channel_id,
                 members,
@@ -2327,6 +2397,8 @@ mod tests {
             username: "christian".to_owned(),
             name: "Chris".to_owned(),
             presence: Presence::Online,
+            status_message: None,
+            typing_label: None,
             role_color: None,
             roles: Vec::new(),
         });
@@ -2355,6 +2427,8 @@ mod tests {
                 username: username.to_owned(),
                 name: "Chris".to_owned(),
                 presence: Presence::Online,
+                status_message: None,
+                typing_label: None,
                 role_color: None,
                 roles: Vec::new(),
             });
@@ -2380,6 +2454,8 @@ mod tests {
             username: "chris_real".to_owned(),
             name: "Chris".to_owned(),
             presence: Presence::Online,
+            status_message: None,
+            typing_label: None,
             role_color: None,
             roles: Vec::new(),
         });
@@ -2398,6 +2474,8 @@ mod tests {
             username: "ana_real".to_owned(),
             name: "Ana Maria".to_owned(),
             presence: Presence::Offline,
+            status_message: None,
+            typing_label: None,
             role_color: None,
             roles: Vec::new(),
         });
