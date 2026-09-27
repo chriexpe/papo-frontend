@@ -89,8 +89,14 @@ pub struct Channel {
     pub topic: Option<String>,
     #[serde(default)]
     pub permissions: Vec<ChannelPermissionEntry>,
+    #[serde(default = "default_channel_notification_setting")]
+    pub notification_settings: String,
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
+}
+
+fn default_channel_notification_setting() -> String {
+    "only_mentions".to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize)]
