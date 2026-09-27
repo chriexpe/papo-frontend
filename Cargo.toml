@@ -109,8 +109,6 @@ eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 # the child HWND, browser rendering and pointer/keyboard interaction.
 webview2-com = "0.39.1"
 tray-icon = "0.25.1"
-ring = "0.17"
-semver = "1"
 windows = { version = "0.62", features = [
     "Data_Xml_Dom",
     "Foundation",
@@ -122,6 +120,10 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
+ring = "0.17"
+semver = "1"
 
 # ---------------------------------------------------------------------------
 # Android
