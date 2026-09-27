@@ -108,6 +108,32 @@ pub trait CallbackTrait: Send + Sync {
         Vec::new()
     }
 
+    /// Return true for callbacks that need the current color target outside
+    /// egui's active render pass. Papo uses this for backdrop composition:
+    /// paint order is preserved by ending the pass, running `composite`, then
+    /// resuming egui with LoadOp::Load.
+    fn is_compositor(&self) -> bool {
+        false
+    }
+
+    /// Runs between egui render-pass segments for compositor callbacks.
+    ///
+    /// `target_texture` contains everything painted before this callback.
+    /// Implementations may copy/sample it and render the result back into the
+    /// same target, provided they use separate passes/resources as required by
+    /// WebGPU validation.
+    fn composite(
+        &self,
+        _info: PaintCallbackInfo,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _screen_descriptor: &ScreenDescriptor,
+        _encoder: &mut wgpu::CommandEncoder,
+        _target_texture: &wgpu::Texture,
+        _callback_resources: &CallbackResources,
+    ) {
+    }
+
     /// Called after all [`CallbackTrait::finish_prepare`] calls are done.
     ///
     /// It is given access to the [`wgpu::RenderPass`] so that it can issue draw commands
@@ -482,23 +508,16 @@ impl Renderer {
         paint_jobs: &[epaint::ClippedPrimitive],
         screen_descriptor: &ScreenDescriptor,
     ) {
-        profiling::function_scope!();
+        self.render_slice(render_pass, paint_jobs, screen_descriptor, 0);
+    }
 
-        let pixels_per_point = screen_descriptor.pixels_per_point;
-        let size_in_pixels = screen_descriptor.size_in_pixels;
-
-        // Whether or not we need to reset the render pass because a paint callback has just
-        // run.
-        let mut needs_reset = true;
-
-        let mut index_buffer_slices = self.index_buffer.slices.iter();
-        let mut vertex_buffer_slices = self.vertex_buffer.slices.iter();
-
-        for epaint::ClippedPrimitive {
-            clip_rect,
-            primitive,
-        } in paint_jobs
-        {
+    fn render_slice(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        paint_jobs: &[epaint::ClippedPrimitive],
+        screen_descriptor: &ScreenDescriptor,
+        mesh_offset: usize,
+    ) {
             if needs_reset {
                 render_pass.set_viewport(
                     0.0,
@@ -604,6 +623,154 @@ impl Renderer {
         }
 
         render_pass.set_scissor_rect(0, 0, size_in_pixels[0], size_in_pixels[1]);
+    }
+
+    /// Whether this frame contains a callback that needs a render-pass break.
+    pub fn has_compositor_callbacks(
+        &self,
+        paint_jobs: &[epaint::ClippedPrimitive],
+    ) -> bool {
+        paint_jobs.iter().any(|job| {
+            let Primitive::Callback(callback) = &job.primitive else {
+                return false;
+            };
+            callback
+                .callback
+                .downcast_ref::<Callback>()
+                .is_some_and(|callback| callback.0.is_compositor())
+        })
+    }
+
+    /// Render egui in paint-order segments, ending the render pass around
+    /// compositor callbacks so they can read the already-painted target.
+    pub fn render_with_compositors(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_texture: &wgpu::Texture,
+        clear_color: [f32; 4],
+        paint_jobs: &[epaint::ClippedPrimitive],
+        screen_descriptor: &ScreenDescriptor,
+    ) {
+        let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut start = 0usize;
+        let mut mesh_offset = 0usize;
+        let mut first_pass = true;
+
+        for (index, job) in paint_jobs.iter().enumerate() {
+            let Primitive::Callback(callback) = &job.primitive else {
+                continue;
+            };
+            let Some(callback) = callback.callback.downcast_ref::<Callback>() else {
+                continue;
+            };
+            if !callback.0.is_compositor() {
+                continue;
+            }
+
+            if start < index {
+                let mut pass = encoder
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("egui_render_segment"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &target_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: if first_pass {
+                                    wgpu::LoadOp::Clear(wgpu::Color {
+                                        r: clear_color[0] as f64,
+                                        g: clear_color[1] as f64,
+                                        b: clear_color[2] as f64,
+                                        a: clear_color[3] as f64,
+                                    })
+                                } else {
+                                    wgpu::LoadOp::Load
+                                },
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    })
+                    .forget_lifetime();
+                self.render_slice(
+                    &mut pass,
+                    &paint_jobs[start..index],
+                    screen_descriptor,
+                    mesh_offset,
+                );
+                drop(pass);
+                first_pass = false;
+            }
+
+            mesh_offset += paint_jobs[start..index]
+                .iter()
+                .filter(|job| matches!(job.primitive, Primitive::Mesh(_)))
+                .count();
+
+            // The callback rectangle lives on the epaint callback, not on the
+            // trait object. Build the same info egui uses for normal callbacks.
+            let info = PaintCallbackInfo {
+                viewport: match &job.primitive {
+                    Primitive::Callback(callback) => callback.rect,
+                    Primitive::Mesh(_) => unreachable!(),
+                },
+                clip_rect: job.clip_rect,
+                pixels_per_point: screen_descriptor.pixels_per_point,
+                screen_size_px: screen_descriptor.size_in_pixels,
+            };
+            callback.0.composite(
+                info,
+                device,
+                queue,
+                screen_descriptor,
+                encoder,
+                target_texture,
+                &self.callback_resources,
+            );
+            first_pass = false;
+            start = index + 1;
+        }
+
+        if start < paint_jobs.len() || first_pass {
+            let mut pass = encoder
+                .begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui_render_segment"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: if first_pass {
+                                wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: clear_color[0] as f64,
+                                    g: clear_color[1] as f64,
+                                    b: clear_color[2] as f64,
+                                    a: clear_color[3] as f64,
+                                })
+                            } else {
+                                wgpu::LoadOp::Load
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                })
+                .forget_lifetime();
+            self.render_slice(
+                &mut pass,
+                &paint_jobs[start..],
+                screen_descriptor,
+                mesh_offset,
+            );
+        }
     }
 
     /// Should be called before [`Self::render`].
