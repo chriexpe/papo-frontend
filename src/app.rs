@@ -345,6 +345,11 @@ pub struct Settings {
     #[serde(default)]
     pub pending_user_settings:
         std::collections::HashMap<String, crate::api::models::UserConfig>,
+    /// Último snapshot remoto conhecido por servidor. Serve para startup e
+    /// troca offline; nunca vence um pending local nem um whoami fresco.
+    #[serde(default)]
+    pub cached_user_settings:
+        std::collections::HashMap<String, crate::api::models::UserConfig>,
 }
 
 /// Marcas de leitura por servidor: chave do servidor → canal → instante.
@@ -387,6 +392,7 @@ impl Default for Settings {
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
             pending_user_settings: std::collections::HashMap::new(),
+            cached_user_settings: std::collections::HashMap::new(),
         }
     }
 }
@@ -660,6 +666,7 @@ impl PapoApp {
                     let enabled = settings
                         .pending_user_settings
                         .get(&key)
+                        .or_else(|| settings.cached_user_settings.get(&key))
                         .map(|config| config.notifications.enabled)
                         .unwrap_or(settings.notifications);
                     (key, entry.url.clone(), enabled)
@@ -2978,11 +2985,18 @@ impl PapoApp {
             return;
         }
         let index = self.active;
-        let Some(remote) = self.workspaces[index].runtime.store.user_settings.as_ref() else {
+        let key = self.workspaces[index].runtime.server_key.clone();
+        let base = self.workspaces[index]
+            .runtime
+            .store
+            .user_settings
+            .as_ref()
+            .map(|settings| settings.config.clone())
+            .or_else(|| self.settings.cached_user_settings.get(&key).cloned());
+        let Some(base) = base else {
             return;
         };
-        let config = self.portable_config_from_local(remote.config.clone());
-        let key = self.workspaces[index].runtime.server_key.clone();
+        let config = self.portable_config_from_local(base);
         self.settings
             .pending_user_settings
             .insert(key, config.clone());
@@ -3013,6 +3027,11 @@ impl PapoApp {
             .user_settings
             .as_ref()
             .map(|settings| settings.config.clone());
+        if let Some(remote) = remote.as_ref() {
+            self.settings
+                .cached_user_settings
+                .insert(key.clone(), remote.clone());
+        }
 
         if let Some(pending) = self.settings.pending_user_settings.get(&key).cloned() {
             if remote.as_ref() == Some(&pending) {
@@ -3039,11 +3058,12 @@ impl PapoApp {
             return;
         }
 
-        if let Some(remote) = remote
-            && self.workspaces[index].applied_user_config.as_ref() != Some(&remote)
+        let effective = remote.or_else(|| self.settings.cached_user_settings.get(&key).cloned());
+        if let Some(effective) = effective
+            && self.workspaces[index].applied_user_config.as_ref() != Some(&effective)
         {
-            self.apply_portable_config(ctx, &remote);
-            self.workspaces[index].applied_user_config = Some(remote);
+            self.apply_portable_config(ctx, &effective);
+            self.workspaces[index].applied_user_config = Some(effective);
             self.workspaces[index].sent_user_config = None;
         }
     }
@@ -3061,6 +3081,12 @@ impl PapoApp {
                     .user_settings
                     .as_ref()
                     .map(|settings| settings.config.notifications.enabled)
+            })
+            .or_else(|| {
+                self.settings
+                    .cached_user_settings
+                    .get(&workspace.runtime.server_key)
+                    .map(|config| config.notifications.enabled)
             })
             .unwrap_or(self.settings.notifications)
     }
