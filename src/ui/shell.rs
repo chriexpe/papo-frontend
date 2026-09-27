@@ -1424,6 +1424,8 @@ fn account_pill(
         username: store.my_username.clone(),
         name: store.my_name.clone(),
         presence: crate::state::Presence::Online,
+        status_message: None,
+        typing_label: None,
         role_color: None,
         roles: Vec::new(),
     });
