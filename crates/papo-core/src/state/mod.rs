@@ -1469,18 +1469,24 @@ impl Store {
                     .collect();
                 self.members = users
                     .into_iter()
-                    .map(|user| Member {
-                        presence: presence
+                    .map(|user| {
+                        let name = user.display_name().to_owned();
+                        let presence = presence
                             .get(&user.id)
                             .copied()
-                            .unwrap_or(Presence::Offline),
-                        status_message: user.status_message,
-                        typing_label: user.typing,
-                        role_color: role_color(&user.roles),
-                        roles: user.roles.iter().map(|role| role.id.clone()).collect(),
-                        name: user.display_name().to_owned(),
-                        username: user.username,
-                        id: user.id,
+                            .unwrap_or(Presence::Offline);
+                        let role_color = role_color(&user.roles);
+                        let roles = user.roles.iter().map(|role| role.id.clone()).collect();
+                        Member {
+                            presence,
+                            status_message: user.status_message,
+                            typing_label: user.typing,
+                            role_color,
+                            roles,
+                            name,
+                            username: user.username,
+                            id: user.id,
+                        }
                     })
                     .collect();
                 self.sort_members();
