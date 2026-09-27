@@ -101,6 +101,9 @@ libc = "0.2"
 # Windows
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "windows")'.dependencies]
+# Windows uses wgpu so eframe renders through native Direct3D instead of
+# depending on an OpenGL 2.0+ driver being available.
+eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 # Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
 # the child HWND, browser rendering and pointer/keyboard interaction.
 webview2-com = "0.39.1"

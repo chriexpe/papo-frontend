@@ -125,8 +125,38 @@ jobs:
           "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GSTREAMER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Check native Windows build
         run: cargo check --locked --workspace
+      - name: Build and smoke-test self-contained bundle
+        shell: pwsh
+        run: |
+          cargo build --locked
+          ./packaging/windows/bundle.ps1 `
+            -GStreamerRoot $env:GSTREAMER_ROOT `
+            -PapoExe target/debug/papo.exe `
+            -OutputDir papo-windows-smoke
+
+          $gstBin = Join-Path $env:GSTREAMER_ROOT 'bin'
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -and $_.TrimEnd('\') -ne $gstBin.TrimEnd('\')
+          }) -join ';'
+
+          $check = & '.\papo-windows-smoke\papo.exe' voice-check 2>&1 | Out-String
+          Write-Host $check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled papo.exe voice-check failed with exit code $LASTEXITCODE"
+          }
+          if ($check -notmatch 'GStreamer') {
+            throw 'Bundled Papo did not initialize GStreamer'
+          }
+
+      - name: Upload self-contained Windows bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: papo-windows-smoke
+          path: papo-windows-smoke
+          if-no-files-found: error
 
   metadata:
     runs-on: ubuntu-24.04

@@ -293,6 +293,7 @@ fn field(ui: &mut egui::Ui, t: &Tokens, label: &str, value: &mut String, secret:
                 .password(secret)
                 .frame(egui::Frame::NONE)
                 .font(text::body())
+                .text_color(t.label)
                 .vertical_align(egui::Align::Center)
                 .desired_width(f32::INFINITY),
         );

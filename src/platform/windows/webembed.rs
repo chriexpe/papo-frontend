@@ -34,10 +34,13 @@ use webview2_com::{
     CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
     NavigationStartingEventHandler, NewWindowRequestedEventHandler,
     PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    WebResourceRequestedEventHandler,
     TrySuspendCompletedHandler,
     Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_PERMISSION_STATE_DENY, CreateCoreWebView2EnvironmentWithOptions,
-        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+        COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, COREWEBVIEW2_PERMISSION_STATE_DENY,
+        COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, CreateCoreWebView2EnvironmentWithOptions,
+        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Controller3,
+        ICoreWebView2Environment,
         ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
         ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
         ICoreWebView2_4, ICoreWebView2_8,
@@ -111,6 +114,21 @@ impl LiveWebView {
         };
         let webview = unsafe { controller.CoreWebView2() }
             .map_err(|error| format!("CoreWebView2 indisponível: {error}"))?;
+
+        // Papo supplies WebView2 geometry in the same physical-pixel space as
+        // the Win32 clipping HWND. Do not let WebView2 reinterpret SetBounds
+        // through an independently detected monitor scale.
+        let controller3: ICoreWebView2Controller3 = controller
+            .cast()
+            .map_err(|error| format!("WebView2 Controller3 indisponível: {error}"))?;
+        unsafe {
+            controller3
+                .SetShouldDetectMonitorScaleChanges(false)
+                .map_err(|error| format!("fixar escala WebView2: {error}"))?;
+            controller3
+                .SetBoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS)
+                .map_err(|error| format!("bounds em pixels WebView2: {error}"))?;
+        }
 
         unsafe {
             let settings = webview
@@ -217,7 +235,18 @@ impl LiveWebView {
         // WebView keeps its full logical size and is translated inside that
         // child window, so scrolling never causes YouTube/other providers to
         // relayout merely because part of the card is offscreen.
+        // Keep Chromium's CSS/device scale synchronized with the exact scale
+        // eframe used to convert the egui rectangle into Win32 pixels.
+        let controller3: ICoreWebView2Controller3 = self
+            .controller
+            .cast()
+            .map_err(|error| format!("WebView2 Controller3 indisponível: {error}"))?;
+
         unsafe {
+            controller3
+                .SetRasterizationScale(scale as f64)
+                .map_err(|error| format!("escala WebView2: {error}"))?;
+
             SetWindowPos(
                 self.host,
                 None,
@@ -502,6 +531,25 @@ fn install_security_and_navigation_handlers(
         Ok(())
     }));
 
+    // YouTube error 153 means the embedded player did not receive a usable
+    // HTTP Referer. NavigateWithWebResourceRequest covers the top-level load,
+    // but Chromium can issue subsequent YouTube document/resource requests
+    // without carrying that custom header forward. WebView2 explicitly allows
+    // request headers to be modified from WebResourceRequested, so keep Papo's
+    // app identity attached to every YouTube request made by this isolated
+    // browser surface.
+    let web_resource = WebResourceRequestedEventHandler::create(Box::new(move |_sender, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        let request = unsafe { args.Request()? };
+        let headers = unsafe { request.Headers()? };
+        unsafe {
+            headers.SetHeader(w!("Referer"), w!("https://io.github.chriexpe.papo/"))?;
+        }
+        Ok(())
+    }));
+
     let permission = PermissionRequestedEventHandler::create(Box::new(move |_sender, args| {
         if let Some(args) = args {
             // Embedded third-party content never receives camera, microphone,
@@ -545,6 +593,21 @@ fn install_security_and_navigation_handlers(
 
     let mut token = 0;
     unsafe {
+        webview
+            .AddWebResourceRequestedFilter(
+                w!("https://*.youtube.com/*"),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )
+            .map_err(|error| format!("filtro YouTube WebView2: {error}"))?;
+        webview
+            .AddWebResourceRequestedFilter(
+                w!("https://*.youtube-nocookie.com/*"),
+                COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            )
+            .map_err(|error| format!("filtro YouTube nocookie WebView2: {error}"))?;
+        webview
+            .add_WebResourceRequested(&web_resource, &mut token)
+            .map_err(|error| format!("WebResourceRequested WebView2: {error}"))?;
         webview
             .add_NavigationStarting(&navigation, &mut token)
             .map_err(|error| format!("NavigationStarting WebView2: {error}"))?;

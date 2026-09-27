@@ -1,8 +1,8 @@
 name: release
 
-# Uma etiqueta `v*` gera os tarballs. Hoje só Linux: a integração com a área
-# de trabalho (bandeja, menu global, notificações, desfoque) é toda D-Bus e
-# Wayland/X11, então não há o que publicar para Windows ou macOS ainda.
+# Uma etiqueta `v*` gera os artefatos de desktop. Linux continua com os
+# formatos nativos/Flatpak; Windows sai como ZIP autocontido com o runtime do
+# GStreamer ao lado do executável.
 on:
   push:
     tags: ['v*']
@@ -84,6 +84,78 @@ jobs:
             *.deb
             *.deb.sha256
 
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-windows
+
+      - name: Install GStreamer SDK/runtime
+        shell: pwsh
+        run: |
+          choco install gstreamer gstreamer-devel --version=1.26.9 -y --no-progress
+          $candidates = @(
+            'C:\Program Files\gstreamer\1.0\msvc_x86_64',
+            'C:\gstreamer\1.0\msvc_x86_64'
+          )
+          $root = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $root) {
+            throw "GStreamer SDK not found in expected install locations"
+          }
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "PKG_CONFIG_PATH=$root\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "GSTREAMER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Assemble self-contained bundle
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME -like 'v*') {
+            $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            'dev'
+          }
+          $name = "papo-$version-x86_64-windows"
+          ./packaging/windows/bundle.ps1 `
+            -GStreamerRoot $env:GSTREAMER_ROOT `
+            -PapoExe target/release/papo.exe `
+            -OutputDir $name
+
+          # Prove the copied runtime works without relying on GStreamer's bin
+          # being present in PATH. Device probes may report no CI hardware;
+          # initialization/plugin discovery itself must still succeed.
+          $oldPath = $env:PATH
+          $gstBin = Join-Path $env:GSTREAMER_ROOT 'bin'
+          $env:PATH = (($oldPath -split ';') | Where-Object {
+            $_ -and $_.TrimEnd('\') -ne $gstBin.TrimEnd('\')
+          }) -join ';'
+          $check = & ".\$name\papo.exe" voice-check 2>&1 | Out-String
+          Write-Host $check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bundled papo.exe voice-check failed with exit code $LASTEXITCODE"
+          }
+          if ($check -notmatch 'GStreamer') {
+            throw 'Bundled Papo did not initialize GStreamer'
+          }
+
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" |
+            Set-Content "$name.zip.sha256"
+          "WINDOWS_ZIP=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-windows-x86_64
+          path: |
+            ${{ env.WINDOWS_ZIP }}
+            ${{ env.WINDOWS_ZIP }}.sha256
+
   # O bundle Flatpak é o pacote que não depende do GStreamer do sistema: o
   # runtime do freedesktop já o traz, e a extensão ffmpeg-full traz os codecs.
   # A compilação roda no flatpak-builder, sem rede, a partir de
@@ -138,7 +210,7 @@ jobs:
           path: '*.flatpak'
 
   publish:
-    needs: [build, flatpak]
+    needs: [build, windows, flatpak]
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -153,4 +225,6 @@ jobs:
             *.deb
             *.deb.sha256
             *.flatpak
+            *.zip
+            *.zip.sha256
           generate_release_notes: true

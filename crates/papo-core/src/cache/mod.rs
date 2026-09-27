@@ -170,6 +170,16 @@ impl ClientDb {
             return Self::disabled(None, max_pending_data);
         };
 
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            log::warn!(
+                "cache: não foi possível criar {}: {error}; seguindo sem cache",
+                parent.display()
+            );
+            return Self::disabled(Some(path), max_pending_data);
+        }
+
         let stats = Arc::new(CacheStats::default());
         let pending_data = Arc::new(Mutex::new(0usize));
         let (queue_tx, queue_rx) = mpsc::unbounded_channel();
