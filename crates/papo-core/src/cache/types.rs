@@ -234,6 +234,7 @@ pub struct CachedChannel {
     pub name: String,
     pub kind: String,
     pub topic: Option<String>,
+    pub parent_id: Option<String>,
     pub position: i32,
     /// Cache de exibição apenas; nunca é autoridade depois de reconectar.
     pub unread: bool,
@@ -252,6 +253,7 @@ impl From<&Channel> for CachedChannel {
             }
             .to_owned(),
             topic: channel.topic.clone(),
+            parent_id: channel.parent_id.clone(),
             position: channel.position,
             unread: channel.unread,
             mentions: channel.mentions,
