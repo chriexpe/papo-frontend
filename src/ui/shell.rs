@@ -3125,7 +3125,9 @@ fn replace_search_fragment(query: &str, replacement: &str) -> String {
     let (_, start) = search_fragment(query);
     let mut next = query[..start].to_owned();
     next.push_str(replacement);
-    next.push(' ');
+    if !replacement.ends_with(':') {
+        next.push(' ');
+    }
     next
 }
 
