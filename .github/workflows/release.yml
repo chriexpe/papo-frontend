@@ -277,7 +277,7 @@ jobs:
       - name: Install Android build tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platforms;android-37"             "build-tools;37.0.0"             "ndk;30.0.16248370"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platforms;android-37.2"             "build-tools;37.0.0"             "ndk;30.0.16248370"
           cargo install cargo-ndk --locked
 
       - name: Cache GStreamer Android SDK
