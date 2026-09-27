@@ -3643,17 +3643,21 @@ impl eframe::App for PapoApp {
         }
     }
 
+    #[cfg(target_os = "android")]
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         self.flush_all_drafts();
         self.ui.webembed.destroy_active();
-        #[cfg(target_os = "android")]
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
         {
             glass.destroy(gl);
         }
-        #[cfg(not(target_os = "android"))]
-        let _ = gl;
+    }
+
+    #[cfg(not(target_os = "android"))]
+    fn on_exit(&mut self) {
+        self.flush_all_drafts();
+        self.ui.webembed.destroy_active();
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
