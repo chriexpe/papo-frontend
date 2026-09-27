@@ -1502,7 +1502,7 @@ impl Store {
                 self.user_settings = Some(models::UserSettings {
                     user_id: me.id.clone(),
                     version: me.settings.version,
-                    config: me.settings.config.clone(),
+                    config: me.settings.config.clone().normalised(),
                     updated_at: None,
                 });
                 self.screen = Screen::Chat;
@@ -1740,7 +1740,9 @@ impl Store {
                 self.history_loading.remove(&channel_id);
             }
             Update::UserSettings(settings) => {
-                self.user_settings = Some(*settings);
+                let mut settings = *settings;
+                settings.config = settings.config.normalised();
+                self.user_settings = Some(settings);
             }
             Update::Devices(devices) => {
                 self.devices = devices;
