@@ -150,6 +150,14 @@ pub struct ChannelDraft {
     pub kind: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ChannelPermissionDraft {
+    pub channel_id: String,
+    pub role_id: String,
+    pub role_name: String,
+    pub permissions: crate::api::models::ChannelPermissions,
+}
+
 impl ChannelDraft {
     pub fn create() -> Self {
         Self {
@@ -190,6 +198,8 @@ pub struct Draft {
     pub server_password: String,
     /// Criação/edição de canal acontece dentro da própria folha.
     pub channel: Option<ChannelDraft>,
+    /// Override por cargo sendo editado no canal aberto.
+    pub channel_permission: Option<ChannelPermissionDraft>,
     /// Canal a apagar: id, nome esperado e o que foi digitado. A confirmação
     /// é por cópia do nome — apagar um canal leva junto tudo que foi dito
     /// nele, e um clique só é barato demais para isso.
@@ -203,6 +213,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = Some(ChannelDraft::create());
+        self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
 
@@ -210,6 +221,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = Some(ChannelDraft::edit(channel));
+        self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
 
@@ -217,6 +229,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = None;
+        self.draft.channel_permission = None;
         self.draft.deleting = Some((
             channel.id.clone(),
             channel.name.clone(),
@@ -1922,6 +1935,122 @@ fn server_pane(
                 ui.add_space(space::LG);
             }
 
+            // Overrides por cargo pertencem ao canal existente. Canal recém-criado
+            // só ganha regras depois que o backend lhe deu um id.
+            if let Some((channel_id, channel_kind)) = draft
+                .channel
+                .as_ref()
+                .and_then(|editor| editor.id.clone().map(|id| (id, editor.kind.clone())))
+            {
+                if let Some(channel) = channels.iter().find(|channel| channel.id == channel_id) {
+                    section(ui, t, s.channel_permissions);
+
+                    if channel.permissions.is_empty() {
+                        group(ui, t, |rows| {
+                            rows.row(
+                                s.channel_permissions_open,
+                                Some(s.channel_permissions_open_hint),
+                                |_, _| {},
+                            );
+                        });
+                        ui.add_space(space::SM);
+                    }
+
+                    if let Some(permission) = draft
+                        .channel_permission
+                        .as_mut()
+                        .filter(|permission| permission.channel_id == channel_id)
+                    {
+                        group(ui, t, |rows| {
+                            rows.row(&permission.role_name, None, |_, _| {});
+                            rows.row(s.perm_read_channel, None, |ui, t| {
+                                switch(ui, t, &mut permission.permissions.read_channel);
+                            });
+                            if channel_kind == "text" {
+                                rows.row(s.perm_send_messages, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.send_messages);
+                                });
+                                rows.row(s.perm_delete_messages, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.delete_messages);
+                                });
+                            }
+                            if channel_kind == "voice" {
+                                rows.row(s.perm_connect_voice, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.connect_voice);
+                                });
+                            }
+                        });
+                        ui.add_space(space::SM);
+                        let mut cancel_permission = false;
+                        let mut save_permission = None;
+                        actions_row(ui, |ui| {
+                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                                cancel_permission = true;
+                            }
+                            if row_button(ui, t, s.save, Emphasis::Primary) {
+                                save_permission = Some((
+                                    permission.channel_id.clone(),
+                                    permission.role_id.clone(),
+                                    permission.permissions,
+                                ));
+                            }
+                        });
+                        if cancel_permission {
+                            draft.channel_permission = None;
+                        }
+                        if let Some((channel_id, role_id, permissions)) = save_permission {
+                            actions.push(SettingsAction::Chat(
+                                ChatAction::SetChannelPermissions {
+                                    channel_id,
+                                    role_id,
+                                    permissions,
+                                },
+                            ));
+                            draft.channel_permission = None;
+                        }
+                    } else {
+                        group(ui, t, |rows| {
+                            for entry in &channel.permissions {
+                                rows.row(&entry.role_name, None, |ui, t| {
+                                    if row_button(ui, t, s.edit, Emphasis::Quiet) {
+                                        draft.channel_permission = Some(ChannelPermissionDraft {
+                                            channel_id: channel_id.clone(),
+                                            role_id: entry.role_id.clone(),
+                                            role_name: entry.role_name.clone(),
+                                            permissions: entry.permissions,
+                                        });
+                                    }
+                                });
+                            }
+
+                            for role in data.store.roles.iter().filter(|role| {
+                                !channel
+                                    .permissions
+                                    .iter()
+                                    .any(|entry| entry.role_id == role.id)
+                            }) {
+                                rows.row(&role.name, None, |ui, t| {
+                                    if row_button(
+                                        ui,
+                                        t,
+                                        s.channel_permission_add_role,
+                                        Emphasis::Quiet,
+                                    ) {
+                                        draft.channel_permission = Some(ChannelPermissionDraft {
+                                            channel_id: channel_id.clone(),
+                                            role_id: role.id.clone(),
+                                            role_name: role.name.clone(),
+                                            permissions: Default::default(),
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    ui.add_space(space::LG);
+                }
+            }
+
             group(ui, t, |rows| {
                 if channels.is_empty() {
                     rows.row(s.no_channels_yet, None, |_, _| {});
@@ -1965,7 +2094,10 @@ fn server_pane(
                         }
                         if row_button(ui, t, s.edit, Emphasis::Quiet) {
                             draft.deleting = None;
-                            draft.channel = Some(ChannelDraft::edit(channel));
+                            draft.channel_permission = None;
+                            actions.push(SettingsAction::Chat(ChatAction::EditChannel(
+                                channel.id.clone(),
+                            )));
                         }
                         if index + 1 < channels.len()
                             && row_icon(ui, t, egui_phosphor::regular::ARROW_DOWN, s.move_down)
@@ -1991,6 +2123,7 @@ fn server_pane(
 
             if close_editor {
                 draft.channel = None;
+                draft.channel_permission = None;
             }
             if cancel_delete {
                 draft.deleting = None;
@@ -2004,6 +2137,7 @@ fn server_pane(
             actions_row(ui, |ui| {
                 if row_button(ui, t, s.create_channel, Emphasis::Primary) {
                     draft.deleting = None;
+                    draft.channel_permission = None;
                     draft.channel = Some(ChannelDraft::create());
                 }
             });
