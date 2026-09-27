@@ -10,6 +10,7 @@ pub mod profile;
 pub mod headerbar;
 pub mod rail;
 pub mod roles;
+pub mod server_card;
 pub mod settings;
 pub mod shell;
 pub mod theme;

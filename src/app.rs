@@ -631,6 +631,8 @@ pub struct PapoApp {
     dialogs: Dialogs,
     /// Editor de recorte aberto (foto, banner, ícone do servidor).
     crop: Option<crate::ui::crop::CropEditor>,
+    /// O voltar do sistema deste quadro, quando é do editor de recorte.
+    crop_back: bool,
     /// A janela tem foco neste quadro.
     focused: bool,
     /// Sair de verdade, em vez de esconder.
@@ -864,6 +866,7 @@ impl PapoApp {
             update_status: None,
             dialogs: Dialogs::default(),
             crop: None,
+            crop_back: false,
             focused: true,
             quitting: false,
             settings,
@@ -1499,6 +1502,15 @@ impl PapoApp {
                 self.sheet.open_account();
                 return;
             }
+            ChatAction::MarkServerRead => {
+                self.workspaces[self.active].runtime.store.mark_all_read();
+                return;
+            }
+            ChatAction::LeaveServer => {
+                let active = self.active;
+                self.remove_server(active, ctx);
+                return;
+            }
             _ => {}
         }
 
@@ -1772,7 +1784,7 @@ impl PapoApp {
             ChatAction::ResetUser(user_id) => ws.runtime.net.send(Command::ResetUser { user_id }),
             ChatAction::LoadProfile(user_id) => ws.runtime.net.send(Command::LoadProfile { user_id }),
             ChatAction::SetPresence(status) => ws.runtime.net.send(Command::SetStatus { status }),
-            ChatAction::EditProfile => {}
+            ChatAction::EditProfile | ChatAction::MarkServerRead | ChatAction::LeaveServer => {}
             // Entrar já foi tratado antes do `match`, porque mexe em todos
             // os servidores de uma vez.
             ChatAction::JoinVoice(_) => {}
@@ -2051,6 +2063,8 @@ impl PapoApp {
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
             | ChatAction::EditProfile
+            | ChatAction::MarkServerRead
+            | ChatAction::LeaveServer
             | ChatAction::Search { .. }
             | ChatAction::LoadReactionDetails { .. } => {}
             // A presença muda na hora, sem servidor para confirmar.
@@ -2550,9 +2564,6 @@ impl PapoApp {
                 self.sheet.toggle(crate::ui::settings::Surface::App);
                 self.sheet.app_pane = crate::ui::settings::AppPane::Sessions;
             }
-            MenuCommand::ServerOverview => {
-                self.sheet.open_server_overview();
-            }
             MenuCommand::Roles => {
                 let ws = &self.workspaces[self.active];
                 if !ws.runtime.store.can_manage_roles() {
@@ -2682,7 +2693,8 @@ impl PapoApp {
                 .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
                 .unwrap_or(t.accent),
         };
-        match crate::ui::crop::draw(ctx, editor, &t, s, &face) {
+        let back = std::mem::take(&mut self.crop_back);
+        match crate::ui::crop::draw(ctx, editor, &t, s, &face, back) {
             Some(crate::ui::crop::CropOutcome::Save(crop)) => {
                 let purpose = editor.purpose;
                 let path = editor.path.clone();
@@ -3385,7 +3397,23 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
-                self.ui.webembed_blocked = self.sheet.open.is_some() || self.ui.profile.is_some();
+                // O voltar do sistema tem um dono por quadro, decidido aqui:
+                // o editor de recorte, senão os ajustes, senão o que está
+                // aberto por cima da conversa (cartões). Espalhar essa
+                // decisão fazia um cartão fechado desligar o voltar de outro.
+                let back = crate::platform::back::take();
+                if self.crop.is_some() {
+                    self.crop_back = back;
+                } else if back && self.sheet.open.is_some() {
+                    self.sheet.back();
+                } else {
+                    self.ui.back = back;
+                }
+                self.ui.webembed_blocked = self.sheet.open.is_some()
+                    || self.ui.profile.is_some()
+                    || self.ui.server_card.is_some();
+                self.ui.server_url = self.workspaces[active].runtime.url.clone();
+                self.ui.server_count = self.workspaces.len();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -3427,6 +3455,12 @@ impl eframe::App for PapoApp {
         self.sheet.modal_above = self.crop.is_some();
         self.settings_sheet(&ctx);
         self.crop_editor(&ctx);
+        crate::platform::back::intercept(
+            self.crop.is_some()
+                || self.sheet.open.is_some()
+                || self.ui.profile.is_some()
+                || self.ui.server_card.is_some(),
+        );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
         self.pump_files(&ctx);

@@ -119,6 +119,7 @@ pub fn draw(
     t: &Tokens,
     s: &Strings,
     face: &Face,
+    back: bool,
 ) -> Option<CropOutcome> {
     let screen = ctx.content_rect();
     let width = SHEET_WIDTH.min(screen.width() - space::MD * 2.0);
@@ -135,7 +136,7 @@ pub fn draw(
         .constrain(false)
         .show(ctx, |ui| {
             ui.set_min_size(screen.size());
-            editor_contents(ui, ctx, editor, t, s, face, screen, sheet, width, canvas_h)
+            editor_contents(ui, ctx, editor, t, s, face, screen, sheet, width, canvas_h, back)
         })
         .inner
 }
@@ -152,6 +153,7 @@ fn editor_contents(
     sheet: Rect,
     width: f32,
     canvas_h: f32,
+    back: bool,
 ) -> Option<CropOutcome> {
     // Véu e bloqueio: nada atrás recebe clique enquanto o editor está aberto.
     ui.painter()
@@ -405,7 +407,7 @@ fn editor_contents(
             input.key_pressed(egui::Key::Enter),
         )
     });
-    if escape || crate::platform::back::take() {
+    if escape || back {
         outcome = Some(CropOutcome::Cancel);
     } else if enter {
         outcome = Some(CropOutcome::Save(editor.crop()));

@@ -180,3 +180,30 @@ pub fn scroll_edge_fade(ui: &Ui, rect: Rect, color: Color32, from_top: bool) {
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     ui.painter().add(egui::Shape::mesh(mesh));
 }
+
+/// Menu suspenso de uma linha, no lugar certo para cada tamanho de tela.
+///
+/// - Desktop: abre ao lado da superfície (`surface`, o cartão ou a folha),
+///   colado na borda direita dela e com o topo na altura da linha — o menu
+///   sai do cartão em vez de cobrir as linhas vizinhas. Sem espaço à
+///   direita, vai para a esquerda.
+/// - Celular: abre por cima do valor tocado (`value`), alinhado à direita
+///   dele, que é onde o dedo está.
+pub fn dropdown<'a>(row: &Response, surface: Rect, value: Rect, compact: bool) -> egui::Popup<'a> {
+    use egui::{Align2, RectAlign};
+    if compact {
+        let over = RectAlign {
+            parent: Align2::RIGHT_TOP,
+            child: Align2::RIGHT_TOP,
+        };
+        egui::Popup::menu(row).anchor(value).align(over).gap(0.0)
+    } else {
+        let edge = Rect::from_x_y_ranges(surface.min.x..=surface.max.x, row.rect.y_range());
+        const SIDES: [RectAlign; 1] = [RectAlign::LEFT_START];
+        egui::Popup::menu(row)
+            .anchor(edge)
+            .align(RectAlign::RIGHT_START)
+            .align_alternatives(&SIDES)
+            .gap(space::SM)
+    }
+}

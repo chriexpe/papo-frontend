@@ -208,6 +208,10 @@ pub enum ChatAction {
     EditProfile,
     /// `away`, `busy` ou nada (disponível), a partir do seu cartão.
     SetPresence(Option<String>),
+    /// Marca como lido tudo deste servidor (o cartão do servidor).
+    MarkServerRead,
+    /// Tira este servidor do trilho, depois da confirmação no cartão.
+    LeaveServer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -776,6 +780,16 @@ pub struct UiState {
     pub popup: Option<Popup>,
     /// Cartão de perfil aberto.
     pub profile: Option<super::profile::ProfileCard>,
+    /// Cartão do servidor aberto (a pastilha do servidor descomprimida).
+    pub server_card: Option<super::server_card::ServerCard>,
+    /// Onde a pastilha do servidor está neste quadro: é a base do cartão.
+    pub server_pill: Option<Rect>,
+    /// Endereço e quantidade de servidores, que o cartão mostra e usa.
+    pub server_url: String,
+    pub server_count: usize,
+    /// O voltar do sistema chegou neste quadro e é das camadas da conversa
+    /// (o app já descontou o editor de recorte e os ajustes).
+    pub back: bool,
     /// Como o seu próprio cartão abre (ajuste de Aparência).
     pub self_card: super::profile::SelfCardStyle,
     /// Pastilha de ações esticada em busca ou fixadas.
@@ -900,6 +914,11 @@ impl Default for UiState {
             external_link_prompt: None,
             popup: None,
             profile: None,
+            server_card: None,
+            server_pill: None,
+            server_url: String::new(),
+            server_count: 1,
+            back: false,
             self_card: Default::default(),
             panel: None,
             jump: None,
@@ -1327,6 +1346,7 @@ fn channels_sidebar(
                 egui::pos2(full.min.x + PILL_INSET, full.min.y + PILL_INSET),
                 Vec2::new(full.width() - PILL_INSET * 2.0, IDENTITY_PILL_HEIGHT),
             );
+            state.server_pill = Some(server_pill);
             let ctx = ui.ctx().clone();
             let icon = store
                 .server
@@ -1352,7 +1372,10 @@ fn channels_sidebar(
                 "pastilha-do-servidor",
             ) {
                 PillHit::Gear => state.pending.push(MenuCommand::ServerSettings),
-                PillHit::Body => state.pending.push(MenuCommand::ServerOverview),
+                PillHit::Body => {
+                    let now = ui.input(|input| input.time);
+                    super::server_card::toggle(state, now);
+                }
                 PillHit::None => {}
             }
 
@@ -2493,6 +2516,7 @@ fn handle_mobile_gesture(
         // must also own horizontal drags instead of leaking them to chat.
         let blocked = state.popup.is_some()
             || state.profile.is_some()
+            || state.server_card.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
             || state.webembed_blocked
@@ -5676,7 +5700,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
-    super::profile::draw(&mut top, store, state, t, s);
+    // O voltar vai para o de cima: o cartão do servidor, senão o de perfil.
+    let back = std::mem::take(&mut state.back);
+    let used = super::server_card::draw(&mut top, store, state, t, s, back);
+    super::profile::draw(&mut top, store, state, t, s, back && !used);
     saved_toast(&mut top, state, t, s);
 
     if state.external_link_prompt.is_some() {
