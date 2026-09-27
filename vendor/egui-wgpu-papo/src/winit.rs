@@ -17,7 +17,6 @@ struct SurfaceState {
     alpha_mode: wgpu::CompositeAlphaMode,
     width: u32,
     height: u32,
-    copy_src: bool,
     resizing: bool,
     needs_reconfigure: bool,
     needs_recreate: bool,
@@ -119,12 +118,7 @@ impl Painter {
         let height = surface_state.height;
 
         let mut surf_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | if surface_state.copy_src {
-                    wgpu::TextureUsages::COPY_SRC
-                } else {
-                    wgpu::TextureUsages::empty()
-                },
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: render_state.target_format,
             present_mode,
             alpha_mode: surface_state.alpha_mode,
@@ -294,21 +288,6 @@ impl Painter {
                 wgpu::CompositeAlphaMode::Auto
             }
         };
-        let copy_src = {
-            let render_state = self
-                .render_state
-                .as_ref()
-                .expect("install_surface called before render_state initialization");
-            surface
-                .get_capabilities(&render_state.adapter)
-                .usages
-                .contains(wgpu::TextureUsages::COPY_SRC)
-        };
-        if !copy_src {
-            log::warn!(
-                "The active wgpu surface cannot be copied from; compositor callbacks will be disabled."
-            );
-        }
         self.surfaces.insert(
             viewport_id,
             SurfaceState {
@@ -316,7 +295,6 @@ impl Painter {
                 width,
                 height,
                 alpha_mode,
-                copy_src,
                 resizing,
                 needs_reconfigure: false,
                 needs_recreate: false,
@@ -664,19 +642,41 @@ impl Painter {
                 &output_frame.texture
             };
 
-            let can_composite = capture || surface_state.copy_src;
-            if can_composite && renderer.has_compositor_callbacks(clipped_primitives) {
-                // Compositor callbacks need paint-order barriers. Render directly
-                // into the sampleable target (MSAA is bypassed for this path),
-                // break the pass around each compositor, then resume with Load.
+            if renderer.has_compositor_callbacks(clipped_primitives) {
+                // Backdrop effects render into a Papo-owned scene texture.
+                // This avoids requiring COPY_SRC/TEXTURE_BINDING support from
+                // the platform surface and gives every native backend the same
+                // compositor contract.
+                let scene = render_state.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("egui_compositor_scene"),
+                    size: wgpu::Extent3d {
+                        width: screen_descriptor.size_in_pixels[0],
+                        height: screen_descriptor.size_in_pixels[1],
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: render_state.target_format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[render_state.target_format],
+                });
                 renderer.render_with_compositors(
                     &render_state.device,
                     &render_state.queue,
                     &mut encoder,
-                    target_texture,
+                    &scene,
                     clear_color,
                     clipped_primitives,
                     &screen_descriptor,
+                );
+                renderer.present_compositor_scene(
+                    &render_state.device,
+                    &mut encoder,
+                    &scene,
+                    target_texture,
                 );
             } else {
                 let target_view =
