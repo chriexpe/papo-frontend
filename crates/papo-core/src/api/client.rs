@@ -821,14 +821,19 @@ impl Api {
         self.post(&format!("/users/{user_id}/reset"), &()).await
     }
 
-    /// Ajustes do usuário guardados no servidor, para acompanhá-lo entre
-    /// máquinas. O corpo é o `config` inteiro.
-    #[allow(dead_code)]
+    /// Ajustes portáteis da conta. O backend exige o envelope
+    /// `{ "config": ... }` e devolve o registro versionado persistido.
     pub async fn put_user_settings(
         &self,
-        config: &serde_json::Value,
-    ) -> ApiResult<serde_json::Value> {
-        self.put("/users/settings", config).await
+        config: &UserConfig,
+    ) -> ApiResult<UserSettings> {
+        self.put(
+            "/users/settings",
+            &UpdateUserSettingsRequest {
+                config: config.clone(),
+            },
+        )
+        .await
     }
 
     // -- Sessões -----------------------------------------------------------
