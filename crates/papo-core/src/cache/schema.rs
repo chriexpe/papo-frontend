@@ -152,6 +152,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }, Migration {
     version: 6,
     statements: &[
+        "ALTER TABLE channels ADD COLUMN parent_id TEXT",
         "DROP INDEX messages_channel_idx",
         "CREATE INDEX messages_timeline_idx
              ON messages(server_key, channel_id, pinned, created_at DESC, message_id DESC)",
