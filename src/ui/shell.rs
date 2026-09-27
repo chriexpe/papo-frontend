@@ -1278,9 +1278,9 @@ fn channels_sidebar(
                 .and_then(|blob| state.media.server_icon(blob))
                 .and_then(|texture| texture.frame(&ctx))
                 .map(|handle| handle.id());
-            // A do servidor ainda não tem cartão: corpo e engrenagem levam
-            // aos ajustes dele.
-            if identity_pill(
+            // O corpo é a visão do servidor para qualquer membro. A engrenagem
+            // é administração e só existe quando a conta pode administrar algo.
+            match identity_pill(
                 ui,
                 state,
                 t,
@@ -1291,10 +1291,12 @@ fn channels_sidebar(
                 None,
                 icon,
                 t.accent,
+                store.can_open_server_admin(),
                 "pastilha-do-servidor",
-            ) != PillHit::None
-            {
-                state.pending.push(MenuCommand::ServerSettings);
+            ) {
+                PillHit::Gear => state.pending.push(MenuCommand::ServerSettings),
+                PillHit::Body => state.pending.push(MenuCommand::ServerOverview),
+                PillHit::None => {}
             }
 
             let header_bottom = full.min.y + SIDEBAR_HEADER_HEIGHT;
@@ -1342,11 +1344,18 @@ fn channels_sidebar(
                                             state.mobile_surface = MobileSurface::Chat;
                                         }
                                     }
-                                    channel_menu(&row, channel, state, s);
+                                    channel_menu(
+                                        &row,
+                                        channel,
+                                        state,
+                                        s,
+                                        store.can_manage_channels(),
+                                    );
                                 }
                                 // Sem canal nenhum a lista fica muda; este é o
                                 // único caminho para o primeiro canal.
                                 if store.channels.is_empty()
+                                    && store.can_manage_channels()
                                     && add_channel_row(ui, t, s, SIDEBAR_WIDTH - indent * 2.0)
                                 {
                                     state.actions.push(ChatAction::NewChannel);
@@ -1387,7 +1396,13 @@ fn channels_sidebar(
                                             state.mobile_surface = MobileSurface::Chat;
                                         }
                                     }
-                                    channel_menu(&row, channel, state, s);
+                                    channel_menu(
+                                        &row,
+                                        channel,
+                                        state,
+                                        s,
+                                        store.can_manage_channels(),
+                                    );
                                     crate::ui::call::roster(
                                         ui,
                                         store,
@@ -1492,6 +1507,7 @@ fn account_pill(
         Some((presence_color(t, me.presence), avatar)),
         None,
         me.role_color.map(rgb).unwrap_or(t.accent),
+        true,
         "pastilha-da-conta",
     ) {
         PillHit::Gear => state.pending.push(MenuCommand::Preferences),
@@ -1531,6 +1547,7 @@ fn identity_pill(
     presence: Option<(Color32, Option<egui::TextureId>)>,
     icon: Option<egui::TextureId>,
     tint: Color32,
+    show_gear: bool,
     id: &str,
 ) -> PillHit {
     pill_surface(ui, state, t, rect);
@@ -1541,8 +1558,11 @@ fn identity_pill(
         egui::pos2(rect.max.x - space::SM - 14.0, rect.center().y),
         Vec2::splat(28.0),
     );
-    let gear_response = ui.interact(gear, Id::new((id, "engrenagem")), Sense::click());
-    if response.hovered() || gear_response.hovered() {
+    let gear_response =
+        show_gear.then(|| ui.interact(gear, Id::new((id, "engrenagem")), Sense::click()));
+    if response.hovered()
+        || gear_response.as_ref().is_some_and(|response| response.hovered())
+    {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(PILL_RADIUS as u8), t.fill_soft);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1586,21 +1606,29 @@ fn identity_pill(
     }
 
     // A engrenagem mora na ponta oposta ao ícone; o texto vive entre as duas.
-    let gear_hovered = gear_response.hovered();
-    if gear_hovered {
-        ui.painter()
-            .rect_filled(gear, CornerRadius::same(radius::FIELD), t.fill_medium);
+    let gear_hovered = gear_response
+        .as_ref()
+        .is_some_and(|response| response.hovered());
+    if show_gear {
+        if gear_hovered {
+            ui.painter()
+                .rect_filled(gear, CornerRadius::same(radius::FIELD), t.fill_medium);
+        }
+        ui.painter().text(
+            gear.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::GEAR_SIX,
+            text::icon(15.0),
+            if gear_hovered { t.label } else { t.label_secondary },
+        );
     }
-    ui.painter().text(
-        gear.center(),
-        egui::Align2::CENTER_CENTER,
-        icon::GEAR_SIX,
-        text::icon(15.0),
-        if gear_hovered { t.label } else { t.label_secondary },
-    );
 
     let text_left = avatar_rect.max.x + space::MD;
-    let text_right = gear.min.x - space::XS;
+    let text_right = if show_gear {
+        gear.min.x - space::XS
+    } else {
+        rect.max.x - space::SM
+    };
     let painter = ui.painter().with_clip_rect(Rect::from_x_y_ranges(
         egui::Rangef::new(text_left, text_right),
         rect.y_range(),
@@ -1626,7 +1654,10 @@ fn identity_pill(
         );
     }
 
-    if gear_response.clicked() {
+    if gear_response
+        .as_ref()
+        .is_some_and(|response| response.clicked())
+    {
         PillHit::Gear
     } else if response.clicked() {
         PillHit::Body
@@ -1724,6 +1755,7 @@ fn channel_menu(
     channel: &crate::state::Channel,
     state: &mut UiState,
     s: &Strings,
+    can_manage: bool,
 ) {
     response.context_menu(|ui| {
         ui.label(s.channel_notifications);
@@ -1740,38 +1772,40 @@ fn channel_menu(
                 ui.close();
             }
         }
-        ui.separator();
-        // A posição é trocada com o vizinho; o backend recebe as duas.
-        if ui.button(s.move_up).clicked() {
-            state.actions.push(ChatAction::MoveChannel {
-                channel_id: channel.id.clone(),
-                old_position: channel.position,
-                new_position: channel.position - 1,
-            });
-            ui.close();
-        }
-        if ui.button(s.move_down).clicked() {
-            state.actions.push(ChatAction::MoveChannel {
-                channel_id: channel.id.clone(),
-                old_position: channel.position,
-                new_position: channel.position + 1,
-            });
-            ui.close();
-        }
-        ui.separator();
-        if ui.button(s.edit).clicked() {
-            state.actions.push(ChatAction::EditChannel(channel.id.clone()));
-            ui.close();
-        }
-        if ui
-            .button(s.delete_channel)
-            .on_hover_text(s.delete_channel_confirm)
-            .clicked()
-        {
-            state
-                .actions
-                .push(ChatAction::RequestDeleteChannel(channel.id.clone()));
-            ui.close();
+        if can_manage {
+            ui.separator();
+            // A posição é trocada com o vizinho; o backend recebe as duas.
+            if ui.button(s.move_up).clicked() {
+                state.actions.push(ChatAction::MoveChannel {
+                    channel_id: channel.id.clone(),
+                    old_position: channel.position,
+                    new_position: channel.position - 1,
+                });
+                ui.close();
+            }
+            if ui.button(s.move_down).clicked() {
+                state.actions.push(ChatAction::MoveChannel {
+                    channel_id: channel.id.clone(),
+                    old_position: channel.position,
+                    new_position: channel.position + 1,
+                });
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(s.edit).clicked() {
+                state.actions.push(ChatAction::EditChannel(channel.id.clone()));
+                ui.close();
+            }
+            if ui
+                .button(s.delete_channel)
+                .on_hover_text(s.delete_channel_confirm)
+                .clicked()
+            {
+                state
+                    .actions
+                    .push(ChatAction::RequestDeleteChannel(channel.id.clone()));
+                ui.close();
+            }
         }
     });
 }
