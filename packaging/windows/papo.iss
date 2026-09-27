@@ -16,6 +16,7 @@
 #define MyAppPublisher "Papo Chat"
 #define MyAppURL "https://github.com/Papo-Chat/papo-frontend"
 #define MyAppId "{{A9194D63-2E47-590F-BC86-95BEB1F6D7C2}"
+#define MyAppUserModelID "io.github.chriexpe.Papo"
 
 [Setup]
 AppId={#MyAppId}
@@ -53,8 +54,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Papo"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\Papo"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\Papo"; Filename: "{app}\{#MyAppExeName}"; AppUserModelID: "{#MyAppUserModelID}"
+Name: "{autodesktop}\Papo"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; AppUserModelID: "{#MyAppUserModelID}"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,Papo}"; Flags: nowait postinstall skipifsilent
