@@ -1409,21 +1409,25 @@ impl Store {
                     let roles: Vec<String> =
                         profile.roles.iter().map(|role| role.id.clone()).collect();
                     let color = role_color(&profile.roles);
+                    let username = profile.username.clone();
+                    let name = profile.display_name().to_owned();
+                    let status_message = profile.status_message.clone();
+                    let typing_label = profile.typing.clone();
                     if let Some(member) = self.members.iter_mut().find(|member| member.id == id) {
-                        member.username = profile.username.clone();
-                        member.name = profile.display_name().to_owned();
-                        member.status_message = profile.status_message.clone();
-                        member.typing_label = profile.typing.clone();
+                        member.username = username;
+                        member.name = name;
+                        member.status_message = status_message;
+                        member.typing_label = typing_label;
                         member.roles = roles;
                         member.role_color = color;
                     } else {
                         self.members.push(Member {
                             id,
-                            username: profile.username,
-                            name: profile.display_name().to_owned(),
+                            username,
+                            name,
                             presence: Presence::Offline,
-                            status_message: profile.status_message,
-                            typing_label: profile.typing,
+                            status_message,
+                            typing_label,
                             role_color: color,
                             roles,
                         });
