@@ -115,3 +115,6 @@ pub mod notify;
 #[cfg(target_os = "windows")]
 #[path = "windows/update.rs"]
 pub mod update;
+#[cfg(target_os = "android")]
+#[path = "android/update.rs"]
+pub mod update;
