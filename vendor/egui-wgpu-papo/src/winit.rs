@@ -17,6 +17,7 @@ struct SurfaceState {
     alpha_mode: wgpu::CompositeAlphaMode,
     width: u32,
     height: u32,
+    copy_src: bool,
     resizing: bool,
     needs_reconfigure: bool,
     needs_recreate: bool,
@@ -118,7 +119,12 @@ impl Painter {
         let height = surface_state.height;
 
         let mut surf_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if surface_state.copy_src {
+                    wgpu::TextureUsages::COPY_SRC
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
             format: render_state.target_format,
             present_mode,
             alpha_mode: surface_state.alpha_mode,
@@ -288,6 +294,21 @@ impl Painter {
                 wgpu::CompositeAlphaMode::Auto
             }
         };
+        let copy_src = {
+            let render_state = self
+                .render_state
+                .as_ref()
+                .expect("install_surface called before render_state initialization");
+            surface
+                .get_capabilities(&render_state.adapter)
+                .usages
+                .contains(wgpu::TextureUsages::COPY_SRC)
+        };
+        if !copy_src {
+            log::warn!(
+                "The active wgpu surface cannot be copied from; compositor callbacks will be disabled."
+            );
+        }
         self.surfaces.insert(
             viewport_id,
             SurfaceState {
@@ -295,6 +316,7 @@ impl Painter {
                 width,
                 height,
                 alpha_mode,
+                copy_src,
                 resizing,
                 needs_reconfigure: false,
                 needs_recreate: false,
@@ -641,71 +663,84 @@ impl Painter {
             } else {
                 &output_frame.texture
             };
-            let target_view = target_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-            let (view, resolve_target) = (self.options.msaa_samples > 1)
-                .then_some(self.msaa_texture_view.get(&viewport_id))
-                .flatten()
-                .map_or((&target_view, None), |texture_view| {
-                    (texture_view, Some(&target_view))
+            let can_composite = capture || surface_state.copy_src;
+            if can_composite && renderer.has_compositor_callbacks(clipped_primitives) {
+                // Compositor callbacks need paint-order barriers. Render directly
+                // into the sampleable target (MSAA is bypassed for this path),
+                // break the pass around each compositor, then resume with Load.
+                renderer.render_with_compositors(
+                    &render_state.device,
+                    &render_state.queue,
+                    &mut encoder,
+                    target_texture,
+                    clear_color,
+                    clipped_primitives,
+                    &screen_descriptor,
+                );
+            } else {
+                let target_view =
+                    target_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let (view, resolve_target) = (self.options.msaa_samples > 1)
+                    .then_some(self.msaa_texture_view.get(&viewport_id))
+                    .flatten()
+                    .map_or((&target_view, None), |texture_view| {
+                        (texture_view, Some(&target_view))
+                    });
+
+                let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui_render"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear_color[0] as f64,
+                                g: clear_color[1] as f64,
+                                b: clear_color[2] as f64,
+                                a: clear_color[3] as f64,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: self.depth_texture_view.get(&viewport_id).map(|view| {
+                        wgpu::RenderPassDepthStencilAttachment {
+                            view,
+                            depth_ops: self
+                                .options
+                                .depth_stencil_format
+                                .is_some_and(|depth_stencil_format| {
+                                    depth_stencil_format.has_depth_aspect()
+                                })
+                                .then_some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(1.0),
+                                    store: wgpu::StoreOp::Discard,
+                                }),
+                            stencil_ops: self
+                                .options
+                                .depth_stencil_format
+                                .is_some_and(|depth_stencil_format| {
+                                    depth_stencil_format.has_stencil_aspect()
+                                })
+                                .then_some(wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(0),
+                                    store: wgpu::StoreOp::Discard,
+                                }),
+                        }
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
 
-            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("egui_render"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear_color[0] as f64,
-                            g: clear_color[1] as f64,
-                            b: clear_color[2] as f64,
-                            a: clear_color[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: self.depth_texture_view.get(&viewport_id).map(|view| {
-                    wgpu::RenderPassDepthStencilAttachment {
-                        view,
-                        depth_ops: self
-                            .options
-                            .depth_stencil_format
-                            .is_some_and(|depth_stencil_format| {
-                                depth_stencil_format.has_depth_aspect()
-                            })
-                            .then_some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(1.0),
-                                // It is very unlikely that the depth buffer is needed after egui finished rendering
-                                // so no need to store it. (this can improve performance on tiling GPUs like mobile chips or Apple Silicon)
-                                store: wgpu::StoreOp::Discard,
-                            }),
-                        stencil_ops: self
-                            .options
-                            .depth_stencil_format
-                            .is_some_and(|depth_stencil_format| {
-                                depth_stencil_format.has_stencil_aspect()
-                            })
-                            .then_some(wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(0),
-                                store: wgpu::StoreOp::Discard,
-                            }),
-                    }
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-
-            // Forgetting the pass' lifetime means that we are no longer compile-time protected from
-            // runtime errors caused by accessing the parent encoder before the render pass is dropped.
-            // Since we don't pass it on to the renderer, we should be perfectly safe against this mistake here!
-            renderer.render(
-                &mut render_pass.forget_lifetime(),
-                clipped_primitives,
-                &screen_descriptor,
-            );
+                renderer.render(
+                    &mut render_pass.forget_lifetime(),
+                    clipped_primitives,
+                    &screen_descriptor,
+                );
+            }
 
             if capture && let Some(capture_state) = &mut self.screen_capture_state {
                 capture_buffer = Some(capture_state.copy_textures(
