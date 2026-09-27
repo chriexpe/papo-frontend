@@ -353,6 +353,8 @@ pub struct Panel {
     pub search_author: Option<String>,
     pub search_attachments: bool,
     pub search_oldest_first: bool,
+    pub search_author_picker: bool,
+    pub search_suggest_index: usize,
     /// Consulta efetivamente enviada; páginas seguintes não usam filtros
     /// editados que ainda não foram submetidos.
     pub search_active: Option<crate::api::models::SearchRequest>,
@@ -2926,6 +2928,8 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 search_author: None,
                 search_attachments: false,
                 search_oldest_first: false,
+                search_author_picker: false,
+                search_suggest_index: 0,
                 search_active: None,
                 focus: kind == PanelKind::Search,
                 searched: false,
@@ -2984,24 +2988,239 @@ fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
-fn search_request_from_panel(panel: &Panel) -> Option<crate::api::models::SearchRequest> {
-    let text = panel.query.trim();
-    if text.is_empty() && panel.search_author.is_none() && !panel.search_attachments {
+#[derive(Clone, Debug)]
+struct SearchShortcut {
+    label: String,
+    replacement: String,
+}
+
+fn search_fragment(query: &str) -> (&str, usize) {
+    let start = query
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(index, c)| index + c.len_utf8())
+        .unwrap_or(0);
+    (&query[start..], start)
+}
+
+fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
+    let (fragment, _) = search_fragment(query);
+    let lower = fragment.to_lowercase();
+    let mut out = Vec::new();
+
+    if !lower.contains(':') {
+        for (token, hint) in [
+            ("de:", "autor"),
+            ("em:", "canal"),
+            ("tem:", "conteúdo"),
+            ("mentions:", "menção"),
+        ] {
+            if !lower.is_empty() && token.starts_with(&lower) {
+                out.push(SearchShortcut {
+                    label: format!("{token}  {hint}"),
+                    replacement: token.to_owned(),
+                });
+            }
+        }
+        return out;
+    }
+
+    let Some((prefix, raw_value)) = fragment.split_once(':') else {
+        return out;
+    };
+    let prefix_lower = prefix.to_lowercase();
+    let needle = raw_value
+        .trim_start_matches(['@', '#'])
+        .to_lowercase();
+
+    match prefix_lower.as_str() {
+        "de" | "from" | "author" => {
+            let mut members: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.name.to_lowercase().contains(&needle)
+                        || member.username.to_lowercase().contains(&needle)
+                })
+                .collect();
+            members.sort_by_key(|member| {
+                let name = member.name.to_lowercase();
+                let username = member.username.to_lowercase();
+                (
+                    !name.starts_with(&needle),
+                    !username.starts_with(&needle),
+                    name,
+                )
+            });
+            for member in members.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("de: @{}  {}", member.username, member.name),
+                    replacement: format!("de:@{}", member.username),
+                });
+            }
+        }
+        "em" | "in" | "channel" => {
+            let mut channels: Vec<_> = store
+                .channels
+                .iter()
+                .filter(|channel| {
+                    needle.is_empty() || channel.name.to_lowercase().contains(&needle)
+                })
+                .collect();
+            channels.sort_by_key(|channel| {
+                let name = channel.name.to_lowercase();
+                (!name.starts_with(&needle), name)
+            });
+            for channel in channels.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("em: #{}", channel.name),
+                    replacement: format!("em:#{}", channel.name),
+                });
+            }
+        }
+        "mentions" | "menciona" | "mention" => {
+            let mut members: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.name.to_lowercase().contains(&needle)
+                        || member.username.to_lowercase().contains(&needle)
+                })
+                .collect();
+            members.sort_by_key(|member| {
+                let name = member.name.to_lowercase();
+                let username = member.username.to_lowercase();
+                (
+                    !name.starts_with(&needle),
+                    !username.starts_with(&needle),
+                    name,
+                )
+            });
+            for member in members.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("mentions: @{}  {}", member.username, member.name),
+                    replacement: format!("mentions:@{}", member.username),
+                });
+            }
+        }
+        "tem" | "has" => {
+            for value in ["link", "anexo", "arquivo"] {
+                if needle.is_empty() || value.starts_with(&needle) {
+                    out.push(SearchShortcut {
+                        label: format!("tem: {value}"),
+                        replacement: format!("tem:{value}"),
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn replace_search_fragment(query: &str, replacement: &str) -> String {
+    let (_, start) = search_fragment(query);
+    let mut next = query[..start].to_owned();
+    next.push_str(replacement);
+    next.push(' ');
+    next
+}
+
+fn search_member_id(store: &Store, raw: &str) -> Option<String> {
+    let value = raw.trim_start_matches('@');
+    store
+        .members
+        .iter()
+        .find(|member| {
+            member.username.eq_ignore_ascii_case(value)
+                || member.name.eq_ignore_ascii_case(value)
+                || member.id == value
+        })
+        .map(|member| member.id.clone())
+}
+
+fn search_channel_id(store: &Store, raw: &str) -> Option<String> {
+    let value = raw.trim_start_matches('#');
+    store
+        .channels
+        .iter()
+        .find(|channel| channel.name.eq_ignore_ascii_case(value) || channel.id == value)
+        .map(|channel| channel.id.clone())
+}
+
+fn search_request_from_panel(
+    panel: &Panel,
+    store: &Store,
+) -> Option<crate::api::models::SearchRequest> {
+    let mut text = Vec::new();
+    let mut author = panel.search_author.clone();
+    let mut channel = None;
+    let mut mentions = None;
+    let mut contains_attachment = panel.search_attachments.then_some(true);
+    let mut contains_link = None;
+
+    for token in panel.query.split_whitespace() {
+        let Some((prefix, value)) = token.split_once(':') else {
+            text.push(token);
+            continue;
+        };
+        match prefix.to_lowercase().as_str() {
+            "de" | "from" | "author" => {
+                if let Some(id) = search_member_id(store, value) {
+                    author = Some(id);
+                }
+            }
+            "em" | "in" | "channel" => {
+                if let Some(id) = search_channel_id(store, value) {
+                    channel = Some(id);
+                }
+            }
+            "mentions" | "menciona" | "mention" => {
+                if let Some(id) = search_member_id(store, value) {
+                    mentions = Some(id);
+                }
+            }
+            "tem" | "has" => match value.to_lowercase().as_str() {
+                "link" => contains_link = Some(true),
+                "anexo" | "arquivo" | "attachment" | "file" => {
+                    contains_attachment = Some(true)
+                }
+                _ => text.push(token),
+            },
+            _ => text.push(token),
+        }
+    }
+
+    let text = text.join(" ");
+    if text.trim().is_empty()
+        && author.is_none()
+        && channel.is_none()
+        && mentions.is_none()
+        && contains_attachment.is_none()
+        && contains_link.is_none()
+    {
         return None;
     }
+
     Some(crate::api::models::SearchRequest {
-        text: (!text.is_empty()).then(|| text.to_owned()),
-        author: panel.search_author.clone(),
+        text: (!text.trim().is_empty()).then(|| text.trim().to_owned()),
+        author,
+        channel,
+        mentions,
         order: Some(
             if panel.search_oldest_first { "asc" } else { "desc" }.to_owned(),
         ),
         date_start: None,
         date_end: None,
-        contains_attachment: panel.search_attachments.then_some(true),
+        contains_attachment,
+        contains_link,
     })
 }
 
-/// Busca dentro da pastilha: campo, filtros opcionais e resultados paginados.
+/// Busca dentro da pastilha: texto livre, filtros explícitos e atalhos composáveis.
 fn search_panel(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -3009,7 +3228,7 @@ fn search_panel(
     t: &Tokens,
     s: &Strings,
 ) {
-    let mut run = false;
+    let mut submit = false;
     let mut query = state
         .panel
         .as_ref()
@@ -3018,7 +3237,9 @@ fn search_panel(
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        let field_width = (ui.available_width() - HIT_TARGET * 2.0 - space::XS * 2.0).max(80.0);
+        let controls = HIT_TARGET * 2.0 + space::XS * 2.0;
+        let field_width = (ui.available_width() - controls).max(80.0);
+
         #[cfg(target_os = "android")]
         {
             let focus = state
@@ -3048,7 +3269,7 @@ fn search_panel(
                 t.label_tertiary,
                 text::body().size,
             );
-            run |= events.submit;
+            submit |= events.submit;
         }
 
         #[cfg(not(target_os = "android"))]
@@ -3070,81 +3291,123 @@ fn search_panel(
                 crate::platform::ime::Kind::Search,
             );
             if let Some(panel) = state.panel.as_mut() {
-                panel.query = query.clone();
                 if panel.focus {
                     field.request_focus();
                     panel.focus = false;
                 }
             }
-            if ui.input(|input| input.key_pressed(egui::Key::Enter))
-                && (field.has_focus() || field.lost_focus())
-            {
-                run = true;
-            }
+            submit |= ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && (field.has_focus() || field.lost_focus());
         }
 
-        if ui
-            .selectable_label(
-                state.panel.as_ref().is_some_and(|panel| panel.search_filters),
-                s.search_filters,
-            )
-            .clicked()
+        let filters_active = state
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.search_filters);
+        let filter_button = icon_button(ui, t, icon::FUNNEL, s.search_filters);
+        if filter_button.clicked()
             && let Some(panel) = state.panel.as_mut()
         {
             panel.search_filters = !panel.search_filters;
         }
+        if filters_active {
+            ui.painter().circle_filled(
+                filter_button.rect.right_top() + egui::vec2(-5.0, 5.0),
+                2.5,
+                t.accent,
+            );
+        }
 
         if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
-            run = true;
+            submit = true;
         }
     });
 
-    #[cfg(target_os = "android")]
     if let Some(panel) = state.panel.as_mut() {
         panel.query.clone_from(&query);
     }
 
-    if state.panel.as_ref().is_some_and(|panel| panel.search_filters) {
-        ui.add_space(space::XS);
-        ui.horizontal_wrapped(|ui| {
-            let author_name = state
-                .panel
-                .as_ref()
-                .and_then(|panel| panel.search_author.as_deref())
-                .and_then(|id| store.member(id))
-                .map(|member| member.name.as_str())
-                .unwrap_or(s.search_anyone);
+    let suggestions = search_shortcuts(store, &query);
+    if let Some(panel) = state.panel.as_mut() {
+        if suggestions.is_empty() {
+            panel.search_suggest_index = 0;
+        } else {
+            if ui.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
+                panel.search_suggest_index =
+                    (panel.search_suggest_index + 1).min(suggestions.len() - 1);
+            }
+            if ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
+                panel.search_suggest_index = panel.search_suggest_index.saturating_sub(1);
+            }
+            panel.search_suggest_index = panel
+                .search_suggest_index
+                .min(suggestions.len().saturating_sub(1));
+        }
+    }
 
-            egui::ComboBox::from_id_salt("search-author")
-                .selected_text(format!("{}: {}", s.search_author, author_name))
-                .show_ui(ui, |ui| {
+    if submit && !suggestions.is_empty() {
+        let index = state
+            .panel
+            .as_ref()
+            .map(|panel| panel.search_suggest_index)
+            .unwrap_or_default()
+            .min(suggestions.len() - 1);
+        query = replace_search_fragment(&query, &suggestions[index].replacement);
+        if let Some(panel) = state.panel.as_mut() {
+            panel.query.clone_from(&query);
+            panel.search_suggest_index = 0;
+            panel.focus = true;
+        }
+        submit = false;
+    }
+
+    if !suggestions.is_empty() {
+        ui.add_space(space::XXS);
+        Frame::new()
+            .fill(t.elevated_bg)
+            .stroke(Stroke::new(1.0, t.separator))
+            .corner_radius(CornerRadius::same(radius::FIELD))
+            .inner_margin(egui::Margin::same(space::XS as i8))
+            .show(ui, |ui| {
+                let selected = state
+                    .panel
+                    .as_ref()
+                    .map(|panel| panel.search_suggest_index)
+                    .unwrap_or_default();
+                for (index, suggestion) in suggestions.iter().enumerate() {
                     if ui
-                        .selectable_label(
-                            state
-                                .panel
-                                .as_ref()
-                                .is_none_or(|panel| panel.search_author.is_none()),
-                            s.search_anyone,
-                        )
+                        .selectable_label(index == selected, &suggestion.label)
                         .clicked()
-                        && let Some(panel) = state.panel.as_mut()
                     {
-                        panel.search_author = None;
-                    }
-                    for member in &store.members {
-                        let selected = state
-                            .panel
-                            .as_ref()
-                            .and_then(|panel| panel.search_author.as_deref())
-                            == Some(member.id.as_str());
-                        if ui.selectable_label(selected, &member.name).clicked()
-                            && let Some(panel) = state.panel.as_mut()
-                        {
-                            panel.search_author = Some(member.id.clone());
+                        query = replace_search_fragment(&query, &suggestion.replacement);
+                        if let Some(panel) = state.panel.as_mut() {
+                            panel.query.clone_from(&query);
+                            panel.search_suggest_index = 0;
+                            panel.focus = true;
                         }
                     }
-                });
+                }
+            });
+    }
 
+    if state.panel.as_ref().is_some_and(|panel| panel.search_filters) {
+        ui.add_space(space::XS);
+        let author_name = state
+            .panel
+            .as_ref()
+            .and_then(|panel| panel.search_author.as_deref())
+            .and_then(|id| store.member(id))
+            .map(|member| member.name.as_str())
+            .unwrap_or(s.search_anyone);
+
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(format!("{}: {}", s.search_author, author_name))
+                .clicked()
+                && let Some(panel) = state.panel.as_mut()
+            {
+                panel.search_author_picker = !panel.search_author_picker;
+            }
             if let Some(panel) = state.panel.as_mut() {
                 ui.checkbox(&mut panel.search_attachments, s.search_attachments);
                 ui.selectable_value(
@@ -3159,14 +3422,61 @@ fn search_panel(
                 );
             }
         });
+
+        if state
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.search_author_picker)
+        {
+            ui.add_space(space::XXS);
+            Frame::new()
+                .fill(t.fill_soft)
+                .corner_radius(CornerRadius::same(radius::FIELD))
+                .inner_margin(egui::Margin::same(space::XS as i8))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("search-author-inline")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            let selected = state
+                                .panel
+                                .as_ref()
+                                .is_none_or(|panel| panel.search_author.is_none());
+                            if ui.selectable_label(selected, s.search_anyone).clicked()
+                                && let Some(panel) = state.panel.as_mut()
+                            {
+                                panel.search_author = None;
+                                panel.search_author_picker = false;
+                            }
+                            for member in &store.members {
+                                let selected = state
+                                    .panel
+                                    .as_ref()
+                                    .and_then(|panel| panel.search_author.as_deref())
+                                    == Some(member.id.as_str());
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        format!("{}  @{}", member.name, member.username),
+                                    )
+                                    .clicked()
+                                    && let Some(panel) = state.panel.as_mut()
+                                {
+                                    panel.search_author = Some(member.id.clone());
+                                    panel.search_author_picker = false;
+                                }
+                            }
+                        });
+                });
+        }
     }
 
     let request = state
         .panel
         .as_ref()
-        .and_then(search_request_from_panel);
+        .and_then(|panel| search_request_from_panel(panel, store));
 
-    if run {
+    if submit {
         if let Some(request) = request.clone() {
             if let Some(panel) = state.panel.as_mut() {
                 panel.searched = true;
