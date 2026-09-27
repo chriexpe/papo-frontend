@@ -65,6 +65,9 @@ pub struct Server {
     pub member_count: i64,
     #[serde(default)]
     pub channel_count: i64,
+    /// Ícone em base64, quando o servidor tem um.
+    #[serde(default)]
+    pub icon_blob: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -222,6 +225,9 @@ pub struct UserProfile {
     pub status: Option<String>,
     pub status_message: Option<String>,
     pub typing: Option<String>,
+    /// Quando a conta foi criada neste servidor (RFC 3339).
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default)]
     pub roles: Vec<RoleSummary>,
 }

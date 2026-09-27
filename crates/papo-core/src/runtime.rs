@@ -666,6 +666,7 @@ mod tests {
             public: false,
             member_count: 1,
             channel_count: 1,
+            icon_blob: None,
         }))));
         cache.flush();
         assert!(
@@ -795,6 +796,7 @@ mod tests {
             public: false,
             member_count: 1,
             channel_count: 1,
+            icon_blob: None,
         }))));
         cache.flush();
 
@@ -964,6 +966,7 @@ mod tests {
             public: false,
             member_count: 1,
             channel_count: 1,
+            icon_blob: None,
         }))));
         cache.flush();
         assert!(

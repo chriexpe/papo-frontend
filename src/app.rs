@@ -310,6 +310,9 @@ pub struct Settings {
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
+    /// Como o seu cartão de perfil abre: da pastilha ou flutuante.
+    #[serde(default)]
+    pub self_card: crate::ui::profile::SelfCardStyle,
     /// Ao rolar um WebEmbed ativo para fora da timeline: encerrar ou flutuar.
     #[serde(default)]
     pub webembed_offscreen: crate::webembed::OffscreenBehavior,
@@ -369,6 +372,7 @@ impl Default for Settings {
             badge: true,
             topic_reveal: true,
             record_button: true,
+            self_card: crate::ui::profile::SelfCardStyle::default(),
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: default_webembed_float_width(),
@@ -560,6 +564,7 @@ impl Workspace {
                 self.runtime.store.connection,
                 crate::api::ws::Connection::Online
             ),
+            icon: None,
         }
     }
 }
@@ -590,6 +595,8 @@ pub struct PapoApp {
     update_status: Option<String>,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
     dialogs: Dialogs,
+    /// Editor de recorte aberto (foto, banner, ícone do servidor).
+    crop: Option<crate::ui::crop::CropEditor>,
     /// A janela tem foco neste quadro.
     focused: bool,
     /// Sair de verdade, em vez de esconder.
@@ -788,6 +795,7 @@ impl PapoApp {
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.show_record = settings.record_button;
+        ui_state.self_card = settings.self_card;
         ui_state.webembed_behavior = settings.webembed_offscreen;
         ui_state.webembed_scope = settings.webembed_scope;
         ui_state.webembed_float_width = settings.webembed_float_width;
@@ -813,6 +821,7 @@ impl PapoApp {
             #[cfg(any(target_os = "windows", target_os = "android"))]
             update_status: None,
             dialogs: Dialogs::default(),
+            crop: None,
             focused: true,
             quitting: false,
             settings,
@@ -1431,6 +1440,10 @@ impl PapoApp {
                 }
                 return;
             }
+            ChatAction::EditProfile => {
+                self.sheet.open_account();
+                return;
+            }
             _ => {}
         }
 
@@ -1672,6 +1685,9 @@ impl PapoApp {
                 ws.runtime.net.send(Command::BanUser { user_id, banned })
             }
             ChatAction::ResetUser(user_id) => ws.runtime.net.send(Command::ResetUser { user_id }),
+            ChatAction::LoadProfile(user_id) => ws.runtime.net.send(Command::LoadProfile { user_id }),
+            ChatAction::SetPresence(status) => ws.runtime.net.send(Command::SetStatus { status }),
+            ChatAction::EditProfile => {}
             // Entrar já foi tratado antes do `match`, porque mexe em todos
             // os servidores de uma vez.
             ChatAction::JoinVoice(_) => {}
@@ -1870,7 +1886,21 @@ impl PapoApp {
             | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
+            | ChatAction::LoadProfile(_)
+            | ChatAction::EditProfile
             | ChatAction::Search(_) => {}
+            // A presença muda na hora, sem servidor para confirmar.
+            ChatAction::SetPresence(status) => {
+                let store = &mut self.workspaces[self.active].runtime.store;
+                let me = store.me.clone();
+                if let Some(member) = store.members.iter_mut().find(|member| member.id == me) {
+                    member.presence = match status.as_deref() {
+                        Some("away") => crate::state::Presence::Away,
+                        Some("busy") => crate::state::Presence::Busy,
+                        _ => crate::state::Presence::Online,
+                    };
+                }
+            }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -2111,12 +2141,27 @@ impl PapoApp {
     }
 
     /// Trilho de servidores e o que ele pediu.
+    /// As entradas do trilho, com o ícone de cada servidor já em textura.
+    fn rail_entries(&mut self, ctx: &egui::Context) -> Vec<crate::ui::rail::Entry> {
+        let mut entries = Vec::with_capacity(self.workspaces.len());
+        for ws in &self.workspaces {
+            let mut entry = ws.entry(&self.settings);
+            entry.icon = ws
+                .runtime
+                .store
+                .server
+                .as_ref()
+                .and_then(|server| server.icon.as_deref())
+                .and_then(|blob| self.ui.media.server_icon(blob))
+                .and_then(|texture| texture.frame(ctx))
+                .map(|handle| handle.id());
+            entries.push(entry);
+        }
+        entries
+    }
+
     fn draw_rail(&mut self, ui: &mut egui::Ui, s: &'static crate::i18n::Strings, ctx: &egui::Context) {
-        let entries: Vec<_> = self
-            .workspaces
-            .iter()
-            .map(|ws| ws.entry(&self.settings))
-            .collect();
+        let entries = self.rail_entries(ctx);
         if let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) {
             self.handle_rail_action(action, ctx);
         }
@@ -2149,6 +2194,21 @@ impl PapoApp {
                         log::warn!("não deu para salvar imagem de link: {error}");
                     }
                 }
+                Chosen::Crop {
+                    purpose,
+                    path,
+                    name,
+                    size,
+                    preview,
+                } => {
+                    self.crop = Some(crate::ui::crop::CropEditor::new(
+                        ctx, purpose, path, name, size, preview,
+                    ));
+                }
+                Chosen::Unreadable => {
+                    let s = self.settings.lang.strings();
+                    self.ui.error = Some((s.image_unreadable.to_owned(), ctx.input(|input| input.time)));
+                }
                 Chosen::Image {
                     purpose,
                     blob,
@@ -2159,6 +2219,30 @@ impl PapoApp {
                         self.workspaces[self.active].runtime
                             .net
                             .send(Command::SetAvatar { blob, format });
+                    }
+                    ImagePick::Banner => {
+                        self.workspaces[self.active].runtime
+                            .net
+                            .send(Command::SetBanner { blob, format });
+                    }
+                    // O contrato pede o nome junto; vai o que já está valendo.
+                    ImagePick::ServerIcon => {
+                        let ws = &self.workspaces[self.active];
+                        let name = ws
+                            .runtime
+                            .store
+                            .server
+                            .as_ref()
+                            .map(|server| server.name.clone())
+                            .unwrap_or_default();
+                        ws.runtime.net.send(Command::UpdateServer(Box::new(
+                            crate::api::models::UpdateServerRequest {
+                                name,
+                                icon_blob: Some(blob),
+                                icon_format: Some(format),
+                                ..Default::default()
+                            },
+                        )));
                     }
                     // A figurinha espera pelo nome: ela aparece no painel com
                     // um campo ao lado, e só então sobe.
@@ -2336,6 +2420,19 @@ impl PapoApp {
                 self.dialogs.pick_image(ctx.clone(), ImagePick::Sticker);
                 return;
             }
+            AdminAction::PickBanner => {
+                self.dialogs.pick_image(ctx.clone(), ImagePick::Banner);
+                return;
+            }
+            AdminAction::PickServerIcon => {
+                self.dialogs.pick_image(ctx.clone(), ImagePick::ServerIcon);
+                return;
+            }
+            // Vazios: o contrato remove o banner.
+            AdminAction::RemoveBanner => Command::SetBanner {
+                blob: String::new(),
+                format: String::new(),
+            },
             AdminAction::SaveProfile(request) => Command::UpdateProfile(request),
             AdminAction::SetPresence(status) => Command::SetStatus { status },
             AdminAction::ChangePassword(password) => Command::ChangePassword { password },
@@ -2386,6 +2483,40 @@ impl PapoApp {
     /// tela de ajustes que existe: conta, aparência, avisos, arquivos,
     /// idioma e sessões de um lado; servidor, canais, cargos, figurinhas e
     /// auditoria do outro.
+    /// Editor de recorte, por cima de tudo, até salvar ou cancelar.
+    fn crop_editor(&mut self, ctx: &egui::Context) {
+        let Some(editor) = &mut self.crop else {
+            return;
+        };
+        let s = self.settings.lang.strings();
+        let t = self.tokens;
+        let store = &self.workspaces[self.active].runtime.store;
+        let me = store.member(&store.me);
+        let face = crate::ui::crop::Face {
+            texture: self
+                .ui
+                .media
+                .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
+                .and_then(|texture| texture.frame(ctx))
+                .map(|handle| handle.id()),
+            initials: me.map(|member| member.initials()).unwrap_or_default(),
+            tint: me
+                .and_then(|member| member.role_color)
+                .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                .unwrap_or(t.accent),
+        };
+        match crate::ui::crop::draw(ctx, editor, &t, s, &face) {
+            Some(crate::ui::crop::CropOutcome::Save(crop)) => {
+                let purpose = editor.purpose;
+                let path = editor.path.clone();
+                self.dialogs.prepare_crop(ctx.clone(), purpose, path, crop);
+                self.crop = None;
+            }
+            Some(crate::ui::crop::CropOutcome::Cancel) => self.crop = None,
+            None => {}
+        }
+    }
+
     fn settings_sheet(&mut self, ctx: &egui::Context) {
         use crate::ui::settings::{SettingsAction, Surface};
 
@@ -2433,6 +2564,7 @@ impl PapoApp {
         let before_secondary = (
             self.settings.topic_reveal,
             self.settings.record_button,
+            self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
@@ -2474,6 +2606,7 @@ impl PapoApp {
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
                 record_button: &mut self.settings.record_button,
+                self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
                 webembed_scope: &mut self.settings.webembed_scope,
                 ask_download: &mut ask_download,
@@ -2505,12 +2638,14 @@ impl PapoApp {
         let after_secondary = (
             self.settings.topic_reveal,
             self.settings.record_button,
+            self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
         );
         if before_primary != after_primary || before_secondary != after_secondary {
-            if ask_download != before_secondary.4 {
+            self.ui.self_card = self.settings.self_card;
+            if ask_download != before_secondary.5 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -2914,19 +3049,14 @@ impl eframe::App for PapoApp {
                 // A autenticação terminou; a partir daqui o servidor deixa de
                 // ser provisório e passa a fazer parte do trilho normalmente.
                 self.add_server_previous = None;
-                let mobile_entries = compact_chat.then(|| {
-                    self.workspaces
-                        .iter()
-                        .map(|ws| ws.entry(&self.settings))
-                        .collect::<Vec<_>>()
-                });
+                let mobile_entries = compact_chat.then(|| self.rail_entries(&ctx));
                 self.ui.reply_notify_default = self.settings.reply_notifications;
                 self.ui.webembed_behavior = self.settings.webembed_offscreen;
                 self.ui.webembed_scope = self.settings.webembed_scope;
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
-                self.ui.webembed_blocked = self.sheet.open.is_some();
+                self.ui.webembed_blocked = self.sheet.open.is_some() || self.ui.profile.is_some();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -2963,7 +3093,11 @@ impl eframe::App for PapoApp {
                 }
             }
         }
+        // O editor fica por cima da folha; no quadro em que ele fecha (o
+        // clique em Salvar/Cancelar) a folha ainda precisa saber disso.
+        self.sheet.modal_above = self.crop.is_some();
         self.settings_sheet(&ctx);
+        self.crop_editor(&ctx);
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
         self.pump_files(&ctx);

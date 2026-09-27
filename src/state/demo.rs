@@ -53,6 +53,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
     store.server = Some(Server {
         name: "Papo".into(),
         description: Some("demonstração".into()),
+        icon: None,
     });
 
     store.members = vec![
@@ -62,6 +63,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
         member("u-dora", "Dora", Presence::Busy, Some((167, 139, 250))),
         member("u-edu", "Edu", Presence::Offline, None),
     ];
+    profiles(store);
 
     store.channels = vec![
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
@@ -470,6 +472,98 @@ fn attachment(id: &str, name: &str, mime: &str, path: &std::path::Path) -> Attac
         created_at: None,
         moderation_status: Some("clean".into()),
     }
+}
+
+/// Recados, descrições, cargos e atividades: o que o cartão de perfil
+/// mostra. A atividade só existe aqui — o servidor ainda não a transporta.
+fn profiles(store: &mut Store) {
+    use crate::api::models::RoleSummary;
+    use crate::state::{Activity, ActivityKind, ProfileDetails};
+    use chrono::Utc;
+
+    let role = |id: &str, name: &str, color: &str, position: i32| RoleSummary {
+        id: id.into(),
+        name: name.into(),
+        color: Some(color.into()),
+        position,
+    };
+    let admin = role("r-admin", "Admin", "#58A6FF", 3);
+    let design = role("r-design", "Design", "#FF8A65", 2);
+    let dev = role("r-dev", "Dev", "#A78BFA", 1);
+    let now = Utc::now();
+    // id, recado, descrição, cargos, dias desde a entrada.
+    type Entry<'a> = (&'a str, Option<&'a str>, Option<&'a str>, Vec<RoleSummary>, i64);
+    let entries: [Entry; 5] = [
+        (
+            "u-eu",
+            Some("Qual comida você tem desejado?"),
+            Some("Mantendo o Papo de pé.\nRust, egui e café demais."),
+            vec![admin.clone(), dev.clone()],
+            210,
+        ),
+        (
+            "u-ana",
+            Some("A mente se apavora com o que ainda não é velho."),
+            Some(
+                "The same atom in your heart was on the core of a burning star.\n🌻\n\
+                 Fotografia analógica, café coado e discos de vinil nos fins de semana. \
+                 Às vezes jogo, às vezes só fico ouvindo.",
+            ),
+            vec![design.clone()],
+            180,
+        ),
+        ("u-bruno", None, Some("Revisando PR até dormir."), vec![dev.clone()], 90),
+        ("u-dora", Some("em reunião até as 16h"), None, vec![design, dev], 60),
+        ("u-edu", None, None, Vec::new(), 12),
+    ];
+    for (id, status, about, roles, days) in entries {
+        if let Some(member) = store.members.iter_mut().find(|member| member.id == id) {
+            member.status_message = status.map(str::to_owned);
+        }
+        store.profiles.insert(
+            id.into(),
+            ProfileDetails {
+                description: about.map(str::to_owned),
+                banner: None,
+                created_at: Some(now - Duration::days(days)),
+                roles,
+            },
+        );
+    }
+
+    store.activities.insert(
+        "u-eu".into(),
+        Activity {
+            kind: ActivityKind::Working,
+            name: "Zed".into(),
+            details: Some("Editando profile.rs".into()),
+            state: Some("papo-frontend".into()),
+            started_at: Some(now - Duration::minutes(38)),
+            ends_at: None,
+        },
+    );
+    store.activities.insert(
+        "u-ana".into(),
+        Activity {
+            kind: ActivityKind::Listening,
+            name: "Spotify".into(),
+            details: Some("Heroes".into()),
+            state: Some("David Bowie".into()),
+            started_at: Some(now - Duration::seconds(94)),
+            ends_at: Some(now + Duration::seconds(277)),
+        },
+    );
+    store.activities.insert(
+        "u-dora".into(),
+        Activity {
+            kind: ActivityKind::Playing,
+            name: "Hades II".into(),
+            details: Some("Nos Campos de Asfódelo".into()),
+            state: None,
+            started_at: Some(now - Duration::minutes(72)),
+            ends_at: None,
+        },
+    );
 }
 
 fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>) -> Member {

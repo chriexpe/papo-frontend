@@ -21,7 +21,7 @@ use super::emoji;
 use super::glass::SharedGlass;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
-use super::widgets::{avatar, floating_pill, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
+use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
@@ -183,6 +183,12 @@ pub enum ChatAction {
     FloatCall(bool),
     /// Joga a call numa janela do sistema só dela (ou a traz de volta).
     PopOutCall(bool),
+    /// O cartão de alguém abriu: pede a ficha fresca.
+    LoadProfile(String),
+    /// Ajustes → Conta, a partir do seu cartão.
+    EditProfile,
+    /// `away`, `busy` ou nada (disponível), a partir do seu cartão.
+    SetPresence(Option<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -740,6 +746,10 @@ pub struct UiState {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
+    /// Cartão de perfil aberto.
+    pub profile: Option<super::profile::ProfileCard>,
+    /// Como o seu próprio cartão abre (ajuste de Aparência).
+    pub self_card: super::profile::SelfCardStyle,
     /// Pastilha de ações esticada em busca ou fixadas.
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
@@ -849,6 +859,8 @@ impl Default for UiState {
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
+            profile: None,
+            self_card: Default::default(),
             panel: None,
             jump: None,
             hover_actions: None,
@@ -1252,6 +1264,16 @@ fn channels_sidebar(
                 egui::pos2(full.min.x + PILL_INSET, full.min.y + PILL_INSET),
                 Vec2::new(full.width() - PILL_INSET * 2.0, IDENTITY_PILL_HEIGHT),
             );
+            let ctx = ui.ctx().clone();
+            let icon = store
+                .server
+                .as_ref()
+                .and_then(|server| server.icon.as_deref())
+                .and_then(|blob| state.media.server_icon(blob))
+                .and_then(|texture| texture.frame(&ctx))
+                .map(|handle| handle.id());
+            // A do servidor ainda não tem cartão: corpo e engrenagem levam
+            // aos ajustes dele.
             if identity_pill(
                 ui,
                 state,
@@ -1261,9 +1283,11 @@ fn channels_sidebar(
                 &name,
                 &subtitle,
                 None,
+                icon,
                 t.accent,
                 "pastilha-do-servidor",
-            ) {
+            ) != PillHit::None
+            {
                 state.pending.push(MenuCommand::ServerSettings);
             }
 
@@ -1403,14 +1427,14 @@ fn channels_sidebar(
         });
 }
 
-/// Pastilha da conta, no pé da coluna. Gêmea da pastilha do servidor lá em
-/// cima: as duas têm ícone, nome, uma linha de contexto e a engrenagem na
-/// ponta oposta, e as duas abrem a mesma folha. O que muda é de quem são os
-/// ajustes — seus, embaixo; do servidor, em cima.
 fn rgb([r, g, b]: [u8; 3]) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// Pastilha da conta, no pé da coluna. Gêmea da pastilha do servidor lá em
+/// cima: as duas têm ícone, nome, uma linha de contexto e a engrenagem na
+/// ponta oposta. A engrenagem abre os seus ajustes; o resto da pastilha abre
+/// o seu cartão de perfil, que cresce dela.
 fn account_pill(
     ui: &mut egui::Ui,
     store: &Store,
@@ -1451,7 +1475,7 @@ fn account_pill(
         .and_then(|texture| texture.frame(&ctx))
         .map(|handle| handle.id());
 
-    if identity_pill(
+    match identity_pill(
         ui,
         state,
         t,
@@ -1460,14 +1484,33 @@ fn account_pill(
         &me.name,
         &subtitle,
         Some((presence_color(t, me.presence), avatar)),
+        None,
         me.role_color.map(rgb).unwrap_or(t.accent),
         "pastilha-da-conta",
     ) {
-        state.pending.push(MenuCommand::Preferences);
+        PillHit::Gear => state.pending.push(MenuCommand::Preferences),
+        PillHit::Body => {
+            let anchor = match (state.self_card, state.compact) {
+                (super::profile::SelfCardStyle::Pill, false) => super::profile::Anchor::Pill(rect),
+                _ => super::profile::Anchor::AbovePill(rect),
+            };
+            let now = ui.input(|input| input.time);
+            super::profile::open(state, &me.id, anchor, now);
+        }
+        PillHit::None => {}
     }
 }
 
-/// Desenho comum das duas pastilhas. Devolve `true` no clique.
+/// Onde a pastilha de identidade foi clicada.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PillHit {
+    None,
+    Body,
+    Gear,
+}
+
+/// Desenho comum das duas pastilhas. A engrenagem é um alvo próprio: o
+/// clique nela não conta como clique no corpo.
 ///
 /// `presence` só existe na pastilha da conta: é o ponto de status e a foto.
 #[allow(clippy::too_many_arguments)]
@@ -1480,12 +1523,20 @@ fn identity_pill(
     name: &str,
     subtitle: &str,
     presence: Option<(Color32, Option<egui::TextureId>)>,
+    icon: Option<egui::TextureId>,
     tint: Color32,
     id: &str,
-) -> bool {
+) -> PillHit {
     pill_surface(ui, state, t, rect);
     let response = ui.interact(rect, Id::new(id), Sense::click());
-    if response.hovered() {
+    // A engrenagem se registra depois do corpo: no egui ganha o último
+    // widget sob o ponteiro, então o clique nela não chega ao corpo.
+    let gear = Rect::from_center_size(
+        egui::pos2(rect.max.x - space::SM - 14.0, rect.center().y),
+        Vec2::splat(28.0),
+    );
+    let gear_response = ui.interact(gear, Id::new((id, "engrenagem")), Sense::click());
+    if response.hovered() || gear_response.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(PILL_RADIUS as u8), t.fill_soft);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1496,19 +1547,18 @@ fn identity_pill(
         egui::pos2(rect.min.x + space::SM + avatar_size / 2.0, rect.center().y),
         Vec2::splat(avatar_size),
     );
-    match presence.and_then(|(_, texture)| texture) {
-        Some(texture) => {
-            let mut mesh = egui::Mesh::with_texture(texture);
-            mesh.add_rect_with_uv(
-                avatar_rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-            ui.painter()
-                .with_clip_rect(avatar_rect)
-                .add(egui::Shape::mesh(mesh));
-        }
-        None => {
+    match (presence.and_then(|(_, texture)| texture), icon) {
+        (Some(texture), _) => round_photo(ui.painter(), avatar_rect, texture, Color32::WHITE),
+        // Ícone do servidor: quadrado arredondado, como no trilho.
+        (None, Some(icon)) => super::widgets::photo(
+            ui.painter(),
+            avatar_rect,
+            icon,
+            super::widgets::FULL_UV,
+            CornerRadius::same(radius::FIELD),
+            Color32::WHITE,
+        ),
+        (None, None) => {
             ui.painter().circle_filled(
                 avatar_rect.center(),
                 avatar_size / 2.0,
@@ -1530,11 +1580,7 @@ fn identity_pill(
     }
 
     // A engrenagem mora na ponta oposta ao ícone; o texto vive entre as duas.
-    let gear = Rect::from_center_size(
-        egui::pos2(rect.max.x - space::SM - 14.0, rect.center().y),
-        Vec2::splat(28.0),
-    );
-    let gear_hovered = ui.rect_contains_pointer(gear);
+    let gear_hovered = gear_response.hovered();
     if gear_hovered {
         ui.painter()
             .rect_filled(gear, CornerRadius::same(radius::FIELD), t.fill_medium);
@@ -1574,7 +1620,13 @@ fn identity_pill(
         );
     }
 
-    response.clicked()
+    if gear_response.clicked() {
+        PillHit::Gear
+    } else if response.clicked() {
+        PillHit::Body
+    } else {
+        PillHit::None
+    }
 }
 
 /// Iniciais de um nome, para o ícone de quem não tem imagem.
@@ -1819,6 +1871,15 @@ fn members_sidebar(
                                         MEMBERS_WIDTH - space::LG * 2.0,
                                         avatar,
                                     );
+                                    if row.clicked() {
+                                        let now = ui.input(|input| input.time);
+                                        super::profile::open(
+                                            state,
+                                            &member.id,
+                                            super::profile::Anchor::Beside(row.rect),
+                                            now,
+                                        );
+                                    }
                                     member_menu(&row, member, state, s);
                                 }
                             }
@@ -1846,6 +1907,7 @@ fn member_row(
     if response.hovered() {
         ui.painter()
             .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     let alpha = if dimmed { 0.45 } else { 1.0 };
@@ -1859,13 +1921,7 @@ fn member_row(
         // Foto redonda: a malha recorta o círculo, senão sobrariam os
         // cantos quadrados da textura.
         Some(texture) => {
-            let mut mesh = egui::Mesh::with_texture(texture);
-            mesh.add_rect_with_uv(
-                avatar_rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE.gamma_multiply(alpha),
-            );
-            painter.with_clip_rect(avatar_rect).add(egui::Shape::mesh(mesh));
+            round_photo(painter, avatar_rect, texture, Color32::WHITE.gamma_multiply(alpha))
         }
         None => {
             painter.circle_filled(avatar_rect.center(), 11.0, tint.gamma_multiply(0.30));
@@ -2004,10 +2060,10 @@ fn typing_pill(
     if names.is_empty() {
         return;
     }
-    let verb = if names.len() == 1 {
-        s.typing_one
-    } else {
-        s.typing_many
+    let verb = match store.typing_phrase() {
+        Some(phrase) => phrase,
+        None if names.len() == 1 => s.typing_one,
+        None => s.typing_many,
     };
     let label = ui.painter().layout_no_wrap(
         format!("{} {verb}", names.join(", ")),
@@ -2277,6 +2333,7 @@ fn handle_mobile_gesture(
         // surfaces through webembed_blocked before drawing us; those surfaces
         // must also own horizontal drags instead of leaking them to chat.
         let blocked = state.popup.is_some()
+            || state.profile.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
             || state.webembed_blocked
@@ -3267,6 +3324,7 @@ fn message_list(
         });
 
         let author = store.member(&message.author_id);
+        let mut open_author: Option<Rect> = None;
         // O escopo da linha é o alvo de toque do layout compacto — duplo
         // toque abre as reações, toque longo abre o menu.
         //
@@ -3298,7 +3356,7 @@ fn message_list(
                             .and_then(|texture| texture.frame(&ctx))
                             .map(|handle| handle.id())
                     });
-                    avatar(
+                    let face = avatar(
                         ui,
                         t,
                         &initials,
@@ -3306,17 +3364,45 @@ fn message_list(
                         author.and_then(|a| a.role_color.map(rgb)),
                         texture,
                     );
+                    // A foto abre o cartão de quem escreveu, ao lado dela.
+                    let face = ui.interact(
+                        face.rect,
+                        Id::new(("autor-foto", &message.id)),
+                        Sense::click(),
+                    );
+                    if face.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if face.clicked() {
+                        open_author = Some(face.rect);
+                    }
                     ui.add_space(space::LG);
                 }
                 ui.vertical(|ui| {
                     ui.set_max_width(text_width);
                     if !grouped {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
-                                    .font(text::headline())
-                                    .color(author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label)),
+                            let name = ui.add(
+                                egui::Label::new(
+                                    RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
+                                        .font(text::headline())
+                                        .color(author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label)),
+                                )
+                                .selectable(false)
+                                .sense(Sense::click()),
                             );
+                            if name.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            // O nome também abre, ancorado na foto: é ao
+                            // lado dela que o cartão sempre aparece.
+                            if name.clicked() {
+                                let face = Rect::from_min_size(
+                                    egui::pos2(name.rect.min.x - space::LG - avatar_size, name.rect.min.y),
+                                    Vec2::splat(avatar_size),
+                                );
+                                open_author = Some(face);
+                            }
                             ui.add_space(space::XS);
                             ui.label(
                                 RichText::new(message.at.format("%H:%M").to_string())
@@ -3341,6 +3427,16 @@ fn message_list(
                 });
             });
         });
+
+        if let Some(face) = open_author {
+            let now = ui.input(|input| input.time);
+            super::profile::open(
+                state,
+                &message.author_id,
+                super::profile::Anchor::Beside(face),
+                now,
+            );
+        }
 
         if let Some(layer) = sliding {
             ui.ctx().transform_layer_shapes(
@@ -4863,6 +4959,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
+    super::profile::draw(&mut top, store, state, t, s);
     saved_toast(&mut top, state, t, s);
 
     if state.external_link_prompt.is_some() {
@@ -6584,13 +6681,7 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                     .and_then(|texture| texture.frame(&ctx))
                     .map(|handle| handle.id());
                 if let Some(texture) = avatar {
-                    let mut mesh = egui::Mesh::with_texture(texture);
-                    mesh.add_rect_with_uv(
-                        art,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    overlay.painter().add(egui::Shape::mesh(mesh));
+                    round_photo(overlay.painter(), art, texture, Color32::WHITE);
                 } else {
                     overlay.painter().circle_filled(
                         art.center(),

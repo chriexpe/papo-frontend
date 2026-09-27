@@ -80,6 +80,8 @@ static STARTUP_CACHE_SWEEP: Once = Once::new();
 
 const INLINE_MAX: u32 = 1600;
 const FULL_MAX: u32 = 4096;
+/// O banner ocupa no máximo a largura do cartão; 1024 sobra para telas 3x.
+const BANNER_MAX: u32 = 1024;
 
 #[derive(Debug, Clone)]
 pub enum Request {
@@ -104,6 +106,9 @@ pub enum Request {
     Poster { id: String, path: PathBuf },
     /// Emoji custom do servidor, que chega em base64 junto da listagem.
     Emoji { id: String, blob: String },
+    /// Banner de perfil: mídia endereçada pelo sha256, então o cache em
+    /// disco nunca fica velho — banner novo é outro sha.
+    Banner { sha: String },
     /// Thumbnail de link preview. Em mensagens históricas a listagem traz os
     /// metadados, mas a imagem fica no endpoint autenticado do preview.
     Preview {
@@ -130,6 +135,7 @@ impl Request {
             Self::Waveform { .. } => "waveform",
             Self::Poster { .. } => "poster",
             Self::Emoji { .. } => "emoji",
+            Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
             Self::RemoteImage { .. } => "remote-image",
         }
@@ -401,6 +407,20 @@ async fn run(
                     key: waveform_key(&id),
                     error: "sem forma de onda".into(),
                 },
+            }
+        }
+        Request::Banner { sha } => {
+            let _slot = fetch_gate.acquire().await;
+            let key = banner_key(&sha);
+            match cached_fetch(
+                api,
+                &authenticated_cache_path(server_key, "banners", &sha, ""),
+                &format!("/media/{sha}"),
+            )
+            .await
+            {
+                Ok(bytes) => decode(key, &bytes, BANNER_MAX),
+                Err(error) => Loaded::Failed { key, error },
             }
         }
         Request::Emoji { id, blob } => {
@@ -901,6 +921,10 @@ pub fn poster_key(id: &str) -> String {
 pub fn waveform_key(id: &str) -> String {
     format!("wave:{id}")
 }
+pub fn banner_key(sha: &str) -> String {
+    format!("banner:{sha}")
+}
+
 pub fn emoji_key(id: &str) -> String {
     format!("emoji:{id}")
 }
@@ -1317,6 +1341,26 @@ impl MediaStore {
     /// que um id de pessoa nunca colida com um id de figurinha.
     pub fn avatar(&mut self, user_id: &str, blob: Option<&str>) -> Option<&Texture> {
         self.emoji(&format!("avatar:{user_id}"), blob)
+    }
+
+    /// Ícone do servidor. Chega em base64 como a foto de perfil; a chave é
+    /// um resumo do conteúdo, então um ícone novo vira outra textura.
+    pub fn server_icon(&mut self, blob: &str) -> Option<&Texture> {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        blob.hash(&mut hasher);
+        self.emoji(&format!("server-icon:{:x}", hasher.finish()), Some(blob))
+    }
+
+    /// Banner de perfil, pelo sha que veio na ficha.
+    pub fn banner(&mut self, sha: &str) -> Option<&Texture> {
+        let key = banner_key(sha);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::Banner { sha: sha.to_owned() });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
     }
 
     /// Imagem de um link preview. Se o evento já trouxe `image_data`, evita

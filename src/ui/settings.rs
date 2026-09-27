@@ -105,6 +105,12 @@ impl ServerPane {
 /// uma coisa costuma voltar para ajustar a vizinha.
 pub struct SettingsState {
     pub open: Option<Surface>,
+    /// Há um modal por cima da folha (o editor de recorte): clique e Esc
+    /// são dele, e não podem fechar a folha que ficou embaixo.
+    pub modal_above: bool,
+    /// A folha acabou de abrir por um clique fora dela (o lápis do cartão
+    /// de perfil): esse mesmo clique não pode contar como "clique fora".
+    pub opened_by_click: bool,
     pub app_pane: AppPane,
     pub server_pane: ServerPane,
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
@@ -116,6 +122,8 @@ impl Default for SettingsState {
     fn default() -> Self {
         Self {
             open: None,
+            modal_above: false,
+            opened_by_click: false,
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
             draft: Draft::default(),
@@ -173,6 +181,8 @@ pub struct Draft {
     pub nickname: String,
     pub status_message: String,
     pub description: String,
+    /// Frase de digitação ("está digitando…" do seu jeito).
+    pub typing: String,
     pub password: String,
     pub loaded_server: bool,
     pub server_name: String,
@@ -214,6 +224,15 @@ impl SettingsState {
         ));
     }
 
+    /// Ajustes → Conta, com o formulário relido do estado: é para onde o
+    /// "Editar perfil" do cartão leva.
+    pub fn open_account(&mut self) {
+        self.open = Some(Surface::App);
+        self.app_pane = AppPane::Account;
+        self.draft.loaded_account = false;
+        self.opened_by_click = true;
+    }
+
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
     pub fn toggle(&mut self, surface: Surface) {
         if self.open == Some(surface) {
@@ -221,6 +240,7 @@ impl SettingsState {
             return;
         }
         self.open = Some(surface);
+        self.opened_by_click = true;
         match surface {
             Surface::App => self.draft.loaded_account = false,
             Surface::Server => {
@@ -280,6 +300,7 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
         t: *t,
         separators: Vec::new(),
         first: true,
+        lines: 1,
     };
     contents(&mut rows);
     let separators = std::mem::take(&mut rows.separators);
@@ -303,6 +324,8 @@ pub struct Rows<'u> {
     t: Tokens,
     separators: Vec<f32>,
     first: bool,
+    /// Linhas visíveis do próximo campo; 1 é o campo de uma linha.
+    lines: usize,
 }
 
 impl Rows<'_> {
@@ -580,8 +603,29 @@ impl Rows<'_> {
 
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
+        self.field_hinted(label, None, value, limit, secret)
+    }
+
+    /// Campo de várias linhas, para texto que quebra linha (a descrição).
+    /// No Android o campo nativo segue de uma linha, por enquanto.
+    fn field_lines(&mut self, label: &str, value: &mut String, limit: usize, lines: usize) {
+        self.lines = lines;
+        self.field_hinted(label, None, value, limit, false);
+        self.lines = 1;
+    }
+
+    fn field_hinted(
+        &mut self,
+        label: &str,
+        hint: Option<&str>,
+        value: &mut String,
+        limit: usize,
+        secret: bool,
+    ) -> bool {
         let mut submitted = false;
-        self.row(label, None, |ui, _t| {
+        #[cfg_attr(target_os = "android", allow(unused_variables))]
+        let lines = self.lines;
+        self.row(label, hint, |ui, _t| {
             let width = ui.available_width();
 
             #[cfg(target_os = "android")]
@@ -621,9 +665,15 @@ impl Rows<'_> {
             {
                 let edit_id = ui.id().with(("settings-field", label));
                 let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, value);
-                let response = ui.add_sized(
-                    Vec2::new(width, 26.0),
+                let editor = if lines > 1 {
+                    egui::TextEdit::multiline(value).desired_rows(lines)
+                } else {
                     egui::TextEdit::singleline(value)
+                };
+                let height = if lines > 1 { lines as f32 * 17.0 + space::SM * 2.0 } else { 26.0 };
+                let response = ui.add_sized(
+                    Vec2::new(width, height),
+                    editor
                         .id(edit_id)
                         .char_limit(limit)
                         .password(secret)
@@ -884,6 +934,7 @@ pub struct Context<'a> {
     pub badge: &'a mut bool,
     pub topic_reveal: &'a mut bool,
     pub record_button: &'a mut bool,
+    pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
     pub webembed_offscreen: &'a mut crate::webembed::OffscreenBehavior,
     pub webembed_scope: &'a mut crate::webembed::FloatScope,
     pub ask_download: &'a mut bool,
@@ -1006,7 +1057,8 @@ pub fn sheet(
     // Ajustes também se comportam como uma folha/popover ancorada na
     // pastilha que a abriu. Clique fora fecha; a própria pastilha fica de
     // fora desta regra porque ela já possui o comportamento de toggle.
-    let outside = ctx.input(|input| {
+    let just_opened = std::mem::take(&mut state.opened_by_click);
+    let outside = !state.modal_above && !just_opened && ctx.input(|input| {
         input.pointer.any_click()
             && input.pointer.interact_pos().is_some_and(|position| {
                 !rect.contains(position) && !anchor.contains(position)
@@ -1084,7 +1136,8 @@ fn header(
         text::icon(14.0),
         t.label_secondary,
     );
-    if response.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+    let escape = !state.modal_above && ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if response.clicked() || escape {
         state.open = None;
     }
 }
@@ -1173,7 +1226,22 @@ fn app_pane(
         AppPane::Account => {
             if !state.draft.loaded_account {
                 state.draft.loaded_account = true;
+                // O formulário começa com o que está valendo. Antes recado e
+                // descrição abriam vazios, e salvar o apelido apagava os dois.
+                let me = data.store.member(&data.store.me);
                 state.draft.nickname = data.store.my_name.clone();
+                state.draft.status_message = me
+                    .and_then(|member| member.status_message.clone())
+                    .unwrap_or_default();
+                state.draft.typing = me
+                    .and_then(|member| member.typing_label.clone())
+                    .unwrap_or_default();
+                state.draft.description = data
+                    .store
+                    .profiles
+                    .get(&data.store.me)
+                    .and_then(|profile| profile.description.clone())
+                    .unwrap_or_default();
                 state.draft.password.clear();
                 actions.push(SettingsAction::Admin(AdminAction::LoadDevices));
             }
@@ -1181,17 +1249,51 @@ fn app_pane(
             // O clique sai de dentro do cartão, e `actions` já está
             // emprestado ali; a bandeira atravessa esse empréstimo.
             let mut pick_avatar = false;
+            let mut pick_banner = false;
+            let mut remove_banner = false;
+            let has_banner = data
+                .store
+                .profiles
+                .get(&data.store.me)
+                .is_some_and(|profile| profile.banner.is_some());
 
             section(ui, t, s.profile);
+            // O cabeçalho do cartão como ele fica, e clicável.
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                match crate::ui::profile::header_preview(ui, t, s, data.store, data.media) {
+                    crate::ui::profile::PreviewHit::Avatar => pick_avatar = true,
+                    crate::ui::profile::PreviewHit::Banner => pick_banner = true,
+                    crate::ui::profile::PreviewHit::None => {}
+                }
+            });
+            // Os botões moram com a prévia: são dela, não linhas à parte.
+            ui.add_space(space::SM);
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if row_button(ui, t, s.change_avatar, Emphasis::Quiet) {
+                    pick_avatar = true;
+                }
+                if row_button(ui, t, s.change_banner, Emphasis::Quiet) {
+                    pick_banner = true;
+                }
+                if has_banner && row_button(ui, t, s.remove_banner, Emphasis::Danger) {
+                    remove_banner = true;
+                }
+            });
+            ui.add_space(space::MD);
             group(ui, t, |rows| {
                 rows.field(s.nickname, &mut draft.nickname, 32, false);
                 rows.field(s.status_message, &mut draft.status_message, 64, false);
-                rows.field(s.description, &mut draft.description, 512, false);
-                rows.row(s.avatar, None, |ui, t| {
-                    if row_button(ui, t, s.change_avatar, Emphasis::Quiet) {
-                        pick_avatar = true;
-                    }
-                });
+                rows.field_lines(s.description, &mut draft.description, 512, 3);
+                rows.field_hinted(
+                    s.typing_phrase,
+                    Some(s.typing_phrase_hint),
+                    &mut draft.typing,
+                    64,
+                    false,
+                );
             });
             ui.add_space(space::SM);
             actions_row(ui, |ui| {
@@ -1201,13 +1303,20 @@ fn app_pane(
                             nickname: draft.nickname.trim().to_owned(),
                             status: draft.status_message.trim().to_owned(),
                             description: draft.description.trim().to_owned(),
-                            typing: None,
+                            // Vazio grava vazio, e vazio volta ao texto padrão.
+                            typing: Some(draft.typing.trim().to_owned()),
                         },
                     ))));
                 }
             });
             if pick_avatar {
                 actions.push(SettingsAction::Admin(AdminAction::PickAvatar));
+            }
+            if pick_banner {
+                actions.push(SettingsAction::Admin(AdminAction::PickBanner));
+            }
+            if remove_banner {
+                actions.push(SettingsAction::Admin(AdminAction::RemoveBanner));
             }
 
             section(ui, t, s.presence);
@@ -1317,6 +1426,26 @@ fn app_pane(
                         );
                     },
                 );
+            });
+
+            section(ui, t, s.profile);
+            group(ui, t, |rows| {
+                use crate::ui::profile::SelfCardStyle;
+                let hint = match *data.self_card {
+                    SelfCardStyle::Pill => s.self_card_pill_hint,
+                    SelfCardStyle::Floating => s.self_card_floating_hint,
+                };
+                rows.row(s.self_card, Some(hint), |ui, t| {
+                    segmented(
+                        ui,
+                        t,
+                        data.self_card,
+                        &[
+                            (SelfCardStyle::Pill, s.self_card_pill),
+                            (SelfCardStyle::Floating, s.self_card_floating),
+                        ],
+                    );
+                });
             });
         }
 
@@ -1614,9 +1743,61 @@ fn server_pane(
             }
             let draft = &mut state.draft;
 
+            let mut pick_icon = false;
+            let ctx = ui.ctx().clone();
+            let icon = data
+                .store
+                .server
+                .as_ref()
+                .and_then(|server| server.icon.as_deref())
+                .and_then(|blob| data.media.server_icon(blob))
+                .and_then(|texture| texture.frame(&ctx))
+                .map(|handle| handle.id());
+            let initials: String = draft
+                .server_name
+                .split_whitespace()
+                .filter_map(|word| word.chars().next())
+                .take(2)
+                .collect::<String>()
+                .to_uppercase();
             section(ui, t, s.pane_identity);
             group(ui, t, |rows| {
                 rows.field(s.server_name, &mut draft.server_name, 64, false);
+                rows.row(s.server_icon, None, |ui, t| {
+                    if row_button(ui, t, s.change_server_icon, Emphasis::Quiet) {
+                        pick_icon = true;
+                    }
+                    // O ícone como o trilho mostra; clicar nele também troca.
+                    let (slot, response) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+                    let corners = CornerRadius::same(radius::FIELD);
+                    match icon {
+                        Some(icon) => crate::ui::widgets::photo(
+                            ui.painter(),
+                            slot,
+                            icon,
+                            crate::ui::widgets::FULL_UV,
+                            corners,
+                            egui::Color32::WHITE,
+                        ),
+                        None => {
+                            ui.painter().rect_filled(slot, corners, t.fill_medium);
+                            ui.painter().text(
+                                slot.center(),
+                                egui::Align2::CENTER_CENTER,
+                                &initials,
+                                text::headline(),
+                                t.label,
+                            );
+                        }
+                    }
+                    if response.hovered() {
+                        ui.painter().rect_filled(slot, corners, egui::Color32::from_black_alpha(90));
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        pick_icon = true;
+                    }
+                });
                 rows.row(s.server_public, Some(s.server_public_hint), |ui, t| {
                     switch(ui, t, &mut draft.server_public);
                 });
@@ -1624,6 +1805,9 @@ fn server_pane(
                     rows.field(s.server_password, &mut draft.server_password, 64, true);
                 }
             });
+            if pick_icon {
+                actions.push(SettingsAction::Admin(AdminAction::PickServerIcon));
+            }
 
             ui.add_space(space::SM);
             let ready = !draft.server_name.trim().is_empty()

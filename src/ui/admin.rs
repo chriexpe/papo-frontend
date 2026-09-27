@@ -10,6 +10,11 @@ pub enum AdminAction {
     SaveProfile(Box<UpdateUserRequest>),
     SetPresence(Option<String>),
     PickAvatar,
+    /// Abre o seletor para o banner do perfil (3:1).
+    PickBanner,
+    RemoveBanner,
+    /// Abre o seletor para o ícone do servidor.
+    PickServerIcon,
     ChangePassword(String),
     LoadDevices,
     DropConnection(String),
