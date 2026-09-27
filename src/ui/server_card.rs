@@ -292,9 +292,7 @@ fn contents(
                         (ChannelNotifyMode::Mentions, s.notify_mentions),
                         (ChannelNotifyMode::Off, s.notify_off),
                     ] {
-                        let check = if option == *mode { icon::CHECK } else { " " };
-                        let item = egui::RichText::new(format!("{check}  {label}"));
-                        if ui.button(item).clicked() {
+                        if super::widgets::menu_option(ui, t, label, option == *mode) {
                             if option != *mode {
                                 state.actions.push(ChatAction::ChannelNotifications {
                                     channel_id: id.clone(),

@@ -101,7 +101,7 @@ impl AppPane {
             Self::Files => s.pane_files,
             Self::Language => s.language,
             Self::Sessions => s.sessions,
-            Self::Diagnostics => "Diagnostics",
+            Self::Diagnostics => s.pane_diagnostics,
         }
     }
 }
@@ -138,6 +138,14 @@ pub struct SettingsState {
     /// A folha acabou de abrir por um clique fora dela (o lápis do cartão
     /// de perfil): esse mesmo clique não pode contar como "clique fora".
     pub opened_by_click: bool,
+    /// No celular os painéis empilham: `false` é a lista, `true` é o painel
+    /// aberto por cima dela.
+    pub mobile_page: bool,
+    /// Busca da lista do celular.
+    pub mobile_query: String,
+    /// A folha foi desenhada no formato do celular neste quadro (o voltar
+    /// decide se sobe um nível ou fecha).
+    pub compact: bool,
     pub app_pane: AppPane,
     pub server_pane: ServerPane,
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
@@ -151,6 +159,9 @@ impl Default for SettingsState {
             open: None,
             modal_above: false,
             opened_by_click: false,
+            mobile_page: false,
+            mobile_query: String::new(),
+            compact: false,
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
             draft: Draft::default(),
@@ -228,6 +239,7 @@ impl SettingsState {
     pub fn open_new_channel(&mut self) {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
+        self.mobile_page = true;
         self.draft.channel = Some(ChannelDraft::create());
         self.draft.channel_permission = None;
         self.draft.deleting = None;
@@ -236,6 +248,7 @@ impl SettingsState {
     pub fn open_edit_channel(&mut self, channel: &crate::state::Channel) {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
+        self.mobile_page = true;
         self.draft.channel = Some(ChannelDraft::edit(channel));
         self.draft.channel_permission = None;
         self.draft.deleting = None;
@@ -244,6 +257,7 @@ impl SettingsState {
     pub fn open_delete_channel(&mut self, channel: &crate::state::Channel) {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
+        self.mobile_page = true;
         self.draft.channel = None;
         self.draft.channel_permission = None;
         self.draft.deleting = Some((
@@ -258,6 +272,7 @@ impl SettingsState {
     pub fn open_account(&mut self) {
         self.open = Some(Surface::App);
         self.app_pane = AppPane::Account;
+        self.mobile_page = true;
         self.draft.loaded_account = false;
         self.opened_by_click = true;
     }
@@ -280,16 +295,22 @@ impl SettingsState {
         }
         self.open = Some(Surface::Server);
         self.server_pane = pane;
+        self.mobile_page = false;
+        self.mobile_query.clear();
         self.draft.loaded_server = false;
         self.draft.loaded_audit = false;
         self.opened_by_click = true;
         true
     }
 
-    /// Voltar do sistema com a folha aberta: fecha. (No celular, onde os
-    /// painéis empilham, sobe um nível antes.)
+    /// Voltar do sistema com a folha aberta. No celular, com um painel
+    /// aberto, volta para a lista; senão fecha.
     pub fn back(&mut self) {
-        self.open = None;
+        if self.compact && self.mobile_page {
+            self.mobile_page = false;
+        } else {
+            self.open = None;
+        }
     }
 
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
@@ -300,6 +321,8 @@ impl SettingsState {
         }
         self.open = Some(surface);
         self.opened_by_click = true;
+        self.mobile_page = false;
+        self.mobile_query.clear();
         match surface {
             Surface::App => self.draft.loaded_account = false,
             Surface::Server => {
@@ -332,7 +355,33 @@ const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
 
 /// Título de seção acima de um cartão.
+/// Os painéis desenhados como peças (celular): cada linha é uma peça
+/// arredondada dentro do grupo, em vez de linhas separadas por fio.
+fn tiles(ui: &egui::Ui) -> bool {
+    ui.ctx()
+        .data(|data| data.get_temp::<bool>(egui::Id::new(TILES_KEY)))
+        .unwrap_or(false)
+}
+
+const TILES_KEY: &str = "ajustes-em-pecas";
+/// Espaço entre peças de um mesmo grupo, e o canto das pontas do grupo.
+const TILE_GAP: f32 = 3.0;
+const TILE_END: u8 = 16;
+const TILE_MID: u8 = 4;
+const TILE_INSET: f32 = space::LG + 2.0;
+
 fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
+    if tiles(ui) {
+        // Legenda de grupo no celular: na cor de destaque, como nos
+        // ajustes do sistema, e em caixa normal.
+        ui.add_space(space::LG);
+        ui.horizontal(|ui| {
+            ui.add_space(space::MD);
+            ui.label(RichText::new(label).font(text::subheadline()).color(t.accent));
+        });
+        ui.add_space(space::XS);
+        return;
+    }
     ui.add_space(space::LG);
     ui.horizontal(|ui| {
         // Mesmo recuo das linhas: o título tem de nascer na mesma coluna
@@ -352,16 +401,46 @@ fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
 /// que ficou pesado. O que separa as linhas é o fio entre elas, que começa
 /// onde o rótulo começa — assim a lista tem estrutura sem ter caixa.
 fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
+    let tiled = tiles(ui);
+    // Em peças o espaço entre elas é o nosso (TILE_GAP), não o do egui.
+    let spacing = ui.spacing().item_spacing.y;
+    if tiled {
+        ui.spacing_mut().item_spacing.y = 0.0;
+    }
     let mut rows = Rows {
         ui,
         t: *t,
         separators: Vec::new(),
         first: true,
         lines: 1,
+        tiled,
+        pieces: Vec::new(),
+        stack_next: false,
     };
     contents(&mut rows);
     let separators = std::mem::take(&mut rows.separators);
+    let pieces = std::mem::take(&mut rows.pieces);
     let ui = rows.ui;
+
+    if tiled {
+        ui.spacing_mut().item_spacing.y = spacing;
+        // Só agora se sabe qual peça é a última: os fundos foram reservados
+        // antes do conteúdo e são preenchidos aqui, com os cantos certos.
+        let last = pieces.len().saturating_sub(1);
+        for (index, (slot, rect)) in pieces.into_iter().enumerate() {
+            let top = if index == 0 { TILE_END } else { TILE_MID };
+            let bottom = if index == last { TILE_END } else { TILE_MID };
+            ui.painter().set(
+                slot,
+                egui::Shape::rect_filled(
+                    rect,
+                    CornerRadius { nw: top, ne: top, sw: bottom, se: bottom },
+                    t.fill_soft,
+                ),
+            );
+        }
+        return;
+    }
 
     let rect = ui.min_rect();
     for y in separators {
@@ -383,12 +462,35 @@ pub struct Rows<'u> {
     first: bool,
     /// Linhas visíveis do próximo campo; 1 é o campo de uma linha.
     lines: usize,
+    /// Desenho em peças (celular).
+    tiled: bool,
+    /// Fundo reservado de cada peça e o retângulo dela.
+    pieces: Vec<(egui::layers::ShapeIdx, Rect)>,
+    /// A próxima linha empilha o controle embaixo do rótulo (campos).
+    stack_next: bool,
 }
 
 impl Rows<'_> {
     /// Reserva a faixa de uma linha e devolve a área útil dela.
     fn band(&mut self, height: f32) -> (Rect, Rect) {
         let width = self.ui.available_width();
+        if self.tiled {
+            if !self.first {
+                self.ui.add_space(TILE_GAP);
+            }
+            self.first = false;
+            let height = height.max(52.0);
+            let (rect, _) = self
+                .ui
+                .allocate_exact_size(Vec2::new(width, height), Sense::hover());
+            let slot = self.ui.painter().add(egui::Shape::Noop);
+            self.pieces.push((slot, rect));
+            let inner = Rect::from_min_max(
+                egui::pos2(rect.min.x + TILE_INSET, rect.min.y),
+                egui::pos2(rect.max.x - TILE_INSET, rect.max.y),
+            );
+            return (rect, inner);
+        }
         let (rect, _) = self
             .ui
             .allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -412,10 +514,19 @@ impl Rows<'_> {
         control: impl FnOnce(&mut egui::Ui, &Tokens),
     ) {
         let t = self.t;
-        let full = (self.ui.available_width() - ROW_INSET - space::MD).max(120.0);
-        let stacked = full < 430.0;
+        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
+        let full = (self.ui.available_width() - inset).max(120.0);
+        // Em peças o controle fica à direita (chave, menu) e só os campos
+        // descem para baixo do rótulo.
+        let stacked = if self.tiled {
+            std::mem::take(&mut self.stack_next) || full < 220.0
+        } else {
+            full < 430.0
+        };
         let control_width = if stacked {
             full
+        } else if self.tiled {
+            (full * 0.42).min(200.0)
         } else {
             CONTROL_COLUMN.min(full * 0.48)
         };
@@ -444,8 +555,9 @@ impl Rows<'_> {
                 .as_ref()
                 .map(|galley| space::XXS + galley.size().y)
                 .unwrap_or(0.0);
+        let control_h = if self.lines > 1 { self.lines as f32 * 17.0 + space::SM * 2.0 } else { 30.0 };
         let height = if stacked {
-            (space::MD + text_height + space::SM + 30.0 + space::MD).max(ROW_HEIGHT)
+            (space::MD + text_height + space::SM + control_h + space::MD).max(ROW_HEIGHT)
         } else {
             (text_height + space::MD * 2.0).max(ROW_HEIGHT)
         };
@@ -471,7 +583,7 @@ impl Rows<'_> {
 
         let control_rect = if stacked {
             Rect::from_min_max(
-                egui::pos2(inner.min.x, inner.max.y - 30.0 - space::MD),
+                egui::pos2(inner.min.x, inner.max.y - control_h - space::MD),
                 egui::pos2(inner.max.x, inner.max.y - space::MD),
             )
         } else {
@@ -490,7 +602,8 @@ impl Rows<'_> {
 
     /// Linha inteira clicável, para navegar ou disparar uma ação.
     fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
-        let width = (self.ui.available_width() - ROW_INSET - space::MD).max(120.0);
+        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
+        let width = (self.ui.available_width() - inset).max(120.0);
         let label_galley = self
             .ui
             .painter()
@@ -632,6 +745,10 @@ impl Rows<'_> {
         let mut submitted = false;
         #[cfg_attr(target_os = "android", allow(unused_variables))]
         let lines = self.lines;
+        // Campo em peça: largura inteira, embaixo do rótulo.
+        if self.tiled {
+            self.stack_next = true;
+        }
         self.row(label, hint, |ui, _t| {
             let width = ui.available_width();
 
@@ -806,6 +923,13 @@ fn segmented<T: PartialEq + Copy>(
         })
         .collect();
     let total: f32 = widths.iter().sum();
+    // Sem espaço para as opções lado a lado (celular, painel estreito),
+    // vira menu suspenso: o valor atual e a seta, e a lista abre por cima.
+    // No celular (peças), escolha é sempre menu suspenso: o rótulo fica
+    // com a linha, e o menu abre por cima do valor tocado.
+    if tiles(ui) || total > ui.available_width() + 0.5 {
+        return dropdown_choice(ui, t, current, options);
+    }
     // O id vem do próprio controle, não do rótulo: numa lista de canais
     // cada linha tem os mesmos rótulos, e `ui.id().with(label)` repetia o
     // mesmo id em todas — o aviso vermelho de colisão do egui.
@@ -842,6 +966,52 @@ fn segmented<T: PartialEq + Copy>(
             changed = true;
         }
     }
+    changed
+}
+
+/// Escolha em menu suspenso: o valor atual com a seta; tocar abre as
+/// opções por cima dele.
+fn dropdown_choice<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    current: &mut T,
+    options: &[(T, &str)],
+) -> bool {
+    let label = options
+        .iter()
+        .find(|(value, _)| *value == *current)
+        .map(|(_, label)| *label)
+        .unwrap_or("");
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), text::callout(), t.label);
+    let width = (galley.size().x + space::MD * 2.0 + 14.0).min(ui.available_width());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(radius::FIELD),
+        if response.hovered() { t.fill_medium } else { t.fill_soft },
+    );
+    ui.painter()
+        .with_clip_rect(rect.shrink2(Vec2::new(space::MD, 0.0)))
+        .galley(egui::pos2(rect.min.x + space::MD, rect.center().y - galley.size().y / 2.0), galley, t.label);
+    ui.painter().text(
+        egui::pos2(rect.max.x - space::MD, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        egui_phosphor::regular::CARET_DOWN,
+        text::icon(11.0),
+        t.label_secondary,
+    );
+    let mut changed = false;
+    crate::ui::widgets::dropdown(&response, rect, rect, true).show(|ui| {
+        for (value, option) in options {
+            if crate::ui::widgets::menu_option(ui, t, option, *value == *current) {
+                if *value != *current {
+                    *current = *value;
+                    changed = true;
+                }
+                ui.close();
+            }
+        }
+    });
     changed
 }
 
@@ -989,6 +1159,14 @@ pub fn sheet(
         }
     }
 
+    // No celular a folha vira tela cheia com pilha de navegação: a lista
+    // de áreas, e o painel por cima dela.
+    state.compact = screen.width() < crate::ui::shell::COMPACT_BREAKPOINT;
+    if state.compact {
+        mobile(ctx, state, data, t, s, surface, screen, &mut actions);
+        return actions;
+    }
+
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
     // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
     // painel faz a coluna da esquerda dançar debaixo do ponteiro, e o guia
@@ -1096,6 +1274,419 @@ pub fn sheet(
     }
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Celular
+// ---------------------------------------------------------------------------
+
+const MOBILE_NAV: f32 = 56.0;
+const MOBILE_SIDE: f32 = space::LG;
+
+/// Ajustes no celular: tela cheia, lista de áreas com busca, e o painel
+/// empurrado por cima. Os painéis são os mesmos do desktop, desenhados em
+/// peças.
+#[allow(clippy::too_many_arguments)]
+fn mobile(
+    ctx: &egui::Context,
+    state: &mut SettingsState,
+    data: &mut Context<'_>,
+    t: &Tokens,
+    s: &Strings,
+    surface: Surface,
+    screen: Rect,
+    actions: &mut Vec<SettingsAction>,
+) {
+    egui::Area::new(egui::Id::new("ajustes-celular"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .show(ctx, |ui| {
+            ui.set_min_size(screen.size());
+            ui.painter().rect_filled(screen, CornerRadius::ZERO, t.content_bg);
+            ui.interact(screen, egui::Id::new("ajustes-celular-fundo"), Sense::click_and_drag());
+
+            // --- Barra: voltar + título à esquerda; X na lista -------------------
+            let nav = Rect::from_min_size(screen.min, Vec2::new(screen.width(), MOBILE_NAV));
+            let page = state.mobile_page;
+            let title = match (page, surface) {
+                (true, Surface::App) => state.app_pane.title(s),
+                (true, Surface::Server) => state.server_pane.title(s),
+                (false, Surface::App) => s.settings,
+                (false, Surface::Server) => s.server_settings,
+            };
+            let mut left = nav.min.x + space::SM;
+            if page {
+                let back = Rect::from_min_size(egui::pos2(left, nav.center().y - 22.0), Vec2::splat(44.0));
+                if nav_button(ui, t, back, egui_phosphor::regular::ARROW_LEFT, "voltar").on_hover_text(s.back).clicked() {
+                    state.mobile_page = false;
+                }
+                left = back.max.x;
+            } else {
+                left += space::SM;
+            }
+            let close = Rect::from_min_size(egui::pos2(nav.max.x - space::SM - 44.0, nav.center().y - 22.0), Vec2::splat(44.0));
+            if !page && nav_button(ui, t, close, egui_phosphor::regular::X, "fechar").clicked() {
+                state.open = None;
+            }
+            ui.painter()
+                .with_clip_rect(Rect::from_x_y_ranges(left..=close.min.x, nav.y_range()))
+                .text(
+                    egui::pos2(left + space::XS, nav.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    title,
+                    egui::FontId::new(20.0, crate::ui::theme::display_family()),
+                    t.label,
+                );
+
+            // --- Corpo -----------------------------------------------------------
+            let body = Rect::from_min_max(egui::pos2(screen.min.x, nav.max.y), screen.max);
+            ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(body.shrink2(Vec2::new(MOBILE_SIDE, 0.0)))
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt(("ajustes-celular-corpo", page, state.app_pane.title(s), state.server_pane.title(s)))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(TILES_KEY), true));
+                            if page {
+                                match surface {
+                                    Surface::App => app_pane(ui, state, data, t, s, actions),
+                                    Surface::Server => server_pane(ui, state, data, t, s, actions),
+                                }
+                            } else {
+                                match surface {
+                                    Surface::App => app_list(ui, state, data, t, s),
+                                    Surface::Server => server_list(ui, state, data, t, s),
+                                }
+                            }
+                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(TILES_KEY), false));
+                            ui.add_space(space::XXXL);
+                        });
+                },
+            );
+        });
+}
+
+fn nav_button(ui: &mut egui::Ui, t: &Tokens, rect: Rect, glyph: &str, id: &str) -> egui::Response {
+    let response = ui.interact(rect, egui::Id::new(("ajustes-celular-nav", id)), Sense::click());
+    if response.hovered() || response.is_pointer_button_down_on() {
+        ui.painter().circle_filled(rect.center(), 20.0, t.fill_soft);
+    }
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, text::icon(20.0), t.label);
+    response
+}
+
+/// Uma área na lista: ícone num círculo, título e o resumo do que está
+/// valendo.
+struct Entry<'a> {
+    glyph: &'a str,
+    title: &'a str,
+    summary: String,
+}
+
+/// Peça clicável da lista. `first`/`last` dão os cantos grandes nas pontas
+/// do grupo.
+/// Desenho próprio do círculo da esquerda (a sua foto, o ícone do servidor).
+type Lead<'a> = &'a dyn Fn(&egui::Painter, Rect);
+
+fn list_tile(ui: &mut egui::Ui, t: &Tokens, entry: &Entry<'_>, first: bool, last: bool, lead: Option<Lead<'_>>) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 64.0), Sense::click());
+    let top = if first { TILE_END } else { TILE_MID };
+    let bottom = if last { TILE_END } else { TILE_MID };
+    let pressed = response.hovered() || response.is_pointer_button_down_on();
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius { nw: top, ne: top, sw: bottom, se: bottom },
+        if pressed { t.fill_medium } else { t.fill_soft },
+    );
+    let icon = Rect::from_center_size(egui::pos2(rect.min.x + TILE_INSET + 20.0, rect.center().y), Vec2::splat(40.0));
+    match lead {
+        Some(draw) => draw(ui.painter(), icon),
+        None => {
+            ui.painter().circle_filled(icon.center(), 20.0, t.fill_medium);
+            ui.painter().text(icon.center(), egui::Align2::CENTER_CENTER, entry.glyph, text::icon(18.0), t.label);
+        }
+    }
+    let x = icon.max.x + space::LG;
+    let clip = ui.painter().with_clip_rect(Rect::from_x_y_ranges(x..=rect.max.x - TILE_INSET, rect.y_range()));
+    let has_summary = !entry.summary.is_empty();
+    clip.text(
+        egui::pos2(x, rect.center().y - if has_summary { 9.0 } else { 0.0 }),
+        egui::Align2::LEFT_CENTER,
+        entry.title,
+        egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        t.label,
+    );
+    if has_summary {
+        clip.text(
+            egui::pos2(x, rect.center().y + 10.0),
+            egui::Align2::LEFT_CENTER,
+            &entry.summary,
+            text::callout(),
+            t.label_secondary,
+        );
+    }
+    if pressed {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
+}
+
+/// Grupo de peças; devolve o índice da que foi tocada.
+fn tile_group(ui: &mut egui::Ui, t: &Tokens, entries: &[Entry<'_>]) -> Option<usize> {
+    let mut hit = None;
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            ui.add_space(TILE_GAP);
+        }
+        if list_tile(ui, t, entry, index == 0, index + 1 == entries.len(), None) {
+            hit = Some(index);
+        }
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+    ui.add_space(space::LG);
+    hit
+}
+
+/// Campo de busca da lista, em pílula.
+fn search_field(ui: &mut egui::Ui, t: &Tokens, s: &Strings, query: &mut String) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 48.0), Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(24), t.glass_opaque, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::XL + 8.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::MAGNIFYING_GLASS,
+        text::icon(17.0),
+        t.accent,
+    );
+    let field = Rect::from_min_max(egui::pos2(rect.min.x + space::XL + 24.0, rect.min.y + 4.0), egui::pos2(rect.max.x - space::XL, rect.max.y - 4.0));
+    #[cfg(target_os = "android")]
+    {
+        let _ = crate::platform::native_field::show(
+            ui.ctx(),
+            "ajustes-celular:busca",
+            query,
+            field,
+            s.settings_search,
+            crate::platform::native_field::Mode::Text,
+            64,
+            false,
+            t.label,
+            t.label_tertiary,
+            15.0,
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut child = ui.new_child(UiBuilder::new().max_rect(field));
+        child.add_sized(
+            field.size(),
+            egui::TextEdit::singleline(query)
+                .hint_text(s.settings_search)
+                .frame(egui::Frame::NONE)
+                .font(egui::FontId::new(15.0, egui::FontFamily::Proportional))
+                .vertical_align(Align::Center),
+        );
+    }
+    ui.add_space(space::MD);
+}
+
+/// Entradas que casam com a busca, sem acento nem caixa.
+fn matches(query: &str, entry: &Entry<'_>) -> bool {
+    let fold = |text: &str| -> String {
+        text.to_lowercase()
+            .chars()
+            .map(|c| match c {
+                'á' | 'à' | 'â' | 'ã' => 'a',
+                'é' | 'ê' => 'e',
+                'í' => 'i',
+                'ó' | 'ô' | 'õ' => 'o',
+                'ú' => 'u',
+                'ç' => 'c',
+                other => other,
+            })
+            .collect()
+    };
+    let query = fold(query.trim());
+    query.is_empty() || fold(entry.title).contains(&query) || fold(&entry.summary).contains(&query)
+}
+
+/// Lista filtrada pela busca; um grupo só, ou "nada encontrado".
+fn filtered<T: Copy>(ui: &mut egui::Ui, t: &Tokens, s: &Strings, query: &str, all: &[(T, Entry<'_>)]) -> Option<T> {
+    let shown: Vec<_> = all.iter().filter(|(_, entry)| matches(query, entry)).collect();
+    if shown.is_empty() {
+        ui.add_space(space::XL);
+        ui.label(RichText::new(s.no_results).font(text::body()).color(t.label_secondary));
+        return None;
+    }
+    let entries: Vec<Entry<'_>> = shown
+        .iter()
+        .map(|(_, entry)| Entry { glyph: entry.glyph, title: entry.title, summary: entry.summary.clone() })
+        .collect();
+    tile_group(ui, t, &entries).map(|index| shown[index].0)
+}
+
+fn footnote(ui: &mut egui::Ui, t: &Tokens, note: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(space::MD);
+        ui.add(egui::Label::new(RichText::new(note).font(text::footnote()).color(t.label_tertiary)).wrap());
+    });
+}
+
+/// Lista dos ajustes do usuário.
+fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    use egui_phosphor::regular as icon;
+    search_field(ui, t, s, &mut state.mobile_query);
+
+    let theme = match *data.theme {
+        crate::ui::theme::ThemePref::System => s.theme_system,
+        crate::ui::theme::ThemePref::Light => s.theme_light,
+        crate::ui::theme::ThemePref::Dark => s.theme_dark,
+    };
+    let appearance = if *data.translucency { format!("{theme} · {}", s.translucency) } else { theme.to_owned() };
+    let alerts = if *data.notifications {
+        if *data.badge { format!("{} · {}", s.sum_on, s.sum_badge) } else { s.sum_on.to_owned() }
+    } else {
+        s.sum_off.to_owned()
+    };
+    // Só o nome da pasta: o caminho inteiro não cabe numa linha de resumo.
+    let files = data
+        .download_dir
+        .as_deref()
+        .map(|dir| {
+            std::path::Path::new(dir)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| dir.to_owned())
+        })
+        .unwrap_or_else(|| s.download_ask.to_owned());
+    let count = data.store.devices.len().max(1);
+    let devices = format!("{count} {}", if count == 1 { s.sum_device } else { s.sum_devices });
+    let rows: Vec<(AppPane, Entry<'_>)> = vec![
+        (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: appearance }),
+        (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: alerts }),
+        (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: data.lang.endonym().to_owned() }),
+        (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: files }),
+        (AppPane::Sessions, Entry { glyph: icon::DEVICES, title: AppPane::Sessions.title(s), summary: devices }),
+        (AppPane::Diagnostics, Entry { glyph: icon::PULSE, title: AppPane::Diagnostics.title(s), summary: s.sum_diagnostics.to_owned() }),
+    ];
+
+    let mut open = None;
+    if !state.mobile_query.trim().is_empty() {
+        let mut all = vec![(AppPane::Account, Entry { glyph: icon::USER, title: AppPane::Account.title(s), summary: s.sum_account.to_owned() })];
+        all.extend(rows);
+        open = filtered(ui, t, s, &state.mobile_query, &all);
+    } else {
+        // Você no topo: a foto, o nome e o que fica em "Conta".
+        let me = data.store.member(&data.store.me);
+        let tint = me
+            .and_then(|member| member.role_color)
+            .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+            .unwrap_or(t.accent);
+        let initials = me.map(|member| member.initials()).unwrap_or_default();
+        let ctx = ui.ctx().clone();
+        let face = data
+            .media
+            .avatar(&data.store.me, data.store.avatars.get(&data.store.me).map(String::as_str))
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let lead = |painter: &egui::Painter, rect: Rect| match face {
+            Some(texture) => crate::ui::widgets::round_photo(painter, rect, texture, egui::Color32::WHITE),
+            None => {
+                painter.circle_filled(rect.center(), 20.0, tint.gamma_multiply(0.30));
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), tint);
+            }
+        };
+        let me_entry = Entry { glyph: "", title: &data.store.my_name, summary: s.sum_account.to_owned() };
+        if list_tile(ui, t, &me_entry, true, true, Some(&lead)) {
+            open = Some(AppPane::Account);
+        }
+        ui.add_space(space::LG);
+        let (device, rest) = rows.split_at(4);
+        let groups: [&[(AppPane, Entry<'_>)]; 3] = [device, &rest[..1], &rest[1..]];
+        for group in groups {
+            let entries: Vec<Entry<'_>> = group.iter().map(|(_, e)| Entry { glyph: e.glyph, title: e.title, summary: e.summary.clone() }).collect();
+            if let Some(index) = tile_group(ui, t, &entries) {
+                open = Some(group[index].0);
+            }
+        }
+        footnote(ui, t, s.sum_synced);
+    }
+    if let Some(pane) = open {
+        state.app_pane = pane;
+        state.mobile_page = true;
+        if pane == AppPane::Account {
+            state.draft.loaded_account = false;
+        }
+    }
+}
+
+/// Lista dos ajustes do servidor: só o que o cargo permite.
+fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    use egui_phosphor::regular as icon;
+    search_field(ui, t, s, &mut state.mobile_query);
+    let store = data.store;
+    let all: Vec<(ServerPane, Entry<'_>)> = [
+        (ServerPane::General, icon::IDENTIFICATION_CARD, s.sum_identity.to_owned()),
+        (ServerPane::Channels, icon::LIST_BULLETS, format!("{} {}", store.channels.len(), s.sum_channels)),
+        (ServerPane::Roles, icon::SHIELD, format!("{} {}", store.roles.len(), s.sum_roles)),
+        (ServerPane::Emojis, icon::SMILEY, format!("{} {}", store.emojis.len(), s.sum_stickers)),
+        (ServerPane::Audit, icon::CLOCK_COUNTER_CLOCKWISE, s.sum_audit.to_owned()),
+    ]
+    .into_iter()
+    .filter(|(pane, _, _)| server_pane_allowed(store, *pane))
+    .map(|(pane, glyph, summary)| (pane, Entry { glyph, title: pane.title(s), summary }))
+    .collect();
+
+    let mut open = None;
+    if !state.mobile_query.trim().is_empty() {
+        open = filtered(ui, t, s, &state.mobile_query, &all);
+    } else {
+        // O servidor no topo: ícone, nome, endereço e quantos são.
+        let name = store.server.as_ref().map(|server| server.name.clone()).unwrap_or_default();
+        let ctx = ui.ctx().clone();
+        let texture = store
+            .server
+            .as_ref()
+            .and_then(|server| server.icon.as_deref())
+            .and_then(|blob| data.media.server_icon(blob))
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
+        let lead = |painter: &egui::Painter, rect: Rect| match texture {
+            Some(texture) => crate::ui::widgets::photo(painter, rect, texture, crate::ui::widgets::FULL_UV, CornerRadius::same(radius::CARD), egui::Color32::WHITE),
+            None => {
+                painter.rect_filled(rect, CornerRadius::same(radius::CARD), t.accent.gamma_multiply(0.30));
+                painter.text(rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), t.accent);
+            }
+        };
+        let address = data.server_url.trim_start_matches("https://").trim_start_matches("http://");
+        let head = Entry { glyph: "", title: &name, summary: format!("{address} · {} {}", store.members.len(), s.count_members) };
+        list_tile(ui, t, &head, true, true, Some(&lead));
+        ui.add_space(space::LG);
+        let split = all.iter().position(|(pane, _)| matches!(pane, ServerPane::Emojis | ServerPane::Audit)).unwrap_or(all.len());
+        let (admin, extra) = all.split_at(split);
+        for group in [admin, extra] {
+            if group.is_empty() {
+                continue;
+            }
+            let entries: Vec<Entry<'_>> = group.iter().map(|(_, e)| Entry { glyph: e.glyph, title: e.title, summary: e.summary.clone() }).collect();
+            if let Some(index) = tile_group(ui, t, &entries) {
+                open = Some(group[index].0);
+            }
+        }
+        footnote(ui, t, s.sum_admin_note);
+    }
+    if let Some(pane) = open {
+        state.server_pane = pane;
+        state.mobile_page = true;
+        state.draft.loaded_server = false;
+        state.draft.loaded_audit = false;
+    }
 }
 
 /// Cabeçalho: quem ou o quê está sendo ajustado, o nome do painel e o X.

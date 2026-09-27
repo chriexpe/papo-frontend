@@ -207,3 +207,29 @@ pub fn dropdown<'a>(row: &Response, surface: Rect, value: Rect, compact: bool) -
             .gap(space::SM)
     }
 }
+
+/// Opção de um menu suspenso: a marca numa coluna própria, para os rótulos
+/// ficarem alinhados com ou sem ela. Devolve `true` no clique.
+pub fn menu_option(ui: &mut Ui, t: &Tokens, label: &str, selected: bool) -> bool {
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), text::body(), t.label);
+    let width = (galley.size().x + 20.0 + space::MD * 2.0).max(ui.available_width());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+    }
+    if selected {
+        ui.painter().text(
+            egui::pos2(rect.min.x + space::MD + 6.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CHECK,
+            text::icon(13.0),
+            t.accent,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        t.label,
+    );
+    response.clicked()
+}
