@@ -3829,6 +3829,61 @@ mod tests {
     }
 
     #[test]
+    fn refresh_parcial_preserva_historico_abaixo_da_janela_autoritativa() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+
+        let base = Utc::now();
+        let mut old = wire_message("old", "geral", "old");
+        old.created_at = base - chrono::Duration::minutes(10);
+        let mut stale = wire_message("stale", "geral", "stale");
+        stale.created_at = base - chrono::Duration::minutes(1);
+        let mut keep = wire_message("keep", "geral", "old value");
+        keep.created_at = base;
+
+        let me = store.me.clone();
+        store.messages = vec![
+            convert(old, &me),
+            convert(stale, &me),
+            convert(keep, &me),
+        ];
+
+        let ticket = store.mark_loading("geral");
+        let mut keep_new = wire_message("keep", "geral", "new value");
+        keep_new.created_at = base;
+        let mut newest = wire_message("new", "geral", "new");
+        newest.created_at = base + chrono::Duration::minutes(1);
+        store.apply(Update::Messages {
+            ticket,
+            messages: vec![newest, keep_new],
+            has_more: true,
+            pinned_ids: Some(Vec::new()),
+        });
+
+        assert!(store.message("old").is_some(), "histórico mais antigo deve sobreviver");
+        assert!(store.message("stale").is_none(), "linha ausente dentro do head deve sair");
+        assert_eq!(
+            store.message("keep").map(|message| message.content.as_str()),
+            Some("new value")
+        );
+        assert!(store.message("new").is_some());
+
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::MergeChannelHead { channel_id, deleted_ids, .. }
+                if channel_id == "geral" && deleted_ids == &vec!["stale".to_owned()]
+        )));
+        assert!(
+            !ops.iter().any(|op| matches!(op, CacheOp::ReplaceChannelSnapshot { .. })),
+            "refresh parcial não pode achatar o cache inteiro"
+        );
+    }
+
+    #[test]
     fn pagina_antiga_mescla_sem_substituir_e_fecha_no_fim() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
