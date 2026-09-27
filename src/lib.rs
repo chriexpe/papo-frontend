@@ -10,6 +10,7 @@ pub mod app;
 pub mod i18n;
 pub mod media;
 pub mod platform;
+pub mod render;
 pub mod state;
 pub mod storage;
 pub mod ui;
