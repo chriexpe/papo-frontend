@@ -2448,6 +2448,8 @@ mod tests {
             username: "chris_real".to_owned(),
             name: "Chris".to_owned(),
             presence: Presence::Online,
+            status_message: None,
+            typing_label: None,
             role_color: None,
             roles: Vec::new(),
         });
