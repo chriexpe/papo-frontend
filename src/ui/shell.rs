@@ -796,9 +796,9 @@ pub struct UiState {
     forced_chat_scroll: Option<(String, f32)>,
     /// Baseline para uma mudança de altura assíncrona acima da viewport.
     relayout_scroll_anchor: Option<(String, f32, f32)>,
-    /// Estado observado dos previews; false -> true indica que metadados ricos
-    /// chegaram e o cartão pode mudar de altura.
-    preview_layout_ready: std::collections::HashMap<String, bool>,
+    /// Fase de layout observada por preview: 0 carregando, 1 metadados ricos,
+    /// 2 mídia materializada. Cada avanço pode alterar a altura do cartão.
+    preview_layout_phase: std::collections::HashMap<String, u8>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -899,7 +899,7 @@ impl Default for UiState {
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
-            preview_layout_ready: std::collections::HashMap::new(),
+            preview_layout_phase: std::collections::HashMap::new(),
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -952,7 +952,7 @@ fn preserve_chat_position_for_relayout(state: &mut UiState, ctx: &egui::Context)
     let Some((metrics_channel, offset, height)) = state.chat_scroll_metrics.as_ref() else {
         return;
     };
-    if *metrics_channel != channel || height <= &0.0 {
+    if *metrics_channel != channel || *height <= 0.0 {
         return;
     }
     state.relayout_scroll_anchor = Some((channel, *offset, *height));
@@ -972,10 +972,11 @@ pub fn draw(
     state.media_seek_zones.clear();
     state.webembed_inline_rect = None;
 
-    // Mídia que acabou de chegar pode mudar a altura de uma mensagem já
-    // visível. Preserva o ponto visual antes de deixar a nova geometria entrar.
+    // Mídia que acabou de chegar muda a altura das mensagens. A compensação
+    // fina dos previews é feita por cartão, onde sabemos se ele está acima da
+    // viewport; outras mídias mantêm o relayout já usado pelo shell.
     if state.media.pump(ui.ctx()) {
-        preserve_chat_position_for_relayout(state, ui.ctx());
+        state.relayout = true;
     }
 
     // Resultado de um canal que nunca carregou: a busca não pode ficar
@@ -2251,6 +2252,7 @@ fn conversation(
                     state.forced_chat_scroll = Some((forced_channel, offset));
                 }
             }
+            let mut request_older = false;
             let output = scroll.show_viewport(ui, |ui, viewport| {
                 let web_scroll = state
                     .webembed
@@ -2262,21 +2264,19 @@ fn conversation(
                 message_list(ui, store, state, t, s, full);
                 ui.add_space(bottom_inset);
 
-                if viewport.min.y <= top_inset + 360.0
+                request_older = viewport.min.y <= top_inset + 360.0
                     && store.can_load_older(&channel_id)
-                    && state.history_scroll_anchor.is_none()
-                {
-                    let old_height = state
-                        .chat_scroll_metrics
-                        .as_ref()
-                        .filter(|(id, _, _)| id == &channel_id)
-                        .map(|(_, _, height)| *height)
-                        .unwrap_or(0.0);
-                    state.history_scroll_anchor =
-                        Some((channel_id.clone(), viewport.min.y, old_height));
-                    state.actions.push(ChatAction::LoadOlderMessages);
-                }
+                    && state.history_scroll_anchor.is_none();
             });
+
+            if request_older && output.content_size.y > 0.0 {
+                state.history_scroll_anchor = Some((
+                    channel_id.clone(),
+                    output.state.offset.y,
+                    output.content_size.y,
+                ));
+                state.actions.push(ChatAction::LoadOlderMessages);
+            }
 
             if let Some((anchor_channel, anchor_offset, old_height)) =
                 state.history_scroll_anchor.clone()
@@ -4227,15 +4227,6 @@ fn preview_card(
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
-    let is_ready = ready.is_some();
-    let previous_ready = state.preview_layout_ready.insert(embed_id.to_owned(), is_ready);
-    if previous_ready == Some(false)
-        && is_ready
-        && ui.cursor().min.y <= ui.clip_rect().max.y
-    {
-        preserve_chat_position_for_relayout(state, ui.ctx());
-    }
-
     let backend_image = backend
         .and_then(|preview| state.media.preview(preview))
         .and_then(|texture| texture.frame(ui.ctx()))
@@ -4280,6 +4271,22 @@ fn preview_card(
                 .ok()
                 .and_then(|parsed| parsed.host_str().map(str::to_owned))
         });
+
+    // O cartão pode crescer em duas etapas: primeiro chegam os metadados
+    // (título/embed/media URL), depois a imagem realmente materializa.
+    let phase = if image.is_some() {
+        2
+    } else if ready.is_some() || video_url.is_some() || embed_url.is_some() {
+        1
+    } else {
+        0
+    };
+    let previous_phase = state.preview_layout_phase.insert(embed_id.to_owned(), phase);
+    if previous_phase.is_some_and(|previous| phase > previous)
+        && ui.cursor().min.y <= ui.clip_rect().max.y
+    {
+        preserve_chat_position_for_relayout(state, ui.ctx());
+    }
 
     ui.add_space(space::SM);
     let card_width = width.clamp(160.0, MAX_W);
