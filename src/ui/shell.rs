@@ -157,6 +157,8 @@ pub enum ChatAction {
     },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
+    /// Busca mais antiga do histórico quando a timeline chega perto do topo.
+    LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
     Search(String),
     /// `off`, `only_mentions` ou `all` para este canal.
@@ -785,6 +787,18 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
+    /// Última geometria observada da conversa, usada para preservar o ponto
+    /// visual quando uma página antiga entra antes do conteúdo visível.
+    chat_scroll_metrics: Option<(String, f32, f32)>,
+    /// Baseline capturada quando pedimos uma página mais antiga.
+    history_scroll_anchor: Option<(String, f32, f32)>,
+    /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
+    forced_chat_scroll: Option<(String, f32)>,
+    /// Baseline para uma mudança de altura assíncrona acima da viewport.
+    relayout_scroll_anchor: Option<(String, f32, f32)>,
+    /// Fase de layout observada por preview: 0 carregando, 1 metadados ricos,
+    /// 2 mídia materializada. Cada avanço pode alterar a altura do cartão.
+    preview_layout_phase: std::collections::HashMap<String, u8>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -881,6 +895,11 @@ impl Default for UiState {
             show_record: true,
             recorder: None,
             error: None,
+            chat_scroll_metrics: None,
+            history_scroll_anchor: None,
+            forced_chat_scroll: None,
+            relayout_scroll_anchor: None,
+            preview_layout_phase: std::collections::HashMap::new(),
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -928,6 +947,18 @@ impl UiState {
     }
 }
 
+fn preserve_chat_position_for_relayout(state: &mut UiState, ctx: &egui::Context) {
+    let channel = state.last_channel.clone();
+    let Some((metrics_channel, offset, height)) = state.chat_scroll_metrics.as_ref() else {
+        return;
+    };
+    if *metrics_channel != channel || *height <= 0.0 {
+        return;
+    }
+    state.relayout_scroll_anchor = Some((channel, *offset, *height));
+    ctx.request_discard("conteúdo assíncrono mudou a altura da conversa");
+}
+
 pub fn draw(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -941,7 +972,9 @@ pub fn draw(
     state.media_seek_zones.clear();
     state.webembed_inline_rect = None;
 
-    // Mídia que acabou de chegar muda a altura das mensagens.
+    // Mídia que acabou de chegar muda a altura das mensagens. A compensação
+    // fina dos previews é feita por cartão, onde sabemos se ele está acima da
+    // viewport; outras mídias mantêm o relayout já usado pelo shell.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
     }
@@ -979,6 +1012,10 @@ pub fn draw(
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         state.close_popup();
+        state.chat_scroll_metrics = None;
+        state.history_scroll_anchor = None;
+        state.forced_chat_scroll = None;
+        state.relayout_scroll_anchor = None;
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2198,25 +2235,87 @@ fn conversation(
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
-            egui::ScrollArea::vertical()
+            let channel_id = store.selected_channel.clone();
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
                     egui::containers::scroll_area::ScrollSource::NONE
                 } else {
                     egui::containers::scroll_area::ScrollSource::ALL
                 })
                 .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    let web_scroll = state
-                        .webembed
-                        .take_scroll_delta_points(ui.ctx().pixels_per_point());
-                    if web_scroll.abs() > f32::EPSILON {
-                        ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
-                    }
-                    ui.add_space(top_inset);
-                    message_list(ui, store, state, t, s, full);
-                    ui.add_space(bottom_inset);
-                });
+                .stick_to_bottom(true);
+            if let Some((forced_channel, offset)) = state.forced_chat_scroll.take() {
+                if forced_channel == channel_id {
+                    scroll = scroll.vertical_scroll_offset(offset.max(0.0));
+                } else {
+                    state.forced_chat_scroll = Some((forced_channel, offset));
+                }
+            }
+            let mut request_older = false;
+            let output = scroll.show_viewport(ui, |ui, viewport| {
+                let web_scroll = state
+                    .webembed
+                    .take_scroll_delta_points(ui.ctx().pixels_per_point());
+                if web_scroll.abs() > f32::EPSILON {
+                    ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
+                }
+                ui.add_space(top_inset);
+                message_list(ui, store, state, t, s, full);
+                ui.add_space(bottom_inset);
+
+                request_older = viewport.min.y <= top_inset + 360.0
+                    && store.can_load_older(&channel_id)
+                    && state.history_scroll_anchor.is_none();
+            });
+
+            if request_older && output.content_size.y > 0.0 {
+                state.history_scroll_anchor = Some((
+                    channel_id.clone(),
+                    output.state.offset.y,
+                    output.content_size.y,
+                ));
+                state.actions.push(ChatAction::LoadOlderMessages);
+            }
+
+            if let Some((anchor_channel, anchor_offset, old_height)) =
+                state.history_scroll_anchor.clone()
+                && anchor_channel == channel_id
+                && old_height > 0.0
+                && output.content_size.y > old_height + 1.0
+            {
+                let delta = output.content_size.y - old_height;
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), anchor_offset + delta));
+                state.history_scroll_anchor = None;
+                ui.ctx().request_discard("histórico antigo inserido acima da viewport");
+            } else if state.history_scroll_anchor.is_some()
+                && !request_older
+                && !store.loading_older(&channel_id)
+            {
+                // Falhou, chegou uma página vazia ou acabou o histórico sem
+                // alterar a geometria. Libera a âncora para permitir retry.
+                state.history_scroll_anchor = None;
+            }
+
+            if let Some((anchor_channel, anchor_offset, old_height)) =
+                state.relayout_scroll_anchor.clone()
+                && anchor_channel == channel_id
+                && old_height > 0.0
+                && (output.content_size.y - old_height).abs() > 1.0
+            {
+                let delta = output.content_size.y - old_height;
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), (anchor_offset + delta).max(0.0)));
+                state.relayout_scroll_anchor = None;
+                ui.ctx().request_discard("preview/mídia mudou acima da viewport");
+            }
+
+            state.chat_scroll_metrics = Some((
+                channel_id,
+                output.state.offset.y,
+                output.content_size.y,
+            ));
         });
 
         // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
@@ -4135,7 +4234,6 @@ fn preview_card(
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
-
     let backend_image = backend
         .and_then(|preview| state.media.preview(preview))
         .and_then(|texture| texture.frame(ui.ctx()))
@@ -4180,6 +4278,22 @@ fn preview_card(
                 .ok()
                 .and_then(|parsed| parsed.host_str().map(str::to_owned))
         });
+
+    // O cartão pode crescer em duas etapas: primeiro chegam os metadados
+    // (título/embed/media URL), depois a imagem realmente materializa.
+    let phase = if image.is_some() {
+        2
+    } else if ready.is_some() || video_url.is_some() || embed_url.is_some() {
+        1
+    } else {
+        0
+    };
+    let previous_phase = state.preview_layout_phase.insert(embed_id.to_owned(), phase);
+    if previous_phase.is_some_and(|previous| phase > previous)
+        && ui.cursor().min.y < ui.clip_rect().min.y
+    {
+        preserve_chat_position_for_relayout(state, ui.ctx());
+    }
 
     ui.add_space(space::SM);
     let card_width = width.clamp(160.0, MAX_W);

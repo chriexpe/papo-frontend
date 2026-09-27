@@ -357,6 +357,8 @@ enum StoreMutation {
     ReplaceChannelSnapshot {
         channel_id: String,
         messages: Vec<Message>,
+        /// false means the backend returned only the newest window.
+        complete: bool,
     },
     ConfirmSent {
         local_id: String,
@@ -405,6 +407,10 @@ pub struct Store {
     outgoing_states: HashMap<String, OutgoingState>,
     /// Refresh aceito atualmente por canal, incluindo o barrier local.
     loading_channels: HashMap<String, ActiveRefresh>,
+    /// Se ainda há páginas mais antigas no backend, por canal.
+    history_has_more: HashMap<String, bool>,
+    /// Evita disparar duas páginas antigas do mesmo canal ao mesmo tempo.
+    history_loading: HashSet<String>,
     /// Mutações live recebidas durante refreshes REST.
     mutation_journals: HashMap<String, ChannelMutationJournal>,
     next_refresh_request_id: u64,
@@ -464,6 +470,8 @@ impl Default for Store {
             pending_cache: Vec::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
+            history_has_more: HashMap::new(),
+            history_loading: HashSet::new(),
             mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
             typing: HashMap::new(),
@@ -797,6 +805,8 @@ impl Store {
         self.members.clear();
         self.messages.clear();
         self.cached_channels.clear();
+        self.history_has_more.clear();
+        self.history_loading.clear();
         self.pending_cache.clear();
         self.outgoing_states.clear();
         self.selected_channel.clear();
@@ -884,6 +894,33 @@ impl Store {
             outgoing_oldest_age_ms: oldest
                 .map(|created| now_millis().saturating_sub(created).max(0)),
         }
+    }
+
+    pub fn can_load_older(&self, channel_id: &str) -> bool {
+        self.connection == Connection::Online
+            && self.history_has_more.get(channel_id).copied().unwrap_or(false)
+            && !self.history_loading.contains(channel_id)
+    }
+
+    pub fn loading_older(&self, channel_id: &str) -> bool {
+        self.history_loading.contains(channel_id)
+    }
+
+    /// Marca uma página antiga como em voo e devolve seu cursor.
+    pub fn begin_load_older(
+        &mut self,
+        channel_id: &str,
+    ) -> Option<(DateTime<Utc>, String)> {
+        if !self.can_load_older(channel_id) {
+            return None;
+        }
+        let oldest = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+        let cursor = (oldest.at.with_timezone(&Utc), oldest.id.clone());
+        self.history_loading.insert(channel_id.to_owned());
+        Some(cursor)
     }
 
     /// Canal que ainda precisa ter as mensagens buscadas.
@@ -1048,29 +1085,74 @@ impl Store {
             StoreMutation::ReplaceChannelSnapshot {
                 channel_id,
                 messages,
+                complete,
             } => {
-                // O snapshot autoritativo substitui apenas estado confirmado
-                // pelo servidor. Ecos locais continuam sendo outra projeção.
-                self.messages
-                    .retain(|message| message.channel_id != channel_id || message.pending);
-                for message in messages {
-                    self.upsert_message(message);
+                let returned_ids: HashSet<String> =
+                    messages.iter().map(|message| message.id.clone()).collect();
+                let oldest_returned = messages
+                    .iter()
+                    .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|message| (message.at, message.id.clone()));
+
+                // A primeira página só é autoridade para a janela que ela
+                // cobre. Se há páginas anteriores, conserva o histórico local
+                // abaixo do cursor e converge apenas o head.
+                let mut deleted_ids = Vec::new();
+                if complete {
+                    deleted_ids.extend(
+                        self.messages
+                            .iter()
+                            .filter(|message| {
+                                message.channel_id == channel_id
+                                    && !message.pending
+                                    && !returned_ids.contains(&message.id)
+                            })
+                            .map(|message| message.id.clone()),
+                    );
+                    self.messages
+                        .retain(|message| message.channel_id != channel_id || message.pending);
+                } else if let Some((oldest_at, oldest_id)) = oldest_returned.as_ref() {
+                    self.messages.retain(|message| {
+                        if message.channel_id != channel_id || message.pending {
+                            return true;
+                        }
+                        let inside_authoritative_head = message.at > *oldest_at
+                            || (message.at == *oldest_at && message.id >= *oldest_id);
+                        let stale = inside_authoritative_head
+                            && !returned_ids.contains(&message.id);
+                        if stale {
+                            deleted_ids.push(message.id.clone());
+                        }
+                        !stale
+                    });
+                }
+
+                for message in &messages {
+                    self.upsert_message(message.clone());
                 }
                 self.sort_messages();
 
                 if source == MutationSource::Reconcile {
-                    let confirmed: Vec<CachedMessage> = self
-                        .messages
-                        .iter()
-                        .filter(|message| message.channel_id == channel_id && !message.pending)
-                        .map(CachedMessage::from_store)
-                        .collect();
-                    self.pending_cache
-                        .push(CacheOp::ReplaceChannelSnapshot {
+                    if complete {
+                        let confirmed: Vec<CachedMessage> = self
+                            .messages
+                            .iter()
+                            .filter(|message| message.channel_id == channel_id && !message.pending)
+                            .map(CachedMessage::from_store)
+                            .collect();
+                        self.pending_cache.push(CacheOp::ReplaceChannelSnapshot {
                             channel_id,
                             messages: confirmed,
                             cached_at: now_millis(),
                         });
+                    } else {
+                        self.pending_cache.push(CacheOp::MergeChannelHead {
+                            channel_id,
+                            messages: messages.iter().map(CachedMessage::from_store).collect(),
+                            deleted_ids,
+                            cached_at: now_millis(),
+                        });
+                    }
                 }
             }
             StoreMutation::ConfirmSent { local_id, message } => {
@@ -1600,6 +1682,29 @@ impl Store {
                     self.pending_cache.push(CacheOp::ReplaceMembers(cached));
                 }
             }
+            Update::OlderMessages {
+                channel_id,
+                messages,
+                has_more,
+            } => {
+                let me = self.me.clone();
+                for message in messages {
+                    let message = convert(message, &me);
+                    self.apply_mutation(
+                        MutationSource::Reconcile,
+                        StoreMutation::Timeline {
+                            channel_id: Some(channel_id.clone()),
+                            mutation: TimelineMutation::MessageUpsert(message),
+                        },
+                    );
+                }
+                self.sort_messages();
+                self.history_has_more.insert(channel_id.clone(), has_more);
+                self.history_loading.remove(&channel_id);
+            }
+            Update::OlderMessagesFailed { channel_id } => {
+                self.history_loading.remove(&channel_id);
+            }
             Update::Devices(devices) => {
                 self.devices = devices;
                 self.busy = false;
@@ -1656,6 +1761,7 @@ impl Store {
             Update::Messages {
                 ticket,
                 messages,
+                has_more,
                 pinned_ids,
             } => {
                 if self.refresh_ticket_is_current(&ticket) {
@@ -1693,6 +1799,7 @@ impl Store {
                         StoreMutation::ReplaceChannelSnapshot {
                             channel_id: channel_id.clone(),
                             messages,
+                            complete: !has_more,
                         },
                     );
 
@@ -1713,6 +1820,8 @@ impl Store {
                     self.sort_messages();
 
                     self.loading_channels.remove(&channel_id);
+                    self.history_has_more.insert(channel_id.clone(), has_more);
+                    self.history_loading.remove(&channel_id);
                     self.channel_freshness
                         .insert(channel_id.clone(), ticket.generation);
                     self.mutation_journals.remove(&channel_id);
@@ -2496,7 +2605,12 @@ mod tests {
             Some(channel_id.to_owned())
         );
         let ticket = store.mark_loading(channel_id);
-        store.apply(Update::Messages { ticket, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.channel_needing_messages(), None);
         store
     }
@@ -2525,6 +2639,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages,
+            has_more: false,
             pinned_ids: Some(Vec::new()),
         });
     }
@@ -2715,9 +2830,19 @@ mod tests {
         store.apply(Update::Connection(Connection::Online));
         let atual = store.mark_loading("geral");
 
-        store.apply(Update::Messages { ticket: antiga, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: antiga,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: atual,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2729,9 +2854,19 @@ mod tests {
         let segunda = store.mark_loading("geral");
         assert_ne!(primeira.request_id, segunda.request_id);
 
-        store.apply(Update::Messages { ticket: primeira, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: primeira,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: segunda, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: segunda,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2743,7 +2878,12 @@ mod tests {
         let atual = store.mark_loading("geral");
         store.apply(Update::MessagesFailed(antiga));
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: atual,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -3001,6 +3141,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: vec![wire_message("m1", "geral", "base")],
+            has_more: false,
             pinned_ids: Some(Vec::new()),
         });
 
@@ -3688,6 +3829,109 @@ mod tests {
     }
 
     #[test]
+    fn refresh_parcial_preserva_historico_abaixo_da_janela_autoritativa() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+
+        let base = Utc::now();
+        let mut old = wire_message("old", "geral", "old");
+        old.created_at = base - chrono::Duration::minutes(10);
+        let mut stale = wire_message("stale", "geral", "stale");
+        // Fica dentro da janela autoritativa do head (entre keep e new),
+        // portanto sua ausência na resposta significa exclusão.
+        stale.created_at = base + chrono::Duration::seconds(30);
+        let mut keep = wire_message("keep", "geral", "old value");
+        keep.created_at = base;
+
+        let me = store.me.clone();
+        store.messages = vec![
+            convert(old, &me),
+            convert(stale, &me),
+            convert(keep, &me),
+        ];
+
+        let ticket = store.mark_loading("geral");
+        let mut keep_new = wire_message("keep", "geral", "new value");
+        keep_new.created_at = base;
+        let mut newest = wire_message("new", "geral", "new");
+        newest.created_at = base + chrono::Duration::minutes(1);
+        store.apply(Update::Messages {
+            ticket,
+            messages: vec![newest, keep_new],
+            has_more: true,
+            pinned_ids: Some(Vec::new()),
+        });
+
+        assert!(store.message("old").is_some(), "histórico mais antigo deve sobreviver");
+        assert!(store.message("stale").is_none(), "linha ausente dentro do head deve sair");
+        assert_eq!(
+            store.message("keep").map(|message| message.content.as_str()),
+            Some("new value")
+        );
+        assert!(store.message("new").is_some());
+
+        let ops = store.take_cache_ops();
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            CacheOp::MergeChannelHead { channel_id, deleted_ids, .. }
+                if channel_id == "geral" && deleted_ids == &vec!["stale".to_owned()]
+        )));
+        assert!(
+            !ops.iter().any(|op| matches!(op, CacheOp::ReplaceChannelSnapshot { .. })),
+            "refresh parcial não pode achatar o cache inteiro"
+        );
+    }
+
+    #[test]
+    fn pagina_antiga_mescla_sem_substituir_e_fecha_no_fim() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+
+        let now = Utc::now();
+        let mut newest = wire_message("nova", "geral", "nova");
+        newest.created_at = now;
+        let mut oldest = wire_message("antiga", "geral", "antiga");
+        oldest.created_at = now - chrono::Duration::minutes(1);
+
+        let ticket = store.mark_loading("geral");
+        store.apply(Update::Messages {
+            ticket,
+            messages: vec![newest, oldest],
+            has_more: true,
+            pinned_ids: Some(Vec::new()),
+        });
+
+        assert!(store.can_load_older("geral"));
+        let (since, last_id) = store
+            .begin_load_older("geral")
+            .expect("cursor da mensagem mais antiga");
+        assert_eq!(last_id, "antiga");
+        assert_eq!(since, now - chrono::Duration::minutes(1));
+        assert!(!store.can_load_older("geral"));
+
+        let mut older = wire_message("mais-antiga", "geral", "mais antiga");
+        older.created_at = now - chrono::Duration::minutes(2);
+        store.apply(Update::OlderMessages {
+            channel_id: "geral".to_owned(),
+            messages: vec![older],
+            has_more: false,
+        });
+
+        let ids: Vec<_> = store
+            .messages_in("geral")
+            .map(|message| message.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["mais-antiga", "antiga", "nova"]);
+        assert!(!store.can_load_older("geral"));
+    }
+
+    #[test]
     fn snapshot_de_mensagens_so_converge_pins_quando_autoritativo() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
@@ -3701,6 +3945,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: Vec::new(),
+            has_more: false,
             pinned_ids: Some(vec!["x".to_owned()]),
         });
         let ops = store.take_cache_ops();
@@ -3715,6 +3960,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages: Vec::new(),
+            has_more: false,
             pinned_ids: None,
         });
         let ops = store.take_cache_ops();

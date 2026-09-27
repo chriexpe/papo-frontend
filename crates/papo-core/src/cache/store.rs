@@ -290,6 +290,35 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             // A retenção deste canal roda uma vez no fim do lote.
             statements
         }
+        CacheOp::MergeChannelHead {
+            channel_id,
+            messages,
+            deleted_ids,
+            cached_at,
+        } => {
+            let mut statements = Vec::with_capacity(deleted_ids.len() + messages.len() + 1);
+            for message_id in deleted_ids {
+                statements.push(Stmt {
+                    sql: "DELETE FROM messages
+                          WHERE server_key = ?1 AND channel_id = ?2 AND message_id = ?3",
+                    params: vec![text(server_key), text(channel_id), text(message_id)],
+                });
+            }
+            statements.push(Stmt {
+                sql: "INSERT INTO channel_cache_state (server_key, channel_id, cached_at)
+                      VALUES (?1,?2,?3)
+                      ON CONFLICT(server_key, channel_id) DO UPDATE SET
+                          cached_at = excluded.cached_at",
+                params: vec![text(server_key), text(channel_id), integer(*cached_at)],
+            });
+            for message in messages {
+                statements.push(Stmt {
+                    sql: UPSERT_MESSAGE,
+                    params: message_params(server_key, message),
+                });
+            }
+            statements
+        }
         CacheOp::UpsertMessage(message) => vec![Stmt {
             sql: UPSERT_MESSAGE,
             params: message_params(server_key, message),
@@ -431,6 +460,7 @@ impl TursoCache {
                     retention_channels.push(message.channel_id.clone());
                 }
                 CacheOp::ReplaceChannelSnapshot { channel_id, .. }
+                | CacheOp::MergeChannelHead { channel_id, .. }
                 | CacheOp::ReplacePins { channel_id, .. } => {
                     retention_channels.push(channel_id.clone());
                 }

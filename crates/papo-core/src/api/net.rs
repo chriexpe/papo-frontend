@@ -244,6 +244,11 @@ pub enum Command {
     LoadMessages {
         ticket: RefreshTicket,
     },
+    LoadOlderMessages {
+        channel_id: String,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: String,
+    },
     CreateChannel {
         name: String,
         kind: String,
@@ -440,12 +445,21 @@ pub enum Update {
     Messages {
         ticket: RefreshTicket,
         messages: Vec<Message>,
+        has_more: bool,
         /// Snapshot de pins lido junto com o histórico. None preserva o
         /// cache anterior caso apenas a consulta de pins falhe.
         pinned_ids: Option<Vec<String>>,
     },
     /// A carga de histórico falhou; a Store libera a tentativa correspondente.
     MessagesFailed(RefreshTicket),
+    OlderMessages {
+        channel_id: String,
+        messages: Vec<Message>,
+        has_more: bool,
+    },
+    OlderMessagesFailed {
+        channel_id: String,
+    },
     /// Projeção durável local, criada/restaurada antes de qualquer POST.
     Outgoing(Box<CachedOutgoing>),
     OutgoingRestored(Vec<CachedOutgoing>),
@@ -2258,6 +2272,7 @@ async fn run_reconcile(
                     updates: vec![Update::Messages {
                         ticket,
                         messages: list.messages,
+                        has_more: list.has_more,
                         pinned_ids: fetch_pinned_ids(&api, &scope, &channel_id).await,
                     }],
                 },
@@ -2785,6 +2800,31 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
+        Command::LoadOlderMessages {
+            channel_id,
+            since,
+            last_id,
+        } => match api.messages_before(&channel_id, since, &last_id).await {
+            Ok(list) => publish(
+                updates,
+                wake,
+                Update::OlderMessages {
+                    channel_id,
+                    messages: list.messages,
+                    has_more: list.has_more,
+                },
+            ),
+            Err(error) => {
+                publish(
+                    updates,
+                    wake,
+                    Update::OlderMessagesFailed {
+                        channel_id: channel_id.clone(),
+                    },
+                );
+                report(storage_key, updates, wake, error);
+            }
+        },
         Command::Search { text } => match api.search(&text).await {
             Ok(found) => publish(updates, wake, Update::SearchResults(found.results)),
             Err(error) => report(storage_key, updates, wake, error),
