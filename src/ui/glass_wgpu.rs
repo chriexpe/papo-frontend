@@ -371,17 +371,15 @@ impl GlassGpu {
             source = self.sampled_group(device, &self.blur_layout, target_view);
         }
 
-        let final_view = if (PASSES * 2 - 1) % 2 == 0 {
-            &ping0_view
-        } else {
-            &ping1_view
-        };
+        // Each blur pair ends in ping1; PASSES is the number of H/V pairs.
+        let final_view = &ping1_view;
 
         let corner_px = corner_points * info.pixels_per_point;
         let params = [width as f32, height as f32, corner_px, SATURATION];
         let mut bytes = [0_u8; 16];
-        for (chunk, value) in bytes.chunks_exact_mut(4).zip(params) {
-            chunk.copy_from_slice(&value.to_ne_bytes());
+        for (index, value) in params.into_iter().enumerate() {
+            let offset = index * 4;
+            bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
         }
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("papo_glass_params"),
