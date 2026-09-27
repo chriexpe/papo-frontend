@@ -9,7 +9,6 @@ pub enum MenuCommand {
     NewChannel,
     Roles,
     ServerSettings,
-    ServerOverview,
     Search,
     MarkAllRead,
     ToggleMembers,

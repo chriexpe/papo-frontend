@@ -631,6 +631,8 @@ pub struct PapoApp {
     dialogs: Dialogs,
     /// Editor de recorte aberto (foto, banner, ícone do servidor).
     crop: Option<crate::ui::crop::CropEditor>,
+    /// O voltar do sistema deste quadro, quando é do editor de recorte.
+    crop_back: bool,
     /// A janela tem foco neste quadro.
     focused: bool,
     /// Sair de verdade, em vez de esconder.
@@ -864,6 +866,7 @@ impl PapoApp {
             update_status: None,
             dialogs: Dialogs::default(),
             crop: None,
+            crop_back: false,
             focused: true,
             quitting: false,
             settings,
@@ -1499,6 +1502,15 @@ impl PapoApp {
                 self.sheet.open_account();
                 return;
             }
+            ChatAction::MarkServerRead => {
+                self.workspaces[self.active].runtime.store.mark_all_read();
+                return;
+            }
+            ChatAction::LeaveServer => {
+                let active = self.active;
+                self.remove_server(active, ctx);
+                return;
+            }
             _ => {}
         }
 
@@ -1761,10 +1773,12 @@ impl PapoApp {
                 channel_id,
                 old_position,
                 new_position,
+                parent_id,
             } => ws.runtime.net.send(Command::MoveChannel {
                 channel_id,
                 old_position,
                 new_position,
+                parent_id,
             }),
             ChatAction::BanUser { user_id, banned } => {
                 ws.runtime.net.send(Command::BanUser { user_id, banned })
@@ -1772,7 +1786,7 @@ impl PapoApp {
             ChatAction::ResetUser(user_id) => ws.runtime.net.send(Command::ResetUser { user_id }),
             ChatAction::LoadProfile(user_id) => ws.runtime.net.send(Command::LoadProfile { user_id }),
             ChatAction::SetPresence(status) => ws.runtime.net.send(Command::SetStatus { status }),
-            ChatAction::EditProfile => {}
+            ChatAction::EditProfile | ChatAction::MarkServerRead | ChatAction::LeaveServer => {}
             // Entrar já foi tratado antes do `match`, porque mexe em todos
             // os servidores de uma vez.
             ChatAction::JoinVoice(_) => {}
@@ -1930,6 +1944,7 @@ impl PapoApp {
                     position,
                     permissions: Vec::new(),
                     notification_settings: "only_mentions".to_owned(),
+                    parent_id: None,
                     unread: false,
                     mentions: 0,
                 });
@@ -2044,13 +2059,27 @@ impl PapoApp {
                     channel.notification_settings = setting.to_owned();
                 }
             }
+            // Mover na demonstração muda a ordem aqui mesmo: é como se vê o
+            // arrastar e soltar sem servidor.
+            ChatAction::MoveChannel {
+                channel_id,
+                new_position,
+                parent_id,
+                ..
+            } => {
+                self.workspaces[self.active]
+                    .runtime
+                    .store
+                    .move_channel_local(&channel_id, new_position, parent_id);
+            }
             // Sem rede na demonstração: estas ações não têm efeito local.
             ChatAction::LoadOlderMessages
-            | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
             | ChatAction::EditProfile
+            | ChatAction::MarkServerRead
+            | ChatAction::LeaveServer
             | ChatAction::Search { .. }
             | ChatAction::LoadReactionDetails { .. } => {}
             // A presença muda na hora, sem servidor para confirmar.
@@ -2364,9 +2393,10 @@ impl PapoApp {
                     name,
                     size,
                     preview,
+                    frames,
                 } => {
                     self.crop = Some(crate::ui::crop::CropEditor::new(
-                        ctx, purpose, path, name, size, preview,
+                        ctx, purpose, path, name, size, preview, frames,
                     ));
                 }
                 Chosen::Unreadable => {
@@ -2377,7 +2407,8 @@ impl PapoApp {
                     purpose,
                     blob,
                     format,
-                    shrunk,
+                    shrunk: _,
+                    name,
                 } => match purpose {
                     ImagePick::Avatar => {
                         self.workspaces[self.active].runtime
@@ -2408,18 +2439,14 @@ impl PapoApp {
                             },
                         )));
                     }
-                    // A figurinha espera pelo nome: ela aparece no painel com
-                    // um campo ao lado, e só então sobe.
+                    // O nome veio do editor: a figurinha sobe direto.
                     ImagePick::Sticker => {
-                        self.sheet.draft.pending_sticker =
-                            Some(crate::ui::settings::PendingSticker {
-                                blob,
-                                format,
-                                shrunk,
-                                name: String::new(),
-                            });
-                        self.sheet.open = Some(crate::ui::settings::Surface::Server);
-                        self.sheet.server_pane = crate::ui::settings::ServerPane::Emojis;
+                        if let Some(name) = name.filter(|name| !name.is_empty()) {
+                            self.workspaces[self.active]
+                                .runtime
+                                .net
+                                .send(Command::CreateEmoji { name, blob, format });
+                        }
                     }
                 },
                 Chosen::Cancelled => {}
@@ -2550,9 +2577,6 @@ impl PapoApp {
                 self.sheet.toggle(crate::ui::settings::Surface::App);
                 self.sheet.app_pane = crate::ui::settings::AppPane::Sessions;
             }
-            MenuCommand::ServerOverview => {
-                self.sheet.open_server_overview();
-            }
             MenuCommand::Roles => {
                 let ws = &self.workspaces[self.active];
                 if !ws.runtime.store.can_manage_roles() {
@@ -2568,7 +2592,7 @@ impl PapoApp {
                 if self.sheet.open_server_admin(&ws.runtime.store) {
                     ws.runtime.net.send(Command::LoadRoles);
                     if ws.runtime.store.can_manage_server() {
-                        ws.runtime.net.send(Command::LoadAuditLogs);
+                        ws.runtime.net.send(Command::LoadAuditLogs(Default::default()));
                     }
                 }
             }
@@ -2620,13 +2644,42 @@ impl PapoApp {
                 Command::CreateEmoji { name, blob, format }
             }
             AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
-            AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
+            AdminAction::LoadAuditLogs(query) => Command::LoadAuditLogs(query),
         };
         self.workspaces[self.active].runtime.net.send(command);
     }
 
     fn handle_role(&mut self, action: crate::ui::roles::RoleAction) {
         use crate::ui::roles::RoleAction;
+
+        // Na demonstração não há servidor: dar, tirar e editar cargo mudam
+        // o estado aqui mesmo, para a tela de Cargos responder.
+        if self.demo {
+            let store = &mut self.workspaces[self.active].runtime.store;
+            match action {
+                RoleAction::Assign { user_id, role_id } => {
+                    if let Some(member) = store.members.iter_mut().find(|m| m.id == user_id)
+                        && !member.roles.contains(&role_id)
+                    {
+                        member.roles.push(role_id);
+                    }
+                }
+                RoleAction::Unassign { user_id, role_id } => {
+                    if let Some(member) = store.members.iter_mut().find(|m| m.id == user_id) {
+                        member.roles.retain(|id| id != &role_id);
+                    }
+                }
+                RoleAction::Update { role_id, name, color, permissions } => {
+                    if let Some(role) = store.roles.iter_mut().find(|r| r.id == role_id) {
+                        role.name = name;
+                        role.color = color;
+                        role.permissions = permissions;
+                    }
+                }
+                RoleAction::Create { .. } | RoleAction::Delete(_) => {}
+            }
+            return;
+        }
 
         let command = match action {
             RoleAction::Create {
@@ -2670,6 +2723,7 @@ impl PapoApp {
         let store = &self.workspaces[self.active].runtime.store;
         let me = store.member(&store.me);
         let face = crate::ui::crop::Face {
+            name: store.my_name.clone(),
             texture: self
                 .ui
                 .media
@@ -2682,11 +2736,12 @@ impl PapoApp {
                 .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
                 .unwrap_or(t.accent),
         };
-        match crate::ui::crop::draw(ctx, editor, &t, s, &face) {
-            Some(crate::ui::crop::CropOutcome::Save(crop)) => {
+        let back = std::mem::take(&mut self.crop_back);
+        match crate::ui::crop::draw(ctx, editor, &t, s, &face, back) {
+            Some(crate::ui::crop::CropOutcome::Save(crop, name)) => {
                 let purpose = editor.purpose;
                 let path = editor.path.clone();
-                self.dialogs.prepare_crop(ctx.clone(), purpose, path, crop);
+                self.dialogs.prepare_crop(ctx.clone(), purpose, path, crop, name);
                 self.crop = None;
             }
             Some(crate::ui::crop::CropOutcome::Cancel) => self.crop = None,
@@ -2774,6 +2829,7 @@ impl PapoApp {
                 store: &ws.runtime.store,
                 server_url: &ws.runtime.url,
                 media: &mut self.ui.media,
+                collapsed: &mut self.ui.collapsed_categories,
                 roles: &mut self.roles,
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,
@@ -3385,7 +3441,23 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
-                self.ui.webembed_blocked = self.sheet.open.is_some() || self.ui.profile.is_some();
+                // O voltar do sistema tem um dono por quadro, decidido aqui:
+                // o editor de recorte, senão os ajustes, senão o que está
+                // aberto por cima da conversa (cartões). Espalhar essa
+                // decisão fazia um cartão fechado desligar o voltar de outro.
+                let back = crate::platform::back::take();
+                if self.crop.is_some() {
+                    self.crop_back = back;
+                } else if back && self.sheet.open.is_some() {
+                    self.sheet.back();
+                } else {
+                    self.ui.back = back;
+                }
+                self.ui.webembed_blocked = self.sheet.open.is_some()
+                    || self.ui.profile.is_some()
+                    || self.ui.server_card.is_some();
+                self.ui.server_url = self.workspaces[active].runtime.url.clone();
+                self.ui.server_count = self.workspaces.len();
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -3427,6 +3499,12 @@ impl eframe::App for PapoApp {
         self.sheet.modal_above = self.crop.is_some();
         self.settings_sheet(&ctx);
         self.crop_editor(&ctx);
+        crate::platform::back::intercept(
+            self.crop.is_some()
+                || self.sheet.open.is_some()
+                || self.ui.profile.is_some()
+                || self.ui.server_card.is_some(),
+        );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
         self.pump_files(&ctx);

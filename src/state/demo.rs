@@ -65,26 +65,40 @@ pub fn seed(store: &mut Store, server_key: &str) {
         member("u-edu", "Edu", Presence::Offline, None),
     ];
     profiles(store);
+    store.audit_logs = audit_logs();
 
     store.channels = vec![
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
-        channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 2),
-        channel("c-design", "design", "Telas, protótipos e discussões de cor", 3),
+        // Uma categoria de verdade, para ver o arrastar entre categorias.
+        Channel {
+            kind: ChannelKind::Category,
+            topic: None,
+            ..channel("c-projetos", "Projetos", "", 2)
+        },
+        Channel {
+            parent_id: Some("c-projetos".into()),
+            ..channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 3)
+        },
+        Channel {
+            parent_id: Some("c-projetos".into()),
+            ..channel("c-design", "design", "Telas, protótipos e discussões de cor", 4)
+        },
         Channel {
             id: "c-voz".into(),
             name: "sala de voz".into(),
             kind: ChannelKind::Voice,
             topic: None,
-            position: 4,
+            position: 5,
             permissions: Vec::new(),
             notification_settings: "only_mentions".into(),
+            parent_id: None,
             unread: false,
             mentions: 0,
         },
     ];
-    store.channels[1].unread = true;
-    store.channels[1].mentions = 2;
     store.channels[2].unread = true;
+    store.channels[2].mentions = 2;
+    store.channels[3].unread = true;
     store.selected_channel = "c-geral".into();
     store.mark_loading("c-geral");
     store.mark_loading("c-dev");
@@ -516,12 +530,33 @@ fn profiles(store: &mut Store) {
             180,
         ),
         ("u-bruno", None, Some("Revisando PR até dormir."), vec![dev.clone()], 90),
-        ("u-dora", Some("em reunião até as 16h"), None, vec![design, dev], 60),
+        ("u-dora", Some("em reunião até as 16h"), None, vec![design.clone(), dev.clone()], 60),
         ("u-edu", None, None, Vec::new(), 12),
     ];
+    // Os mesmos cargos na lista do servidor, para a tela de Cargos ter o
+    // que mostrar (com permissões de exemplo).
+    let permissions = |manage: bool| crate::api::models::RolePermissions {
+        manage_server: manage,
+        manage_channels: manage,
+        manage_roles: manage,
+        ban_members: manage,
+        pin_message: true,
+        everyone_message: manage,
+        send_attachment: true,
+    };
+    store.roles = [(&admin, true), (&design, false), (&dev, false)]
+        .into_iter()
+        .map(|(role, manage)| crate::api::models::Role {
+            id: role.id.clone(),
+            name: role.name.clone(),
+            color: role.color.clone(),
+            permissions: permissions(manage),
+        })
+        .collect();
     for (id, status, about, roles, days) in entries {
         if let Some(member) = store.members.iter_mut().find(|member| member.id == id) {
             member.status_message = status.map(str::to_owned);
+            member.roles = roles.iter().map(|role| role.id.clone()).collect();
         }
         store.profiles.insert(
             id.into(),
@@ -569,6 +604,42 @@ fn profiles(store: &mut Store) {
     );
 }
 
+/// Um pouco de tudo, para a Auditoria ter o que filtrar sem servidor.
+fn audit_logs() -> Vec<crate::api::models::AuditLogEntry> {
+    let now = chrono::Utc::now();
+    let entry = |id: &str, minutes: i64, actor: (&str, &str), action: &str, meta: serde_json::Value| {
+        let metadata = meta.as_object().cloned().unwrap_or_default();
+        crate::api::models::AuditLogEntry {
+            id: id.into(),
+            actor_username: actor.1.into(),
+            action: action.into(),
+            entity_type: action.split('.').next().unwrap_or("").into(),
+            created_at: Some(now - Duration::minutes(minutes)),
+            actor_id: Some(actor.0.into()),
+            entity_id: None,
+            target_user_id: metadata.get("target_user_id").and_then(|v| v.as_str()).map(str::to_owned),
+            target_username: None,
+            channel_id: metadata.get("channel_id").and_then(|v| v.as_str()).map(str::to_owned),
+            metadata,
+        }
+    };
+    let ana = ("u-ana", "ana");
+    let me = ("u-eu", "christian");
+    let dora = ("u-dora", "dora");
+    vec![
+        entry("a1", 12, ana, "message.delete", serde_json::json!({"channel_id": "c-geral", "author_id": "u-bruno", "content": "perfeito, @christian fecha isso hoje então 👀"})),
+        entry("a2", 40, me, "message.delete", serde_json::json!({"channel_id": "c-dev", "author_id": "u-eu"})),
+        entry("a3", 95, me, "user_role.assign", serde_json::json!({"target_user_id": "u-edu", "name": "Dev"})),
+        entry("a4", 180, dora, "channel.update", serde_json::json!({"channel_id": "c-design"})),
+        entry("a5", 60 * 26, dora, "message.delete", serde_json::json!({"channel_id": "c-design", "author_id": "u-edu", "content": "vou mandar o protótipo novo amanhã cedo"})),
+        entry("a6", 60 * 27, me, "channel.create", serde_json::json!({"channel_id": "c-projetos", "name": "Projetos"})),
+        entry("a7", 60 * 28, me, "role.create", serde_json::json!({"name": "Design"})),
+        entry("a8", 60 * 24 * 4, ana, "emoji.create", serde_json::json!({"name": "festa"})),
+        entry("a9", 60 * 24 * 5, me, "server.update", serde_json::json!({})),
+        entry("a10", 60 * 24 * 6, ("u-edu", "edu"), "user.register", serde_json::json!({})),
+    ]
+}
+
 fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>) -> Member {
     Member {
         id: id.into(),
@@ -591,6 +662,7 @@ fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
         position,
         permissions: Vec::new(),
         notification_settings: "only_mentions".into(),
+        parent_id: None,
         unread: false,
         mentions: 0,
     }

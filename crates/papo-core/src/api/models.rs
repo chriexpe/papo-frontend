@@ -206,6 +206,10 @@ pub struct Channel {
     pub permissions: Vec<ChannelPermissionEntry>,
     #[serde(default = "default_channel_notification_setting")]
     pub notification_settings: String,
+    /// Categoria do canal (`parent_id`); ausente em servidores que ainda não
+    /// a têm.
+    #[serde(default)]
+    pub parent_id: Option<String>,
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
 }
@@ -302,6 +306,10 @@ pub struct BanUserRequest {
 pub struct ChangeChannelPositionRequest {
     pub old_position: i32,
     pub new_position: i32,
+    /// Troca de categoria no mesmo pedido: ausente não mexe, `""` tira o
+    /// canal da categoria, um id põe o canal nela.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// Permissões de uma role dentro de um canal. O backend usa o conjunto
@@ -420,6 +428,54 @@ pub struct AuditLogEntry {
     #[serde(default)]
     pub entity_type: String,
     pub created_at: Option<DateTime<Utc>>,
+    // O que vem daqui para baixo é opcional: servidores mais antigos não
+    // mandam, e a tela se vira com o que tiver.
+    #[serde(default)]
+    pub actor_id: Option<String>,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub target_user_id: Option<String>,
+    #[serde(default)]
+    pub target_username: Option<String>,
+    #[serde(default)]
+    pub channel_id: Option<String>,
+    /// Dados da ação (nome do canal, texto apagado...), como o servidor
+    /// guardou.
+    #[serde(default)]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+impl AuditLogEntry {
+    /// O canal envolvido: o campo próprio, ou o `channel_id` do metadata.
+    pub fn channel(&self) -> Option<&str> {
+        self.channel_id
+            .as_deref()
+            .or_else(|| self.metadata.get("channel_id").and_then(|value| value.as_str()))
+            .filter(|id| !id.is_empty())
+    }
+
+    /// O alvo: o campo próprio, ou o autor da mensagem apagada.
+    pub fn target(&self) -> Option<&str> {
+        self.target_user_id
+            .as_deref()
+            .or_else(|| self.metadata.get("author_id").and_then(|value| value.as_str()))
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// Filtros de GET /admin/audit-logs. Os que o servidor não conhece ele
+/// ignora; a tela filtra de novo aqui o que der (alvo e canal).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AuditQuery {
+    pub action: Option<String>,
+    pub actor_id: Option<String>,
+    pub entity_type: Option<String>,
+    pub target_user_id: Option<String>,
+    pub channel_id: Option<String>,
+    pub since: Option<DateTime<Utc>>,
+    /// Cursor: id do último item carregado ("carregar mais").
+    pub last_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

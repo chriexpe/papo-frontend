@@ -21,6 +21,8 @@ pub enum Chosen {
         format: String,
         /// O arquivo precisou ser reduzido para caber.
         shrunk: bool,
+        /// Nome dado no editor (a figurinha sobe já com ele).
+        name: Option<String>,
     },
     /// Imagem escolhida que ainda passa pelo editor de recorte: o arquivo
     /// original e uma prévia reduzida para desenhar.
@@ -31,6 +33,10 @@ pub enum Chosen {
         /// Tamanho do original, em pixels.
         size: [u32; 2],
         preview: egui::ColorImage,
+        /// GIF animado: os quadros reduzidos e a espera de cada um, em
+        /// segundos, para o editor mostrar a animação. Vazio numa imagem
+        /// parada.
+        frames: Vec<(egui::ColorImage, f32)>,
     },
     /// A imagem não abriu (arquivo que não é imagem, corrompido...).
     Unreadable,
@@ -70,13 +76,12 @@ impl ImagePick {
         }
     }
 
-    /// Proporção do recorte (largura ÷ altura). Figurinha não passa pelo
-    /// editor: ela é o que é.
+    /// Proporção do recorte (largura ÷ altura).
     pub fn aspect(self) -> Option<f32> {
         match self {
-            Self::Avatar | Self::ServerIcon => Some(1.0),
+            // Figurinha começa quadrada; o editor deixa trocar por "Original".
+            Self::Avatar | Self::ServerIcon | Self::Sticker => Some(1.0),
             Self::Banner => Some(3.0),
-            Self::Sticker => None,
         }
     }
 }
@@ -87,21 +92,6 @@ const PREVIEW_MAX: u32 = 1600;
 /// Depois de escolher: figurinha vai direto para o encolhimento; o resto
 /// abre o editor com uma prévia.
 fn after_pick(path: &Path, name: String, purpose: ImagePick) -> Chosen {
-    if purpose.aspect().is_none() {
-        let (max_width, max_height, max_bytes) = purpose.limits();
-        return match crate::media::prepare::fit_cropped(path, None, max_width, max_height, max_bytes) {
-            Ok(prepared) => Chosen::Image {
-                purpose,
-                blob: prepared.blob,
-                format: prepared.format.to_owned(),
-                shrunk: prepared.shrunk,
-            },
-            Err(error) => {
-                log::warn!("imagem recusada: {error}");
-                Chosen::Unreadable
-            }
-        };
-    }
     let image = match image::open(path) {
         Ok(image) => image,
         Err(error) => {
@@ -121,7 +111,54 @@ fn after_pick(path: &Path, name: String, purpose: ImagePick) -> Chosen {
         name,
         size,
         preview,
+        frames: animation_frames(path),
     }
+}
+
+/// Pixels somados de todos os quadros da prévia animada (~48 MB em RGBA).
+/// Um GIF longo sai com quadros menores em vez de estourar a memória.
+const ANIMATION_BUDGET: f32 = 12_000_000.0;
+
+/// Quadros de um GIF animado, reduzidos, para a prévia do editor. Vazio para
+/// qualquer outra coisa (inclusive GIF de um quadro só).
+fn animation_frames(path: &Path) -> Vec<(egui::ColorImage, f32)> {
+    use image::AnimationDecoder as _;
+    let Ok(raw) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    if image::guess_format(&raw).ok() != Some(image::ImageFormat::Gif) {
+        return Vec::new();
+    }
+    let Ok(decoder) = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(raw)) else {
+        return Vec::new();
+    };
+    let Ok(frames) = decoder.into_frames().collect_frames() else {
+        return Vec::new();
+    };
+    if frames.len() <= 1 {
+        return Vec::new();
+    }
+    let side = (ANIMATION_BUDGET / frames.len() as f32).sqrt().clamp(96.0, 480.0) as u32;
+    frames
+        .into_iter()
+        .map(|frame| {
+            let (numer, denom) = frame.delay().numer_denom_ms();
+            // Navegadores tratam espera abaixo de 20 ms como 100 ms; sem
+            // isso, GIF "rápido demais" vira borrão.
+            let mut delay = numer as f32 / denom.max(1) as f32 / 1000.0;
+            if delay < 0.02 {
+                delay = 0.1;
+            }
+            let small = image::DynamicImage::ImageRgba8(frame.into_buffer())
+                .thumbnail(side, side)
+                .to_rgba8();
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [small.width() as usize, small.height() as usize],
+                small.as_raw(),
+            );
+            (image, delay)
+        })
+        .collect()
 }
 
 /// O que vale nos dois lados: recortar e preparar a imagem que saiu do
@@ -133,6 +170,7 @@ impl Dialogs {
         purpose: ImagePick,
         path: PathBuf,
         crop: crate::media::prepare::Crop,
+        name: Option<String>,
     ) {
         let (tx, rx) = mpsc::channel();
         self.pending.push(rx);
@@ -158,6 +196,7 @@ impl Dialogs {
                         blob: prepared.blob,
                         format: prepared.format.to_owned(),
                         shrunk: prepared.shrunk,
+                        name,
                     }
                 }
                 Err(error) => {
