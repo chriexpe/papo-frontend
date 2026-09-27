@@ -685,19 +685,25 @@ impl Api {
             .await
     }
 
-    /// Busca mensagens. O backend limita a 100 por chamada e só devolve o
-    /// que o usuário pode ler, então não há o que filtrar deste lado.
-    pub async fn search(&self, text: &str) -> ApiResult<SearchResponse> {
-        self.post(
-            "/search",
-            &SearchRequest {
-                text: Some(text.to_owned()),
-                author: None,
-                order: Some("desc".to_owned()),
-                contains_attachment: None,
-            },
-        )
-        .await
+    /// Busca mensagens com os filtros suportados pelo backend.
+    pub async fn search(
+        &self,
+        request: &SearchRequest,
+        cursor: Option<(DateTime<Utc>, &str)>,
+    ) -> ApiResult<SearchResponse> {
+        let path = if let Some((since, last_id)) = cursor {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair(
+                    "since",
+                    &since.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                )
+                .append_pair("last_id", last_id)
+                .finish();
+            format!("/search?{query}")
+        } else {
+            "/search".to_owned()
+        };
+        self.post(&path, request).await
     }
 
     // -- Servidor, perfil e conta -----------------------------------------
@@ -1005,6 +1011,28 @@ impl Api {
             Some(emoji),
         )
         .await
+    }
+
+    pub async fn reaction_details(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        cursor: Option<(DateTime<Utc>, &str)>,
+    ) -> ApiResult<ReactionList> {
+        let base = format!("/channels/{channel_id}/messages/{message_id}/reactions");
+        let path = if let Some((since, last_id)) = cursor {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair(
+                    "since",
+                    &since.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                )
+                .append_pair("last_id", last_id)
+                .finish();
+            format!("{base}?{query}")
+        } else {
+            base
+        };
+        self.get(&path).await
     }
 
     /// Emojis custom do servidor, em páginas de 25.
