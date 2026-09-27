@@ -561,7 +561,7 @@ impl Rows<'_> {
         } else {
             (text_height + space::MD * 2.0).max(ROW_HEIGHT)
         };
-        let (_, inner) = self.band(height);
+        let (band_rect, inner) = self.band(height);
 
         let text_top = if stacked {
             inner.min.y + space::MD
@@ -598,6 +598,10 @@ impl Rows<'_> {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| control(ui, &t),
         );
+        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
+        // no pé do controle, acima do fim da faixa, e a linha seguinte
+        // começaria por cima desta (no celular, as peças se sobrepunham).
+        self.ui.advance_cursor_after_rect(band_rect);
     }
 
     /// Linha inteira clicável, para navegar ou disparar uma ação.
@@ -719,6 +723,10 @@ impl Rows<'_> {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| control(ui, &t),
         );
+        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
+        // no pé do controle, acima do fim da faixa, e a linha seguinte
+        // começaria por cima desta (no celular, as peças se sobrepunham).
+        self.ui.advance_cursor_after_rect(rect);
     }
 
     /// Linha com um campo de texto ocupando a direita.
