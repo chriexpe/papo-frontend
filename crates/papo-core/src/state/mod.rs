@@ -1080,19 +1080,19 @@ impl Store {
                 .get(&channel_id)
                 .copied()
                 .unwrap_or(false);
-        let fresh_cutoff = (!older && fresh && !authoritative_complete)
-            .then(|| {
-                self.messages_in(&channel_id)
-                    .filter(|message| !message.pending)
-                    .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
-                    .map(|message| {
-                        (
-                            message.at.with_timezone(&Utc).timestamp_millis(),
-                            message.id.clone(),
-                        )
-                    })
-            })
-            .flatten();
+        let fresh_cutoff = if !older && fresh && !authoritative_complete {
+            self.messages_in(&channel_id)
+                .filter(|message| !message.pending)
+                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                .map(|message| {
+                    (
+                        message.at.with_timezone(&Utc).timestamp_millis(),
+                        message.id.clone(),
+                    )
+                })
+        } else {
+            None
+        };
 
         if !authoritative_complete {
             for message in page.messages {
