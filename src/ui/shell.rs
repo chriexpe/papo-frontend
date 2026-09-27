@@ -157,6 +157,8 @@ pub enum ChatAction {
     },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
+    /// Busca mais antiga do histórico quando a timeline chega perto do topo.
+    LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
     Search(String),
     /// `off`, `only_mentions` ou `all` para este canal.
@@ -785,6 +787,13 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
+    /// Última geometria observada da conversa, usada para preservar o ponto
+    /// visual quando uma página antiga entra antes do conteúdo visível.
+    chat_scroll_metrics: Option<(String, f32, f32)>,
+    /// Baseline capturada quando pedimos uma página mais antiga.
+    history_scroll_anchor: Option<(String, f32, f32)>,
+    /// Offset aplicado no quadro descartado seguinte ao prepend.
+    forced_chat_scroll: Option<(String, f32)>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -881,6 +890,9 @@ impl Default for UiState {
             show_record: true,
             recorder: None,
             error: None,
+            chat_scroll_metrics: None,
+            history_scroll_anchor: None,
+            forced_chat_scroll: None,
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -979,6 +991,9 @@ pub fn draw(
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         state.close_popup();
+        state.chat_scroll_metrics = None;
+        state.history_scroll_anchor = None;
+        state.forced_chat_scroll = None;
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2198,25 +2213,68 @@ fn conversation(
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
-            egui::ScrollArea::vertical()
+            let channel_id = store.selected_channel.clone();
+            let mut scroll = egui::ScrollArea::vertical()
+                .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
                     egui::containers::scroll_area::ScrollSource::NONE
                 } else {
                     egui::containers::scroll_area::ScrollSource::ALL
                 })
                 .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    let web_scroll = state
-                        .webembed
-                        .take_scroll_delta_points(ui.ctx().pixels_per_point());
-                    if web_scroll.abs() > f32::EPSILON {
-                        ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
-                    }
-                    ui.add_space(top_inset);
-                    message_list(ui, store, state, t, s, full);
-                    ui.add_space(bottom_inset);
-                });
+                .stick_to_bottom(true);
+            if let Some((forced_channel, offset)) = state.forced_chat_scroll.take() {
+                if forced_channel == channel_id {
+                    scroll = scroll.vertical_scroll_offset(offset.max(0.0));
+                } else {
+                    state.forced_chat_scroll = Some((forced_channel, offset));
+                }
+            }
+            let output = scroll.show_viewport(ui, |ui, viewport| {
+                let web_scroll = state
+                    .webembed
+                    .take_scroll_delta_points(ui.ctx().pixels_per_point());
+                if web_scroll.abs() > f32::EPSILON {
+                    ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
+                }
+                ui.add_space(top_inset);
+                message_list(ui, store, state, t, s, full);
+                ui.add_space(bottom_inset);
+
+                if viewport.min.y <= top_inset + 360.0
+                    && store.can_load_older(&channel_id)
+                    && state.history_scroll_anchor.is_none()
+                {
+                    let old_height = state
+                        .chat_scroll_metrics
+                        .as_ref()
+                        .filter(|(id, _, _)| id == &channel_id)
+                        .map(|(_, _, height)| *height)
+                        .unwrap_or(0.0);
+                    state.history_scroll_anchor =
+                        Some((channel_id.clone(), viewport.min.y, old_height));
+                    state.actions.push(ChatAction::LoadOlderMessages);
+                }
+            });
+
+            if let Some((anchor_channel, anchor_offset, old_height)) =
+                state.history_scroll_anchor.clone()
+                && anchor_channel == channel_id
+                && old_height > 0.0
+                && output.content_size.y > old_height + 1.0
+            {
+                let delta = output.content_size.y - old_height;
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), anchor_offset + delta));
+                state.history_scroll_anchor = None;
+                ui.ctx().request_discard("histórico antigo inserido acima da viewport");
+            }
+
+            state.chat_scroll_metrics = Some((
+                channel_id,
+                output.state.offset.y,
+                output.content_size.y,
+            ));
         });
 
         // O conteúdo se dissolve onde encontra a camada flutuante, em vez de
