@@ -3870,6 +3870,10 @@ mod tests {
             status: None,
             status_message: None,
             roles: Vec::new(),
+            settings: models::WhoamiSettings {
+                version: 1,
+                config: models::UserConfig::default(),
+            },
         }))));
         let ops = store.take_cache_ops();
         assert!(ops.iter().any(|op| matches!(
@@ -3887,6 +3891,43 @@ mod tests {
         assert!(
             !ops.iter().any(|op| matches!(op, CacheOp::ClearServer)),
             "fila/ledger particionados por owner sobrevivem à expiração"
+        );
+    }
+
+    #[test]
+    fn sessao_retém_config_portatil_e_update_substitui_o_snapshot() {
+        let mut store = Store::default();
+        let mut initial = models::UserConfig::default();
+        initial.theme = "dark".to_owned();
+        store.apply(Update::Session(Some(Box::new(models::Whoami {
+            id: "eu".to_owned(),
+            username: "eu".to_owned(),
+            nickname: None,
+            status: None,
+            status_message: None,
+            roles: Vec::new(),
+            settings: models::WhoamiSettings {
+                version: 1,
+                config: initial.clone(),
+            },
+        }))));
+        assert_eq!(
+            store.user_settings.as_ref().map(|settings| &settings.config),
+            Some(&initial)
+        );
+
+        let mut updated = initial;
+        updated.theme = "light".to_owned();
+        updated.notifications.enabled = false;
+        store.apply(Update::UserSettings(Box::new(models::UserSettings {
+            user_id: "eu".to_owned(),
+            version: 1,
+            config: updated.clone(),
+            updated_at: None,
+        })));
+        assert_eq!(
+            store.user_settings.as_ref().map(|settings| &settings.config),
+            Some(&updated)
         );
     }
 
