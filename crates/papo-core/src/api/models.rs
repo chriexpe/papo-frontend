@@ -901,8 +901,13 @@ mod tests {
         let body = serde_json::to_string(&SearchRequest {
             text: Some("oi".to_owned()),
             author: None,
+            channel: None,
+            mentions: None,
             order: Some("desc".to_owned()),
+            date_start: None,
+            date_end: None,
             contains_attachment: None,
+            contains_link: None,
         })
         .unwrap();
         assert_eq!(body, r#"{"text":"oi","order":"desc"}"#);
