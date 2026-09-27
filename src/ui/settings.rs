@@ -2012,6 +2012,20 @@ fn server_pane(
                         group(ui, t, |rows| {
                             for entry in &channel.permissions {
                                 rows.row(&entry.role_name, None, |ui, t| {
+                                    if row_button(
+                                        ui,
+                                        t,
+                                        s.channel_permission_remove,
+                                        Emphasis::Danger,
+                                    ) {
+                                        actions.push(SettingsAction::Chat(
+                                            ChatAction::RemoveChannelPermissions {
+                                                channel_id: channel_id.clone(),
+                                                role_id: entry.role_id.clone(),
+                                            },
+                                        ));
+                                        draft.channel_permission = None;
+                                    }
                                     if row_button(ui, t, s.edit, Emphasis::Quiet) {
                                         draft.channel_permission = Some(ChannelPermissionDraft {
                                             channel_id: channel_id.clone(),
