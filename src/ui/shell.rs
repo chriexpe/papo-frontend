@@ -3292,11 +3292,11 @@ fn search_panel(
                 field.has_focus(),
                 crate::platform::ime::Kind::Search,
             );
-            if let Some(panel) = state.panel.as_mut() {
-                if panel.focus {
-                    field.request_focus();
-                    panel.focus = false;
-                }
+            if let Some(panel) = state.panel.as_mut()
+                && panel.focus
+            {
+                field.request_focus();
+                panel.focus = false;
             }
             submit |= ui.input(|input| input.key_pressed(egui::Key::Enter))
                 && (field.has_focus() || field.lost_focus());
@@ -3478,19 +3478,19 @@ fn search_panel(
         .as_ref()
         .and_then(|panel| search_request_from_panel(panel, store));
 
-    if submit {
-        if let Some(request) = request.clone() {
-            if let Some(panel) = state.panel.as_mut() {
-                panel.searched = true;
-                panel.search_active = Some(request.clone());
-            }
-            store.searching = true;
-            state.actions.push(ChatAction::Search {
-                request,
-                cursor: None,
-                append: false,
-            });
+    if submit
+        && let Some(request) = request.clone()
+    {
+        if let Some(panel) = state.panel.as_mut() {
+            panel.searched = true;
+            panel.search_active = Some(request.clone());
         }
+        store.searching = true;
+        state.actions.push(ChatAction::Search {
+            request,
+            cursor: None,
+            append: false,
+        });
     }
 
     ui.add_space(space::XS);
