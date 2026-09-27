@@ -3899,8 +3899,10 @@ mod tests {
     #[test]
     fn sessao_retém_config_portatil_e_update_substitui_o_snapshot() {
         let mut store = Store::default();
-        let mut initial = models::UserConfig::default();
-        initial.theme = "dark".to_owned();
+        let initial = models::UserConfig {
+            theme: "dark".to_owned(),
+            ..Default::default()
+        };
         store.apply(Update::Session(Some(Box::new(models::Whoami {
             id: "eu".to_owned(),
             username: "eu".to_owned(),
