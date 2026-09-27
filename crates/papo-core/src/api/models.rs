@@ -375,6 +375,10 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub contains_attachment: Option<bool>,
 }
 
@@ -390,7 +394,9 @@ pub struct SearchResult {
     #[serde(default)]
     pub channel_name: String,
     #[serde(default)]
-    pub author_username: String,
+    pub author_id: Option<String>,
+    #[serde(default)]
+    pub author_username: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -542,6 +548,32 @@ impl ReactionRequest {
             unicode: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionUser {
+    pub id: String,
+    pub user_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionGroup {
+    pub emoji_id: Option<String>,
+    pub unicode: Option<String>,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub users: Vec<ReactionUser>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionList {
+    pub message_id: String,
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub reactions: Vec<ReactionGroup>,
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
