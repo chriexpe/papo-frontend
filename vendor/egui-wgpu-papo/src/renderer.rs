@@ -259,6 +259,114 @@ impl Default for RendererOptions {
     }
 }
 
+struct CompositorPresenter {
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl CompositorPresenter {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("egui_compositor_present"),
+            source: wgpu::ShaderSource::Wgsl(
+                r#"
+struct VertexOut {
+    @builtin(position) pos: vec4f,
+    @location(0) uv: vec2f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOut {
+    var positions = array<vec2f, 3>(
+        vec2f(-1.0, -1.0),
+        vec2f( 3.0, -1.0),
+        vec2f(-1.0,  3.0),
+    );
+    let p = positions[vertex_index];
+    var out: VertexOut;
+    out.pos = vec4f(p, 0.0, 1.0);
+    out.uv = vec2f((p.x + 1.0) * 0.5, (1.0 - p.y) * 0.5);
+    return out;
+}
+
+@group(0) @binding(0) var scene: texture_2d<f32>;
+@group(0) @binding(1) var scene_sampler: sampler;
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4f {
+    return textureSample(scene, scene_sampler, in.uv);
+}
+"#
+                .into(),
+            ),
+        });
+        let bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("egui_compositor_present_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("egui_compositor_present_pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("egui_compositor_present_pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("egui_compositor_present_sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+        }
+    }
+}
+
 /// Renderer for a egui based GUI.
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
@@ -279,6 +387,7 @@ pub struct Renderer {
     samplers: HashMap<epaint::textures::TextureOptions, wgpu::Sampler>,
 
     options: RendererOptions,
+    compositor_presenter: CompositorPresenter,
 
     /// Storage for resources shared with all invocations of [`CallbackTrait`]'s methods.
     ///
@@ -462,6 +571,8 @@ impl Renderer {
         )
         };
 
+        let compositor_presenter = CompositorPresenter::new(device, output_color_format);
+
         const VERTEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
             (core::mem::size_of::<Vertex>() * 1024) as _;
         const INDEX_BUFFER_START_CAPACITY: wgpu::BufferAddress =
@@ -488,6 +599,7 @@ impl Renderer {
             next_user_texture_id: 0,
             samplers: HashMap::default(),
             options,
+            compositor_presenter,
             callback_resources: CallbackResources::default(),
         }
     }
@@ -771,6 +883,51 @@ impl Renderer {
                 mesh_offset,
             );
         }
+    }
+
+    /// Present an offscreen compositor scene into the native surface.
+    pub fn present_compositor_scene(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scene: &wgpu::Texture,
+        output: &wgpu::Texture,
+    ) {
+        let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
+        let output_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("egui_compositor_present_group"),
+            layout: &self.compositor_presenter.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.compositor_presenter.sampler),
+                },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("egui_compositor_present"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.compositor_presenter.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Should be called before [`Self::render`].
