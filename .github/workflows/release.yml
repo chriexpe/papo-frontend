@@ -355,8 +355,8 @@ jobs:
             *.flatpak
             *.zip
             *.zip.sha256
-            *-Setup.exe
-            *-Setup.exe.sha256
+            **/*-Setup.exe
+            **/*-Setup.exe.sha256
             *.apk
             *.apk.sha256
           generate_release_notes: true
