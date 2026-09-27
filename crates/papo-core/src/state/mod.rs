@@ -9,8 +9,8 @@ use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
-    now_millis, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedServer,
-    CachedServerSnapshot, CacheOp, OutgoingState,
+    now_millis, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
+    CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
 };
 
 pub use call::{CallState, Phase, Stage};
@@ -398,10 +398,15 @@ pub struct Store {
     sync_generation: u64,
     /// Última geração em que cada canal recebeu uma carga REST autoritativa.
     channel_freshness: HashMap<String, u64>,
-    /// Canais com cache em disco ainda não reconciliados nesta geração. Um
-    /// snapshot vazio também entra aqui: cacheado e "nunca carregado" são
-    /// coisas diferentes.
+    /// Canais que possuem estado de timeline persistido no Turso. Um snapshot
+    /// vazio também entra aqui: cacheado e "nunca persistido" são diferentes.
     cached_channels: HashSet<String>,
+    /// Canais cuja primeira página local já foi projetada nesta Store.
+    hydrated_channels: HashSet<String>,
+    /// Se ainda há páginas normais mais antigas no Turso, por canal.
+    cache_history_has_more: HashMap<String, bool>,
+    /// Leituras locais em voo; separadas do refresh REST/freshness.
+    cache_loading: HashSet<String>,
     /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
     pending_cache: Vec<CacheOp>,
     /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
@@ -475,6 +480,9 @@ impl Default for Store {
             sync_generation: 0,
             channel_freshness: HashMap::new(),
             cached_channels: HashSet::new(),
+            hydrated_channels: HashSet::new(),
+            cache_history_has_more: HashMap::new(),
+            cache_loading: HashSet::new(),
             pending_cache: Vec::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
@@ -743,25 +751,22 @@ impl Store {
         }
     }
 
-    /// Hidrata a Store a partir do cache em disco, antes de a rede começar.
-    ///
-    /// É deliberadamente sem efeitos colaterais: não soma não lidos nem
-    /// menções novas, não notifica, não abre tickets, não mexe na geração e
-    /// não devolve operações de persistência — senão o restore viraria eco.
-    pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
-        if let Some(server) = &snapshot.server {
+    /// Hidrata somente metadados persistidos antes da rede começar. Timelines
+    /// são carregadas sob demanda e nunca tornam um canal Fresh.
+    pub fn restore_cached_metadata(&mut self, metadata: CachedServerMetadata) {
+        if let Some(server) = &metadata.server {
             self.me = server.me_user_id.clone().unwrap_or_default();
             self.my_name = server.me_display_name.clone().unwrap_or_default();
             self.my_username = server.me_username.clone().unwrap_or_default();
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
-                owner_id: snapshot.owner_user_id.clone(),
+                owner_id: metadata.owner_user_id.clone(),
                 icon: None,
             });
         }
 
-        self.channels = snapshot
+        self.channels = metadata
             .channels
             .into_iter()
             .map(|channel| Channel {
@@ -780,7 +785,7 @@ impl Store {
 
         // Presença lida do disco é sempre velha; ninguém é "online" só por
         // causa dela.
-        self.members = snapshot
+        self.members = metadata
             .members
             .into_iter()
             .map(|member| Member {
@@ -795,17 +800,11 @@ impl Store {
             })
             .collect();
 
-        self.messages = snapshot
-            .messages
-            .into_iter()
-            .map(|message| message.to_store())
-            .collect();
-        self.sort_messages();
-
-        self.cached_channels = snapshot.cached_channels;
-        for message in &self.messages {
-            self.cached_channels.insert(message.channel_id.clone());
-        }
+        self.messages.clear();
+        self.cached_channels = metadata.cached_channels;
+        self.hydrated_channels.clear();
+        self.cache_history_has_more.clear();
+        self.cache_loading.clear();
 
         if self.selected_channel.is_empty()
             && let Some(first) = self
@@ -816,7 +815,7 @@ impl Store {
             self.selected_channel = first.id.clone();
         }
 
-        if !self.channels.is_empty() || !self.messages.is_empty() {
+        if !self.channels.is_empty() || self.server.is_some() {
             self.screen = Screen::Chat;
             self.connection = Connection::Offline;
         }
@@ -824,6 +823,37 @@ impl Store {
         self.pending_cache.clear();
     }
 
+    /// Compatibilidade interna/testes: restaura o snapshot integral antigo.
+    /// O runtime interativo usa metadados + páginas por canal.
+    pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
+        let CachedServerSnapshot {
+            owner_user_id,
+            server,
+            channels,
+            members,
+            messages,
+            cached_channels,
+        } = snapshot;
+        let hydrated = cached_channels.clone();
+        self.restore_cached_metadata(CachedServerMetadata {
+            owner_user_id,
+            server,
+            channels,
+            members,
+            cached_channels,
+        });
+        for message in messages {
+            self.apply_mutation(
+                MutationSource::CacheRestore,
+                StoreMutation::Timeline {
+                    channel_id: Some(message.channel_id.clone()),
+                    mutation: TimelineMutation::MessageUpsert(message.to_store()),
+                },
+            );
+        }
+        self.sort_messages();
+        self.hydrated_channels = hydrated;
+    }
     /// Esvazia o estado vindo do cache. Usado quando a conta verificada não é
     /// a dona do cache — nunca deixar a conversa de um usuário aparecer para
     /// outro.
@@ -833,6 +863,9 @@ impl Store {
         self.members.clear();
         self.messages.clear();
         self.cached_channels.clear();
+        self.hydrated_channels.clear();
+        self.cache_history_has_more.clear();
+        self.cache_loading.clear();
         self.history_has_more.clear();
         self.history_loading.clear();
         self.pending_cache.clear();
