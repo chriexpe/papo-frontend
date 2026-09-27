@@ -20,6 +20,19 @@ pub struct GlassRenderer;
 
 impl GlassRenderer {
     pub fn new(state: &egui_wgpu::RenderState) -> Option<SharedGlass> {
+        let info = state.adapter.get_info();
+        if info.device_type == wgpu::DeviceType::Cpu {
+            // A software WGPU adapter (for example Microsoft Basic Render
+            // Driver in a VM) can render egui, but multiple offscreen blur
+            // passes per glass surface make the desktop unusably slow. Keep
+            // the normal translucent surface and skip only the backdrop blur.
+            log::warn!(
+                "renderer: software adapter detected ({}); frosted backdrop blur disabled",
+                info.name
+            );
+            return None;
+        }
+
         let resources = GlassGpu::new(&state.device, state.target_format);
         state
             .renderer
