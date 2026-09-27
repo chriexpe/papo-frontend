@@ -1,9 +1,10 @@
-//! Windows update discovery and installer handoff.
+//! Android sideload update discovery and APK handoff.
 //!
-//! GitHub Releases is only the feed. Inno Setup remains the authority that
-//! actually replaces an installed Papo copy.
+//! Google Play owns updates for Play-installed builds. Other installs may use
+//! the same stable GitHub Release feed as Windows, but Android's package
+//! installer always keeps the final user confirmation.
 
-#![cfg(target_os = "windows")]
+#![cfg(target_os = "android")]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -50,32 +51,38 @@ pub struct Updater {
     sender: mpsc::Sender<Event>,
     checking: bool,
     downloading: bool,
+    enabled: bool,
 }
 
 impl Updater {
     pub fn new() -> Self {
         let (sender, events) = mpsc::channel();
+        let enabled = super::jvm::call_activity_bool("isSelfUpdateAllowed", "()Z", None)
+            .unwrap_or(false);
         let mut updater = Self {
             events,
             sender,
             checking: false,
             downloading: false,
+            enabled,
         };
-        updater.check();
+        if enabled {
+            updater.check();
+        }
         updater
     }
 
     pub fn enabled(&self) -> bool {
-        true
+        self.enabled
     }
 
     pub fn check(&mut self) {
-        if self.checking || self.downloading {
+        if !self.enabled || self.checking || self.downloading {
             return;
         }
         self.checking = true;
         let sender = self.sender.clone();
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("papo-update-check".into())
             .spawn(move || {
                 let event = match check_latest() {
@@ -84,17 +91,17 @@ impl Updater {
                     Err(error) => Event::Error(error),
                 };
                 let _ = sender.send(event);
-            })
-            .ok();
+                super::wake::request();
+            });
     }
 
     pub fn download(&mut self, release: Available) {
-        if self.downloading {
+        if !self.enabled || self.downloading {
             return;
         }
         self.downloading = true;
         let sender = self.sender.clone();
-        std::thread::Builder::new()
+        let _ = std::thread::Builder::new()
             .name("papo-update-download".into())
             .spawn(move || {
                 let event = match download_release(&release) {
@@ -102,8 +109,8 @@ impl Updater {
                     Err(error) => Event::Error(error),
                 };
                 let _ = sender.send(event);
-            })
-            .ok();
+                super::wake::request();
+            });
     }
 
     pub fn poll(&mut self) -> Option<Event> {
@@ -128,6 +135,15 @@ impl Updater {
     pub fn downloading(&self) -> bool {
         self.downloading
     }
+}
+
+pub fn can_install_packages() -> bool {
+    super::jvm::call_activity_bool("canInstallUpdatePackages", "()Z", None)
+        .unwrap_or(false)
+}
+
+pub fn request_install_permission() {
+    let _ = super::jvm::call_activity("requestInstallUpdatePermission", "()V", None);
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -155,7 +171,7 @@ fn check_latest() -> Result<Option<Available>, String> {
         return Ok(None);
     }
 
-    let expected = format!("Papo-{latest}-Setup.exe");
+    let expected = format!("Papo-{latest}-android-arm64.apk");
     let expected_checksum = format!("{expected}.sha256");
     let installer = release
         .assets
@@ -181,13 +197,13 @@ fn check_latest() -> Result<Option<Available>, String> {
 
 fn download_release(release: &Available) -> Result<PathBuf, String> {
     let client = client()?;
-    let installer = client
+    let apk = client
         .get(&release.installer_url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| format!("download do instalador: {error}"))?
+        .map_err(|error| format!("download do APK: {error}"))?
         .bytes()
-        .map_err(|error| format!("leitura do instalador: {error}"))?;
+        .map_err(|error| format!("leitura do APK: {error}"))?;
     let checksum = client
         .get(&release.checksum_url)
         .send()
@@ -204,7 +220,7 @@ fn download_release(release: &Available) -> Result<PathBuf, String> {
         .to_ascii_lowercase();
 
     let mut digest = Context::new(&SHA256);
-    digest.update(&installer);
+    digest.update(&apk);
     let actual = digest
         .finish()
         .as_ref()
@@ -213,31 +229,42 @@ fn download_release(release: &Available) -> Result<PathBuf, String> {
         .collect::<String>();
     if actual != expected {
         return Err(format!(
-            "checksum do instalador não confere (esperado {expected}, obtido {actual})"
+            "checksum do APK não confere (esperado {expected}, obtido {actual})"
         ));
     }
 
-    let dir = std::env::temp_dir().join("Papo").join("updates");
+    let dir = super::jvm::call_activity_string("updateCacheDir")
+        .map(PathBuf::from)
+        .ok_or_else(|| "Android não forneceu a pasta de atualização".to_owned())?;
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("pasta de atualização: {error}"))?;
-    let path = dir.join(format!("Papo-{}-Setup.exe", release.version));
-    std::fs::write(&path, &installer)
-        .map_err(|error| format!("salvar instalador: {error}"))?;
+    let path = dir.join(format!("Papo-{}-android-arm64.apk", release.version));
+    std::fs::write(&path, &apk).map_err(|error| format!("salvar APK: {error}"))?;
     Ok(path)
 }
 
 pub fn launch(installer: &Path) -> Result<(), String> {
-    std::process::Command::new(installer)
-        .arg("/SP-")
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("abrir instalador: {error}"))
+    let path = installer
+        .to_str()
+        .ok_or_else(|| "caminho do APK não é UTF-8".to_owned())?;
+    if super::jvm::call_activity(
+        "installUpdateApk",
+        "(Ljava/lang/String;)V",
+        Some(path),
+    ) {
+        Ok(())
+    } else {
+        Err("Android não abriu o instalador".to_owned())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn version_order_is_semantic() {
-        assert!(semver::Version::parse("0.10.0").unwrap() > semver::Version::parse("0.9.9").unwrap());
+        assert!(
+            semver::Version::parse("0.10.0").unwrap()
+                > semver::Version::parse("0.9.9").unwrap()
+        );
     }
 }

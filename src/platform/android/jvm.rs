@@ -42,6 +42,27 @@ pub fn call_activity_bool(method: &str, signature: &str, text: Option<&str>) -> 
 pub fn call_activity_int(method: &str) -> Option<i32> {
     call(method, "()I", None, |value| value.i().ok()).flatten()
 }
+/// Chama um método da Activity sem argumentos que devolve `String`.
+pub fn call_activity_string(method: &str) -> Option<String> {
+    let Some(app) = APP.get() else {
+        log::error!("sem Activity para chamar {method}");
+        return None;
+    };
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let value = env
+        .call_method(&activity, method, "()Ljava/lang/String;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    if value.is_null() {
+        return None;
+    }
+    let value = jni::objects::JString::from(value);
+    env.get_string(&value).ok().map(Into::into)
+}
+
 
 /// `None` quer dizer que a chamada não aconteceu. `read` tira do retorno o
 /// tipo que o método promete; ele roda enquanto o `JNIEnv` ainda existe.

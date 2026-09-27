@@ -1,6 +1,31 @@
+import java.util.Properties
+
+val cargoManifest = rootProject.file("../Cargo.toml")
+val cargoVersion = cargoManifest.readLines()
+    .first { it.trimStart().startsWith("version = ") }
+    .substringAfter("=")
+    .trim()
+    .trim('"')
+
+val versionParts = cargoVersion.substringBefore('-').split('.').map { it.toInt() }
+require(versionParts.size == 3) { "Cargo package version must be MAJOR.MINOR.PATCH" }
+val papoVersionCode =
+    versionParts[0] * 1_000_000 +
+    versionParts[1] * 1_000 +
+    versionParts[2]
+require(versionParts[1] < 1_000 && versionParts[2] < 1_000) {
+    "Android versionCode encoding supports MINOR/PATCH values below 1000"
+}
+require(papoVersionCode in 1..2_100_000_000) { "Android versionCode out of range" }
+
 plugins {
     alias(libs.plugins.android.application)
 }
+
+val releaseKeystore = System.getenv("PAPO_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+val releaseStorePassword = System.getenv("PAPO_ANDROID_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("PAPO_ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("PAPO_ANDROID_KEY_PASSWORD")
 
 android {
     namespace = "io.github.chriexpe.papo"
@@ -20,8 +45,10 @@ android {
         applicationId = "io.github.chriexpe.papo"
         minSdk = 31
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.2.0"
+        // Cargo.toml is the single version source shared with GitHub tags.
+        // Android additionally needs a monotonically increasing integer.
+        versionCode = papoVersionCode
+        versionName = cargoVersion
 
         // Por enquanto só o celular de verdade (arm64). O emulador x86_64
         // entra quando alguém precisar dele.
@@ -36,6 +63,20 @@ android {
     // prefab: o `android-activity` traz a própria camada de cola nativa, e
     // a do GameActivity por cima dela quebraria as duas.
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = releaseStorePassword
+                    ?: error("PAPO_ANDROID_STORE_PASSWORD is required for signed releases")
+                keyAlias = releaseKeyAlias
+                    ?: error("PAPO_ANDROID_KEY_ALIAS is required for signed releases")
+                keyPassword = releaseKeyPassword
+                    ?: error("PAPO_ANDROID_KEY_PASSWORD is required for signed releases")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isJniDebuggable = true
@@ -43,6 +84,9 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
