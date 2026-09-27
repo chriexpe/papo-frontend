@@ -19,7 +19,7 @@ use crate::platform::launcher::{Badge, Launcher};
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Wake};
 use crate::state::{Phase, Screen, Store};
-use papo_core::cache::ClientDb;
+use papo_core::cache::{CachedMessagePage, ClientDb};
 use papo_core::notification::{NotificationCoordinator, NotificationSink};
 use papo_core::runtime::{
     CallRuntimeEffect, RuntimeEffect, RuntimeNotificationView, ServerRuntime,
@@ -483,6 +483,13 @@ impl SystemTheme {
     }
 }
 
+struct PendingCachePage {
+    channel_id: String,
+    older: bool,
+    restore_epoch: u64,
+    receiver: std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>,
+}
+
 /// Um servidor conectado: rede, estado e o que a interface guarda dele.
 ///
 /// Todos ficam ligados ao mesmo tempo — é o que faz a menção de um servidor
@@ -510,6 +517,8 @@ pub struct Workspace {
     applied_user_config: Option<crate::api::models::UserConfig>,
     /// Config já enviado nesta conexão; evita PUT a cada frame.
     sent_user_config: Option<crate::api::models::UserConfig>,
+    /// Leituras Turso em voo. O worker de cache faz SQL; egui só sonda o receiver.
+    cache_pages: Vec<PendingCachePage>,
     #[cfg(target_os = "android")]
     _network_registration: crate::platform::android_network::Registration,
 }
@@ -561,9 +570,42 @@ impl Workspace {
             camera_revision: 0,
             applied_user_config: None,
             sent_user_config: None,
+            cache_pages: Vec::new(),
             #[cfg(target_os = "android")]
             _network_registration: network_registration,
         }
+    }
+
+    fn queue_cached_page(
+        &mut self,
+        channel_id: String,
+        before: Option<(i64, String)>,
+        older: bool,
+    ) -> bool {
+        let restore_epoch = self.runtime.store.cache_restore_epoch();
+        let Some(receiver) = self.runtime.cache.load_channel_page_async(
+            &self.runtime.server_key,
+            &channel_id,
+            before,
+        ) else {
+            self.runtime.store.cached_page_failed(&channel_id, older);
+            return false;
+        };
+        self.cache_pages.push(PendingCachePage {
+            channel_id,
+            older,
+            restore_epoch,
+            receiver,
+        });
+        true
+    }
+
+    fn ensure_channel_cache_hydrated(&mut self) {
+        let Some(channel_id) = self.runtime.store.channel_needing_cache() else {
+            return;
+        };
+        self.runtime.store.mark_cache_loading(&channel_id);
+        self.queue_cached_page(channel_id, None, false);
     }
 
     fn ensure_channel_reconciled(&mut self) {
@@ -1430,6 +1472,7 @@ impl PapoApp {
         let typed = self.ui.typed;
         let ws = &mut self.workspaces[self.active];
 
+        ws.ensure_channel_cache_hydrated();
         ws.ensure_channel_reconciled();
 
         // Com a janela à frente, o canal aberto está sendo lido agora.
@@ -1557,7 +1600,11 @@ impl PapoApp {
         match action {
             ChatAction::LoadOlderMessages => {
                 let channel_id = ws.runtime.store.selected_channel.clone();
-                if let Some((since, last_id)) = ws.runtime.store.begin_load_older(&channel_id) {
+                if let Some(before) = ws.runtime.store.begin_load_cached_older(&channel_id) {
+                    ws.queue_cached_page(channel_id, Some(before), true);
+                } else if let Some((since, last_id)) =
+                    ws.runtime.store.begin_load_older(&channel_id)
+                {
                     ws.runtime.net.send(Command::LoadOlderMessages {
                         channel_id,
                         since,
@@ -2129,6 +2176,57 @@ impl PapoApp {
         // As texturas que saíram ainda estavam na tela deste quadro; o próximo
         // desenha o estado vazio e reconstrói o que estiver visível.
         ctx.request_repaint();
+    }
+
+    /// Sonda páginas Turso sem bloquear o frame. O SQL roda no worker do
+    /// ClientDb; receivers vazios pedem apenas outro repaint curto.
+    fn pump_cache(&mut self, ctx: &egui::Context) {
+        use std::sync::mpsc::TryRecvError;
+
+        for workspace in &mut self.workspaces {
+            let mut finished = Vec::new();
+            for (index, request) in workspace.cache_pages.iter().enumerate() {
+                match request.receiver.try_recv() {
+                    Ok(result) => finished.push((index, result)),
+                    Err(TryRecvError::Empty) => {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                    }
+                    Err(TryRecvError::Disconnected) => finished.push((
+                        index,
+                        Err("worker do cache encerrou antes de devolver a página".to_owned()),
+                    )),
+                }
+            }
+
+            for (index, result) in finished.into_iter().rev() {
+                let request = workspace.cache_pages.remove(index);
+                if request.restore_epoch != workspace.runtime.store.cache_restore_epoch() {
+                    log::debug!(
+                        "cache: discarded stale hydration server={} channel={}",
+                        workspace.runtime.server_key,
+                        request.channel_id
+                    );
+                    continue;
+                }
+                match result {
+                    Ok(page) => workspace
+                        .runtime
+                        .store
+                        .restore_cached_page(page, request.older),
+                    Err(error) => {
+                        workspace
+                            .runtime
+                            .store
+                            .cached_page_failed(&request.channel_id, request.older);
+                        log::warn!(
+                            "cache: hydration failed server={} channel={}: {error}",
+                            workspace.runtime.server_key,
+                            request.channel_id
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// Lê o que chegou de cada servidor. Todos são atendidos no mesmo
@@ -3297,6 +3395,7 @@ impl eframe::App for PapoApp {
         }
 
         self.pump_network(&ctx);
+        self.pump_cache(&ctx);
         self.sync_active_portable_settings(&ctx);
         self.ensure_active_drafts_loaded();
         self.sync_notification_contexts();

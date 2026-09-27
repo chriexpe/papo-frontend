@@ -56,6 +56,7 @@ fn channel(id: &str, position: i32) -> CachedChannel {
         name: format!("canal-{id}"),
         kind: "text".to_owned(),
         topic: None,
+        parent_id: None,
         position,
         unread: false,
         mentions: 0,
@@ -144,6 +145,152 @@ fn open_apply_reopen_round_trip() {
     assert_eq!(snapshot.messages.len(), 1);
     assert_eq!(snapshot.messages[0].content, "oi");
     assert!(snapshot.cached_channels.contains("geral"));
+}
+
+#[test]
+fn metadata_restore_does_not_require_loading_timelines() {
+    let temp = TempDb::new("metadata-only");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannels(vec![channel("geral", 0)]),
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".to_owned(),
+                cached_at: now_millis(),
+                messages: vec![message("m1", "geral", "oi", 1_000)],
+            },
+        ],
+    );
+    db.flush();
+
+    let metadata = db.load_metadata("srv").expect("metadata");
+    assert_eq!(metadata.channels.len(), 1);
+    assert!(metadata.cached_channels.contains("geral"));
+
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("page request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("page reply")
+        .expect("page");
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].id, "m1");
+    assert!(!page.has_more);
+}
+
+#[test]
+fn channel_cache_pages_are_bounded_and_cursor_stable() {
+    let temp = TempDb::new("channel-pages");
+    let db = open(&temp);
+    let messages = (0..205)
+        .map(|index| {
+            message(
+                &format!("m{index:03}"),
+                "geral",
+                &format!("msg {index}"),
+                1_000 + index,
+            )
+        })
+        .collect();
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages,
+        }],
+    );
+    db.flush();
+
+    let first = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("first request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("first reply")
+        .expect("first page");
+    assert_eq!(first.messages.len(), CACHE_PAGE_SIZE as usize);
+    assert_eq!(first.messages.first().map(|m| m.id.as_str()), Some("m105"));
+    assert_eq!(first.messages.last().map(|m| m.id.as_str()), Some("m204"));
+    assert!(first.has_more);
+
+    let oldest = first.messages.first().expect("oldest first page");
+    let second = db
+        .load_channel_page_async(
+            "srv",
+            "geral",
+            Some((oldest.created_at, oldest.id.clone())),
+        )
+        .expect("second request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("second reply")
+        .expect("second page");
+    assert_eq!(second.messages.len(), CACHE_PAGE_SIZE as usize);
+    assert_eq!(second.messages.first().map(|m| m.id.as_str()), Some("m005"));
+    assert_eq!(second.messages.last().map(|m| m.id.as_str()), Some("m104"));
+    assert!(second.has_more);
+
+    let oldest = second.messages.first().expect("oldest second page");
+    let third = db
+        .load_channel_page_async(
+            "srv",
+            "geral",
+            Some((oldest.created_at, oldest.id.clone())),
+        )
+        .expect("third request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("third reply")
+        .expect("third page");
+    assert_eq!(third.messages.len(), 5);
+    assert_eq!(third.messages.first().map(|m| m.id.as_str()), Some("m000"));
+    assert_eq!(third.messages.last().map(|m| m.id.as_str()), Some("m004"));
+    assert!(!third.has_more);
+}
+
+#[test]
+fn pinned_retention_does_not_move_local_history_cursor() {
+    let temp = TempDb::new("pinned-cursor");
+    let db = open(&temp);
+    let mut ancient_pin = message("pin", "geral", "fixada", 1);
+    ancient_pin.pinned = true;
+    let mut messages = vec![ancient_pin];
+    messages.extend((0..110).map(|index| {
+        message(
+            &format!("m{index:03}"),
+            "geral",
+            &format!("msg {index}"),
+            1_000 + index,
+        )
+    }));
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages,
+        }],
+    );
+    db.flush();
+
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("reply")
+        .expect("page");
+    assert_eq!(
+        page.messages.iter().filter(|message| !message.pinned).count(),
+        CACHE_PAGE_SIZE as usize
+    );
+    assert!(page.messages.iter().any(|message| message.id == "pin" && message.pinned));
+    let oldest_normal = page
+        .messages
+        .iter()
+        .filter(|message| !message.pinned)
+        .min_by_key(|message| (message.created_at, message.id.clone()))
+        .expect("normal message");
+    assert_eq!(oldest_normal.id, "m010");
+    assert!(page.has_more);
 }
 
 #[test]
@@ -1460,7 +1607,7 @@ fn drafts_survive_reconstructible_clear_but_not_delete_or_server_removal() {
 }
 
 #[test]
-fn v4_database_migrates_to_v5_without_reset() {
+fn v4_database_migrates_to_current_without_reset() {
     let temp = TempDb::new("draft-v4-migration");
     let path = temp.path();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1473,19 +1620,11 @@ fn v4_database_migrates_to_v5_without_reset() {
             .build()
             .await
             .unwrap();
-        let conn = db.connect().unwrap();
-        conn.execute(
-            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-            (),
-        )
-        .await
-        .unwrap();
-        conn.execute(
-            "INSERT INTO meta(key, value) VALUES ('schema_version', '4')",
-            (),
-        )
-        .await
-        .unwrap();
+        let mut conn = db.connect().unwrap();
+        let version = super::schema::apply_migrations_for_test(&mut conn, 4)
+            .await
+            .unwrap();
+        assert_eq!(version, 4);
     });
 
     let db = open(&temp);

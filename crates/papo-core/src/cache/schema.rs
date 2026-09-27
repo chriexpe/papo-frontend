@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -149,6 +149,18 @@ const MIGRATIONS: &[Migration] = &[Migration {
         "CREATE INDEX drafts_owner_updated_idx
              ON drafts(server_key, owner_user_id, updated_at DESC)",
     ],
+}, Migration {
+    version: 6,
+    statements: &[
+        "ALTER TABLE channels ADD COLUMN parent_id TEXT",
+        "INSERT OR IGNORE INTO channel_cache_state (server_key, channel_id, cached_at)
+             SELECT server_key, channel_id, MAX(created_at)
+             FROM messages
+             GROUP BY server_key, channel_id",
+        "DROP INDEX messages_channel_idx",
+        "CREATE INDEX messages_timeline_idx
+             ON messages(server_key, channel_id, pinned, created_at DESC, message_id DESC)",
+    ],
 }];
 
 /// Lê a versão atual do esquema (0 quando ainda não há nada).
@@ -175,19 +187,22 @@ async fn ensure_meta(conn: &Connection) -> Result<(), turso::Error> {
     Ok(())
 }
 
-/// Aplica as migrações pendentes. Idempotente: reabrir na mesma versão não
-/// executa nada.
-pub async fn apply_migrations(conn: &mut Connection) -> Result<i64, turso::Error> {
+/// Aplica migrações até `target`. O helper também permite aos testes
+/// construir um banco antigo real usando exatamente as migrações de produção.
+async fn apply_migrations_through(
+    conn: &mut Connection,
+    target: i64,
+) -> Result<i64, turso::Error> {
     ensure_meta(conn).await?;
     let mut current = read_version(conn).await?;
-    if current > SCHEMA_VERSION {
+    if current > target {
         return Err(turso::Error::Misuse(format!(
-            "cache schema version {current} is newer than supported {SCHEMA_VERSION}"
+            "cache schema version {current} is newer than supported {target}"
         )));
     }
 
     for migration in MIGRATIONS {
-        if migration.version <= current {
+        if migration.version <= current || migration.version > target {
             continue;
         }
         let tx = conn.transaction().await?;
@@ -205,4 +220,18 @@ pub async fn apply_migrations(conn: &mut Connection) -> Result<i64, turso::Error
     }
 
     Ok(current)
+}
+
+/// Aplica as migrações pendentes. Idempotente: reabrir na mesma versão não
+/// executa nada.
+pub async fn apply_migrations(conn: &mut Connection) -> Result<i64, turso::Error> {
+    apply_migrations_through(conn, SCHEMA_VERSION).await
+}
+
+#[cfg(test)]
+pub(super) async fn apply_migrations_for_test(
+    conn: &mut Connection,
+    target: i64,
+) -> Result<i64, turso::Error> {
+    apply_migrations_through(conn, target).await
 }

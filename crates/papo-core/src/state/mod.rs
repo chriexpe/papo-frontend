@@ -9,8 +9,8 @@ use crate::api::models::{self, parse_hex_color, Attachment};
 use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
-    now_millis, CachedChannel, CachedMember, CachedMessage, CachedOutgoing, CachedServer,
-    CachedServerSnapshot, CacheOp, OutgoingState,
+    now_millis, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
+    CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
 };
 
 pub use call::{CallState, Phase, Stage};
@@ -401,10 +401,18 @@ pub struct Store {
     sync_generation: u64,
     /// Última geração em que cada canal recebeu uma carga REST autoritativa.
     channel_freshness: HashMap<String, u64>,
-    /// Canais com cache em disco ainda não reconciliados nesta geração. Um
-    /// snapshot vazio também entra aqui: cacheado e "nunca carregado" são
-    /// coisas diferentes.
+    /// Canais que possuem estado de timeline persistido no Turso. Um snapshot
+    /// vazio também entra aqui: cacheado e "nunca persistido" são diferentes.
     cached_channels: HashSet<String>,
+    /// Canais cuja primeira página local já foi projetada nesta Store.
+    hydrated_channels: HashSet<String>,
+    /// Se ainda há páginas normais mais antigas no Turso, por canal.
+    cache_history_has_more: HashMap<String, bool>,
+    /// Leituras locais em voo; separadas do refresh REST/freshness.
+    cache_loading: HashSet<String>,
+    /// Invalida respostas Turso assíncronas quando o contexto de cache muda
+    /// (principalmente após detectar que o cache pertence a outra conta).
+    cache_restore_epoch: u64,
     /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
     pending_cache: Vec<CacheOp>,
     /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
@@ -480,6 +488,10 @@ impl Default for Store {
             sync_generation: 0,
             channel_freshness: HashMap::new(),
             cached_channels: HashSet::new(),
+            hydrated_channels: HashSet::new(),
+            cache_history_has_more: HashMap::new(),
+            cache_loading: HashSet::new(),
+            cache_restore_epoch: 0,
             pending_cache: Vec::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
@@ -826,25 +838,23 @@ impl Store {
         }
     }
 
-    /// Hidrata a Store a partir do cache em disco, antes de a rede começar.
-    ///
-    /// É deliberadamente sem efeitos colaterais: não soma não lidos nem
-    /// menções novas, não notifica, não abre tickets, não mexe na geração e
-    /// não devolve operações de persistência — senão o restore viraria eco.
-    pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
-        if let Some(server) = &snapshot.server {
+    /// Hidrata somente metadados persistidos antes da rede começar. Timelines
+    /// são carregadas sob demanda e nunca tornam um canal Fresh.
+    pub fn restore_cached_metadata(&mut self, metadata: CachedServerMetadata) {
+        self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
+        if let Some(server) = &metadata.server {
             self.me = server.me_user_id.clone().unwrap_or_default();
             self.my_name = server.me_display_name.clone().unwrap_or_default();
             self.my_username = server.me_username.clone().unwrap_or_default();
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
-                owner_id: snapshot.owner_user_id.clone(),
+                owner_id: metadata.owner_user_id.clone(),
                 icon: None,
             });
         }
 
-        self.channels = snapshot
+        self.channels = metadata
             .channels
             .into_iter()
             .map(|channel| Channel {
@@ -855,7 +865,7 @@ impl Store {
                 position: channel.position,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
-                parent_id: None,
+                parent_id: channel.parent_id,
                 unread: channel.unread,
                 mentions: channel.mentions,
             })
@@ -864,7 +874,7 @@ impl Store {
 
         // Presença lida do disco é sempre velha; ninguém é "online" só por
         // causa dela.
-        self.members = snapshot
+        self.members = metadata
             .members
             .into_iter()
             .map(|member| Member {
@@ -879,17 +889,11 @@ impl Store {
             })
             .collect();
 
-        self.messages = snapshot
-            .messages
-            .into_iter()
-            .map(|message| message.to_store())
-            .collect();
-        self.sort_messages();
-
-        self.cached_channels = snapshot.cached_channels;
-        for message in &self.messages {
-            self.cached_channels.insert(message.channel_id.clone());
-        }
+        self.messages.clear();
+        self.cached_channels = metadata.cached_channels;
+        self.hydrated_channels.clear();
+        self.cache_history_has_more.clear();
+        self.cache_loading.clear();
 
         if self.selected_channel.is_empty()
             && let Some(first) = self
@@ -900,7 +904,7 @@ impl Store {
             self.selected_channel = first.id.clone();
         }
 
-        if !self.channels.is_empty() || !self.messages.is_empty() {
+        if !self.channels.is_empty() || self.server.is_some() {
             self.screen = Screen::Chat;
             self.connection = Connection::Offline;
         }
@@ -908,15 +912,50 @@ impl Store {
         self.pending_cache.clear();
     }
 
+    /// Compatibilidade interna/testes: restaura o snapshot integral antigo.
+    /// O runtime interativo usa metadados + páginas por canal.
+    pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
+        let CachedServerSnapshot {
+            owner_user_id,
+            server,
+            channels,
+            members,
+            messages,
+            cached_channels,
+        } = snapshot;
+        let hydrated = cached_channels.clone();
+        self.restore_cached_metadata(CachedServerMetadata {
+            owner_user_id,
+            server,
+            channels,
+            members,
+            cached_channels,
+        });
+        for message in messages {
+            self.apply_mutation(
+                MutationSource::CacheRestore,
+                StoreMutation::Timeline {
+                    channel_id: Some(message.channel_id.clone()),
+                    mutation: TimelineMutation::MessageUpsert(message.to_store()),
+                },
+            );
+        }
+        self.sort_messages();
+        self.hydrated_channels = hydrated;
+    }
     /// Esvazia o estado vindo do cache. Usado quando a conta verificada não é
     /// a dona do cache — nunca deixar a conversa de um usuário aparecer para
     /// outro.
     pub fn clear_cached_state(&mut self) {
+        self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
         self.server = None;
         self.channels.clear();
         self.members.clear();
         self.messages.clear();
         self.cached_channels.clear();
+        self.hydrated_channels.clear();
+        self.cache_history_has_more.clear();
+        self.cache_loading.clear();
         self.history_has_more.clear();
         self.history_loading.clear();
         self.pending_cache.clear();
@@ -1008,22 +1047,145 @@ impl Store {
         }
     }
 
+    /// Canal selecionado cuja primeira página persistida ainda não entrou na
+    /// Store. Funciona offline: cache não depende da conexão.
+    pub fn cache_restore_epoch(&self) -> u64 {
+        self.cache_restore_epoch
+    }
+
+    pub fn channel_needing_cache(&self) -> Option<String> {
+        let id = &self.selected_channel;
+        if id.is_empty()
+            || !self.cached_channels.contains(id)
+            || self.hydrated_channels.contains(id)
+            || self.cache_loading.contains(id)
+            || self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice)
+        {
+            return None;
+        }
+        Some(id.clone())
+    }
+
+    pub fn mark_cache_loading(&mut self, channel_id: &str) {
+        self.cache_loading.insert(channel_id.to_owned());
+    }
+
+    /// Projeta uma página local sem atribuir freshness.
+    pub fn restore_cached_page(&mut self, page: CachedMessagePage, older: bool) {
+        let channel_id = page.channel_id.clone();
+        let fresh = self.timeline_status(&channel_id) == TimelineStatus::Fresh;
+        let authoritative_complete = fresh
+            && !self
+                .history_has_more
+                .get(&channel_id)
+                .copied()
+                .unwrap_or(false);
+        let fresh_cutoff = if !older && fresh && !authoritative_complete {
+            self.messages_in(&channel_id)
+                .filter(|message| !message.pending)
+                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                .map(|message| {
+                    (
+                        message.at.with_timezone(&Utc).timestamp_millis(),
+                        message.id.clone(),
+                    )
+                })
+        } else {
+            None
+        };
+
+        if !authoritative_complete {
+            for message in page.messages {
+                let older_than_fresh_head = fresh_cutoff.as_ref().is_none_or(|(at, id)| {
+                    message.created_at < *at
+                        || (message.created_at == *at && message.id < *id)
+                });
+                if older || !fresh || older_than_fresh_head {
+                    self.apply_mutation(
+                        MutationSource::CacheRestore,
+                        StoreMutation::Timeline {
+                            channel_id: Some(channel_id.clone()),
+                            mutation: TimelineMutation::MessageUpsert(message.to_store()),
+                        },
+                    );
+                }
+            }
+            self.sort_messages();
+        }
+        self.cached_channels.insert(channel_id.clone());
+        self.hydrated_channels.insert(channel_id.clone());
+        self.cache_history_has_more
+            .insert(channel_id.clone(), page.has_more && !authoritative_complete);
+        self.cache_loading.remove(&channel_id);
+        if older {
+            self.history_loading.remove(&channel_id);
+        }
+    }
+
+    /// Falha de leitura local não pode virar retry por frame.
+    pub fn cached_page_failed(&mut self, channel_id: &str, older: bool) {
+        self.cache_loading.remove(channel_id);
+        if older {
+            self.cache_history_has_more
+                .insert(channel_id.to_owned(), false);
+            self.history_loading.remove(channel_id);
+        } else {
+            self.hydrated_channels.insert(channel_id.to_owned());
+        }
+    }
+
     pub fn can_load_older(&self, channel_id: &str) -> bool {
-        self.connection == Connection::Online
-            && self.history_has_more.get(channel_id).copied().unwrap_or(false)
-            && !self.history_loading.contains(channel_id)
+        !self.history_loading.contains(channel_id)
+            && (self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+                || (self.connection == Connection::Online
+                    && self.history_has_more.get(channel_id).copied().unwrap_or(false)))
     }
 
     pub fn loading_older(&self, channel_id: &str) -> bool {
         self.history_loading.contains(channel_id)
     }
 
-    /// Marca uma página antiga como em voo e devolve seu cursor.
+    /// Reserva primeiro uma página antiga do Turso.
+    pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, String)> {
+        if self.history_loading.contains(channel_id)
+            || !self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+        {
+            return None;
+        }
+        let oldest = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending && !message.pinned)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+        let cursor = (
+            oldest.at.with_timezone(&Utc).timestamp_millis(),
+            oldest.id.clone(),
+        );
+        self.history_loading.insert(channel_id.to_owned());
+        Some(cursor)
+    }
+
+    /// Depois que o Turso esgotou, reserva a próxima página do backend.
     pub fn begin_load_older(
         &mut self,
         channel_id: &str,
     ) -> Option<(DateTime<Utc>, String)> {
-        if !self.can_load_older(channel_id) {
+        if self.history_loading.contains(channel_id)
+            || self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+            || self.connection != Connection::Online
+            || !self.history_has_more.get(channel_id).copied().unwrap_or(false)
+        {
             return None;
         }
         let oldest = self
@@ -3900,6 +4062,7 @@ mod tests {
                 name: "Geral".to_owned(),
                 kind: "text".to_owned(),
                 topic: None,
+                parent_id: None,
                 position: 0,
                 unread: false,
                 mentions: 0,

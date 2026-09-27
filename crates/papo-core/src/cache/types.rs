@@ -12,6 +12,8 @@ use crate::state::{Channel, ChannelKind, Emoji, Member, Message, Reaction, Serve
 
 /// Limite de mensagens confirmadas guardadas por canal.
 pub const MESSAGE_RETENTION: i64 = 500;
+/// Quantas mensagens o cache entrega por página para a timeline quente.
+pub const CACHE_PAGE_SIZE: i64 = 100;
 /// Limite de mensagens fixadas guardadas por canal, além das recentes.
 pub const PINNED_RETENTION: i64 = 200;
 /// Limite duro de intenções de envio ainda não resolvidas por conta/servidor.
@@ -232,6 +234,7 @@ pub struct CachedChannel {
     pub name: String,
     pub kind: String,
     pub topic: Option<String>,
+    pub parent_id: Option<String>,
     pub position: i32,
     /// Cache de exibição apenas; nunca é autoridade depois de reconectar.
     pub unread: bool,
@@ -250,6 +253,7 @@ impl From<&Channel> for CachedChannel {
             }
             .to_owned(),
             topic: channel.topic.clone(),
+            parent_id: channel.parent_id.clone(),
             position: channel.position,
             unread: channel.unread,
             mentions: channel.mentions,
@@ -445,7 +449,38 @@ impl CachedMessage {
     }
 }
 
+/// Metadados suficientes para abrir um servidor sem varrer suas timelines.
+#[derive(Clone, Debug, Default)]
+pub struct CachedServerMetadata {
+    pub owner_user_id: Option<String>,
+    pub server: Option<CachedServer>,
+    pub channels: Vec<CachedChannel>,
+    pub members: Vec<CachedMember>,
+    /// Canais que têm um snapshot/cache persistido, inclusive quando vazio.
+    pub cached_channels: HashSet<String>,
+}
+
+impl CachedServerMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.server.is_none()
+            && self.channels.is_empty()
+            && self.members.is_empty()
+            && self.cached_channels.is_empty()
+    }
+}
+
+/// Uma página de timeline lida do cache local.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CachedMessagePage {
+    pub channel_id: String,
+    pub messages: Vec<CachedMessage>,
+    pub has_more: bool,
+}
+
 /// Projeção pronta para hidratar uma Store. Cobre um servidor inteiro.
+///
+/// Mantida para testes/ferramentas e compatibilidade interna; o runtime
+/// interativo usa metadados + páginas por canal.
 #[derive(Clone, Debug, Default)]
 pub struct CachedServerSnapshot {
     pub owner_user_id: Option<String>,
