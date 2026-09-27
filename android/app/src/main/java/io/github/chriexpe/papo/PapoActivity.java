@@ -11,6 +11,7 @@ import android.app.PictureInPictureParams;
 import android.app.RemoteAction;
 import android.service.notification.StatusBarNotification;
 import android.content.Intent;
+import android.content.pm.InstallSourceInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
@@ -22,6 +23,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import androidx.core.content.FileProvider;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
@@ -1238,6 +1240,67 @@ public class PapoActivity extends GameActivity {
     /** Remove da gaveta as notificações do canal que acabou de ser lido. */
     public void clearMessageNotifications(String payload) {
         runOnUiThread(() -> MessageNotifications.clear(this, payload));
+    }
+
+    /** Whether Papo may use the GitHub sideload updater on this install. */
+    public boolean isSelfUpdateAllowed() {
+        try {
+            final String installer;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                final InstallSourceInfo source =
+                        getPackageManager().getInstallSourceInfo(getPackageName());
+                installer = source.getInstallingPackageName();
+            } else {
+                installer = getPackageManager().getInstallerPackageName(getPackageName());
+            }
+            return installer == null || !"com.android.vending".equals(installer);
+        } catch (Exception error) {
+            Log.w("papo-update", "não deu para descobrir a origem da instalação", error);
+            return true;
+        }
+    }
+
+    public boolean canInstallUpdatePackages() {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                || getPackageManager().canRequestPackageInstalls();
+    }
+
+    public void requestInstallUpdatePermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return;
+        }
+        runOnUiThread(() -> {
+            final Intent intent = new Intent(
+                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        });
+    }
+
+    public String updateCacheDir() {
+        final File dir = new File(getCacheDir(), "updates");
+        if (!dir.exists() && !dir.mkdirs()) {
+            Log.w("papo-update", "não deu para criar " + dir);
+        }
+        return dir.getAbsolutePath();
+    }
+
+    public void installUpdateApk(String path) {
+        runOnUiThread(() -> {
+            try {
+                final File apk = new File(path);
+                final Uri uri = FileProvider.getUriForFile(
+                        this,
+                        getPackageName() + ".files",
+                        apk);
+                final Intent intent = new Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(intent);
+            } catch (Exception error) {
+                Log.e("papo-update", "não deu para abrir o instalador do Android", error);
+            }
+        });
     }
 
     /** Synchronizes persistent periodic work with the current Rust settings. */
