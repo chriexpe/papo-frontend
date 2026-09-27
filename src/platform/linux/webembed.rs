@@ -129,12 +129,13 @@ fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
         match frame.format {
             // Little-endian DRM XRGB/ARGB memory is B,G,R,X/A.
             DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => {
-                for (src, dst) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
-                    dst[0] = src[2];
-                    dst[1] = src[1];
-                    dst[2] = src[0];
-                    dst[3] = if frame.format == DRM_FORMAT_ARGB8888 {
-                        src[3]
+                for pixel in 0..frame.width as usize {
+                    let offset = pixel * 4;
+                    destination[offset] = source[offset + 2];
+                    destination[offset + 1] = source[offset + 1];
+                    destination[offset + 2] = source[offset];
+                    destination[offset + 3] = if frame.format == DRM_FORMAT_ARGB8888 {
+                        source[offset + 3]
                     } else {
                         0xff
                     };
@@ -142,12 +143,13 @@ fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
             }
             // Little-endian DRM XBGR/ABGR memory is R,G,B,X/A.
             DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => {
-                for (src, dst) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
-                    dst[0] = src[0];
-                    dst[1] = src[1];
-                    dst[2] = src[2];
-                    dst[3] = if frame.format == DRM_FORMAT_ABGR8888 {
-                        src[3]
+                for pixel in 0..frame.width as usize {
+                    let offset = pixel * 4;
+                    destination[offset] = source[offset];
+                    destination[offset + 1] = source[offset + 1];
+                    destination[offset + 2] = source[offset + 2];
+                    destination[offset + 3] = if frame.format == DRM_FORMAT_ABGR8888 {
+                        source[offset + 3]
                     } else {
                         0xff
                     };
