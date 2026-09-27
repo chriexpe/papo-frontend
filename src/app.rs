@@ -1431,6 +1431,11 @@ impl PapoApp {
             ChatAction::EditChannel(id) => {
                 if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
                     self.sheet.open_edit_channel(&channel);
+                    let net = &self.workspaces[self.active].runtime.net;
+                    net.send(Command::LoadRoles);
+                    net.send(Command::LoadChannelPermissions {
+                        channel_id: id.clone(),
+                    });
                 }
                 return;
             }
@@ -1662,6 +1667,15 @@ impl PapoApp {
                 name,
                 topic,
             }),
+            ChatAction::SetChannelPermissions {
+                channel_id,
+                role_id,
+                permissions,
+            } => ws.runtime.net.send(Command::SetChannelPermissions {
+                channel_id,
+                role_id,
+                permissions,
+            }),
             ChatAction::DeleteChannel(channel_id) => {
                 ws.runtime.net.send(Command::DeleteChannel { channel_id })
             }
@@ -1817,6 +1831,7 @@ impl PapoApp {
                     kind,
                     topic,
                     position,
+                    permissions: Vec::new(),
                     unread: false,
                     mentions: 0,
                 });
@@ -1837,6 +1852,42 @@ impl PapoApp {
                 {
                     channel.name = name;
                     channel.topic = topic;
+                }
+            }
+            ChatAction::SetChannelPermissions {
+                channel_id,
+                role_id,
+                permissions,
+            } => {
+                let role_name = ws
+                    .runtime
+                    .store
+                    .roles
+                    .iter()
+                    .find(|role| role.id == role_id)
+                    .map(|role| role.name.clone())
+                    .unwrap_or_default();
+                if let Some(channel) = ws
+                    .runtime
+                    .store
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    if let Some(entry) = channel
+                        .permissions
+                        .iter_mut()
+                        .find(|entry| entry.role_id == role_id)
+                    {
+                        entry.permissions = permissions;
+                        entry.role_name = role_name;
+                    } else {
+                        channel.permissions.push(crate::api::models::ChannelPermissionEntry {
+                            role_id,
+                            role_name,
+                            permissions,
+                        });
+                    }
                 }
             }
             // A call de mentira não abre microfone nenhum: serve para o
