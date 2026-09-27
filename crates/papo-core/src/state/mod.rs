@@ -410,6 +410,9 @@ pub struct Store {
     cache_history_has_more: HashMap<String, bool>,
     /// Leituras locais em voo; separadas do refresh REST/freshness.
     cache_loading: HashSet<String>,
+    /// Invalida respostas Turso assíncronas quando o contexto de cache muda
+    /// (principalmente após detectar que o cache pertence a outra conta).
+    cache_restore_epoch: u64,
     /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
     pending_cache: Vec<CacheOp>,
     /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
@@ -488,6 +491,7 @@ impl Default for Store {
             hydrated_channels: HashSet::new(),
             cache_history_has_more: HashMap::new(),
             cache_loading: HashSet::new(),
+            cache_restore_epoch: 0,
             pending_cache: Vec::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
@@ -837,6 +841,7 @@ impl Store {
     /// Hidrata somente metadados persistidos antes da rede começar. Timelines
     /// são carregadas sob demanda e nunca tornam um canal Fresh.
     pub fn restore_cached_metadata(&mut self, metadata: CachedServerMetadata) {
+        self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
         if let Some(server) = &metadata.server {
             self.me = server.me_user_id.clone().unwrap_or_default();
             self.my_name = server.me_display_name.clone().unwrap_or_default();
@@ -942,6 +947,7 @@ impl Store {
     /// a dona do cache — nunca deixar a conversa de um usuário aparecer para
     /// outro.
     pub fn clear_cached_state(&mut self) {
+        self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
         self.server = None;
         self.channels.clear();
         self.members.clear();
@@ -1043,6 +1049,10 @@ impl Store {
 
     /// Canal selecionado cuja primeira página persistida ainda não entrou na
     /// Store. Funciona offline: cache não depende da conexão.
+    pub fn cache_restore_epoch(&self) -> u64 {
+        self.cache_restore_epoch
+    }
+
     pub fn channel_needing_cache(&self) -> Option<String> {
         let id = &self.selected_channel;
         if id.is_empty()
