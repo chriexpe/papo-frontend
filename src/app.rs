@@ -745,6 +745,8 @@ impl PapoApp {
         }
 
         let system = SystemTheme::read();
+        #[cfg(not(target_os = "android"))]
+        crate::render::log_adapter(cc);
         theme::install_fonts(&cc.egui_ctx, desktop::system_ui_font().as_ref());
 
         let tokens = Tokens::new(appearance_for(&settings, &system), system.accent);
