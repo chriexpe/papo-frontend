@@ -233,3 +233,25 @@ pub fn menu_option(ui: &mut Ui, t: &Tokens, label: &str, selected: bool) -> bool
     );
     response.clicked()
 }
+
+/// Texto de uma linha que cabe em `max_width`: o que passa vira "…" em vez
+/// de ser cortado no meio de uma letra (ou vazar para fora da coluna).
+pub fn text_fit(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> Rect {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = max_width.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = painter.layout_job(job);
+    let rect = align.anchor_size(pos, galley.size());
+    painter.galley(rect.min, galley, color);
+    rect
+}

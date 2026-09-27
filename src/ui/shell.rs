@@ -182,6 +182,8 @@ pub enum ChatAction {
         channel_id: String,
         old_position: i32,
         new_position: i32,
+        /// Categoria nova: `None` não mexe, `Some("")` tira da categoria.
+        parent_id: Option<String>,
     },
     BanUser {
         user_id: String,
@@ -1714,7 +1716,9 @@ fn identity_pill(
         rect.y_range(),
     ));
     let has_subtitle = !subtitle.is_empty();
-    painter.text(
+    let width = text_right - text_left;
+    super::widgets::text_fit(
+        &painter,
         egui::pos2(
             text_left,
             rect.center().y - if has_subtitle { 7.0 } else { 0.0 },
@@ -1723,14 +1727,17 @@ fn identity_pill(
         name,
         text::headline(),
         t.label,
+        width,
     );
     if has_subtitle {
-        painter.text(
+        super::widgets::text_fit(
+            &painter,
             egui::pos2(text_left, rect.center().y + 8.0),
             egui::Align2::LEFT_CENTER,
             subtitle,
             text::footnote(),
             t.label_tertiary,
+            width,
         );
     }
 
@@ -1796,12 +1803,16 @@ fn channel_row(
         text::icon(14.0),
         if selected { t.accent } else { t.label_tertiary },
     );
-    painter.text(
+    // O nome para antes do contador de menções, com reticências.
+    let reserve = if mentions > 0 { 28.0 + space::MD } else { space::MD };
+    super::widgets::text_fit(
+        painter,
         egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         font,
         label_color,
+        rect.max.x - reserve - (rect.min.x + space::MD + 20.0),
     );
 
     if mentions > 0 {
@@ -1860,6 +1871,7 @@ fn channel_menu(
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
                     new_position: channel.position - 1,
+                    parent_id: None,
                 });
                 ui.close();
             }
@@ -1868,6 +1880,7 @@ fn channel_menu(
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
                     new_position: channel.position + 1,
+                    parent_id: None,
                 });
                 ui.close();
             }
@@ -2056,12 +2069,14 @@ fn member_row(
     }
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 4.5, t.glass_opaque);
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 3.0, dot.gamma_multiply(alpha));
-    painter.text(
+    super::widgets::text_fit(
+        painter,
         egui::pos2(avatar_rect.max.x + space::MD, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         text::body(),
         if dimmed { t.label_tertiary } else { t.label_secondary },
+        rect.max.x - space::SM - (avatar_rect.max.x + space::MD),
     );
     response
 }

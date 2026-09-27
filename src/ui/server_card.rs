@@ -216,26 +216,23 @@ fn contents(
     let text_left = icon_rect.max.x + space::MD;
     let text_right = if admin { gear.min.x - space::XS } else { head.max.x - space::LG };
     let clip = ui.painter().with_clip_rect(Rect::from_x_y_ranges(text_left..=text_right, head.y_range()));
-    clip.text(
-        egui::pos2(text_left, icon_rect.min.y + 1.0),
-        Align2::LEFT_TOP,
-        &name,
-        text::title3(),
-        t.label,
-    );
+    let text_width = text_right - text_left;
+    super::widgets::text_fit(&clip, egui::pos2(text_left, icon_rect.min.y + 1.0), Align2::LEFT_TOP, &name, text::title3(), t.label, text_width);
     let mut line_y = icon_rect.min.y + 21.0;
     if let Some(description) = description.as_deref().filter(|text| !text.is_empty()) {
-        clip.text(egui::pos2(text_left, line_y), Align2::LEFT_TOP, description, text::callout(), t.label_secondary);
+        super::widgets::text_fit(&clip, egui::pos2(text_left, line_y), Align2::LEFT_TOP, description, text::callout(), t.label_secondary, text_width);
         line_y += 16.0;
     }
     let online = store.members.iter().filter(|member| member.presence != Presence::Offline).count();
     clip.circle_filled(egui::pos2(text_left + 3.5, line_y + 6.0), 3.5, t.online);
-    clip.text(
+    super::widgets::text_fit(
+        &clip,
         egui::pos2(text_left + 11.0, line_y),
         Align2::LEFT_TOP,
-        format!("{online} {} · {} {}", s.count_online, store.members.len(), s.count_members),
+        &format!("{online} {} · {} {}", s.count_online, store.members.len(), s.count_members),
         text::footnote(),
         t.label_secondary,
+        text_width - 11.0,
     );
     if admin {
         let response = ui.interact(gear, Id::new("cartao-do-servidor-engrenagem"), Sense::click());
@@ -402,9 +399,7 @@ fn row(
         x += 16.0 + space::MD;
     }
     let right = rect.max.x - space::SM - if trail.is_some() { 16.0 + space::SM } else { 0.0 };
-    ui.painter()
-        .with_clip_rect(Rect::from_x_y_ranges(x..=right, rect.y_range()))
-        .text(egui::pos2(x, rect.center().y), Align2::LEFT_CENTER, label, font, color);
+    super::widgets::text_fit(ui.painter(), egui::pos2(x, rect.center().y), Align2::LEFT_CENTER, label, font, color, right - x);
     if let Some(trail) = trail {
         ui.painter().text(
             egui::pos2(rect.max.x - space::SM - 7.0, rect.center().y),
@@ -440,9 +435,7 @@ fn value_row(ui: &mut egui::Ui, t: &Tokens, height: f32, glyph: &str, name: &str
         if muted { t.label_tertiary } else { t.label_secondary },
     );
     let name_left = rect.min.x + space::SM + 22.0;
-    painter
-        .with_clip_rect(Rect::from_x_y_ranges(name_left..=value_x - space::SM, rect.y_range()))
-        .text(egui::pos2(name_left, rect.center().y), Align2::LEFT_CENTER, name, text::body(), t.label);
+    super::widgets::text_fit(painter, egui::pos2(name_left, rect.center().y), Align2::LEFT_CENTER, name, text::body(), t.label, value_x - space::SM - name_left);
     (response, value_rect)
 }
 

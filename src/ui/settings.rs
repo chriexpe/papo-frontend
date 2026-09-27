@@ -779,6 +779,23 @@ impl Rows<'_> {
         let mut submitted = false;
         #[cfg_attr(target_os = "android", allow(unused_variables))]
         let lines = self.lines;
+        // Contador: sempre nos campos longos (recado, bio, frase) quando têm
+        // texto; nos curtos, só perto do limite. Vai na linha de apoio.
+        let used = value.chars().count();
+        let counter = (!secret && used > 0 && (limit >= 64 || used * 5 >= limit * 4))
+            .then(|| format!("{used}/{limit}"));
+        let joined;
+        let hint = match (hint, counter) {
+            (Some(hint), Some(counter)) => {
+                joined = format!("{hint} · {counter}");
+                Some(joined.as_str())
+            }
+            (None, Some(counter)) => {
+                joined = counter;
+                Some(joined.as_str())
+            }
+            (hint, None) => hint,
+        };
         // Campo em peça: largura inteira, embaixo do rótulo.
         if self.tiled {
             self.stack_next = true;
@@ -829,15 +846,24 @@ impl Rows<'_> {
                     egui::TextEdit::singleline(value)
                 };
                 let height = if lines > 1 { lines as f32 * 17.0 + space::SM * 2.0 } else { 26.0 };
-                let response = ui.add_sized(
-                    Vec2::new(width, height),
-                    editor
-                        .id(edit_id)
-                        .char_limit(limit)
-                        .password(secret)
-                        .font(text::body())
-                        .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8)),
-                );
+                let editor = editor
+                    .id(edit_id)
+                    .char_limit(limit)
+                    .password(secret)
+                    .font(text::body())
+                    .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8));
+                // Várias linhas: altura fixa e rolagem por dentro. Sem isso o
+                // campo crescia com o texto (512 caracteres de bio) e cobria
+                // o resto do painel.
+                let response = if lines > 1 {
+                    egui::ScrollArea::vertical()
+                        .id_salt(edit_id.with("rolagem"))
+                        .max_height(height)
+                        .show(ui, |ui| ui.add_sized(Vec2::new(width, height), editor))
+                        .inner
+                } else {
+                    ui.add_sized(Vec2::new(width, height), editor)
+                };
                 let _ = crate::platform::ime::sync_text_edit(
                     ui.ctx(),
                     edit_id,
@@ -1544,20 +1570,25 @@ fn list_tile(ui: &mut egui::Ui, t: &Tokens, entry: &Entry<'_>, first: bool, last
     let x = icon.max.x + space::LG;
     let clip = ui.painter().with_clip_rect(Rect::from_x_y_ranges(x..=rect.max.x - TILE_INSET, rect.y_range()));
     let has_summary = !entry.summary.is_empty();
-    clip.text(
+    let width = rect.max.x - TILE_INSET - x;
+    crate::ui::widgets::text_fit(
+        &clip,
         egui::pos2(x, rect.center().y - if has_summary { 9.0 } else { 0.0 }),
         egui::Align2::LEFT_CENTER,
         entry.title,
         egui::FontId::new(15.0, egui::FontFamily::Proportional),
         t.label,
+        width,
     );
     if has_summary {
-        clip.text(
+        crate::ui::widgets::text_fit(
+            &clip,
             egui::pos2(x, rect.center().y + 10.0),
             egui::Align2::LEFT_CENTER,
             &entry.summary,
             text::callout(),
             t.label_secondary,
+            width,
         );
     }
     if pressed {
@@ -2917,6 +2948,7 @@ fn server_pane(
                                 channel_id: channel.id.clone(),
                                 old_position: channel.position,
                                 new_position: channel.position + 1,
+                                parent_id: None,
                             }));
                         }
                         if index > 0
@@ -2926,6 +2958,7 @@ fn server_pane(
                                 channel_id: channel.id.clone(),
                                 old_position: channel.position,
                                 new_position: channel.position - 1,
+                                parent_id: None,
                             }));
                         }
                     });

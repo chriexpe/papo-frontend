@@ -78,6 +78,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
             position: 4,
             permissions: Vec::new(),
             notification_settings: "only_mentions".into(),
+            parent_id: None,
             unread: false,
             mentions: 0,
         },
@@ -591,6 +592,7 @@ fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
         position,
         permissions: Vec::new(),
         notification_settings: "only_mentions".into(),
+        parent_id: None,
         unread: false,
         mentions: 0,
     }

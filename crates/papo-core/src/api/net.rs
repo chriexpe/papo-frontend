@@ -338,6 +338,8 @@ pub enum Command {
         channel_id: String,
         old_position: i32,
         new_position: i32,
+        /// Categoria nova (ver `ChangeChannelPositionRequest`).
+        parent_id: Option<String>,
     },
     SetChannelNotifications {
         channel_id: String,
@@ -2984,8 +2986,9 @@ async fn handle(
             channel_id,
             old_position,
             new_position,
+            parent_id,
         } => match api
-            .move_channel(&channel_id, old_position, new_position)
+            .move_channel(&channel_id, old_position, new_position, parent_id)
             .await
         {
             Ok(_) => relist_channels(api, storage_key, updates, wake).await,

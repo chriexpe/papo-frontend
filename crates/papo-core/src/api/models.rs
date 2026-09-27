@@ -206,6 +206,10 @@ pub struct Channel {
     pub permissions: Vec<ChannelPermissionEntry>,
     #[serde(default = "default_channel_notification_setting")]
     pub notification_settings: String,
+    /// Categoria do canal (`parent_id`); ausente em servidores que ainda não
+    /// a têm.
+    #[serde(default)]
+    pub parent_id: Option<String>,
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
 }
@@ -302,6 +306,10 @@ pub struct BanUserRequest {
 pub struct ChangeChannelPositionRequest {
     pub old_position: i32,
     pub new_position: i32,
+    /// Troca de categoria no mesmo pedido: ausente não mexe, `""` tira o
+    /// canal da categoria, um id põe o canal nela.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// Permissões de uma role dentro de um canal. O backend usa o conjunto

@@ -44,6 +44,9 @@ pub struct Channel {
     pub permissions: Vec<models::ChannelPermissionEntry>,
     /// Preferência deste usuário neste canal: off, only_mentions ou all.
     pub notification_settings: String,
+    /// Categoria à qual o canal pertence, quando o servidor informa. Sem
+    /// ela, a categoria é dona dos canais que vêm depois dela na ordem.
+    pub parent_id: Option<String>,
     /// Chegou coisa nova desde a última vez que o canal foi visto.
     pub unread: bool,
     /// Quantas dessas citam você.
@@ -772,6 +775,7 @@ impl Store {
                 position: channel.position,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: channel.unread,
                 mentions: channel.mentions,
             })
@@ -1600,6 +1604,7 @@ impl Store {
                             position: channel.position,
                             permissions: channel.permissions,
                             notification_settings: channel.notification_settings,
+                            parent_id: channel.parent_id.filter(|id| !id.is_empty()),
                             mentions,
                         }
                     })
@@ -2276,6 +2281,7 @@ impl Store {
                     position,
                     permissions: Vec::new(),
                     notification_settings: "only_mentions".to_owned(),
+                    parent_id: None,
                     unread: false,
                     mentions: 0,
                 });
@@ -3265,6 +3271,7 @@ mod tests {
                 position: 0,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: false,
                 mentions: 0,
             },
@@ -3276,6 +3283,7 @@ mod tests {
                 position: 1,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: false,
                 mentions: 0,
             },

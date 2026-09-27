@@ -1773,10 +1773,12 @@ impl PapoApp {
                 channel_id,
                 old_position,
                 new_position,
+                parent_id,
             } => ws.runtime.net.send(Command::MoveChannel {
                 channel_id,
                 old_position,
                 new_position,
+                parent_id,
             }),
             ChatAction::BanUser { user_id, banned } => {
                 ws.runtime.net.send(Command::BanUser { user_id, banned })
@@ -1942,6 +1944,7 @@ impl PapoApp {
                     position,
                     permissions: Vec::new(),
                     notification_settings: "only_mentions".to_owned(),
+                    parent_id: None,
                     unread: false,
                     mentions: 0,
                 });

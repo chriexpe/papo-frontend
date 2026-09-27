@@ -861,12 +861,14 @@ impl Api {
         channel_id: &str,
         old_position: i32,
         new_position: i32,
+        parent_id: Option<String>,
     ) -> ApiResult<serde_json::Value> {
         self.put(
             &format!("/channels/{channel_id}/change_position"),
             &ChangeChannelPositionRequest {
                 old_position,
                 new_position,
+                parent_id,
             },
         )
         .await
