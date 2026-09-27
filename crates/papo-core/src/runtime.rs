@@ -174,9 +174,9 @@ impl ServerRuntime {
     ) -> Self {
         let server_key = crate::server_key(&url);
 
-        // Restore happens synchronously before the transport is allowed to
-        // mutate the Store. Cached data is useful immediately, but Store keeps
-        // it stale until current-runtime reconciliation makes it authoritative.
+        // Só metadados são restaurados sincronicamente antes do transporte.
+        // Timelines são hidratadas depois, por canal, pelo worker Turso; cache
+        // continua stale até a reconciliação desta geração torná-lo autoritativo.
         let mut cached_owner = None;
         let has_session = storage
             .load(&server_key, Secret::SessionToken)
@@ -184,11 +184,11 @@ impl ServerRuntime {
             .flatten()
             .is_some();
         if has_session
-            && let Some(snapshot) = cache.load_snapshot(&server_key)
-            && !snapshot.is_empty()
+            && let Some(metadata) = cache.load_metadata(&server_key)
+            && !metadata.is_empty()
         {
-            cached_owner = snapshot.owner_user_id.clone();
-            store.restore_cached(snapshot);
+            cached_owner = metadata.owner_user_id.clone();
+            store.restore_cached_metadata(metadata);
             if let Some(owner) = cached_owner.as_deref() {
                 match cache.load_outgoing(&server_key, owner) {
                     Ok(outgoing) => {
