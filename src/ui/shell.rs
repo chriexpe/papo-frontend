@@ -182,6 +182,8 @@ pub enum ChatAction {
         channel_id: String,
         old_position: i32,
         new_position: i32,
+        /// Categoria nova: `None` não mexe, `Some("")` tira da categoria.
+        parent_id: Option<String>,
     },
     BanUser {
         user_id: String,
@@ -208,6 +210,10 @@ pub enum ChatAction {
     EditProfile,
     /// `away`, `busy` ou nada (disponível), a partir do seu cartão.
     SetPresence(Option<String>),
+    /// Marca como lido tudo deste servidor (o cartão do servidor).
+    MarkServerRead,
+    /// Tira este servidor do trilho, depois da confirmação no cartão.
+    LeaveServer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -776,6 +782,18 @@ pub struct UiState {
     pub popup: Option<Popup>,
     /// Cartão de perfil aberto.
     pub profile: Option<super::profile::ProfileCard>,
+    /// Cartão do servidor aberto (a pastilha do servidor descomprimida).
+    pub server_card: Option<super::server_card::ServerCard>,
+    /// Categorias recolhidas (na coluna e nos ajustes de canais).
+    pub collapsed_categories: std::collections::HashSet<String>,
+    /// Onde a pastilha do servidor está neste quadro: é a base do cartão.
+    pub server_pill: Option<Rect>,
+    /// Endereço e quantidade de servidores, que o cartão mostra e usa.
+    pub server_url: String,
+    pub server_count: usize,
+    /// O voltar do sistema chegou neste quadro e é das camadas da conversa
+    /// (o app já descontou o editor de recorte e os ajustes).
+    pub back: bool,
     /// Como o seu próprio cartão abre (ajuste de Aparência).
     pub self_card: super::profile::SelfCardStyle,
     /// Pastilha de ações esticada em busca ou fixadas.
@@ -900,6 +918,12 @@ impl Default for UiState {
             external_link_prompt: None,
             popup: None,
             profile: None,
+            server_card: None,
+            collapsed_categories: Default::default(),
+            server_pill: None,
+            server_url: String::new(),
+            server_count: 1,
+            back: false,
             self_card: Default::default(),
             panel: None,
             jump: None,
@@ -1327,6 +1351,7 @@ fn channels_sidebar(
                 egui::pos2(full.min.x + PILL_INSET, full.min.y + PILL_INSET),
                 Vec2::new(full.width() - PILL_INSET * 2.0, IDENTITY_PILL_HEIGHT),
             );
+            state.server_pill = Some(server_pill);
             let ctx = ui.ctx().clone();
             let icon = store
                 .server
@@ -1352,7 +1377,10 @@ fn channels_sidebar(
                 "pastilha-do-servidor",
             ) {
                 PillHit::Gear => state.pending.push(MenuCommand::ServerSettings),
-                PillHit::Body => state.pending.push(MenuCommand::ServerOverview),
+                PillHit::Body => {
+                    let now = ui.input(|input| input.time);
+                    super::server_card::toggle(state, now);
+                }
                 PillHit::None => {}
             }
 
@@ -1378,97 +1406,60 @@ fn channels_sidebar(
                         ui.horizontal(|ui| {
                             ui.add_space(indent);
                             ui.vertical(|ui| {
+                                // Canais sem categoria nas duas seções de
+                                // sempre; depois cada categoria, que recolhe.
+                                let width = SIDEBAR_WIDTH - indent * 2.0;
+                                let layout: Vec<(crate::state::Channel, Option<String>)> = store
+                                    .channel_layout()
+                                    .into_iter()
+                                    .map(|(index, parent)| (store.channels[index].clone(), parent))
+                                    .collect();
                                 section_caption(ui, t, s.text_channels);
-                                for channel in store
-                                    .channels
-                                    .clone()
+                                for (channel, _) in layout
                                     .iter()
-                                    .filter(|c| c.kind == ChannelKind::Text)
+                                    .filter(|(c, parent)| parent.is_none() && c.kind == ChannelKind::Text)
                                 {
-                                    let row = channel_row(
-                                        ui,
-                                        t,
-                                        icon::HASH,
-                                        &channel.name,
-                                        store.selected_channel == channel.id,
-                                        channel.unread,
-                                        channel.mentions,
-                                        SIDEBAR_WIDTH - indent * 2.0,
-                                    );
-                                    if row.clicked() {
-                                        store.selected_channel = channel.id.clone();
-                                        if state.compact {
-                                            state.mobile_surface = MobileSurface::Chat;
-                                        }
-                                    }
-                                    channel_menu(
-                                        &row,
-                                        channel,
-                                        state,
-                                        s,
-                                        store.can_manage_channels(),
-                                    );
+                                    sidebar_channel(ui, store, state, t, s, channel, width);
                                 }
                                 // Sem canal nenhum a lista fica muda; este é o
                                 // único caminho para o primeiro canal.
                                 if store.channels.is_empty()
                                     && store.can_manage_channels()
-                                    && add_channel_row(ui, t, s, SIDEBAR_WIDTH - indent * 2.0)
+                                    && add_channel_row(ui, t, s, width)
                                 {
                                     state.actions.push(ChatAction::NewChannel);
                                 }
 
                                 section_caption(ui, t, s.voice_channels);
-                                for channel in store
-                                    .channels
-                                    .clone()
+                                for (channel, _) in layout
                                     .iter()
-                                    .filter(|c| c.kind == ChannelKind::Voice)
+                                    .filter(|(c, parent)| parent.is_none() && c.kind == ChannelKind::Voice)
                                 {
-                                    let here = store.call.channel_id == channel.id;
-                                    let row = channel_row(
-                                        ui,
-                                        t,
-                                        icon::SPEAKER_HIGH,
-                                        &channel.name,
-                                        here,
-                                        false,
-                                        0,
-                                        SIDEBAR_WIDTH - indent * 2.0,
-                                    );
-                                    // Um clique entra, como se espera de uma
-                                    // sala de voz: ela não é uma tela para
-                                    // visitar, é um lugar onde se está. Na
-                                    // sala em que já se está, o mesmo clique
-                                    // leva de volta a ela — era o que faltava
-                                    // para quem saiu para ler outro canal ter
-                                    // caminho de volta.
-                                    if row.clicked() {
-                                        state.actions.push(if here {
-                                            ChatAction::OpenCall
+                                    sidebar_channel(ui, store, state, t, s, channel, width);
+                                }
+
+                                for (category, _) in layout.iter().filter(|(c, _)| c.kind == ChannelKind::Category) {
+                                    let children: Vec<&crate::state::Channel> = layout
+                                        .iter()
+                                        .filter(|(_, parent)| parent.as_deref() == Some(category.id.as_str()))
+                                        .map(|(channel, _)| channel)
+                                        .collect();
+                                    let collapsed = state.collapsed_categories.contains(&category.id);
+                                    let unread = collapsed && children.iter().any(|c| c.unread || c.mentions > 0);
+                                    let header = category_header(ui, t, &category.name, collapsed, unread, width);
+                                    if header.clicked() {
+                                        if collapsed {
+                                            state.collapsed_categories.remove(&category.id);
                                         } else {
-                                            ChatAction::JoinVoice(channel.id.clone())
-                                        });
-                                        if state.compact {
-                                            state.mobile_surface = MobileSurface::Chat;
+                                            state.collapsed_categories.insert(category.id.clone());
                                         }
                                     }
-                                    channel_menu(
-                                        &row,
-                                        channel,
-                                        state,
-                                        s,
-                                        store.can_manage_channels(),
-                                    );
-                                    crate::ui::call::roster(
-                                        ui,
-                                        store,
-                                        state,
-                                        t,
-                                        s,
-                                        &channel.id,
-                                        SIDEBAR_WIDTH - indent * 2.0,
-                                    );
+                                    channel_menu(&header, category, state, s, store.can_manage_channels());
+                                    if !collapsed {
+                                        for channel in children {
+                                            sidebar_channel(ui, store, state, t, s, channel, width);
+                                        }
+                                    }
                                 }
                                 // Espaço para a pastilha da conta (e a barra
                                 // da call, quando existe) não cobrirem o
@@ -1691,7 +1682,9 @@ fn identity_pill(
         rect.y_range(),
     ));
     let has_subtitle = !subtitle.is_empty();
-    painter.text(
+    let width = text_right - text_left;
+    super::widgets::text_fit(
+        &painter,
         egui::pos2(
             text_left,
             rect.center().y - if has_subtitle { 7.0 } else { 0.0 },
@@ -1700,14 +1693,17 @@ fn identity_pill(
         name,
         text::headline(),
         t.label,
+        width,
     );
     if has_subtitle {
-        painter.text(
+        super::widgets::text_fit(
+            &painter,
             egui::pos2(text_left, rect.center().y + 8.0),
             egui::Align2::LEFT_CENTER,
             subtitle,
             text::footnote(),
             t.label_tertiary,
+            width,
         );
     }
 
@@ -1730,6 +1726,84 @@ fn initials_of(name: &str) -> String {
         .take(2)
         .collect::<String>()
         .to_uppercase()
+}
+
+/// Um canal na coluna: texto abre a conversa, voz entra na sala (ou volta
+/// para ela), e a lista de quem está na sala vem logo abaixo.
+fn sidebar_channel(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    channel: &crate::state::Channel,
+    width: f32,
+) {
+    let voice = channel.kind == ChannelKind::Voice;
+    let here = voice && store.call.channel_id == channel.id;
+    let row = channel_row(
+        ui,
+        t,
+        if voice { icon::SPEAKER_HIGH } else { icon::HASH },
+        &channel.name,
+        if voice { here } else { store.selected_channel == channel.id },
+        !voice && channel.unread,
+        if voice { 0 } else { channel.mentions },
+        width,
+    );
+    if row.clicked() {
+        if voice {
+            // Um clique entra, como se espera de uma sala de voz: ela não é
+            // uma tela para visitar, é um lugar onde se está. Na sala em que
+            // já se está, o mesmo clique leva de volta a ela.
+            state.actions.push(if here {
+                ChatAction::OpenCall
+            } else {
+                ChatAction::JoinVoice(channel.id.clone())
+            });
+        } else {
+            store.selected_channel = channel.id.clone();
+        }
+        if state.compact {
+            state.mobile_surface = MobileSurface::Chat;
+        }
+    }
+    channel_menu(&row, channel, state, s, store.can_manage_channels());
+    if voice {
+        crate::ui::call::roster(ui, store, state, t, s, &channel.id, width);
+    }
+}
+
+/// Cabeçalho de categoria: a seta diz se está aberta; recolhida, um ponto
+/// avisa que tem coisa nova lá dentro.
+fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, unread: bool, width: f32) -> egui::Response {
+    ui.add_space(space::SM);
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+    let hovered = response.hovered();
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let ink = if hovered { t.label_secondary } else { t.label_tertiary };
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::XS + 5.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        if collapsed { icon::CARET_RIGHT } else { icon::CARET_DOWN },
+        text::icon(10.0),
+        ink,
+    );
+    super::widgets::text_fit(
+        ui.painter(),
+        egui::pos2(rect.min.x + space::XS + 14.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &name.to_uppercase(),
+        text::caption(),
+        ink,
+        rect.width() - 30.0,
+    );
+    if unread {
+        ui.painter().circle_filled(egui::pos2(rect.max.x - space::MD, rect.center().y), 3.0, t.label);
+    }
+    response
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1773,12 +1847,16 @@ fn channel_row(
         text::icon(14.0),
         if selected { t.accent } else { t.label_tertiary },
     );
-    painter.text(
+    // O nome para antes do contador de menções, com reticências.
+    let reserve = if mentions > 0 { 28.0 + space::MD } else { space::MD };
+    super::widgets::text_fit(
+        painter,
         egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         font,
         label_color,
+        rect.max.x - reserve - (rect.min.x + space::MD + 20.0),
     );
 
     if mentions > 0 {
@@ -1837,6 +1915,7 @@ fn channel_menu(
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
                     new_position: channel.position - 1,
+                    parent_id: None,
                 });
                 ui.close();
             }
@@ -1845,6 +1924,7 @@ fn channel_menu(
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
                     new_position: channel.position + 1,
+                    parent_id: None,
                 });
                 ui.close();
             }
@@ -2033,12 +2113,14 @@ fn member_row(
     }
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 4.5, t.glass_opaque);
     painter.circle_filled(avatar_rect.right_bottom() - Vec2::splat(1.0), 3.0, dot.gamma_multiply(alpha));
-    painter.text(
+    super::widgets::text_fit(
+        painter,
         egui::pos2(avatar_rect.max.x + space::MD, rect.center().y),
         egui::Align2::LEFT_CENTER,
         name,
         text::body(),
         if dimmed { t.label_tertiary } else { t.label_secondary },
+        rect.max.x - space::SM - (avatar_rect.max.x + space::MD),
     );
     response
 }
@@ -2493,6 +2575,7 @@ fn handle_mobile_gesture(
         // must also own horizontal drags instead of leaking them to chat.
         let blocked = state.popup.is_some()
             || state.profile.is_some()
+            || state.server_card.is_some()
             || state.viewer.is_some()
             || state.panel.is_some()
             || state.webembed_blocked
@@ -5676,7 +5759,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     let screen = ui.ctx().content_rect();
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
-    super::profile::draw(&mut top, store, state, t, s);
+    // O voltar vai para o de cima: o cartão do servidor, senão o de perfil.
+    let back = std::mem::take(&mut state.back);
+    let used = super::server_card::draw(&mut top, store, state, t, s, back);
+    super::profile::draw(&mut top, store, state, t, s, back && !used);
     saved_toast(&mut top, state, t, s);
 
     if state.external_link_prompt.is_some() {

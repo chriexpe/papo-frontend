@@ -338,6 +338,8 @@ pub enum Command {
         channel_id: String,
         old_position: i32,
         new_position: i32,
+        /// Categoria nova (ver `ChangeChannelPositionRequest`).
+        parent_id: Option<String>,
     },
     SetChannelNotifications {
         channel_id: String,
@@ -355,7 +357,9 @@ pub enum Command {
     DeleteEmoji {
         emoji_id: String,
     },
-    LoadAuditLogs,
+    /// Carrega o registro com estes filtros; com `last_id`, é a próxima
+    /// página e se soma à que já está na tela.
+    LoadAuditLogs(crate::api::models::AuditQuery),
     /// Envio de texto durável. A UI fornece o owner que já estava verificado
     /// na projeção; o worker recusa se ele divergir da sessão verificada.
     QueueMessage {
@@ -461,7 +465,11 @@ pub enum Update {
         permissions: Vec<crate::api::models::ChannelPermissionEntry>,
     },
     Devices(Vec<crate::api::models::ConnectionInfo>),
-    AuditLogs(Vec<crate::api::models::AuditLogEntry>),
+    AuditLogs {
+        logs: Vec<crate::api::models::AuditLogEntry>,
+        has_more: bool,
+        append: bool,
+    },
     Profiles(Vec<crate::api::models::UserProfile>),
     UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
@@ -2984,8 +2992,9 @@ async fn handle(
             channel_id,
             old_position,
             new_position,
+            parent_id,
         } => match api
-            .move_channel(&channel_id, old_position, new_position)
+            .move_channel(&channel_id, old_position, new_position, parent_id)
             .await
         {
             Ok(_) => relist_channels(api, storage_key, updates, wake).await,
@@ -3029,8 +3038,16 @@ async fn handle(
             Ok(()) => relist_emojis(api, storage_key, updates, wake).await,
             Err(error) => report(storage_key, updates, wake, error),
         },
-        Command::LoadAuditLogs => match api.audit_logs().await {
-            Ok(logs) => publish(updates, wake, Update::AuditLogs(logs)),
+        Command::LoadAuditLogs(query) => match api.audit_logs(&query).await {
+            Ok(list) => publish(
+                updates,
+                wake,
+                Update::AuditLogs {
+                    logs: list.logs,
+                    has_more: list.has_more,
+                    append: query.last_id.is_some(),
+                },
+            ),
             Err(error) => report(storage_key, updates, wake, error),
         },
         Command::CreateRole {

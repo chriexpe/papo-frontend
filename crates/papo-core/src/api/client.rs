@@ -861,12 +861,14 @@ impl Api {
         channel_id: &str,
         old_position: i32,
         new_position: i32,
+        parent_id: Option<String>,
     ) -> ApiResult<serde_json::Value> {
         self.put(
             &format!("/channels/{channel_id}/change_position"),
             &ChangeChannelPositionRequest {
                 old_position,
                 new_position,
+                parent_id,
             },
         )
         .await
@@ -924,9 +926,30 @@ impl Api {
 
     // -- Auditoria ---------------------------------------------------------
 
-    pub async fn audit_logs(&self) -> ApiResult<Vec<AuditLogEntry>> {
-        let list: AuditLogList = self.get("/admin/audit-logs").await?;
-        Ok(list.logs)
+    pub async fn audit_logs(&self, query: &AuditQuery) -> ApiResult<AuditLogList> {
+        let mut params = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in [
+            ("action", &query.action),
+            ("actor_id", &query.actor_id),
+            ("entity_type", &query.entity_type),
+            ("target_user_id", &query.target_user_id),
+            ("channel_id", &query.channel_id),
+            ("last_id", &query.last_id),
+        ] {
+            if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+                params.append_pair(key, value);
+            }
+        }
+        if let Some(since) = query.since {
+            params.append_pair("since", &since.to_rfc3339());
+        }
+        let params = params.finish();
+        let path = if params.is_empty() {
+            "/admin/audit-logs".to_owned()
+        } else {
+            format!("/admin/audit-logs?{params}")
+        };
+        self.get(&path).await
     }
 
     // -- Cargos ------------------------------------------------------------

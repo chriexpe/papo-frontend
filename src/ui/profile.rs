@@ -134,7 +134,7 @@ pub fn place(anchor: Anchor, height: f32, screen: Rect) -> Rect {
 
 /// Retângulo da folha no celular: presa ao pé, centrada quando a tela é
 /// larga.
-fn place_sheet(height: f32, screen: Rect) -> Rect {
+pub(crate) fn place_sheet(height: f32, screen: Rect) -> Rect {
     let width = screen.width().min(SHEET_MAX_WIDTH);
     let height = height.min(screen.height() * SHEET_MAX);
     Rect::from_min_size(
@@ -146,19 +146,18 @@ fn place_sheet(height: f32, screen: Rect) -> Rect {
 /// Desenha o cartão aberto, se houver. Mora na camada de cima; um bloqueio
 /// logo abaixo dele recebe qualquer clique fora, fecha o cartão e não deixa
 /// o clique chegar à conversa.
-pub fn draw(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
-    let back = crate::platform::back::take();
+/// `back` é o voltar do sistema neste quadro, já roteado pelo app: quem
+/// decide se o voltar é nosso é um lugar só, para que um cartão fechado não
+/// desligue o voltar de outro que está aberto.
+pub fn draw(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings, back: bool) {
     let Some(mut card) = state.profile.take() else {
-        crate::platform::back::intercept(false);
         return;
     };
     let ctx = ui.ctx().clone();
     let Some(member) = store.member(&card.user_id).cloned() else {
         // A pessoa saiu da lista (banida, servidor trocado): nada a mostrar.
-        crate::platform::back::intercept(false);
         return;
     };
-    crate::platform::back::intercept(true);
 
     let screen = ctx.content_rect();
     let compact = state.compact;
@@ -306,6 +305,7 @@ pub fn draw(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
                         &member,
                         narrow,
                         compact,
+                        rect,
                         &mut outcome,
                     );
                 },
@@ -325,8 +325,6 @@ pub fn draw(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
     if !close {
         state.profile = Some(card);
-    } else {
-        crate::platform::back::intercept(false);
     }
 }
 
@@ -827,6 +825,7 @@ fn footer_contents(
     member: &Member,
     narrow: bool,
     compact: bool,
+    card: Rect,
     outcome: &mut Outcome,
 ) {
     let row_h: f32 = if compact { 44.0 } else { 34.0 };
@@ -896,7 +895,9 @@ fn footer_contents(
             true,
             row_h,
         );
-        egui::Popup::menu(&row).show(|ui| {
+        // Sai do lado do cartão (desktop) ou por cima da linha (celular).
+        let value = Rect::from_x_y_ranges(row.rect.center().x..=row.rect.max.x, row.rect.y_range());
+        super::widgets::dropdown(&row, card, value, compact).show(|ui| {
             for (presence, label, status) in presences {
                 let text = RichText::new(format!("●  {label}")).color(presence_color(t, presence));
                 if ui.button(text).clicked() {

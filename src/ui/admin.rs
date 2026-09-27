@@ -28,5 +28,5 @@ pub enum AdminAction {
         format: String,
     },
     DeleteEmoji(String),
-    LoadAuditLogs,
+    LoadAuditLogs(crate::api::models::AuditQuery),
 }

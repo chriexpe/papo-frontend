@@ -44,6 +44,9 @@ pub struct Channel {
     pub permissions: Vec<models::ChannelPermissionEntry>,
     /// Preferência deste usuário neste canal: off, only_mentions ou all.
     pub notification_settings: String,
+    /// Categoria à qual o canal pertence, quando o servidor informa. Sem
+    /// ela, a categoria é dona dos canais que vêm depois dela na ordem.
+    pub parent_id: Option<String>,
     /// Chegou coisa nova desde a última vez que o canal foi visto.
     pub unread: bool,
     /// Quantas dessas citam você.
@@ -449,6 +452,8 @@ pub struct Store {
     /// Sessões abertas da conta neste servidor.
     pub devices: Vec<models::ConnectionInfo>,
     pub audit_logs: Vec<models::AuditLogEntry>,
+    /// O servidor tem mais registro além do carregado ("carregar mais").
+    pub audit_has_more: bool,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
     pub search_has_more: bool,
@@ -504,6 +509,7 @@ impl Default for Store {
             activities: HashMap::new(),
             devices: Vec::new(),
             audit_logs: Vec::new(),
+            audit_has_more: false,
             search_results: Vec::new(),
             search_has_more: false,
             searching: false,
@@ -523,6 +529,83 @@ fn mention_boundary(c: char) -> bool {
 impl Store {
     pub fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|channel| channel.id == id)
+    }
+
+    /// Canais na ordem de exibição, cada um com a sua categoria.
+    ///
+    /// A ordem é hierárquica: os de fora de categoria e as categorias pela
+    /// posição, e logo depois de cada categoria os canais dela (também pela
+    /// posição, entre si). Assim mover uma categoria leva os canais junto na
+    /// tela, mesmo que as posições deles não tenham mudado.
+    ///
+    /// Com `parent_id` vindo do servidor, vale ele. Sem nenhum `parent_id`
+    /// (servidor sem categoria de verdade), a categoria é dona dos canais
+    /// que vêm depois dela até a próxima categoria.
+    pub fn channel_layout(&self) -> Vec<(usize, Option<String>)> {
+        let mut order: Vec<usize> = (0..self.channels.len()).collect();
+        order.sort_by_key(|&index| self.channels[index].position);
+        let explicit = self.channels.iter().any(|channel| channel.parent_id.is_some());
+        let is_category = |id: &str| self.channel(id).is_some_and(|c| c.kind == ChannelKind::Category);
+
+        // A categoria de cada canal.
+        let mut current: Option<String> = None;
+        let parents: Vec<(usize, Option<String>)> = order
+            .iter()
+            .map(|&index| {
+                let channel = &self.channels[index];
+                if channel.kind == ChannelKind::Category {
+                    current = Some(channel.id.clone());
+                    return (index, None);
+                }
+                let parent = if explicit {
+                    channel.parent_id.clone().filter(|parent| is_category(parent))
+                } else {
+                    current.clone()
+                };
+                (index, parent)
+            })
+            .collect();
+
+        // Raízes pela posição; cada categoria seguida dos filhos.
+        let mut layout = Vec::with_capacity(parents.len());
+        for (index, parent) in &parents {
+            if parent.is_some() {
+                continue;
+            }
+            layout.push((*index, None));
+            let channel = &self.channels[*index];
+            if channel.kind == ChannelKind::Category {
+                for (child, child_parent) in &parents {
+                    if child_parent.as_deref() == Some(channel.id.as_str()) {
+                        layout.push((*child, child_parent.clone()));
+                    }
+                }
+            }
+        }
+        layout
+    }
+
+    /// Move um canal localmente (demonstração, e o eco otimista de um
+    /// arrasto): posições contíguas de 1 em diante, como o servidor faz.
+    /// `parent` `None` não mexe na categoria; `Some("")` tira dela.
+    pub fn move_channel_local(&mut self, id: &str, new_position: i32, parent: Option<String>) {
+        let mut order: Vec<usize> = (0..self.channels.len()).collect();
+        order.sort_by_key(|&index| self.channels[index].position);
+        let Some(from) = order.iter().position(|&index| self.channels[index].id == id) else {
+            return;
+        };
+        let moved = order.remove(from);
+        let to = ((new_position.max(1) - 1) as usize).min(order.len());
+        order.insert(to, moved);
+        for (position, index) in order.into_iter().enumerate() {
+            self.channels[index].position = position as i32 + 1;
+        }
+        if let Some(parent) = parent
+            && let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == id)
+        {
+            channel.parent_id = (!parent.is_empty()).then_some(parent);
+        }
+        self.channels.sort_by_key(|channel| channel.position);
     }
 
     pub fn member(&self, id: &str) -> Option<&Member> {
@@ -777,6 +860,7 @@ impl Store {
                 position: channel.position,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: channel.unread,
                 mentions: channel.mentions,
             })
@@ -976,9 +1060,7 @@ impl Store {
         self.cache_loading.insert(channel_id.to_owned());
     }
 
-    /// Projeta uma página local sem atribuir freshness. Se o REST já tornou a
-    /// cabeça Fresh antes de a primeira leitura Turso voltar, ignoramos essa
-    /// página para não deixar dado stale sobrescrever o snapshot autoritativo.
+    /// Projeta uma página local sem atribuir freshness.
     pub fn restore_cached_page(&mut self, page: CachedMessagePage, older: bool) {
         let channel_id = page.channel_id.clone();
         let fresh = self.timeline_status(&channel_id) == TimelineStatus::Fresh;
@@ -1004,8 +1086,6 @@ impl Store {
 
         if !authoritative_complete {
             for message in page.messages {
-                // Se o head REST venceu a corrida, só aceitamos cache que
-                // esteja estritamente abaixo da janela autoritativa já visível.
                 let older_than_fresh_head = fresh_cutoff.as_ref().is_none_or(|(at, id)| {
                     message.created_at < *at
                         || (message.created_at == *at && message.id < *id)
@@ -1032,8 +1112,7 @@ impl Store {
         }
     }
 
-    /// Falha de leitura local não pode virar retry por frame. A rede continua
-    /// sendo capaz de reconciliar normalmente.
+    /// Falha de leitura local não pode virar retry por frame.
     pub fn cached_page_failed(&mut self, channel_id: &str, older: bool) {
         self.cache_loading.remove(channel_id);
         if older {
@@ -1060,9 +1139,7 @@ impl Store {
         self.history_loading.contains(channel_id)
     }
 
-    /// Reserva primeiro uma página antiga do Turso. Mensagens pinned são
-    /// excluídas do cursor local porque podem ser retenções muito antigas,
-    /// fora da sequência normal de 500 mensagens.
+    /// Reserva primeiro uma página antiga do Turso.
     pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, String)> {
         if self.history_loading.contains(channel_id)
             || !self
@@ -1085,8 +1162,7 @@ impl Store {
         Some(cursor)
     }
 
-    /// Depois que o Turso esgotou, reserva a próxima página autoritativa do
-    /// backend usando o cursor da timeline visível.
+    /// Depois que o Turso esgotou, reserva a próxima página do backend.
     pub fn begin_load_older(
         &mut self,
         channel_id: &str,
@@ -1760,6 +1836,7 @@ impl Store {
                             position: channel.position,
                             permissions: channel.permissions,
                             notification_settings: channel.notification_settings,
+                            parent_id: channel.parent_id.filter(|id| !id.is_empty()),
                             mentions,
                         }
                     })
@@ -1908,8 +1985,13 @@ impl Store {
                 self.devices = devices;
                 self.busy = false;
             }
-            Update::AuditLogs(logs) => {
-                self.audit_logs = logs;
+            Update::AuditLogs { logs, has_more, append } => {
+                if append {
+                    self.audit_logs.extend(logs);
+                } else {
+                    self.audit_logs = logs;
+                }
+                self.audit_has_more = has_more;
                 self.busy = false;
             }
             Update::Done => self.busy = false,
@@ -2436,6 +2518,7 @@ impl Store {
                     position,
                     permissions: Vec::new(),
                     notification_settings: "only_mentions".to_owned(),
+                    parent_id: None,
                     unread: false,
                     mentions: 0,
                 });
@@ -2756,6 +2839,109 @@ fn role_color(roles: &[models::RoleSummary]) -> Option<[u8; 3]> {
         .max_by_key(|role| role.position)
         .and_then(|role| role.color.as_deref())
         .and_then(parse_hex_color)
+}
+
+#[cfg(test)]
+mod channel_layout_tests {
+    use super::*;
+
+    fn channel(id: &str, kind: ChannelKind, position: i32, parent: Option<&str>) -> Channel {
+        Channel {
+            id: id.into(),
+            name: id.into(),
+            kind,
+            topic: None,
+            position,
+            permissions: Vec::new(),
+            notification_settings: "only_mentions".into(),
+            parent_id: parent.map(str::to_owned),
+            unread: false,
+            mentions: 0,
+        }
+    }
+
+    #[test]
+    fn without_parent_ids_a_category_owns_the_channels_after_it() {
+        let store = Store {
+            channels: vec![
+                channel("geral", ChannelKind::Text, 1, None),
+                channel("proj", ChannelKind::Category, 2, None),
+                channel("dev", ChannelKind::Text, 3, None),
+                channel("voz", ChannelKind::Voice, 4, None),
+            ],
+            ..Store::default()
+        };
+        let layout: Vec<_> = store
+            .channel_layout()
+            .into_iter()
+            .map(|(index, parent)| (store.channels[index].id.clone(), parent))
+            .collect();
+        assert_eq!(layout[0], ("geral".into(), None));
+        assert_eq!(layout[2], ("dev".into(), Some("proj".into())));
+        assert_eq!(layout[3], ("voz".into(), Some("proj".into())));
+    }
+
+    #[test]
+    fn explicit_parent_ids_win_over_order() {
+        let store = Store {
+            channels: vec![
+                channel("proj", ChannelKind::Category, 1, None),
+                channel("geral", ChannelKind::Text, 2, None),
+                channel("dev", ChannelKind::Text, 3, Some("proj")),
+            ],
+            ..Store::default()
+        };
+        // dev vem logo abaixo da sua categoria, antes de geral.
+        let layout: Vec<_> = store
+            .channel_layout()
+            .into_iter()
+            .map(|(index, parent)| (store.channels[index].id.as_str(), parent))
+            .collect();
+        assert_eq!(
+            layout,
+            vec![("proj", None), ("dev", Some("proj".into())), ("geral", None)]
+        );
+    }
+
+    #[test]
+    fn children_follow_their_category_wherever_it_is() {
+        // A categoria foi para o fim, os filhos ficaram com posições baixas.
+        let store = Store {
+            channels: vec![
+                channel("dev", ChannelKind::Text, 1, Some("proj")),
+                channel("design", ChannelKind::Text, 2, Some("proj")),
+                channel("voz", ChannelKind::Voice, 3, None),
+                channel("proj", ChannelKind::Category, 4, None),
+                channel("geral", ChannelKind::Text, 5, None),
+            ],
+            ..Store::default()
+        };
+        let order: Vec<_> = store
+            .channel_layout()
+            .into_iter()
+            .map(|(index, _)| store.channels[index].id.as_str())
+            .collect();
+        assert_eq!(order, vec!["voz", "proj", "dev", "design", "geral"]);
+    }
+
+    #[test]
+    fn local_move_keeps_positions_contiguous_and_sets_the_parent() {
+        let mut store = Store {
+            channels: vec![
+                channel("a", ChannelKind::Text, 1, None),
+                channel("cat", ChannelKind::Category, 2, None),
+                channel("b", ChannelKind::Text, 3, None),
+            ],
+            ..Store::default()
+        };
+        store.move_channel_local("a", 3, Some("cat".into()));
+        let order: Vec<_> = store.channels.iter().map(|c| (c.id.as_str(), c.position)).collect();
+        assert_eq!(order, vec![("cat", 1), ("b", 2), ("a", 3)]);
+        assert_eq!(store.channel("a").unwrap().parent_id.as_deref(), Some("cat"));
+        store.move_channel_local("a", 1, Some(String::new()));
+        assert_eq!(store.channel("a").unwrap().parent_id, None);
+        assert_eq!(store.channels[0].id, "a");
+    }
 }
 
 #[cfg(test)]
@@ -3425,6 +3611,7 @@ mod tests {
                 position: 0,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: false,
                 mentions: 0,
             },
@@ -3436,6 +3623,7 @@ mod tests {
                 position: 1,
                 permissions: Vec::new(),
                 notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
                 unread: false,
                 mentions: 0,
             },

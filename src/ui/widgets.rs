@@ -180,3 +180,106 @@ pub fn scroll_edge_fade(ui: &Ui, rect: Rect, color: Color32, from_top: bool) {
     mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
     ui.painter().add(egui::Shape::mesh(mesh));
 }
+
+/// Menu suspenso de uma linha, no lugar certo para cada tamanho de tela.
+///
+/// - Desktop: abre ao lado da superfície (`surface`, o cartão ou a folha),
+///   colado na borda direita dela e com o topo na altura da linha — o menu
+///   sai do cartão em vez de cobrir as linhas vizinhas. Sem espaço à
+///   direita, vai para a esquerda.
+/// - Celular: abre por cima do valor tocado (`value`), alinhado à direita
+///   dele, que é onde o dedo está.
+pub fn dropdown<'a>(row: &Response, surface: Rect, value: Rect, compact: bool) -> egui::Popup<'a> {
+    use egui::{Align2, RectAlign};
+    if compact {
+        let over = RectAlign {
+            parent: Align2::RIGHT_TOP,
+            child: Align2::RIGHT_TOP,
+        };
+        egui::Popup::menu(row).anchor(value).align(over).gap(0.0)
+    } else {
+        let edge = Rect::from_x_y_ranges(surface.min.x..=surface.max.x, row.rect.y_range());
+        const SIDES: [RectAlign; 1] = [RectAlign::LEFT_START];
+        egui::Popup::menu(row)
+            .anchor(edge)
+            .align(RectAlign::RIGHT_START)
+            .align_alternatives(&SIDES)
+            .gap(space::SM)
+    }
+}
+
+/// Opção de um menu suspenso: a marca numa coluna própria, para os rótulos
+/// ficarem alinhados com ou sem ela. Devolve `true` no clique.
+pub fn menu_option(ui: &mut Ui, t: &Tokens, label: &str, selected: bool) -> bool {
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), text::body(), t.label);
+    let width = (galley.size().x + 20.0 + space::MD * 2.0).max(ui.available_width());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+    }
+    if selected {
+        ui.painter().text(
+            egui::pos2(rect.min.x + space::MD + 6.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CHECK,
+            text::icon(13.0),
+            t.accent,
+        );
+    }
+    ui.painter().galley(
+        egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        t.label,
+    );
+    response.clicked()
+}
+
+/// Texto de uma linha que cabe em `max_width`: o que passa vira "…" em vez
+/// de ser cortado no meio de uma letra (ou vazar para fora da coluna).
+pub fn text_fit(
+    painter: &egui::Painter,
+    pos: egui::Pos2,
+    align: egui::Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> Rect {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap.max_width = max_width.max(0.0);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = painter.layout_job(job);
+    let rect = align.anchor_size(pos, galley.size());
+    let elided = galley.elided;
+    painter.galley(rect.min, galley, color);
+    // Cortou? Parar o ponteiro em cima mostra o texto inteiro, como uma
+    // dica de ferramenta.
+    if elided {
+        let ctx = painter.ctx();
+        let resting = ctx.input(|input| {
+            input.pointer.hover_pos().is_some_and(|pointer| rect.contains(pointer))
+                && input.pointer.time_since_last_movement() > 0.4
+        });
+        let on_top = ctx
+            .pointer_hover_pos()
+            .and_then(|pointer| ctx.layer_id_at(pointer))
+            .is_none_or(|layer| layer == painter.layer_id());
+        if resting && on_top {
+            egui::containers::Tooltip::always_open(
+                ctx.clone(),
+                painter.layer_id(),
+                egui::Id::new(("texto-inteiro", text)),
+                rect,
+            )
+            .show(|ui| {
+                ui.label(text);
+            });
+        } else if ctx.input(|input| input.pointer.hover_pos().is_some_and(|pointer| rect.contains(pointer))) {
+            // Parado ainda não: pede outro quadro para a dica poder abrir.
+            ctx.request_repaint_after(std::time::Duration::from_millis(450));
+        }
+    }
+    rect
+}

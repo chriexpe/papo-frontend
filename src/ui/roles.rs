@@ -42,7 +42,19 @@ pub struct Draft {
     pub permissions: RolePermissions,
 }
 
+/// Aba do cargo aberto.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Permissions,
+    Members,
+    Look,
+}
+
 #[derive(Default)]
 pub struct RolesState {
     pub draft: Option<Draft>,
+    pub tab: Tab,
+    /// Busca da aba Membros: apelido, @usuário ou ID.
+    pub member_query: String,
 }
