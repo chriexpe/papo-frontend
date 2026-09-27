@@ -483,6 +483,14 @@ pub enum CacheOp {
         messages: Vec<CachedMessage>,
         cached_at: i64,
     },
+    /// Reconcilia somente a janela mais recente que o backend declarou
+    /// autoritativa. Mensagens mais antigas continuam no cache.
+    MergeChannelHead {
+        channel_id: String,
+        messages: Vec<CachedMessage>,
+        deleted_ids: Vec<String>,
+        cached_at: i64,
+    },
     UpsertMessage(CachedMessage),
     DeleteMessage { message_id: String },
     /// Snapshot autoritativo de fixadas. Converge também linhas que a Store
