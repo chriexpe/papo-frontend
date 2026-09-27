@@ -4283,7 +4283,7 @@ fn preview_card(
     };
     let previous_phase = state.preview_layout_phase.insert(embed_id.to_owned(), phase);
     if previous_phase.is_some_and(|previous| phase > previous)
-        && ui.cursor().min.y <= ui.clip_rect().max.y
+        && ui.cursor().min.y < ui.clip_rect().min.y
     {
         preserve_chat_position_for_relayout(state, ui.ctx());
     }
