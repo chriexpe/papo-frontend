@@ -160,7 +160,18 @@ pub enum ChatAction {
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
-    Search(String),
+    Search {
+        request: crate::api::models::SearchRequest,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
+    },
+    /// Carrega quem reagiu a uma mensagem; páginas seguintes usam cursor.
+    LoadReactionDetails {
+        channel_id: String,
+        message_id: String,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
+    },
     /// `off`, `only_mentions` ou `all` para este canal.
     ChannelNotifications {
         channel_id: String,
@@ -336,6 +347,12 @@ pub fn is_compact(rect: Rect) -> bool {
 pub struct Panel {
     pub kind: PanelKind,
     pub query: String,
+    /// Filtros avançados da busca. Mantidos no painel para paginação usar
+    /// exatamente a mesma consulta.
+    pub search_filters: bool,
+    pub search_author: Option<String>,
+    pub search_attachments: bool,
+    pub search_oldest_first: bool,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
     /// Distingue "ainda não buscou" de uma busca válida com zero resultados.
@@ -2902,6 +2919,10 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
             state.panel = Some(Panel {
                 kind,
                 query: String::new(),
+                search_filters: false,
+                search_author: None,
+                search_attachments: false,
+                search_oldest_first: false,
                 focus: kind == PanelKind::Search,
                 searched: false,
             })
