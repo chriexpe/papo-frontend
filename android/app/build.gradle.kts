@@ -22,6 +22,11 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+val releaseKeystore = System.getenv("PAPO_ANDROID_KEYSTORE")?.takeIf { it.isNotBlank() }
+val releaseStorePassword = System.getenv("PAPO_ANDROID_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("PAPO_ANDROID_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("PAPO_ANDROID_KEY_PASSWORD")
+
 android {
     namespace = "io.github.chriexpe.papo"
     compileSdk = 37
@@ -58,6 +63,20 @@ android {
     // prefab: o `android-activity` traz a própria camada de cola nativa, e
     // a do GameActivity por cima dela quebraria as duas.
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = releaseStorePassword
+                    ?: error("PAPO_ANDROID_STORE_PASSWORD is required for signed releases")
+                keyAlias = releaseKeyAlias
+                    ?: error("PAPO_ANDROID_KEY_ALIAS is required for signed releases")
+                keyPassword = releaseKeyPassword
+                    ?: error("PAPO_ANDROID_KEY_PASSWORD is required for signed releases")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isJniDebuggable = true
@@ -65,6 +84,9 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
