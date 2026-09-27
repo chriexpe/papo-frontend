@@ -652,16 +652,23 @@ impl PapoApp {
 
         #[cfg(target_os = "android")]
         {
-            let background_servers: Vec<(String, String)> = settings
+            let background_servers: Vec<(String, String, bool)> = settings
                 .servers
                 .iter()
-                .map(|entry| (papo_core::server_key(&entry.url), entry.url.clone()))
+                .map(|entry| {
+                    let key = papo_core::server_key(&entry.url);
+                    let enabled = settings
+                        .pending_user_settings
+                        .get(&key)
+                        .map(|config| config.notifications.enabled)
+                        .unwrap_or(settings.notifications);
+                    (key, entry.url.clone(), enabled)
+                })
                 .collect();
             crate::platform::android_work::sync_periodic(
                 background_servers
                     .iter()
-                    .map(|(key, url)| (key.as_str(), url.as_str())),
-                settings.notifications,
+                    .map(|(key, url, enabled)| (key.as_str(), url.as_str(), *enabled)),
             );
         }
 
@@ -3041,10 +3048,27 @@ impl PapoApp {
         }
     }
 
+    fn notification_enabled_for(&self, index: usize) -> bool {
+        let workspace = &self.workspaces[index];
+        self.settings
+            .pending_user_settings
+            .get(&workspace.runtime.server_key)
+            .map(|config| config.notifications.enabled)
+            .or_else(|| {
+                workspace
+                    .runtime
+                    .store
+                    .user_settings
+                    .as_ref()
+                    .map(|settings| settings.config.notifications.enabled)
+            })
+            .unwrap_or(self.settings.notifications)
+    }
+
     fn sync_notification_contexts(&self) {
         for (index, workspace) in self.workspaces.iter().enumerate() {
             workspace.sync_notification_context(
-                self.settings.notifications,
+                self.notification_enabled_for(index),
                 index == self.active,
             );
         }
@@ -3057,13 +3081,13 @@ impl PapoApp {
                     .iter()
                     .enumerate()
                     .filter(|(index, _)| Some(*index) != draft)
-                    .map(|(_, workspace)| {
+                    .map(|(index, workspace)| {
                         (
                             workspace.runtime.server_key.as_str(),
                             workspace.runtime.url.as_str(),
+                            self.notification_enabled_for(index),
                         )
                     }),
-                self.settings.notifications,
             );
         }
     }
