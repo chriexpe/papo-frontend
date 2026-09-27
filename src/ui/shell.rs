@@ -155,10 +155,6 @@ pub enum ChatAction {
         role_id: String,
         permissions: crate::api::models::ChannelPermissions,
     },
-    RemoveChannelPermissions {
-        channel_id: String,
-        role_id: String,
-    },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
     /// Busca no servidor, a partir da pastilha.

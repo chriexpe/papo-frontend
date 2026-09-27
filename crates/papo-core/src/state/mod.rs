@@ -3422,7 +3422,6 @@ mod tests {
                 kind: "text".to_owned(),
                 topic: None,
                 position: 0,
-                permissions: Vec::new(),
                 unread: false,
                 mentions: 0,
             }],

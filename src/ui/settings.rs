@@ -1941,8 +1941,8 @@ fn server_pane(
                 .channel
                 .as_ref()
                 .and_then(|editor| editor.id.clone().map(|id| (id, editor.kind.clone())))
+                && let Some(channel) = channels.iter().find(|channel| channel.id == channel_id)
             {
-                if let Some(channel) = channels.iter().find(|channel| channel.id == channel_id) {
                     section(ui, t, s.channel_permissions);
 
                     if channel.permissions.is_empty() {
@@ -2012,20 +2012,6 @@ fn server_pane(
                         group(ui, t, |rows| {
                             for entry in &channel.permissions {
                                 rows.row(&entry.role_name, None, |ui, t| {
-                                    if row_button(
-                                        ui,
-                                        t,
-                                        s.channel_permission_remove,
-                                        Emphasis::Danger,
-                                    ) {
-                                        actions.push(SettingsAction::Chat(
-                                            ChatAction::RemoveChannelPermissions {
-                                                channel_id: channel_id.clone(),
-                                                role_id: entry.role_id.clone(),
-                                            },
-                                        ));
-                                        draft.channel_permission = None;
-                                    }
                                     if row_button(ui, t, s.edit, Emphasis::Quiet) {
                                         draft.channel_permission = Some(ChannelPermissionDraft {
                                             channel_id: channel_id.clone(),
@@ -2062,7 +2048,6 @@ fn server_pane(
                         });
                     }
                     ui.add_space(space::LG);
-                }
             }
 
             group(ui, t, |rows| {
