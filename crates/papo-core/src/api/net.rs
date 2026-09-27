@@ -16,7 +16,8 @@ use super::scheduler::{
     ReconcileScheduler, StartedReconcile, TaskOwner,
 };
 use super::models::{
-    Channel, Emoji, Message, Notification, ReactionRequest, Server, UserSummary, Whoami,
+    Channel, Emoji, Message, Notification, ReactionRequest, Server, UserConfig, UserSettings,
+    UserSummary, Whoami,
 };
 use super::ws::{self, Connection, Event};
 use crate::storage::{Secret, SecretStore};
@@ -306,6 +307,7 @@ pub enum Command {
     },
     UpdateServer(Box<crate::api::models::UpdateServerRequest>),
     UpdateProfile(Box<crate::api::models::UpdateUserRequest>),
+    UpdateUserSettings(Box<UserConfig>),
     SetStatus {
         status: Option<String>,
     },
@@ -461,6 +463,7 @@ pub enum Update {
     Devices(Vec<crate::api::models::ConnectionInfo>),
     AuditLogs(Vec<crate::api::models::AuditLogEntry>),
     Profiles(Vec<crate::api::models::UserProfile>),
+    UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
     Done,
     Users(Vec<UserSummary>),
@@ -2920,6 +2923,10 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
+        Command::UpdateUserSettings(config) => match api.put_user_settings(&config).await {
+            Ok(settings) => publish(updates, wake, Update::UserSettings(Box::new(settings))),
+            Err(error) => report(storage_key, updates, wake, error),
+        },
         Command::SetStatus { status } => {
             let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
                 return;
