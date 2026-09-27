@@ -1607,7 +1607,7 @@ fn drafts_survive_reconstructible_clear_but_not_delete_or_server_removal() {
 }
 
 #[test]
-fn v4_database_migrates_to_v5_without_reset() {
+fn v4_database_migrates_to_current_without_reset() {
     let temp = TempDb::new("draft-v4-migration");
     let path = temp.path();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1620,19 +1620,11 @@ fn v4_database_migrates_to_v5_without_reset() {
             .build()
             .await
             .unwrap();
-        let conn = db.connect().unwrap();
-        conn.execute(
-            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-            (),
-        )
-        .await
-        .unwrap();
-        conn.execute(
-            "INSERT INTO meta(key, value) VALUES ('schema_version', '4')",
-            (),
-        )
-        .await
-        .unwrap();
+        let mut conn = db.connect().unwrap();
+        let version = super::schema::apply_migrations_for_test(&mut conn, 4)
+            .await
+            .unwrap();
+        assert_eq!(version, 4);
     });
 
     let db = open(&temp);
