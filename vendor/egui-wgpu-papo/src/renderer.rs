@@ -794,6 +794,34 @@ impl Renderer {
                 continue;
             }
 
+            if first_pass && start == index {
+                // A compositor can legally be the first paint primitive.
+                // Give it the same cleared scene a normal egui pass would see.
+                let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("egui_render_segment_clear"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear_color[0] as f64,
+                                g: clear_color[1] as f64,
+                                b: clear_color[2] as f64,
+                                a: clear_color[3] as f64,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                drop(pass);
+                first_pass = false;
+            }
+
             if start < index {
                 let mut pass = encoder
                     .begin_render_pass(&wgpu::RenderPassDescriptor {
