@@ -529,12 +529,33 @@ fn profiles(store: &mut Store) {
             180,
         ),
         ("u-bruno", None, Some("Revisando PR até dormir."), vec![dev.clone()], 90),
-        ("u-dora", Some("em reunião até as 16h"), None, vec![design, dev], 60),
+        ("u-dora", Some("em reunião até as 16h"), None, vec![design.clone(), dev.clone()], 60),
         ("u-edu", None, None, Vec::new(), 12),
     ];
+    // Os mesmos cargos na lista do servidor, para a tela de Cargos ter o
+    // que mostrar (com permissões de exemplo).
+    let permissions = |manage: bool| crate::api::models::RolePermissions {
+        manage_server: manage,
+        manage_channels: manage,
+        manage_roles: manage,
+        ban_members: manage,
+        pin_message: true,
+        everyone_message: manage,
+        send_attachment: true,
+    };
+    store.roles = [(&admin, true), (&design, false), (&dev, false)]
+        .into_iter()
+        .map(|(role, manage)| crate::api::models::Role {
+            id: role.id.clone(),
+            name: role.name.clone(),
+            color: role.color.clone(),
+            permissions: permissions(manage),
+        })
+        .collect();
     for (id, status, about, roles, days) in entries {
         if let Some(member) = store.members.iter_mut().find(|member| member.id == id) {
             member.status_message = status.map(str::to_owned);
+            member.roles = roles.iter().map(|role| role.id.clone()).collect();
         }
         store.profiles.insert(
             id.into(),

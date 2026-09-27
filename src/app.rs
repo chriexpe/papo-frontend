@@ -2652,6 +2652,35 @@ impl PapoApp {
     fn handle_role(&mut self, action: crate::ui::roles::RoleAction) {
         use crate::ui::roles::RoleAction;
 
+        // Na demonstração não há servidor: dar, tirar e editar cargo mudam
+        // o estado aqui mesmo, para a tela de Cargos responder.
+        if self.demo {
+            let store = &mut self.workspaces[self.active].runtime.store;
+            match action {
+                RoleAction::Assign { user_id, role_id } => {
+                    if let Some(member) = store.members.iter_mut().find(|m| m.id == user_id)
+                        && !member.roles.contains(&role_id)
+                    {
+                        member.roles.push(role_id);
+                    }
+                }
+                RoleAction::Unassign { user_id, role_id } => {
+                    if let Some(member) = store.members.iter_mut().find(|m| m.id == user_id) {
+                        member.roles.retain(|id| id != &role_id);
+                    }
+                }
+                RoleAction::Update { role_id, name, color, permissions } => {
+                    if let Some(role) = store.roles.iter_mut().find(|r| r.id == role_id) {
+                        role.name = name;
+                        role.color = color;
+                        role.permissions = permissions;
+                    }
+                }
+                RoleAction::Create { .. } | RoleAction::Delete(_) => {}
+            }
+            return;
+        }
+
         let command = match action {
             RoleAction::Create {
                 name,

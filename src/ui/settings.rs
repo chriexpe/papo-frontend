@@ -952,11 +952,27 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
 }
 
 /// Controle segmentado: as opções lado a lado, uma acesa.
+/// Abas (Permissões / Membros / Aparência): sempre lado a lado, mesmo
+/// com rótulos longos — navegar não é escolher um valor.
+fn tabs<T: PartialEq + Copy>(ui: &mut egui::Ui, t: &Tokens, current: &mut T, options: &[(T, &str)]) -> bool {
+    segmented_inner(ui, t, current, options, true)
+}
+
 fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     t: &Tokens,
     current: &mut T,
     options: &[(T, &str)],
+) -> bool {
+    segmented_inner(ui, t, current, options, false)
+}
+
+fn segmented_inner<T: PartialEq + Copy>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    current: &mut T,
+    options: &[(T, &str)],
+    always: bool,
 ) -> bool {
     let mut changed = false;
     let height = 26.0;
@@ -978,7 +994,7 @@ fn segmented<T: PartialEq + Copy>(
     // Segmentado só para poucas opções curtas (Tema, presença); o resto é
     // menu suspenso, também no desktop — é o que não transborda.
     let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 10);
-    if tiles(ui) || !short || total > ui.available_width() + 0.5 {
+    if !always && (tiles(ui) || !short || total > ui.available_width() + 0.5) {
         return dropdown_choice(ui, t, current, options);
     }
     // O id vem do próprio controle, não do rótulo: numa lista de canais
@@ -1334,6 +1350,245 @@ pub fn sheet(
     }
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Cargos
+// ---------------------------------------------------------------------------
+
+/// Cargos: a lista à esquerda (com quantos têm cada um) e o cargo aberto à
+/// direita, em abas — Permissões, Membros, Aparência. No celular, empilhado.
+fn roles_pane(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
+    let wide = !tiles(ui) && ui.available_width() >= 460.0;
+    if wide {
+        ui.add_space(space::MD);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(170.0);
+                role_list(ui, data, t, s);
+            });
+            ui.add_space(space::LG);
+            ui.vertical(|ui| role_detail(ui, data, t, s, actions));
+        });
+    } else {
+        role_list(ui, data, t, s);
+        role_detail(ui, data, t, s, actions);
+    }
+}
+
+fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    use super::roles::{Draft, Tab};
+    let roles = data.store.roles.clone();
+    section(ui, t, s.roles);
+    if roles.is_empty() {
+        ui.add(egui::Label::new(RichText::new(s.no_roles).font(text::footnote()).color(t.label_tertiary)).wrap());
+    }
+    let selected_id = data.roles.draft.as_ref().and_then(|draft| draft.id.clone());
+    for role in &roles {
+        let count = data.store.members.iter().filter(|m| m.roles.iter().any(|id| id == &role.id)).count();
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+        let selected = selected_id.as_deref() == Some(role.id.as_str());
+        if selected || response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), if selected { t.fill_medium } else { t.fill_soft });
+        }
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        let color = role
+            .color
+            .as_deref()
+            .and_then(crate::api::models::parse_hex_color)
+            .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+            .unwrap_or(t.label_tertiary);
+        ui.painter().circle_filled(egui::pos2(rect.min.x + space::MD + 5.0, rect.center().y), 5.0, color);
+        let count_text = count.to_string();
+        let count_w = ui.painter().layout_no_wrap(count_text.clone(), text::footnote(), t.label_tertiary).size().x;
+        ui.painter().text(egui::pos2(rect.max.x - space::MD, rect.center().y), egui::Align2::RIGHT_CENTER, count_text, text::footnote(), t.label_tertiary);
+        let left = rect.min.x + space::MD + 18.0;
+        crate::ui::widgets::text_fit(
+            ui.painter(),
+            egui::pos2(left, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            &role.name,
+            text::body(),
+            t.label,
+            rect.max.x - space::MD - count_w - space::SM - left,
+        );
+        if response.clicked() {
+            data.roles.draft = Some(Draft {
+                id: Some(role.id.clone()),
+                name: role.name.clone(),
+                color: role.color.clone().unwrap_or_default(),
+                permissions: role.permissions,
+            });
+            data.roles.member_query.clear();
+        }
+    }
+    ui.add_space(space::SM);
+    if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+        // Cargo novo começa pelo nome e pela cor.
+        data.roles.draft = Some(Draft::default());
+        data.roles.tab = Tab::Look;
+    }
+}
+
+fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
+    use super::roles::{RoleAction, Tab};
+    let Some(draft) = data.roles.draft.as_mut() else {
+        ui.add_space(space::LG);
+        ui.label(RichText::new(s.role_pick_hint).font(text::body()).color(t.label_tertiary));
+        return;
+    };
+    let members = data
+        .store
+        .members
+        .iter()
+        .filter(|m| draft.id.as_deref().is_some_and(|id| m.roles.iter().any(|r| r == id)))
+        .count();
+    let members_label = format!("{} · {members}", s.role_tab_members);
+    ui.add_space(space::SM);
+    let mut tab = data.roles.tab;
+    if tabs(
+        ui,
+        t,
+        &mut tab,
+        &[(Tab::Permissions, s.role_tab_permissions), (Tab::Members, &members_label), (Tab::Look, s.role_tab_look)],
+    ) {
+        data.roles.tab = tab;
+    }
+
+    match data.roles.tab {
+        Tab::Permissions => {
+            group(ui, t, |rows| {
+                for (label, value) in [
+                    (s.perm_send_attachment, &mut draft.permissions.send_attachment),
+                    (s.perm_manage_channels, &mut draft.permissions.manage_channels),
+                    (s.perm_pin_message, &mut draft.permissions.pin_message),
+                    (s.perm_everyone_message, &mut draft.permissions.everyone_message),
+                    (s.perm_ban_members, &mut draft.permissions.ban_members),
+                    (s.perm_manage_roles, &mut draft.permissions.manage_roles),
+                    (s.perm_manage_server, &mut draft.permissions.manage_server),
+                ] {
+                    rows.row(label, None, |ui, t| {
+                        switch(ui, t, value);
+                    });
+                }
+            });
+        }
+        Tab::Look => {
+            group(ui, t, |rows| {
+                rows.field(s.role_name, &mut draft.name, 32, false);
+                rows.row(s.role_color, None, |ui, _| {
+                    let mut picked = crate::api::models::parse_hex_color(&draft.color).unwrap_or([128, 128, 128]);
+                    if ui.color_edit_button_srgb(&mut picked).changed() {
+                        draft.color = format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);
+                    }
+                });
+            });
+        }
+        Tab::Members => {
+            let Some(role_id) = draft.id.clone() else {
+                ui.add_space(space::MD);
+                ui.label(RichText::new(s.role_members_hint).font(text::footnote()).color(t.label_tertiary));
+                return;
+            };
+            ui.add_space(space::MD);
+            // Busca por apelido, @usuário ou ID.
+            let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+            ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
+            ui.painter().text(
+                egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::MAGNIFYING_GLASS,
+                text::icon(12.0),
+                t.label_tertiary,
+            );
+            let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 18.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
+            let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
+            child.add_sized(
+                inner.size(),
+                egui::TextEdit::singleline(&mut data.roles.member_query)
+                    .hint_text(s.role_member_search)
+                    .frame(egui::Frame::NONE)
+                    .font(text::callout())
+                    .vertical_align(Align::Center),
+            );
+            ui.add_space(space::SM);
+
+            let query = data.roles.member_query.trim().trim_start_matches('@').to_lowercase();
+            let role_colors: std::collections::HashMap<String, egui::Color32> = data
+                .store
+                .roles
+                .iter()
+                .filter_map(|role| {
+                    let color = role.color.as_deref().and_then(crate::api::models::parse_hex_color)?;
+                    Some((role.id.clone(), egui::Color32::from_rgb(color[0], color[1], color[2])))
+                })
+                .collect();
+            let mut shown = 0;
+            for member in &data.store.members {
+                let matches = query.is_empty()
+                    || member.name.to_lowercase().contains(&query)
+                    || member.username.to_lowercase().contains(&query)
+                    || member.id.to_lowercase().starts_with(&query);
+                if !matches {
+                    continue;
+                }
+                shown += 1;
+                let has = member.roles.iter().any(|id| id == &role_id);
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
+                let face = Rect::from_center_size(egui::pos2(rect.min.x + space::MD + 13.0, rect.center().y), Vec2::splat(26.0));
+                let tint = member.role_color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.accent);
+                ui.painter().circle_filled(face.center(), 13.0, tint.gamma_multiply(0.30));
+                ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, member.initials(), egui::FontId::new(10.0, egui::FontFamily::Name("semibold".into())), tint);
+                // Chave à direita; pontinhos dos outros cargos antes dela.
+                let toggle = Rect::from_min_size(egui::pos2(rect.max.x - space::SM - SWITCH_W, rect.center().y - SWITCH_H / 2.0), Vec2::new(SWITCH_W, SWITCH_H));
+                let mut dots_x = toggle.min.x - space::MD;
+                for other in member.roles.iter().filter(|id| *id != &role_id).take(4) {
+                    if let Some(color) = role_colors.get(other) {
+                        ui.painter().circle_filled(egui::pos2(dots_x - 4.0, rect.center().y), 4.0, *color);
+                        dots_x -= 11.0;
+                    }
+                }
+                let text_left = face.max.x + space::MD;
+                let text_right = dots_x - space::SM;
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y - 7.0), egui::Align2::LEFT_CENTER, &member.name, text::body(), t.label, text_right - text_left);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y + 8.0), egui::Align2::LEFT_CENTER, &format!("@{}", member.username), text::footnote(), t.label_tertiary, text_right - text_left);
+                let mut on = has;
+                let mut slot = ui.new_child(UiBuilder::new().max_rect(toggle));
+                if switch(&mut slot, t, &mut on) {
+                    actions.push(SettingsAction::Role(if has {
+                        RoleAction::Unassign { user_id: member.id.clone(), role_id: role_id.clone() }
+                    } else {
+                        RoleAction::Assign { user_id: member.id.clone(), role_id: role_id.clone() }
+                    }));
+                }
+            }
+            if shown == 0 {
+                ui.label(RichText::new(s.no_results).font(text::body()).color(t.label_secondary));
+            }
+            ui.add_space(space::SM);
+            ui.add(egui::Label::new(RichText::new(s.role_members_toggle_hint).font(text::footnote()).color(t.label_tertiary)).wrap());
+            return;
+        }
+    }
+
+    // Salvar e apagar valem para as abas que editam o cargo.
+    ui.add_space(space::SM);
+    let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
+    actions_row(ui, |ui| {
+        if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
+            actions.push(SettingsAction::Role(match draft.id.clone() {
+                Some(role_id) => RoleAction::Update { role_id, name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
+                None => RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
+            }));
+        }
+        if let Some(role_id) = draft.id.clone()
+            && row_button(ui, t, s.delete_role, Emphasis::Danger)
+        {
+            actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -2942,7 +3197,6 @@ fn server_pane(
     actions: &mut Vec<SettingsAction>,
 ) {
     use super::admin::AdminAction;
-    use super::roles::RoleAction;
     use super::shell::ChatAction;
 
     match state.server_pane {
@@ -3337,120 +3591,7 @@ fn server_pane(
             });
         }
 
-        ServerPane::Roles => {
-            let roles = data.store.roles.clone();
-            section(ui, t, s.roles);
-            group(ui, t, |rows| {
-                if roles.is_empty() {
-                    rows.row(s.no_roles, None, |_, _| {});
-                }
-                for role in &roles {
-                    let selected = data
-                        .roles
-                        .draft
-                        .as_ref()
-                        .and_then(|draft| draft.id.as_deref())
-                        == Some(role.id.as_str());
-                    if rows.choice(&role.name, selected) {
-                        data.roles.draft = Some(super::roles::Draft {
-                            id: Some(role.id.clone()),
-                            name: role.name.clone(),
-                            color: role.color.clone().unwrap_or_default(),
-                            permissions: role.permissions,
-                        });
-                    }
-                }
-            });
-            ui.add_space(space::SM);
-            actions_row(ui, |ui| {
-                if row_button(ui, t, s.new_role, Emphasis::Quiet) {
-                    data.roles.draft = Some(super::roles::Draft::default());
-                }
-            });
-
-            let Some(draft) = data.roles.draft.as_mut() else {
-                return;
-            };
-            section(ui, t, s.role_permissions);
-            group(ui, t, |rows| {
-                rows.field(s.role_name, &mut draft.name, 32, false);
-                rows.row(s.role_color, None, |ui, _| {
-                    let mut picked = crate::api::models::parse_hex_color(&draft.color)
-                        .unwrap_or([128, 128, 128]);
-                    if ui.color_edit_button_srgb(&mut picked).changed() {
-                        draft.color =
-                            format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);
-                    }
-                });
-                for (label, value) in [
-                    (s.perm_send_attachment, &mut draft.permissions.send_attachment),
-                    (s.perm_manage_channels, &mut draft.permissions.manage_channels),
-                    (s.perm_pin_message, &mut draft.permissions.pin_message),
-                    (s.perm_everyone_message, &mut draft.permissions.everyone_message),
-                    (s.perm_ban_members, &mut draft.permissions.ban_members),
-                    (s.perm_manage_roles, &mut draft.permissions.manage_roles),
-                    (s.perm_manage_server, &mut draft.permissions.manage_server),
-                ] {
-                    rows.row(label, None, |ui, t| {
-                        switch(ui, t, value);
-                    });
-                }
-            });
-
-            section(ui, t, s.role_members);
-            if draft.id.is_none() {
-                ui.label(
-                    RichText::new(s.role_members_hint)
-                        .font(text::footnote())
-                        .color(t.label_tertiary),
-                );
-            }
-            if let Some(role_id) = draft.id.clone() {
-                group(ui, t, |rows| {
-                    for member in &data.store.members {
-                        let has = member.roles.iter().any(|id| id == &role_id);
-                        if rows.choice(&member.name, has) {
-                            actions.push(SettingsAction::Role(if has {
-                                RoleAction::Unassign {
-                                    user_id: member.id.clone(),
-                                    role_id: role_id.clone(),
-                                }
-                            } else {
-                                RoleAction::Assign {
-                                    user_id: member.id.clone(),
-                                    role_id: role_id.clone(),
-                                }
-                            }));
-                        }
-                    }
-                });
-            }
-
-            ui.add_space(space::SM);
-            let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
-            actions_row(ui, |ui| {
-                if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
-                    actions.push(SettingsAction::Role(match draft.id.clone() {
-                        Some(role_id) => RoleAction::Update {
-                            role_id,
-                            name: draft.name.trim().to_owned(),
-                            color,
-                            permissions: draft.permissions,
-                        },
-                        None => RoleAction::Create {
-                            name: draft.name.trim().to_owned(),
-                            color,
-                            permissions: draft.permissions,
-                        },
-                    }));
-                }
-                if let Some(role_id) = draft.id.clone()
-                    && row_button(ui, t, s.delete_role, Emphasis::Danger)
-                {
-                    actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
-                }
-            });
-        }
+        ServerPane::Roles => roles_pane(ui, data, t, s, actions),
 
         ServerPane::Emojis => {
             // Escolher o arquivo abre o editor: recorte, prévia na conversa
