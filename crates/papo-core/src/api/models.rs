@@ -93,6 +93,34 @@ impl Default for UserConfig {
     }
 }
 
+impl UserConfig {
+    /// Normaliza rows de versões antigas. O backend antigo gravava o wrapper
+    /// UserSettings dentro de config; ao lê-lo como UserConfig, estes três
+    /// campos discriminantes chegam vazios e todos os bools chegam falsos.
+    pub fn normalised(mut self) -> Self {
+        let legacy_zero = self.theme.is_empty()
+            && self.display.font_size.is_empty()
+            && self.display.message_density.is_empty();
+        if legacy_zero {
+            return Self::default();
+        }
+
+        if !matches!(self.theme.as_str(), "dark" | "light" | "system") {
+            self.theme = "system".to_owned();
+        }
+        if !matches!(self.display.font_size.as_str(), "small" | "medium" | "huge") {
+            self.display.font_size = "medium".to_owned();
+        }
+        if !matches!(
+            self.display.message_density.as_str(),
+            "compact" | "normal" | "comfortable"
+        ) {
+            self.display.message_density = "normal".to_owned();
+        }
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserSettings {
     pub user_id: String,
@@ -990,6 +1018,27 @@ mod tests {
         assert!(config.notifications.enabled);
         assert_eq!(config.display.font_size, "medium");
         assert_eq!(config.display.message_density, "normal");
+    }
+
+    #[test]
+    fn user_settings_legacy_zero_e_normalizado_sem_desligar_notificacoes() {
+        let config = UserConfig {
+            theme: String::new(),
+            notifications: UserNotifications {
+                enabled: false,
+                message_preview: false,
+                sound: false,
+                mentions: false,
+            },
+            display: UserDisplay {
+                font_size: String::new(),
+                message_density: String::new(),
+                show_timestamps: false,
+                show_avatars: false,
+            },
+        }
+        .normalised();
+        assert_eq!(config, UserConfig::default());
     }
 
     #[test]
