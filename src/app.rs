@@ -2059,9 +2059,21 @@ impl PapoApp {
                     channel.notification_settings = setting.to_owned();
                 }
             }
+            // Mover na demonstração muda a ordem aqui mesmo: é como se vê o
+            // arrastar e soltar sem servidor.
+            ChatAction::MoveChannel {
+                channel_id,
+                new_position,
+                parent_id,
+                ..
+            } => {
+                self.workspaces[self.active]
+                    .runtime
+                    .store
+                    .move_channel_local(&channel_id, new_position, parent_id);
+            }
             // Sem rede na demonstração: estas ações não têm efeito local.
             ChatAction::LoadOlderMessages
-            | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
@@ -2788,6 +2800,7 @@ impl PapoApp {
                 store: &ws.runtime.store,
                 server_url: &ws.runtime.url,
                 media: &mut self.ui.media,
+                collapsed: &mut self.ui.collapsed_categories,
                 roles: &mut self.roles,
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,

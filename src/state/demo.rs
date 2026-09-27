@@ -68,14 +68,26 @@ pub fn seed(store: &mut Store, server_key: &str) {
 
     store.channels = vec![
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
-        channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 2),
-        channel("c-design", "design", "Telas, protótipos e discussões de cor", 3),
+        // Uma categoria de verdade, para ver o arrastar entre categorias.
+        Channel {
+            kind: ChannelKind::Category,
+            topic: None,
+            ..channel("c-projetos", "Projetos", "", 2)
+        },
+        Channel {
+            parent_id: Some("c-projetos".into()),
+            ..channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 3)
+        },
+        Channel {
+            parent_id: Some("c-projetos".into()),
+            ..channel("c-design", "design", "Telas, protótipos e discussões de cor", 4)
+        },
         Channel {
             id: "c-voz".into(),
             name: "sala de voz".into(),
             kind: ChannelKind::Voice,
             topic: None,
-            position: 4,
+            position: 5,
             permissions: Vec::new(),
             notification_settings: "only_mentions".into(),
             parent_id: None,
@@ -83,9 +95,9 @@ pub fn seed(store: &mut Store, server_key: &str) {
             mentions: 0,
         },
     ];
-    store.channels[1].unread = true;
-    store.channels[1].mentions = 2;
     store.channels[2].unread = true;
+    store.channels[2].mentions = 2;
+    store.channels[3].unread = true;
     store.selected_channel = "c-geral".into();
     store.mark_loading("c-geral");
     store.mark_loading("c-dev");

@@ -168,6 +168,8 @@ pub struct SettingsState {
     pub mobile_page: bool,
     /// Busca da lista do celular.
     pub mobile_query: String,
+    /// Canal sendo arrastado na árvore de canais.
+    pub drag_channel: Option<String>,
     /// A folha foi desenhada no formato do celular neste quadro (o voltar
     /// decide se sobe um nível ou fecha).
     pub compact: bool,
@@ -186,6 +188,7 @@ impl Default for SettingsState {
             opened_by_click: false,
             mobile_page: false,
             mobile_query: String::new(),
+            drag_channel: None,
             compact: false,
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
@@ -888,26 +891,6 @@ impl Rows<'_> {
     }
 }
 
-/// Botão de ícone para a linha. Mover para cima e para baixo em palavras
-/// ocupavam metade da linha e encostavam no nome do canal; a seta diz o
-/// mesmo em um quadrado.
-fn row_icon(ui: &mut egui::Ui, t: &Tokens, glyph: &str, tip: &str) -> bool {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
-    if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        glyph,
-        text::icon(13.0),
-        t.label_secondary,
-    );
-    response.on_hover_text(tip).clicked()
-}
-
 /// Faixa dos botões de ação, logo abaixo de uma lista.
 ///
 /// Precisa de altura própria: um `with_layout` solto herda toda a altura
@@ -1173,6 +1156,8 @@ pub enum SettingsAction {
 /// Tudo que a folha precisa do resto do programa.
 pub struct Context<'a> {
     pub store: &'a Store,
+    /// Categorias recolhidas, as mesmas da coluna de canais.
+    pub collapsed: &'a mut std::collections::HashSet<String>,
     /// Endpoint local deste workspace; não é uma propriedade administrativa.
     pub server_url: &'a str,
     /// As figurinhas viram textura pelo mesmo caminho da conversa.
@@ -1349,6 +1334,236 @@ pub fn sheet(
     }
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Árvore de canais (arrastar e soltar)
+// ---------------------------------------------------------------------------
+
+enum TreeAction {
+    Edit(String),
+    Delete(String, String),
+    Move {
+        channel_id: String,
+        old_position: i32,
+        new_position: i32,
+        parent_id: Option<String>,
+    },
+}
+
+const TREE_ROW: f32 = 34.0;
+const TREE_INDENT: f32 = 20.0;
+
+/// Para onde um arrasto leva: antes de qual item visível (ou para o fim) e
+/// em qual categoria. Função pura para dar para testar sem janela.
+///
+/// `items` é a lista visível: (id, posição, é categoria, categoria-mãe,
+/// recolhida). `gap` é a fresta entre `items[gap-1]` e `items[gap]`.
+fn tree_drop(
+    items: &[(String, i32, bool, Option<String>, bool)],
+    dragged: usize,
+    mut gap: usize,
+    total: i32,
+) -> (i32, Option<String>) {
+    let (_, old, is_category, _, _) = &items[dragged];
+    // Categoria não entra em categoria: dentro da lista de outra, ela vai
+    // para antes daquela categoria.
+    if *is_category {
+        while gap < items.len() && items[gap].3.is_some() && gap > 0 && items[gap - 1].3.is_some() {
+            gap -= 1;
+        }
+        if gap < items.len() && items[gap].3.is_some() {
+            // Primeiro filho de uma categoria: antes do cabeçalho dela.
+            while gap > 0 && !items[gap - 1].2 {
+                gap -= 1;
+            }
+            gap = gap.saturating_sub(1);
+        }
+    }
+    let parent = if *is_category || gap == 0 {
+        None
+    } else {
+        let above = &items[gap - 1];
+        match (above.2, above.4) {
+            // Logo abaixo de uma categoria aberta: entra nela.
+            (true, false) => Some(above.0.clone()),
+            (true, true) => None,
+            _ => above.3.clone(),
+        }
+    };
+    let new = match items.get(gap) {
+        Some((_, before, ..)) if *old < *before => before - 1,
+        Some((_, before, ..)) => *before,
+        None => total,
+    };
+    (new.max(1), parent)
+}
+
+/// Categorias e canais com alça de arrastar; editar e apagar aparecem ao
+/// passar o ponteiro. Soltar reordena (e troca de categoria) num pedido só.
+fn channel_tree(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    store: &Store,
+    collapsed: &mut std::collections::HashSet<String>,
+    dragging: &mut Option<String>,
+) -> Option<TreeAction> {
+    use egui_phosphor::regular as icon;
+    let layout = store.channel_layout();
+    let total = store.channels.len() as i32;
+    // Visíveis: os filhos de categoria recolhida somem.
+    let visible: Vec<(&crate::state::Channel, Option<String>)> = layout
+        .iter()
+        .map(|(index, parent)| (&store.channels[*index], parent.clone()))
+        .filter(|(_, parent)| parent.as_ref().is_none_or(|p| !collapsed.contains(p)))
+        .collect();
+    let items: Vec<(String, i32, bool, Option<String>, bool)> = visible
+        .iter()
+        .map(|(c, parent)| {
+            let is_category = c.kind == crate::state::ChannelKind::Category;
+            (c.id.clone(), c.position, is_category, parent.clone(), is_category && collapsed.contains(&c.id))
+        })
+        .collect();
+
+    let mut action = None;
+    let mut rects = Vec::with_capacity(visible.len());
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
+    for (index, (channel, parent)) in visible.iter().enumerate() {
+        let is_category = items[index].2;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TREE_ROW), Sense::click());
+        rects.push(rect);
+        let being_dragged = dragging.as_deref() == Some(channel.id.as_str());
+        let hovered = response.hovered() || being_dragged;
+        if hovered {
+            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
+        }
+        let alpha = if being_dragged { 0.45 } else { 1.0 };
+        let indent = if parent.is_some() { TREE_INDENT } else { 0.0 };
+
+        // Alça: é por ela que se arrasta, para o clique no resto da linha
+        // continuar sendo clique.
+        let grip = Rect::from_min_size(egui::pos2(rect.min.x + indent, rect.min.y), Vec2::new(22.0, TREE_ROW));
+        let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
+        if grip_response.hovered() || grip_response.dragged() {
+            ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+        }
+        if grip_response.drag_started() {
+            *dragging = Some(channel.id.clone());
+        }
+        ui.painter().text(
+            grip.center(),
+            egui::Align2::CENTER_CENTER,
+            icon::DOTS_SIX_VERTICAL,
+            text::icon(13.0),
+            if hovered { t.label_secondary } else { t.label_tertiary }.gamma_multiply(alpha),
+        );
+
+        let mut x = grip.max.x + space::XS;
+        if is_category {
+            let folded = collapsed.contains(&channel.id);
+            ui.painter().text(
+                egui::pos2(x + 5.0, rect.center().y),
+                egui::Align2::CENTER_CENTER,
+                if folded { icon::CARET_RIGHT } else { icon::CARET_DOWN },
+                text::icon(10.0),
+                t.label_secondary,
+            );
+            if response.clicked() {
+                if folded {
+                    collapsed.remove(&channel.id);
+                } else {
+                    collapsed.insert(channel.id.clone());
+                }
+            }
+            x += 16.0;
+        } else {
+            let glyph = if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH };
+            ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+            x += 18.0;
+        }
+        let tools_w = if hovered { 60.0 } else { 0.0 };
+        let name = if is_category { channel.name.to_uppercase() } else { channel.name.clone() };
+        let name_rect = crate::ui::widgets::text_fit(
+            ui.painter(),
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            &name,
+            if is_category { text::subheadline() } else { text::body() },
+            if is_category { t.label_secondary } else { t.label }.gamma_multiply(alpha),
+            rect.max.x - tools_w - space::MD - x,
+        );
+        if let Some(topic) = channel.topic.as_deref().filter(|topic| !topic.is_empty() && !is_category) {
+            let left = name_rect.max.x + space::SM;
+            let room = rect.max.x - tools_w - space::MD - left;
+            if room > 40.0 {
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y), egui::Align2::LEFT_CENTER, topic, text::footnote(), t.label_tertiary, room);
+            }
+        }
+
+        // Editar e apagar só aparecem na linha sob o ponteiro.
+        if hovered && dragging.is_none() {
+            let mut right = rect.max.x - space::SM;
+            for (glyph, danger, which) in [(icon::TRASH, true, 1), (icon::PENCIL_SIMPLE, false, 0)] {
+                let tool = Rect::from_min_size(egui::pos2(right - 24.0, rect.center().y - 12.0), Vec2::splat(24.0));
+                right -= 28.0;
+                let tool_response = ui.interact(tool, egui::Id::new(("ferramenta-canal", &channel.id, which)), Sense::click());
+                if tool_response.hovered() {
+                    ui.painter().rect_filled(tool, CornerRadius::same(radius::CONTROL), t.fill_medium);
+                }
+                ui.painter().text(tool.center(), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), if danger { t.danger } else { t.label_secondary });
+                if tool_response.clicked() {
+                    action = Some(if which == 1 {
+                        TreeAction::Delete(channel.id.clone(), channel.name.clone())
+                    } else {
+                        TreeAction::Edit(channel.id.clone())
+                    });
+                }
+            }
+        }
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+
+    // Durante o arrasto: a fresta mais perto do ponteiro vira uma linha de
+    // destaque; ao soltar, o pedido sai.
+    if let Some(id) = dragging.clone() {
+        let Some(dragged) = items.iter().position(|item| item.0 == id) else {
+            *dragging = None;
+            return action;
+        };
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        let released = ui.input(|input| !input.pointer.any_down());
+        if let Some(pointer) = pointer {
+            let gap = rects.iter().position(|rect| pointer.y < rect.center().y).unwrap_or(rects.len());
+            let (_, parent) = tree_drop(&items, dragged, gap, total);
+            let y = match rects.get(gap) {
+                Some(rect) => rect.min.y - 1.0,
+                None => rects.last().map(|rect| rect.max.y + 1.0).unwrap_or(0.0),
+            };
+            let left = rects.first().map(|rect| rect.min.x).unwrap_or(0.0) + if parent.is_some() { TREE_INDENT } else { 0.0 };
+            let right = rects.first().map(|rect| rect.max.x).unwrap_or(0.0);
+            ui.painter().line_segment([egui::pos2(left + space::SM, y), egui::pos2(right - space::SM, y)], Stroke::new(2.0, t.accent));
+            ui.ctx().request_repaint();
+            if released {
+                let (new_position, parent) = tree_drop(&items, dragged, gap, total);
+                let (_, old_position, _, old_parent, _) = &items[dragged];
+                let parent_change = (parent != *old_parent).then(|| parent.clone().unwrap_or_default());
+                if new_position != *old_position || parent_change.is_some() {
+                    action = Some(TreeAction::Move {
+                        channel_id: id,
+                        old_position: *old_position,
+                        new_position,
+                        parent_id: parent_change,
+                    });
+                }
+                *dragging = None;
+            }
+        } else if released {
+            *dragging = None;
+        }
+    }
+    let _ = s;
+    action
 }
 
 // ---------------------------------------------------------------------------
@@ -3053,77 +3268,52 @@ fn server_pane(
                     ui.add_space(space::LG);
             }
 
-            group(ui, t, |rows| {
-                if channels.is_empty() {
-                    rows.row(s.no_channels_yet, None, |_, _| {});
-                }
-                for (index, channel) in channels.iter().enumerate() {
-                    // Apagar pede o nome digitado: é o que separa "quis" de
-                    // "esbarrou".
-                    if let Some((id, expected, typed)) = draft.deleting.as_mut()
-                        && id == &channel.id
-                    {
-                        rows.row(&channel.name, Some(s.delete_type_name), |ui, t| {
-                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                cancel_delete = true;
-                            }
-                        });
-                        let sent = rows.field(s.channel_name, typed, 32, false);
-                        let matches = typed.trim() == expected.as_str();
-                        rows.row("", None, |ui, t| {
-                            if (row_button(ui, t, s.delete_forever, Emphasis::Danger) || sent)
-                                && matches
-                            {
-                                confirmed_delete = Some(channel.id.clone());
-                            }
-                        });
-                        continue;
-                    }
-
-                    let kind = match channel.kind {
-                        crate::state::ChannelKind::Voice => s.channel_kind_voice,
-                        crate::state::ChannelKind::Category => s.channel_kind_category,
-                        crate::state::ChannelKind::Text => s.channel_kind_text,
-                    };
-                    rows.row(&channel.name, Some(kind), |ui, t| {
-                        if row_button(ui, t, s.delete, Emphasis::Danger) {
-                            draft.channel = None;
-                            draft.deleting = Some((
-                                channel.id.clone(),
-                                channel.name.clone(),
-                                String::new(),
-                            ));
-                        }
-                        if row_button(ui, t, s.edit, Emphasis::Quiet) {
-                            draft.deleting = None;
-                            draft.channel_permission = None;
-                            actions.push(SettingsAction::Chat(ChatAction::EditChannel(
-                                channel.id.clone(),
-                            )));
-                        }
-                        if index + 1 < channels.len()
-                            && row_icon(ui, t, egui_phosphor::regular::ARROW_DOWN, s.move_down)
-                        {
-                            actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
-                                channel_id: channel.id.clone(),
-                                old_position: channel.position,
-                                new_position: channel.position + 1,
-                                parent_id: None,
-                            }));
-                        }
-                        if index > 0
-                            && row_icon(ui, t, egui_phosphor::regular::ARROW_UP, s.move_up)
-                        {
-                            actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
-                                channel_id: channel.id.clone(),
-                                old_position: channel.position,
-                                new_position: channel.position - 1,
-                                parent_id: None,
-                            }));
+            // Apagar pede o nome digitado: é o que separa "quis" de
+            // "esbarrou". A confirmação fica acima da árvore.
+            if let Some((id, expected, typed)) = draft.deleting.as_mut() {
+                let name = channels.iter().find(|c| &c.id == id).map(|c| c.name.clone()).unwrap_or_default();
+                let id = id.clone();
+                group(ui, t, |rows| {
+                    rows.row(&name, Some(s.delete_type_name), |ui, t| {
+                        if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                            cancel_delete = true;
                         }
                     });
+                    let sent = rows.field(s.channel_name, typed, 32, false);
+                    let matches = typed.trim() == expected.as_str();
+                    rows.row("", None, |ui, t| {
+                        if (row_button(ui, t, s.delete_forever, Emphasis::Danger) || sent) && matches {
+                            confirmed_delete = Some(id.clone());
+                        }
+                    });
+                });
+                ui.add_space(space::MD);
+            }
+
+            if channels.is_empty() {
+                group(ui, t, |rows| rows.row(s.no_channels_yet, None, |_, _| {}));
+            } else {
+                match channel_tree(ui, t, s, data.store, data.collapsed, &mut state.drag_channel) {
+                    Some(TreeAction::Edit(id)) => {
+                        draft.deleting = None;
+                        draft.channel_permission = None;
+                        actions.push(SettingsAction::Chat(ChatAction::EditChannel(id)));
+                    }
+                    Some(TreeAction::Delete(id, name)) => {
+                        draft.channel = None;
+                        draft.deleting = Some((id, name, String::new()));
+                    }
+                    Some(TreeAction::Move { channel_id, old_position, new_position, parent_id }) => {
+                        actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
+                            channel_id,
+                            old_position,
+                            new_position,
+                            parent_id,
+                        }));
+                    }
+                    None => {}
                 }
-            });
+            }
 
             if close_editor {
                 draft.channel = None;
@@ -3343,5 +3533,56 @@ fn server_pane(
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::tree_drop;
+
+    fn item(id: &str, position: i32, category: bool, parent: Option<&str>) -> (String, i32, bool, Option<String>, bool) {
+        (id.into(), position, category, parent.map(str::to_owned), false)
+    }
+
+    /// geral(1) · Projetos(2) [dev(3), design(4)] · voz(5)
+    fn items() -> Vec<(String, i32, bool, Option<String>, bool)> {
+        vec![
+            item("geral", 1, false, None),
+            item("proj", 2, true, None),
+            item("dev", 3, false, Some("proj")),
+            item("design", 4, false, Some("proj")),
+            item("voz", 5, false, None),
+        ]
+    }
+
+    #[test]
+    fn dropping_right_under_an_open_category_puts_the_channel_in_it() {
+        // geral solto logo abaixo do cabeçalho de Projetos.
+        assert_eq!(tree_drop(&items(), 0, 2, 5), (2, Some("proj".into())));
+    }
+
+    #[test]
+    fn dropping_between_children_keeps_the_category() {
+        // voz entre dev e design.
+        assert_eq!(tree_drop(&items(), 4, 3, 5), (4, Some("proj".into())));
+    }
+
+    #[test]
+    fn dropping_at_the_top_takes_the_channel_out() {
+        assert_eq!(tree_drop(&items(), 3, 0, 5), (1, None));
+    }
+
+    #[test]
+    fn dropping_at_the_end_is_the_last_position() {
+        assert_eq!(tree_drop(&items(), 0, 5, 5), (5, None));
+    }
+
+    #[test]
+    fn a_category_never_lands_inside_another_category() {
+        let mut list = items();
+        list.push(item("arquivo", 6, true, None));
+        // A categoria "arquivo" solta entre dev e design vai para antes de
+        // Projetos, e sem categoria.
+        assert_eq!(tree_drop(&list, 5, 3, 6), (2, None));
     }
 }
