@@ -68,6 +68,7 @@ swash = "0.2"
 # GStreamer, bandeja, menu global, diálogos do portal e as pastas do XDG só
 # existem aqui. No Android cada um desses tem um substituto em `stub/`.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 env_logger = "0.11"
 directories = "6"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
@@ -102,11 +103,6 @@ libc = "0.2"
 # Windows
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "windows")'.dependencies]
-# WGPU stays the Windows default because Windows can expose only the legacy
-# OpenGL 1.1 system driver even when Direct3D is available. Glow remains
-# compiled by the common eframe dependency for explicit development/testing;
-# Papo's current in-app blur callback still depends on that backend.
-eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 # Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
 # the child HWND, browser rendering and pointer/keyboard interaction.
 webview2-com = "0.39.1"
