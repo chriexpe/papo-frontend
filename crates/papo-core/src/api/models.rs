@@ -984,6 +984,28 @@ mod tests {
 
     /// A busca manda só o que foi preenchido.
     #[test]
+    fn user_settings_vazio_cai_em_defaults_validos() {
+        let config: UserConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.theme, "system");
+        assert!(config.notifications.enabled);
+        assert_eq!(config.display.font_size, "medium");
+        assert_eq!(config.display.message_density, "normal");
+    }
+
+    #[test]
+    fn update_user_settings_usa_envelope_config_sem_perder_campos() {
+        let mut config = UserConfig::default();
+        config.theme = "dark".to_owned();
+        config.notifications.message_preview = false;
+        config.display.show_avatars = false;
+        let body = serde_json::to_value(UpdateUserSettingsRequest { config }).unwrap();
+        assert_eq!(body["config"]["theme"], "dark");
+        assert_eq!(body["config"]["notifications"]["messagePreview"], false);
+        assert_eq!(body["config"]["display"]["showAvatars"], false);
+        assert!(body.get("theme").is_none());
+    }
+
+    #[test]
     fn busca_omite_os_filtros_vazios() {
         let body = serde_json::to_string(&SearchRequest {
             text: Some("oi".to_owned()),
