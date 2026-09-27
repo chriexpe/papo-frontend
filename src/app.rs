@@ -446,6 +446,22 @@ impl Settings {
         }
         self.active = active.min(self.servers.len() - 1);
         self.server_url = self.servers[self.active].url.clone();
+
+        // Antes de criar tokens de tema / pedir permissão nativa, projeta o
+        // último config conhecido da conta ativa. Pending local tem prioridade.
+        let active_key = crate::state::server_key(&self.server_url);
+        if let Some(config) = self
+            .pending_user_settings
+            .get(&active_key)
+            .or_else(|| self.cached_user_settings.get(&active_key))
+        {
+            self.theme = match config.theme.as_str() {
+                "dark" => ThemePref::Dark,
+                "light" => ThemePref::Light,
+                _ => ThemePref::System,
+            };
+            self.notifications = config.notifications.enabled;
+        }
     }
 }
 
