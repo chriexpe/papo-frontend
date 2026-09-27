@@ -110,6 +110,10 @@ jobs:
           "GSTREAMER_1_0_ROOT_MSVC_X86_64=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "GSTREAMER_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
       - name: Build
         run: cargo build --release --locked
 
@@ -149,12 +153,36 @@ jobs:
             Set-Content "$name.zip.sha256"
           "WINDOWS_ZIP=$name.zip" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME -like 'v*') {
+            $env:GITHUB_REF_NAME.Substring(1)
+          } else {
+            'dev'
+          }
+          ./packaging/windows/build-installer.ps1 `
+            -GStreamerRoot $env:GSTREAMER_ROOT `
+            -PapoExe target/release/papo.exe `
+            -Version $version `
+            -OutputDir installer-out
+          $setup = Get-ChildItem installer-out -Filter 'Papo-*-Setup.exe' -File |
+            Select-Object -First 1
+          if (-not $setup) {
+            throw 'Windows Setup executable not found'
+          }
+          $hash = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($setup.Name)" | Set-Content "$($setup.FullName).sha256"
+          "WINDOWS_SETUP=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - uses: actions/upload-artifact@v4
         with:
           name: papo-windows-x86_64
           path: |
             ${{ env.WINDOWS_ZIP }}
             ${{ env.WINDOWS_ZIP }}.sha256
+            ${{ env.WINDOWS_SETUP }}
+            ${{ env.WINDOWS_SETUP }}.sha256
 
   # O bundle Flatpak é o pacote que não depende do GStreamer do sistema: o
   # runtime do freedesktop já o traz, e a extensão ffmpeg-full traz os codecs.
@@ -227,4 +255,6 @@ jobs:
             *.flatpak
             *.zip
             *.zip.sha256
+            *-Setup.exe
+            *-Setup.exe.sha256
           generate_release_notes: true

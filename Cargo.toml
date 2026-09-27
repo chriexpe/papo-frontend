@@ -134,6 +134,9 @@ gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 # pede o JNI. É a única coisa que falamos com o Java diretamente.
 jni = "0.21"
 
+[build-dependencies]
+embed-resource = "3"
+
 [profile.release]
 # Binário de distribuição: um arquivo só, sem símbolos de depuração.
 lto = "thin"
