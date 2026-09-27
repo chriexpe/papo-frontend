@@ -2980,7 +2980,31 @@ fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
-fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
+fn search_request_from_panel(panel: &Panel) -> Option<crate::api::models::SearchRequest> {
+    let text = panel.query.trim();
+    if text.is_empty() && panel.search_author.is_none() && !panel.search_attachments {
+        return None;
+    }
+    Some(crate::api::models::SearchRequest {
+        text: (!text.is_empty()).then(|| text.to_owned()),
+        author: panel.search_author.clone(),
+        order: Some(
+            if panel.search_oldest_first { "asc" } else { "desc" }.to_owned(),
+        ),
+        date_start: None,
+        date_end: None,
+        contains_attachment: panel.search_attachments.then_some(true),
+    })
+}
+
+/// Busca dentro da pastilha: campo, filtros opcionais e resultados paginados.
+fn search_panel(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
     let mut run = false;
     let mut query = state
         .panel
@@ -2990,7 +3014,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
+        let field_width = (ui.available_width() - HIT_TARGET * 2.0 - space::XS * 2.0).max(80.0);
         #[cfg(target_os = "android")]
         {
             let focus = state
@@ -3054,24 +3078,106 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 run = true;
             }
         }
+
+        if ui
+            .selectable_label(
+                state.panel.as_ref().is_some_and(|panel| panel.search_filters),
+                s.search_filters,
+            )
+            .clicked()
+            && let Some(panel) = state.panel.as_mut()
+        {
+            panel.search_filters = !panel.search_filters;
+        }
+
         if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
             run = true;
         }
     });
+
     #[cfg(target_os = "android")]
     if let Some(panel) = state.panel.as_mut() {
         panel.query.clone_from(&query);
     }
-    if run && !query.trim().is_empty() {
-        if let Some(panel) = state.panel.as_mut() {
-            panel.searched = true;
+
+    if state.panel.as_ref().is_some_and(|panel| panel.search_filters) {
+        ui.add_space(space::XS);
+        ui.horizontal_wrapped(|ui| {
+            let author_name = state
+                .panel
+                .as_ref()
+                .and_then(|panel| panel.search_author.as_deref())
+                .and_then(|id| store.member(id))
+                .map(|member| member.name.as_str())
+                .unwrap_or(s.search_anyone);
+
+            egui::ComboBox::from_id_salt("search-author")
+                .selected_text(format!("{}: {}", s.search_author, author_name))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(
+                            state
+                                .panel
+                                .as_ref()
+                                .is_none_or(|panel| panel.search_author.is_none()),
+                            s.search_anyone,
+                        )
+                        .clicked()
+                        && let Some(panel) = state.panel.as_mut()
+                    {
+                        panel.search_author = None;
+                    }
+                    for member in &store.members {
+                        let selected = state
+                            .panel
+                            .as_ref()
+                            .and_then(|panel| panel.search_author.as_deref())
+                            == Some(member.id.as_str());
+                        if ui.selectable_label(selected, &member.name).clicked()
+                            && let Some(panel) = state.panel.as_mut()
+                        {
+                            panel.search_author = Some(member.id.clone());
+                        }
+                    }
+                });
+
+            if let Some(panel) = state.panel.as_mut() {
+                ui.checkbox(&mut panel.search_attachments, s.search_attachments);
+                ui.selectable_value(
+                    &mut panel.search_oldest_first,
+                    false,
+                    s.search_newest,
+                );
+                ui.selectable_value(
+                    &mut panel.search_oldest_first,
+                    true,
+                    s.search_oldest,
+                );
+            }
+        });
+    }
+
+    let request = state
+        .panel
+        .as_ref()
+        .and_then(search_request_from_panel);
+
+    if run {
+        if let Some(request) = request.clone() {
+            if let Some(panel) = state.panel.as_mut() {
+                panel.searched = true;
+            }
+            store.searching = true;
+            state.actions.push(ChatAction::Search {
+                request,
+                cursor: None,
+                append: false,
+            });
         }
-        store.searching = true;
-        state.actions.push(ChatAction::Search(query.trim().to_owned()));
     }
 
     ui.add_space(space::XS);
-    if store.searching {
+    if store.searching && store.search_results.is_empty() {
         ui.label(
             RichText::new(s.searching)
                 .font(text::footnote())
@@ -3080,8 +3186,6 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         return;
     }
     if store.search_results.is_empty() {
-        // Antes da primeira busca o que falta é a instrução, não o "nada
-        // encontrado": quem acabou de abrir ainda não procurou coisa alguma.
         let searched = state
             .panel
             .as_ref()
@@ -3098,7 +3202,16 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .search_results
         .iter()
         .map(|result| {
-            let member = store.member_by_username(&result.author_username);
+            let member = result
+                .author_id
+                .as_deref()
+                .and_then(|id| store.member(id))
+                .or_else(|| {
+                    result
+                        .author_username
+                        .as_deref()
+                        .and_then(|username| store.member_by_username(username))
+                });
             (
                 result.channel_id.clone(),
                 result.id.clone(),
@@ -3106,12 +3219,14 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 member.map(|member| member.id.clone()),
                 member
                     .map(|member| member.name.clone())
-                    .unwrap_or_else(|| result.author_username.clone()),
+                    .or_else(|| result.author_username.clone())
+                    .unwrap_or_else(|| "?".to_owned()),
                 result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
             )
         })
         .collect();
+
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
         .auto_shrink([false, false])
@@ -3134,6 +3249,30 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
                 }
+            }
+
+            if store.search_has_more {
+                ui.add_space(space::SM);
+                let enabled = !store.searching && request.is_some();
+                if ui.add_enabled(enabled, egui::Button::new(s.search_more)).clicked()
+                    && let Some(request) = request.clone()
+                    && let Some(last) = store.search_results.last()
+                    && let Some(at) = last.created_at
+                {
+                    store.searching = true;
+                    state.actions.push(ChatAction::Search {
+                        request,
+                        cursor: Some((at, last.id.clone())),
+                        append: true,
+                    });
+                }
+            } else if store.searching {
+                ui.add_space(space::SM);
+                ui.label(
+                    RichText::new(s.searching)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
             }
         });
 }
