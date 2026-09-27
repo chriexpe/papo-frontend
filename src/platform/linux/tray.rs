@@ -3,7 +3,7 @@
 //! O KDE fala SNI nativamente; o ksni cuida do D-Bus numa thread própria.
 //! A janela conversa com ele por canais, como no menu global.
 
-use std::sync::mpsc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
 
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::StandardItem;
@@ -34,11 +34,20 @@ struct PapoTray {
     unread: bool,
     commands: mpsc::Sender<TrayCommand>,
     repaint: egui::Context,
+    quit_requested: Arc<AtomicBool>,
 }
 
 impl PapoTray {
     fn emit(&self, command: TrayCommand) {
         let _ = self.commands.send(command);
+        self.repaint.request_repaint();
+    }
+
+    fn request_quit(&self) {
+        self.quit_requested.store(true, Ordering::Release);
+        // Do not wait for a minimized Wayland window to render another frame
+        // before asking the native event loop to close.
+        self.repaint.send_viewport_cmd(egui::ViewportCommand::Close);
         self.repaint.request_repaint();
     }
 }
@@ -97,7 +106,7 @@ impl ksni::Tray for PapoTray {
             MenuItem::Separator,
             StandardItem {
                 label: self.labels.quit.clone(),
-                activate: Box::new(|tray: &mut Self| tray.emit(TrayCommand::Quit)),
+                activate: Box::new(|tray: &mut Self| tray.request_quit()),
                 ..Default::default()
             }
             .into(),
@@ -108,12 +117,14 @@ impl ksni::Tray for PapoTray {
 pub struct Tray {
     handle: Handle<PapoTray>,
     commands: mpsc::Receiver<TrayCommand>,
+    quit_requested: Arc<AtomicBool>,
 }
 
 impl Tray {
     /// `None` quando não há um host SNI na sessão.
     pub fn spawn(repaint: egui::Context, labels: TrayLabels) -> Option<Self> {
         let (tx, rx) = mpsc::channel();
+        let quit_requested = Arc::new(AtomicBool::new(false));
         let tray = PapoTray {
             icons: load_icons(),
             labels,
@@ -121,6 +132,7 @@ impl Tray {
             unread: false,
             commands: tx,
             repaint,
+            quit_requested: Arc::clone(&quit_requested),
         };
         // O Flatpak não deixa registrar o nome próprio do item
         // (`StatusNotifierItem-<pid>-<n>`): o curinga do sandbox só alcança
@@ -136,6 +148,7 @@ impl Tray {
                 Some(Self {
                     handle,
                     commands: rx,
+                    quit_requested,
                 })
             }
             Err(error) => {
@@ -147,6 +160,11 @@ impl Tray {
 
     pub fn try_recv(&self) -> Option<TrayCommand> {
         self.commands.try_recv().ok()
+    }
+
+
+    pub fn take_quit_requested(&self) -> bool {
+        self.quit_requested.swap(false, Ordering::AcqRel)
     }
 
     pub fn set_badge(&self, mentions: u32, unread: bool) {
