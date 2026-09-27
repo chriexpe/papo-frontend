@@ -14,10 +14,10 @@ mod tests;
 pub use store::TursoCache;
 pub use types::{
     new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedMember,
-    CachedMentionBinding, CachedMessage, CachedOutgoing, CachedPreview, CachedReaction, CachedServer,
-    CachedServerSnapshot, CacheOp,
+    CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing, CachedPreview,
+    CachedReaction, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp,
     ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
-    OutgoingState, PreviewCacheState, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
+    OutgoingState, PreviewCacheState, CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
     OUTGOING_LIMIT, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,
 };
 
@@ -82,6 +82,16 @@ enum WorkerMsg {
     Load {
         server_key: String,
         reply: std::sync::mpsc::Sender<Result<CachedServerSnapshot, String>>,
+    },
+    LoadMetadata {
+        server_key: String,
+        reply: std::sync::mpsc::Sender<Result<CachedServerMetadata, String>>,
+    },
+    LoadChannelPage {
+        server_key: String,
+        channel_id: String,
+        before: Option<(i64, String)>,
+        reply: std::sync::mpsc::Sender<Result<CachedMessagePage, String>>,
     },
     EnqueueOutgoing {
         server_key: String,
@@ -499,8 +509,65 @@ impl ClientDb {
         let _ = reply_rx.recv_timeout(LOAD_TIMEOUT);
     }
 
-    /// Leitura síncrona no arranque; também é barreira atrás do que já foi
-    /// aceito. Não é caminho de frame.
+    /// Leitura pequena e síncrona usada no arranque. Mensagens são hidratadas
+    /// depois, por canal, sem bloquear o frame.
+    pub fn load_metadata(&self, server_key: &str) -> Option<CachedServerMetadata> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if !self.enqueue(
+            WorkerMsg::LoadMetadata {
+                server_key: server_key.to_owned(),
+                reply: reply_tx,
+            },
+            false,
+        ) {
+            return None;
+        }
+        match reply_rx.recv_timeout(LOAD_TIMEOUT) {
+            Ok(Ok(metadata)) => {
+                self.stats.restores.fetch_add(1, Ordering::Relaxed);
+                log::debug!(
+                    "cache: restored metadata server={server_key} channels={} members={} cached_channels={}",
+                    metadata.channels.len(),
+                    metadata.members.len(),
+                    metadata.cached_channels.len()
+                );
+                Some(metadata)
+            }
+            Ok(Err(error)) => {
+                self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
+                self.set_last_error(error.clone());
+                log::warn!("cache: metadata restore falhou para {server_key}: {error}");
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Enfileira uma página de timeline sem bloquear o chamador. O Receiver é
+    /// sondado pela camada de runtime/UI, mantendo o worker Turso fora do frame.
+    pub fn load_channel_page_async(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: Option<(i64, String)>,
+    ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if !self.enqueue(
+            WorkerMsg::LoadChannelPage {
+                server_key: server_key.to_owned(),
+                channel_id: channel_id.to_owned(),
+                before,
+                reply: reply_tx,
+            },
+            false,
+        ) {
+            return None;
+        }
+        Some(reply_rx)
+    }
+
+    /// Leitura síncrona integral mantida para testes/ferramentas. O runtime
+    /// interativo não usa mais este caminho.
     pub fn load_snapshot(&self, server_key: &str) -> Option<CachedServerSnapshot> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         if !self.enqueue(
@@ -678,6 +745,29 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
         WorkerMsg::Load { server_key, reply } => {
             let result = cache
                 .load_snapshot(&server_key)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadMetadata { server_key, reply } => {
+            let result = cache
+                .load_metadata(&server_key)
+                .await
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadChannelPage {
+            server_key,
+            channel_id,
+            before,
+            reply,
+        } => {
+            let result = cache
+                .load_channel_page(
+                    &server_key,
+                    &channel_id,
+                    before.as_ref().map(|(at, id)| (*at, id.as_str())),
+                )
                 .await
                 .map_err(|error| error.to_string());
             let _ = reply.send(result);
