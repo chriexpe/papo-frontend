@@ -26,7 +26,6 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-AppUserModelID={#MyAppUserModelID}
 DefaultDirName={autopf}\Papo
 DefaultGroupName=Papo
 UsePreviousAppDir=yes
