@@ -133,14 +133,22 @@ ls -la "$JNI_LIBS/$ABI/libpapo.so" | awk '{printf "    libpapo.so: %.1f MB\n", $
 # --- Gradle ----------------------------------------------------------------
 if [ "$PROFILE" = release ]; then
     GRADLE_TASK=assembleRelease
-    APK="$ROOT/android/app/build/outputs/apk/release/app-release-unsigned.apk"
 else
     GRADLE_TASK=assembleDebug
-    APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
 fi
 
 echo "==> gradlew $GRADLE_TASK"
 (cd android && ./gradlew --console=plain "$GRADLE_TASK")
+
+if [ "$PROFILE" = release ]; then
+    if [ -f "$ROOT/android/app/build/outputs/apk/release/app-release.apk" ]; then
+        APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
+    else
+        APK="$ROOT/android/app/build/outputs/apk/release/app-release-unsigned.apk"
+    fi
+else
+    APK="$ROOT/android/app/build/outputs/apk/debug/app-debug.apk"
+fi
 ls -la "$APK" | awk '{printf "    apk: %.1f MB\n", $5/1048576}'
 
 # --- Aparelho --------------------------------------------------------------
