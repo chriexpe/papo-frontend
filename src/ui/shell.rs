@@ -2760,7 +2760,9 @@ fn call_layers(
 /// Pastilha de identidade do canal, no alto à esquerda.
 ///
 /// A descrição entra junto com o canal, fica alguns segundos e escorrega na
-/// direção do nome até sumir — a pastilha encolhe junto.
+/// direção do nome até sumir — a pastilha encolhe junto. Ao clicar, a própria
+/// pastilha cresce para baixo, como as pastilhas de busca/fixadas do outro
+/// lado, em vez de abrir a descrição na âncora das ações.
 fn channel_pill(
     ui: &mut egui::Ui,
     store: &Store,
@@ -2769,11 +2771,32 @@ fn channel_pill(
     area: Rect,
 ) -> Option<Rect> {
     let channel = store.channel(&store.selected_channel).cloned()?;
+    let topic_text = channel
+        .topic
+        .as_deref()
+        .map(str::trim)
+        .filter(|topic| !topic.is_empty());
+    let topic_open = state.panel.as_ref().is_some_and(|panel| panel.kind == PanelKind::Topic);
+
+    // Um canal sem descrição não pode deixar um painel Topic órfão aberto
+    // depois de um update do backend.
+    if topic_text.is_none() && topic_open {
+        state.panel = None;
+    }
+
+    let screen = ui.ctx().content_rect();
+    let layer = if topic_open {
+        egui::LayerId::new(egui::Order::Foreground, Id::new("channel-topic-panel-layer"))
+    } else {
+        ui.layer_id()
+    };
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+    let ui = &mut top;
 
     let painter = ui.painter();
-    let glyph = painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
+    let glyph =
+        painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
     let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
-    let topic_text = channel.topic.as_deref().map(str::trim).filter(|topic| !topic.is_empty());
     let topic = topic_text.map(|topic| {
         const TOPIC_SNIPPET_CHARS: usize = 80;
         let mut chars = topic.chars();
@@ -2785,25 +2808,31 @@ fn channel_pill(
     });
 
     // Quanto da descrição ainda está na tela: 1 inteira, 0 recolhida.
-    let reveal = match (&topic, state.reveal_topic, state.topic_since) {
-        (None, _, _) => 0.0,
-        (Some(_), false, _) => 0.0,
-        (Some(_), true, None) => 0.0,
-        (Some(_), true, Some(since)) => {
-            let elapsed = ui.input(|input| input.time) - since;
-            if elapsed < TOPIC_HOLD {
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
-                    (TOPIC_HOLD - elapsed).max(0.01),
-                ));
-                1.0
-            } else if elapsed < TOPIC_HOLD + TOPIC_SLIDE {
-                ui.ctx().request_repaint();
-                let progress = ((elapsed - TOPIC_HOLD) / TOPIC_SLIDE) as f32;
-                // Desacelerando no fim, como todo movimento da casa.
-                1.0 - (1.0 - (1.0 - progress).powi(3))
-            } else {
-                state.topic_since = None;
-                0.0
+    // Com o painel aberto o resumo some: o texto completo já começa logo
+    // abaixo da própria pastilha.
+    let reveal = if topic_open {
+        0.0
+    } else {
+        match (&topic, state.reveal_topic, state.topic_since) {
+            (None, _, _) => 0.0,
+            (Some(_), false, _) => 0.0,
+            (Some(_), true, None) => 0.0,
+            (Some(_), true, Some(since)) => {
+                let elapsed = ui.input(|input| input.time) - since;
+                if elapsed < TOPIC_HOLD {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                        (TOPIC_HOLD - elapsed).max(0.01),
+                    ));
+                    1.0
+                } else if elapsed < TOPIC_HOLD + TOPIC_SLIDE {
+                    ui.ctx().request_repaint();
+                    let progress = ((elapsed - TOPIC_HOLD) / TOPIC_SLIDE) as f32;
+                    // Desacelerando no fim, como todo movimento da casa.
+                    1.0 - (1.0 - (1.0 - progress).powi(3))
+                } else {
+                    state.topic_since = None;
+                    0.0
+                }
             }
         }
     };
@@ -2813,16 +2842,46 @@ fn channel_pill(
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
         .unwrap_or(0.0);
-    let limit = (area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD)
+    let closed_limit = (area.width() - PILL_MARGIN * 2.0 - ACTIONS_PILL_WIDTH - space::MD)
         .max(PILL_HEIGHT);
-    let width = (base_width + topic_width * reveal).min(limit);
+    let closed_width = (base_width + topic_width * reveal).min(closed_limit);
+
+    let available_width = (area.width() - PILL_MARGIN * 2.0).max(PILL_HEIGHT);
+    let width = if topic_open {
+        PANEL_WIDTH.min(available_width)
+    } else {
+        closed_width
+    };
+
+    // A descrição acompanha o próprio conteúdo em vez de reservar o teto
+    // inteiro. Só vira a altura antiga quando o texto realmente precisa dela.
+    let max_body = (area.height() - PILL_MARGIN * 2.0 - PILL_HEIGHT)
+        .min(PANEL_MAX_BODY)
+        .max(0.0);
+    let body_padding = space::SM * 2.0;
+    let body_text_width = (width - body_padding).max(1.0);
+    let topic_height = topic_text
+        .map(|topic| {
+            painter
+                .layout(topic.to_owned(), text::body(), t.label, body_text_width)
+                .size()
+                .y
+        })
+        .unwrap_or(0.0);
+    let body = if topic_open {
+        (topic_height + body_padding).min(max_body)
+    } else {
+        0.0
+    };
 
     let rect = Rect::from_min_size(
         area.min + Vec2::splat(PILL_MARGIN),
-        Vec2::new(width, PILL_HEIGHT),
+        Vec2::new(width, PILL_HEIGHT + body),
     );
     pill_surface(ui, state, t, rect);
-    let response = ui.interact(rect, Id::new("channel-topic-pill"), Sense::click());
+
+    let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
+    let response = ui.interact(header, Id::new("channel-topic-pill"), Sense::click());
     if topic_text.is_some() && response.clicked() {
         toggle_panel(state, PanelKind::Topic);
     }
@@ -2830,12 +2889,20 @@ fn channel_pill(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    let mid = rect.center().y;
-    let mut x = rect.min.x + space::LG;
+    let mid = header.center().y;
+    let mut x = header.min.x + space::LG;
     let painter = ui.painter();
-    painter.galley(egui::pos2(x, mid - glyph.size().y / 2.0), glyph.clone(), t.label_tertiary);
+    painter.galley(
+        egui::pos2(x, mid - glyph.size().y / 2.0),
+        glyph.clone(),
+        t.label_tertiary,
+    );
     x += glyph.size().x + space::SM;
-    painter.galley(egui::pos2(x, mid - name.size().y / 2.0), name.clone(), t.label);
+    painter.galley(
+        egui::pos2(x, mid - name.size().y / 2.0),
+        name.clone(),
+        t.label,
+    );
     x += name.size().x + space::LG;
 
     // A descrição escorrega no mesmo passo em que a pastilha encolhe: a
@@ -2846,8 +2913,8 @@ fn channel_pill(
         let start = x - slide;
         let alpha = (reveal * 1.8).clamp(0.0, 1.0);
         let clip = Rect::from_min_max(
-            egui::pos2(x, rect.min.y),
-            egui::pos2(rect.max.x - space::SM, rect.max.y),
+            egui::pos2(x, header.min.y),
+            egui::pos2(header.max.x - space::SM, header.max.y),
         );
         let painter = painter.with_clip_rect(clip);
         painter.line_segment(
@@ -2859,6 +2926,73 @@ fn channel_pill(
             topic,
             t.label_tertiary.gamma_multiply(alpha),
         );
+    }
+
+    if topic_open {
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.min.x + space::MD, header.max.y),
+                egui::pos2(rect.max.x - space::MD, header.max.y),
+            ],
+            Stroke::new(1.0, t.separator),
+        );
+
+        if let Some(topic) = topic_text {
+            let body_rect = Rect::from_min_max(
+                egui::pos2(rect.min.x, header.max.y),
+                egui::pos2(rect.max.x, rect.max.y),
+            );
+            ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(body_rect.shrink(space::SM))
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("descricao-do-canal")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_max_width(body_text_width);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(topic)
+                                        .font(text::body())
+                                        .color(t.label),
+                                )
+                                .wrap(),
+                            );
+                        });
+                },
+            );
+        }
+
+        // Mesma semântica modal leve de busca/fixadas: o clique fora fecha e
+        // não atravessa para a conversa.
+        let outside = [
+            Rect::from_min_max(screen.min, egui::pos2(rect.min.x, screen.max.y)),
+            Rect::from_min_max(
+                egui::pos2(rect.min.x, screen.min.y),
+                egui::pos2(screen.max.x, rect.min.y),
+            ),
+            Rect::from_min_max(
+                egui::pos2(rect.max.x, rect.min.y),
+                egui::pos2(screen.max.x, rect.max.y),
+            ),
+            Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y), screen.max),
+        ];
+        let dismiss = outside.into_iter().enumerate().any(|(index, zone)| {
+            zone.width() > 0.0
+                && zone.height() > 0.0
+                && ui
+                    .interact(
+                        zone,
+                        Id::new(("channel-topic-panel-dismiss", index)),
+                        Sense::click(),
+                    )
+                    .clicked()
+        });
+        if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+            state.panel = None;
+        }
     }
 
     Some(rect)
@@ -2877,7 +3011,14 @@ fn actions_pill(
     s: &Strings,
     area: Rect,
 ) -> Rect {
-    let open = state.panel.as_ref().map(|panel| panel.kind);
+    // Topic pertence à pastilha do canal, do outro lado. Para esta pastilha
+    // ele conta como fechada; o estado compartilhado ainda garante que só um
+    // dos três painéis fica aberto por vez.
+    let open = state
+        .panel
+        .as_ref()
+        .map(|panel| panel.kind)
+        .filter(|kind| matches!(kind, PanelKind::Search | PanelKind::Pinned));
     // Fechada, esta pastilha precisa morar na camada normal. Antes ela
     // criava uma camada Foreground do tamanho da tela inteira e roubava o
     // ponteiro da pastilha da call mesmo sem painel aberto.
@@ -2962,7 +3103,7 @@ fn actions_pill(
         |ui| match kind {
             PanelKind::Search => search_panel(ui, store, state, t, s),
             PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
-            PanelKind::Topic => topic_panel(ui, store, t),
+            PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
         },
     );
 
@@ -3035,35 +3176,6 @@ fn pill_toggle(ui: &mut egui::Ui, t: &Tokens, glyph: &str, tip: &str, active: bo
         );
     }
     response.clicked()
-}
-
-/// Descrição completa do canal. A pastilha mostra apenas o resumo; aqui o
-/// mesmo `topic` pode ocupar quantas linhas precisar e rolar sem mexer na
-/// conversa atrás.
-fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
-    let topic = store
-        .channel(&store.selected_channel)
-        .and_then(|channel| channel.topic.as_deref())
-        .map(str::trim)
-        .filter(|topic| !topic.is_empty());
-
-    let Some(topic) = topic else {
-        return;
-    };
-
-    egui::ScrollArea::vertical()
-        .id_salt("descricao-do-canal")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(topic)
-                        .font(text::body())
-                        .color(t.label),
-                )
-                .wrap(),
-            );
-        });
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
