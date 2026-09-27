@@ -50,7 +50,7 @@ platform-specific blur workaround.
 - Desktop selects `eframe::Renderer::Wgpu` through `render::desktop_renderer`.
 - Papo code must not branch on D3D12/Vulkan/Metal for visual effects.
 - New shaders are WGSL and live under the rendering layer.
-- The existing Glow glass path is legacy during this PR and is removed only
-  after the WGPU compositor reaches visual parity.
-- No Linux regression is acceptable at merge time: this branch stays draft
-  until frosted glass works through the WGPU path as well.
+- The existing Glow glass path is temporary migration code and disappears once
+  the WGPU compositor is wired in.
+- Visual effects are defined once at the Papo/WGPU layer. Windows, Linux and
+  macOS consume the same implementation; native API differences are WGPU's job.
