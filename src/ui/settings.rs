@@ -93,6 +93,20 @@ impl AppPane {
         Self::Diagnostics,
     ];
 
+    /// Ícone do painel: o mesmo na coluna do desktop e na lista do celular.
+    fn glyph(self) -> &'static str {
+        use egui_phosphor::regular as icon;
+        match self {
+            Self::Account => icon::USER,
+            Self::Appearance => icon::PALETTE,
+            Self::Alerts => icon::BELL,
+            Self::Files => icon::FOLDER,
+            Self::Language => icon::GLOBE,
+            Self::Sessions => icon::DEVICES,
+            Self::Diagnostics => icon::PULSE,
+        }
+    }
+
     fn title(self, s: &Strings) -> &'static str {
         match self {
             Self::Account => s.pane_account,
@@ -114,6 +128,17 @@ impl ServerPane {
         Self::Emojis,
         Self::Audit,
     ];
+
+    fn glyph(self) -> &'static str {
+        use egui_phosphor::regular as icon;
+        match self {
+            Self::General => icon::IDENTIFICATION_CARD,
+            Self::Channels => icon::LIST_BULLETS,
+            Self::Roles => icon::SHIELD,
+            Self::Emojis => icon::SMILEY,
+            Self::Audit => icon::CLOCK_COUNTER_CLOCKWISE,
+        }
+    }
 
     /// Nome curto, para a coluna. O título longo continua valendo dentro
     /// do painel, na legenda da seção.
@@ -559,7 +584,8 @@ impl Rows<'_> {
         let height = if stacked {
             (space::MD + text_height + space::SM + control_h + space::MD).max(ROW_HEIGHT)
         } else {
-            (text_height + space::MD * 2.0).max(ROW_HEIGHT)
+            // Campo de várias linhas ao lado do rótulo: a linha cresce com ele.
+            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0).max(ROW_HEIGHT)
         };
         let (band_rect, inner) = self.band(height);
 
@@ -935,7 +961,10 @@ fn segmented<T: PartialEq + Copy>(
     // vira menu suspenso: o valor atual e a seta, e a lista abre por cima.
     // No celular (peças), escolha é sempre menu suspenso: o rótulo fica
     // com a linha, e o menu abre por cima do valor tocado.
-    if tiles(ui) || total > ui.available_width() + 0.5 {
+    // Segmentado só para poucas opções curtas (Tema, presença); o resto é
+    // menu suspenso, também no desktop — é o que não transborda.
+    let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 10);
+    if tiles(ui) || !short || total > ui.available_width() + 0.5 {
         return dropdown_choice(ui, t, current, options);
     }
     // O id vem do próprio controle, não do rótulo: numa lista de canais
@@ -1086,9 +1115,12 @@ fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) ->
 // A folha
 // ---------------------------------------------------------------------------
 
-const SHEET_W: f32 = 620.0;
-const SHEET_H: f32 = 440.0;
-const RAIL_W: f32 = 148.0;
+const SHEET_W: f32 = 720.0;
+/// A altura acompanha a janela (80%) entre estes limites: Conta ficou
+/// grande demais para 440, e uma folha enorme numa tela alta vira janela.
+const SHEET_H_MIN: f32 = 440.0;
+const SHEET_H_MAX: f32 = 640.0;
+const RAIL_W: f32 = 176.0;
 /// Altura de um item da coluna de painéis.
 const RAIL_ENTRY_H: f32 = 32.0;
 const HEADER_H: f32 = 52.0;
@@ -1181,7 +1213,9 @@ pub fn sheet(
     // pede justamente o contrário — uma tela de ajustes estável, para que se
     // aprenda onde as coisas ficam.
     let width = SHEET_W.min((screen.width() - space::MD * 2.0).max(280.0));
-    let height = SHEET_H.min((screen.height() - space::MD * 2.0).max(260.0));
+    let height = (screen.height() * 0.8)
+        .clamp(SHEET_H_MIN, SHEET_H_MAX)
+        .min((screen.height() - space::MD * 2.0).max(260.0));
     let top = if anchor.center().y > screen.center().y {
         (anchor.min.y - space::SM - height).max(screen.min.y + space::MD)
     } else {
@@ -1252,8 +1286,10 @@ pub fn sheet(
                     .max_rect(pane_rect.shrink2(Vec2::new(space::XL, space::SM)))
                     .layout(Layout::top_down(Align::Min)),
                 |ui| {
+                    // Um rolamento por painel: trocar de painel começa do
+                    // topo (com a prévia), não onde o anterior parou.
                     egui::ScrollArea::vertical()
-                        .id_salt("corpo-do-painel")
+                        .id_salt(("corpo-do-painel", title))
                         .auto_shrink([false, false])
                         .show(ui, |ui| match surface {
                             Surface::App => {
@@ -1282,6 +1318,93 @@ pub fn sheet(
     }
 
     actions
+}
+
+// ---------------------------------------------------------------------------
+// Prévias no topo dos painéis
+// ---------------------------------------------------------------------------
+
+/// Faixa de prévia no topo de um painel: fundo suave, cantos de cartão. O
+/// conteúdo é desenhado por `draw` dentro da área útil.
+fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui::Ui, Rect)) {
+    ui.add_space(space::MD);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height + space::LG * 2.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
+    draw(ui, rect.shrink(space::LG));
+}
+
+/// Texto de apoio à direita da prévia, quando sobra espaço.
+fn hint_beside(ui: &egui::Ui, t: &Tokens, area: Rect, used: Rect, hint: &str) {
+    let left = used.max.x + space::XL;
+    let width = area.max.x - left;
+    if width < 140.0 {
+        return;
+    }
+    let galley = ui.painter().layout(hint.to_owned(), text::footnote(), t.label_tertiary, width);
+    let pos = egui::pos2(left, area.max.y - galley.size().y);
+    ui.painter().galley(pos, galley, t.label_tertiary);
+}
+
+/// Um Papo em miniatura com as cores do momento: trilho, conversa e a
+/// caixa de texto flutuando. Muda junto com o tema e a translucidez.
+fn appearance_preview(ui: &egui::Ui, t: &Tokens, rect: Rect, translucent: bool) {
+    let painter = ui.painter();
+    painter.rect(rect, CornerRadius::same(radius::CARD), t.content_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+    let rail = Rect::from_min_size(rect.min, Vec2::new(40.0, rect.height()));
+    painter.rect_filled(
+        rail.shrink(1.0),
+        CornerRadius { nw: radius::CARD - 1, sw: radius::CARD - 1, ne: 0, se: 0 },
+        t.glass_opaque,
+    );
+    for index in 0..3 {
+        let tile = Rect::from_min_size(rail.min + Vec2::new(6.0, 6.0 + index as f32 * 33.0), Vec2::splat(28.0));
+        painter.rect_filled(tile, CornerRadius::same(radius::FIELD), if index == 0 { t.accent } else { t.fill_medium });
+    }
+    let content = Rect::from_min_max(egui::pos2(rail.max.x + 10.0, rect.min.y + 12.0), egui::pos2(rect.max.x - 10.0, rect.max.y - 10.0));
+    for (row, fraction) in [0.6_f32, 0.85, 0.4].into_iter().enumerate() {
+        let line = Rect::from_min_size(
+            content.min + Vec2::new(0.0, row as f32 * 16.0),
+            Vec2::new(content.width() * fraction, 8.0),
+        );
+        painter.rect_filled(line, CornerRadius::same(4), t.fill_medium);
+    }
+    let pill = Rect::from_min_max(egui::pos2(content.min.x, content.max.y - 22.0), content.max);
+    painter.rect(pill, CornerRadius::same(radius::FIELD), t.pill_fill(translucent), Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+}
+
+/// Um aviso de exemplo, como o sistema mostraria. Apagado quando os avisos
+/// estão desligados.
+fn notification_preview(ui: &egui::Ui, t: &Tokens, s: &Strings, rect: Rect, initials: &str, on: bool) {
+    let painter = ui.painter();
+    let alpha = if on { 1.0 } else { 0.4 };
+    painter.add(ui.visuals().popup_shadow.as_shape(rect, CornerRadius::same(radius::SHEET)));
+    painter.rect(rect, CornerRadius::same(radius::SHEET), t.elevated_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+    let icon = Rect::from_min_size(rect.min + Vec2::new(space::LG, space::LG), Vec2::splat(32.0));
+    painter.rect_filled(icon, CornerRadius::same(radius::FIELD), t.accent.gamma_multiply(alpha));
+    painter.text(icon.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent_label);
+    let x = icon.max.x + space::MD;
+    let clip = painter.with_clip_rect(rect.shrink(2.0));
+    clip.text(egui::pos2(x, icon.min.y), egui::Align2::LEFT_TOP, s.preview_notify_title, text::headline(), t.label.gamma_multiply(alpha));
+    clip.text(egui::pos2(x, icon.min.y + 17.0), egui::Align2::LEFT_TOP, s.preview_notify_body, text::callout(), t.label_secondary.gamma_multiply(alpha));
+    clip.text(egui::pos2(rect.max.x - space::LG, icon.min.y), egui::Align2::RIGHT_TOP, s.preview_notify_meta, text::footnote(), t.label_tertiary);
+}
+
+/// Ícone do servidor num quadrado arredondado, ou as iniciais.
+fn paint_server_icon(ui: &egui::Ui, t: &Tokens, rect: Rect, icon: Option<egui::TextureId>, initials: &str, corner: u8) {
+    match icon {
+        Some(texture) => crate::ui::widgets::photo(
+            ui.painter(),
+            rect,
+            texture,
+            crate::ui::widgets::FULL_UV,
+            CornerRadius::same(corner),
+            egui::Color32::WHITE,
+        ),
+        None => {
+            ui.painter().rect_filled(rect, CornerRadius::same(corner), t.accent.gamma_multiply(0.30));
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,7 +1909,32 @@ fn rail(
             // O `top_down` põe um respiro entre widgets por conta própria;
             // com ele, seis painéis passavam da borda de baixo da folha.
             ui.spacing_mut().item_spacing.y = 0.0;
-            let entry = |ui: &mut egui::Ui, label: &str, active: bool| -> bool {
+            // Busca no topo da coluna: filtra os painéis pelo nome.
+            {
+                let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
+                ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
+                ui.painter().text(
+                    egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::regular::MAGNIFYING_GLASS,
+                    text::icon(12.0),
+                    t.label_tertiary,
+                );
+                let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 16.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
+                let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
+                child.add_sized(
+                    inner.size(),
+                    egui::TextEdit::singleline(&mut state.mobile_query)
+                        .hint_text(s.rail_search)
+                        .frame(egui::Frame::NONE)
+                        .font(text::callout())
+                        .vertical_align(Align::Center),
+                );
+                ui.add_space(space::MD);
+            }
+            let query = state.mobile_query.trim().to_lowercase();
+            let shown = |title: &str| query.is_empty() || title.to_lowercase().contains(&query);
+            let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, active: bool| -> bool {
                 let (slot, response) = ui.allocate_exact_size(
                     Vec2::new(ui.available_width(), RAIL_ENTRY_H),
                     Sense::click(),
@@ -1805,12 +1953,20 @@ fn rail(
                     );
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
+                let ink = if active { t.accent } else { t.label_secondary };
                 ui.painter().text(
-                    egui::pos2(slot.min.x + space::MD, slot.center().y),
+                    egui::pos2(slot.min.x + space::MD + 7.0, slot.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    text::icon(14.0),
+                    if active { t.accent } else { t.label_tertiary },
+                );
+                ui.painter().text(
+                    egui::pos2(slot.min.x + space::MD + 22.0, slot.center().y),
                     egui::Align2::LEFT_CENTER,
                     label,
                     if active { text::headline() } else { text::body() },
-                    if active { t.accent } else { t.label_secondary },
+                    ink,
                 );
                 response.clicked()
             };
@@ -1818,17 +1974,20 @@ fn rail(
             match surface {
                 Surface::App => {
                     for pane in AppPane::ALL {
-                        if entry(ui, pane.title(s), state.app_pane == pane) {
+                        if !shown(pane.title(s)) {
+                            continue;
+                        }
+                        if entry(ui, pane.glyph(), pane.title(s), state.app_pane == pane) {
                             state.app_pane = pane;
                         }
                     }
                 }
                 Surface::Server => {
                     for pane in ServerPane::ALL {
-                        if !server_pane_allowed(store, pane) {
+                        if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
                             continue;
                         }
-                        if entry(ui, pane.title(s), state.server_pane == pane) {
+                        if entry(ui, pane.glyph(), pane.title(s), state.server_pane == pane) {
                             state.server_pane = pane;
                         }
                     }
@@ -1927,7 +2086,7 @@ fn app_pane(
             });
             ui.add_space(space::SM);
             actions_row(ui, |ui| {
-                if row_button(ui, t, s.save, Emphasis::Primary) {
+                if row_button(ui, t, s.save_profile, Emphasis::Primary) {
                     actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
                         crate::api::models::UpdateUserRequest {
                             nickname: draft.nickname.trim().to_owned(),
@@ -1978,7 +2137,9 @@ fn app_pane(
                 });
             });
 
-            section(ui, t, s.new_password);
+            // Segurança: senha e sair, juntos — as duas coisas que não são
+            // perfil e não mudam na hora como a presença.
+            section(ui, t, s.security);
             group(ui, t, |rows| {
                 let sent = rows.field(s.new_password, &mut draft.password, 64, true);
                 let ready = draft.password.chars().count() >= 8;
@@ -1990,10 +2151,6 @@ fn app_pane(
                         draft.password.clear();
                     }
                 });
-            });
-
-            section(ui, t, s.sign_out);
-            group(ui, t, |rows| {
                 if rows.action(s.sign_out, Some(s.sign_out_hint), true) {
                     actions.push(SettingsAction::Menu(
                         crate::platform::menu::MenuCommand::SignOut,
@@ -2003,6 +2160,11 @@ fn app_pane(
         }
 
         AppPane::Appearance => {
+            hero(ui, t, 150.0, |ui, area| {
+                let window = Rect::from_min_size(area.min, Vec2::new(area.width().min(300.0), 150.0));
+                appearance_preview(ui, t, window, *data.translucency);
+                hint_beside(ui, t, area, window, s.preview_theme_hint);
+            });
             section(ui, t, s.appearance);
             group(ui, t, |rows| {
                 rows.row(s.theme, None, |ui, t| {
@@ -2080,6 +2242,17 @@ fn app_pane(
         }
 
         AppPane::Alerts => {
+            hero(ui, t, 76.0, |ui, area| {
+                let card = Rect::from_min_size(area.min + Vec2::new(0.0, 6.0), Vec2::new(area.width().min(300.0), 64.0));
+                let initials: String = data
+                    .store
+                    .server
+                    .as_ref()
+                    .map(|server| server.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase())
+                    .unwrap_or_else(|| "P".to_owned());
+                notification_preview(ui, t, s, card, &initials, *data.notifications);
+                hint_beside(ui, t, area, card, s.preview_notify_hint);
+            });
             section(ui, t, s.menu_notifications);
             group(ui, t, |rows| {
                 rows.row(s.menu_notifications, Some(s.notifications_hint), |ui, t| {
@@ -2398,6 +2571,20 @@ fn server_pane(
                 .take(2)
                 .collect::<String>()
                 .to_uppercase();
+            hero(ui, t, 52.0, |ui, area| {
+                let tile = Rect::from_min_size(area.min + Vec2::new(0.0, 4.0), Vec2::splat(44.0));
+                paint_server_icon(ui, t, tile, icon, &initials, radius::SHEET);
+                let pill = Rect::from_min_size(egui::pos2(tile.max.x + space::LG, area.min.y + 3.0), Vec2::new(216.0_f32.min(area.width() - 60.0), 46.0));
+                ui.painter().rect(pill, CornerRadius::same(12), t.glass_opaque, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
+                let small = Rect::from_center_size(egui::pos2(pill.min.x + space::SM + 14.0, pill.center().y), Vec2::splat(28.0));
+                paint_server_icon(ui, t, small, icon, &initials, radius::FIELD);
+                let clip = ui.painter().with_clip_rect(pill.shrink(2.0));
+                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y - 7.0), egui::Align2::LEFT_CENTER, &draft.server_name, text::headline(), t.label);
+                let owner = data.store.server.as_ref().and_then(|server| server.description.clone()).unwrap_or_default();
+                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y + 8.0), egui::Align2::LEFT_CENTER, owner, text::footnote(), t.label_tertiary);
+                let wide = Rect::from_min_max(tile.min, pill.max);
+                hint_beside(ui, t, area, wide, s.preview_identity_hint);
+            });
             section(ui, t, s.pane_identity);
             group(ui, t, |rows| {
                 rows.field(s.server_name, &mut draft.server_name, 64, false);
