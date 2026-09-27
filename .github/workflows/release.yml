@@ -277,7 +277,11 @@ jobs:
       - name: Install Android build tools
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"             "platforms;android-37.2"             "build-tools;37.0.0"             "ndk;30.0.16248370"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-37.0" \
+            "platforms;android-37.2" \
+            "build-tools;37.0.0" \
+            "ndk;30.0.16248370"
           cargo install cargo-ndk --locked
 
       - name: Cache GStreamer Android SDK
@@ -294,7 +298,7 @@ jobs:
           mkdir -p ~/.cache/papo-gstreamer-android
           url="https://gstreamer.freedesktop.org/data/pkg/android/$GST_VERSION/gstreamer-1.0-android-universal-$GST_VERSION.tar.xz"
           curl --fail --location --retry 3 "$url" -o /tmp/gstreamer-android.tar.xz
-          tar -xJf /tmp/gstreamer-android.tar.xz -C ~/.cache/papo-gstreamer-android --strip-components=1
+          tar -xJf /tmp/gstreamer-android.tar.xz -C ~/.cache/papo-gstreamer-android
 
       - name: Prepare Android signing key
         env:
