@@ -885,7 +885,6 @@ impl Renderer {
                 target_texture,
                 &self.callback_resources,
             );
-            first_pass = false;
             start = index + 1;
         }
 
