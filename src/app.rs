@@ -340,6 +340,11 @@ pub struct Settings {
     /// escreve.
     #[serde(default)]
     pub server_marks: ReadMarks,
+    /// Ajustes portáteis alterados localmente e ainda não confirmados pelo
+    /// servidor. A chave é o server_key; persiste para sobreviver offline.
+    #[serde(default)]
+    pub pending_user_settings:
+        std::collections::HashMap<String, crate::api::models::UserConfig>,
 }
 
 /// Marcas de leitura por servidor: chave do servidor → canal → instante.
@@ -381,6 +386,7 @@ impl Default for Settings {
             downloads: DownloadMode::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
+            pending_user_settings: std::collections::HashMap::new(),
         }
     }
 }
@@ -478,6 +484,10 @@ pub struct Workspace {
     /// Quantas mudanças de câmera a thread da call já publicou quando
     /// olhamos pela última vez.
     camera_revision: u64,
+    /// Último config remoto aplicado à UI enquanto este servidor estava ativo.
+    applied_user_config: Option<crate::api::models::UserConfig>,
+    /// Config já enviado nesta conexão; evita PUT a cada frame.
+    sent_user_config: Option<crate::api::models::UserConfig>,
     #[cfg(target_os = "android")]
     _network_registration: crate::platform::android_network::Registration,
 }
@@ -527,6 +537,8 @@ impl Workspace {
             call_ready: false,
             watching: Vec::new(),
             camera_revision: 0,
+            applied_user_config: None,
+            sent_user_config: None,
             #[cfg(target_os = "android")]
             _network_registration: network_registration,
         }
@@ -2686,6 +2698,7 @@ impl PapoApp {
         // que vale é o arquivo em disco, então ele é lido e escrito à parte.
         let autostart_before = crate::platform::autostart::is_enabled();
         let mut autostart = autostart_before;
+        let before_portable = (self.settings.theme, self.settings.notifications);
         let before_primary = (
             self.settings.lang,
             self.settings.theme,
@@ -2789,6 +2802,11 @@ impl PapoApp {
                 };
             }
             self.retheme(ctx);
+        }
+
+        let after_portable = (self.settings.theme, self.settings.notifications);
+        if before_portable != after_portable {
+            self.queue_portable_settings();
         }
 
         if autostart != autostart_before
@@ -2913,6 +2931,114 @@ impl PapoApp {
             }
         }
         self.cache.flush();
+    }
+
+    fn apply_portable_config(&mut self, ctx: &egui::Context, config: &crate::api::models::UserConfig) {
+        let theme = match config.theme.as_str() {
+            "dark" => ThemePref::Dark,
+            "light" => ThemePref::Light,
+            _ => ThemePref::System,
+        };
+        let changed = self.settings.theme != theme
+            || self.settings.notifications != config.notifications.enabled;
+        self.settings.theme = theme;
+        self.settings.notifications = config.notifications.enabled;
+        if changed {
+            self.retheme(ctx);
+            #[cfg(target_os = "android")]
+            if self.settings.notifications {
+                crate::platform::android_message::ensure_permission();
+            }
+        }
+    }
+
+    fn portable_config_from_local(
+        &self,
+        mut config: crate::api::models::UserConfig,
+    ) -> crate::api::models::UserConfig {
+        config.theme = match self.settings.theme {
+            ThemePref::Dark => "dark",
+            ThemePref::Light => "light",
+            ThemePref::System => "system",
+        }
+        .to_owned();
+        config.notifications.enabled = self.settings.notifications;
+        config
+    }
+
+    fn queue_portable_settings(&mut self) {
+        if self.demo || self.workspaces.is_empty() {
+            return;
+        }
+        let index = self.active;
+        let Some(remote) = self.workspaces[index].runtime.store.user_settings.as_ref() else {
+            return;
+        };
+        let config = self.portable_config_from_local(remote.config.clone());
+        let key = self.workspaces[index].runtime.server_key.clone();
+        self.settings
+            .pending_user_settings
+            .insert(key, config.clone());
+        self.workspaces[index].applied_user_config = Some(config);
+        self.workspaces[index].sent_user_config = None;
+    }
+
+    /// Converge preferências portáteis do servidor ativo. Um pending local
+    /// vence o snapshot remoto até o PUT ser confirmado; sem pending, whoami
+    /// é a autoridade quando a conta/servidor muda.
+    fn sync_active_portable_settings(&mut self, ctx: &egui::Context) {
+        if self.demo || self.workspaces.is_empty() {
+            return;
+        }
+        let index = self.active;
+        let key = self.workspaces[index].runtime.server_key.clone();
+        let online = matches!(
+            self.workspaces[index].runtime.store.connection,
+            crate::api::ws::Connection::Online
+        );
+        if !online {
+            self.workspaces[index].sent_user_config = None;
+        }
+
+        let remote = self.workspaces[index]
+            .runtime
+            .store
+            .user_settings
+            .as_ref()
+            .map(|settings| settings.config.clone());
+
+        if let Some(pending) = self.settings.pending_user_settings.get(&key).cloned() {
+            if remote.as_ref() == Some(&pending) {
+                self.settings.pending_user_settings.remove(&key);
+                self.workspaces[index].sent_user_config = None;
+                if self.workspaces[index].applied_user_config.as_ref() != Some(&pending) {
+                    self.apply_portable_config(ctx, &pending);
+                    self.workspaces[index].applied_user_config = Some(pending);
+                }
+                return;
+            }
+
+            if self.workspaces[index].applied_user_config.as_ref() != Some(&pending) {
+                self.apply_portable_config(ctx, &pending);
+                self.workspaces[index].applied_user_config = Some(pending.clone());
+            }
+            if online && self.workspaces[index].sent_user_config.as_ref() != Some(&pending) {
+                self.workspaces[index]
+                    .runtime
+                    .net
+                    .send(Command::UpdateUserSettings(Box::new(pending.clone())));
+                self.workspaces[index].sent_user_config = Some(pending);
+            }
+            return;
+        }
+
+        if let Some(remote) = remote
+            && self.workspaces[index].applied_user_config.as_ref() != Some(&remote)
+        {
+            self.apply_portable_config(ctx, &remote);
+            self.workspaces[index].applied_user_config = Some(remote);
+            self.workspaces[index].sent_user_config = None;
+        }
     }
 
     fn sync_notification_contexts(&self) {
@@ -3049,6 +3175,7 @@ impl eframe::App for PapoApp {
         }
 
         self.pump_network(&ctx);
+        self.sync_active_portable_settings(&ctx);
         self.ensure_active_drafts_loaded();
         self.sync_notification_contexts();
 
