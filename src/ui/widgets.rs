@@ -30,6 +30,29 @@ pub fn section_caption(ui: &mut Ui, t: &Tokens, label: &str) {
 ///
 /// A foto é recortada pelo retângulo, igual à lista de membros e à pastilha
 /// da conta — as três mostram a mesma imagem do mesmo jeito.
+/// Foto de perfil redonda. Recortar a malha pelo retângulo deixava a foto
+/// quadrada enquanto as iniciais, ao lado, eram círculos; o raio no próprio
+/// retângulo texturizado é que faz o círculo.
+pub fn round_photo(painter: &egui::Painter, rect: Rect, texture: egui::TextureId, tint: Color32) {
+    photo(painter, rect, texture, FULL_UV, CornerRadius::same((rect.width() / 2.0).min(255.0) as u8), tint);
+}
+
+/// Imagem com cantos arredondados, recortada por `uv`.
+pub fn photo(
+    painter: &egui::Painter,
+    rect: Rect,
+    texture: egui::TextureId,
+    uv: Rect,
+    corners: CornerRadius,
+    tint: Color32,
+) {
+    painter.add(egui::Shape::Rect(
+        egui::epaint::RectShape::filled(rect, corners, tint).with_texture(texture, uv),
+    ));
+}
+
+pub const FULL_UV: Rect = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+
 pub fn avatar(
     ui: &mut Ui,
     t: &Tokens,
@@ -41,15 +64,7 @@ pub fn avatar(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let base = tint.unwrap_or(t.accent);
     match texture {
-        Some(texture) => {
-            let mut mesh = egui::Mesh::with_texture(texture);
-            mesh.add_rect_with_uv(
-                rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-            ui.painter().with_clip_rect(rect).add(egui::Shape::mesh(mesh));
-        }
+        Some(texture) => round_photo(ui.painter(), rect, texture, Color32::WHITE),
         None => {
             let painter = ui.painter();
             painter.circle_filled(rect.center(), size / 2.0, base.gamma_multiply(0.30));

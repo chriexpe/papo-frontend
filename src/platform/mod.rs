@@ -40,6 +40,9 @@ pub mod runtime_lease;
 #[cfg(any(target_os = "android", test))]
 #[path = "android/memory_pressure.rs"]
 pub mod memory_pressure;
+/// Voltar do Android fechando o que está por cima da conversa.
+#[path = "android/back.rs"]
+pub mod back;
 /// Foreground service, lifecycle e Picture-in-Picture da call.
 #[cfg(target_os = "android")]
 #[path = "android/call.rs"]

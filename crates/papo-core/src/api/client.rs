@@ -709,12 +709,7 @@ impl Api {
         .await
     }
 
-    // As cinco daqui até o fim do bloco existem porque o contrato tem, e
-    // conferem contra ele; o que falta é tela. `set_banner` e `media` são o
-    // banner do perfil, `profile` é a ficha de uma pessoa só,
-    // `put_user_settings` guardaria os ajustes no servidor em vez de só em
-    // disco, e `link_preview` é a prévia de link que já vem em `previews`.
-    #[allow(dead_code)]
+    /// Banner do perfil. `banner` e `format` vazios removem o banner.
     pub async fn set_banner(
         &self,
         user_id: &str,
@@ -731,7 +726,7 @@ impl Api {
         .await
     }
 
-    #[allow(dead_code)]
+    /// A ficha de uma pessoa só: é o que o cartão de perfil pede ao abrir.
     pub async fn profile(&self, user_id: &str) -> ApiResult<UserProfile> {
         self.get(&format!("/users/{user_id}/profile")).await
     }

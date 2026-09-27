@@ -23,6 +23,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.FileProvider;
 import android.os.Build;
 import android.os.Bundle;
@@ -107,6 +108,41 @@ public class PapoActivity extends GameActivity {
     private static native void nativeNetworkChanged(boolean available, long epoch, String transport);
     private static native void nativeSetPipSurface(Surface surface);
     private static native void nativeMessageNotificationTapped(String payload);
+
+    /** Voltar do sistema fechou o que o Rust tinha aberto. Em `src/platform/android/back.rs`. */
+    private static native void nativeBackPressed();
+
+    /** O Rust tem algo aberto que o voltar deve fechar (cartão de perfil...). */
+    private boolean rustWantsBack = false;
+
+    /**
+     * O voltar só é nosso enquanto há algo para fechar. Com o callback
+     * desligado o sistema faz o de sempre, inclusive a animação preditiva do
+     * Android 16 — que, para apps com targetSdk 36+, nem chama mais o
+     * onBackPressed.
+     */
+    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(false) {
+        @Override
+        public void handleOnBackPressed() {
+            if (webEmbedFullscreenView != null) {
+                hideWebEmbedFullscreen();
+                return;
+            }
+            nativeBackPressed();
+        }
+    };
+
+    /** Chamado pelo Rust quando muda o que o voltar deve fechar. */
+    public void setBackIntercept(boolean enabled) {
+        runOnUiThread(() -> {
+            rustWantsBack = enabled;
+            refreshBackCallback();
+        });
+    }
+
+    private void refreshBackCallback() {
+        backCallback.setEnabled(rustWantsBack || webEmbedFullscreenView != null);
+    }
 
     /** Pressão de memória do sistema. Em `src/platform/memory_pressure.rs`. */
     private static native void nativeTrimMemory(int level);
@@ -621,6 +657,7 @@ public class PapoActivity extends GameActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT));
         webEmbedFullscreenLayer.bringToFront();
+        refreshBackCallback();
     }
 
     private void hideWebEmbedFullscreen() {
@@ -636,6 +673,7 @@ public class PapoActivity extends GameActivity {
         }
         webEmbedFullscreenView = null;
         webEmbedFullscreenLayer = null;
+        refreshBackCallback();
         if (webEmbedFullscreenCallback != null) {
             webEmbedFullscreenCallback.onCustomViewHidden();
             webEmbedFullscreenCallback = null;
@@ -1739,6 +1777,7 @@ public class PapoActivity extends GameActivity {
         // libpapo já foi carregado pelo GameActivity; JNI pode ser chamado
         // com segurança a partir deste ponto.
         registerNetworkCallback();
+        getOnBackPressedDispatcher().addCallback(this, backCallback);
         ensurePipLayer();
         ensureMessageNotificationChannel();
         handleMessageNotificationIntent(getIntent());
@@ -1768,15 +1807,6 @@ public class PapoActivity extends GameActivity {
             return view.onApplyWindowInsets(insets);
         });
         root.requestApplyInsets();
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (webEmbedFullscreenView != null) {
-            hideWebEmbedFullscreen();
-            return;
-        }
-        super.onBackPressed();
     }
 
     @Override

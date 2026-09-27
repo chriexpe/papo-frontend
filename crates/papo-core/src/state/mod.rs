@@ -79,6 +79,44 @@ pub struct Member {
     pub roles: Vec<String>,
 }
 
+/// O que o cartão de perfil mostra além do que a lista de pessoas já tem.
+/// Chega com o mesmo lote de perfis que traz as fotos.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileDetails {
+    pub description: Option<String>,
+    /// sha256 do banner na mídia endereçada por conteúdo.
+    pub banner: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+    /// Cargos com nome e cor, do mais alto para o mais baixo.
+    pub roles: Vec<models::RoleSummary>,
+}
+
+/// O que a pessoa está fazendo agora: ouvindo, jogando, trabalhando.
+///
+/// Hoje só a demonstração preenche isto. O backend ainda não transporta
+/// atividade; quando transportar, o evento alimenta este mesmo modelo e o
+/// cartão não muda.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Activity {
+    pub kind: ActivityKind,
+    /// Aplicativo ou jogo.
+    pub name: String,
+    /// Primeira linha: faixa, fase, arquivo.
+    pub details: Option<String>,
+    /// Segunda linha: artista, modo, projeto.
+    pub state: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    /// Com início e fim, o cartão desenha a barra de progresso.
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityKind {
+    Listening,
+    Playing,
+    Working,
+}
+
 impl Member {
     pub fn initials(&self) -> String {
         self.name
@@ -166,6 +204,9 @@ impl Message {
 pub struct Server {
     pub name: String,
     pub description: Option<String>,
+    /// Ícone em base64, como o servidor entrega. Não vai para o cache em
+    /// disco: chega de novo na carga inicial.
+    pub icon: Option<String>,
 }
 
 /// Aviso que o servidor manda e a interface traduz.
@@ -381,6 +422,10 @@ pub struct Store {
     pub roles: Vec<models::Role>,
     /// Foto de perfil por pessoa, em base64, como o servidor a entrega.
     pub avatars: HashMap<String, String>,
+    /// Descrição, banner, cargos e data de entrada, por pessoa.
+    pub profiles: HashMap<String, ProfileDetails>,
+    /// Atividade por pessoa (só a demonstração preenche, por enquanto).
+    pub activities: HashMap<String, Activity>,
     /// Sessões abertas da conta neste servidor.
     pub devices: Vec<models::ConnectionInfo>,
     pub audit_logs: Vec<models::AuditLogEntry>,
@@ -424,6 +469,8 @@ impl Default for Store {
             notice: None,
             roles: Vec::new(),
             avatars: HashMap::new(),
+            profiles: HashMap::new(),
+            activities: HashMap::new(),
             devices: Vec::new(),
             audit_logs: Vec::new(),
             search_results: Vec::new(),
@@ -618,6 +665,23 @@ impl Store {
             .unwrap_or_default()
     }
 
+    /// A frase de digitação de quem está sozinho digitando, se a pessoa
+    /// escolheu uma. Com duas ou mais, cada frase no seu jeito vira ruído: o
+    /// texto padrão serve para o grupo.
+    pub fn typing_phrase(&self) -> Option<&str> {
+        let users = self.typing.get(&self.selected_channel)?;
+        let mut others = users.iter().filter(|id| **id != self.me);
+        let only = others.next()?;
+        if others.next().is_some() {
+            return None;
+        }
+        self.member(only)?
+            .typing_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|phrase| !phrase.is_empty())
+    }
+
     pub fn sync_generation(&self) -> u64 {
         self.sync_generation
     }
@@ -649,6 +713,7 @@ impl Store {
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
+                icon: None,
             });
         }
 
@@ -1316,6 +1381,7 @@ impl Store {
                         .owner_username
                         .clone()
                         .map(|owner| format!("de {owner}")),
+                    icon: server.icon_blob.clone().filter(|blob| !blob.is_empty()),
                 });
                 self.busy = false;
                 if let Some(server) = &self.server {
@@ -1406,6 +1472,27 @@ impl Store {
                         }
                     }
 
+                    let mut summaries = profile.roles.clone();
+                    summaries.sort_by_key(|role| std::cmp::Reverse(role.position));
+                    self.profiles.insert(
+                        id.clone(),
+                        ProfileDetails {
+                            description: profile
+                                .description
+                                .clone()
+                                .filter(|text| !text.trim().is_empty()),
+                            banner: profile
+                                .banner_media
+                                .clone()
+                                .filter(|sha| !sha.is_empty()),
+                            created_at: profile
+                                .created_at
+                                .as_deref()
+                                .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+                                .map(|at| at.with_timezone(&Utc)),
+                            roles: summaries,
+                        },
+                    );
                     let roles: Vec<String> =
                         profile.roles.iter().map(|role| role.id.clone()).collect();
                     let color = role_color(&profile.roles);

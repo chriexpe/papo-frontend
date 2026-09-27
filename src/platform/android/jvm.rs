@@ -33,6 +33,30 @@ pub fn call_activity(method: &str, signature: &str, text: Option<&str>) -> bool 
     call(method, signature, text, |_| ()).is_some()
 }
 
+/// Chama um método da Activity que recebe um `boolean` e não devolve nada.
+pub fn call_activity_flag(method: &str, flag: bool) -> bool {
+    let Some(app) = APP.get() else {
+        log::error!("sem Activity para chamar {method}");
+        return false;
+    };
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        return false;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return false;
+    };
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let args = [jni::objects::JValue::Bool(flag.into())];
+    match env.call_method(&activity, method, "(Z)V", &args) {
+        Ok(_) => true,
+        Err(error) => {
+            let _ = env.exception_clear();
+            log::error!("{method} falhou: {error}");
+            false
+        }
+    }
+}
+
 /// Chama um método da Activity que devolve `boolean`.
 pub fn call_activity_bool(method: &str, signature: &str, text: Option<&str>) -> Option<bool> {
     call(method, signature, text, |value| value.z().unwrap_or(false))

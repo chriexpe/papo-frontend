@@ -79,6 +79,10 @@ pub fn main() -> eframe::Result<()> {
                         | platform::files::Chosen::SaveCached { dest, .. } => {
                             format!("salvar em {}", dest.display())
                         }
+                        platform::files::Chosen::Crop { size, .. } => {
+                            format!("imagem para recortar, {} × {}", size[0], size[1])
+                        }
+                        platform::files::Chosen::Unreadable => "imagem ilegível".to_owned(),
                         platform::files::Chosen::Cancelled => "cancelado".to_owned(),
                     };
                     println!("resultado {round}: {summary}");

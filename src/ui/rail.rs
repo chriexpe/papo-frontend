@@ -26,6 +26,8 @@ pub struct Entry {
     /// Ainda sem sessão: o servidor aparece apagado, esperando login.
     pub signed_in: bool,
     pub online: bool,
+    /// Ícone do servidor, já decodificado; sem ele, as iniciais.
+    pub icon: Option<egui::TextureId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,13 +111,31 @@ fn tile(ui: &mut egui::Ui, entry: &Entry, active: bool, t: &Tokens, s: &Strings)
     } else {
         t.label_tertiary
     };
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        initials(&entry.label),
-        text::headline(),
-        label_color,
-    );
+    match entry.icon {
+        // O ícone ocupa o quadrado inteiro, com o mesmo canto que abre no
+        // hover; sem sessão ele fica apagado, como as iniciais.
+        Some(icon) => super::widgets::photo(
+            painter,
+            rect,
+            icon,
+            super::widgets::FULL_UV,
+            CornerRadius::same(corner),
+            if entry.signed_in {
+                egui::Color32::WHITE
+            } else {
+                egui::Color32::from_white_alpha(110)
+            },
+        ),
+        None => {
+            painter.text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                initials(&entry.label),
+                text::headline(),
+                label_color,
+            );
+        }
+    }
 
     // Marcador à esquerda: barra comprida no ativo, pontinho no não lido.
     let marker_height = if active {

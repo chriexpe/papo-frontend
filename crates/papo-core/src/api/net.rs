@@ -292,6 +292,15 @@ pub enum Command {
         blob: String,
         format: String,
     },
+    /// Vazios removem o banner.
+    SetBanner {
+        blob: String,
+        format: String,
+    },
+    /// Ficha fresca de uma pessoa, pedida quando o cartão dela abre.
+    LoadProfile {
+        user_id: String,
+    },
     ChangePassword {
         password: String,
     },
@@ -2768,6 +2777,24 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
+        Command::SetBanner { blob, format } => {
+            let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
+                return;
+            };
+            match api.set_banner(&user_id, &blob, &format).await {
+                Ok(_) => match api.profile(&user_id).await {
+                    Ok(profile) => publish(updates, wake, Update::Profiles(vec![profile])),
+                    Err(error) => report(storage_key, updates, wake, error),
+                },
+                Err(error) => report(storage_key, updates, wake, error),
+            }
+        }
+        // Falha aqui não merece aviso: o cartão já mostra o que o lote
+        // trouxe, a ficha fresca só atualiza.
+        Command::LoadProfile { user_id } => match api.profile(&user_id).await {
+            Ok(profile) => publish(updates, wake, Update::Profiles(vec![profile])),
+            Err(error) => log::debug!("runtime {storage_key}: perfil {user_id}: {error}"),
+        },
         Command::ChangePassword { password } => {
             let Some(user_id) = me.lock().ok().and_then(|slot| slot.clone()) else {
                 return;

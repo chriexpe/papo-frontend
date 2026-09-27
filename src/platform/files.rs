@@ -22,6 +22,18 @@ pub enum Chosen {
         /// O arquivo precisou ser reduzido para caber.
         shrunk: bool,
     },
+    /// Imagem escolhida que ainda passa pelo editor de recorte: o arquivo
+    /// original e uma prévia reduzida para desenhar.
+    Crop {
+        purpose: ImagePick,
+        path: PathBuf,
+        name: String,
+        /// Tamanho do original, em pixels.
+        size: [u32; 2],
+        preview: egui::ColorImage,
+    },
+    /// A imagem não abriu (arquivo que não é imagem, corrompido...).
+    Unreadable,
     Folder(PathBuf),
     /// Destino de um anexo que estava esperando o "salvar como".
     SaveAs { id: String, name: String, dest: PathBuf },
@@ -35,20 +47,127 @@ pub enum Chosen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImagePick {
     Avatar,
+    /// Banner do perfil, sempre 3:1.
+    Banner,
+    /// Ícone do servidor.
+    ServerIcon,
     /// Figurinha do servidor. O nome é pedido depois de escolher o arquivo:
     /// digitar o nome antes de ver a imagem era pedir na ordem errada.
     Sticker,
 }
 
 impl ImagePick {
-    /// Lado maior e peso máximo. Os números vêm do resumo de cada endpoint:
-    /// avatar aceita 512 px e 2 MB, figurinha 512 px e 256 KB.
-    #[cfg(not(target_os = "android"))]
-    fn limits(self) -> (u32, usize) {
+    /// Caixa de saída e peso máximo. Os números são os que o backend confere
+    /// (`services/users.go`, `servers.go`, `emojis.go`): 2 MB e 512 px para
+    /// foto e ícone, 2 MB e 2048 px para banner, 256 KB e 512 px para
+    /// figurinha. O banner sai em 1536 × 512, bem dentro do teto e nítido
+    /// em telas 3x.
+    pub fn limits(self) -> (u32, u32, usize) {
         match self {
-            Self::Avatar => (512, 2 * 1024 * 1024),
-            Self::Sticker => (512, 256 * 1024),
+            Self::Avatar | Self::ServerIcon => (512, 512, 2 * 1024 * 1024),
+            Self::Banner => (1536, 512, 2 * 1024 * 1024),
+            Self::Sticker => (512, 512, 256 * 1024),
         }
+    }
+
+    /// Proporção do recorte (largura ÷ altura). Figurinha não passa pelo
+    /// editor: ela é o que é.
+    pub fn aspect(self) -> Option<f32> {
+        match self {
+            Self::Avatar | Self::ServerIcon => Some(1.0),
+            Self::Banner => Some(3.0),
+            Self::Sticker => None,
+        }
+    }
+}
+
+/// Lado maior da prévia do editor. O recorte de verdade é feito no original.
+const PREVIEW_MAX: u32 = 1600;
+
+/// Depois de escolher: figurinha vai direto para o encolhimento; o resto
+/// abre o editor com uma prévia.
+fn after_pick(path: &Path, name: String, purpose: ImagePick) -> Chosen {
+    if purpose.aspect().is_none() {
+        let (max_width, max_height, max_bytes) = purpose.limits();
+        return match crate::media::prepare::fit_cropped(path, None, max_width, max_height, max_bytes) {
+            Ok(prepared) => Chosen::Image {
+                purpose,
+                blob: prepared.blob,
+                format: prepared.format.to_owned(),
+                shrunk: prepared.shrunk,
+            },
+            Err(error) => {
+                log::warn!("imagem recusada: {error}");
+                Chosen::Unreadable
+            }
+        };
+    }
+    let image = match image::open(path) {
+        Ok(image) => image,
+        Err(error) => {
+            log::warn!("imagem não abriu: {error}");
+            return Chosen::Unreadable;
+        }
+    };
+    let size = [image.width(), image.height()];
+    let small = image.thumbnail(PREVIEW_MAX, PREVIEW_MAX).to_rgba8();
+    let preview = egui::ColorImage::from_rgba_unmultiplied(
+        [small.width() as usize, small.height() as usize],
+        small.as_raw(),
+    );
+    Chosen::Crop {
+        purpose,
+        path: path.to_path_buf(),
+        name,
+        size,
+        preview,
+    }
+}
+
+/// O que vale nos dois lados: recortar e preparar a imagem que saiu do
+/// editor, numa thread à parte, com a resposta pela mesma fila dos diálogos.
+impl Dialogs {
+    pub fn prepare_crop(
+        &mut self,
+        repaint: egui::Context,
+        purpose: ImagePick,
+        path: PathBuf,
+        crop: crate::media::prepare::Crop,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        self.pending.push(rx);
+        std::thread::spawn(move || {
+            let (max_width, max_height, max_bytes) = purpose.limits();
+            let answer = match crate::media::prepare::fit_cropped(
+                &path,
+                Some(crop),
+                max_width,
+                max_height,
+                max_bytes,
+            ) {
+                Ok(prepared) => {
+                    log::info!(
+                        "imagem pronta: {}x{} {} · {} KB",
+                        prepared.width,
+                        prepared.height,
+                        prepared.format,
+                        prepared.bytes / 1024
+                    );
+                    Chosen::Image {
+                        purpose,
+                        blob: prepared.blob,
+                        format: prepared.format.to_owned(),
+                        shrunk: prepared.shrunk,
+                    }
+                }
+                Err(error) => {
+                    log::warn!("imagem recusada: {error}");
+                    Chosen::Unreadable
+                }
+            };
+            let _ = tx.send(answer);
+            repaint.request_repaint();
+        });
     }
 }
 
@@ -182,7 +301,6 @@ impl Dialogs {
     /// recusa o que passa do limite, e mandar o usuário achar uma imagem
     /// menor sozinho é empurrar para ele um trabalho que a máquina faz.
     pub fn pick_image(&mut self, repaint: egui::Context, purpose: ImagePick) {
-        let (max_side, max_bytes) = purpose.limits();
         self.spawn(repaint, move |dialog| async move {
             let Some(handle) = dialog
                 .set_title("Imagem")
@@ -192,27 +310,13 @@ impl Dialogs {
             else {
                 return Chosen::Cancelled;
             };
-            match crate::media::prepare::fit(handle.path(), max_side, max_bytes) {
-                Ok(prepared) => {
-                    log::info!(
-                        "imagem pronta: {}x{} {} · {} KB",
-                        prepared.width,
-                        prepared.height,
-                        prepared.format,
-                        prepared.bytes / 1024
-                    );
-                    Chosen::Image {
-                    purpose,
-                        blob: prepared.blob,
-                        format: prepared.format.to_owned(),
-                        shrunk: prepared.shrunk,
-                    }
-                }
-                Err(error) => {
-                    log::warn!("imagem recusada: {error}");
-                    Chosen::Cancelled
-                }
-            }
+            // Decodificar uma foto de câmera leva uns décimos: fora da thread
+            // que conversa com o portal.
+            let path = handle.path().to_path_buf();
+            let name = handle.file_name();
+            tokio::task::spawn_blocking(move || after_pick(&path, name, purpose))
+                .await
+                .unwrap_or(Chosen::Unreadable)
         });
     }
 
@@ -351,8 +455,30 @@ impl Dialogs {
         self.unavailable(repaint);
     }
 
-    pub fn pick_image(&mut self, repaint: egui::Context, _purpose: ImagePick) {
-        self.unavailable(repaint);
+    /// Imagem pelo mesmo seletor dos anexos: a Activity já copia o arquivo
+    /// para o cache, e daí em diante o caminho é o do desktop — prévia,
+    /// editor de recorte, preparo.
+    pub fn pick_image(&mut self, repaint: egui::Context, purpose: ImagePick) {
+        let (picked_tx, picked_rx) = mpsc::channel();
+        if let Ok(mut slot) = ANSWER.lock() {
+            *slot = Some(picked_tx);
+        }
+        let (tx, rx) = mpsc::channel();
+        self.pending.push(rx);
+        if !super::jvm::call_activity("pickFiles", "()V", None) {
+            log::warn!("o seletor de arquivos não abriu");
+        }
+        std::thread::spawn(move || {
+            let answer = match picked_rx.recv() {
+                Ok(Chosen::Files(files)) => match files.into_iter().next() {
+                    Some(upload) => after_pick(&upload.path, upload.name, purpose),
+                    None => Chosen::Cancelled,
+                },
+                _ => Chosen::Cancelled,
+            };
+            let _ = tx.send(answer);
+            repaint.request_repaint();
+        });
     }
 
     pub fn save_cached_as(
