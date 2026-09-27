@@ -278,9 +278,18 @@ fn pinned_retention_does_not_move_local_history_cursor() {
         .recv_timeout(std::time::Duration::from_secs(2))
         .expect("reply")
         .expect("page");
-    assert_eq!(page.messages.len(), CACHE_PAGE_SIZE as usize);
-    assert!(page.messages.iter().all(|message| !message.pinned));
-    assert_eq!(page.messages.first().map(|m| m.id.as_str()), Some("m010"));
+    assert_eq!(
+        page.messages.iter().filter(|message| !message.pinned).count(),
+        CACHE_PAGE_SIZE as usize
+    );
+    assert!(page.messages.iter().any(|message| message.id == "pin" && message.pinned));
+    let oldest_normal = page
+        .messages
+        .iter()
+        .filter(|message| !message.pinned)
+        .min_by_key(|message| (message.created_at, message.id.clone()))
+        .expect("normal message");
+    assert_eq!(oldest_normal.id, "m010");
     assert!(page.has_more);
 }
 
