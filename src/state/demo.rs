@@ -65,6 +65,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
         member("u-edu", "Edu", Presence::Offline, None),
     ];
     profiles(store);
+    store.audit_logs = audit_logs();
 
     store.channels = vec![
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
@@ -601,6 +602,42 @@ fn profiles(store: &mut Store) {
             ends_at: None,
         },
     );
+}
+
+/// Um pouco de tudo, para a Auditoria ter o que filtrar sem servidor.
+fn audit_logs() -> Vec<crate::api::models::AuditLogEntry> {
+    let now = chrono::Utc::now();
+    let entry = |id: &str, minutes: i64, actor: (&str, &str), action: &str, meta: serde_json::Value| {
+        let metadata = meta.as_object().cloned().unwrap_or_default();
+        crate::api::models::AuditLogEntry {
+            id: id.into(),
+            actor_username: actor.1.into(),
+            action: action.into(),
+            entity_type: action.split('.').next().unwrap_or("").into(),
+            created_at: Some(now - Duration::minutes(minutes)),
+            actor_id: Some(actor.0.into()),
+            entity_id: None,
+            target_user_id: metadata.get("target_user_id").and_then(|v| v.as_str()).map(str::to_owned),
+            target_username: None,
+            channel_id: metadata.get("channel_id").and_then(|v| v.as_str()).map(str::to_owned),
+            metadata,
+        }
+    };
+    let ana = ("u-ana", "ana");
+    let me = ("u-eu", "christian");
+    let dora = ("u-dora", "dora");
+    vec![
+        entry("a1", 12, ana, "message.delete", serde_json::json!({"channel_id": "c-geral", "author_id": "u-bruno", "content": "perfeito, @christian fecha isso hoje então 👀"})),
+        entry("a2", 40, me, "message.delete", serde_json::json!({"channel_id": "c-dev", "author_id": "u-eu"})),
+        entry("a3", 95, me, "user_role.assign", serde_json::json!({"target_user_id": "u-edu", "name": "Dev"})),
+        entry("a4", 180, dora, "channel.update", serde_json::json!({"channel_id": "c-design"})),
+        entry("a5", 60 * 26, dora, "message.delete", serde_json::json!({"channel_id": "c-design", "author_id": "u-edu", "content": "vou mandar o protótipo novo amanhã cedo"})),
+        entry("a6", 60 * 27, me, "channel.create", serde_json::json!({"channel_id": "c-projetos", "name": "Projetos"})),
+        entry("a7", 60 * 28, me, "role.create", serde_json::json!({"name": "Design"})),
+        entry("a8", 60 * 24 * 4, ana, "emoji.create", serde_json::json!({"name": "festa"})),
+        entry("a9", 60 * 24 * 5, me, "server.update", serde_json::json!({})),
+        entry("a10", 60 * 24 * 6, ("u-edu", "edu"), "user.register", serde_json::json!({})),
+    ]
 }
 
 fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>) -> Member {

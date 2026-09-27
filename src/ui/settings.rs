@@ -261,6 +261,7 @@ pub struct Draft {
     /// nele, e um clique só é barato demais para isso.
     pub deleting: Option<(String, String, String)>,
     pub loaded_audit: bool,
+    pub audit: crate::ui::audit::Filter,
 }
 
 impl SettingsState {
@@ -3645,37 +3646,328 @@ fn server_pane(
             });
         }
 
-        ServerPane::Audit => {
-            // O registro é pedido ao abrir o painel, não ao abrir a folha:
-            // quem só queria renomear o servidor não precisa esperá-lo.
-            if !state.draft.loaded_audit {
-                state.draft.loaded_audit = true;
-                actions.push(SettingsAction::Admin(AdminAction::LoadAuditLogs));
-            }
-            section(ui, t, s.audit_log);
-            group(ui, t, |rows| {
-                if data.store.audit_logs.is_empty() {
-                    rows.row(s.connecting, None, |_, _| {});
-                }
-                for entry in data.store.audit_logs.iter().take(60) {
-                    let when = entry
-                        .created_at
-                        .map(|at| {
-                            at.with_timezone(&chrono::Local)
-                                .format("%d/%m %H:%M")
-                                .to_string()
-                        })
-                        .unwrap_or_default();
-                    rows.row(
-                        &entry.action,
-                        Some(&format!("{when} · {}", entry.actor_username)),
-                        |_, _| {},
-                    );
-                }
-            });
-        }
+        ServerPane::Audit => audit_pane(ui, data, state, t, s, actions),
     }
 }
+
+fn audit_pane(
+    ui: &mut egui::Ui,
+    data: &mut Context<'_>,
+    state: &mut SettingsState,
+    t: &Tokens,
+    s: &Strings,
+    actions: &mut Vec<SettingsAction>,
+) {
+    use super::admin::AdminAction;
+    use crate::ui::audit::{self, Kind, Period, Piece};
+    let now = chrono::Local::now();
+    // O registro é pedido ao abrir o painel, não ao abrir a folha: quem só
+    // queria renomear o servidor não precisa esperá-lo.
+    if !state.draft.loaded_audit {
+        state.draft.loaded_audit = true;
+        actions.push(SettingsAction::Admin(AdminAction::LoadAuditLogs(state.draft.audit.query(now))));
+    }
+    let before = state.draft.audit.clone();
+    let filter = &mut state.draft.audit;
+    ui.add_space(space::MD);
+
+    // Pessoa: casa com quem fez ou com quem sofreu a ação.
+    let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
+    ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
+    ui.painter().text(
+        egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
+        egui::Align2::CENTER_CENTER,
+        egui_phosphor::regular::MAGNIFYING_GLASS,
+        text::icon(12.0),
+        t.label_tertiary,
+    );
+    let inner = Rect::from_min_max(
+        egui::pos2(field.min.x + space::MD + 18.0, field.min.y),
+        egui::pos2(field.max.x - space::SM, field.max.y),
+    );
+    let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
+    child.add_sized(
+        inner.size(),
+        egui::TextEdit::singleline(&mut filter.person)
+            .hint_text(s.audit_person_search)
+            .frame(egui::Frame::NONE)
+            .font(text::callout())
+            .vertical_align(Align::Center),
+    );
+    ui.add_space(space::SM);
+
+    let kinds: Vec<(Kind, &str)> = Kind::ALL
+        .iter()
+        .map(|kind| {
+            (*kind, match kind {
+                Kind::All => s.audit_kind_all,
+                Kind::Deleted => s.audit_kind_deleted,
+                Kind::Messages => s.audit_kind_messages,
+                Kind::Channels => s.audit_kind_channels,
+                Kind::Roles => s.audit_kind_roles,
+                Kind::Members => s.audit_kind_members,
+                Kind::Server => s.audit_kind_server,
+            })
+        })
+        .collect();
+    let periods: Vec<(Period, &str)> = Period::ALL
+        .iter()
+        .map(|period| {
+            (*period, match period {
+                Period::All => s.audit_period_all,
+                Period::Today => s.audit_period_today,
+                Period::Week => s.audit_period_week,
+                Period::Month => s.audit_period_month,
+            })
+        })
+        .collect();
+    let mut channels: Vec<(Option<&str>, String)> = vec![(None, s.audit_all.to_owned())];
+    channels.extend(
+        data.store
+            .channels
+            .iter()
+            .filter(|channel| channel.kind != crate::state::ChannelKind::Category)
+            .map(|channel| (Some(channel.id.as_str()), format!("#{}", channel.name))),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(space::SM, space::SM);
+        let deleted = filter.kind == Kind::Deleted;
+        if audit_chip(ui, t, egui_phosphor::regular::TRASH, s.audit_kind_deleted, deleted, false).clicked() {
+            filter.kind = if deleted { Kind::All } else { Kind::Deleted };
+        }
+        let kind_label = kinds.iter().find(|(kind, _)| *kind == filter.kind).map(|(_, label)| *label).unwrap_or("");
+        let response = audit_chip(
+            ui,
+            t,
+            egui_phosphor::regular::SHAPES,
+            &format!("{}: {}", s.audit_kind, if filter.kind == Kind::All { s.audit_all } else { kind_label }),
+            filter.kind != Kind::All,
+            true,
+        );
+        crate::ui::widgets::dropdown(&response, response.rect, response.rect, true).show(|ui| {
+            for (kind, label) in &kinds {
+                if crate::ui::widgets::menu_option(ui, t, label, *kind == filter.kind) {
+                    filter.kind = *kind;
+                }
+            }
+        });
+        let channel_label = channels
+            .iter()
+            .find(|(id, _)| *id == filter.channel.as_deref())
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| s.audit_all.to_owned());
+        let response = audit_chip(
+            ui,
+            t,
+            egui_phosphor::regular::HASH,
+            &format!("{}: {channel_label}", s.audit_channel),
+            filter.channel.is_some(),
+            true,
+        );
+        crate::ui::widgets::dropdown(&response, response.rect, response.rect, true).show(|ui| {
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for (id, label) in &channels {
+                    if crate::ui::widgets::menu_option(ui, t, label, *id == filter.channel.as_deref()) {
+                        filter.channel = id.map(str::to_owned);
+                    }
+                }
+            });
+        });
+        let period_label = periods.iter().find(|(period, _)| *period == filter.period).map(|(_, label)| *label).unwrap_or("");
+        let response = audit_chip(ui, t, egui_phosphor::regular::CALENDAR_BLANK, period_label, filter.period != Period::All, true);
+        crate::ui::widgets::dropdown(&response, response.rect, response.rect, true).show(|ui| {
+            for (period, label) in &periods {
+                if crate::ui::widgets::menu_option(ui, t, label, *period == filter.period) {
+                    filter.period = *period;
+                }
+            }
+        });
+        if !filter.is_empty() {
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.audit_clear.to_owned(), text::footnote(), t.label).size().x + space::MD * 2.0, 26.0), Sense::click());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                s.audit_clear,
+                text::footnote(),
+                if response.hovered() { t.label } else { t.label_tertiary },
+            );
+            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                *filter = Default::default();
+            }
+        }
+    });
+    let filter = state.draft.audit.clone();
+    // Só o que o servidor sabe filtrar pede de novo; a pessoa filtra aqui.
+    if filter.query(now) != before.query(now) {
+        actions.push(SettingsAction::Admin(AdminAction::LoadAuditLogs(filter.query(now))));
+    }
+    ui.add_space(space::MD);
+
+    let store = data.store;
+    let lookup = |id: &str| store.member(id).map(|member| (member.name.clone(), member.username.clone()));
+    let person = |id: &str| store.member(id).map(|member| member.name.clone());
+    let channel = |id: &str| store.channel(id).map(|channel| channel.name.clone());
+    let names = audit::Names { person: &person, channel: &channel };
+    let shown: Vec<&crate::api::models::AuditLogEntry> =
+        store.audit_logs.iter().filter(|entry| filter.keeps(entry, &lookup, now)).collect();
+
+    if shown.is_empty() {
+        ui.add_space(space::LG);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                RichText::new(if state.draft.loaded_audit && store.audit_logs.is_empty() && filter.is_empty() {
+                    s.audit_loading
+                } else {
+                    s.audit_empty
+                })
+                .font(text::footnote())
+                .color(t.label_tertiary),
+            );
+        });
+    }
+    let semibold = egui::FontId::new(text::body().size, egui::FontFamily::Name("semibold".into()));
+    let mut day = None;
+    for entry in &shown {
+        let label = entry.created_at.map(|at| audit::day_label(at, now, *data.lang));
+        if label != day {
+            day = label.clone();
+            if let Some(label) = label {
+                ui.add_space(space::MD);
+                ui.horizontal(|ui| {
+                    ui.add_space(space::XS);
+                    ui.label(RichText::new(label).font(text::footnote()).strong().color(t.label_secondary));
+                });
+                ui.add_space(space::XS);
+            }
+        }
+        let danger = audit::is_danger(&entry.action);
+        let icon = match entry.action.split('.').next().unwrap_or("") {
+            _ if entry.action == "message.delete" => egui_phosphor::regular::TRASH,
+            "message" | "media" => egui_phosphor::regular::CHAT_TEXT,
+            "channel" => egui_phosphor::regular::HASH,
+            "role" | "user_role" => egui_phosphor::regular::SHIELD,
+            "user" | "auth" => egui_phosphor::regular::USER,
+            "emoji" => egui_phosphor::regular::SMILEY,
+            _ => egui_phosphor::regular::GEAR,
+        };
+        let time = entry
+            .created_at
+            .map(|at| at.with_timezone(&chrono::Local).format("%H:%M").to_string())
+            .unwrap_or_default();
+        let width = ui.available_width();
+        let text_left = space::MD + 26.0 + space::MD;
+        let time_w = 44.0;
+        let mut job = egui::text::LayoutJob::default();
+        job.wrap.max_width = (width - text_left - time_w).max(80.0);
+        for piece in audit::sentence(entry, *data.lang, &names) {
+            let (words, font, color) = match piece {
+                Piece::Text(words) => (words, text::body(), t.label_secondary),
+                Piece::Person(words) => (words, semibold.clone(), t.label),
+                Piece::Channel(words) => (words, text::body(), t.accent),
+            };
+            job.append(&words, 0.0, egui::TextFormat::simple(font, color));
+        }
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let quote = audit::deleted_text(entry).map(|content| {
+            let mut job = egui::text::LayoutJob::simple(
+                format!("“{content}”"),
+                text::footnote(),
+                t.label_secondary,
+                (width - text_left - time_w).max(80.0),
+            );
+            job.wrap.max_rows = 4;
+            job.wrap.overflow_character = Some('…');
+            ui.fonts_mut(|fonts| fonts.layout_job(job))
+        });
+        let body_h = galley.size().y + quote.as_ref().map_or(0.0, |quote| quote.size().y + space::XS);
+        let height = body_h.max(26.0) + space::MD * 2.0;
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        if response.hovered() {
+            ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        }
+        let tint = if danger { t.danger } else { t.label_secondary };
+        let badge = egui::pos2(rect.min.x + space::MD + 13.0, rect.min.y + space::MD + 13.0);
+        ui.painter().circle_filled(badge, 13.0, tint.gamma_multiply(if danger { 0.18 } else { 0.12 }));
+        ui.painter().text(badge, egui::Align2::CENTER_CENTER, icon, text::icon(13.0), tint);
+        let top = rect.min.y + space::MD + (26.0 - galley.rows.first().map_or(18.0, |row| row.height())).max(0.0) / 2.0;
+        let sentence_h = galley.size().y;
+        ui.painter().galley(egui::pos2(rect.min.x + text_left, top), galley, t.label);
+        ui.painter().text(
+            egui::pos2(rect.max.x - space::MD, badge.y),
+            egui::Align2::RIGHT_CENTER,
+            time,
+            text::footnote(),
+            t.label_tertiary,
+        );
+        if let Some(quote) = quote {
+            let at = egui::pos2(rect.min.x + text_left, top + sentence_h + space::XS);
+            ui.painter().rect_filled(
+                Rect::from_min_size(egui::pos2(at.x - space::SM, at.y), Vec2::new(2.0, quote.size().y)),
+                CornerRadius::same(1),
+                t.separator,
+            );
+            ui.painter().galley(at, quote, t.label_secondary);
+        }
+        // O código cru continua a um hover de distância, para quem precisa.
+        response.on_hover_text_at_pointer(format!("{} · {}", entry.action, entry.actor_username));
+    }
+
+    if store.audit_has_more {
+        ui.add_space(space::MD);
+        ui.vertical_centered(|ui| {
+            if row_button(ui, t, s.audit_load_more, Emphasis::Quiet) {
+                let mut query = filter.query(now);
+                query.last_id = store.audit_logs.last().map(|entry| entry.id.clone());
+                actions.push(SettingsAction::Admin(AdminAction::LoadAuditLogs(query)));
+            }
+        });
+    }
+    ui.add_space(space::LG);
+}
+
+/// Ficha de filtro: acesa quando restringe alguma coisa; `menu` põe a setinha.
+fn audit_chip(ui: &mut egui::Ui, t: &Tokens, icon: &str, label: &str, on: bool, menu: bool) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), text::footnote(), t.label);
+    let width = space::MD + 14.0 + galley.size().x + if menu { 16.0 } else { 0.0 } + space::MD;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width.min(ui.available_width().max(80.0)), 26.0), Sense::click());
+    let fill = if on {
+        t.accent.gamma_multiply(0.22)
+    } else if response.hovered() {
+        t.fill_medium
+    } else {
+        t.fill_soft
+    };
+    let color = if on { t.accent } else { t.label_secondary };
+    ui.painter().rect_filled(rect, CornerRadius::same(13), fill);
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::MD + 6.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        icon,
+        text::icon(11.0),
+        color,
+    );
+    let right = rect.max.x - space::MD - if menu { 16.0 } else { 0.0 };
+    crate::ui::widgets::text_fit(
+        ui.painter(),
+        egui::pos2(rect.min.x + space::MD + 14.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        text::footnote(),
+        if on { t.accent } else { t.label },
+        right - rect.min.x - space::MD - 14.0,
+    );
+    if menu {
+        ui.painter().text(
+            egui::pos2(rect.max.x - space::MD - 5.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CARET_DOWN,
+            text::icon(9.0),
+            color,
+        );
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 
 #[cfg(test)]
 mod tree_tests {

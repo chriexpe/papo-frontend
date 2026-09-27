@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod audit;
 pub mod attachments;
 pub mod auth;
 pub mod call;

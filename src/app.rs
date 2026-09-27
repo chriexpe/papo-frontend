@@ -2592,7 +2592,7 @@ impl PapoApp {
                 if self.sheet.open_server_admin(&ws.runtime.store) {
                     ws.runtime.net.send(Command::LoadRoles);
                     if ws.runtime.store.can_manage_server() {
-                        ws.runtime.net.send(Command::LoadAuditLogs);
+                        ws.runtime.net.send(Command::LoadAuditLogs(Default::default()));
                     }
                 }
             }
@@ -2644,7 +2644,7 @@ impl PapoApp {
                 Command::CreateEmoji { name, blob, format }
             }
             AdminAction::DeleteEmoji(emoji_id) => Command::DeleteEmoji { emoji_id },
-            AdminAction::LoadAuditLogs => Command::LoadAuditLogs,
+            AdminAction::LoadAuditLogs(query) => Command::LoadAuditLogs(query),
         };
         self.workspaces[self.active].runtime.net.send(command);
     }

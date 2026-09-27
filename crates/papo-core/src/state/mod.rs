@@ -447,6 +447,8 @@ pub struct Store {
     /// Sessões abertas da conta neste servidor.
     pub devices: Vec<models::ConnectionInfo>,
     pub audit_logs: Vec<models::AuditLogEntry>,
+    /// O servidor tem mais registro além do carregado ("carregar mais").
+    pub audit_has_more: bool,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
     pub search_has_more: bool,
@@ -499,6 +501,7 @@ impl Default for Store {
             activities: HashMap::new(),
             devices: Vec::new(),
             audit_logs: Vec::new(),
+            audit_has_more: false,
             search_results: Vec::new(),
             search_has_more: false,
             searching: false,
@@ -1830,8 +1833,13 @@ impl Store {
                 self.devices = devices;
                 self.busy = false;
             }
-            Update::AuditLogs(logs) => {
-                self.audit_logs = logs;
+            Update::AuditLogs { logs, has_more, append } => {
+                if append {
+                    self.audit_logs.extend(logs);
+                } else {
+                    self.audit_logs = logs;
+                }
+                self.audit_has_more = has_more;
                 self.busy = false;
             }
             Update::Done => self.busy = false,
