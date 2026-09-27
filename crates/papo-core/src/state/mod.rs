@@ -957,22 +957,121 @@ impl Store {
         }
     }
 
+    /// Canal selecionado cuja primeira página persistida ainda não entrou na
+    /// Store. Funciona offline: cache não depende da conexão.
+    pub fn channel_needing_cache(&self) -> Option<String> {
+        let id = &self.selected_channel;
+        if id.is_empty()
+            || !self.cached_channels.contains(id)
+            || self.hydrated_channels.contains(id)
+            || self.cache_loading.contains(id)
+            || self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice)
+        {
+            return None;
+        }
+        Some(id.clone())
+    }
+
+    pub fn mark_cache_loading(&mut self, channel_id: &str) {
+        self.cache_loading.insert(channel_id.to_owned());
+    }
+
+    /// Projeta uma página local sem atribuir freshness. Se o REST já tornou a
+    /// cabeça Fresh antes de a primeira leitura Turso voltar, ignoramos essa
+    /// página para não deixar dado stale sobrescrever o snapshot autoritativo.
+    pub fn restore_cached_page(&mut self, page: CachedMessagePage, older: bool) {
+        let channel_id = page.channel_id.clone();
+        let ignore_initial = !older && self.timeline_status(&channel_id) == TimelineStatus::Fresh;
+        if !ignore_initial {
+            for message in page.messages {
+                self.apply_mutation(
+                    MutationSource::CacheRestore,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id.clone()),
+                        mutation: TimelineMutation::MessageUpsert(message.to_store()),
+                    },
+                );
+            }
+            self.sort_messages();
+        }
+        self.cached_channels.insert(channel_id.clone());
+        self.hydrated_channels.insert(channel_id.clone());
+        self.cache_history_has_more
+            .insert(channel_id.clone(), page.has_more);
+        self.cache_loading.remove(&channel_id);
+        if older {
+            self.history_loading.remove(&channel_id);
+        }
+    }
+
+    /// Falha de leitura local não pode virar retry por frame. A rede continua
+    /// sendo capaz de reconciliar normalmente.
+    pub fn cached_page_failed(&mut self, channel_id: &str, older: bool) {
+        self.cache_loading.remove(channel_id);
+        if older {
+            self.cache_history_has_more
+                .insert(channel_id.to_owned(), false);
+            self.history_loading.remove(channel_id);
+        } else {
+            self.hydrated_channels.insert(channel_id.to_owned());
+        }
+    }
+
     pub fn can_load_older(&self, channel_id: &str) -> bool {
-        self.connection == Connection::Online
-            && self.history_has_more.get(channel_id).copied().unwrap_or(false)
-            && !self.history_loading.contains(channel_id)
+        !self.history_loading.contains(channel_id)
+            && (self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+                || (self.connection == Connection::Online
+                    && self.history_has_more.get(channel_id).copied().unwrap_or(false)))
     }
 
     pub fn loading_older(&self, channel_id: &str) -> bool {
         self.history_loading.contains(channel_id)
     }
 
-    /// Marca uma página antiga como em voo e devolve seu cursor.
+    /// Reserva primeiro uma página antiga do Turso. Mensagens pinned são
+    /// excluídas do cursor local porque podem ser retenções muito antigas,
+    /// fora da sequência normal de 500 mensagens.
+    pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, String)> {
+        if self.history_loading.contains(channel_id)
+            || !self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+        {
+            return None;
+        }
+        let oldest = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending && !message.pinned)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+        let cursor = (
+            oldest.at.with_timezone(&Utc).timestamp_millis(),
+            oldest.id.clone(),
+        );
+        self.history_loading.insert(channel_id.to_owned());
+        Some(cursor)
+    }
+
+    /// Depois que o Turso esgotou, reserva a próxima página autoritativa do
+    /// backend usando o cursor da timeline visível.
     pub fn begin_load_older(
         &mut self,
         channel_id: &str,
     ) -> Option<(DateTime<Utc>, String)> {
-        if !self.can_load_older(channel_id) {
+        if self.history_loading.contains(channel_id)
+            || self
+                .cache_history_has_more
+                .get(channel_id)
+                .copied()
+                .unwrap_or(false)
+            || self.connection != Connection::Online
+            || !self.history_has_more.get(channel_id).copied().unwrap_or(false)
+        {
             return None;
         }
         let oldest = self
