@@ -1,3 +1,23 @@
+import java.util.Properties
+
+val cargoManifest = rootProject.file("../Cargo.toml")
+val cargoVersion = cargoManifest.readLines()
+    .first { it.trimStart().startsWith("version = ") }
+    .substringAfter("=")
+    .trim()
+    .trim('"')
+
+val versionParts = cargoVersion.substringBefore('-').split('.').map { it.toInt() }
+require(versionParts.size == 3) { "Cargo package version must be MAJOR.MINOR.PATCH" }
+val papoVersionCode =
+    versionParts[0] * 1_000_000 +
+    versionParts[1] * 1_000 +
+    versionParts[2]
+require(versionParts[1] < 1_000 && versionParts[2] < 1_000) {
+    "Android versionCode encoding supports MINOR/PATCH values below 1000"
+}
+require(papoVersionCode in 1..2_100_000_000) { "Android versionCode out of range" }
+
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -20,8 +40,10 @@ android {
         applicationId = "io.github.chriexpe.papo"
         minSdk = 31
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.2.0"
+        // Cargo.toml is the single version source shared with GitHub tags.
+        // Android additionally needs a monotonically increasing integer.
+        versionCode = papoVersionCode
+        versionName = cargoVersion
 
         // Por enquanto só o celular de verdade (arm64). O emulador x86_64
         // entra quando alguém precisar dele.
