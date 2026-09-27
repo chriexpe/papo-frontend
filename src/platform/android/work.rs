@@ -25,11 +25,11 @@ const RECEIVE_SLICE: Duration = Duration::from_millis(100);
 struct WorkServer {
     server_key: String,
     server_url: String,
+    notifications_enabled: bool,
 }
 
 #[derive(Serialize)]
 struct WorkSync {
-    notifications_enabled: bool,
     servers: Vec<WorkServer>,
 }
 
@@ -38,16 +38,15 @@ static LAST_SCHEDULE: Mutex<Option<String>> = Mutex::new(None);
 /// Mirrors the actual configured workspaces into WorkManager. Repeated frame
 /// calls are cheap: JNI is only crossed when the serialized desired set changes.
 pub fn sync_periodic<'a>(
-    servers: impl IntoIterator<Item = (&'a str, &'a str)>,
-    notifications_enabled: bool,
+    servers: impl IntoIterator<Item = (&'a str, &'a str, bool)>,
 ) {
     let payload = WorkSync {
-        notifications_enabled,
         servers: servers
             .into_iter()
-            .map(|(server_key, server_url)| WorkServer {
+            .map(|(server_key, server_url, notifications_enabled)| WorkServer {
                 server_key: server_key.to_owned(),
                 server_url: server_url.to_owned(),
+                notifications_enabled,
             })
             .collect(),
     };
