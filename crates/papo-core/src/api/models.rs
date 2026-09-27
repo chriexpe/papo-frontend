@@ -373,6 +373,10 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date_start: Option<String>,
@@ -380,6 +384,8 @@ pub struct SearchRequest {
     pub date_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contains_attachment: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_link: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
