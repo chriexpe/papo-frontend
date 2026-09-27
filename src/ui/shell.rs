@@ -350,10 +350,8 @@ pub struct Panel {
     /// Filtros avançados da busca. Mantidos no painel para paginação usar
     /// exatamente a mesma consulta.
     pub search_filters: bool,
-    pub search_author: Option<String>,
     pub search_attachments: bool,
     pub search_oldest_first: bool,
-    pub search_author_picker: bool,
     pub search_suggest_index: usize,
     /// Consulta efetivamente enviada; páginas seguintes não usam filtros
     /// editados que ainda não foram submetidos.
@@ -2925,10 +2923,8 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 kind,
                 query: String::new(),
                 search_filters: false,
-                search_author: None,
                 search_attachments: false,
                 search_oldest_first: false,
-                search_author_picker: false,
                 search_suggest_index: 0,
                 search_active: None,
                 focus: kind == PanelKind::Search,
@@ -3131,6 +3127,19 @@ fn replace_search_fragment(query: &str, replacement: &str) -> String {
     next
 }
 
+#[cfg(not(target_os = "android"))]
+fn search_cursor_to_end(ctx: &egui::Context, id: Id, text: &str) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let end = text.chars().count();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange {
+            primary: egui::text::CCursor::new(end),
+            secondary: egui::text::CCursor::new(end),
+            h_pos: None,
+        }));
+        state.store(ctx, id);
+    }
+}
+
 fn search_member_id(store: &Store, raw: &str) -> Option<String> {
     let value = raw.trim_start_matches('@');
     store
@@ -3158,7 +3167,7 @@ fn search_request_from_panel(
     store: &Store,
 ) -> Option<crate::api::models::SearchRequest> {
     let mut text = Vec::new();
-    let mut author = panel.search_author.clone();
+    let mut author = None;
     let mut channel = None;
     let mut mentions = None;
     let mut contains_attachment = panel.search_attachments.then_some(true);
@@ -3296,6 +3305,7 @@ fn search_panel(
                 && panel.focus
             {
                 field.request_focus();
+                search_cursor_to_end(ui.ctx(), search_id, &query);
                 panel.focus = false;
             }
             submit |= ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -3394,22 +3404,7 @@ fn search_panel(
 
     if state.panel.as_ref().is_some_and(|panel| panel.search_filters) {
         ui.add_space(space::XS);
-        let author_name = state
-            .panel
-            .as_ref()
-            .and_then(|panel| panel.search_author.as_deref())
-            .and_then(|id| store.member(id))
-            .map(|member| member.name.as_str())
-            .unwrap_or(s.search_anyone);
-
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .button(format!("{}: {}", s.search_author, author_name))
-                .clicked()
-                && let Some(panel) = state.panel.as_mut()
-            {
-                panel.search_author_picker = !panel.search_author_picker;
-            }
             if let Some(panel) = state.panel.as_mut() {
                 ui.checkbox(&mut panel.search_attachments, s.search_attachments);
                 ui.selectable_value(
@@ -3424,53 +3419,6 @@ fn search_panel(
                 );
             }
         });
-
-        if state
-            .panel
-            .as_ref()
-            .is_some_and(|panel| panel.search_author_picker)
-        {
-            ui.add_space(space::XXS);
-            Frame::new()
-                .fill(t.fill_soft)
-                .corner_radius(CornerRadius::same(radius::FIELD))
-                .inner_margin(egui::Margin::same(space::XS as i8))
-                .show(ui, |ui| {
-                    egui::ScrollArea::vertical()
-                        .id_salt("search-author-inline")
-                        .max_height(140.0)
-                        .show(ui, |ui| {
-                            let selected = state
-                                .panel
-                                .as_ref()
-                                .is_none_or(|panel| panel.search_author.is_none());
-                            if ui.selectable_label(selected, s.search_anyone).clicked()
-                                && let Some(panel) = state.panel.as_mut()
-                            {
-                                panel.search_author = None;
-                                panel.search_author_picker = false;
-                            }
-                            for member in &store.members {
-                                let selected = state
-                                    .panel
-                                    .as_ref()
-                                    .and_then(|panel| panel.search_author.as_deref())
-                                    == Some(member.id.as_str());
-                                if ui
-                                    .selectable_label(
-                                        selected,
-                                        format!("{}  @{}", member.name, member.username),
-                                    )
-                                    .clicked()
-                                    && let Some(panel) = state.panel.as_mut()
-                                {
-                                    panel.search_author = Some(member.id.clone());
-                                    panel.search_author_picker = false;
-                                }
-                            }
-                        });
-                });
-        }
     }
 
     let request = state
