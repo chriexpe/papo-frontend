@@ -158,3 +158,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+
+# Papo needs a render-pass barrier for backend-neutral backdrop effects.
+# This is a narrow egui-wgpu 0.36.2 patch; keep it isolated so it can be
+# dropped as soon as the hook is available upstream.
+[patch.crates-io]
+egui-wgpu = { path = "vendor/egui-wgpu-papo" }
