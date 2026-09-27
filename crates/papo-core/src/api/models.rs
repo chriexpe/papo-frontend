@@ -26,6 +26,87 @@ pub struct LoginUser {
     pub username: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserNotifications {
+    pub enabled: bool,
+    #[serde(rename = "messagePreview")]
+    pub message_preview: bool,
+    pub sound: bool,
+    pub mentions: bool,
+}
+
+impl Default for UserNotifications {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            message_preview: true,
+            sound: true,
+            mentions: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserDisplay {
+    #[serde(rename = "fontSize")]
+    pub font_size: String,
+    #[serde(rename = "messageDensity")]
+    pub message_density: String,
+    #[serde(rename = "showTimestamps")]
+    pub show_timestamps: bool,
+    #[serde(rename = "showAvatars")]
+    pub show_avatars: bool,
+}
+
+impl Default for UserDisplay {
+    fn default() -> Self {
+        Self {
+            font_size: "medium".to_owned(),
+            message_density: "normal".to_owned(),
+            show_timestamps: true,
+            show_avatars: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserConfig {
+    pub theme: String,
+    #[serde(default)]
+    pub notifications: UserNotifications,
+    #[serde(default)]
+    pub display: UserDisplay,
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_owned(),
+            notifications: UserNotifications::default(),
+            display: UserDisplay::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserSettings {
+    pub user_id: String,
+    pub version: i32,
+    pub config: UserConfig,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateUserSettingsRequest {
+    pub config: UserConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct WhoamiSettings {
+    pub version: i32,
+    pub config: UserConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Whoami {
     pub id: String,
@@ -35,6 +116,7 @@ pub struct Whoami {
     pub status_message: Option<String>,
     #[serde(default)]
     pub roles: Vec<RoleSummary>,
+    pub settings: WhoamiSettings,
 }
 
 impl Whoami {
