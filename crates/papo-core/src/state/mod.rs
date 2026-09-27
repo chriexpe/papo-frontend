@@ -444,8 +444,13 @@ pub struct Store {
     pub audit_logs: Vec<models::AuditLogEntry>,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
+    pub search_has_more: bool,
     /// Uma busca saiu e ainda não voltou.
     pub searching: bool,
+    /// Detalhes de reação carregados sob demanda, por mensagem.
+    pub reaction_details: HashMap<String, Vec<models::ReactionGroup>>,
+    pub reaction_details_has_more: HashMap<String, bool>,
+    pub reaction_details_loading: HashSet<String>,
     /// A call: quem está em cada canal de voz e onde ela aparece na tela.
     pub call: CallState,
 }
@@ -489,7 +494,11 @@ impl Default for Store {
             devices: Vec::new(),
             audit_logs: Vec::new(),
             search_results: Vec::new(),
+            search_has_more: false,
             searching: false,
+            reaction_details: HashMap::new(),
+            reaction_details_has_more: HashMap::new(),
+            reaction_details_loading: HashSet::new(),
             call: CallState::default(),
         }
     }
@@ -1714,9 +1723,49 @@ impl Store {
                 self.busy = false;
             }
             Update::Done => self.busy = false,
-            Update::SearchResults(results) => {
-                self.search_results = results;
+            Update::SearchResults {
+                results,
+                has_more,
+                append,
+            } => {
+                if append {
+                    for result in results {
+                        if !self.search_results.iter().any(|existing| existing.id == result.id) {
+                            self.search_results.push(result);
+                        }
+                    }
+                } else {
+                    self.search_results = results;
+                }
+                self.search_has_more = has_more;
                 self.searching = false;
+            }
+            Update::ReactionDetails {
+                message_id,
+                reactions,
+                has_more,
+                append,
+            } => {
+                let target = self.reaction_details.entry(message_id.clone()).or_default();
+                if !append {
+                    target.clear();
+                }
+                for mut incoming in reactions {
+                    if let Some(existing) = target.iter_mut().find(|group| {
+                        group.emoji_id == incoming.emoji_id && group.unicode == incoming.unicode
+                    }) {
+                        for user in incoming.users.drain(..) {
+                            if !existing.users.iter().any(|known| known.id == user.id) {
+                                existing.users.push(user);
+                            }
+                        }
+                        existing.count = existing.users.len() as u32;
+                    } else {
+                        target.push(incoming);
+                    }
+                }
+                self.reaction_details_has_more.insert(message_id.clone(), has_more);
+                self.reaction_details_loading.remove(&message_id);
             }
             // Chega depois da lista nova, então o canal já está lá.
             Update::ChannelCreated(id) => {
