@@ -486,6 +486,7 @@ impl SystemTheme {
 struct PendingCachePage {
     channel_id: String,
     older: bool,
+    restore_epoch: u64,
     receiver: std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>,
 }
 
@@ -581,6 +582,7 @@ impl Workspace {
         before: Option<(i64, String)>,
         older: bool,
     ) -> bool {
+        let restore_epoch = self.runtime.store.cache_restore_epoch();
         let Some(receiver) = self.runtime.cache.load_channel_page_async(
             &self.runtime.server_key,
             &channel_id,
@@ -592,6 +594,7 @@ impl Workspace {
         self.cache_pages.push(PendingCachePage {
             channel_id,
             older,
+            restore_epoch,
             receiver,
         });
         true
@@ -2197,6 +2200,14 @@ impl PapoApp {
 
             for (index, result) in finished.into_iter().rev() {
                 let request = workspace.cache_pages.remove(index);
+                if request.restore_epoch != workspace.runtime.store.cache_restore_epoch() {
+                    log::debug!(
+                        "cache: discarded stale hydration server={} channel={}",
+                        workspace.runtime.server_key,
+                        request.channel_id
+                    );
+                    continue;
+                }
                 match result {
                     Ok(page) => workspace
                         .runtime
