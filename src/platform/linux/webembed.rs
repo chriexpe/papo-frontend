@@ -1,246 +1,34 @@
 //! Linux WebEmbed backend powered by WPE WebKit.
 //!
-//! WPE renders into DMA-BUFs. Papo imports those buffers into the OpenGL
-//! context eframe already owns, GPU-copies them into one persistent texture,
-//! then returns the WPE buffer. No second GL context is ever made current.
+//! WPE renders into DMA-BUFs. Desktop rendering is WGPU-only, so the Linux
+//! bridge maps the linear WPE buffer, converts its DRM pixel layout to RGBA,
+//! and uploads it into one persistent WGPU texture registered with egui.
+//!
+//! This is the correctness path. A future zero-copy importer can replace the
+//! mmap/upload step without changing the WebEmbed/egui contract.
 
 #![cfg(target_os = "linux")]
 
-use std::ffi::{CString, c_char, c_void};
 use std::os::fd::AsRawFd as _;
 use std::time::Instant;
 
-use eframe::glow::{self, HasContext as _};
+use eframe::wgpu;
 
 use crate::platform::linux_wpe::{Frame as WpeFrame, Page, PageEvent, Runtime, RuntimePaths};
 use crate::webembed::{
     EmbedViewport, WebEmbedBackend, WebEmbedButton, WebEmbedEvent, WebEmbedInput,
 };
 
-const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
-const EGL_WIDTH: i32 = 0x3057;
-const EGL_HEIGHT: i32 = 0x3056;
-const EGL_LINUX_DRM_FOURCC_EXT: i32 = 0x3271;
-const EGL_DMA_BUF_PLANE0_FD_EXT: i32 = 0x3272;
-const EGL_DMA_BUF_PLANE0_OFFSET_EXT: i32 = 0x3273;
-const EGL_DMA_BUF_PLANE0_PITCH_EXT: i32 = 0x3274;
-const EGL_NONE: i32 = 0x3038;
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
 
-type EglDisplay = *mut c_void;
-type EglImage = *mut c_void;
-type EglGetCurrentDisplay = unsafe extern "C" fn() -> EglDisplay;
-type EglGetProcAddress = unsafe extern "C" fn(*const c_char) -> *const c_void;
-type EglCreateImageKhr = unsafe extern "C" fn(
-    EglDisplay,
-    *mut c_void,
-    u32,
-    *mut c_void,
-    *const i32,
-) -> EglImage;
-type EglDestroyImageKhr = unsafe extern "C" fn(EglDisplay, EglImage) -> u32;
-type EglGetError = unsafe extern "C" fn() -> u32;
-type GlEglImageTargetTexture2dOes = unsafe extern "C" fn(u32, *mut c_void);
-
-struct EglDmaBuf {
-    _library: libloading::Library,
-    get_current_display: EglGetCurrentDisplay,
-    create_image: EglCreateImageKhr,
-    destroy_image: EglDestroyImageKhr,
-    get_error: EglGetError,
-    image_target_texture: GlEglImageTargetTexture2dOes,
+const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
+    (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
 }
 
-impl EglDmaBuf {
-    fn load() -> Result<Self, String> {
-        // SAFETY: libEGL stays mapped in this struct for all resolved pointers.
-        let library = unsafe { libloading::Library::new("libEGL.so.1") }
-            .map_err(|error| format!("libEGL.so.1 indisponível: {error}"))?;
-
-        unsafe fn symbol<T: Copy>(
-            library: &libloading::Library,
-            name: &[u8],
-        ) -> Result<T, String> {
-            // SAFETY: symbol type matches the EGL ABI.
-            unsafe { library.get::<T>(name) }
-                .map(|value| *value)
-                .map_err(|error| format!("símbolo EGL ausente: {error}"))
-        }
-
-        // SAFETY: exact EGL function signatures.
-        let get_current_display =
-            unsafe { symbol::<EglGetCurrentDisplay>(&library, b"eglGetCurrentDisplay\0")? };
-        let get_proc_address =
-            unsafe { symbol::<EglGetProcAddress>(&library, b"eglGetProcAddress\0")? };
-        let get_error = unsafe { symbol::<EglGetError>(&library, b"eglGetError\0")? };
-
-        let create_image = unsafe {
-            resolve_proc::<EglCreateImageKhr>(&library, get_proc_address, b"eglCreateImageKHR\0")?
-        };
-        let destroy_image = unsafe {
-            resolve_proc::<EglDestroyImageKhr>(&library, get_proc_address, b"eglDestroyImageKHR\0")?
-        };
-        let image_target_texture = unsafe {
-            resolve_proc::<GlEglImageTargetTexture2dOes>(
-                &library,
-                get_proc_address,
-                b"glEGLImageTargetTexture2DOES\0",
-            )?
-        };
-
-        Ok(Self {
-            _library: library,
-            get_current_display,
-            create_image,
-            destroy_image,
-            get_error,
-            image_target_texture,
-        })
-    }
-
-    fn import_into(
-        &self,
-        gl: &glow::Context,
-        source: &WpeFrame,
-        destination: glow::Texture,
-    ) -> Result<(), String> {
-        if source.modifier != DRM_FORMAT_MOD_LINEAR {
-            return Err(format!(
-                "WPE entregou DMA-BUF com modifier não-linear 0x{:x}",
-                source.modifier
-            ));
-        }
-
-        // SAFETY: eframe has its host context current while App::ui runs.
-        let display = unsafe { (self.get_current_display)() };
-        if display.is_null() {
-            return Err(
-                "o contexto Glow atual não é EGL; importação WPE DMA-BUF indisponível".to_owned(),
-            );
-        }
-
-        let attributes = [
-            EGL_WIDTH,
-            source.width as i32,
-            EGL_HEIGHT,
-            source.height as i32,
-            EGL_LINUX_DRM_FOURCC_EXT,
-            source.format as i32,
-            EGL_DMA_BUF_PLANE0_FD_EXT,
-            source.plane.as_raw_fd(),
-            EGL_DMA_BUF_PLANE0_OFFSET_EXT,
-            source.offset as i32,
-            EGL_DMA_BUF_PLANE0_PITCH_EXT,
-            source.stride as i32,
-            EGL_NONE,
-        ];
-
-        // SAFETY: attributes reference the live DMA-BUF frame for this call.
-        let image = unsafe {
-            (self.create_image)(
-                display,
-                std::ptr::null_mut(),
-                EGL_LINUX_DMA_BUF_EXT,
-                std::ptr::null_mut(),
-                attributes.as_ptr(),
-            )
-        };
-        if image.is_null() {
-            // SAFETY: plain EGL error query.
-            let error = unsafe { (self.get_error)() };
-            return Err(format!("eglCreateImageKHR(DMA-BUF) falhou: 0x{error:04x}"));
-        }
-
-        let result = unsafe {
-            let imported = gl
-                .create_texture()
-                .map_err(|error| format!("falha ao criar textura temporária WPE: {error}"))?;
-            gl.bind_texture(glow::TEXTURE_2D, Some(imported));
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MIN_FILTER,
-                glow::LINEAR as i32,
-            );
-            gl.tex_parameter_i32(
-                glow::TEXTURE_2D,
-                glow::TEXTURE_MAG_FILTER,
-                glow::LINEAR as i32,
-            );
-
-            (self.image_target_texture)(glow::TEXTURE_2D, image);
-
-            let read_fbo = gl
-                .create_framebuffer()
-                .map_err(|error| format!("falha ao criar FBO WPE: {error}"))?;
-            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read_fbo));
-            gl.framebuffer_texture_2d(
-                glow::READ_FRAMEBUFFER,
-                glow::COLOR_ATTACHMENT0,
-                glow::TEXTURE_2D,
-                Some(imported),
-                0,
-            );
-            if gl.check_framebuffer_status(glow::READ_FRAMEBUFFER)
-                != glow::FRAMEBUFFER_COMPLETE
-            {
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-                gl.delete_framebuffer(read_fbo);
-                gl.delete_texture(imported);
-                Err("DMA-BUF importado não formou framebuffer completo".to_owned())
-            } else {
-                gl.read_buffer(glow::COLOR_ATTACHMENT0);
-                gl.bind_texture(glow::TEXTURE_2D, Some(destination));
-                gl.copy_tex_image_2d(
-                    glow::TEXTURE_2D,
-                    0,
-                    glow::RGBA,
-                    0,
-                    0,
-                    source.width as i32,
-                    source.height as i32,
-                    0,
-                );
-                // First correctness pass: guarantee the GPU has finished
-                // reading WPE's buffer before it returns to WebKit's pool.
-                gl.finish();
-
-                gl.bind_texture(glow::TEXTURE_2D, None);
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-                gl.delete_framebuffer(read_fbo);
-                gl.delete_texture(imported);
-                Ok(())
-            }
-        };
-
-        // SAFETY: image belongs to this display and was created above.
-        unsafe {
-            (self.destroy_image)(display, image);
-        }
-        result
-    }
-}
-
-unsafe fn resolve_proc<T: Copy>(
-    library: &libloading::Library,
-    get_proc_address: EglGetProcAddress,
-    name: &[u8],
-) -> Result<T, String> {
-    if let Ok(symbol) = unsafe { library.get::<T>(name) } {
-        return Ok(*symbol);
-    }
-    let name = CString::from_vec_with_nul(name.to_vec())
-        .map_err(|_| "nome de símbolo EGL inválido".to_owned())?;
-    // SAFETY: eglGetProcAddress accepts a NUL-terminated symbol name.
-    let pointer = unsafe { get_proc_address(name.as_ptr()) };
-    if pointer.is_null() {
-        return Err(format!(
-            "extensão EGL/GL ausente: {}",
-            name.to_string_lossy()
-        ));
-    }
-    // SAFETY: caller chose T to match the named function's ABI.
-    Ok(unsafe { std::mem::transmute_copy::<*const c_void, T>(&pointer) })
-}
+const DRM_FORMAT_XRGB8888: u32 = fourcc(b'X', b'R', b'2', b'4');
+const DRM_FORMAT_ARGB8888: u32 = fourcc(b'A', b'R', b'2', b'4');
+const DRM_FORMAT_XBGR8888: u32 = fourcc(b'X', b'B', b'2', b'4');
+const DRM_FORMAT_ABGR8888: u32 = fourcc(b'A', b'B', b'2', b'4');
 
 fn fence_ready(frame: &WpeFrame) -> bool {
     let Some(fence) = frame.rendering_fence.as_ref() else {
@@ -255,6 +43,125 @@ fn fence_ready(frame: &WpeFrame) -> bool {
     unsafe { libc::poll(&mut pollfd, 1, 0) > 0 }
 }
 
+fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
+    if frame.modifier != DRM_FORMAT_MOD_LINEAR {
+        return Err(format!(
+            "WPE entregou DMA-BUF com modifier não-linear 0x{:x}",
+            frame.modifier
+        ));
+    }
+
+    let row_bytes = (frame.width as usize)
+        .checked_mul(4)
+        .ok_or_else(|| "largura WPE excede usize".to_owned())?;
+    if (frame.stride as usize) < row_bytes {
+        return Err(format!(
+            "stride WPE inválido: {} para {} px",
+            frame.stride, frame.width
+        ));
+    }
+
+    let body_len = (frame.stride as usize)
+        .checked_mul(frame.height as usize)
+        .ok_or_else(|| "frame WPE excede usize".to_owned())?;
+    let map_len = (frame.offset as usize)
+        .checked_add(body_len)
+        .ok_or_else(|| "offset WPE excede usize".to_owned())?;
+    if map_len == 0 {
+        return Err("frame WPE vazio".to_owned());
+    }
+
+    // SAFETY: the frame owns a live DMA-BUF fd for the duration of this call.
+    // We map it read-only, bounds-check all row accesses below, then unmap it
+    // before returning the WPE lease.
+    let mapped = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            map_len,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            frame.plane.as_raw_fd(),
+            0,
+        )
+    };
+    if mapped == libc::MAP_FAILED {
+        return Err(format!(
+            "mmap do DMA-BUF WPE falhou: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    struct Mapping {
+        ptr: *mut libc::c_void,
+        len: usize,
+    }
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            // SAFETY: this pair is exactly the successful mmap above.
+            unsafe {
+                libc::munmap(self.ptr, self.len);
+            }
+        }
+    }
+    let mapping = Mapping {
+        ptr: mapped,
+        len: map_len,
+    };
+
+    // SAFETY: map_len bytes are live until mapping is dropped.
+    let bytes = unsafe { std::slice::from_raw_parts(mapping.ptr.cast::<u8>(), mapping.len) };
+    let start = frame.offset as usize;
+    let mut rgba = vec![
+        0_u8;
+        row_bytes
+            .checked_mul(frame.height as usize)
+            .ok_or_else(|| "frame RGBA excede usize".to_owned())?
+    ];
+
+    for y in 0..frame.height as usize {
+        let source_start = start + y * frame.stride as usize;
+        let source_end = source_start + row_bytes;
+        let source = bytes
+            .get(source_start..source_end)
+            .ok_or_else(|| "linha WPE fora do DMA-BUF mapeado".to_owned())?;
+        let destination = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
+
+        match frame.format {
+            // Little-endian DRM XRGB/ARGB memory is B,G,R,X/A.
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => {
+                for (src, dst) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+                    dst[0] = src[2];
+                    dst[1] = src[1];
+                    dst[2] = src[0];
+                    dst[3] = if frame.format == DRM_FORMAT_ARGB8888 {
+                        src[3]
+                    } else {
+                        0xff
+                    };
+                }
+            }
+            // Little-endian DRM XBGR/ABGR memory is R,G,B,X/A.
+            DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => {
+                for (src, dst) in source.chunks_exact(4).zip(destination.chunks_exact_mut(4)) {
+                    dst[0] = src[0];
+                    dst[1] = src[1];
+                    dst[2] = src[2];
+                    dst[3] = if frame.format == DRM_FORMAT_ABGR8888 {
+                        src[3]
+                    } else {
+                        0xff
+                    };
+                }
+            }
+            other => {
+                return Err(format!("formato DRM WPE não suportado: 0x{other:08x}"));
+            }
+        }
+    }
+
+    Ok(rgba)
+}
+
 pub struct LinuxWebEmbedBackend {
     runtime: Option<Runtime>,
     page: Option<Page>,
@@ -262,8 +169,7 @@ pub struct LinuxWebEmbedBackend {
     events: Vec<WebEmbedEvent>,
     egui: Option<egui::Context>,
     pending_frame: Option<WpeFrame>,
-    egl: Option<Result<EglDmaBuf, String>>,
-    native_texture: Option<glow::Texture>,
+    native_texture: Option<wgpu::Texture>,
     texture_id: Option<egui::TextureId>,
     texture_size: (u32, u32),
     started: Instant,
@@ -280,7 +186,6 @@ impl LinuxWebEmbedBackend {
             events: Vec::new(),
             egui: None,
             pending_frame: None,
-            egl: None,
             native_texture: None,
             texture_id: None,
             texture_size: (0, 0),
@@ -405,8 +310,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         self.pending_frame = None;
         self.last_pointer = None;
         self.pointer_modifiers = 0;
-        // Keep Papo's registered texture around and reuse it for the next
-        // embed; eframe owns and eventually deletes it.
+        // Keep the WGPU texture registered and reuse it when dimensions match.
     }
 
     fn poll_events(&mut self) -> Vec<WebEmbedEvent> {
@@ -431,64 +335,83 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
             return;
         }
 
-        let Some(gl) = frame.gl().cloned() else {
-            log::warn!("webembed(wpe): eframe sem Glow");
+        let Some(render_state) = frame.wgpu_render_state().cloned() else {
+            log::warn!("webembed(wpe): eframe sem WGPU");
             self.pending_frame = Some(pending);
             return;
         };
 
-        if self.native_texture.is_none() {
-            // SAFETY: this is Papo's current Glow context; no context switch.
-            let texture = unsafe {
-                match gl.create_texture() {
-                    Ok(texture) => {
-                        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_MIN_FILTER,
-                            glow::LINEAR as i32,
-                        );
-                        gl.tex_parameter_i32(
-                            glow::TEXTURE_2D,
-                            glow::TEXTURE_MAG_FILTER,
-                            glow::LINEAR as i32,
-                        );
-                        gl.bind_texture(glow::TEXTURE_2D, None);
-                        texture
-                    }
-                    Err(error) => {
-                        log::error!("webembed(wpe): textura Glow: {error}");
-                        return;
-                    }
-                }
-            };
-            let texture_id = frame.register_native_glow_texture(texture);
-            self.native_texture = Some(texture);
-            self.texture_id = Some(texture_id);
-        }
-
-        let egl = match self.egl.get_or_insert_with(EglDmaBuf::load) {
-            Ok(egl) => egl,
+        let rgba = match map_frame_rgba(&pending) {
+            Ok(rgba) => rgba,
             Err(error) => {
-                log::error!("webembed(wpe): {error}");
+                log::error!("webembed(wpe): import DMA-BUF falhou: {error}");
                 return;
             }
         };
-        let texture = self
-            .native_texture
-            .expect("registered WPE texture must have native handle");
-        match egl.import_into(&gl, &pending, texture) {
-            Ok(()) => {
-                self.texture_size = (pending.width, pending.height);
-                pending.release();
-                if let Some(ctx) = &self.egui {
-                    ctx.request_repaint();
-                }
+
+        let size_changed = self.texture_size != (pending.width, pending.height);
+        if self.native_texture.is_none() || size_changed {
+            let texture = render_state.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("papo_wpe_webembed"),
+                size: wgpu::Extent3d {
+                    width: pending.width,
+                    height: pending.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut renderer = render_state.renderer.write();
+            if let Some(texture_id) = self.texture_id {
+                renderer.update_egui_texture_from_wgpu_texture(
+                    &render_state.device,
+                    &view,
+                    wgpu::FilterMode::Linear,
+                    texture_id,
+                );
+            } else {
+                self.texture_id = Some(renderer.register_native_texture(
+                    &render_state.device,
+                    &view,
+                    wgpu::FilterMode::Linear,
+                ));
             }
-            Err(error) => {
-                log::error!("webembed(wpe): import DMA-BUF falhou: {error}");
-                // Drop returns the lease to WPE.
-            }
+            drop(renderer);
+            self.native_texture = Some(texture);
+        }
+
+        let Some(texture) = self.native_texture.as_ref() else {
+            return;
+        };
+        render_state.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pending.width * 4),
+                rows_per_image: Some(pending.height),
+            },
+            wgpu::Extent3d {
+                width: pending.width,
+                height: pending.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.texture_size = (pending.width, pending.height);
+        pending.release();
+        if let Some(ctx) = &self.egui {
+            ctx.request_repaint();
         }
     }
 
