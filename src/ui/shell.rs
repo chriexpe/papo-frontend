@@ -353,6 +353,9 @@ pub struct Panel {
     pub search_author: Option<String>,
     pub search_attachments: bool,
     pub search_oldest_first: bool,
+    /// Consulta efetivamente enviada; páginas seguintes não usam filtros
+    /// editados que ainda não foram submetidos.
+    pub search_active: Option<crate::api::models::SearchRequest>,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
     /// Distingue "ainda não buscou" de uma busca válida com zero resultados.
@@ -2923,6 +2926,7 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 search_author: None,
                 search_attachments: false,
                 search_oldest_first: false,
+                search_active: None,
                 focus: kind == PanelKind::Search,
                 searched: false,
             })
@@ -3166,6 +3170,7 @@ fn search_panel(
         if let Some(request) = request.clone() {
             if let Some(panel) = state.panel.as_mut() {
                 panel.searched = true;
+                panel.search_active = Some(request.clone());
             }
             store.searching = true;
             state.actions.push(ChatAction::Search {
@@ -3253,9 +3258,13 @@ fn search_panel(
 
             if store.search_has_more {
                 ui.add_space(space::SM);
-                let enabled = !store.searching && request.is_some();
+                let active_request = state
+                    .panel
+                    .as_ref()
+                    .and_then(|panel| panel.search_active.clone());
+                let enabled = !store.searching && active_request.is_some();
                 if ui.add_enabled(enabled, egui::Button::new(s.search_more)).clicked()
-                    && let Some(request) = request.clone()
+                    && let Some(request) = active_request
                     && let Some(last) = store.search_results.last()
                     && let Some(at) = last.created_at
                 {
