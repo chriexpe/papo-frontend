@@ -1043,8 +1043,10 @@ mod tests {
 
     #[test]
     fn update_user_settings_usa_envelope_config_sem_perder_campos() {
-        let mut config = UserConfig::default();
-        config.theme = "dark".to_owned();
+        let mut config = UserConfig {
+            theme: "dark".to_owned(),
+            ..Default::default()
+        };
         config.notifications.message_preview = false;
         config.display.show_avatars = false;
         let body = serde_json::to_value(UpdateUserSettingsRequest { config }).unwrap();
