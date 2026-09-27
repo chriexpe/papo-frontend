@@ -2553,8 +2553,12 @@ mod tests {
             Some(channel_id.to_owned())
         );
         let ticket = store.mark_loading(channel_id);
-        store.apply(Update::Messages { ticket, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.channel_needing_messages(), None);
         store
     }
@@ -2583,6 +2587,7 @@ mod tests {
         store.apply(Update::Messages {
             ticket,
             messages,
+            has_more: false,
             pinned_ids: Some(Vec::new()),
         });
     }
@@ -2773,11 +2778,19 @@ mod tests {
         store.apply(Update::Connection(Connection::Online));
         let atual = store.mark_loading("geral");
 
-        store.apply(Update::Messages { ticket: antiga, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: antiga,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: atual,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2789,11 +2802,19 @@ mod tests {
         let segunda = store.mark_loading("geral");
         assert_ne!(primeira.request_id, segunda.request_id);
 
-        store.apply(Update::Messages { ticket: primeira, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: primeira,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: segunda, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: segunda,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2805,8 +2826,12 @@ mod tests {
         let atual = store.mark_loading("geral");
         store.apply(Update::MessagesFailed(antiga));
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), has_more: false,
- pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages {
+            ticket: atual,
+            messages: Vec::new(),
+            has_more: false,
+            pinned_ids: Some(Vec::new()),
+        });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -3749,6 +3774,52 @@ mod tests {
         let (channel_id, ids) = pins.expect("snapshot de pins precisa ir para o cache");
         assert_eq!(channel_id, "geral");
         assert!(ids.contains(&"fantasma".to_owned()));
+    }
+
+    #[test]
+    fn pagina_antiga_mescla_sem_substituir_e_fecha_no_fim() {
+        let mut store = Store {
+            selected_channel: "geral".to_owned(),
+            ..Store::default()
+        };
+        store.apply(Update::Connection(Connection::Online));
+
+        let now = Utc::now();
+        let mut newest = wire_message("nova", "geral", "nova");
+        newest.created_at = now;
+        let mut oldest = wire_message("antiga", "geral", "antiga");
+        oldest.created_at = now - chrono::Duration::minutes(1);
+
+        let ticket = store.mark_loading("geral");
+        store.apply(Update::Messages {
+            ticket,
+            messages: vec![newest, oldest],
+            has_more: true,
+            pinned_ids: Some(Vec::new()),
+        });
+
+        assert!(store.can_load_older("geral"));
+        let (since, last_id) = store
+            .begin_load_older("geral")
+            .expect("cursor da mensagem mais antiga");
+        assert_eq!(last_id, "antiga");
+        assert_eq!(since, now - chrono::Duration::minutes(1));
+        assert!(!store.can_load_older("geral"));
+
+        let mut older = wire_message("mais-antiga", "geral", "mais antiga");
+        older.created_at = now - chrono::Duration::minutes(2);
+        store.apply(Update::OlderMessages {
+            channel_id: "geral".to_owned(),
+            messages: vec![older],
+            has_more: false,
+        });
+
+        let ids: Vec<_> = store
+            .messages_in("geral")
+            .map(|message| message.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["mais-antiga", "antiga", "nova"]);
+        assert!(!store.can_load_older("geral"));
     }
 
     #[test]
