@@ -765,9 +765,15 @@ impl PapoApp {
             options.input_options.max_click_duration = 0.5;
         });
 
+        #[cfg(target_os = "android")]
         let glass = cc.gl.as_ref().and_then(|gl| GlassRenderer::new(gl));
+        #[cfg(not(target_os = "android"))]
+        let glass = cc
+            .wgpu_render_state
+            .as_ref()
+            .and_then(GlassRenderer::new);
         if glass.is_none() {
-            log::warn!("sem backend glow: o vidro fosco fica desligado");
+            log::warn!("renderer sem suporte ao compositor de vidro; efeito desativado");
         }
 
         // Um banco de cache por processo. Abrir aqui deixa o restore
@@ -3640,11 +3646,14 @@ impl eframe::App for PapoApp {
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         self.flush_all_drafts();
         self.ui.webembed.destroy_active();
+        #[cfg(target_os = "android")]
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
         {
             glass.destroy(gl);
         }
+        #[cfg(not(target_os = "android"))]
+        let _ = gl;
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
