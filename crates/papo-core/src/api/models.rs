@@ -87,8 +87,16 @@ pub struct Channel {
     #[serde(default)]
     pub position: i32,
     pub topic: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<ChannelPermissionEntry>,
+    #[serde(default = "default_channel_notification_setting")]
+    pub notification_settings: String,
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
+}
+
+fn default_channel_notification_setting() -> String {
+    "only_mentions".to_owned()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,6 +187,42 @@ pub struct BanUserRequest {
 pub struct ChangeChannelPositionRequest {
     pub old_position: i32,
     pub new_position: i32,
+}
+
+/// Permissões de uma role dentro de um canal. O backend usa o conjunto
+/// vazio do canal como "aberto"; quando há overrides, uma role precisa
+/// conceder explicitamente a capacidade correspondente.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelPermissions {
+    #[serde(default)]
+    pub read_channel: bool,
+    #[serde(default)]
+    pub send_messages: bool,
+    #[serde(default)]
+    pub delete_messages: bool,
+    #[serde(default)]
+    pub connect_voice: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChannelPermissionEntry {
+    pub role_id: String,
+    #[serde(default)]
+    pub role_name: String,
+    #[serde(default)]
+    pub permissions: ChannelPermissions,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ChannelPermissionsResponse {
+    pub channel_id: String,
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub permissions: Vec<ChannelPermissionEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateChannelPermissionsRequest {
+    pub permissions: ChannelPermissions,
 }
 
 /// `off`, `only_mentions` ou `all`. Sem linha no banco vale `only_mentions`.

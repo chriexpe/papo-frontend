@@ -48,11 +48,37 @@ pub enum AppPane {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerPane {
+    Overview,
     General,
     Channels,
     Roles,
     Emojis,
     Audit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelNotifyMode {
+    All,
+    Mentions,
+    Off,
+}
+
+impl ChannelNotifyMode {
+    fn parse(value: &str) -> Self {
+        match value {
+            "all" => Self::All,
+            "off" => Self::Off,
+            _ => Self::Mentions,
+        }
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Mentions => "only_mentions",
+            Self::Off => "off",
+        }
+    }
 }
 
 impl AppPane {
@@ -80,7 +106,8 @@ impl AppPane {
 }
 
 impl ServerPane {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
+        Self::Overview,
         Self::General,
         Self::Channels,
         Self::Roles,
@@ -92,6 +119,7 @@ impl ServerPane {
     /// do painel, na legenda da seção.
     fn title(self, s: &Strings) -> &'static str {
         match self {
+            Self::Overview => s.pane_overview,
             Self::General => s.pane_identity,
             Self::Channels => s.pane_channels,
             Self::Roles => s.roles,
@@ -125,7 +153,7 @@ impl Default for SettingsState {
             modal_above: false,
             opened_by_click: false,
             app_pane: AppPane::Account,
-            server_pane: ServerPane::General,
+            server_pane: ServerPane::Overview,
             draft: Draft::default(),
         }
     }
@@ -148,6 +176,14 @@ pub struct ChannelDraft {
     pub topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     pub kind: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ChannelPermissionDraft {
+    pub channel_id: String,
+    pub role_id: String,
+    pub role_name: String,
+    pub permissions: crate::api::models::ChannelPermissions,
 }
 
 impl ChannelDraft {
@@ -190,6 +226,8 @@ pub struct Draft {
     pub server_password: String,
     /// Criação/edição de canal acontece dentro da própria folha.
     pub channel: Option<ChannelDraft>,
+    /// Override por cargo sendo editado no canal aberto.
+    pub channel_permission: Option<ChannelPermissionDraft>,
     /// Canal a apagar: id, nome esperado e o que foi digitado. A confirmação
     /// é por cópia do nome — apagar um canal leva junto tudo que foi dito
     /// nele, e um clique só é barato demais para isso.
@@ -203,6 +241,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = Some(ChannelDraft::create());
+        self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
 
@@ -210,6 +249,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = Some(ChannelDraft::edit(channel));
+        self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
 
@@ -217,6 +257,7 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.draft.channel = None;
+        self.draft.channel_permission = None;
         self.draft.deleting = Some((
             channel.id.clone(),
             channel.name.clone(),
@@ -231,6 +272,41 @@ impl SettingsState {
         self.app_pane = AppPane::Account;
         self.draft.loaded_account = false;
         self.opened_by_click = true;
+    }
+
+    /// Visão do servidor disponível a qualquer membro.
+    pub fn open_server_overview(&mut self) {
+        if self.open == Some(Surface::Server) && self.server_pane == ServerPane::Overview {
+            self.open = None;
+            return;
+        }
+        self.open = Some(Surface::Server);
+        self.server_pane = ServerPane::Overview;
+        self.opened_by_click = true;
+    }
+
+    /// Abre a primeira área administrativa que esta conta pode gerir.
+    pub fn open_server_admin(&mut self, store: &Store) -> bool {
+        let pane = if store.can_manage_server() {
+            ServerPane::General
+        } else if store.can_manage_channels() {
+            ServerPane::Channels
+        } else if store.can_manage_roles() {
+            ServerPane::Roles
+        } else {
+            return false;
+        };
+
+        if self.open == Some(Surface::Server) && self.server_pane != ServerPane::Overview {
+            self.open = None;
+            return false;
+        }
+        self.open = Some(Surface::Server);
+        self.server_pane = pane;
+        self.draft.loaded_server = false;
+        self.draft.loaded_audit = false;
+        self.opened_by_click = true;
+        true
     }
 
     /// Abre a folha na superfície pedida, ou fecha se ela já era a aberta.
@@ -921,6 +997,8 @@ pub enum SettingsAction {
 /// Tudo que a folha precisa do resto do programa.
 pub struct Context<'a> {
     pub store: &'a Store,
+    /// Endpoint local deste workspace; não é uma propriedade administrativa.
+    pub server_url: &'a str,
     /// As figurinhas viram textura pelo mesmo caminho da conversa.
     pub media: &'a mut crate::media::MediaStore,
     pub roles: &'a mut super::roles::RolesState,
@@ -961,6 +1039,9 @@ pub fn sheet(
     let Some(surface) = state.open else {
         return actions;
     };
+    if surface == Surface::Server && !server_pane_allowed(data.store, state.server_pane) {
+        state.server_pane = ServerPane::Overview;
+    }
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
     // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
@@ -1021,7 +1102,7 @@ pub fn sheet(
 
             let rail_rect =
                 Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
-            rail(ui, state, t, s, rail_rect, surface);
+            rail(ui, state, data.store, t, s, rail_rect, surface);
             ui.painter().line_segment(
                 [
                     egui::pos2(rail_rect.max.x, body.min.y + space::SM),
@@ -1088,6 +1169,7 @@ fn header(
         egui::Align2::LEFT_CENTER,
         match surface {
             Surface::App => s.settings,
+            Surface::Server if state.server_pane == ServerPane::Overview => s.server,
             Surface::Server => s.server_settings,
         },
         text::title3(),
@@ -1099,6 +1181,7 @@ fn header(
         .layout_no_wrap(
             match surface {
                 Surface::App => s.settings.to_owned(),
+                Surface::Server if state.server_pane == ServerPane::Overview => s.server.to_owned(),
                 Surface::Server => s.server_settings.to_owned(),
             },
             text::title3(),
@@ -1146,6 +1229,7 @@ fn header(
 fn rail(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
+    store: &Store,
     t: &Tokens,
     s: &Strings,
     rect: Rect,
@@ -1198,6 +1282,9 @@ fn rail(
                 }
                 Surface::Server => {
                     for pane in ServerPane::ALL {
+                        if !server_pane_allowed(store, pane) {
+                            continue;
+                        }
                         if entry(ui, pane.title(s), state.server_pane == pane) {
                             state.server_pane = pane;
                         }
@@ -1716,6 +1803,15 @@ fn app_pane(
 // Painéis do servidor
 // ---------------------------------------------------------------------------
 
+fn server_pane_allowed(store: &Store, pane: ServerPane) -> bool {
+    match pane {
+        ServerPane::Overview => true,
+        ServerPane::General | ServerPane::Emojis | ServerPane::Audit => store.can_manage_server(),
+        ServerPane::Channels => store.can_manage_channels(),
+        ServerPane::Roles => store.can_manage_roles(),
+    }
+}
+
 fn server_pane(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
@@ -1729,6 +1825,65 @@ fn server_pane(
     use super::shell::ChatAction;
 
     match state.server_pane {
+        ServerPane::Overview => {
+            section(ui, t, s.server);
+            group(ui, t, |rows| {
+                rows.row(s.server_address, None, |ui, t| {
+                    ui.label(
+                        RichText::new(data.server_url)
+                            .font(text::callout())
+                            .color(t.label_secondary),
+                    );
+                });
+                rows.row(s.members, None, |ui, t| {
+                    ui.label(
+                        RichText::new(data.store.members.len().to_string())
+                            .font(text::callout())
+                            .color(t.label_secondary),
+                    );
+                });
+            });
+
+            section(ui, t, s.channel_notifications);
+            let channels: Vec<_> = data
+                .store
+                .channels
+                .iter()
+                .filter(|channel| channel.kind != crate::state::ChannelKind::Category)
+                .map(|channel| {
+                    (
+                        channel.id.clone(),
+                        channel.name.clone(),
+                        channel.notification_settings.clone(),
+                    )
+                })
+                .collect();
+            group(ui, t, |rows| {
+                if channels.is_empty() {
+                    rows.row(s.no_channels_yet, None, |_, _| {});
+                }
+                for (channel_id, channel_name, setting) in &channels {
+                    let mut mode = ChannelNotifyMode::parse(setting);
+                    rows.row(channel_name, None, |ui, t| {
+                        if segmented(
+                            ui,
+                            t,
+                            &mut mode,
+                            &[
+                                (ChannelNotifyMode::All, s.notify_all),
+                                (ChannelNotifyMode::Mentions, s.notify_mentions),
+                                (ChannelNotifyMode::Off, s.notify_off),
+                            ],
+                        ) {
+                            actions.push(SettingsAction::Chat(ChatAction::ChannelNotifications {
+                                channel_id: channel_id.clone(),
+                                setting: mode.wire(),
+                            }));
+                        }
+                    });
+                }
+            });
+        }
         ServerPane::General => {
             if !state.draft.loaded_server {
                 state.draft.loaded_server = true;
@@ -1922,6 +2077,121 @@ fn server_pane(
                 ui.add_space(space::LG);
             }
 
+            // Overrides por cargo pertencem ao canal existente. Canal recém-criado
+            // só ganha regras depois que o backend lhe deu um id.
+            if let Some((channel_id, channel_kind)) = draft
+                .channel
+                .as_ref()
+                .and_then(|editor| editor.id.clone().map(|id| (id, editor.kind.clone())))
+                && let Some(channel) = channels.iter().find(|channel| channel.id == channel_id)
+            {
+                    section(ui, t, s.channel_permissions);
+
+                    if channel.permissions.is_empty() {
+                        group(ui, t, |rows| {
+                            rows.row(
+                                s.channel_permissions_open,
+                                Some(s.channel_permissions_open_hint),
+                                |_, _| {},
+                            );
+                        });
+                        ui.add_space(space::SM);
+                    }
+
+                    if let Some(permission) = draft
+                        .channel_permission
+                        .as_mut()
+                        .filter(|permission| permission.channel_id == channel_id)
+                    {
+                        group(ui, t, |rows| {
+                            rows.row(&permission.role_name, None, |_, _| {});
+                            rows.row(s.perm_read_channel, None, |ui, t| {
+                                switch(ui, t, &mut permission.permissions.read_channel);
+                            });
+                            if channel_kind == "text" {
+                                rows.row(s.perm_send_messages, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.send_messages);
+                                });
+                                rows.row(s.perm_delete_messages, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.delete_messages);
+                                });
+                            }
+                            if channel_kind == "voice" {
+                                rows.row(s.perm_connect_voice, None, |ui, t| {
+                                    switch(ui, t, &mut permission.permissions.connect_voice);
+                                });
+                            }
+                        });
+                        ui.add_space(space::SM);
+                        let mut cancel_permission = false;
+                        let mut save_permission = None;
+                        actions_row(ui, |ui| {
+                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
+                                cancel_permission = true;
+                            }
+                            if row_button(ui, t, s.save, Emphasis::Primary) {
+                                save_permission = Some((
+                                    permission.channel_id.clone(),
+                                    permission.role_id.clone(),
+                                    permission.permissions,
+                                ));
+                            }
+                        });
+                        if cancel_permission {
+                            draft.channel_permission = None;
+                        }
+                        if let Some((channel_id, role_id, permissions)) = save_permission {
+                            actions.push(SettingsAction::Chat(
+                                ChatAction::SetChannelPermissions {
+                                    channel_id,
+                                    role_id,
+                                    permissions,
+                                },
+                            ));
+                            draft.channel_permission = None;
+                        }
+                    } else {
+                        group(ui, t, |rows| {
+                            for entry in &channel.permissions {
+                                rows.row(&entry.role_name, None, |ui, t| {
+                                    if row_button(ui, t, s.edit, Emphasis::Quiet) {
+                                        draft.channel_permission = Some(ChannelPermissionDraft {
+                                            channel_id: channel_id.clone(),
+                                            role_id: entry.role_id.clone(),
+                                            role_name: entry.role_name.clone(),
+                                            permissions: entry.permissions,
+                                        });
+                                    }
+                                });
+                            }
+
+                            for role in data.store.roles.iter().filter(|role| {
+                                !channel
+                                    .permissions
+                                    .iter()
+                                    .any(|entry| entry.role_id == role.id)
+                            }) {
+                                rows.row(&role.name, None, |ui, t| {
+                                    if row_button(
+                                        ui,
+                                        t,
+                                        s.channel_permission_add_role,
+                                        Emphasis::Quiet,
+                                    ) {
+                                        draft.channel_permission = Some(ChannelPermissionDraft {
+                                            channel_id: channel_id.clone(),
+                                            role_id: role.id.clone(),
+                                            role_name: role.name.clone(),
+                                            permissions: Default::default(),
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    ui.add_space(space::LG);
+            }
+
             group(ui, t, |rows| {
                 if channels.is_empty() {
                     rows.row(s.no_channels_yet, None, |_, _| {});
@@ -1965,7 +2235,10 @@ fn server_pane(
                         }
                         if row_button(ui, t, s.edit, Emphasis::Quiet) {
                             draft.deleting = None;
-                            draft.channel = Some(ChannelDraft::edit(channel));
+                            draft.channel_permission = None;
+                            actions.push(SettingsAction::Chat(ChatAction::EditChannel(
+                                channel.id.clone(),
+                            )));
                         }
                         if index + 1 < channels.len()
                             && row_icon(ui, t, egui_phosphor::regular::ARROW_DOWN, s.move_down)
@@ -1991,6 +2264,7 @@ fn server_pane(
 
             if close_editor {
                 draft.channel = None;
+                draft.channel_permission = None;
             }
             if cancel_delete {
                 draft.deleting = None;
@@ -2004,6 +2278,7 @@ fn server_pane(
             actions_row(ui, |ui| {
                 if row_button(ui, t, s.create_channel, Emphasis::Primary) {
                     draft.deleting = None;
+                    draft.channel_permission = None;
                     draft.channel = Some(ChannelDraft::create());
                 }
             });

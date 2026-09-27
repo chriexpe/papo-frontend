@@ -53,6 +53,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
     store.server = Some(Server {
         name: "Papo".into(),
         description: Some("demonstração".into()),
+        owner_id: Some("u-eu".into()),
         icon: None,
     });
 
@@ -75,6 +76,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             kind: ChannelKind::Voice,
             topic: None,
             position: 4,
+            permissions: Vec::new(),
+            notification_settings: "only_mentions".into(),
             unread: false,
             mentions: 0,
         },
@@ -586,6 +589,8 @@ fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
         kind: ChannelKind::Text,
         topic: Some(topic.into()),
         position,
+        permissions: Vec::new(),
+        notification_settings: "only_mentions".into(),
         unread: false,
         mentions: 0,
     }

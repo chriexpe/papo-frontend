@@ -39,6 +39,11 @@ pub struct Channel {
     pub kind: ChannelKind,
     pub topic: Option<String>,
     pub position: i32,
+    /// Overrides por cargo. Vetor vazio significa canal sem restrição
+    /// específica no backend.
+    pub permissions: Vec<models::ChannelPermissionEntry>,
+    /// Preferência deste usuário neste canal: off, only_mentions ou all.
+    pub notification_settings: String,
     /// Chegou coisa nova desde a última vez que o canal foi visto.
     pub unread: bool,
     /// Quantas dessas citam você.
@@ -204,6 +209,8 @@ impl Message {
 pub struct Server {
     pub name: String,
     pub description: Option<String>,
+    /// Dono do servidor; o backend concede a ele capacidades administrativas.
+    pub owner_id: Option<String>,
     /// Ícone em base64, como o servidor entrega. Não vai para o cache em
     /// disco: chega de novo na carga inicial.
     pub icon: Option<String>,
@@ -713,6 +720,7 @@ impl Store {
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
+                owner_id: snapshot.owner_user_id.clone(),
                 icon: None,
             });
         }
@@ -726,6 +734,8 @@ impl Store {
                 kind: ChannelKind::parse(&channel.kind),
                 topic: channel.topic,
                 position: channel.position,
+                permissions: Vec::new(),
+                notification_settings: "only_mentions".to_owned(),
                 unread: channel.unread,
                 mentions: channel.mentions,
             })
@@ -1324,6 +1334,52 @@ impl Store {
         )
     }
 
+    /// Permissões globais acumuladas dos cargos do usuário atual.
+    pub fn my_role_permissions(&self) -> models::RolePermissions {
+        let Some(me) = self.member(&self.me) else {
+            return models::RolePermissions::default();
+        };
+        let mut combined = models::RolePermissions::default();
+        for role in self
+            .roles
+            .iter()
+            .filter(|role| me.roles.iter().any(|role_id| role_id == &role.id))
+        {
+            let p = role.permissions;
+            combined.manage_server |= p.manage_server;
+            combined.manage_channels |= p.manage_channels;
+            combined.manage_roles |= p.manage_roles;
+            combined.ban_members |= p.ban_members;
+            combined.pin_message |= p.pin_message;
+            combined.everyone_message |= p.everyone_message;
+            combined.send_attachment |= p.send_attachment;
+        }
+        combined
+    }
+
+    pub fn is_server_owner(&self) -> bool {
+        self.server
+            .as_ref()
+            .and_then(|server| server.owner_id.as_deref())
+            .is_some_and(|owner| owner == self.me)
+    }
+
+    pub fn can_manage_server(&self) -> bool {
+        self.is_server_owner() || self.my_role_permissions().manage_server
+    }
+
+    pub fn can_manage_channels(&self) -> bool {
+        self.is_server_owner() || self.my_role_permissions().manage_channels
+    }
+
+    pub fn can_manage_roles(&self) -> bool {
+        self.is_server_owner() || self.my_role_permissions().manage_roles
+    }
+
+    pub fn can_open_server_admin(&self) -> bool {
+        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles()
+    }
+
     // -- Atualizações ------------------------------------------------------
 
     /// Aplica uma atualização vinda da rede.
@@ -1381,6 +1437,7 @@ impl Store {
                         .owner_username
                         .clone()
                         .map(|owner| format!("de {owner}")),
+                    owner_id: server.owner_id.clone(),
                     icon: server.icon_blob.clone().filter(|blob| !blob.is_empty()),
                 });
                 self.busy = false;
@@ -1425,6 +1482,8 @@ impl Store {
                             kind: ChannelKind::parse(&channel.kind),
                             topic: channel.topic,
                             position: channel.position,
+                            permissions: channel.permissions,
+                            notification_settings: channel.notification_settings,
                             mentions,
                         }
                     })
@@ -1455,6 +1514,19 @@ impl Store {
             }
             Update::Roles(roles) => {
                 self.roles = roles;
+                self.busy = false;
+            }
+            Update::ChannelPermissions {
+                channel_id,
+                permissions,
+            } => {
+                if let Some(channel) = self
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.permissions = permissions;
+                }
                 self.busy = false;
             }
             // Perfis completam a listagem leve de usuários e também são o
@@ -2008,6 +2080,8 @@ impl Store {
                     kind: ChannelKind::parse(&kind),
                     topic,
                     position,
+                    permissions: Vec::new(),
+                    notification_settings: "only_mentions".to_owned(),
                     unread: false,
                     mentions: 0,
                 });
@@ -2963,6 +3037,8 @@ mod tests {
                 kind: ChannelKind::Text,
                 topic: None,
                 position: 0,
+                permissions: Vec::new(),
+                notification_settings: "only_mentions".to_owned(),
                 unread: false,
                 mentions: 0,
             },
@@ -2972,6 +3048,8 @@ mod tests {
                 kind: ChannelKind::Text,
                 topic: None,
                 position: 1,
+                permissions: Vec::new(),
+                notification_settings: "only_mentions".to_owned(),
                 unread: false,
                 mentions: 0,
             },
