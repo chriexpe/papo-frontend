@@ -252,6 +252,34 @@ pub fn text_fit(
     job.wrap.overflow_character = Some('…');
     let galley = painter.layout_job(job);
     let rect = align.anchor_size(pos, galley.size());
+    let elided = galley.elided;
     painter.galley(rect.min, galley, color);
+    // Cortou? Parar o ponteiro em cima mostra o texto inteiro, como uma
+    // dica de ferramenta.
+    if elided {
+        let ctx = painter.ctx();
+        let resting = ctx.input(|input| {
+            input.pointer.hover_pos().is_some_and(|pointer| rect.contains(pointer))
+                && input.pointer.time_since_last_movement() > 0.4
+        });
+        let on_top = ctx
+            .pointer_hover_pos()
+            .and_then(|pointer| ctx.layer_id_at(pointer))
+            .is_none_or(|layer| layer == painter.layer_id());
+        if resting && on_top {
+            egui::containers::Tooltip::always_open(
+                ctx.clone(),
+                painter.layer_id(),
+                egui::Id::new(("texto-inteiro", text)),
+                rect,
+            )
+            .show(|ui| {
+                ui.label(text);
+            });
+        } else if ctx.input(|input| input.pointer.hover_pos().is_some_and(|pointer| rect.contains(pointer))) {
+            // Parado ainda não: pede outro quadro para a dica poder abrir.
+            ctx.request_repaint_after(std::time::Duration::from_millis(450));
+        }
+    }
     rect
 }

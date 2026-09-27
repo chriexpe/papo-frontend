@@ -396,6 +396,9 @@ const TILE_MID: u8 = 4;
 const TILE_INSET: f32 = space::LG + 2.0;
 
 fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
+    let top = ui.cursor().min.y;
+    let spot = Rect::from_min_size(egui::pos2(ui.max_rect().min.x, top), Vec2::new(ui.available_width(), 28.0));
+    spotlight(ui, spot, label);
     if tiles(ui) {
         // Legenda de grupo no celular: na cor de destaque, como nos
         // ajustes do sistema, e em caixa normal.
@@ -588,6 +591,7 @@ impl Rows<'_> {
             (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0).max(ROW_HEIGHT)
         };
         let (band_rect, inner) = self.band(height);
+        spotlight(self.ui, band_rect, label);
 
         let text_top = if stacked {
             inner.min.y + space::MD
@@ -652,6 +656,7 @@ impl Rows<'_> {
                 .map(|galley| space::XXS + galley.size().y)
                 .unwrap_or(0.0);
         let (rect, inner) = self.band((block + space::MD * 2.0).max(ROW_HEIGHT));
+        spotlight(self.ui, rect, label);
         let t = self.t;
         let response = self
             .ui
@@ -1347,6 +1352,93 @@ pub fn sheet(
 }
 
 // ---------------------------------------------------------------------------
+// Busca por ajuste
+// ---------------------------------------------------------------------------
+
+/// Cada ajuste que a busca encontra, com o painel onde ele mora. O rótulo é
+/// o mesmo da linha, que é como o destaque a reconhece ao chegar lá.
+fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
+    vec![
+        (AppPane::Account, s.nickname),
+        (AppPane::Account, s.status_message),
+        (AppPane::Account, s.description),
+        (AppPane::Account, s.typing_phrase),
+        (AppPane::Account, s.presence),
+        (AppPane::Account, s.new_password),
+        (AppPane::Account, s.change_password),
+        (AppPane::Account, s.sign_out),
+        (AppPane::Appearance, s.theme),
+        (AppPane::Appearance, s.translucency),
+        (AppPane::Appearance, s.topic_reveal),
+        (AppPane::Appearance, s.record_button),
+        (AppPane::Appearance, s.webembed_offscreen),
+        (AppPane::Appearance, s.webembed_scope),
+        (AppPane::Appearance, s.self_card),
+        (AppPane::Alerts, s.menu_notifications),
+        (AppPane::Alerts, s.reply_notifications_default),
+        (AppPane::Alerts, s.badge),
+        (AppPane::Alerts, s.menu_close_to_tray),
+        (AppPane::Alerts, s.start_at_login),
+        (AppPane::Files, s.downloads),
+        (AppPane::Files, s.download_folder),
+        (AppPane::Sessions, s.version),
+    ]
+}
+
+fn server_settings_index(s: &Strings) -> Vec<(ServerPane, &'static str)> {
+    vec![
+        (ServerPane::General, s.server_name),
+        (ServerPane::General, s.server_icon),
+        (ServerPane::General, s.server_public),
+        (ServerPane::General, s.server_password),
+        (ServerPane::Channels, s.channel_name),
+        (ServerPane::Channels, s.channel_topic),
+        (ServerPane::Channels, s.channel_permissions),
+        (ServerPane::Roles, s.role_permissions),
+        (ServerPane::Roles, s.role_color),
+        (ServerPane::Roles, s.role_members),
+        (ServerPane::Emojis, s.add_emoji),
+        (ServerPane::Emojis, s.server_emojis),
+        (ServerPane::Audit, s.audit_log),
+    ]
+}
+
+const FOCUS_KEY: &str = "ajustes-foco";
+const FOCUS_SECONDS: f64 = 1.6;
+
+/// Pede que a linha com este rótulo apareça e pisque ao abrir o painel.
+fn focus_setting(ctx: &egui::Context, label: &str) {
+    let now = ctx.input(|input| input.time);
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(FOCUS_KEY), (label.to_owned(), now)));
+}
+
+/// Chamado por cada linha: se é a procurada, rola até ela e acende por um
+/// instante, apagando aos poucos.
+fn spotlight(ui: &egui::Ui, rect: Rect, label: &str) {
+    let Some((wanted, since)) = ui.ctx().data(|data| data.get_temp::<(String, f64)>(egui::Id::new(FOCUS_KEY))) else {
+        return;
+    };
+    if label.is_empty() || wanted != label {
+        return;
+    }
+    let elapsed = ui.input(|input| input.time) - since;
+    if elapsed > FOCUS_SECONDS {
+        ui.ctx().data_mut(|data| data.remove::<(String, f64)>(egui::Id::new(FOCUS_KEY)));
+        return;
+    }
+    if elapsed < 0.3 {
+        ui.scroll_to_rect(rect, Some(Align::Center));
+    }
+    let fade = (1.0 - elapsed / FOCUS_SECONDS) as f32;
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(radius::FIELD),
+        ui.visuals().selection.bg_fill.gamma_multiply(0.6 * fade),
+    );
+    ui.ctx().request_repaint();
+}
+
+// ---------------------------------------------------------------------------
 // Prévias no topo dos painéis
 // ---------------------------------------------------------------------------
 
@@ -1739,9 +1831,19 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
 
     let mut open = None;
     if !state.mobile_query.trim().is_empty() {
-        let mut all = vec![(AppPane::Account, Entry { glyph: icon::USER, title: AppPane::Account.title(s), summary: s.sum_account.to_owned() })];
-        all.extend(rows);
-        open = filtered(ui, t, s, &state.mobile_query, &all);
+        // Painéis e ajustes soltos: o ajuste leva ao painel e acende.
+        let mut all: Vec<((AppPane, Option<&'static str>), Entry<'_>)> =
+            vec![((AppPane::Account, None), Entry { glyph: icon::USER, title: AppPane::Account.title(s), summary: s.sum_account.to_owned() })];
+        all.extend(rows.into_iter().map(|(pane, entry)| ((pane, None), entry)));
+        all.extend(app_settings_index(s).into_iter().map(|(pane, label)| {
+            ((pane, Some(label)), Entry { glyph: pane.glyph(), title: label, summary: pane.title(s).to_owned() })
+        }));
+        if let Some((pane, label)) = filtered(ui, t, s, &state.mobile_query, &all) {
+            if let Some(label) = label {
+                focus_setting(ui.ctx(), label);
+            }
+            open = Some(pane);
+        }
     } else {
         // Você no topo: a foto, o nome e o que fica em "Conta".
         let me = data.store.member(&data.store.me);
@@ -1806,7 +1908,22 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
 
     let mut open = None;
     if !state.mobile_query.trim().is_empty() {
-        open = filtered(ui, t, s, &state.mobile_query, &all);
+        let mut found: Vec<((ServerPane, Option<&'static str>), Entry<'_>)> = all
+            .iter()
+            .map(|(pane, entry)| ((*pane, None), Entry { glyph: entry.glyph, title: entry.title, summary: entry.summary.clone() }))
+            .collect();
+        found.extend(
+            server_settings_index(s)
+                .into_iter()
+                .filter(|(pane, _)| server_pane_allowed(store, *pane))
+                .map(|(pane, label)| ((pane, Some(label)), Entry { glyph: pane.glyph(), title: label, summary: pane.title(s).to_owned() })),
+        );
+        if let Some((pane, label)) = filtered(ui, t, s, &state.mobile_query, &found) {
+            if let Some(label) = label {
+                focus_setting(ui.ctx(), label);
+            }
+            open = Some(pane);
+        }
     } else {
         // O servidor no topo: ícone, nome, endereço e quantos são.
         let name = store.server.as_ref().map(|server| server.name.clone()).unwrap_or_default();
@@ -1992,38 +2109,81 @@ fn rail(
                     text::icon(14.0),
                     if active { t.accent } else { t.label_tertiary },
                 );
-                ui.painter().text(
+                crate::ui::widgets::text_fit(
+                    ui.painter(),
                     egui::pos2(slot.min.x + space::MD + 22.0, slot.center().y),
                     egui::Align2::LEFT_CENTER,
                     label,
                     if active { text::headline() } else { text::body() },
                     ink,
+                    slot.max.x - space::SM - (slot.min.x + space::MD + 22.0),
                 );
                 response.clicked()
             };
 
-            match surface {
-                Surface::App => {
-                    for pane in AppPane::ALL {
-                        if !shown(pane.title(s)) {
-                            continue;
+            // A coluna rola: com a busca, a lista de ajustes pode passar da
+            // altura da folha.
+            egui::ScrollArea::vertical()
+                .id_salt(("coluna-de-ajustes", surface == Surface::App))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                match surface {
+                    Surface::App => {
+                        for pane in AppPane::ALL {
+                            if !shown(pane.title(s)) {
+                                continue;
+                            }
+                            if entry(ui, pane.glyph(), pane.title(s), state.app_pane == pane) {
+                                state.app_pane = pane;
+                            }
                         }
-                        if entry(ui, pane.glyph(), pane.title(s), state.app_pane == pane) {
-                            state.app_pane = pane;
+                    }
+                    Surface::Server => {
+                        for pane in ServerPane::ALL {
+                            if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
+                                continue;
+                            }
+                            if entry(ui, pane.glyph(), pane.title(s), state.server_pane == pane) {
+                                state.server_pane = pane;
+                            }
                         }
                     }
                 }
-                Surface::Server => {
-                    for pane in ServerPane::ALL {
-                        if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
-                            continue;
-                        }
-                        if entry(ui, pane.glyph(), pane.title(s), state.server_pane == pane) {
-                            state.server_pane = pane;
+
+                // Com busca, os ajustes que casam aparecem embaixo dos painéis;
+                // clicar abre o painel e acende a linha.
+                if !query.is_empty() {
+                    let hits: Vec<(Option<AppPane>, Option<ServerPane>, &'static str, &'static str)> = match surface {
+                        Surface::App => app_settings_index(s)
+                            .into_iter()
+                            .filter(|(_, label)| shown(label))
+                            .map(|(pane, label)| (Some(pane), None, pane.glyph(), label))
+                            .collect(),
+                        Surface::Server => server_settings_index(s)
+                            .into_iter()
+                            .filter(|(pane, label)| server_pane_allowed(store, *pane) && shown(label))
+                            .map(|(pane, label)| (None, Some(pane), pane.glyph(), label))
+                            .collect(),
+                    };
+                    if !hits.is_empty() {
+                        ui.add_space(space::MD);
+                        ui.label(RichText::new(s.settings.to_uppercase()).font(text::caption()).color(t.label_tertiary));
+                        ui.add_space(space::XS);
+                    }
+                    for (app, server, glyph, label) in hits {
+                        if entry(ui, glyph, label, false) {
+                            if let Some(pane) = app {
+                                state.app_pane = pane;
+                            }
+                            if let Some(pane) = server {
+                                state.server_pane = pane;
+                            }
+                            focus_setting(ui.ctx(), label);
                         }
                     }
                 }
-            }
+            });
         },
     );
 }
