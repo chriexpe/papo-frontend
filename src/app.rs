@@ -582,11 +582,11 @@ pub struct PapoApp {
     tray: Option<Tray>,
     #[cfg(target_os = "linux")]
     launcher: Option<Launcher>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     updater: crate::platform::update::Updater,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     update_available: Option<crate::platform::update::Available>,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     update_status: Option<String>,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
     dialogs: Dialogs,
@@ -806,11 +806,11 @@ impl PapoApp {
             tray: Tray::spawn(cc.egui_ctx.clone(), tray_labels(&settings)),
             #[cfg(target_os = "linux")]
             launcher: Launcher::spawn(),
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "android"))]
             updater: crate::platform::update::Updater::new(),
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "android"))]
             update_available: None,
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "android"))]
             update_status: None,
             dialogs: Dialogs::default(),
             focused: true,
@@ -1026,7 +1026,7 @@ impl PapoApp {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     fn pump_updater(&mut self, ctx: &egui::Context) {
         use crate::platform::update::Event;
 
@@ -1067,7 +1067,7 @@ impl PapoApp {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     fn update_prompt(&mut self, ctx: &egui::Context) {
         let Some(release) = self.update_available.clone() else {
             return;
@@ -1094,9 +1094,25 @@ impl PapoApp {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button(s.update_now).clicked() {
-                        self.update_status = Some(s.update_downloading.to_owned());
-                        self.updater.download(release.clone());
-                        keep = false;
+                        #[cfg(target_os = "android")]
+                        if !crate::platform::update::can_install_packages() {
+                            crate::platform::update::request_install_permission();
+                            self.update_status = Some(
+                                "Permita que o Papo instale atualizações e tente novamente."
+                                    .to_owned(),
+                            );
+                        } else {
+                            self.update_status = Some(s.update_downloading.to_owned());
+                            self.updater.download(release.clone());
+                            keep = false;
+                        }
+
+                        #[cfg(target_os = "windows")]
+                        {
+                            self.update_status = Some(s.update_downloading.to_owned());
+                            self.updater.download(release.clone());
+                            keep = false;
+                        }
                     }
                     if ui.button(s.update_later).clicked() {
                         keep = false;
@@ -2467,8 +2483,10 @@ impl PapoApp {
                 },
                 diagnostics: &diagnostics,
                 preview: preview_diagnostics,
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "windows", target_os = "android"))]
                 update_status: self.update_status.as_deref(),
+                #[cfg(any(target_os = "windows", target_os = "android"))]
+                update_enabled: self.updater.enabled(),
             };
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
@@ -2518,7 +2536,7 @@ impl PapoApp {
                     };
                     self.dialogs.pick_folder(ctx.clone(), start);
                 }
-                #[cfg(target_os = "windows")]
+                #[cfg(any(target_os = "windows", target_os = "android"))]
                 SettingsAction::CheckUpdates => {
                     self.update_status = Some(self.settings.lang.strings().update_checking.to_owned());
                     self.updater.check();
@@ -2717,7 +2735,7 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "android"))]
         self.pump_updater(&ctx);
 
         #[cfg(target_os = "android")]
@@ -2946,7 +2964,7 @@ impl eframe::App for PapoApp {
             }
         }
         self.settings_sheet(&ctx);
-        #[cfg(target_os = "windows")]
+        #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
         self.pump_files(&ctx);
 
