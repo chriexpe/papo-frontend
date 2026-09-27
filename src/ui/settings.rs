@@ -158,16 +158,6 @@ impl Default for SettingsState {
     }
 }
 
-/// Figurinha já escolhida e encolhida, à espera de um nome.
-#[derive(Clone, Debug)]
-pub struct PendingSticker {
-    pub blob: String,
-    pub format: String,
-    /// Precisou ser reduzida para caber no limite do servidor.
-    pub shrunk: bool,
-    pub name: String,
-}
-
 #[derive(Clone, Debug)]
 pub struct ChannelDraft {
     pub id: Option<String>,
@@ -231,7 +221,6 @@ pub struct Draft {
     /// é por cópia do nome — apagar um canal leva junto tudo que foi dito
     /// nele, e um clique só é barato demais para isso.
     pub deleting: Option<(String, String, String)>,
-    pub pending_sticker: Option<PendingSticker>,
     pub loaded_audit: bool,
 }
 
@@ -338,8 +327,6 @@ const CONTROL_COLUMN: f32 = 190.0;
 /// Linhas que mostram figurinha: a arte e a altura que ela pede.
 const STICKER_SIDE: f32 = 28.0;
 const STICKER_ROW_H: f32 = 44.0;
-const PREVIEW_SIDE: f32 = 72.0;
-const PREVIEW_H: f32 = 88.0;
 /// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
 const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
@@ -619,56 +606,6 @@ impl Rows<'_> {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| control(ui, &t),
         );
-    }
-
-    /// Figurinha grande, para conferir antes de dar nome a ela.
-    fn preview(
-        &mut self,
-        label: &str,
-        note: Option<&str>,
-        media: &mut crate::media::MediaStore,
-        id: &str,
-        blob: Option<&str>,
-    ) {
-        let (rect, inner) = self.band(PREVIEW_H);
-        let t = self.t;
-        let ctx = self.ui.ctx().clone();
-        let texture = media
-            .emoji(id, blob)
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|handle| handle.id());
-        let painter = self.ui.painter();
-        let middle = rect.center().y;
-        match note {
-            None => painter.text(
-                egui::pos2(inner.min.x, middle),
-                egui::Align2::LEFT_CENTER,
-                label,
-                text::body(),
-                t.label,
-            ),
-            Some(note) => {
-                painter.text(
-                    egui::pos2(inner.min.x, middle - 9.0),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    text::body(),
-                    t.label,
-                );
-                painter.text(
-                    egui::pos2(inner.min.x, middle + 9.0),
-                    egui::Align2::LEFT_CENTER,
-                    note,
-                    text::footnote(),
-                    t.label_tertiary,
-                )
-            }
-        };
-        let art = Rect::from_center_size(
-            egui::pos2(inner.max.x - PREVIEW_SIDE / 2.0, middle),
-            Vec2::splat(PREVIEW_SIDE),
-        );
-        draw_sticker(self.ui, &t, art, texture);
     }
 
     /// Linha com um campo de texto ocupando a direita.
@@ -2347,52 +2284,14 @@ fn server_pane(
         }
 
         ServerPane::Emojis => {
-            // Escolher o arquivo vem primeiro: dá para ver o que se está
-            // nomeando, em vez de nomear no escuro e só então abrir o
-            // seletor.
-            if let Some(pending) = state.draft.pending_sticker.as_mut() {
-                section(ui, t, s.sticker_new);
-                let ready = !pending.name.trim().is_empty();
-                let mut submit = false;
-                let mut discard = false;
-                group(ui, t, |rows| {
-                    rows.preview(
-                        s.sticker_preview,
-                        pending.shrunk.then_some(s.sticker_shrunk),
-                        data.media,
-                        "pendente",
-                        Some(pending.blob.as_str()),
-                    );
-                    submit = rows.field(s.emoji_name, &mut pending.name, 32, false) && ready;
-                });
-                ui.add_space(space::SM);
-                actions_row(ui, |ui| {
-                    if row_button(ui, t, s.save, Emphasis::Primary) && ready {
-                        submit = true;
-                    }
-                    if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                        discard = true;
-                    }
-                });
-                if submit {
-                    actions.push(SettingsAction::Admin(AdminAction::CreateSticker {
-                        name: pending.name.trim().to_owned(),
-                        blob: pending.blob.clone(),
-                        format: pending.format.clone(),
-                    }));
-                    discard = true;
+            // Escolher o arquivo abre o editor: recorte, prévia na conversa
+            // e o nome, tudo num lugar só; Salvar já sobe.
+            section(ui, t, s.sticker_new);
+            group(ui, t, |rows| {
+                if rows.action(s.add_emoji, Some(s.sticker_hint), false) {
+                    actions.push(SettingsAction::Admin(AdminAction::PickSticker));
                 }
-                if discard {
-                    state.draft.pending_sticker = None;
-                }
-            } else {
-                section(ui, t, s.sticker_new);
-                group(ui, t, |rows| {
-                    if rows.action(s.add_emoji, Some(s.sticker_hint), false) {
-                        actions.push(SettingsAction::Admin(AdminAction::PickSticker));
-                    }
-                });
-            }
+            });
 
             section(ui, t, s.server_emojis);
             let stickers: Vec<(String, String, Option<String>)> = data

@@ -2378,9 +2378,10 @@ impl PapoApp {
                     name,
                     size,
                     preview,
+                    frames,
                 } => {
                     self.crop = Some(crate::ui::crop::CropEditor::new(
-                        ctx, purpose, path, name, size, preview,
+                        ctx, purpose, path, name, size, preview, frames,
                     ));
                 }
                 Chosen::Unreadable => {
@@ -2391,7 +2392,8 @@ impl PapoApp {
                     purpose,
                     blob,
                     format,
-                    shrunk,
+                    shrunk: _,
+                    name,
                 } => match purpose {
                     ImagePick::Avatar => {
                         self.workspaces[self.active].runtime
@@ -2422,18 +2424,14 @@ impl PapoApp {
                             },
                         )));
                     }
-                    // A figurinha espera pelo nome: ela aparece no painel com
-                    // um campo ao lado, e só então sobe.
+                    // O nome veio do editor: a figurinha sobe direto.
                     ImagePick::Sticker => {
-                        self.sheet.draft.pending_sticker =
-                            Some(crate::ui::settings::PendingSticker {
-                                blob,
-                                format,
-                                shrunk,
-                                name: String::new(),
-                            });
-                        self.sheet.open = Some(crate::ui::settings::Surface::Server);
-                        self.sheet.server_pane = crate::ui::settings::ServerPane::Emojis;
+                        if let Some(name) = name.filter(|name| !name.is_empty()) {
+                            self.workspaces[self.active]
+                                .runtime
+                                .net
+                                .send(Command::CreateEmoji { name, blob, format });
+                        }
                     }
                 },
                 Chosen::Cancelled => {}
@@ -2681,6 +2679,7 @@ impl PapoApp {
         let store = &self.workspaces[self.active].runtime.store;
         let me = store.member(&store.me);
         let face = crate::ui::crop::Face {
+            name: store.my_name.clone(),
             texture: self
                 .ui
                 .media
@@ -2695,10 +2694,10 @@ impl PapoApp {
         };
         let back = std::mem::take(&mut self.crop_back);
         match crate::ui::crop::draw(ctx, editor, &t, s, &face, back) {
-            Some(crate::ui::crop::CropOutcome::Save(crop)) => {
+            Some(crate::ui::crop::CropOutcome::Save(crop, name)) => {
                 let purpose = editor.purpose;
                 let path = editor.path.clone();
-                self.dialogs.prepare_crop(ctx.clone(), purpose, path, crop);
+                self.dialogs.prepare_crop(ctx.clone(), purpose, path, crop, name);
                 self.crop = None;
             }
             Some(crate::ui::crop::CropOutcome::Cancel) => self.crop = None,
