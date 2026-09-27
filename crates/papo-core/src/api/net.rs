@@ -443,11 +443,15 @@ pub enum Update {
         has_more: bool,
         append: bool,
     },
+    SearchFailed,
     ReactionDetails {
         message_id: String,
         reactions: Vec<crate::api::models::ReactionGroup>,
         has_more: bool,
         append: bool,
+    },
+    ReactionDetailsFailed {
+        message_id: String,
     },
     Roles(Vec<crate::api::models::Role>),
     ChannelPermissions {
@@ -2859,7 +2863,10 @@ async fn handle(
                         append,
                     },
                 ),
-                Err(error) => report(storage_key, updates, wake, error),
+                Err(error) => {
+                    publish(updates, wake, Update::SearchFailed);
+                    report(storage_key, updates, wake, error);
+                }
             }
         }
         Command::LoadReactionDetails {
@@ -2883,7 +2890,16 @@ async fn handle(
                         append,
                     },
                 ),
-                Err(error) => report(storage_key, updates, wake, error),
+                Err(error) => {
+                    publish(
+                        updates,
+                        wake,
+                        Update::ReactionDetailsFailed {
+                            message_id: message_id.clone(),
+                        },
+                    );
+                    report(storage_key, updates, wake, error);
+                }
             }
         }
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
