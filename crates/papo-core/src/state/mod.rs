@@ -3957,6 +3957,76 @@ mod tests {
     }
 
     #[test]
+    fn busca_paginada_anexa_sem_duplicar() {
+        let mut store = Store::default();
+        let at = Utc::now();
+        let result = |id: &str| models::SearchResult {
+            kind: "message".to_owned(),
+            id: id.to_owned(),
+            content: id.to_owned(),
+            channel_id: "geral".to_owned(),
+            channel_name: "Geral".to_owned(),
+            author_id: Some("u1".to_owned()),
+            author_username: Some("ana".to_owned()),
+            created_at: Some(at),
+        };
+
+        store.apply(Update::SearchResults {
+            results: vec![result("a"), result("b")],
+            has_more: true,
+            append: false,
+        });
+        store.apply(Update::SearchResults {
+            results: vec![result("b"), result("c")],
+            has_more: false,
+            append: true,
+        });
+
+        let ids: Vec<_> = store.search_results.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+        assert!(!store.search_has_more);
+        assert!(!store.searching);
+    }
+
+    #[test]
+    fn detalhes_de_reacao_mesclam_paginas_e_cursor_pega_a_mais_antiga() {
+        let mut store = Store::default();
+        let now = Utc::now();
+        let group = |users: Vec<models::ReactionUser>| models::ReactionGroup {
+            emoji_id: None,
+            unicode: Some("👍".to_owned()),
+            count: users.len() as u32,
+            users,
+        };
+        let user = |id: &str, seconds: i64| models::ReactionUser {
+            id: id.to_owned(),
+            user_id: format!("user-{id}"),
+            created_at: now - chrono::Duration::seconds(seconds),
+        };
+
+        assert!(store.begin_reaction_details("m1"));
+        store.apply(Update::ReactionDetails {
+            message_id: "m1".to_owned(),
+            reactions: vec![group(vec![user("r1", 1), user("r2", 2)])],
+            has_more: true,
+            append: false,
+        });
+        store.apply(Update::ReactionDetails {
+            message_id: "m1".to_owned(),
+            reactions: vec![group(vec![user("r2", 2), user("r3", 3)])],
+            has_more: false,
+            append: true,
+        });
+
+        let users = &store.reaction_details["m1"][0].users;
+        assert_eq!(users.len(), 3);
+        let cursor = store.reaction_details_cursor("m1").expect("cursor");
+        assert_eq!(cursor.1, "r3");
+        assert!(!store.reaction_details_has_more["m1"]);
+        assert!(!store.reaction_details_loading.contains("m1"));
+    }
+
+    #[test]
     fn pagina_antiga_mescla_sem_substituir_e_fecha_no_fim() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
