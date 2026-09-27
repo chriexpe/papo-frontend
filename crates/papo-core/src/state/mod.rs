@@ -900,6 +900,10 @@ impl Store {
             && !self.history_loading.contains(channel_id)
     }
 
+    pub fn loading_older(&self, channel_id: &str) -> bool {
+        self.history_loading.contains(channel_id)
+    }
+
     /// Marca uma página antiga como em voo e devolve seu cursor.
     pub fn begin_load_older(
         &mut self,
