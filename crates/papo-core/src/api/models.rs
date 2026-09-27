@@ -71,11 +71,16 @@ impl Default for UserDisplay {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserConfig {
+    #[serde(default = "default_user_theme")]
     pub theme: String,
     #[serde(default)]
     pub notifications: UserNotifications,
     #[serde(default)]
     pub display: UserDisplay,
+}
+
+fn default_user_theme() -> String {
+    "system".to_owned()
 }
 
 impl Default for UserConfig {
