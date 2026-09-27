@@ -2855,9 +2855,8 @@ fn channel_pill(
 
     // A descrição acompanha o próprio conteúdo em vez de reservar o teto
     // inteiro. Só vira a altura antiga quando o texto realmente precisa dela.
-    let max_body = (area.height() - PILL_MARGIN * 2.0 - PILL_HEIGHT)
-        .min(PANEL_MAX_BODY)
-        .max(0.0);
+    let max_body =
+        (area.height() - PILL_MARGIN * 2.0 - PILL_HEIGHT).clamp(0.0, PANEL_MAX_BODY);
     let body_padding = space::SM * 2.0;
     let body_text_width = (width - body_padding).max(1.0);
     let topic_height = topic_text
