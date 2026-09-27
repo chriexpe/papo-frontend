@@ -659,6 +659,22 @@ impl Store {
         (out, bindings)
     }
 
+    pub fn begin_reaction_details(&mut self, message_id: &str) -> bool {
+        self.reaction_details_loading.insert(message_id.to_owned())
+    }
+
+    pub fn reaction_details_cursor(
+        &self,
+        message_id: &str,
+    ) -> Option<(DateTime<Utc>, String)> {
+        self.reaction_details
+            .get(message_id)?
+            .iter()
+            .flat_map(|group| group.users.iter())
+            .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+            .map(|user| (user.created_at, user.id.clone()))
+    }
+
     pub fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|message| message.id == id)
     }
@@ -1723,6 +1739,9 @@ impl Store {
                 self.busy = false;
             }
             Update::Done => self.busy = false,
+            Update::SearchFailed => {
+                self.searching = false;
+            }
             Update::SearchResults {
                 results,
                 has_more,
@@ -1739,6 +1758,9 @@ impl Store {
                 }
                 self.search_has_more = has_more;
                 self.searching = false;
+            }
+            Update::ReactionDetailsFailed { message_id } => {
+                self.reaction_details_loading.remove(&message_id);
             }
             Update::ReactionDetails {
                 message_id,
