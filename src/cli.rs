@@ -5,18 +5,18 @@ use papo::{APP_ID, api, app, media, platform, storage, voice};
 #[cfg(target_os = "windows")]
 fn windows_renderer() -> eframe::Renderer {
     match std::env::var("PAPO_RENDERER").as_deref() {
-        // WGPU remains an explicit compatibility escape hatch for machines
-        // where creating an OpenGL context is not possible. The in-app
-        // frosted-glass renderer is Glow-based, so this path intentionally
-        // does not provide blur.
-        Ok("wgpu") => {
-            log::warn!("PAPO_RENDERER=wgpu: vidro fosco fica desativado");
-            eframe::Renderer::Wgpu
-        }
-        Ok("glow") | Err(_) => eframe::Renderer::Glow,
+        // WGPU is the safe Windows default. Some otherwise supported Windows
+        // machines (including our self-contained smoke environment) expose
+        // only the legacy OpenGL 1.1 system driver; forcing Glow there makes
+        // egui_glow abort before the first frame because it requires GL 2.0+.
+        //
+        // Glow remains opt-in for development/testing on machines with a
+        // suitable OpenGL driver while the in-app blur still depends on it.
+        Ok("glow") => eframe::Renderer::Glow,
+        Ok("wgpu") | Err(_) => eframe::Renderer::Wgpu,
         Ok(other) => {
-            log::warn!("PAPO_RENDERER={other:?} desconhecido; usando glow");
-            eframe::Renderer::Glow
+            log::warn!("PAPO_RENDERER={other:?} desconhecido; usando wgpu");
+            eframe::Renderer::Wgpu
         }
     }
 }
