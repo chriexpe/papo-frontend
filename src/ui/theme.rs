@@ -379,6 +379,17 @@ fn load_system_faces(family: &str) -> Option<Vec<(&'static str, Vec<u8>)>> {
 
 /// `motion` é o fator de animação do sistema: 0 desliga as transições.
 pub fn apply(ctx: &egui::Context, t: &Tokens, translucent: bool, motion: f32) {
+    // Keep egui's own theme selector in lock-step with Papo's resolved
+    // appearance. Most of Papo is painted from Tokens directly, but stock
+    // widgets such as TextEdit and Popup start from Context::global_style().
+    // If egui stays on the OS light theme while Papo is dark (notably on
+    // Windows), those controls keep their white defaults inside a dark UI.
+    ctx.set_theme(if t.appearance.is_dark() {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
+
     let mut style = (*ctx.global_style()).clone();
 
     style.text_styles = [
