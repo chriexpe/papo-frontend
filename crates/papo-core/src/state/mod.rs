@@ -357,6 +357,8 @@ enum StoreMutation {
     ReplaceChannelSnapshot {
         channel_id: String,
         messages: Vec<Message>,
+        /// false means the backend returned only the newest window.
+        complete: bool,
     },
     ConfirmSent {
         local_id: String,
@@ -1083,29 +1085,74 @@ impl Store {
             StoreMutation::ReplaceChannelSnapshot {
                 channel_id,
                 messages,
+                complete,
             } => {
-                // O snapshot autoritativo substitui apenas estado confirmado
-                // pelo servidor. Ecos locais continuam sendo outra projeção.
-                self.messages
-                    .retain(|message| message.channel_id != channel_id || message.pending);
-                for message in messages {
-                    self.upsert_message(message);
+                let returned_ids: HashSet<String> =
+                    messages.iter().map(|message| message.id.clone()).collect();
+                let oldest_returned = messages
+                    .iter()
+                    .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|message| (message.at, message.id.clone()));
+
+                // A primeira página só é autoridade para a janela que ela
+                // cobre. Se há páginas anteriores, conserva o histórico local
+                // abaixo do cursor e converge apenas o head.
+                let mut deleted_ids = Vec::new();
+                if complete {
+                    deleted_ids.extend(
+                        self.messages
+                            .iter()
+                            .filter(|message| {
+                                message.channel_id == channel_id
+                                    && !message.pending
+                                    && !returned_ids.contains(&message.id)
+                            })
+                            .map(|message| message.id.clone()),
+                    );
+                    self.messages
+                        .retain(|message| message.channel_id != channel_id || message.pending);
+                } else if let Some((oldest_at, oldest_id)) = oldest_returned.as_ref() {
+                    self.messages.retain(|message| {
+                        if message.channel_id != channel_id || message.pending {
+                            return true;
+                        }
+                        let inside_authoritative_head = message.at > *oldest_at
+                            || (message.at == *oldest_at && message.id >= *oldest_id);
+                        let stale = inside_authoritative_head
+                            && !returned_ids.contains(&message.id);
+                        if stale {
+                            deleted_ids.push(message.id.clone());
+                        }
+                        !stale
+                    });
+                }
+
+                for message in &messages {
+                    self.upsert_message(message.clone());
                 }
                 self.sort_messages();
 
                 if source == MutationSource::Reconcile {
-                    let confirmed: Vec<CachedMessage> = self
-                        .messages
-                        .iter()
-                        .filter(|message| message.channel_id == channel_id && !message.pending)
-                        .map(CachedMessage::from_store)
-                        .collect();
-                    self.pending_cache
-                        .push(CacheOp::ReplaceChannelSnapshot {
+                    if complete {
+                        let confirmed: Vec<CachedMessage> = self
+                            .messages
+                            .iter()
+                            .filter(|message| message.channel_id == channel_id && !message.pending)
+                            .map(CachedMessage::from_store)
+                            .collect();
+                        self.pending_cache.push(CacheOp::ReplaceChannelSnapshot {
                             channel_id,
                             messages: confirmed,
                             cached_at: now_millis(),
                         });
+                    } else {
+                        self.pending_cache.push(CacheOp::MergeChannelHead {
+                            channel_id,
+                            messages: messages.iter().map(CachedMessage::from_store).collect(),
+                            deleted_ids,
+                            cached_at: now_millis(),
+                        });
+                    }
                 }
             }
             StoreMutation::ConfirmSent { local_id, message } => {
@@ -1752,6 +1799,7 @@ impl Store {
                         StoreMutation::ReplaceChannelSnapshot {
                             channel_id: channel_id.clone(),
                             messages,
+                            complete: !has_more,
                         },
                     );
 
