@@ -10,9 +10,10 @@ use turso::{Builder, Connection, Value};
 use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
-    CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerMetadata,
+    CachedServerSnapshot, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
-    MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
+    CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
 };
 
@@ -934,6 +935,156 @@ impl TursoCache {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Lê apenas metadados de startup. Timelines ficam fora deste caminho para
+    /// que abrir muitos servidores não varra até 500 mensagens por canal.
+    pub async fn load_metadata(
+        &self,
+        server_key: &str,
+    ) -> Result<CachedServerMetadata, turso::Error> {
+        let mut metadata = CachedServerMetadata::default();
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT server_name, server_description, owner_user_id, me_user_id,
+                        me_display_name, me_username, updated_at
+                 FROM server_cache WHERE server_key = ?1",
+                [server_key],
+            )
+            .await?;
+        if let Some(row) = rows.next().await? {
+            metadata.owner_user_id = row.get::<Option<String>>(2)?;
+            metadata.server = Some(CachedServer {
+                name: row.get::<Option<String>>(0)?.unwrap_or_default(),
+                description: row.get(1)?,
+                owner_user_id: row.get(2)?,
+                me_user_id: row.get(3)?,
+                me_display_name: row.get(4)?,
+                me_username: row.get(5)?,
+                updated_at: row.get(6)?,
+            });
+        }
+        drop(rows);
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT channel_id, name, kind, topic, position, unread, mentions
+                 FROM channels WHERE server_key = ?1 ORDER BY position",
+                [server_key],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            metadata.channels.push(CachedChannel {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: row.get(2)?,
+                topic: row.get(3)?,
+                position: row.get::<i64>(4)? as i32,
+                unread: row.get(5)?,
+                mentions: row.get::<i64>(6)? as u32,
+            });
+        }
+        drop(rows);
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT user_id, username, name, role_color, roles
+                 FROM members WHERE server_key = ?1",
+                [server_key],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let color: Option<String> = row.get(3)?;
+            let roles: String = row.get(4)?;
+            metadata.members.push(CachedMember {
+                id: row.get(0)?,
+                username: row.get(1)?,
+                name: row.get(2)?,
+                role_color: color
+                    .as_deref()
+                    .and_then(crate::api::models::parse_hex_color),
+                roles: serde_json::from_str(&roles).unwrap_or_default(),
+            });
+        }
+        drop(rows);
+
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT channel_id FROM channel_cache_state WHERE server_key = ?1
+                 UNION
+                 SELECT DISTINCT channel_id FROM messages WHERE server_key = ?1",
+                [server_key],
+            )
+            .await?;
+        while let Some(row) = rows.next().await? {
+            metadata.cached_channels.insert(row.get(0)?);
+        }
+
+        Ok(metadata)
+    }
+
+    /// Lê uma página cronológica do cache local. Fixadas antigas são retenção
+    /// auxiliar, não parte do cursor da timeline: incluí-las aqui poderia fazer
+    /// uma fixada muito velha pular centenas de mensagens normais.
+    pub async fn load_channel_page(
+        &self,
+        server_key: &str,
+        channel_id: &str,
+        before: Option<(i64, &str)>,
+    ) -> Result<CachedMessagePage, turso::Error> {
+        let (before_at, before_id) = before
+            .map(|(at, id)| (Value::Integer(at), Value::Text(id.to_owned())))
+            .unwrap_or((Value::Null, Value::Null));
+        let limit = CACHE_PAGE_SIZE.saturating_add(1);
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT message_id, channel_id, author_id, content, created_at,
+                        edited, reply_to, pinned, attachments, reactions
+                 FROM messages
+                 WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                   AND (?3 IS NULL OR created_at < ?3
+                        OR (created_at = ?3 AND message_id < ?4))
+                 ORDER BY created_at DESC, message_id DESC
+                 LIMIT ?5",
+                vec![text(server_key), text(channel_id), before_at, before_id, integer(limit)],
+            )
+            .await?;
+
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let attachments: String = row.get(8)?;
+            let reactions: String = row.get(9)?;
+            messages.push(CachedMessage {
+                id: row.get(0)?,
+                channel_id: row.get(1)?,
+                author_id: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+                edited: row.get(5)?,
+                reply_to: row.get(6)?,
+                pinned: row.get(7)?,
+                attachments: serde_json::from_str::<Vec<CachedAttachment>>(&attachments)
+                    .unwrap_or_default(),
+                reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
+                    .unwrap_or_default(),
+            });
+        }
+        let has_more = messages.len() > CACHE_PAGE_SIZE as usize;
+        if has_more {
+            messages.truncate(CACHE_PAGE_SIZE as usize);
+        }
+        messages.reverse();
+        Ok(CachedMessagePage {
+            channel_id: channel_id.to_owned(),
+            messages,
+            has_more,
+        })
     }
 
     /// Lê a projeção persistida de um servidor. Nunca é autoridade.
