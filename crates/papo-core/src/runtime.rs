@@ -548,6 +548,10 @@ mod tests {
             status: None,
             status_message: None,
             roles: Vec::new(),
+            settings: crate::api::models::WhoamiSettings {
+                version: 1,
+                config: crate::api::models::UserConfig::default(),
+            },
         }
     }
 

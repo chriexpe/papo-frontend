@@ -36,11 +36,13 @@ final class PapoWorkScheduler {
     private static final class DesiredServer {
         final String serverKey;
         final String serverUrl;
+        final boolean notificationsEnabled;
         final String workName;
 
-        DesiredServer(String serverKey, String serverUrl) {
+        DesiredServer(String serverKey, String serverUrl, boolean notificationsEnabled) {
             this.serverKey = serverKey;
             this.serverUrl = serverUrl;
+            this.notificationsEnabled = notificationsEnabled;
             this.workName = PREFIX + serverKey;
         }
     }
@@ -48,8 +50,6 @@ final class PapoWorkScheduler {
     static boolean sync(Context context, String payload) {
         try {
             final JSONObject config = new JSONObject(payload);
-            final boolean notificationsEnabled =
-                    config.optBoolean("notifications_enabled", true);
             final JSONArray servers = config.getJSONArray("servers");
             final List<DesiredServer> desired = new ArrayList<>();
             final Set<String> wanted = new HashSet<>();
@@ -58,10 +58,13 @@ final class PapoWorkScheduler {
                 final JSONObject server = servers.getJSONObject(i);
                 final String serverKey = server.getString("server_key");
                 final String serverUrl = server.getString("server_url");
+                final boolean notificationsEnabled =
+                        server.optBoolean("notifications_enabled", true);
                 if (serverKey.isBlank() || serverUrl.isBlank()) {
                     continue;
                 }
-                final DesiredServer entry = new DesiredServer(serverKey, serverUrl);
+                final DesiredServer entry =
+                        new DesiredServer(serverKey, serverUrl, notificationsEnabled);
                 desired.add(entry);
                 wanted.add(entry.workName);
             }
@@ -87,7 +90,7 @@ final class PapoWorkScheduler {
                         .putString(PapoReconcileWorker.INPUT_SERVER_URL, server.serverUrl)
                         .putBoolean(
                                 PapoReconcileWorker.INPUT_NOTIFICATIONS_ENABLED,
-                                notificationsEnabled)
+                                server.notificationsEnabled)
                         .build();
                 final PeriodicWorkRequest request =
                         new PeriodicWorkRequest.Builder(

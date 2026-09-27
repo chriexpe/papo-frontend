@@ -26,6 +26,120 @@ pub struct LoginUser {
     pub username: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserNotifications {
+    pub enabled: bool,
+    #[serde(rename = "messagePreview")]
+    pub message_preview: bool,
+    pub sound: bool,
+    pub mentions: bool,
+}
+
+impl Default for UserNotifications {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            message_preview: true,
+            sound: true,
+            mentions: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserDisplay {
+    #[serde(rename = "fontSize")]
+    pub font_size: String,
+    #[serde(rename = "messageDensity")]
+    pub message_density: String,
+    #[serde(rename = "showTimestamps")]
+    pub show_timestamps: bool,
+    #[serde(rename = "showAvatars")]
+    pub show_avatars: bool,
+}
+
+impl Default for UserDisplay {
+    fn default() -> Self {
+        Self {
+            font_size: "medium".to_owned(),
+            message_density: "normal".to_owned(),
+            show_timestamps: true,
+            show_avatars: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserConfig {
+    #[serde(default = "default_user_theme")]
+    pub theme: String,
+    #[serde(default)]
+    pub notifications: UserNotifications,
+    #[serde(default)]
+    pub display: UserDisplay,
+}
+
+fn default_user_theme() -> String {
+    "system".to_owned()
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        Self {
+            theme: "system".to_owned(),
+            notifications: UserNotifications::default(),
+            display: UserDisplay::default(),
+        }
+    }
+}
+
+impl UserConfig {
+    /// Normaliza rows de versões antigas. O backend antigo gravava o wrapper
+    /// UserSettings dentro de config; ao lê-lo como UserConfig, estes três
+    /// campos discriminantes chegam vazios e todos os bools chegam falsos.
+    pub fn normalised(mut self) -> Self {
+        let legacy_zero = self.theme.is_empty()
+            && self.display.font_size.is_empty()
+            && self.display.message_density.is_empty();
+        if legacy_zero {
+            return Self::default();
+        }
+
+        if !matches!(self.theme.as_str(), "dark" | "light" | "system") {
+            self.theme = "system".to_owned();
+        }
+        if !matches!(self.display.font_size.as_str(), "small" | "medium" | "huge") {
+            self.display.font_size = "medium".to_owned();
+        }
+        if !matches!(
+            self.display.message_density.as_str(),
+            "compact" | "normal" | "comfortable"
+        ) {
+            self.display.message_density = "normal".to_owned();
+        }
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UserSettings {
+    pub user_id: String,
+    pub version: i32,
+    pub config: UserConfig,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateUserSettingsRequest {
+    pub config: UserConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct WhoamiSettings {
+    pub version: i32,
+    pub config: UserConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Whoami {
     pub id: String,
@@ -35,6 +149,7 @@ pub struct Whoami {
     pub status_message: Option<String>,
     #[serde(default)]
     pub roles: Vec<RoleSummary>,
+    pub settings: WhoamiSettings,
 }
 
 impl Whoami {
@@ -896,6 +1011,51 @@ mod tests {
     }
 
     /// A busca manda só o que foi preenchido.
+    #[test]
+    fn user_settings_vazio_cai_em_defaults_validos() {
+        let config: UserConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.theme, "system");
+        assert!(config.notifications.enabled);
+        assert_eq!(config.display.font_size, "medium");
+        assert_eq!(config.display.message_density, "normal");
+    }
+
+    #[test]
+    fn user_settings_legacy_zero_e_normalizado_sem_desligar_notificacoes() {
+        let config = UserConfig {
+            theme: String::new(),
+            notifications: UserNotifications {
+                enabled: false,
+                message_preview: false,
+                sound: false,
+                mentions: false,
+            },
+            display: UserDisplay {
+                font_size: String::new(),
+                message_density: String::new(),
+                show_timestamps: false,
+                show_avatars: false,
+            },
+        }
+        .normalised();
+        assert_eq!(config, UserConfig::default());
+    }
+
+    #[test]
+    fn update_user_settings_usa_envelope_config_sem_perder_campos() {
+        let mut config = UserConfig {
+            theme: "dark".to_owned(),
+            ..Default::default()
+        };
+        config.notifications.message_preview = false;
+        config.display.show_avatars = false;
+        let body = serde_json::to_value(UpdateUserSettingsRequest { config }).unwrap();
+        assert_eq!(body["config"]["theme"], "dark");
+        assert_eq!(body["config"]["notifications"]["messagePreview"], false);
+        assert_eq!(body["config"]["display"]["showAvatars"], false);
+        assert!(body.get("theme").is_none());
+    }
+
     #[test]
     fn busca_omite_os_filtros_vazios() {
         let body = serde_json::to_string(&SearchRequest {

@@ -391,6 +391,8 @@ pub struct Store {
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
     pub my_username: String,
+    /// Preferências portáteis da conta deste servidor.
+    pub user_settings: Option<models::UserSettings>,
     pub selected_channel: String,
     /// Geração da continuidade atual do WebSocket.
     sync_generation: u64,
@@ -468,6 +470,7 @@ impl Default for Store {
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
+            user_settings: None,
             selected_channel: String::new(),
             sync_generation: 0,
             channel_freshness: HashMap::new(),
@@ -1496,6 +1499,12 @@ impl Store {
                 self.me = me.id.clone();
                 self.my_name = me.display_name().to_owned();
                 self.my_username = me.username.clone();
+                self.user_settings = Some(models::UserSettings {
+                    user_id: me.id.clone(),
+                    version: me.settings.version,
+                    config: me.settings.config.clone().normalised(),
+                    updated_at: None,
+                });
                 self.screen = Screen::Chat;
                 self.error = None;
                 self.busy = false;
@@ -1729,6 +1738,11 @@ impl Store {
             }
             Update::OlderMessagesFailed { channel_id } => {
                 self.history_loading.remove(&channel_id);
+            }
+            Update::UserSettings(settings) => {
+                let mut settings = *settings;
+                settings.config = settings.config.normalised();
+                self.user_settings = Some(settings);
             }
             Update::Devices(devices) => {
                 self.devices = devices;
@@ -3858,6 +3872,10 @@ mod tests {
             status: None,
             status_message: None,
             roles: Vec::new(),
+            settings: models::WhoamiSettings {
+                version: 1,
+                config: models::UserConfig::default(),
+            },
         }))));
         let ops = store.take_cache_ops();
         assert!(ops.iter().any(|op| matches!(
@@ -3875,6 +3893,45 @@ mod tests {
         assert!(
             !ops.iter().any(|op| matches!(op, CacheOp::ClearServer)),
             "fila/ledger particionados por owner sobrevivem à expiração"
+        );
+    }
+
+    #[test]
+    fn sessao_retém_config_portatil_e_update_substitui_o_snapshot() {
+        let mut store = Store::default();
+        let initial = models::UserConfig {
+            theme: "dark".to_owned(),
+            ..Default::default()
+        };
+        store.apply(Update::Session(Some(Box::new(models::Whoami {
+            id: "eu".to_owned(),
+            username: "eu".to_owned(),
+            nickname: None,
+            status: None,
+            status_message: None,
+            roles: Vec::new(),
+            settings: models::WhoamiSettings {
+                version: 1,
+                config: initial.clone(),
+            },
+        }))));
+        assert_eq!(
+            store.user_settings.as_ref().map(|settings| &settings.config),
+            Some(&initial)
+        );
+
+        let mut updated = initial;
+        updated.theme = "light".to_owned();
+        updated.notifications.enabled = false;
+        store.apply(Update::UserSettings(Box::new(models::UserSettings {
+            user_id: "eu".to_owned(),
+            version: 1,
+            config: updated.clone(),
+            updated_at: None,
+        })));
+        assert_eq!(
+            store.user_settings.as_ref().map(|settings| &settings.config),
+            Some(&updated)
         );
     }
 
