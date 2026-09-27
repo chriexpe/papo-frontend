@@ -321,6 +321,53 @@ fn snapshot_replacement_removes_missing_messages() {
 }
 
 #[test]
+fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
+    let temp = TempDb::new("head-merge");
+    let db = open(&temp);
+
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("old-1", "geral", "old", 1_000),
+                message("old-2", "geral", "old", 2_000),
+                message("head-stale", "geral", "stale", 8_000),
+                message("head-keep", "geral", "old value", 9_000),
+            ],
+        }],
+    );
+    db.flush();
+
+    db.submit(
+        "srv",
+        vec![CacheOp::MergeChannelHead {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("head-keep", "geral", "new value", 9_000),
+                message("head-new", "geral", "new", 10_000),
+            ],
+            deleted_ids: vec!["head-stale".to_owned()],
+        }],
+    );
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    let ids: Vec<&str> = snapshot.messages.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["old-1", "old-2", "head-keep", "head-new"]);
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .find(|m| m.id == "head-keep")
+            .map(|m| m.content.as_str()),
+        Some("new value")
+    );
+}
+
+#[test]
 fn retention_is_hard_bounded() {
     let temp = TempDb::new("retention");
     let db = open(&temp);
