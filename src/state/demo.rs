@@ -75,6 +75,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
             kind: ChannelKind::Voice,
             topic: None,
             position: 4,
+            permissions: Vec::new(),
             unread: false,
             mentions: 0,
         },
@@ -586,6 +587,7 @@ fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
         kind: ChannelKind::Text,
         topic: Some(topic.into()),
         position,
+        permissions: Vec::new(),
         unread: false,
         mentions: 0,
     }
