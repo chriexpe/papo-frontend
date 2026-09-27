@@ -7629,6 +7629,35 @@ mod draft_tests {
     }
 
     #[test]
+    fn autocomplete_de_filtro_substitui_fragmento_e_permite_empilhar() {
+        assert_eq!(replace_search_fragment("d", "de:"), "de:");
+        assert_eq!(
+            replace_search_fragment("de:", "de:@chriexpe"),
+            "de:@chriexpe "
+        );
+        assert_eq!(
+            replace_search_fragment("de:@chriexpe e", "em:"),
+            "de:@chriexpe em:"
+        );
+        assert_eq!(
+            replace_search_fragment("de:@chriexpe em:", "em:#geral"),
+            "de:@chriexpe em:#geral "
+        );
+    }
+
+    #[test]
+    fn autocomplete_preserva_filtros_anteriores_e_texto_livre() {
+        assert_eq!(
+            replace_search_fragment("erro de:@ana t", "tem:"),
+            "erro de:@ana tem:"
+        );
+        assert_eq!(
+            replace_search_fragment("erro de:@ana tem:", "tem:link"),
+            "erro de:@ana tem:link "
+        );
+    }
+
+    #[test]
     fn canais_guardam_e_restauram_rascunhos_independentes() {
         let mut ui = UiState::default();
         ui.drafts.reset_owner("owner");
