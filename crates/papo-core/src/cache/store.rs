@@ -1040,6 +1040,7 @@ impl TursoCache {
         channel_id: &str,
         before: Option<(i64, &str)>,
     ) -> Result<CachedMessagePage, turso::Error> {
+        let initial = before.is_none();
         let (before_at, before_id) = before
             .map(|(at, id)| (Value::Integer(at), Value::Text(id.to_owned())))
             .unwrap_or((Value::Null, Value::Null));
@@ -1082,7 +1083,48 @@ impl TursoCache {
         if has_more {
             messages.truncate(CACHE_PAGE_SIZE as usize);
         }
-        messages.reverse();
+
+        // A primeira hidratação também leva as fixadas retidas fora da janela
+        // normal. Elas aparecem offline, mas nunca participam do cursor das
+        // páginas seguintes.
+        if initial {
+            let mut pinned = self
+                .conn
+                .query(
+                    "SELECT message_id, channel_id, author_id, content, created_at,
+                            edited, reply_to, pinned, attachments, reactions
+                     FROM messages
+                     WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1
+                     ORDER BY created_at DESC, message_id DESC
+                     LIMIT ?3",
+                    vec![text(server_key), text(channel_id), integer(PINNED_RETENTION)],
+                )
+                .await?;
+            while let Some(row) = pinned.next().await? {
+                let attachments: String = row.get(8)?;
+                let reactions: String = row.get(9)?;
+                messages.push(CachedMessage {
+                    id: row.get(0)?,
+                    channel_id: row.get(1)?,
+                    author_id: row.get(2)?,
+                    content: row.get(3)?,
+                    created_at: row.get(4)?,
+                    edited: row.get(5)?,
+                    reply_to: row.get(6)?,
+                    pinned: row.get(7)?,
+                    attachments: serde_json::from_str::<Vec<CachedAttachment>>(&attachments)
+                        .unwrap_or_default(),
+                    reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
+                        .unwrap_or_default(),
+                });
+            }
+        }
+
+        messages.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         Ok(CachedMessagePage {
             channel_id: channel_id.to_owned(),
             messages,
