@@ -72,6 +72,8 @@ pub struct Member {
     pub username: String,
     pub name: String,
     pub presence: Presence,
+    pub status_message: Option<String>,
+    pub typing_label: Option<String>,
     pub role_color: Option<[u8; 3]>,
     /// Ids dos cargos que a pessoa tem; é o que a tela de cargos marca.
     pub roles: Vec<String>,
@@ -675,6 +677,8 @@ impl Store {
                 username: member.username,
                 name: member.name,
                 presence: Presence::Offline,
+                status_message: None,
+                typing_label: None,
                 role_color: member.role_color,
                 roles: member.roles,
             })
@@ -1434,6 +1438,8 @@ impl Store {
                             .get(&user.id)
                             .copied()
                             .unwrap_or(Presence::Offline),
+                        status_message: user.status_message,
+                        typing_label: user.typing,
                         role_color: role_color(&user.roles),
                         roles: user.roles.iter().map(|role| role.id.clone()).collect(),
                         name: user.display_name().to_owned(),
