@@ -102,8 +102,10 @@ libc = "0.2"
 # Windows
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "windows")'.dependencies]
-# Windows uses wgpu so eframe renders through native Direct3D instead of
-# depending on an OpenGL 2.0+ driver being available.
+# WGPU stays the Windows default because Windows can expose only the legacy
+# OpenGL 1.1 system driver even when Direct3D is available. Glow remains
+# compiled by the common eframe dependency for explicit development/testing;
+# Papo's current in-app blur callback still depends on that backend.
 eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 # Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
 # the child HWND, browser rendering and pointer/keyboard interaction.
