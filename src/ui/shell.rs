@@ -4171,7 +4171,16 @@ fn message_body(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = space::XS;
             for reaction in &message.reactions {
-                if reaction_chip(ui, t, store, &mut state.media, reaction) {
+                if reaction_chip(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    state,
+                    &message.id,
+                    &message.channel_id,
+                    reaction,
+                ) {
                     toggled = Some((reaction.emoji.clone(), !reaction.mine));
                 }
             }
@@ -5100,8 +5109,11 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 fn reaction_chip(
     ui: &mut egui::Ui,
     t: &Tokens,
+    s: &Strings,
     store: &Store,
-    media: &mut MediaStore,
+    state: &mut UiState,
+    message_id: &str,
+    channel_id: &str,
     reaction: &crate::state::Reaction,
 ) -> bool {
     let count = reaction.count.to_string();
@@ -5131,7 +5143,7 @@ fn reaction_chip(
         egui::pos2(rect.min.x + space::SM + glyph / 2.0, rect.center().y),
         Vec2::splat(glyph),
     );
-    emoji::draw_reaction(ui, t, media, store, &reaction.emoji, glyph_rect);
+    emoji::draw_reaction(ui, t, &mut state.media, store, &reaction.emoji, glyph_rect);
     ui.painter().galley(
         egui::pos2(
             glyph_rect.max.x + space::XS,
@@ -5140,6 +5152,67 @@ fn reaction_chip(
         galley,
         label,
     );
+
+    response.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        ui.label(RichText::new(s.reaction_people).font(text::headline()));
+
+        let groups = store.reaction_details.get(message_id);
+        let group = groups.and_then(|groups| {
+            groups.iter().find(|group| match &reaction.emoji {
+                Emoji::Unicode(value) => group.unicode.as_deref() == Some(value.as_str()),
+                Emoji::Custom(id) => group.emoji_id.as_deref() == Some(id.as_str()),
+            })
+        });
+
+        let loading = store.reaction_details_loading.contains(message_id);
+        if groups.is_none() && !loading {
+            state.actions.push(ChatAction::LoadReactionDetails {
+                channel_id: channel_id.to_owned(),
+                message_id: message_id.to_owned(),
+                cursor: None,
+                append: false,
+            });
+        }
+
+        if let Some(group) = group {
+            if group.users.is_empty() && loading {
+                ui.label(s.reaction_loading);
+            } else {
+                for user in &group.users {
+                    let name = store
+                        .member(&user.user_id)
+                        .map(|member| member.name.as_str())
+                        .unwrap_or(user.user_id.as_str());
+                    ui.label(name);
+                }
+            }
+        } else if loading || groups.is_none() {
+            ui.label(s.reaction_loading);
+        }
+
+        if store
+            .reaction_details_has_more
+            .get(message_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            ui.separator();
+            if ui
+                .add_enabled(!loading, egui::Button::new(s.reaction_more))
+                .clicked()
+                && let Some(cursor) = store.reaction_details_cursor(message_id)
+            {
+                state.actions.push(ChatAction::LoadReactionDetails {
+                    channel_id: channel_id.to_owned(),
+                    message_id: message_id.to_owned(),
+                    cursor: Some(cursor),
+                    append: true,
+                });
+            }
+        }
+    });
+
     response.clicked()
 }
 
