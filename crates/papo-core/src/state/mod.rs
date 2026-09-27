@@ -981,23 +981,51 @@ impl Store {
     /// página para não deixar dado stale sobrescrever o snapshot autoritativo.
     pub fn restore_cached_page(&mut self, page: CachedMessagePage, older: bool) {
         let channel_id = page.channel_id.clone();
-        let ignore_initial = !older && self.timeline_status(&channel_id) == TimelineStatus::Fresh;
-        if !ignore_initial {
+        let fresh = self.timeline_status(&channel_id) == TimelineStatus::Fresh;
+        let authoritative_complete = fresh
+            && !self
+                .history_has_more
+                .get(&channel_id)
+                .copied()
+                .unwrap_or(false);
+        let fresh_cutoff = (!older && fresh && !authoritative_complete)
+            .then(|| {
+                self.messages_in(&channel_id)
+                    .filter(|message| !message.pending)
+                    .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                    .map(|message| {
+                        (
+                            message.at.with_timezone(&Utc).timestamp_millis(),
+                            message.id.clone(),
+                        )
+                    })
+            })
+            .flatten();
+
+        if !authoritative_complete {
             for message in page.messages {
-                self.apply_mutation(
-                    MutationSource::CacheRestore,
-                    StoreMutation::Timeline {
-                        channel_id: Some(channel_id.clone()),
-                        mutation: TimelineMutation::MessageUpsert(message.to_store()),
-                    },
-                );
+                // Se o head REST venceu a corrida, só aceitamos cache que
+                // esteja estritamente abaixo da janela autoritativa já visível.
+                let older_than_fresh_head = fresh_cutoff.as_ref().is_none_or(|(at, id)| {
+                    message.created_at < *at
+                        || (message.created_at == *at && message.id < *id)
+                });
+                if older || !fresh || older_than_fresh_head {
+                    self.apply_mutation(
+                        MutationSource::CacheRestore,
+                        StoreMutation::Timeline {
+                            channel_id: Some(channel_id.clone()),
+                            mutation: TimelineMutation::MessageUpsert(message.to_store()),
+                        },
+                    );
+                }
             }
             self.sort_messages();
         }
         self.cached_channels.insert(channel_id.clone());
         self.hydrated_channels.insert(channel_id.clone());
         self.cache_history_has_more
-            .insert(channel_id.clone(), page.has_more);
+            .insert(channel_id.clone(), page.has_more && !authoritative_complete);
         self.cache_loading.remove(&channel_id);
         if older {
             self.history_loading.remove(&channel_id);
