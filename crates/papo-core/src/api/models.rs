@@ -373,9 +373,19 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mentions: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_start: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub contains_attachment: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contains_link: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -390,7 +400,9 @@ pub struct SearchResult {
     #[serde(default)]
     pub channel_name: String,
     #[serde(default)]
-    pub author_username: String,
+    pub author_id: Option<String>,
+    #[serde(default)]
+    pub author_username: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
 
@@ -542,6 +554,32 @@ impl ReactionRequest {
             unicode: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionUser {
+    pub id: String,
+    pub user_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionGroup {
+    pub emoji_id: Option<String>,
+    pub unicode: Option<String>,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub users: Vec<ReactionUser>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReactionList {
+    pub message_id: String,
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub reactions: Vec<ReactionGroup>,
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -863,8 +901,13 @@ mod tests {
         let body = serde_json::to_string(&SearchRequest {
             text: Some("oi".to_owned()),
             author: None,
+            channel: None,
+            mentions: None,
             order: Some("desc".to_owned()),
+            date_start: None,
+            date_end: None,
             contains_attachment: None,
+            contains_link: None,
         })
         .unwrap();
         assert_eq!(body, r#"{"text":"oi","order":"desc"}"#);

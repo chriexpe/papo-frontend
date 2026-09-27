@@ -1086,9 +1086,13 @@ public class PapoActivity extends GameActivity {
             nativeFieldLayer.bringToFront();
             editor.bringToFront();
 
-            // Enquanto o usuário digita, Android é a fonte de verdade. Fora
-            // disso, Rust repopula a View quando ela nasce ou perde foco.
-            if ((created || !editor.hasFocus()) && !editor.getText().toString().equals(text)) {
+            // Enquanto o usuário digita, Android é a fonte de verdade. Um
+            // request de foco vindo do Rust também pode representar uma
+            // substituição programática (ex.: autocomplete da busca); nesse
+            // caso o texto novo precisa vencer mesmo com o campo já focado e
+            // o cursor deve terminar depois da substituição.
+            if ((created || !editor.hasFocus() || focus)
+                    && !editor.getText().toString().equals(text)) {
                 editor.setText(text);
                 editor.setSelection(editor.getText().length());
             }

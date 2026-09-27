@@ -271,7 +271,15 @@ pub enum Command {
         channel_id: String,
     },
     Search {
-        text: String,
+        request: crate::api::models::SearchRequest,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
+    },
+    LoadReactionDetails {
+        channel_id: String,
+        message_id: String,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
     },
     LoadRoles,
     CreateRole {
@@ -430,7 +438,21 @@ pub enum Update {
     Channels(Vec<Channel>),
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
     ChannelCreated(String),
-    SearchResults(Vec<crate::api::models::SearchResult>),
+    SearchResults {
+        results: Vec<crate::api::models::SearchResult>,
+        has_more: bool,
+        append: bool,
+    },
+    SearchFailed,
+    ReactionDetails {
+        message_id: String,
+        reactions: Vec<crate::api::models::ReactionGroup>,
+        has_more: bool,
+        append: bool,
+    },
+    ReactionDetailsFailed {
+        message_id: String,
+    },
     Roles(Vec<crate::api::models::Role>),
     ChannelPermissions {
         channel_id: String,
@@ -2825,10 +2847,61 @@ async fn handle(
                 report(storage_key, updates, wake, error);
             }
         },
-        Command::Search { text } => match api.search(&text).await {
-            Ok(found) => publish(updates, wake, Update::SearchResults(found.results)),
-            Err(error) => report(storage_key, updates, wake, error),
-        },
+        Command::Search {
+            request,
+            cursor,
+            append,
+        } => {
+            let cursor_ref = cursor.as_ref().map(|(at, id)| (*at, id.as_str()));
+            match api.search(&request, cursor_ref).await {
+                Ok(found) => publish(
+                    updates,
+                    wake,
+                    Update::SearchResults {
+                        results: found.results,
+                        has_more: found.has_more,
+                        append,
+                    },
+                ),
+                Err(error) => {
+                    publish(updates, wake, Update::SearchFailed);
+                    report(storage_key, updates, wake, error);
+                }
+            }
+        }
+        Command::LoadReactionDetails {
+            channel_id,
+            message_id,
+            cursor,
+            append,
+        } => {
+            let cursor_ref = cursor.as_ref().map(|(at, id)| (*at, id.as_str()));
+            match api
+                .reaction_details(&channel_id, &message_id, cursor_ref)
+                .await
+            {
+                Ok(list) => publish(
+                    updates,
+                    wake,
+                    Update::ReactionDetails {
+                        message_id: list.message_id,
+                        reactions: list.reactions,
+                        has_more: list.has_more,
+                        append,
+                    },
+                ),
+                Err(error) => {
+                    publish(
+                        updates,
+                        wake,
+                        Update::ReactionDetailsFailed {
+                            message_id: message_id.clone(),
+                        },
+                    );
+                    report(storage_key, updates, wake, error);
+                }
+            }
+        }
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
         // pessoas — por isso as duas listas são relidas juntas.
         Command::LoadRoles => relist_roles(api, storage_key, updates, wake).await,

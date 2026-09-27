@@ -160,7 +160,18 @@ pub enum ChatAction {
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
-    Search(String),
+    Search {
+        request: crate::api::models::SearchRequest,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
+    },
+    /// Carrega quem reagiu a uma mensagem; páginas seguintes usam cursor.
+    LoadReactionDetails {
+        channel_id: String,
+        message_id: String,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
+        append: bool,
+    },
     /// `off`, `only_mentions` ou `all` para este canal.
     ChannelNotifications {
         channel_id: String,
@@ -336,6 +347,15 @@ pub fn is_compact(rect: Rect) -> bool {
 pub struct Panel {
     pub kind: PanelKind,
     pub query: String,
+    /// Filtros avançados da busca. Mantidos no painel para paginação usar
+    /// exatamente a mesma consulta.
+    pub search_filters: bool,
+    pub search_attachments: bool,
+    pub search_oldest_first: bool,
+    pub search_suggest_index: usize,
+    /// Consulta efetivamente enviada; páginas seguintes não usam filtros
+    /// editados que ainda não foram submetidos.
+    pub search_active: Option<crate::api::models::SearchRequest>,
     /// O campo de busca recebe o foco uma vez, ao abrir.
     pub focus: bool,
     /// Distingue "ainda não buscou" de uma busca válida com zero resultados.
@@ -2902,6 +2922,11 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
             state.panel = Some(Panel {
                 kind,
                 query: String::new(),
+                search_filters: false,
+                search_attachments: false,
+                search_oldest_first: false,
+                search_suggest_index: 0,
+                search_active: None,
                 focus: kind == PanelKind::Search,
                 searched: false,
             })
@@ -2959,8 +2984,319 @@ fn topic_panel(ui: &mut egui::Ui, store: &Store, t: &Tokens) {
 }
 
 /// Busca dentro da pastilha: campo em cima, resultados embaixo.
-fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
-    let mut run = false;
+#[derive(Clone, Debug)]
+struct SearchShortcut {
+    label: String,
+    replacement: String,
+}
+
+fn search_fragment(query: &str) -> (&str, usize) {
+    let start = query
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map(|(index, c)| index + c.len_utf8())
+        .unwrap_or(0);
+    (&query[start..], start)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SearchFilterUsage {
+    author: bool,
+    channel: bool,
+    mentions: bool,
+    attachment: bool,
+    link: bool,
+}
+
+fn search_filter_usage(query: &str) -> SearchFilterUsage {
+    let mut usage = SearchFilterUsage::default();
+
+    for token in query.split_whitespace() {
+        let Some((prefix, value)) = token.split_once(':') else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        match prefix.to_lowercase().as_str() {
+            "de" | "from" | "author" => usage.author = true,
+            "em" | "in" | "channel" => usage.channel = true,
+            "mentions" | "menciona" | "mention" => usage.mentions = true,
+            "tem" | "has" => match value.to_lowercase().as_str() {
+                "link" => usage.link = true,
+                "anexo" | "arquivo" | "attachment" | "file" => usage.attachment = true,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    usage
+}
+
+fn search_shortcuts(
+    store: &Store,
+    query: &str,
+    explicit_attachment: bool,
+) -> Vec<SearchShortcut> {
+    let (fragment, start) = search_fragment(query);
+    let lower = fragment.to_lowercase();
+    let mut usage = search_filter_usage(&query[..start]);
+    usage.attachment |= explicit_attachment;
+    let mut out = Vec::new();
+
+    if !lower.contains(':') {
+        let candidates = [
+            ("de:", "autor", !usage.author),
+            ("em:", "canal", !usage.channel),
+            (
+                "tem:",
+                "conteúdo",
+                !(usage.link && usage.attachment),
+            ),
+            ("mentions:", "menção", !usage.mentions),
+        ];
+        for (token, hint, available) in candidates {
+            if available && !lower.is_empty() && token.starts_with(&lower) {
+                out.push(SearchShortcut {
+                    label: format!("{token}  {hint}"),
+                    replacement: token.to_owned(),
+                });
+            }
+        }
+        return out;
+    }
+
+    let Some((prefix, raw_value)) = fragment.split_once(':') else {
+        return out;
+    };
+    let prefix_lower = prefix.to_lowercase();
+    let needle = raw_value
+        .trim_start_matches(['@', '#'])
+        .to_lowercase();
+
+    match prefix_lower.as_str() {
+        "de" | "from" | "author" if !usage.author => {
+            let mut members: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.name.to_lowercase().contains(&needle)
+                        || member.username.to_lowercase().contains(&needle)
+                })
+                .collect();
+            members.sort_by_key(|member| {
+                let name = member.name.to_lowercase();
+                let username = member.username.to_lowercase();
+                (
+                    !name.starts_with(&needle),
+                    !username.starts_with(&needle),
+                    name,
+                )
+            });
+            for member in members.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("de: @{}  {}", member.username, member.name),
+                    replacement: format!("de:@{}", member.username),
+                });
+            }
+        }
+        "em" | "in" | "channel" if !usage.channel => {
+            let mut channels: Vec<_> = store
+                .channels
+                .iter()
+                .filter(|channel| {
+                    needle.is_empty() || channel.name.to_lowercase().contains(&needle)
+                })
+                .collect();
+            channels.sort_by_key(|channel| {
+                let name = channel.name.to_lowercase();
+                (!name.starts_with(&needle), name)
+            });
+            for channel in channels.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("em: #{}", channel.name),
+                    replacement: format!("em:#{}", channel.name),
+                });
+            }
+        }
+        "mentions" | "menciona" | "mention" if !usage.mentions => {
+            let mut members: Vec<_> = store
+                .members
+                .iter()
+                .filter(|member| {
+                    needle.is_empty()
+                        || member.name.to_lowercase().contains(&needle)
+                        || member.username.to_lowercase().contains(&needle)
+                })
+                .collect();
+            members.sort_by_key(|member| {
+                let name = member.name.to_lowercase();
+                let username = member.username.to_lowercase();
+                (
+                    !name.starts_with(&needle),
+                    !username.starts_with(&needle),
+                    name,
+                )
+            });
+            for member in members.into_iter().take(6) {
+                out.push(SearchShortcut {
+                    label: format!("mentions: @{}  {}", member.username, member.name),
+                    replacement: format!("mentions:@{}", member.username),
+                });
+            }
+        }
+        "tem" | "has" => {
+            for value in ["link", "anexo", "arquivo"] {
+                let available = match value {
+                    "link" => !usage.link,
+                    "anexo" | "arquivo" => !usage.attachment,
+                    _ => true,
+                };
+                if available && (needle.is_empty() || value.starts_with(&needle)) {
+                    out.push(SearchShortcut {
+                        label: format!("tem: {value}"),
+                        replacement: format!("tem:{value}"),
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn replace_search_fragment(query: &str, replacement: &str) -> String {
+    let (_, start) = search_fragment(query);
+    let mut next = query[..start].to_owned();
+    next.push_str(replacement);
+    if !replacement.ends_with(':') {
+        next.push(' ');
+    }
+    next
+}
+
+#[cfg(not(target_os = "android"))]
+fn search_cursor_to_end(ctx: &egui::Context, id: Id, text: &str) {
+    if let Some(mut state) = egui::TextEdit::load_state(ctx, id) {
+        let end = text.chars().count();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange {
+            primary: egui::text::CCursor::new(end),
+            secondary: egui::text::CCursor::new(end),
+            h_pos: None,
+        }));
+        state.store(ctx, id);
+    }
+}
+
+fn search_member_id(store: &Store, raw: &str) -> Option<String> {
+    let value = raw.trim_start_matches('@');
+    store
+        .members
+        .iter()
+        .find(|member| {
+            member.username.eq_ignore_ascii_case(value)
+                || member.name.eq_ignore_ascii_case(value)
+                || member.id == value
+        })
+        .map(|member| member.id.clone())
+}
+
+fn search_channel_id(store: &Store, raw: &str) -> Option<String> {
+    let value = raw.trim_start_matches('#');
+    store
+        .channels
+        .iter()
+        .find(|channel| channel.name.eq_ignore_ascii_case(value) || channel.id == value)
+        .map(|channel| channel.id.clone())
+}
+
+fn search_request_from_panel(
+    panel: &Panel,
+    store: &Store,
+) -> Option<crate::api::models::SearchRequest> {
+    let mut text = Vec::new();
+    let mut author = None;
+    let mut channel = None;
+    let mut mentions = None;
+    let mut contains_attachment = panel.search_attachments.then_some(true);
+    let mut contains_link = None;
+
+    for token in panel.query.split_whitespace() {
+        let Some((prefix, value)) = token.split_once(':') else {
+            text.push(token);
+            continue;
+        };
+        match prefix.to_lowercase().as_str() {
+            "de" | "from" | "author" => {
+                if author.is_none()
+                    && let Some(id) = search_member_id(store, value)
+                {
+                    author = Some(id);
+                }
+            }
+            "em" | "in" | "channel" => {
+                if channel.is_none()
+                    && let Some(id) = search_channel_id(store, value)
+                {
+                    channel = Some(id);
+                }
+            }
+            "mentions" | "menciona" | "mention" => {
+                if mentions.is_none()
+                    && let Some(id) = search_member_id(store, value)
+                {
+                    mentions = Some(id);
+                }
+            }
+            "tem" | "has" => match value.to_lowercase().as_str() {
+                "link" => contains_link = Some(true),
+                "anexo" | "arquivo" | "attachment" | "file" => {
+                    contains_attachment = Some(true)
+                }
+                _ => text.push(token),
+            },
+            _ => text.push(token),
+        }
+    }
+
+    let text = text.join(" ");
+    if text.trim().is_empty()
+        && author.is_none()
+        && channel.is_none()
+        && mentions.is_none()
+        && contains_attachment.is_none()
+        && contains_link.is_none()
+    {
+        return None;
+    }
+
+    Some(crate::api::models::SearchRequest {
+        text: (!text.trim().is_empty()).then(|| text.trim().to_owned()),
+        author,
+        channel,
+        mentions,
+        order: Some(
+            if panel.search_oldest_first { "asc" } else { "desc" }.to_owned(),
+        ),
+        date_start: None,
+        date_end: None,
+        contains_attachment,
+        contains_link,
+    })
+}
+
+/// Busca dentro da pastilha: texto livre, filtros explícitos e atalhos composáveis.
+fn search_panel(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let mut submit = false;
     let mut query = state
         .panel
         .as_ref()
@@ -2969,7 +3305,9 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::XS;
-        let field_width = (ui.available_width() - HIT_TARGET - space::XS).max(80.0);
+        let controls = HIT_TARGET * 2.0 + space::XS * 2.0;
+        let field_width = (ui.available_width() - controls).max(80.0);
+
         #[cfg(target_os = "android")]
         {
             let focus = state
@@ -2999,7 +3337,7 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 t.label_tertiary,
                 text::body().size,
             );
-            run |= events.submit;
+            submit |= events.submit;
         }
 
         #[cfg(not(target_os = "android"))]
@@ -3020,37 +3358,152 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 field.has_focus(),
                 crate::platform::ime::Kind::Search,
             );
-            if let Some(panel) = state.panel.as_mut() {
-                panel.query = query.clone();
-                if panel.focus {
-                    field.request_focus();
-                    panel.focus = false;
-                }
-            }
-            if ui.input(|input| input.key_pressed(egui::Key::Enter))
-                && (field.has_focus() || field.lost_focus())
+            if let Some(panel) = state.panel.as_mut()
+                && panel.focus
             {
-                run = true;
+                field.request_focus();
+                search_cursor_to_end(ui.ctx(), search_id, &query);
+                panel.focus = false;
             }
+            submit |= ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && (field.has_focus() || field.lost_focus());
         }
+
+        let filters_active = state
+            .panel
+            .as_ref()
+            .is_some_and(|panel| panel.search_filters);
+        let filter_button = icon_button(ui, t, icon::FUNNEL, s.search_filters);
+        if filter_button.clicked()
+            && let Some(panel) = state.panel.as_mut()
+        {
+            panel.search_filters = !panel.search_filters;
+        }
+        if filters_active {
+            ui.painter().circle_filled(
+                filter_button.rect.right_top() + egui::vec2(-5.0, 5.0),
+                2.5,
+                t.accent,
+            );
+        }
+
         if icon_button(ui, t, icon::MAGNIFYING_GLASS, s.search).clicked() {
-            run = true;
+            submit = true;
         }
     });
-    #[cfg(target_os = "android")]
+
     if let Some(panel) = state.panel.as_mut() {
         panel.query.clone_from(&query);
     }
-    if run && !query.trim().is_empty() {
+
+    let explicit_attachment = state
+        .panel
+        .as_ref()
+        .is_some_and(|panel| panel.search_attachments);
+    let suggestions = search_shortcuts(store, &query, explicit_attachment);
+    if let Some(panel) = state.panel.as_mut() {
+        if suggestions.is_empty() {
+            panel.search_suggest_index = 0;
+        } else {
+            if ui.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
+                panel.search_suggest_index =
+                    (panel.search_suggest_index + 1).min(suggestions.len() - 1);
+            }
+            if ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
+                panel.search_suggest_index = panel.search_suggest_index.saturating_sub(1);
+            }
+            panel.search_suggest_index = panel
+                .search_suggest_index
+                .min(suggestions.len().saturating_sub(1));
+        }
+    }
+
+    if submit && !suggestions.is_empty() {
+        let index = state
+            .panel
+            .as_ref()
+            .map(|panel| panel.search_suggest_index)
+            .unwrap_or_default()
+            .min(suggestions.len() - 1);
+        query = replace_search_fragment(&query, &suggestions[index].replacement);
+        if let Some(panel) = state.panel.as_mut() {
+            panel.query.clone_from(&query);
+            panel.search_suggest_index = 0;
+            panel.focus = true;
+        }
+        submit = false;
+    }
+
+    if !suggestions.is_empty() {
+        ui.add_space(space::XXS);
+        Frame::new()
+            .fill(t.elevated_bg)
+            .stroke(Stroke::new(1.0, t.separator))
+            .corner_radius(CornerRadius::same(radius::FIELD))
+            .inner_margin(egui::Margin::same(space::XS as i8))
+            .show(ui, |ui| {
+                let selected = state
+                    .panel
+                    .as_ref()
+                    .map(|panel| panel.search_suggest_index)
+                    .unwrap_or_default();
+                for (index, suggestion) in suggestions.iter().enumerate() {
+                    if ui
+                        .selectable_label(index == selected, &suggestion.label)
+                        .clicked()
+                    {
+                        query = replace_search_fragment(&query, &suggestion.replacement);
+                        if let Some(panel) = state.panel.as_mut() {
+                            panel.query.clone_from(&query);
+                            panel.search_suggest_index = 0;
+                            panel.focus = true;
+                        }
+                    }
+                }
+            });
+    }
+
+    if state.panel.as_ref().is_some_and(|panel| panel.search_filters) {
+        ui.add_space(space::XS);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(panel) = state.panel.as_mut() {
+                ui.checkbox(&mut panel.search_attachments, s.search_attachments);
+                ui.selectable_value(
+                    &mut panel.search_oldest_first,
+                    false,
+                    s.search_newest,
+                );
+                ui.selectable_value(
+                    &mut panel.search_oldest_first,
+                    true,
+                    s.search_oldest,
+                );
+            }
+        });
+    }
+
+    let request = state
+        .panel
+        .as_ref()
+        .and_then(|panel| search_request_from_panel(panel, store));
+
+    if submit
+        && let Some(request) = request.clone()
+    {
         if let Some(panel) = state.panel.as_mut() {
             panel.searched = true;
+            panel.search_active = Some(request.clone());
         }
         store.searching = true;
-        state.actions.push(ChatAction::Search(query.trim().to_owned()));
+        state.actions.push(ChatAction::Search {
+            request,
+            cursor: None,
+            append: false,
+        });
     }
 
     ui.add_space(space::XS);
-    if store.searching {
+    if store.searching && store.search_results.is_empty() {
         ui.label(
             RichText::new(s.searching)
                 .font(text::footnote())
@@ -3059,8 +3512,6 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         return;
     }
     if store.search_results.is_empty() {
-        // Antes da primeira busca o que falta é a instrução, não o "nada
-        // encontrado": quem acabou de abrir ainda não procurou coisa alguma.
         let searched = state
             .panel
             .as_ref()
@@ -3077,7 +3528,16 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .search_results
         .iter()
         .map(|result| {
-            let member = store.member_by_username(&result.author_username);
+            let member = result
+                .author_id
+                .as_deref()
+                .and_then(|id| store.member(id))
+                .or_else(|| {
+                    result
+                        .author_username
+                        .as_deref()
+                        .and_then(|username| store.member_by_username(username))
+                });
             (
                 result.channel_id.clone(),
                 result.id.clone(),
@@ -3085,12 +3545,14 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 member.map(|member| member.id.clone()),
                 member
                     .map(|member| member.name.clone())
-                    .unwrap_or_else(|| result.author_username.clone()),
+                    .or_else(|| result.author_username.clone())
+                    .unwrap_or_else(|| "?".to_owned()),
                 result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
             )
         })
         .collect();
+
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
         .auto_shrink([false, false])
@@ -3113,6 +3575,34 @@ fn search_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
                 }
+            }
+
+            if store.search_has_more {
+                ui.add_space(space::SM);
+                let active_request = state
+                    .panel
+                    .as_ref()
+                    .and_then(|panel| panel.search_active.clone());
+                let enabled = !store.searching && active_request.is_some();
+                if ui.add_enabled(enabled, egui::Button::new(s.search_more)).clicked()
+                    && let Some(request) = active_request
+                    && let Some(last) = store.search_results.last()
+                    && let Some(at) = last.created_at
+                {
+                    store.searching = true;
+                    state.actions.push(ChatAction::Search {
+                        request,
+                        cursor: Some((at, last.id.clone())),
+                        append: true,
+                    });
+                }
+            } else if store.searching {
+                ui.add_space(space::SM);
+                ui.label(
+                    RichText::new(s.searching)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
             }
         });
 }
@@ -4011,7 +4501,16 @@ fn message_body(
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = space::XS;
             for reaction in &message.reactions {
-                if reaction_chip(ui, t, store, &mut state.media, reaction) {
+                if reaction_chip(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    state,
+                    &message.id,
+                    &message.channel_id,
+                    reaction,
+                ) {
                     toggled = Some((reaction.emoji.clone(), !reaction.mine));
                 }
             }
@@ -4940,8 +5439,11 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
 fn reaction_chip(
     ui: &mut egui::Ui,
     t: &Tokens,
+    s: &Strings,
     store: &Store,
-    media: &mut MediaStore,
+    state: &mut UiState,
+    message_id: &str,
+    channel_id: &str,
     reaction: &crate::state::Reaction,
 ) -> bool {
     let count = reaction.count.to_string();
@@ -4971,7 +5473,7 @@ fn reaction_chip(
         egui::pos2(rect.min.x + space::SM + glyph / 2.0, rect.center().y),
         Vec2::splat(glyph),
     );
-    emoji::draw_reaction(ui, t, media, store, &reaction.emoji, glyph_rect);
+    emoji::draw_reaction(ui, t, &mut state.media, store, &reaction.emoji, glyph_rect);
     ui.painter().galley(
         egui::pos2(
             glyph_rect.max.x + space::XS,
@@ -4980,6 +5482,67 @@ fn reaction_chip(
         galley,
         label,
     );
+
+    response.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        ui.label(RichText::new(s.reaction_people).font(text::headline()));
+
+        let groups = store.reaction_details.get(message_id);
+        let group = groups.and_then(|groups| {
+            groups.iter().find(|group| match &reaction.emoji {
+                Emoji::Unicode(value) => group.unicode.as_deref() == Some(value.as_str()),
+                Emoji::Custom(id) => group.emoji_id.as_deref() == Some(id.as_str()),
+            })
+        });
+
+        let loading = store.reaction_details_loading.contains(message_id);
+        if groups.is_none() && !loading {
+            state.actions.push(ChatAction::LoadReactionDetails {
+                channel_id: channel_id.to_owned(),
+                message_id: message_id.to_owned(),
+                cursor: None,
+                append: false,
+            });
+        }
+
+        if let Some(group) = group {
+            if group.users.is_empty() && loading {
+                ui.label(s.reaction_loading);
+            } else {
+                for user in &group.users {
+                    let name = store
+                        .member(&user.user_id)
+                        .map(|member| member.name.as_str())
+                        .unwrap_or(user.user_id.as_str());
+                    ui.label(name);
+                }
+            }
+        } else if loading || groups.is_none() {
+            ui.label(s.reaction_loading);
+        }
+
+        if store
+            .reaction_details_has_more
+            .get(message_id)
+            .copied()
+            .unwrap_or(false)
+        {
+            ui.separator();
+            if ui
+                .add_enabled(!loading, egui::Button::new(s.reaction_more))
+                .clicked()
+                && let Some(cursor) = store.reaction_details_cursor(message_id)
+            {
+                state.actions.push(ChatAction::LoadReactionDetails {
+                    channel_id: channel_id.to_owned(),
+                    message_id: message_id.to_owned(),
+                    cursor: Some(cursor),
+                    append: true,
+                });
+            }
+        }
+    });
+
     response.clicked()
 }
 
@@ -7124,6 +7687,89 @@ mod draft_tests {
             reply_to: reply.map(str::to_owned),
             notify_reply: notify,
         }
+    }
+
+    #[test]
+    fn autocomplete_de_filtro_substitui_fragmento_e_permite_empilhar() {
+        assert_eq!(replace_search_fragment("d", "de:"), "de:");
+        assert_eq!(
+            replace_search_fragment("de:", "de:@chriexpe"),
+            "de:@chriexpe "
+        );
+        assert_eq!(
+            replace_search_fragment("de:@chriexpe e", "em:"),
+            "de:@chriexpe em:"
+        );
+        assert_eq!(
+            replace_search_fragment("de:@chriexpe em:", "em:#geral"),
+            "de:@chriexpe em:#geral "
+        );
+    }
+
+    #[test]
+    fn autocomplete_preserva_filtros_anteriores_e_texto_livre() {
+        assert_eq!(
+            replace_search_fragment("erro de:@ana t", "tem:"),
+            "erro de:@ana tem:"
+        );
+        assert_eq!(
+            replace_search_fragment("erro de:@ana tem:", "tem:link"),
+            "erro de:@ana tem:link "
+        );
+    }
+
+    #[test]
+    fn filtros_de_valor_unico_nao_sao_sugeridos_duas_vezes() {
+        let store = Store::default();
+
+        let author = search_shortcuts(&store, "de:@ana d", false);
+        assert!(
+            author.iter().all(|item| item.replacement != "de:"),
+            "de: não deve reaparecer depois de um autor já comprometido"
+        );
+
+        let channel = search_shortcuts(&store, "em:#geral e", false);
+        assert!(
+            channel.iter().all(|item| item.replacement != "em:"),
+            "em: não deve reaparecer depois de um canal já comprometido"
+        );
+
+        let mentions = search_shortcuts(&store, "mentions:@ana m", false);
+        assert!(
+            mentions
+                .iter()
+                .all(|item| item.replacement != "mentions:"),
+            "mentions: não deve reaparecer depois de um usuário já comprometido"
+        );
+    }
+
+    #[test]
+    fn tem_permite_intersecao_mas_nao_repete_o_mesmo_predicado() {
+        let store = Store::default();
+
+        let after_link = search_shortcuts(&store, "tem:link tem:", false);
+        assert!(
+            after_link
+                .iter()
+                .all(|item| item.replacement != "tem:link")
+        );
+        assert!(
+            after_link
+                .iter()
+                .any(|item| item.replacement == "tem:anexo")
+        );
+
+        let after_both = search_shortcuts(&store, "tem:link tem:anexo t", false);
+        assert!(
+            after_both.iter().all(|item| item.replacement != "tem:"),
+            "tem: deve desaparecer quando link e anexo já foram usados"
+        );
+
+        let checkbox = search_shortcuts(&store, "t", true);
+        assert!(
+            checkbox.iter().any(|item| item.replacement == "tem:"),
+            "com anexo explícito ainda é válido acrescentar tem:link"
+        );
     }
 
     #[test]

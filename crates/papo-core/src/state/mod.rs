@@ -444,8 +444,13 @@ pub struct Store {
     pub audit_logs: Vec<models::AuditLogEntry>,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
+    pub search_has_more: bool,
     /// Uma busca saiu e ainda não voltou.
     pub searching: bool,
+    /// Detalhes de reação carregados sob demanda, por mensagem.
+    pub reaction_details: HashMap<String, Vec<models::ReactionGroup>>,
+    pub reaction_details_has_more: HashMap<String, bool>,
+    pub reaction_details_loading: HashSet<String>,
     /// A call: quem está em cada canal de voz e onde ela aparece na tela.
     pub call: CallState,
 }
@@ -489,7 +494,11 @@ impl Default for Store {
             devices: Vec::new(),
             audit_logs: Vec::new(),
             search_results: Vec::new(),
+            search_has_more: false,
             searching: false,
+            reaction_details: HashMap::new(),
+            reaction_details_has_more: HashMap::new(),
+            reaction_details_loading: HashSet::new(),
             call: CallState::default(),
         }
     }
@@ -648,6 +657,22 @@ impl Store {
             i += 1;
         }
         (out, bindings)
+    }
+
+    pub fn begin_reaction_details(&mut self, message_id: &str) -> bool {
+        self.reaction_details_loading.insert(message_id.to_owned())
+    }
+
+    pub fn reaction_details_cursor(
+        &self,
+        message_id: &str,
+    ) -> Option<(DateTime<Utc>, String)> {
+        self.reaction_details
+            .get(message_id)?
+            .iter()
+            .flat_map(|group| group.users.iter())
+            .min_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)))
+            .map(|user| (user.created_at, user.id.clone()))
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
@@ -1714,9 +1739,55 @@ impl Store {
                 self.busy = false;
             }
             Update::Done => self.busy = false,
-            Update::SearchResults(results) => {
-                self.search_results = results;
+            Update::SearchFailed => {
                 self.searching = false;
+            }
+            Update::SearchResults {
+                results,
+                has_more,
+                append,
+            } => {
+                if append {
+                    for result in results {
+                        if !self.search_results.iter().any(|existing| existing.id == result.id) {
+                            self.search_results.push(result);
+                        }
+                    }
+                } else {
+                    self.search_results = results;
+                }
+                self.search_has_more = has_more;
+                self.searching = false;
+            }
+            Update::ReactionDetailsFailed { message_id } => {
+                self.reaction_details_loading.remove(&message_id);
+            }
+            Update::ReactionDetails {
+                message_id,
+                reactions,
+                has_more,
+                append,
+            } => {
+                let target = self.reaction_details.entry(message_id.clone()).or_default();
+                if !append {
+                    target.clear();
+                }
+                for mut incoming in reactions {
+                    if let Some(existing) = target.iter_mut().find(|group| {
+                        group.emoji_id == incoming.emoji_id && group.unicode == incoming.unicode
+                    }) {
+                        for user in incoming.users.drain(..) {
+                            if !existing.users.iter().any(|known| known.id == user.id) {
+                                existing.users.push(user);
+                            }
+                        }
+                        existing.count = existing.users.len() as u32;
+                    } else {
+                        target.push(incoming);
+                    }
+                }
+                self.reaction_details_has_more.insert(message_id.clone(), has_more);
+                self.reaction_details_loading.remove(&message_id);
             }
             // Chega depois da lista nova, então o canal já está lá.
             Update::ChannelCreated(id) => {
@@ -3883,6 +3954,76 @@ mod tests {
             !ops.iter().any(|op| matches!(op, CacheOp::ReplaceChannelSnapshot { .. })),
             "refresh parcial não pode achatar o cache inteiro"
         );
+    }
+
+    #[test]
+    fn busca_paginada_anexa_sem_duplicar() {
+        let mut store = Store::default();
+        let at = Utc::now();
+        let result = |id: &str| models::SearchResult {
+            kind: "message".to_owned(),
+            id: id.to_owned(),
+            content: id.to_owned(),
+            channel_id: "geral".to_owned(),
+            channel_name: "Geral".to_owned(),
+            author_id: Some("u1".to_owned()),
+            author_username: Some("ana".to_owned()),
+            created_at: Some(at),
+        };
+
+        store.apply(Update::SearchResults {
+            results: vec![result("a"), result("b")],
+            has_more: true,
+            append: false,
+        });
+        store.apply(Update::SearchResults {
+            results: vec![result("b"), result("c")],
+            has_more: false,
+            append: true,
+        });
+
+        let ids: Vec<_> = store.search_results.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, vec!["a", "b", "c"]);
+        assert!(!store.search_has_more);
+        assert!(!store.searching);
+    }
+
+    #[test]
+    fn detalhes_de_reacao_mesclam_paginas_e_cursor_pega_a_mais_antiga() {
+        let mut store = Store::default();
+        let now = Utc::now();
+        let group = |users: Vec<models::ReactionUser>| models::ReactionGroup {
+            emoji_id: None,
+            unicode: Some("👍".to_owned()),
+            count: users.len() as u32,
+            users,
+        };
+        let user = |id: &str, seconds: i64| models::ReactionUser {
+            id: id.to_owned(),
+            user_id: format!("user-{id}"),
+            created_at: now - chrono::Duration::seconds(seconds),
+        };
+
+        assert!(store.begin_reaction_details("m1"));
+        store.apply(Update::ReactionDetails {
+            message_id: "m1".to_owned(),
+            reactions: vec![group(vec![user("r1", 1), user("r2", 2)])],
+            has_more: true,
+            append: false,
+        });
+        store.apply(Update::ReactionDetails {
+            message_id: "m1".to_owned(),
+            reactions: vec![group(vec![user("r2", 2), user("r3", 3)])],
+            has_more: false,
+            append: true,
+        });
+
+        let users = &store.reaction_details["m1"][0].users;
+        assert_eq!(users.len(), 3);
+        let cursor = store.reaction_details_cursor("m1").expect("cursor");
+        assert_eq!(cursor.1, "r3");
+        assert!(!store.reaction_details_has_more["m1"]);
+        assert!(!store.reaction_details_loading.contains("m1"));
     }
 
     #[test]

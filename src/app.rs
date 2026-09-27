@@ -1772,7 +1772,33 @@ impl PapoApp {
                     ws.runtime.store.call.floating = false;
                 }
             }
-            ChatAction::Search(text) => ws.runtime.net.send(Command::Search { text }),
+            ChatAction::Search {
+                request,
+                cursor,
+                append,
+            } => {
+                ws.runtime.store.searching = true;
+                ws.runtime.net.send(Command::Search {
+                    request,
+                    cursor,
+                    append,
+                });
+            }
+            ChatAction::LoadReactionDetails {
+                channel_id,
+                message_id,
+                cursor,
+                append,
+            } => {
+                if ws.runtime.store.begin_reaction_details(&message_id) {
+                    ws.runtime.net.send(Command::LoadReactionDetails {
+                        channel_id,
+                        message_id,
+                        cursor,
+                        append,
+                    });
+                }
+            }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
             ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
@@ -1983,7 +2009,8 @@ impl PapoApp {
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
             | ChatAction::EditProfile
-            | ChatAction::Search(_) => {}
+            | ChatAction::Search { .. }
+            | ChatAction::LoadReactionDetails { .. } => {}
             // A presença muda na hora, sem servidor para confirmar.
             ChatAction::SetPresence(status) => {
                 let store = &mut self.workspaces[self.active].runtime.store;
