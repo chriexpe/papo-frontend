@@ -4062,6 +4062,7 @@ mod tests {
                 name: "Geral".to_owned(),
                 kind: "text".to_owned(),
                 topic: None,
+                parent_id: None,
                 position: 0,
                 unread: false,
                 mentions: 0,
