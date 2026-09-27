@@ -792,8 +792,13 @@ pub struct UiState {
     chat_scroll_metrics: Option<(String, f32, f32)>,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
-    /// Offset aplicado no quadro descartado seguinte ao prepend.
+    /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
     forced_chat_scroll: Option<(String, f32)>,
+    /// Baseline para uma mudança de altura assíncrona acima da viewport.
+    relayout_scroll_anchor: Option<(String, f32, f32)>,
+    /// Estado observado dos previews; false -> true indica que metadados ricos
+    /// chegaram e o cartão pode mudar de altura.
+    preview_layout_ready: std::collections::HashMap<String, bool>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -893,6 +898,8 @@ impl Default for UiState {
             chat_scroll_metrics: None,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
+            relayout_scroll_anchor: None,
+            preview_layout_ready: std::collections::HashMap::new(),
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -940,6 +947,18 @@ impl UiState {
     }
 }
 
+fn preserve_chat_position_for_relayout(state: &mut UiState, ctx: &egui::Context) {
+    let channel = state.last_channel.clone();
+    let Some((metrics_channel, offset, height)) = state.chat_scroll_metrics.as_ref() else {
+        return;
+    };
+    if *metrics_channel != channel || height <= &0.0 {
+        return;
+    }
+    state.relayout_scroll_anchor = Some((channel, *offset, *height));
+    ctx.request_discard("conteúdo assíncrono mudou a altura da conversa");
+}
+
 pub fn draw(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -953,9 +972,10 @@ pub fn draw(
     state.media_seek_zones.clear();
     state.webembed_inline_rect = None;
 
-    // Mídia que acabou de chegar muda a altura das mensagens.
+    // Mídia que acabou de chegar pode mudar a altura de uma mensagem já
+    // visível. Preserva o ponto visual antes de deixar a nova geometria entrar.
     if state.media.pump(ui.ctx()) {
-        state.relayout = true;
+        preserve_chat_position_for_relayout(state, ui.ctx());
     }
 
     // Resultado de um canal que nunca carregou: a busca não pode ficar
@@ -994,6 +1014,7 @@ pub fn draw(
         state.chat_scroll_metrics = None;
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
+        state.relayout_scroll_anchor = None;
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2268,6 +2289,19 @@ fn conversation(
                     Some((channel_id.clone(), anchor_offset + delta));
                 state.history_scroll_anchor = None;
                 ui.ctx().request_discard("histórico antigo inserido acima da viewport");
+            }
+
+            if let Some((anchor_channel, anchor_offset, old_height)) =
+                state.relayout_scroll_anchor.clone()
+                && anchor_channel == channel_id
+                && old_height > 0.0
+                && (output.content_size.y - old_height).abs() > 1.0
+            {
+                let delta = output.content_size.y - old_height;
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), (anchor_offset + delta).max(0.0)));
+                state.relayout_scroll_anchor = None;
+                ui.ctx().request_discard("preview/mídia mudou acima da viewport");
             }
 
             state.chat_scroll_metrics = Some((
@@ -4193,6 +4227,14 @@ fn preview_card(
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
+    let is_ready = ready.is_some();
+    let previous_ready = state.preview_layout_ready.insert(embed_id.to_owned(), is_ready);
+    if previous_ready == Some(false)
+        && is_ready
+        && ui.cursor().min.y <= ui.clip_rect().max.y
+    {
+        preserve_chat_position_for_relayout(state, ui.ctx());
+    }
 
     let backend_image = backend
         .and_then(|preview| state.media.preview(preview))
