@@ -2882,7 +2882,7 @@ async fn handle(
                 .set_channel_notifications(&channel_id, &user_id, &setting)
                 .await
             {
-                Ok(_) => publish(updates, wake, Update::Done),
+                Ok(_) => relist_channels(api, storage_key, updates, wake).await,
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
