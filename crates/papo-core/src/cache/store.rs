@@ -322,10 +322,23 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             }
             statements
         }
-        CacheOp::UpsertMessage(message) => vec![Stmt {
-            sql: UPSERT_MESSAGE,
-            params: message_params(server_key, message),
-        }],
+        CacheOp::UpsertMessage(message) => vec![
+            Stmt {
+                sql: UPSERT_MESSAGE,
+                params: message_params(server_key, message),
+            },
+            Stmt {
+                sql: "INSERT INTO channel_cache_state (server_key, channel_id, cached_at)
+                      VALUES (?1, ?2, ?3)
+                      ON CONFLICT(server_key, channel_id) DO UPDATE SET
+                          cached_at = MAX(cached_at, excluded.cached_at)",
+                params: vec![
+                    text(server_key),
+                    text(&message.channel_id),
+                    integer(super::types::now_millis()),
+                ],
+            },
+        ],
         CacheOp::DeleteMessage { message_id } => vec![Stmt {
             sql: "DELETE FROM messages WHERE server_key = ?1 AND message_id = ?2",
             params: vec![text(server_key), text(message_id)],
@@ -1018,9 +1031,7 @@ impl TursoCache {
         let mut rows = self
             .conn
             .query(
-                "SELECT channel_id FROM channel_cache_state WHERE server_key = ?1
-                 UNION
-                 SELECT DISTINCT channel_id FROM messages WHERE server_key = ?1",
+                "SELECT channel_id FROM channel_cache_state WHERE server_key = ?1",
                 [server_key],
             )
             .await?;
