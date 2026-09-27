@@ -147,6 +147,143 @@ fn open_apply_reopen_round_trip() {
 }
 
 #[test]
+fn metadata_restore_does_not_require_loading_timelines() {
+    let temp = TempDb::new("metadata-only");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannels(vec![channel("geral", 0)]),
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".to_owned(),
+                cached_at: now_millis(),
+                messages: vec![message("m1", "geral", "oi", 1_000)],
+            },
+        ],
+    );
+    db.flush();
+
+    let metadata = db.load_metadata("srv").expect("metadata");
+    assert_eq!(metadata.channels.len(), 1);
+    assert!(metadata.cached_channels.contains("geral"));
+
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("page request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("page reply")
+        .expect("page");
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].id, "m1");
+    assert!(!page.has_more);
+}
+
+#[test]
+fn channel_cache_pages_are_bounded_and_cursor_stable() {
+    let temp = TempDb::new("channel-pages");
+    let db = open(&temp);
+    let messages = (0..205)
+        .map(|index| {
+            message(
+                &format!("m{index:03}"),
+                "geral",
+                &format!("msg {index}"),
+                1_000 + index,
+            )
+        })
+        .collect();
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages,
+        }],
+    );
+    db.flush();
+
+    let first = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("first request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("first reply")
+        .expect("first page");
+    assert_eq!(first.messages.len(), CACHE_PAGE_SIZE as usize);
+    assert_eq!(first.messages.first().map(|m| m.id.as_str()), Some("m105"));
+    assert_eq!(first.messages.last().map(|m| m.id.as_str()), Some("m204"));
+    assert!(first.has_more);
+
+    let oldest = first.messages.first().expect("oldest first page");
+    let second = db
+        .load_channel_page_async(
+            "srv",
+            "geral",
+            Some((oldest.created_at, oldest.id.clone())),
+        )
+        .expect("second request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("second reply")
+        .expect("second page");
+    assert_eq!(second.messages.len(), CACHE_PAGE_SIZE as usize);
+    assert_eq!(second.messages.first().map(|m| m.id.as_str()), Some("m005"));
+    assert_eq!(second.messages.last().map(|m| m.id.as_str()), Some("m104"));
+    assert!(second.has_more);
+
+    let oldest = second.messages.first().expect("oldest second page");
+    let third = db
+        .load_channel_page_async(
+            "srv",
+            "geral",
+            Some((oldest.created_at, oldest.id.clone())),
+        )
+        .expect("third request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("third reply")
+        .expect("third page");
+    assert_eq!(third.messages.len(), 5);
+    assert_eq!(third.messages.first().map(|m| m.id.as_str()), Some("m000"));
+    assert_eq!(third.messages.last().map(|m| m.id.as_str()), Some("m004"));
+    assert!(!third.has_more);
+}
+
+#[test]
+fn pinned_retention_does_not_move_local_history_cursor() {
+    let temp = TempDb::new("pinned-cursor");
+    let db = open(&temp);
+    let mut ancient_pin = message("pin", "geral", "fixada", 1);
+    ancient_pin.pinned = true;
+    let mut messages = vec![ancient_pin];
+    messages.extend((0..110).map(|index| {
+        message(
+            &format!("m{index:03}"),
+            "geral",
+            &format!("msg {index}"),
+            1_000 + index,
+        )
+    }));
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages,
+        }],
+    );
+    db.flush();
+
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("reply")
+        .expect("page");
+    assert_eq!(page.messages.len(), CACHE_PAGE_SIZE as usize);
+    assert!(page.messages.iter().all(|message| !message.pinned));
+    assert_eq!(page.messages.first().map(|m| m.id.as_str()), Some("m010"));
+    assert!(page.has_more);
+}
+
+#[test]
 fn migration_is_idempotent_across_reopens() {
     let temp = TempDb::new("migration");
     for _ in 0..3 {
