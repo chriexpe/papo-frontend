@@ -2553,7 +2553,8 @@ mod tests {
             Some(channel_id.to_owned())
         );
         let ticket = store.mark_loading(channel_id);
-        store.apply(Update::Messages { ticket, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.channel_needing_messages(), None);
         store
     }
@@ -2772,9 +2773,11 @@ mod tests {
         store.apply(Update::Connection(Connection::Online));
         let atual = store.mark_loading("geral");
 
-        store.apply(Update::Messages { ticket: antiga, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket: antiga, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2786,9 +2789,11 @@ mod tests {
         let segunda = store.mark_loading("geral");
         assert_ne!(primeira.request_id, segunda.request_id);
 
-        store.apply(Update::Messages { ticket: primeira, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket: primeira, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: segunda, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket: segunda, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
@@ -2800,7 +2805,8 @@ mod tests {
         let atual = store.mark_loading("geral");
         store.apply(Update::MessagesFailed(antiga));
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Refreshing);
-        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), pinned_ids: Some(Vec::new()) });
+        store.apply(Update::Messages { ticket: atual, messages: Vec::new(), has_more: false,
+ pinned_ids: Some(Vec::new()) });
         assert_eq!(store.timeline_status("geral"), TimelineStatus::Fresh);
     }
 
