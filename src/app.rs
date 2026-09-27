@@ -1501,6 +1501,16 @@ impl PapoApp {
         let s = self.settings.lang.strings();
         let ws = &mut self.workspaces[self.active];
         match action {
+            ChatAction::LoadOlderMessages => {
+                let channel_id = ws.runtime.store.selected_channel.clone();
+                if let Some((since, last_id)) = ws.runtime.store.begin_load_older(&channel_id) {
+                    ws.runtime.net.send(Command::LoadOlderMessages {
+                        channel_id,
+                        since,
+                        last_id,
+                    });
+                }
+            }
             ChatAction::Send {
                 content,
                 reply_to,
@@ -1967,7 +1977,8 @@ impl PapoApp {
                 }
             }
             // Sem rede na demonstração: estas ações não têm efeito local.
-            ChatAction::MoveChannel { .. }
+            ChatAction::LoadOlderMessages
+            | ChatAction::MoveChannel { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
