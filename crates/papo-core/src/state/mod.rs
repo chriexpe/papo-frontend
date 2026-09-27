@@ -3840,7 +3840,9 @@ mod tests {
         let mut old = wire_message("old", "geral", "old");
         old.created_at = base - chrono::Duration::minutes(10);
         let mut stale = wire_message("stale", "geral", "stale");
-        stale.created_at = base - chrono::Duration::minutes(1);
+        // Fica dentro da janela autoritativa do head (entre keep e new),
+        // portanto sua ausência na resposta significa exclusão.
+        stale.created_at = base + chrono::Duration::seconds(30);
         let mut keep = wire_message("keep", "geral", "old value");
         keep.created_at = base;
 
