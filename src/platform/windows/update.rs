@@ -65,6 +65,10 @@ impl Updater {
         updater
     }
 
+    pub fn enabled(&self) -> bool {
+        true
+    }
+
     pub fn check(&mut self) {
         if self.checking || self.downloading {
             return;
