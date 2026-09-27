@@ -630,6 +630,19 @@ impl Renderer {
         screen_descriptor: &ScreenDescriptor,
         mesh_offset: usize,
     ) {
+        profiling::function_scope!();
+
+        let pixels_per_point = screen_descriptor.pixels_per_point;
+        let size_in_pixels = screen_descriptor.size_in_pixels;
+        let mut needs_reset = true;
+        let mut index_buffer_slices = self.index_buffer.slices.iter().skip(mesh_offset);
+        let mut vertex_buffer_slices = self.vertex_buffer.slices.iter().skip(mesh_offset);
+
+        for epaint::ClippedPrimitive {
+            clip_rect,
+            primitive,
+        } in paint_jobs
+        {
             if needs_reset {
                 render_pass.set_viewport(
                     0.0,
