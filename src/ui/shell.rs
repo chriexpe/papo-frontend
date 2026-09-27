@@ -3000,19 +3000,65 @@ fn search_fragment(query: &str) -> (&str, usize) {
     (&query[start..], start)
 }
 
-fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
-    let (fragment, _) = search_fragment(query);
+#[derive(Clone, Copy, Debug, Default)]
+struct SearchFilterUsage {
+    author: bool,
+    channel: bool,
+    mentions: bool,
+    attachment: bool,
+    link: bool,
+}
+
+fn search_filter_usage(query: &str) -> SearchFilterUsage {
+    let mut usage = SearchFilterUsage::default();
+
+    for token in query.split_whitespace() {
+        let Some((prefix, value)) = token.split_once(':') else {
+            continue;
+        };
+        if value.is_empty() {
+            continue;
+        }
+        match prefix.to_lowercase().as_str() {
+            "de" | "from" | "author" => usage.author = true,
+            "em" | "in" | "channel" => usage.channel = true,
+            "mentions" | "menciona" | "mention" => usage.mentions = true,
+            "tem" | "has" => match value.to_lowercase().as_str() {
+                "link" => usage.link = true,
+                "anexo" | "arquivo" | "attachment" | "file" => usage.attachment = true,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    usage
+}
+
+fn search_shortcuts(
+    store: &Store,
+    query: &str,
+    explicit_attachment: bool,
+) -> Vec<SearchShortcut> {
+    let (fragment, start) = search_fragment(query);
     let lower = fragment.to_lowercase();
+    let mut usage = search_filter_usage(&query[..start]);
+    usage.attachment |= explicit_attachment;
     let mut out = Vec::new();
 
     if !lower.contains(':') {
-        for (token, hint) in [
-            ("de:", "autor"),
-            ("em:", "canal"),
-            ("tem:", "conteúdo"),
-            ("mentions:", "menção"),
-        ] {
-            if !lower.is_empty() && token.starts_with(&lower) {
+        let candidates = [
+            ("de:", "autor", !usage.author),
+            ("em:", "canal", !usage.channel),
+            (
+                "tem:",
+                "conteúdo",
+                !(usage.link && usage.attachment),
+            ),
+            ("mentions:", "menção", !usage.mentions),
+        ];
+        for (token, hint, available) in candidates {
+            if available && !lower.is_empty() && token.starts_with(&lower) {
                 out.push(SearchShortcut {
                     label: format!("{token}  {hint}"),
                     replacement: token.to_owned(),
@@ -3031,7 +3077,7 @@ fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
         .to_lowercase();
 
     match prefix_lower.as_str() {
-        "de" | "from" | "author" => {
+        "de" | "from" | "author" if !usage.author => {
             let mut members: Vec<_> = store
                 .members
                 .iter()
@@ -3057,7 +3103,7 @@ fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
                 });
             }
         }
-        "em" | "in" | "channel" => {
+        "em" | "in" | "channel" if !usage.channel => {
             let mut channels: Vec<_> = store
                 .channels
                 .iter()
@@ -3076,7 +3122,7 @@ fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
                 });
             }
         }
-        "mentions" | "menciona" | "mention" => {
+        "mentions" | "menciona" | "mention" if !usage.mentions => {
             let mut members: Vec<_> = store
                 .members
                 .iter()
@@ -3104,7 +3150,12 @@ fn search_shortcuts(store: &Store, query: &str) -> Vec<SearchShortcut> {
         }
         "tem" | "has" => {
             for value in ["link", "anexo", "arquivo"] {
-                if needle.is_empty() || value.starts_with(&needle) {
+                let available = match value {
+                    "link" => !usage.link,
+                    "anexo" | "arquivo" => !usage.attachment,
+                    _ => true,
+                };
+                if available && (needle.is_empty() || value.starts_with(&needle)) {
                     out.push(SearchShortcut {
                         label: format!("tem: {value}"),
                         replacement: format!("tem:{value}"),
@@ -3180,17 +3231,23 @@ fn search_request_from_panel(
         };
         match prefix.to_lowercase().as_str() {
             "de" | "from" | "author" => {
-                if let Some(id) = search_member_id(store, value) {
+                if author.is_none()
+                    && let Some(id) = search_member_id(store, value)
+                {
                     author = Some(id);
                 }
             }
             "em" | "in" | "channel" => {
-                if let Some(id) = search_channel_id(store, value) {
+                if channel.is_none()
+                    && let Some(id) = search_channel_id(store, value)
+                {
                     channel = Some(id);
                 }
             }
             "mentions" | "menciona" | "mention" => {
-                if let Some(id) = search_member_id(store, value) {
+                if mentions.is_none()
+                    && let Some(id) = search_member_id(store, value)
+                {
                     mentions = Some(id);
                 }
             }
@@ -3339,7 +3396,11 @@ fn search_panel(
         panel.query.clone_from(&query);
     }
 
-    let suggestions = search_shortcuts(store, &query);
+    let explicit_attachment = state
+        .panel
+        .as_ref()
+        .is_some_and(|panel| panel.search_attachments);
+    let suggestions = search_shortcuts(store, &query, explicit_attachment);
     if let Some(panel) = state.panel.as_mut() {
         if suggestions.is_empty() {
             panel.search_suggest_index = 0;
@@ -7654,6 +7715,60 @@ mod draft_tests {
         assert_eq!(
             replace_search_fragment("erro de:@ana tem:", "tem:link"),
             "erro de:@ana tem:link "
+        );
+    }
+
+    #[test]
+    fn filtros_de_valor_unico_nao_sao_sugeridos_duas_vezes() {
+        let store = Store::default();
+
+        let author = search_shortcuts(&store, "de:@ana d", false);
+        assert!(
+            author.iter().all(|item| item.replacement != "de:"),
+            "de: não deve reaparecer depois de um autor já comprometido"
+        );
+
+        let channel = search_shortcuts(&store, "em:#geral e", false);
+        assert!(
+            channel.iter().all(|item| item.replacement != "em:"),
+            "em: não deve reaparecer depois de um canal já comprometido"
+        );
+
+        let mentions = search_shortcuts(&store, "mentions:@ana m", false);
+        assert!(
+            mentions
+                .iter()
+                .all(|item| item.replacement != "mentions:"),
+            "mentions: não deve reaparecer depois de um usuário já comprometido"
+        );
+    }
+
+    #[test]
+    fn tem_permite_intersecao_mas_nao_repete_o_mesmo_predicado() {
+        let store = Store::default();
+
+        let after_link = search_shortcuts(&store, "tem:link tem:", false);
+        assert!(
+            after_link
+                .iter()
+                .all(|item| item.replacement != "tem:link")
+        );
+        assert!(
+            after_link
+                .iter()
+                .any(|item| item.replacement == "tem:anexo")
+        );
+
+        let after_both = search_shortcuts(&store, "tem:link tem:anexo t", false);
+        assert!(
+            after_both.iter().all(|item| item.replacement != "tem:"),
+            "tem: deve desaparecer quando link e anexo já foram usados"
+        );
+
+        let checkbox = search_shortcuts(&store, "t", true);
+        assert!(
+            checkbox.iter().any(|item| item.replacement == "tem:"),
+            "com anexo explícito ainda é válido acrescentar tem:link"
         );
     }
 
