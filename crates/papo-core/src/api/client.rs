@@ -503,6 +503,23 @@ impl Api {
         self.get(&format!("/channels/{channel_id}/messages")).await
     }
 
+    pub async fn messages_before(
+        &self,
+        channel_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: &str,
+    ) -> ApiResult<MessageList> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair(
+                "since",
+                &since.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            )
+            .append_pair("last_id", last_id)
+            .finish();
+        self.get(&format!("/channels/{channel_id}/messages?{query}"))
+            .await
+    }
+
     /// O endpoint aceita multipart porque carrega anexos; sem anexo, só os
     /// campos de texto.
     pub async fn send_message(
