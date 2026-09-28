@@ -67,6 +67,22 @@
   </content_rating>
 
   <releases>
+    <release version="0.6.0" date="2026-09-28">
+      <description>
+        <p>Rich Presence no desktop, prévias de link mais ricas com player de vídeo próprio e ajustes de busca, fixadas e gestos.</p>
+        <p xml:lang="en">Desktop Rich Presence, richer link previews with a built-in video player, and search, pinned and gesture polish.</p>
+        <ul>
+          <li>Atividade do Rich Presence por um arRPC existente ou pelo rsRPC embutido, com atividade manual e imagem própria</li>
+          <li xml:lang="en">Rich Presence through an existing arRPC bridge or the bundled rsRPC, with a manual activity and its own image</li>
+          <li>Posts do Instagram, X e YouTube com autor, legenda, números e vídeo tocando dentro do Papo</li>
+          <li xml:lang="en">Instagram, X and YouTube posts with author, caption, counts and video playing inside Papo</li>
+          <li>Um player único para anexos e prévias, com volume, busca e tela cheia</li>
+          <li xml:lang="en">One player for attachments and previews, with volume, seeking and fullscreen</li>
+          <li>Busca e fixadas rolam com a roda do mouse e mostram anexos</li>
+          <li xml:lang="en">Search and pinned panels scroll with the mouse wheel and show attachments</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.1" date="2026-09-28">
       <description>
         <p>Versão 0.5.1.</p>
