@@ -838,6 +838,17 @@ pub struct MarkNotificationsReadRequest {
     pub notification_ids: Vec<String>,
 }
 
+/// `PUT`/`DELETE /users/me/push-device`. O `user_id` vem da sessão, nunca
+/// do corpo; no `DELETE` só o `token` importa.
+#[derive(Debug, Clone, Serialize)]
+pub struct PushDeviceRequest {
+    pub token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserSummary {
     pub id: String,

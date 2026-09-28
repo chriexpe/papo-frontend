@@ -26,6 +26,8 @@ struct WorkServer {
     server_key: String,
     server_url: String,
     notifications_enabled: bool,
+    /// O servidor entrega por FCM: a reconciliação periódica sai de cena.
+    push: bool,
 }
 
 #[derive(Serialize)]
@@ -37,16 +39,18 @@ static LAST_SCHEDULE: Mutex<Option<String>> = Mutex::new(None);
 
 /// Mirrors the actual configured workspaces into WorkManager. Repeated frame
 /// calls are cheap: JNI is only crossed when the serialized desired set changes.
+/// Items are `(server_key, server_url, notifications_enabled, push)`.
 pub fn sync_periodic<'a>(
-    servers: impl IntoIterator<Item = (&'a str, &'a str, bool)>,
+    servers: impl IntoIterator<Item = (&'a str, &'a str, bool, bool)>,
 ) {
     let payload = WorkSync {
         servers: servers
             .into_iter()
-            .map(|(server_key, server_url, notifications_enabled)| WorkServer {
+            .map(|(server_key, server_url, notifications_enabled, push)| WorkServer {
                 server_key: server_key.to_owned(),
                 server_url: server_url.to_owned(),
                 notifications_enabled,
+                push,
             })
             .collect(),
     };

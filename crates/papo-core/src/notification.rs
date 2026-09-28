@@ -32,6 +32,9 @@ pub enum SuppressionReason {
     OwnMessage,
     ForegroundVisible,
     PlatformUnavailable,
+    /// O servidor entrega por push; com o app fora da tela, a notificação
+    /// dele é a que vale e esta seria duplicata.
+    PushDelivered,
 }
 
 impl SuppressionReason {
@@ -41,6 +44,7 @@ impl SuppressionReason {
             Self::OwnMessage => "own_message",
             Self::ForegroundVisible => "foreground_visible",
             Self::PlatformUnavailable => "platform_unavailable",
+            Self::PushDelivered => "push_delivered",
         }
     }
 }
@@ -66,6 +70,8 @@ pub struct NotificationContext {
     pub selected_channel: String,
     pub visible_server: bool,
     pub notifications_enabled: bool,
+    /// Este aparelho está registrado para push neste servidor.
+    pub push_registered: bool,
     pub channels: HashMap<String, String>,
     pub members: HashMap<String, String>,
 }
@@ -276,6 +282,8 @@ impl NotificationCoordinator {
             && context.selected_channel == candidate.channel_id
         {
             Some(SuppressionReason::ForegroundVisible)
+        } else if context.push_registered && !self.is_foreground() {
+            Some(SuppressionReason::PushDelivered)
         } else if self.sink.is_none() {
             Some(SuppressionReason::PlatformUnavailable)
         } else {
@@ -488,6 +496,7 @@ mod tests {
             selected_channel: "geral".to_owned(),
             visible_server: visible,
             notifications_enabled: enabled,
+            push_registered: false,
             channels: [("geral".to_owned(), "Geral".to_owned()), ("outro".to_owned(), "Outro".to_owned())]
                 .into_iter()
                 .collect(),
@@ -716,6 +725,36 @@ mod tests {
             NotificationOutcome::Delivered
         );
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 2);
+    }
+
+    #[test]
+    fn push_server_leaves_background_delivery_to_push() {
+        let temp = TempDb::new("push-background");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        let mut pushed = context("srv", "me", true, false);
+        pushed.push_registered = true;
+        coordinator.sync_context(pushed.clone());
+
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m1", "outro", "bia", "<@me>"),
+                CandidateSource::Live,
+            ),
+            NotificationOutcome::Suppressed(SuppressionReason::PushDelivered)
+        );
+
+        // Em primeiro plano o FCM não mostra nada: a via local continua.
+        coordinator.set_foreground(true);
+        assert_eq!(
+            coordinator.handle_message(
+                "srv",
+                &message("m2", "outro", "bia", "<@me>"),
+                CandidateSource::Live,
+            ),
+            NotificationOutcome::Delivered
+        );
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[test]

@@ -27,6 +27,25 @@ val releaseStorePassword = System.getenv("PAPO_ANDROID_STORE_PASSWORD")
 val releaseKeyAlias = System.getenv("PAPO_ANDROID_KEY_ALIAS")
 val releaseKeyPassword = System.getenv("PAPO_ANDROID_KEY_PASSWORD")
 
+// Configuração do app Android no projeto Firebase (os campos do
+// google-services.json). Vem de variável de ambiente ou de propriedade do
+// Gradle (`~/.gradle/gradle.properties`), nunca do repositório: um fork não
+// herda o projeto de ninguém. Sem os quatro valores o APK sai sem FCM e as
+// notificações em segundo plano ficam com a reconciliação periódica.
+fun firebaseValue(name: String): String? =
+    (System.getenv(name) ?: providers.gradleProperty(name).orNull)?.takeIf { it.isNotBlank() }
+
+val firebaseConfig = mapOf(
+    "google_app_id" to firebaseValue("PAPO_FIREBASE_APP_ID"),
+    "google_api_key" to firebaseValue("PAPO_FIREBASE_API_KEY"),
+    "project_id" to firebaseValue("PAPO_FIREBASE_PROJECT_ID"),
+    "gcm_defaultSenderId" to firebaseValue("PAPO_FIREBASE_SENDER_ID"),
+)
+val firebaseConfigured = firebaseConfig.values.all { it != null }
+if (!firebaseConfigured && firebaseConfig.values.any { it != null }) {
+    logger.warn("Papo: configuração do Firebase incompleta; o APK sai sem FCM")
+}
+
 android {
     namespace = "io.github.chriexpe.papo"
     compileSdk = 37
@@ -55,6 +74,16 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
+
+        // Os mesmos recursos que o plugin google-services geraria: com eles o
+        // FirebaseInitProvider inicializa o Firebase sozinho na abertura.
+        if (firebaseConfigured) {
+            firebaseConfig.forEach { (name, value) -> resValue("string", name, value!!) }
+        }
+    }
+
+    buildFeatures {
+        resValues = true
     }
 
     // O `.so` não é compilado pelo Gradle: quem faz isso é o `cargo ndk`,
@@ -114,4 +143,6 @@ dependencies {
     implementation(libs.games.activity)
     implementation(libs.appcompat)
     implementation(libs.work.runtime)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 }

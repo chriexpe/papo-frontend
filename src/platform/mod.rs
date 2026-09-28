@@ -55,6 +55,10 @@ pub mod android_message;
 #[cfg(target_os = "android")]
 #[path = "android/work.rs"]
 pub mod android_work;
+
+#[cfg(target_os = "android")]
+#[path = "android/push.rs"]
+pub mod android_push;
 /// Browser surface nativa para embeds ricos.
 #[cfg(target_os = "android")]
 #[path = "android/webembed.rs"]

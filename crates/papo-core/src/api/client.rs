@@ -1129,6 +1129,24 @@ impl Api {
         .await
     }
 
+    /// Registra (upsert) o token FCM deste aparelho na conta da sessão.
+    pub async fn register_push_device(&self, device: &PushDeviceRequest) -> ApiResult<()> {
+        let _: serde_json::Value = self.put("/users/me/push-device", device).await?;
+        Ok(())
+    }
+
+    pub async fn unregister_push_device(&self, token: &str) -> ApiResult<()> {
+        self.delete(
+            "/users/me/push-device",
+            Some(&PushDeviceRequest {
+                token: token.to_owned(),
+                platform: None,
+                device_name: None,
+            }),
+        )
+        .await
+    }
+
     pub async fn users(&self) -> ApiResult<Vec<UserSummary>> {
         let list: UserList = self.get("/users").await?;
         Ok(list.users)

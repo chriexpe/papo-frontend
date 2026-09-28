@@ -2344,7 +2344,7 @@ impl Store {
                 self.error = Some(message);
                 self.busy = false;
             }
-            Update::BackgroundFinished(_) => {}
+            Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
         }
     }
 

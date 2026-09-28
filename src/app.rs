@@ -356,6 +356,11 @@ pub struct Settings {
     #[serde(default)]
     pub cached_user_settings:
         std::collections::HashMap<String, crate::api::models::UserConfig>,
+    /// Servidores que aceitaram o token de push deste aparelho: server_key →
+    /// token. Nestes o FCM entrega as notificações em segundo plano e a
+    /// reconciliação periódica fica desligada. Só o Android escreve aqui.
+    #[serde(default)]
+    pub push_devices: std::collections::HashMap<String, String>,
 }
 
 /// Marcas de leitura por servidor: chave do servidor → canal → instante.
@@ -400,6 +405,7 @@ impl Default for Settings {
             server_marks: ReadMarks::new(),
             pending_user_settings: std::collections::HashMap::new(),
             cached_user_settings: std::collections::HashMap::new(),
+            push_devices: std::collections::HashMap::new(),
         }
     }
 }
@@ -453,6 +459,12 @@ impl Settings {
         }
         self.active = active.min(self.servers.len() - 1);
         self.server_url = self.servers[self.active].url.clone();
+        let known: std::collections::HashSet<String> = self
+            .servers
+            .iter()
+            .map(|entry| crate::state::server_key(&entry.url))
+            .collect();
+        self.push_devices.retain(|key, _| known.contains(key));
 
         // Antes de criar tokens de tema / pedir permissão nativa, projeta o
         // último config conhecido da conta ativa. Pending local tem prioridade.
@@ -526,6 +538,10 @@ pub struct Workspace {
     sent_user_config: Option<crate::api::models::UserConfig>,
     /// Leituras Turso em voo. O worker de cache faz SQL; egui só sonda o receiver.
     cache_pages: Vec<PendingCachePage>,
+    /// Último pedido de push feito nesta conexão: (token, registrar?). O
+    /// pedido só sai de novo quando um dos dois muda.
+    #[cfg(target_os = "android")]
+    push_sent: Option<(String, bool)>,
     #[cfg(target_os = "android")]
     _network_registration: crate::platform::android_network::Registration,
 }
@@ -579,6 +595,8 @@ impl Workspace {
             sent_user_config: None,
             cache_pages: Vec::new(),
             #[cfg(target_os = "android")]
+            push_sent: None,
+            #[cfg(target_os = "android")]
             _network_registration: network_registration,
         }
     }
@@ -623,11 +641,12 @@ impl Workspace {
         self.runtime.net.send(Command::LoadMessages { ticket });
     }
 
-    fn sync_notification_context(&self, enabled: bool, visible_server: bool) {
+    fn sync_notification_context(&self, enabled: bool, visible_server: bool, push: bool) {
         self.runtime.sync_notification_context(RuntimeNotificationView {
             server_label: self.label.clone(),
             visible_server,
             notifications_enabled: enabled,
+            push_registered: push,
         });
     }
 
@@ -728,7 +747,7 @@ impl PapoApp {
 
         #[cfg(target_os = "android")]
         {
-            let background_servers: Vec<(String, String, bool)> = settings
+            let background_servers: Vec<(String, String, bool, bool)> = settings
                 .servers
                 .iter()
                 .map(|entry| {
@@ -739,13 +758,14 @@ impl PapoApp {
                         .or_else(|| settings.cached_user_settings.get(&key))
                         .map(|config| config.notifications.enabled)
                         .unwrap_or(settings.notifications);
-                    (key, entry.url.clone(), enabled)
+                    let push = settings.push_devices.contains_key(&key);
+                    (key, entry.url.clone(), enabled, push)
                 })
                 .collect();
             crate::platform::android_work::sync_periodic(
-                background_servers
-                    .iter()
-                    .map(|(key, url, enabled)| (key.as_str(), url.as_str(), *enabled)),
+                background_servers.iter().map(|(key, url, enabled, push)| {
+                    (key.as_str(), url.as_str(), *enabled, *push)
+                }),
             );
         }
 
@@ -856,6 +876,9 @@ impl PapoApp {
             workspace.sync_notification_context(
                 settings.notifications,
                 index == active,
+                settings
+                    .push_devices
+                    .contains_key(&workspace.runtime.server_key),
             );
         }
 
@@ -1605,6 +1628,9 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
+        if let Some(token) = self.settings.push_devices.remove(&key) {
+            self.workspaces[index].runtime.release_push_device(token);
+        }
         self.workspaces[index].runtime.forget_server();
         self.workspaces.remove(index);
         self.settings.servers.remove(index);
@@ -1641,6 +1667,9 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
+        if let Some(token) = self.settings.push_devices.remove(&key) {
+            self.workspaces[index].runtime.release_push_device(token);
+        }
         self.workspaces[index].runtime.forget_server();
         crate::media::clear_server_media_cache(&key);
         self.workspaces.remove(index);
@@ -2521,6 +2550,14 @@ impl PapoApp {
                             }
                         }
                         RuntimeEffect::Call(effect) => route_call_effect(ws, *effect, ctx),
+                        RuntimeEffect::PushDevice { token, registered } => {
+                            let key = ws.runtime.server_key.clone();
+                            if registered {
+                                self.settings.push_devices.insert(key, token);
+                            } else if self.settings.push_devices.get(&key) == Some(&token) {
+                                self.settings.push_devices.remove(&key);
+                            }
+                        }
                     }
                 }
             }
@@ -2532,13 +2569,38 @@ impl PapoApp {
         let Some(target) = crate::platform::android_message::take_navigation() else {
             return;
         };
-        let wanted = normalise_server_url(&target.server_url);
-        let Some(index) = self
-            .workspaces
-            .iter()
-            .position(|ws| normalise_server_url(&ws.runtime.url) == wanted)
-        else {
-            return;
+        let index = if target.server_url.is_empty() {
+            // Notificação do FCM desenhada pelo próprio sistema: o toque só
+            // traz o canal, e o servidor é o que o conhece.
+            let found = self.workspaces.iter().position(|ws| {
+                ws.runtime
+                    .store
+                    .channels
+                    .iter()
+                    .any(|channel| channel.id == target.channel_id)
+            });
+            let Some(index) = found else {
+                let loading = self.workspaces.iter().any(|ws| {
+                    let store = &ws.runtime.store;
+                    store.screen == Screen::Starting
+                        || (store.screen == Screen::Chat && store.channels.is_empty())
+                });
+                if loading {
+                    crate::platform::android_message::defer_navigation(target);
+                }
+                return;
+            };
+            index
+        } else {
+            let wanted = normalise_server_url(&target.server_url);
+            let Some(index) = self
+                .workspaces
+                .iter()
+                .position(|ws| normalise_server_url(&ws.runtime.url) == wanted)
+            else {
+                return;
+            };
+            index
         };
 
         let ready = self.workspaces[index].runtime
@@ -2829,7 +2891,14 @@ impl PapoApp {
                 }
                 self.quit(ctx);
             }
-            MenuCommand::SignOut => self.ws().runtime.net.send(Command::Logout),
+            MenuCommand::SignOut => {
+                // O token sai antes da sessão: é ela que autoriza o DELETE.
+                let key = self.ws().runtime.server_key.clone();
+                if let Some(token) = self.settings.push_devices.get(&key).cloned() {
+                    self.ws().runtime.net.send(Command::UnregisterPushDevice { token });
+                }
+                self.ws().runtime.net.send(Command::Logout);
+            }
             MenuCommand::Preferences => self
                 .sheet
                 .toggle(crate::ui::settings::Surface::App),
@@ -3482,6 +3551,46 @@ impl PapoApp {
         }
     }
 
+    /// Leva o token FCM a cada servidor com sessão e notificações ligadas, e
+    /// o tira dos que as desligaram. Sem token (APK sem Firebase, aparelho
+    /// sem Play Services) nada acontece e a reconciliação periódica segue.
+    #[cfg(target_os = "android")]
+    fn sync_push_devices(&mut self) {
+        let Some(device) = crate::platform::android_push::device() else {
+            return;
+        };
+        for index in 0..self.workspaces.len() {
+            let enabled = self.notification_enabled_for(index);
+            let ws = &mut self.workspaces[index];
+            let key = &ws.runtime.server_key;
+            match ws.runtime.store.screen {
+                Screen::Chat if !ws.runtime.store.me.is_empty() => {}
+                // A sessão acabou e levou o registro junto.
+                Screen::Auth => {
+                    self.settings.push_devices.remove(key);
+                    ws.push_sent = None;
+                    continue;
+                }
+                _ => continue,
+            }
+            let desired = (device.token.clone(), enabled);
+            if ws.push_sent.as_ref() == Some(&desired) {
+                continue;
+            }
+            if enabled {
+                ws.runtime.net.send(Command::RegisterPushDevice {
+                    token: device.token.clone(),
+                    device_name: device.name.clone(),
+                });
+            } else if let Some(token) = self.settings.push_devices.get(key) {
+                ws.runtime.net.send(Command::UnregisterPushDevice {
+                    token: token.clone(),
+                });
+            }
+            ws.push_sent = Some(desired);
+        }
+    }
+
     fn notification_enabled_for(&self, index: usize) -> bool {
         let workspace = &self.workspaces[index];
         self.settings
@@ -3510,6 +3619,9 @@ impl PapoApp {
             workspace.sync_notification_context(
                 self.notification_enabled_for(index),
                 index == self.active,
+                self.settings
+                    .push_devices
+                    .contains_key(&workspace.runtime.server_key),
             );
         }
 
@@ -3526,6 +3638,9 @@ impl PapoApp {
                             workspace.runtime.server_key.as_str(),
                             workspace.runtime.url.as_str(),
                             self.notification_enabled_for(index),
+                            self.settings
+                                .push_devices
+                                .contains_key(&workspace.runtime.server_key),
                         )
                     }),
             );
@@ -3605,7 +3720,10 @@ impl eframe::App for PapoApp {
         self.pump_updater(&ctx);
 
         #[cfg(target_os = "android")]
-        self.handle_android_notification_navigation(&ctx);
+        {
+            self.handle_android_notification_navigation(&ctx);
+            self.sync_push_devices();
+        }
         self.sync_notification_contexts();
 
         // Indo para segundo plano: gravar agora, porque pode não haver um

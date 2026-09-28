@@ -63,6 +63,11 @@ final class PapoWorkScheduler {
                 if (serverKey.isBlank() || serverUrl.isBlank()) {
                     continue;
                 }
+                // Servidor que entrega por FCM: fora do conjunto desejado, o
+                // job periódico dele é cancelado logo abaixo.
+                if (server.optBoolean("push", false)) {
+                    continue;
+                }
                 final DesiredServer entry =
                         new DesiredServer(serverKey, serverUrl, notificationsEnabled);
                 desired.add(entry);
