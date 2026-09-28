@@ -20,6 +20,10 @@ const ZOOM_MAX: f32 = 12.0;
 pub struct Viewer {
     pub message_id: String,
     pub index: usize,
+    /// Search results may reference messages outside the hydrated timeline.
+    /// Keep their attachment snapshot with the viewer so image/video/audio
+    /// still works without forcing a channel-history fetch first.
+    attachments: Option<Vec<Attachment>>,
     zoom: f32,
     offset: Vec2,
     /// Sem zoom manual: a imagem acompanha a janela.
@@ -31,10 +35,30 @@ impl Viewer {
         Self {
             message_id,
             index,
+            attachments: None,
             zoom: 1.0,
             offset: Vec2::ZERO,
             fitted: true,
         }
+    }
+
+    pub fn with_attachments(
+        message_id: String,
+        index: usize,
+        attachments: Vec<Attachment>,
+    ) -> Self {
+        Self {
+            message_id,
+            index,
+            attachments: Some(attachments),
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            fitted: true,
+        }
+    }
+
+    pub fn source_attachments(&self) -> Option<&[Attachment]> {
+        self.attachments.as_deref()
     }
 
     fn reset(&mut self) {

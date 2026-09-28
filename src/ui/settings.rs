@@ -448,6 +448,7 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
         tiled,
         pieces: Vec::new(),
         stack_next: false,
+        min_height_next: ROW_HEIGHT,
     };
     contents(&mut rows);
     let separators = std::mem::take(&mut rows.separators);
@@ -500,6 +501,9 @@ pub struct Rows<'u> {
     pieces: Vec<(egui::layers::ShapeIdx, Rect)>,
     /// A próxima linha empilha o controle embaixo do rótulo (campos).
     stack_next: bool,
+    /// Altura mínima de uma linha especial (por exemplo, um preview de 36px).
+    /// Volta ao padrão depois de consumir uma linha.
+    min_height_next: f32,
 }
 
 impl Rows<'_> {
@@ -546,6 +550,7 @@ impl Rows<'_> {
         control: impl FnOnce(&mut egui::Ui, &Tokens),
     ) {
         let t = self.t;
+        let min_height = std::mem::replace(&mut self.min_height_next, ROW_HEIGHT);
         let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
         let full = (self.ui.available_width() - inset).max(120.0);
         // Em peças o controle fica à direita (chave, menu) e só os campos
@@ -589,10 +594,11 @@ impl Rows<'_> {
                 .unwrap_or(0.0);
         let control_h = if self.lines > 1 { self.lines as f32 * 17.0 + space::SM * 2.0 } else { 30.0 };
         let height = if stacked {
-            (space::MD + text_height + space::SM + control_h + space::MD).max(ROW_HEIGHT)
+            (space::MD + text_height + space::SM + control_h + space::MD).max(min_height)
         } else {
             // Campo de várias linhas ao lado do rótulo: a linha cresce com ele.
-            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0).max(ROW_HEIGHT)
+            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0)
+                .max(min_height)
         };
         let (band_rect, inner) = self.band(height);
         spotlight(self.ui, band_rect, label);
@@ -636,6 +642,10 @@ impl Rows<'_> {
         // no pé do controle, acima do fim da faixa, e a linha seguinte
         // começaria por cima desta (no celular, as peças se sobrepunham).
         self.ui.advance_cursor_after_rect(band_rect);
+    }
+
+    fn min_height_next(&mut self, height: f32) {
+        self.min_height_next = height.max(ROW_HEIGHT);
     }
 
     /// Linha inteira clicável, para navegar ou disparar uma ação.
@@ -3249,6 +3259,10 @@ fn server_pane(
             section(ui, t, s.pane_identity);
             group(ui, t, |rows| {
                 rows.field(s.server_name, &mut draft.server_name, 64, false);
+                // 36px icon + 26px picker button need actual breathing room
+                // between the separators; a normal 44px row made them appear
+                // pinned to the lower divider.
+                rows.min_height_next(52.0);
                 rows.row(s.server_icon, None, |ui, t| {
                     if row_button(ui, t, s.change_server_icon, Emphasis::Quiet) {
                         pick_icon = true;

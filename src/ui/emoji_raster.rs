@@ -18,7 +18,13 @@ use swash::FontRef;
 const RASTER_PX: f32 = 72.0;
 
 /// Caminhos comuns da fonte colorida; evita varrer o sistema inteiro.
-const CANDIDATES: [&str; 6] = [
+const CANDIDATES: [&str; 9] = [
+    // Android does not expose its system fonts through the desktop fontconfig
+    // paths below. Prefer the platform locations so the picker gets the same
+    // color Noto emoji that messages use instead of egui's monochrome fallback.
+    "/system/fonts/NotoColorEmoji.ttf",
+    "/product/fonts/NotoColorEmoji.ttf",
+    "/system/fonts/NotoColorEmojiLegacy.ttf",
     "/usr/share/fonts/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",

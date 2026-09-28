@@ -31,6 +31,13 @@ pub const COMPACT_BREAKPOINT: f32 = 820.0;
 /// ainda pode ser um toque, e roubar o movimento cedo demais faria a rolagem
 /// engasgar a cada encostada.
 const SWIPE_SLOP: f32 = 6.0;
+/// No Android, uma mensagem segura um pequeno "slop" maior enquanto decide
+/// entre toque longo e gesto. Isso evita que tremor natural do dedo transforme
+/// um hold em scroll/reply antes de o menu poder abrir.
+#[cfg(target_os = "android")]
+const LONG_PRESS_SLOP: f32 = 12.0;
+#[cfg(target_os = "android")]
+const LONG_PRESS_SECONDS: f64 = 0.45;
 /// O quanto o movimento precisa ser mais horizontal que vertical para ser
 /// nosso. Sem isto, rolar a conversa arrastaria a gaveta junto.
 const SWIPE_AXIS_BIAS: f32 = 1.25;
@@ -258,6 +265,9 @@ pub struct MobileServers<'a> {
 struct MobileGesture {
     origin: egui::Pos2,
     last: egui::Pos2,
+    /// Quando o toque começou; separado de `last_time`, que muda enquanto
+    /// o dedo se move.
+    started: f64,
     /// Quando `last` foi visto, para tirar a velocidade do piparote.
     last_time: f64,
     /// Velocidade horizontal recente, em pontos por segundo. Vai sendo
@@ -1918,14 +1928,6 @@ fn channel_menu(
         ui.set_max_width(MENU_W);
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        ui.add_space(space::XXS);
-        ui.label(
-            RichText::new(s.channel_notifications)
-                .font(text::caption())
-                .color(t.label_tertiary),
-        );
-        ui.add_space(space::XXS);
-
         let current = match channel.notification_settings.as_str() {
             "all" => "all",
             "off" => "off",
@@ -2406,6 +2408,7 @@ fn conversation(
             if state.compact {
                 handle_mobile_gesture(
                     ui,
+                    store,
                     state,
                     full,
                     PILL_MARGIN * 2.0 + PILL_HEIGHT,
@@ -2559,7 +2562,7 @@ fn conversation(
         );
 
         if state.compact {
-            handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
+            handle_mobile_gesture(ui, store, state, full, top_inset, bottom_inset);
         }
     });
 }
@@ -2635,6 +2638,7 @@ fn decide_intent(delta: Vec2, surface: MobileSurface, message: &Option<String>) 
 
 fn handle_mobile_gesture(
     ui: &egui::Ui,
+    store: &Store,
     state: &mut UiState,
     area: Rect,
     top_inset: f32,
@@ -2683,12 +2687,16 @@ fn handle_mobile_gesture(
             || state.webembed_blocked
             || media_seek
             || state
+                .webembed_inline_rect
+                .is_some_and(|rect| rect.contains(origin))
+            || state
                 .webembed_float_rect
                 .is_some_and(|rect| rect.contains(origin))
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
             last: origin,
+            started: time,
             last_time: time,
             velocity: 0.0,
             message_id,
@@ -2716,7 +2724,47 @@ fn handle_mobile_gesture(
         active.last_time = time;
 
         let delta = pos - active.origin;
-        if active.intent.is_none() && delta.length() >= SWIPE_SLOP {
+
+        #[cfg(target_os = "android")]
+        {
+            // Long-press is a time + movement-tolerance gesture, not a
+            // secondary-click side effect. Keep repainting while the finger is
+            // still so the timer can mature even when Android sends no motion.
+            if down
+                && active.intent.is_none()
+                && active.message_id.is_some()
+                && !active.blocked
+                && delta.length() <= LONG_PRESS_SLOP
+            {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(50));
+                if time - active.started >= LONG_PRESS_SECONDS
+                    && let Some(message_id) = active.message_id.clone()
+                    && store.message(&message_id).is_some_and(|message| !message.pending)
+                {
+                    // A small anchor rect also absorbs the release click, so
+                    // opening the menu does not immediately dismiss it.
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id,
+                        anchor: Rect::from_center_size(
+                            active.origin,
+                            Vec2::splat(LONG_PRESS_SLOP * 2.0),
+                        ),
+                        at_pointer: true,
+                        opened: time,
+                    });
+                    active.blocked = true;
+                }
+            }
+        }
+
+        let mut intent_slop = SWIPE_SLOP;
+        #[cfg(target_os = "android")]
+        if active.message_id.is_some() {
+            intent_slop = LONG_PRESS_SLOP;
+        }
+        if active.intent.is_none() && !active.blocked && delta.length() >= intent_slop {
             active.intent = Some(decide_intent(delta, state.mobile_surface, &active.message_id));
         }
 
@@ -3201,10 +3249,16 @@ fn actions_pill(
         UiBuilder::new()
             .max_rect(body_rect.shrink(space::SM))
             .layout(Layout::top_down(Align::Min)),
-        |ui| match kind {
-            PanelKind::Search => search_panel(ui, store, state, t, s),
-            PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
-            PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+        |ui| {
+            // Rich cards/media can be taller than the visible panel body.
+            // Keep both painting and hit-testing inside the stretched pill;
+            // the inner ScrollAreas own the overflow.
+            ui.set_clip_rect(ui.clip_rect().intersect(body_rect.shrink(space::SM)));
+            match kind {
+                PanelKind::Search => search_panel(ui, store, state, t, s),
+                PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+                PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+            }
         },
     );
 
@@ -3845,15 +3899,35 @@ fn search_panel(
                     .unwrap_or_else(|| "?".to_owned()),
                 result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
+                if result.attachments.is_empty() {
+                    store
+                        .message(&result.id)
+                        .map(|message| message.attachments.clone())
+                        .unwrap_or_default()
+                } else {
+                    result.attachments.clone()
+                },
             )
         })
         .collect();
 
+    let result_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
+        .max_height(result_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (channel_id, message_id, channel_name, author_id, author_name, at, body) in found {
+            for (
+                channel_id,
+                message_id,
+                channel_name,
+                author_id,
+                author_name,
+                at,
+                body,
+                attachments,
+            ) in found
+            {
                 if result_row(
                     ui,
                     store,
@@ -3867,6 +3941,7 @@ fn search_panel(
                         at,
                         channel_name: Some(&channel_name),
                         body: &body,
+                        attachments: &attachments,
                     },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
@@ -3929,6 +4004,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     .unwrap_or_else(|| "?".into()),
                 message.at,
                 body,
+                message.attachments.clone(),
             )
         })
         .collect();
@@ -3941,11 +4017,13 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         );
         return;
     }
+    let pinned_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("lista-de-fixadas")
+        .max_height(pinned_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, author_id, author_name, at, body) in pinned {
+            for (message_id, author_id, author_name, at, body, attachments) in pinned {
                 if result_row(
                     ui,
                     store,
@@ -3959,6 +4037,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         at: Some(at),
                         channel_name: None,
                         body: &body,
+                        attachments: &attachments,
                     },
                 ) {
                     let channel = channel_id.clone();
@@ -3975,6 +4054,7 @@ struct ResultPreview<'a> {
     at: Option<DateTime<Local>>,
     channel_name: Option<&'a str>,
     body: &'a str,
+    attachments: &'a [crate::api::models::Attachment],
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -3994,6 +4074,7 @@ fn result_row(
         at,
         channel_name,
         body,
+        attachments,
     } = preview;
     let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
@@ -4070,8 +4151,17 @@ fn result_row(
                         false,
                         max_text_width,
                     );
-                    panel_rich_links(ui, state, t, message_id, body, max_text_width);
                 }
+                panel_attachments(
+                    ui,
+                    state,
+                    t,
+                    s,
+                    message_id,
+                    attachments,
+                    max_text_width,
+                );
+                panel_rich_links(ui, state, t, message_id, body, max_text_width);
             });
             ui.add_space(space::SM);
         });
@@ -4081,10 +4171,19 @@ fn result_row(
     let row = inner.response.rect;
     let response = inner.response;
     if response.hovered() {
-        ui.painter().set(
-            backdrop,
-            egui::epaint::RectShape::filled(row, CornerRadius::same(radius::CARD), t.fill_soft),
-        );
+        let highlight = row
+            .intersect(ui.clip_rect())
+            .shrink2(Vec2::new(space::XXS, 0.0));
+        if highlight.is_positive() {
+            ui.painter().set(
+                backdrop,
+                egui::epaint::RectShape::filled(
+                    highlight,
+                    CornerRadius::same(radius::CARD),
+                    t.fill_soft,
+                ),
+            );
+        }
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.add_space(space::XXS);
@@ -5024,6 +5123,45 @@ fn rich_links_from_message(
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
         preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+    }
+}
+
+fn panel_attachments(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    message_id: &str,
+    attachments: &[crate::api::models::Attachment],
+    width: f32,
+) {
+    if attachments.is_empty() {
+        return;
+    }
+    if let Some(action) = attachments::draw(
+        ui,
+        t,
+        s,
+        &mut state.media,
+        message_id,
+        attachments,
+        width,
+        &mut state.media_seek_zones,
+    ) {
+        match action {
+            MediaAction::Open { message_id, index } => {
+                state.viewer = Some(Viewer::with_attachments(
+                    message_id,
+                    index,
+                    attachments.to_vec(),
+                ));
+                state.media.pause_all();
+            }
+            MediaAction::Download { id, name } => {
+                state.actions.push(ChatAction::Download { id, name });
+            }
+            MediaAction::Reveal(id) => state.media.reveal(&id),
+        }
     }
 }
 
@@ -6055,9 +6193,14 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if let Some(mut viewer) = state.viewer.take() {
-        let attachments = store
-            .message(&viewer.message_id)
-            .map(|message| message.attachments.clone())
+        let attachments = viewer
+            .source_attachments()
+            .map(<[_]>::to_vec)
+            .or_else(|| {
+                store
+                    .message(&viewer.message_id)
+                    .map(|message| message.attachments.clone())
+            })
             .unwrap_or_default();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
             Some(ViewerAction::Close) => state.media.pause_all(),

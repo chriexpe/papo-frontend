@@ -575,6 +575,10 @@ pub struct SearchResult {
     #[serde(default)]
     pub author_username: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
+    /// Newer backends return attachment metadata with search hits so a result
+    /// can render exactly like the source message without hydrating its channel.
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub attachments: Vec<Attachment>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
