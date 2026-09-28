@@ -1073,7 +1073,10 @@ fn dropdown_choice<T: PartialEq + Copy>(
         t.label_secondary,
     );
     let mut changed = false;
-    crate::ui::widgets::dropdown(&response, rect, rect, true).show(|ui| {
+    // On desktop the menu belongs beside the value instead of covering the
+    // rows underneath it. On mobile/tiled settings it stays over the tapped
+    // value, where there is no side room.
+    crate::ui::widgets::dropdown(&response, rect, rect, tiles(ui)).show(|ui| {
         for (value, option) in options {
             if crate::ui::widgets::menu_option(ui, t, option, *value == *current) {
                 if *value != *current {
@@ -3037,10 +3040,7 @@ fn app_pane(
                 );
                 if data.rich_presence.override_activity.enabled {
                     rows.row(s.rich_presence_override_type, None, |ui, t| {
-                        // Three fixed activity kinds fit comfortably in the
-                        // control column; keep them as a proper segmented
-                        // selector instead of dropping into the generic popup.
-                        tabs(
+                        segmented(
                             ui,
                             t,
                             &mut data.rich_presence.override_activity.kind,
