@@ -9,20 +9,23 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::sync::mpsc;
 
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use windows::{
     Win32::{
         Foundation::{E_POINTER, HWND, RECT},
+        Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF, SetWindowRgn,
+        },
         System::Com::{
             COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW,
-            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN,
-            WS_CLIPSIBLINGS,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD,
+            WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
         },
     },
     core::{BOOL, Interface as _, PWSTR, w},
@@ -85,6 +88,47 @@ impl EventSink {
 }
 
 type EventQueue = Rc<EventSink>;
+
+thread_local! {
+    /// Geometry produced while egui lays out the current root frame.
+    ///
+    /// Applying it immediately makes the native child move before WGPU has
+    /// presented the matching egui frame, which creates a visible one-frame
+    /// split while scrolling. The WGPU post-present hook consumes this only
+    /// after the swapchain image is on screen.
+    static PENDING_GEOMETRY: RefCell<Option<(Weak<LiveWebView>, EmbedViewport)>> =
+        const { RefCell::new(None) };
+}
+
+fn queue_geometry(live: &Rc<LiveWebView>, viewport: &EmbedViewport) {
+    PENDING_GEOMETRY.with(|pending| {
+        pending.replace(Some((Rc::downgrade(live), viewport.clone())));
+    });
+}
+
+fn clear_queued_geometry() {
+    PENDING_GEOMETRY.with(|pending| {
+        pending.take();
+    });
+}
+
+fn flush_presented_geometry(viewport_id: egui::ViewportId) {
+    if viewport_id != egui::ViewportId::ROOT {
+        return;
+    }
+
+    let pending = PENDING_GEOMETRY.with(|pending| pending.take());
+    let Some((live, viewport)) = pending else {
+        return;
+    };
+    let Some(live) = live.upgrade() else {
+        return;
+    };
+
+    if let Err(error) = live.set_bounds(&viewport) {
+        log::warn!("webembed(webview2): pós-presentação: {error}");
+    }
+}
 
 struct LiveWebView {
     parent: HWND,
@@ -231,6 +275,29 @@ impl LiveWebView {
         let clip_width = (clipped.width() * scale).round().max(1.0) as i32;
         let clip_height = (clipped.height() * scale).round().max(1.0) as i32;
 
+        // Shape the native host around egui chrome instead of sacrificing
+        // entire top/bottom bands. Chromium keeps its full logical viewport;
+        // only the child HWND's visible/input region gets holes punched out.
+        let host_region = unsafe { CreateRectRgn(0, 0, clip_width, clip_height) };
+        for occluder in &viewport.occlusions {
+            let cut = occluder.intersect(clipped);
+            if cut.width() <= 0.5 || cut.height() <= 0.5 {
+                continue;
+            }
+            let left = ((cut.min.x * scale).round() as i32 - clip_left).clamp(0, clip_width);
+            let top = ((cut.min.y * scale).round() as i32 - clip_top).clamp(0, clip_height);
+            let right = ((cut.max.x * scale).round() as i32 - clip_left).clamp(0, clip_width);
+            let bottom = ((cut.max.y * scale).round() as i32 - clip_top).clamp(0, clip_height);
+            if right <= left || bottom <= top {
+                continue;
+            }
+            let cut_region = unsafe { CreateRectRgn(left, top, right, bottom) };
+            unsafe {
+                CombineRgn(Some(host_region), Some(host_region), Some(cut_region), RGN_DIFF);
+                let _ = DeleteObject(HGDIOBJ(cut_region.0));
+            }
+        }
+
         // The clipping HWND occupies only the visible intersection. The actual
         // WebView keeps its full logical size and is translated inside that
         // child window, so scrolling never causes YouTube/other providers to
@@ -257,6 +324,15 @@ impl LiveWebView {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )
             .map_err(|error| format!("posicionar host WebView2: {error}"))?;
+
+            if SetWindowRgn(self.host, Some(host_region), true) == 0 {
+                // Ownership transfers only on success.
+                let _ = DeleteObject(HGDIOBJ(host_region.0));
+                return Err(format!(
+                    "recortar host WebView2: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
 
             self.controller
                 .SetBounds(RECT {
@@ -646,7 +722,7 @@ fn pwstr_string(value: PWSTR) -> Option<String> {
 pub struct WindowsWebEmbedBackend {
     parent: Option<HWND>,
     pending: Option<(String, String)>,
-    live: Option<LiveWebView>,
+    live: Option<Rc<LiveWebView>>,
     current_id: Option<String>,
     events: EventQueue,
     com_initialized: bool,
@@ -654,6 +730,7 @@ pub struct WindowsWebEmbedBackend {
 
 impl WindowsWebEmbedBackend {
     pub fn new() -> Self {
+        eframe::egui_wgpu::set_post_present_hook(flush_presented_geometry);
         Self {
             parent: None,
             pending: None,
@@ -690,7 +767,7 @@ impl WindowsWebEmbedBackend {
             .ok_or_else(|| "WebEmbed sem ativação pendente".to_owned())?;
 
         self.ensure_com()?;
-        let live = LiveWebView::new(parent, &id, &url, &self.events)?;
+        let live = Rc::new(LiveWebView::new(parent, &id, &url, &self.events)?);
         self.current_id = Some(id);
         self.live = Some(live);
         Ok(())
@@ -740,12 +817,8 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
                 .push(WebEmbedEvent::Failed { id: id.to_owned() });
             return;
         }
-        if let Some(live) = &self.live
-            && let Err(error) = live.set_bounds(viewport)
-        {
-            log::warn!("webembed(webview2): {error}");
-            self.events
-                .push(WebEmbedEvent::Failed { id: id.to_owned() });
+        if let Some(live) = &self.live {
+            queue_geometry(live, viewport);
         }
     }
 
@@ -753,6 +826,7 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if self.current_id.as_deref() == Some(id)
             && let Some(live) = &self.live
         {
+            clear_queued_geometry();
             live.suspend();
         }
     }
@@ -771,6 +845,7 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if self.current_id.as_deref() != Some(id) {
             return;
         }
+        clear_queued_geometry();
         if let Some(live) = self.live.take() {
             live.close();
         }
@@ -794,12 +869,13 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if self.current_id.as_deref() != Some(id) {
             return None;
         }
-        self.live.as_ref().and_then(LiveWebView::is_playing)
+        self.live.as_ref().and_then(|live| live.is_playing())
     }
 }
 
 impl Drop for WindowsWebEmbedBackend {
     fn drop(&mut self) {
+        clear_queued_geometry();
         if let Some(live) = self.live.take() {
             live.close();
         }

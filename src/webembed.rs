@@ -42,7 +42,11 @@ pub enum FloatScope {
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbedViewport {
     pub rect: Rect,
+    /// Ordinary content/scroll clipping.
     pub clip_rect: Rect,
+    /// Native surfaces sit above egui. These rectangles describe only the
+    /// actual egui chrome that must punch holes through that native surface.
+    pub occlusions: Vec<Rect>,
     pub pixels_per_point: f32,
 }
 
@@ -181,6 +185,7 @@ impl WebEmbedManager {
         rect: Rect,
         clip_rect: Rect,
         pixels_per_point: f32,
+        occlusions: &[Rect],
         allowed: bool,
     ) {
         let Some(active) = self.active.as_mut() else {
@@ -208,6 +213,7 @@ impl WebEmbedManager {
             &EmbedViewport {
                 rect,
                 clip_rect,
+                occlusions: occlusions.to_vec(),
                 pixels_per_point: pixels_per_point.max(0.1),
             },
         );
@@ -236,6 +242,7 @@ impl WebEmbedManager {
         rect: Rect,
         clip_rect: Rect,
         pixels_per_point: f32,
+        occlusions: &[Rect],
         allowed: bool,
     ) {
         let Some(active) = self.active.as_mut() else {
@@ -258,6 +265,7 @@ impl WebEmbedManager {
             &EmbedViewport {
                 rect,
                 clip_rect,
+                occlusions: occlusions.to_vec(),
                 pixels_per_point: pixels_per_point.max(0.1),
             },
         );
@@ -548,7 +556,7 @@ mod tests {
         let (mut manager, calls) = manager();
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Stop, FloatScope::CurrentChannel, false);
         assert_eq!(
             calls.lock().unwrap().last(),
@@ -561,9 +569,9 @@ mod tests {
         let (mut manager, calls) = manager();
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
         assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel));
-        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.present_floating(rect(), rect(), 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::CurrentChannel, false);
         let calls = calls.lock().unwrap();
         assert!(!matches!(calls.last(), Some(Call::Destroy(_))));
@@ -592,7 +600,7 @@ mod tests {
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
         assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::Global));
-        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.present_floating(rect(), rect(), 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::Global, false);
         assert!(!matches!(calls.lock().unwrap().last(), Some(Call::Destroy(_))));
     }
@@ -602,7 +610,7 @@ mod tests {
         let (mut manager, _calls, _playing) = manager_with_playing(Some(false));
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
 
         assert!(!manager.should_float(
             OffscreenBehavior::Float,
@@ -615,12 +623,12 @@ mod tests {
         let (mut manager, _calls, playing) = manager_with_playing(Some(true));
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
         assert!(manager.should_float(
             OffscreenBehavior::Float,
             FloatScope::CurrentChannel,
         ));
-        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.present_floating(rect(), rect(), 1.0, &[], true);
 
         *playing.lock().unwrap() = Some(false);
         assert!(manager.should_float(

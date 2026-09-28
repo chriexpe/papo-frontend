@@ -803,6 +803,8 @@ impl Painter {
             vsync_sec += start.elapsed().as_secs_f32();
         }
 
+        crate::run_post_present_hook(viewport_id);
+
         vsync_sec
     }
 
