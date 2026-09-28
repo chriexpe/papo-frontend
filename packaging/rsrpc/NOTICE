@@ -1,0 +1,12 @@
+rsRPC
+=====
+
+Bundled by Papo as the native Rich Presence fallback provider.
+
+Upstream source: https://github.com/pog5/rsrpc
+Pinned upstream revision: 572b609d400d44244dc90c05c06410a47d0d039c
+License: GNU General Public License version 3
+
+The release helper binaries are distributed unmodified from the upstream
+nightly release corresponding to the pinned detectable database snapshot.
+See LICENSE in this directory for the license text.
