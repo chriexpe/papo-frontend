@@ -2,11 +2,11 @@
 //!
 //! Papo is a consumer first. If an arRPC-compatible JSON bridge already
 //! exists, Papo connects to it and does not start another provider.
-//! Otherwise Papo starts a pinned native rsrpc build as the fallback provider
-//! and consumes the exact same arRPC-compatible bridge on localhost:1337.
+//! Otherwise Papo starts the native rsrpc helper bundled with the desktop
+//! package and consumes the exact same arRPC-compatible bridge on localhost:1337.
 //!
-//! No Node/Bun/npm runtime is involved. The fallback is one native binary,
-//! downloaded only when needed, checksum-verified, and kept in Papo's cache.
+//! No Node/Bun/npm runtime and no first-run download are involved. Release
+//! packages ship the matching rsrpc executable beside Papo (or in libexec).
 //! Android never starts a provider; it only renders activities received from
 //! Papo servers.
 
@@ -18,7 +18,6 @@ use crate::state::{Activity, ActivityKind};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: &str = "1337";
 const LOCAL_BRIDGE: &str = "ws://127.0.0.1:1337";
-const RSRPC_BUILD: &str = "pog5-rsrpc-pinned-2026-03-29";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverrideKind {
@@ -780,7 +779,7 @@ struct RsrpcProcess {
 #[cfg(not(target_os = "android"))]
 impl RsrpcProcess {
     async fn start(settings: &Settings) -> Result<Self, String> {
-        let binary = ensure_rsrpc_binary().await?;
+        let binary = find_rsrpc_binary()?;
 
         let mut command = std::process::Command::new(binary);
         if !settings.game_detection {
@@ -867,146 +866,56 @@ where
 }
 
 #[cfg(not(target_os = "android"))]
-#[derive(Clone, Copy)]
-struct RsrpcAsset {
-    name: &'static str,
-    url: &'static str,
-    sha256: &'static str,
-}
-
-#[cfg(not(target_os = "android"))]
-fn rsrpc_asset() -> Result<RsrpcAsset, String> {
-    let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => RsrpcAsset {
-            name: "rsrpc-x86_64-unknown-linux-gnu",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/383835874",
-            sha256: "9c575b67960fe9763613702a08494bf4ab4ef0d4535fb1619abfd8279feea2db",
-        },
-        ("linux", "aarch64") => RsrpcAsset {
-            name: "rsrpc-aarch64-unknown-linux-gnu",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/383835872",
-            sha256: "116c4d8f6b5dcd65c2bf9a2036d2e2613e780e206ed0ead72224e71c509ca551",
-        },
-        ("windows", "x86_64") => RsrpcAsset {
-            name: "rsrpc-x86_64-pc-windows-msvc.exe",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644996",
-            sha256: "062e893ee5eacba02f64e24877c11fd4ae310c20a1373b436aea3a84b519a97b",
-        },
-        ("windows", "aarch64") => RsrpcAsset {
-            name: "rsrpc-aarch64-pc-windows-msvc.exe",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644999",
-            sha256: "5764abea0485ae03d3588183aaa151b4d35d3cd3b132cdfd1f28ea4383729184",
-        },
-        ("macos", "x86_64") => RsrpcAsset {
-            name: "rsrpc-x86_64-apple-darwin",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644997",
-            sha256: "b2e5b6ac8dc1842bcc80740abaafa9ddb75aacd1322f57d851208c13f9dc13ca",
-        },
-        ("macos", "aarch64") => RsrpcAsset {
-            name: "rsrpc-aarch64-apple-darwin",
-            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339645000",
-            sha256: "4f49a8ff5c5b568b7b4b1eeac7a701e79b07aa1b5b544342bba7c4769445bdc1",
-        },
-        (os, arch) => {
-            return Err(format!("no rsRPC build for {os}/{arch}"));
-        }
-    };
-    Ok(asset)
-}
-
-#[cfg(not(target_os = "android"))]
-async fn ensure_rsrpc_binary() -> Result<std::path::PathBuf, String> {
-    let asset = rsrpc_asset()?;
-    let dir = crate::platform::dirs::cache_dir()
-        .join("rich-presence")
-        .join("rsrpc")
-        .join(RSRPC_BUILD);
-    let path = dir.join(if cfg!(target_os = "windows") {
+fn find_rsrpc_binary() -> Result<std::path::PathBuf, String> {
+    let binary_name = if cfg!(target_os = "windows") {
         "rsrpc.exe"
     } else {
         "rsrpc"
-    });
+    };
 
-    if let Ok(bytes) = tokio::fs::read(&path).await
-        && sha256_hex(&bytes) == asset.sha256
-    {
-        ensure_executable(&path).await?;
-        return Ok(path);
-    }
-
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|error| format!("rsRPC cache directory: {error}"))?;
-
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("Papo/", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|error| format!("rsRPC downloader: {error}"))?;
-    let response = client
-        .get(asset.url)
-        .header(reqwest::header::ACCEPT, "application/octet-stream")
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|error| format!("rsRPC download: {error}"))?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("rsRPC download body: {error}"))?;
-    if bytes.len() > 32 * 1024 * 1024 {
-        return Err(format!("rsRPC download is unexpectedly large: {} bytes", bytes.len()));
-    }
-
-    let actual = sha256_hex(&bytes);
-    if actual != asset.sha256 {
+    // Developer/testing escape hatch. Packaged releases do not need this.
+    if let Some(path) = std::env::var_os("PAPO_RSRPC_PATH") {
+        let path = std::path::PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
         return Err(format!(
-            "rsRPC checksum mismatch for {} (expected {}, got {})",
-            asset.name, asset.sha256, actual
+            "PAPO_RSRPC_PATH does not point to a file: {}",
+            path.display()
         ));
     }
 
-    let temp = dir.join(format!("{}.download", asset.name));
-    tokio::fs::write(&temp, &bytes)
-        .await
-        .map_err(|error| format!("save rsRPC: {error}"))?;
-    tokio::fs::rename(&temp, &path)
-        .await
-        .map_err(|error| format!("install rsRPC: {error}"))?;
-    ensure_executable(&path).await?;
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("could not locate Papo executable: {error}"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| format!("Papo executable has no parent: {}", exe.display()))?;
 
-    Ok(path)
-}
+    // Portable Windows/Linux bundles keep the helper next to Papo. Native
+    // Unix packages use ../libexec/papo/rsrpc from /usr/bin or /app/bin.
+    let candidates = [
+        exe_dir.join(binary_name),
+        exe_dir.join("libexec").join("papo").join(binary_name),
+        exe_dir
+            .parent()
+            .map(|prefix| prefix.join("libexec").join("papo").join(binary_name))
+            .unwrap_or_default(),
+        // macOS app bundles can keep the helper with the main executable.
+        exe_dir
+            .parent()
+            .map(|contents| contents.join("Resources").join(binary_name))
+            .unwrap_or_default(),
+    ];
 
-#[cfg(not(target_os = "android"))]
-fn sha256_hex(bytes: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, bytes)
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-async fn ensure_executable(path: &std::path::Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = tokio::fs::metadata(path)
-        .await
-        .map_err(|error| format!("rsRPC metadata: {error}"))?
-        .permissions();
-    if permissions.mode() & 0o111 == 0 {
-        permissions.set_mode(0o700);
-        tokio::fs::set_permissions(path, permissions)
-            .await
-            .map_err(|error| format!("rsRPC permissions: {error}"))?;
-    }
-    Ok(())
-}
-
-#[cfg(all(not(target_os = "android"), not(unix)))]
-async fn ensure_executable(_path: &std::path::Path) -> Result<(), String> {
-    Ok(())
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .ok_or_else(|| {
+            format!(
+                "bundled rsRPC helper not found near {} (set PAPO_RSRPC_PATH for development)",
+                exe.display()
+            )
+        })
 }
 
 #[cfg(not(target_os = "android"))]
