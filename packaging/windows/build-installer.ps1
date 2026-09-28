@@ -9,6 +9,9 @@ param(
     [string]$Version,
 
     [Parameter(Mandatory = $true)]
+    [string]$RsRpcExe,
+
+    [Parameter(Mandatory = $true)]
     [string]$OutputDir
 )
 
@@ -21,6 +24,7 @@ try {
     & (Join-Path $scriptDir 'bundle.ps1') `
         -GStreamerRoot $GStreamerRoot `
         -PapoExe $PapoExe `
+        -RsRpcExe $RsRpcExe `
         -OutputDir $payload `
         -IncludeVCRuntime $false
 
