@@ -669,7 +669,7 @@ pub struct PapoApp {
     update_available: Option<crate::platform::update::Available>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     update_status: Option<String>,
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     update_progress: Option<f32>,
     #[cfg(target_os = "android")]
     update_ready: Option<std::path::PathBuf>,
@@ -920,7 +920,7 @@ impl PapoApp {
             update_available: None,
             #[cfg(any(target_os = "windows", target_os = "android"))]
             update_status: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "windows", target_os = "android"))]
             update_progress: None,
             #[cfg(target_os = "android")]
             update_ready: None,
@@ -1289,25 +1289,56 @@ impl PapoApp {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     fn update_pill(&mut self, ctx: &egui::Context) {
         let downloading = self.updater.downloading();
+        #[cfg(target_os = "android")]
         let ready = self.update_ready.is_some();
-        if !downloading && !ready && !self.update_waiting_permission {
+        #[cfg(target_os = "windows")]
+        let ready = false;
+        #[cfg(target_os = "android")]
+        let waiting_permission = self.update_waiting_permission;
+        #[cfg(target_os = "windows")]
+        let waiting_permission = false;
+        if !downloading && !ready && !waiting_permission {
             return;
         }
 
         let screen = ctx.content_rect();
-        let width = (screen.width() - 48.0).clamp(240.0, 380.0);
-        let size = egui::vec2(width, 48.0);
-        let pos = screen.center() - size * 0.5;
+        #[cfg(target_os = "android")]
+        let (size, pos) = {
+            let width = (screen.width() - 48.0).clamp(240.0, 380.0);
+            let size = egui::vec2(width, 48.0);
+            (size, screen.center() - size * 0.5)
+        };
+        #[cfg(target_os = "windows")]
+        let (size, pos) = {
+            // The closed search/pinned/actions pill is anchored 12 px from the
+            // chat area's top-right edge. Keep update progress as a separate
+            // sibling immediately to its left rather than occupying the chat.
+            let actions_width =
+                crate::ui::shell::ACTIONS_PILL_WIDTH + crate::ui::shell::PILL_MARGIN;
+            let width = 270.0;
+            let size = egui::vec2(width, crate::ui::shell::PILL_HEIGHT);
+            let right = screen.max.x - actions_width - crate::ui::shell::PILL_MARGIN;
+            let pos = egui::pos2(
+                right - width,
+                screen.min.y + crate::ui::shell::PILL_MARGIN,
+            );
+            (size, pos)
+        };
         egui::Area::new(egui::Id::new("papo-update-progress-pill"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
             .show(ctx, |ui| {
                 ui.set_min_size(size);
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-                let rounding = egui::CornerRadius::same(24);
+                let rounding = egui::CornerRadius::same(
+                    #[cfg(target_os = "android")]
+                    { 24 }
+                    #[cfg(target_os = "windows")]
+                    { crate::ui::shell::PILL_RADIUS }
+                );
                 ui.painter().rect(
                     rect,
                     rounding,
@@ -1341,11 +1372,13 @@ impl PapoApp {
                         self.tokens.label,
                     );
                 } else if ready {
+                    #[cfg(target_os = "android")]
                     let hit = ui.interact(
                         rect,
                         egui::Id::new("install-update"),
                         egui::Sense::click(),
                     );
+                    #[cfg(target_os = "android")]
                     if hit.hovered() {
                         ui.painter().rect_filled(rect, rounding, self.tokens.fill_soft);
                     }
@@ -1356,6 +1389,7 @@ impl PapoApp {
                         egui::FontId::proportional(14.0),
                         self.tokens.label,
                     );
+                    #[cfg(target_os = "android")]
                     if hit.clicked()
                         && let Some(installer) = self.update_ready.clone()
                     {
@@ -3764,7 +3798,7 @@ impl eframe::App for PapoApp {
         );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_pill(&ctx);
         self.pump_files(&ctx);
 

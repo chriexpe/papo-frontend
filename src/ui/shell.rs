@@ -61,17 +61,17 @@ pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
 /// em dois valores diferentes como estava.
 pub const PILL_INSET: f32 = space::MD;
 /// Altura das pastilhas flutuantes e respiro entre elas e a borda.
-const PILL_HEIGHT: f32 = 36.0;
-const PILL_MARGIN: f32 = 12.0;
+pub(crate) const PILL_HEIGHT: f32 = 36.0;
+pub(crate) const PILL_MARGIN: f32 = 12.0;
 /// Raio das pastilhas flutuantes — o mesmo canto do realce interno.
-const PILL_RADIUS: f32 = 12.0;
+pub(crate) const PILL_RADIUS: f32 = 12.0;
 /// Largura da pastilha esticada, e teto da parte de baixo dela.
 const PANEL_WIDTH: f32 = 380.0;
 const PANEL_MAX_BODY: f32 = 360.0;
 /// Quanto tempo a mensagem alcançada fica piscando, e quantas piscadas.
 const BLINK_SECONDS: f64 = 1.4;
 const BLINKS: f64 = 2.0;
-const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
+pub(crate) const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
