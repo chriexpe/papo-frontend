@@ -38,6 +38,7 @@ pub enum Surface {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppPane {
     Account,
+    Activity,
     Appearance,
     Alerts,
     Files,
@@ -83,8 +84,9 @@ impl ChannelNotifyMode {
 }
 
 impl AppPane {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Account,
+        Self::Activity,
         Self::Appearance,
         Self::Alerts,
         Self::Files,
@@ -98,6 +100,7 @@ impl AppPane {
         use egui_phosphor::regular as icon;
         match self {
             Self::Account => icon::USER,
+            Self::Activity => icon::GAME_CONTROLLER,
             Self::Appearance => icon::PALETTE,
             Self::Alerts => icon::BELL,
             Self::Files => icon::FOLDER,
@@ -110,6 +113,7 @@ impl AppPane {
     fn title(self, s: &Strings) -> &'static str {
         match self {
             Self::Account => s.pane_account,
+            Self::Activity => s.pane_activity,
             Self::Appearance => s.appearance,
             Self::Alerts => s.pane_alerts,
             Self::Files => s.pane_files,
@@ -1164,6 +1168,7 @@ pub enum SettingsAction {
     Role(super::roles::RoleAction),
     Chat(super::shell::ChatAction),
     Menu(crate::platform::menu::MenuCommand),
+    RestartRichPresence,
     /// Abre o seletor de pasta do sistema para os downloads.
     PickDownloadFolder,
     #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -1193,6 +1198,8 @@ pub struct Context<'a> {
     pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
     pub webembed_offscreen: &'a mut crate::webembed::OffscreenBehavior,
     pub webembed_scope: &'a mut crate::webembed::FloatScope,
+    pub rich_presence: &'a mut crate::rich_presence::Settings,
+    pub rich_presence_snapshot: &'a crate::rich_presence::Snapshot,
     pub ask_download: &'a mut bool,
     pub download_dir: Option<String>,
     pub diagnostics: &'a [WorkspaceDiagnostics],
@@ -1838,6 +1845,13 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Account, s.new_password),
         (AppPane::Account, s.change_password),
         (AppPane::Account, s.sign_out),
+        (AppPane::Activity, s.rich_presence_enabled),
+        (AppPane::Activity, s.rich_presence_builtin),
+        (AppPane::Activity, s.rich_presence_game_detection),
+        (AppPane::Activity, s.rich_presence_auto_reconnect),
+        (AppPane::Activity, s.rich_presence_debug),
+        (AppPane::Activity, s.rich_presence_external),
+        (AppPane::Activity, s.rich_presence_override),
         (AppPane::Appearance, s.theme),
         (AppPane::Appearance, s.translucency),
         (AppPane::Appearance, s.topic_reveal),
@@ -1854,6 +1868,18 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Files, s.download_folder),
         (AppPane::Sessions, s.version),
     ]
+}
+
+fn rich_presence_source_label(source: crate::rich_presence::Source, s: &Strings) -> &'static str {
+    match source {
+        crate::rich_presence::Source::External => s.rich_presence_source_external,
+        crate::rich_presence::Source::BuiltIn => s.rich_presence_source_builtin,
+        crate::rich_presence::Source::Override => s.rich_presence_source_override,
+        crate::rich_presence::Source::Connecting => s.rich_presence_source_connecting,
+        crate::rich_presence::Source::Disabled => s.rich_presence_source_disabled,
+        crate::rich_presence::Source::Error => s.rich_presence_source_error,
+        crate::rich_presence::Source::Unsupported => s.rich_presence_source_disabled,
+    }
 }
 
 fn server_settings_index(s: &Strings) -> Vec<(ServerPane, &'static str)> {
@@ -2291,8 +2317,10 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
         .unwrap_or_else(|| s.download_ask.to_owned());
     let count = data.store.devices.len().max(1);
     let devices = format!("{count} {}", if count == 1 { s.sum_device } else { s.sum_devices });
+    let presence_summary = rich_presence_source_label(data.rich_presence_snapshot.source.clone(), s).to_owned();
     let rows: Vec<(AppPane, Entry<'_>)> = vec![
         (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: appearance }),
+        (AppPane::Activity, Entry { glyph: icon::GAME_CONTROLLER, title: AppPane::Activity.title(s), summary: presence_summary }),
         (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: alerts }),
         (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: data.lang.endonym().to_owned() }),
         (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: files }),
@@ -2900,6 +2928,183 @@ fn app_pane(
                         ],
                     );
                 });
+            });
+        }
+
+        AppPane::Activity => {
+            let manual = data.rich_presence.override_activity.preview();
+            let preview = manual
+                .as_ref()
+                .or(data.rich_presence_snapshot.activity.as_ref());
+            hero(ui, t, 112.0, |ui, area| {
+                ui.scope_builder(
+                    UiBuilder::new()
+                        .max_rect(area)
+                        .layout(Layout::top_down(Align::Min)),
+                    |ui| {
+                        let source = if data.rich_presence.override_activity.enabled {
+                            crate::rich_presence::Source::Override
+                        } else {
+                            data.rich_presence_snapshot.source.clone()
+                        };
+                        ui.horizontal(|ui| {
+                            let color = match source {
+                                crate::rich_presence::Source::External
+                                | crate::rich_presence::Source::BuiltIn
+                                | crate::rich_presence::Source::Override => t.success,
+                                crate::rich_presence::Source::Connecting => t.warning,
+                                crate::rich_presence::Source::Error => t.danger,
+                                _ => t.label_tertiary,
+                            };
+                            ui.label(
+                                RichText::new("●")
+                                    .font(text::callout())
+                                    .color(color),
+                            );
+                            ui.label(
+                                RichText::new(rich_presence_source_label(source, s))
+                                    .font(text::subheadline())
+                                    .color(t.label),
+                            );
+                            if !data.rich_presence_snapshot.detail.is_empty() {
+                                ui.label(
+                                    RichText::new(format!("· {}", data.rich_presence_snapshot.detail))
+                                        .font(text::footnote())
+                                        .color(t.label_tertiary),
+                                );
+                            }
+                        });
+                        ui.add_space(space::SM);
+                        if let Some(activity) = preview {
+                            super::profile::activity_block(ui, t, s, activity, true);
+                        } else {
+                            ui.label(
+                                RichText::new(s.rich_presence_no_activity)
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                        }
+                    },
+                );
+            });
+
+            section(ui, t, s.rich_presence);
+            group(ui, t, |rows| {
+                rows.row(
+                    s.rich_presence_enabled,
+                    Some(s.rich_presence_enabled_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.enabled);
+                    },
+                );
+                rows.row(
+                    s.rich_presence_builtin,
+                    Some(s.rich_presence_builtin_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.built_in);
+                    },
+                );
+                rows.row(
+                    s.rich_presence_game_detection,
+                    Some(s.rich_presence_game_detection_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.game_detection);
+                    },
+                );
+            });
+
+            section(ui, t, s.rich_presence_override);
+            group(ui, t, |rows| {
+                rows.row(
+                    s.rich_presence_override,
+                    Some(s.rich_presence_override_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.override_activity.enabled);
+                    },
+                );
+                if data.rich_presence.override_activity.enabled {
+                    rows.row(s.rich_presence_override_type, None, |ui, t| {
+                        segmented(
+                            ui,
+                            t,
+                            &mut data.rich_presence.override_activity.kind,
+                            &[
+                                (crate::rich_presence::OverrideKind::Playing, s.activity_playing),
+                                (crate::rich_presence::OverrideKind::Listening, s.activity_listening),
+                                (crate::rich_presence::OverrideKind::Working, s.activity_working),
+                            ],
+                        );
+                    });
+                    rows.field(
+                        s.rich_presence_override_name,
+                        &mut data.rich_presence.override_activity.name,
+                        128,
+                        false,
+                    );
+                    rows.field(
+                        s.rich_presence_override_details,
+                        &mut data.rich_presence.override_activity.details,
+                        128,
+                        false,
+                    );
+                    rows.field(
+                        s.rich_presence_override_state,
+                        &mut data.rich_presence.override_activity.state,
+                        128,
+                        false,
+                    );
+                    rows.row(s.rich_presence_override_elapsed, None, |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.override_activity.elapsed);
+                    });
+                    rows.field(
+                        s.rich_presence_override_duration,
+                        &mut data.rich_presence.override_activity.duration_minutes,
+                        6,
+                        false,
+                    );
+                }
+            });
+
+            section(ui, t, s.rich_presence_external);
+            group(ui, t, |rows| {
+                rows.field(
+                    s.rich_presence_host,
+                    &mut data.rich_presence.external_host,
+                    255,
+                    false,
+                );
+                rows.field(
+                    s.rich_presence_port,
+                    &mut data.rich_presence.external_port,
+                    5,
+                    false,
+                );
+            });
+            footnote(ui, t, s.rich_presence_external_hint);
+
+            section(ui, t, s.advanced);
+            group(ui, t, |rows| {
+                rows.row(
+                    s.rich_presence_auto_reconnect,
+                    Some(s.rich_presence_auto_reconnect_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.auto_reconnect);
+                    },
+                );
+                rows.row(
+                    s.rich_presence_debug,
+                    Some(s.rich_presence_debug_hint),
+                    |ui, t| {
+                        switch(ui, t, &mut data.rich_presence.debug);
+                    },
+                );
+                if rows.action(
+                    s.rich_presence_restart,
+                    Some(s.rich_presence_restart_hint),
+                    false,
+                ) {
+                    actions.push(SettingsAction::RestartRichPresence);
+                }
             });
         }
 
