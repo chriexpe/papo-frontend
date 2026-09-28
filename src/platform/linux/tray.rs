@@ -14,6 +14,7 @@ pub enum TrayCommand {
     /// Clique no ícone: mostra ou esconde a janela.
     Toggle,
     Show,
+    RestartRichPresence,
     Quit,
 }
 
@@ -21,6 +22,7 @@ pub enum TrayCommand {
 #[derive(Clone, Debug)]
 pub struct TrayLabels {
     pub open: String,
+    pub restart_rich_presence: String,
     pub quit: String,
     pub tooltip: String,
 }
@@ -105,6 +107,13 @@ impl ksni::Tray for PapoTray {
             .into(),
             MenuItem::Separator,
             StandardItem {
+                label: self.labels.restart_rich_presence.clone(),
+                activate: Box::new(|tray: &mut Self| tray.emit(TrayCommand::RestartRichPresence)),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
                 label: self.labels.quit.clone(),
                 activate: Box::new(|tray: &mut Self| tray.request_quit()),
                 ..Default::default()
@@ -178,7 +187,11 @@ impl Tray {
 
     pub fn set_labels(&self, labels: TrayLabels) {
         self.handle.update(|tray| {
-            if tray.labels.open != labels.open || tray.labels.quit != labels.quit {
+            if tray.labels.open != labels.open
+                || tray.labels.restart_rich_presence != labels.restart_rich_presence
+                || tray.labels.quit != labels.quit
+                || tray.labels.tooltip != labels.tooltip
+            {
                 tray.labels = labels;
             }
         });
