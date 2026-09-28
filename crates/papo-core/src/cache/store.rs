@@ -850,7 +850,7 @@ impl TursoCache {
             .query(
                 "SELECT source_url, state, kind, media_url, image_url, embed_url,
                         title, description, provider_name, resolved_at, retry_after,
-                        failure_class, last_used_at
+                        failure_class, last_used_at, post_meta
                  FROM preview_cache WHERE url_key = ?1",
                 [url_key],
             )
@@ -877,6 +877,7 @@ impl TursoCache {
             retry_after: row.get(10)?,
             failure_class: row.get(11)?,
             last_used_at: row.get(12)?,
+            post_meta: row.get(13)?,
         }))
     }
 
@@ -904,8 +905,8 @@ impl TursoCache {
             "INSERT INTO preview_cache (
                  url_key, source_url, state, kind, media_url, image_url, embed_url,
                  title, description, provider_name, resolved_at, retry_after,
-                 failure_class, last_used_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+                 failure_class, last_used_at, post_meta
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
              ON CONFLICT(url_key) DO UPDATE SET
                  source_url = excluded.source_url,
                  state = excluded.state,
@@ -919,7 +920,8 @@ impl TursoCache {
                  resolved_at = excluded.resolved_at,
                  retry_after = excluded.retry_after,
                  failure_class = excluded.failure_class,
-                 last_used_at = excluded.last_used_at",
+                 last_used_at = excluded.last_used_at,
+                 post_meta = excluded.post_meta",
             vec![
                 text(&preview.url_key),
                 text(&preview.source_url),
@@ -935,6 +937,7 @@ impl TursoCache {
                 preview.retry_after.map(Value::Integer).unwrap_or(Value::Null),
                 opt_text(preview.failure_class.as_deref()),
                 integer(preview.last_used_at),
+                opt_text(preview.post_meta.as_deref()),
             ],
         )
         .await?;
