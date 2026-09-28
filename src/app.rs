@@ -669,6 +669,12 @@ pub struct PapoApp {
     update_available: Option<crate::platform::update::Available>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     update_status: Option<String>,
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    update_progress: Option<f32>,
+    #[cfg(target_os = "android")]
+    update_ready: Option<std::path::PathBuf>,
+    #[cfg(target_os = "android")]
+    update_waiting_permission: bool,
     /// Diálogos do sistema em aberto (anexar, salvar como, escolher pasta).
     dialogs: Dialogs,
     /// Editor de recorte aberto (foto, banner, ícone do servidor).
@@ -914,6 +920,12 @@ impl PapoApp {
             update_available: None,
             #[cfg(any(target_os = "windows", target_os = "android"))]
             update_status: None,
+            #[cfg(any(target_os = "windows", target_os = "android"))]
+            update_progress: None,
+            #[cfg(target_os = "android")]
+            update_ready: None,
+            #[cfg(target_os = "android")]
+            update_waiting_permission: false,
             dialogs: Dialogs::default(),
             crop: None,
             crop_back: false,
@@ -1134,18 +1146,44 @@ impl PapoApp {
     fn pump_updater(&mut self, ctx: &egui::Context) {
         use crate::platform::update::Event;
 
+        #[cfg(target_os = "android")]
+        if self.update_waiting_permission && crate::platform::update::can_install_packages() {
+            self.update_waiting_permission = false;
+            if let Some(release) = self.update_available.take() {
+                self.update_status = Some(self.settings.lang.strings().update_downloading.to_owned());
+                self.update_progress = Some(0.0);
+                self.updater.download(release);
+            }
+        }
+
         while let Some(event) = self.updater.poll() {
             match event {
                 Event::Current => {
-                    self.update_status =
-                        Some(self.settings.lang.strings().update_current.to_owned());
+                    self.update_status = Some(self.settings.lang.strings().update_current.to_owned());
                 }
                 Event::Available(release) => {
-                    self.update_status =
-                        Some(format!("{} {}", self.settings.lang.strings().update_available, release.version));
+                    self.update_status = Some(format!(
+                        "{} {}",
+                        self.settings.lang.strings().update_available,
+                        release.version
+                    ));
                     self.update_available = Some(release);
                 }
+                #[cfg(target_os = "android")]
+                Event::Progress { downloaded, total } => {
+                    self.update_progress = total
+                        .filter(|total| *total > 0)
+                        .map(|total| (downloaded as f32 / total as f32).clamp(0.0, 1.0));
+                    ctx.request_repaint();
+                }
                 Event::Ready { installer, .. } => {
+                    #[cfg(target_os = "android")]
+                    {
+                        self.update_progress = Some(1.0);
+                        self.update_ready = Some(installer);
+                        self.update_status = None;
+                    }
+                    #[cfg(target_os = "windows")]
                     match crate::platform::update::launch(&installer) {
                         Ok(()) => {
                             self.update_status = None;
@@ -1161,7 +1199,12 @@ impl PapoApp {
                     }
                 }
                 Event::Error(error) => {
-                    log::warn!("atualização do Windows: {error}");
+                    log::warn!("atualização: {error}");
+                    #[cfg(target_os = "android")]
+                    {
+                        self.update_progress = None;
+                        self.update_ready = None;
+                    }
                     self.update_status = Some(format!(
                         "{} {error}",
                         self.settings.lang.strings().update_failed
@@ -1177,36 +1220,51 @@ impl PapoApp {
             return;
         };
         let s = self.settings.lang.strings();
+        let compact = ctx.content_rect().width() < shell::COMPACT_BREAKPOINT;
+        let width = if compact {
+            (ctx.content_rect().width() - 32.0).clamp(280.0, 520.0)
+        } else {
+            520.0
+        };
         let mut keep = true;
         egui::Window::new(format!("{} {}", s.update_available, release.version))
             .id(egui::Id::new("papo-update-prompt"))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
-            .resizable(true)
-            .default_width(520.0)
-            .max_width(680.0)
+            .resizable(!compact)
+            .fixed_size(if compact {
+                egui::vec2(width, (ctx.content_rect().height() * 0.72).clamp(360.0, 620.0))
+            } else {
+                egui::vec2(width, 420.0)
+            })
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(s.update_release_notes)
-                        .strong()
-                );
+                ui.vertical_centered(|ui| {
+                    ui.label(egui::RichText::new(s.update_release_notes).strong());
+                });
                 ui.add_space(6.0);
+                let notes_height = (ui.available_height() - 58.0).max(120.0);
                 egui::ScrollArea::vertical()
-                    .max_height(260.0)
+                    .id_salt("update-release-notes")
+                    .max_height(notes_height)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.label(&release.notes);
                     });
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let buttons_width = 318.0_f32.min(ui.available_width());
+                    ui.add_space(((ui.available_width() - buttons_width) * 0.5).max(0.0));
                     if ui.button(s.update_now).clicked() {
                         #[cfg(target_os = "android")]
                         if !crate::platform::update::can_install_packages() {
+                            self.update_waiting_permission = true;
                             crate::platform::update::request_install_permission();
-                            self.update_status = Some(
-                                "Permita que o Papo instale atualizações e tente novamente."
-                                    .to_owned(),
-                            );
+                            self.update_status =
+                                Some("Aguardando permissão para instalar a atualização.".to_owned());
+                            keep = false;
                         } else {
                             self.update_status = Some(s.update_downloading.to_owned());
+                            self.update_progress = Some(0.0);
                             self.updater.download(release.clone());
                             keep = false;
                         }
@@ -1226,9 +1284,138 @@ impl PapoApp {
                     }
                 });
             });
-        if !keep {
+        #[cfg(target_os = "android")]
+        let waiting_permission = self.update_waiting_permission;
+        #[cfg(target_os = "windows")]
+        let waiting_permission = false;
+        if !keep && !waiting_permission {
             self.update_available = None;
         }
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "android"))]
+    fn update_pill(&mut self, ctx: &egui::Context) {
+        let downloading = self.updater.downloading();
+        #[cfg(target_os = "android")]
+        let ready = self.update_ready.is_some();
+        #[cfg(target_os = "windows")]
+        let ready = false;
+        #[cfg(target_os = "android")]
+        let waiting_permission = self.update_waiting_permission;
+        #[cfg(target_os = "windows")]
+        let waiting_permission = false;
+        if !downloading && !ready && !waiting_permission {
+            return;
+        }
+
+        let screen = ctx.content_rect();
+        #[cfg(target_os = "android")]
+        let (size, pos) = {
+            let width = (screen.width() - 48.0).clamp(240.0, 380.0);
+            let size = egui::vec2(width, 48.0);
+            (size, screen.center() - size * 0.5)
+        };
+        #[cfg(target_os = "windows")]
+        let (size, pos) = {
+            // The closed search/pinned/actions pill is anchored 12 px from the
+            // chat area's top-right edge. Keep update progress as a separate
+            // sibling immediately to its left rather than occupying the chat.
+            let actions_width =
+                crate::ui::shell::ACTIONS_PILL_WIDTH + crate::ui::shell::PILL_MARGIN;
+            let width = 270.0;
+            let size = egui::vec2(width, crate::ui::shell::PILL_HEIGHT);
+            let right = screen.max.x - actions_width - crate::ui::shell::PILL_MARGIN;
+            let pos = egui::pos2(
+                right - width,
+                screen.min.y + crate::ui::shell::PILL_MARGIN,
+            );
+            (size, pos)
+        };
+        egui::Area::new(egui::Id::new("papo-update-progress-pill"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                ui.set_min_size(size);
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                #[cfg(target_os = "android")]
+                let rounding = egui::CornerRadius::same(24);
+                #[cfg(target_os = "windows")]
+                let rounding =
+                    egui::CornerRadius::same(crate::ui::shell::PILL_RADIUS as u8);
+                ui.painter().rect(
+                    rect,
+                    rounding,
+                    self.tokens.pill_fill(self.ui.translucent),
+                    egui::Stroke::new(1.0, self.tokens.separator),
+                    egui::StrokeKind::Inside,
+                );
+
+                if downloading {
+                    let progress = self.update_progress.unwrap_or(0.0).clamp(0.0, 1.0);
+                    let fill_width = rect.width() * progress;
+                    if fill_width > 1.0 {
+                        let fill = egui::Rect::from_min_max(
+                            rect.min,
+                            egui::pos2(rect.min.x + fill_width, rect.max.y),
+                        );
+                        ui.painter().rect_filled(
+                            fill.intersect(rect),
+                            rounding,
+                            self.tokens.accent.gamma_multiply(0.28),
+                        );
+                    }
+                    let label = self.update_progress
+                        .map(|p| format!("Baixando atualização · {:.0}%", p * 100.0))
+                        .unwrap_or_else(|| "Baixando atualização…".to_owned());
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::proportional(14.0),
+                        self.tokens.label,
+                    );
+                } else if ready {
+                    #[cfg(target_os = "android")]
+                    let hit = ui.interact(
+                        rect,
+                        egui::Id::new("install-update"),
+                        egui::Sense::click(),
+                    );
+                    #[cfg(target_os = "android")]
+                    if hit.hovered() {
+                        ui.painter().rect_filled(rect, rounding, self.tokens.fill_soft);
+                    }
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Atualização pronta · toque para instalar",
+                        egui::FontId::proportional(14.0),
+                        self.tokens.label,
+                    );
+                    #[cfg(target_os = "android")]
+                    if hit.clicked()
+                        && let Some(installer) = self.update_ready.clone()
+                    {
+                        match crate::platform::update::launch(&installer) {
+                            Ok(()) => self.update_status = None,
+                            Err(error) => {
+                                self.update_status = Some(format!(
+                                    "{} {error}",
+                                    self.settings.lang.strings().update_failed
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Conceda permissão para continuar",
+                        egui::FontId::proportional(14.0),
+                        self.tokens.label_secondary,
+                    );
+                }
+            });
     }
 
     /// Entra ou cria a conta com o que está no formulário.
@@ -3614,6 +3801,8 @@ impl eframe::App for PapoApp {
         );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        self.update_pill(&ctx);
         self.pump_files(&ctx);
 
         if self.own_chrome {

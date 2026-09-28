@@ -31,6 +31,13 @@ pub const COMPACT_BREAKPOINT: f32 = 820.0;
 /// ainda pode ser um toque, e roubar o movimento cedo demais faria a rolagem
 /// engasgar a cada encostada.
 const SWIPE_SLOP: f32 = 6.0;
+/// No Android, uma mensagem segura um pequeno "slop" maior enquanto decide
+/// entre toque longo e gesto. Isso evita que tremor natural do dedo transforme
+/// um hold em scroll/reply antes de o menu poder abrir.
+#[cfg(target_os = "android")]
+const LONG_PRESS_SLOP: f32 = 12.0;
+#[cfg(target_os = "android")]
+const LONG_PRESS_SECONDS: f64 = 0.45;
 /// O quanto o movimento precisa ser mais horizontal que vertical para ser
 /// nosso. Sem isto, rolar a conversa arrastaria a gaveta junto.
 const SWIPE_AXIS_BIAS: f32 = 1.25;
@@ -54,17 +61,17 @@ pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
 /// em dois valores diferentes como estava.
 pub const PILL_INSET: f32 = space::MD;
 /// Altura das pastilhas flutuantes e respiro entre elas e a borda.
-const PILL_HEIGHT: f32 = 36.0;
-const PILL_MARGIN: f32 = 12.0;
+pub(crate) const PILL_HEIGHT: f32 = 36.0;
+pub(crate) const PILL_MARGIN: f32 = 12.0;
 /// Raio das pastilhas flutuantes — o mesmo canto do realce interno.
-const PILL_RADIUS: f32 = 12.0;
+pub(crate) const PILL_RADIUS: f32 = 12.0;
 /// Largura da pastilha esticada, e teto da parte de baixo dela.
 const PANEL_WIDTH: f32 = 380.0;
 const PANEL_MAX_BODY: f32 = 360.0;
 /// Quanto tempo a mensagem alcançada fica piscando, e quantas piscadas.
 const BLINK_SECONDS: f64 = 1.4;
 const BLINKS: f64 = 2.0;
-const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
+pub(crate) const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
@@ -258,6 +265,10 @@ pub struct MobileServers<'a> {
 struct MobileGesture {
     origin: egui::Pos2,
     last: egui::Pos2,
+    /// Quando o toque começou; separado de `last_time`, que muda enquanto
+    /// o dedo se move.
+    #[cfg(target_os = "android")]
+    started: f64,
     /// Quando `last` foi visto, para tirar a velocidade do piparote.
     last_time: f64,
     /// Velocidade horizontal recente, em pontos por segundo. Vai sendo
@@ -1918,14 +1929,6 @@ fn channel_menu(
         ui.set_max_width(MENU_W);
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        ui.add_space(space::XXS);
-        ui.label(
-            RichText::new(s.channel_notifications)
-                .font(text::caption())
-                .color(t.label_tertiary),
-        );
-        ui.add_space(space::XXS);
-
         let current = match channel.notification_settings.as_str() {
             "all" => "all",
             "off" => "off",
@@ -2406,6 +2409,7 @@ fn conversation(
             if state.compact {
                 handle_mobile_gesture(
                     ui,
+                    store,
                     state,
                     full,
                     PILL_MARGIN * 2.0 + PILL_HEIGHT,
@@ -2559,7 +2563,7 @@ fn conversation(
         );
 
         if state.compact {
-            handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
+            handle_mobile_gesture(ui, store, state, full, top_inset, bottom_inset);
         }
     });
 }
@@ -2635,11 +2639,15 @@ fn decide_intent(delta: Vec2, surface: MobileSurface, message: &Option<String>) 
 
 fn handle_mobile_gesture(
     ui: &egui::Ui,
+    store: &Store,
     state: &mut UiState,
     area: Rect,
     top_inset: f32,
     bottom_inset: f32,
 ) {
+    #[cfg(not(target_os = "android"))]
+    let _ = store;
+
     let (pressed, released, down, pos, time) = ui.input(|input| {
         (
             input.pointer.any_pressed(),
@@ -2683,12 +2691,17 @@ fn handle_mobile_gesture(
             || state.webembed_blocked
             || media_seek
             || state
+                .webembed_inline_rect
+                .is_some_and(|rect| rect.contains(origin))
+            || state
                 .webembed_float_rect
                 .is_some_and(|rect| rect.contains(origin))
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
             last: origin,
+            #[cfg(target_os = "android")]
+            started: time,
             last_time: time,
             velocity: 0.0,
             message_id,
@@ -2716,7 +2729,50 @@ fn handle_mobile_gesture(
         active.last_time = time;
 
         let delta = pos - active.origin;
-        if active.intent.is_none() && delta.length() >= SWIPE_SLOP {
+
+        #[cfg(target_os = "android")]
+        {
+            // Long-press is a time + movement-tolerance gesture, not a
+            // secondary-click side effect. Keep repainting while the finger is
+            // still so the timer can mature even when Android sends no motion.
+            if down
+                && active.intent.is_none()
+                && active.message_id.is_some()
+                && !active.blocked
+                && delta.length() <= LONG_PRESS_SLOP
+            {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(50));
+                if time - active.started >= LONG_PRESS_SECONDS
+                    && let Some(message_id) = active.message_id.clone()
+                    && store.message(&message_id).is_some_and(|message| !message.pending)
+                {
+                    // A small anchor rect also absorbs the release click, so
+                    // opening the menu does not immediately dismiss it.
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id,
+                        anchor: Rect::from_center_size(
+                            active.origin,
+                            Vec2::splat(LONG_PRESS_SLOP * 2.0),
+                        ),
+                        at_pointer: true,
+                        opened: time,
+                    });
+                    active.blocked = true;
+                }
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        let intent_slop = if active.message_id.is_some() {
+            LONG_PRESS_SLOP
+        } else {
+            SWIPE_SLOP
+        };
+        #[cfg(not(target_os = "android"))]
+        let intent_slop = SWIPE_SLOP;
+        if active.intent.is_none() && !active.blocked && delta.length() >= intent_slop {
             active.intent = Some(decide_intent(delta, state.mobile_surface, &active.message_id));
         }
 
@@ -2892,6 +2948,9 @@ fn channel_pill(
     } else {
         ui.layer_id()
     };
+    if topic_open {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
@@ -3099,6 +3158,23 @@ fn channel_pill(
     Some(rect)
 }
 
+/// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
+/// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
+/// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
+/// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
+/// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
+/// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
+fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
+    egui::Area::new(layer.id)
+        .order(layer.order)
+        .fixed_pos(rect.min)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            ui.allocate_space(rect.size());
+        });
+}
+
 /// Pastilha de ações do canal, no alto à direita.
 ///
 /// Fechada, são três ícones. Aberta em busca ou em fixadas, vira uma camada
@@ -3129,6 +3205,9 @@ fn actions_pill(
         ui.layer_id()
     };
     let screen = ui.ctx().content_rect();
+    if open.is_some() {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
     let width = if open.is_some() {
@@ -3201,10 +3280,16 @@ fn actions_pill(
         UiBuilder::new()
             .max_rect(body_rect.shrink(space::SM))
             .layout(Layout::top_down(Align::Min)),
-        |ui| match kind {
-            PanelKind::Search => search_panel(ui, store, state, t, s),
-            PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
-            PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+        |ui| {
+            // Rich cards/media can be taller than the visible panel body.
+            // Keep both painting and hit-testing inside the stretched pill;
+            // the inner ScrollAreas own the overflow.
+            ui.set_clip_rect(ui.clip_rect().intersect(body_rect.shrink(space::SM)));
+            match kind {
+                PanelKind::Search => search_panel(ui, store, state, t, s),
+                PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+                PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+            }
         },
     );
 
@@ -3845,15 +3930,36 @@ fn search_panel(
                     .unwrap_or_else(|| "?".to_owned()),
                 result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
+                if result.attachments.is_empty() {
+                    store
+                        .message(&result.id)
+                        .map(|message| message.attachments.clone())
+                        .unwrap_or_default()
+                } else {
+                    result.attachments.clone()
+                },
             )
         })
         .collect();
 
+    let result_height = ui.available_height().max(1.0);
+    let result_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
+        .max_height(result_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (channel_id, message_id, channel_name, author_id, author_name, at, body) in found {
+            for (
+                channel_id,
+                message_id,
+                channel_name,
+                author_id,
+                author_name,
+                at,
+                body,
+                attachments,
+            ) in found
+            {
                 if result_row(
                     ui,
                     store,
@@ -3867,6 +3973,8 @@ fn search_panel(
                         at,
                         channel_name: Some(&channel_name),
                         body: &body,
+                        attachments: &attachments,
+                        row_width: result_width,
                     },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
@@ -3929,6 +4037,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     .unwrap_or_else(|| "?".into()),
                 message.at,
                 body,
+                message.attachments.clone(),
             )
         })
         .collect();
@@ -3941,11 +4050,14 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         );
         return;
     }
+    let pinned_height = ui.available_height().max(1.0);
+    let pinned_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("lista-de-fixadas")
+        .max_height(pinned_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, author_id, author_name, at, body) in pinned {
+            for (message_id, author_id, author_name, at, body, attachments) in pinned {
                 if result_row(
                     ui,
                     store,
@@ -3959,6 +4071,8 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         at: Some(at),
                         channel_name: None,
                         body: &body,
+                        attachments: &attachments,
+                        row_width: pinned_width,
                     },
                 ) {
                     let channel = channel_id.clone();
@@ -3975,6 +4089,11 @@ struct ResultPreview<'a> {
     at: Option<DateTime<Local>>,
     channel_name: Option<&'a str>,
     body: &'a str,
+    attachments: &'a [crate::api::models::Attachment],
+    /// Largura do painel, medida uma vez fora do ScrollArea. Ler
+    /// `available_width()` por linha deixava cada linha herdar o transbordo
+    /// da anterior e o cartão crescia além da pastilha.
+    row_width: f32,
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -3994,11 +4113,12 @@ fn result_row(
         at,
         channel_name,
         body,
+        attachments,
+        row_width,
     } = preview;
     let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
-    let row_width = ui.available_width();
     let max_text_width =
         (row_width - space::SM * 2.0 - avatar_size - space::MD).max(80.0);
     let member = author_id.and_then(|id| store.member(id));
@@ -4021,6 +4141,10 @@ fn result_row(
         ui.set_max_width(row_width);
         ui.add_space(space::XS);
         ui.horizontal(|ui| {
+            // Sem espaçamento implícito: a soma das partes é exatamente
+            // `row_width`, senão cada linha passa 16 px da pastilha.
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(space::SM);
             avatar(
                 ui,
@@ -4032,6 +4156,7 @@ fn result_row(
             );
             ui.add_space(space::MD);
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
                 ui.set_max_width(max_text_width);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
@@ -4070,8 +4195,26 @@ fn result_row(
                         false,
                         max_text_width,
                     );
-                    panel_rich_links(ui, state, t, message_id, body, max_text_width);
                 }
+                panel_attachments(
+                    ui,
+                    state,
+                    t,
+                    s,
+                    message_id,
+                    attachments,
+                    max_text_width,
+                );
+                // O fundo do cartão passa `space::MD` do conteúdo de cada
+                // lado; descontado aqui, ele termina rente à coluna.
+                panel_rich_links(
+                    ui,
+                    state,
+                    t,
+                    message_id,
+                    body,
+                    (max_text_width - space::MD).max(80.0),
+                );
             });
             ui.add_space(space::SM);
         });
@@ -4081,10 +4224,19 @@ fn result_row(
     let row = inner.response.rect;
     let response = inner.response;
     if response.hovered() {
-        ui.painter().set(
-            backdrop,
-            egui::epaint::RectShape::filled(row, CornerRadius::same(radius::CARD), t.fill_soft),
-        );
+        let highlight = row
+            .intersect(ui.clip_rect())
+            .shrink2(Vec2::new(space::XXS, 0.0));
+        if highlight.is_positive() {
+            ui.painter().set(
+                backdrop,
+                egui::epaint::RectShape::filled(
+                    highlight,
+                    CornerRadius::same(radius::CARD),
+                    t.fill_soft,
+                ),
+            );
+        }
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.add_space(space::XXS);
@@ -5024,6 +5176,45 @@ fn rich_links_from_message(
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
         preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+    }
+}
+
+fn panel_attachments(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    message_id: &str,
+    attachments: &[crate::api::models::Attachment],
+    width: f32,
+) {
+    if attachments.is_empty() {
+        return;
+    }
+    if let Some(action) = attachments::draw(
+        ui,
+        t,
+        s,
+        &mut state.media,
+        message_id,
+        attachments,
+        width,
+        &mut state.media_seek_zones,
+    ) {
+        match action {
+            MediaAction::Open { message_id, index } => {
+                state.viewer = Some(Viewer::with_attachments(
+                    message_id,
+                    index,
+                    attachments.to_vec(),
+                ));
+                state.media.pause_all();
+            }
+            MediaAction::Download { id, name } => {
+                state.actions.push(ChatAction::Download { id, name });
+            }
+            MediaAction::Reveal(id) => state.media.reveal(&id),
+        }
     }
 }
 
@@ -6055,9 +6246,14 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if let Some(mut viewer) = state.viewer.take() {
-        let attachments = store
-            .message(&viewer.message_id)
-            .map(|message| message.attachments.clone())
+        let attachments = viewer
+            .source_attachments()
+            .map(<[_]>::to_vec)
+            .or_else(|| {
+                store
+                    .message(&viewer.message_id)
+                    .map(|message| message.attachments.clone())
+            })
             .unwrap_or_default();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
             Some(ViewerAction::Close) => state.media.pause_all(),
