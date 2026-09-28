@@ -668,6 +668,119 @@ fn timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
 // Built-in collector
 // -------------------------------------------------------------------------
 
+
+#[cfg(not(target_os = "android"))]
+struct ProcessInfo {
+    path: String,
+    arguments: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+fn processes() -> Vec<ProcessInfo> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok())
+        .filter_map(|entry| {
+            let root = entry.path();
+            let path = std::fs::read_link(root.join("exe"))
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+                .or_else(|| {
+                    std::fs::read(root.join("cmdline"))
+                        .ok()
+                        .and_then(|bytes| bytes.split(|byte| *byte == 0).next().map(Vec::from))
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                })?;
+            let arguments = std::fs::read(root.join("cmdline"))
+                .ok()
+                .map(|bytes| {
+                    bytes
+                        .split(|byte| *byte == 0)
+                        .filter(|part| !part.is_empty())
+                        .skip(1)
+                        .map(|part| String::from_utf8_lossy(part))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .filter(|args| !args.is_empty());
+            Some(ProcessInfo { path, arguments })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn processes() -> Vec<ProcessInfo> {
+    let Ok(output) = std::process::Command::new("/bin/ps")
+        .args(["-axo", "comm=,args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let split = line.find(char::is_whitespace)?;
+            let path = line[..split].to_owned();
+            let arguments = line[split..].trim();
+            Some(ProcessInfo {
+                path,
+                arguments: (!arguments.is_empty()).then(|| arguments.to_owned()),
+            })
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn processes() -> Vec<ProcessInfo> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return Vec::new();
+    };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = Vec::new();
+    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+        loop {
+            let len = entry
+                .szExeFile
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let path = String::from_utf16_lossy(&entry.szExeFile[..len]);
+            if !path.is_empty() {
+                found.push(ProcessInfo {
+                    path,
+                    // Toolhelp intentionally keeps this lightweight. Games
+                    // whose Discord detectable rule requires command-line
+                    // matching can still publish through RPC/arRPC.
+                    arguments: None,
+                });
+            }
+            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
+                break;
+            }
+        }
+    }
+    let _ = unsafe { CloseHandle(snapshot) };
+    found
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android")))]
+fn processes() -> Vec<ProcessInfo> {
+    Vec::new()
+}
+
 #[cfg(not(target_os = "android"))]
 #[derive(Clone, Debug, Deserialize)]
 struct DetectableApplication {
@@ -895,7 +1008,6 @@ async fn run_builtin(
     let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut ipc_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut ipc_slot: Option<u32> = None;
-    let mut system = sysinfo::System::new();
     let mut rpc_activities: std::collections::HashMap<u64, (u64, Activity)> =
         std::collections::HashMap::new();
     let mut revision = 0u64;
@@ -925,12 +1037,12 @@ async fn run_builtin(
             }
             _ = ticker.tick() => {
                 let (discord_running, detected) = if settings.game_detection && !detector.by_name.is_empty() {
-                    detector.detect(&mut system)
+                    detector.detect()
                 } else {
                     // Even with game detection disabled we still need to know
                     // whether native Discord owns RPC priority.
                     let empty = DetectableIndex::default();
-                    empty.detect(&mut system)
+                    empty.detect()
                 };
 
                 if discord_running {
