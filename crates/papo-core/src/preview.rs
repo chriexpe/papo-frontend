@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION, RETRY_AFTER};
+use reqwest::header::{
+    ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, LOCATION, RETRY_AFTER, USER_AGENT,
+};
 use tokio::sync::{mpsc, Semaphore};
 use url::{Host, Url};
 
@@ -36,6 +38,16 @@ const RETRY_BASE_MS: i64 = 5 * 60 * 1000;
 const RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1000;
 const RESOLVER_CONCURRENCY: usize = 4;
 const QUEUE_CAPACITY: usize = 128;
+/// Compatibility retry for origins whose Cloudflare policy challenges a
+/// conventional HTTP-client UA before the site's own crawler route can run.
+///
+/// The Papo token deliberately remains in the UA (and includes "Preview") so
+/// origins can still identify this as a crawler; this is not a Discord/Google
+/// impersonation.
+const CHALLENGE_COMPAT_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 PapoRichPreview/0.5";
+const CHALLENGE_COMPAT_ACCEPT: &str =
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const CHALLENGE_COMPAT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewKind {
@@ -1292,28 +1304,47 @@ async fn get_following_safe_redirects(
     client: &reqwest::Client,
     url: Url,
 ) -> Result<reqwest::Response, ResolveError> {
-    get_following_safe_redirects_with_policy(client, url, false).await
+    get_following_safe_redirects_with_policy(client, url, false, false).await
 }
 
 async fn get_following_safe_preview_response(
     client: &reqwest::Client,
     url: Url,
 ) -> Result<reqwest::Response, ResolveError> {
-    get_following_safe_redirects_with_policy(client, url, true).await
+    let response =
+        get_following_safe_redirects_with_policy(client, url.clone(), true, false).await?;
+    if !is_cloudflare_challenge(response.status(), response.headers()) {
+        return Ok(response);
+    }
+
+    // A Managed Challenge cannot be solved by reqwest. One compatibility retry
+    // is still useful, though: some Cloudflare policies challenge unknown
+    // client-shaped UAs but permit browser-shaped crawler requests. Keep Papo's
+    // identity in the UA so the origin can continue routing us as a preview bot.
+    log::debug!(
+        "preview {}: Cloudflare challenge; tentando cabeçalhos compatíveis com navegador",
+        safe_key(url.as_str())
+    );
+    drop(response);
+    get_following_safe_redirects_with_policy(client, url, true, true).await
 }
 
 async fn get_following_safe_redirects_with_policy(
     client: &reqwest::Client,
     mut url: Url,
     allow_preview_client_errors: bool,
+    challenge_compat: bool,
 ) -> Result<reqwest::Response, ResolveError> {
     for hop in 0..=MAX_REDIRECTS {
         validate_destination(&url).await?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(classify_reqwest)?;
+        let mut request = client.get(url.clone());
+        if challenge_compat {
+            request = request
+                .header(USER_AGENT, CHALLENGE_COMPAT_UA)
+                .header(ACCEPT, CHALLENGE_COMPAT_ACCEPT)
+                .header(ACCEPT_LANGUAGE, CHALLENGE_COMPAT_LANGUAGE);
+        }
+        let response = request.send().await.map_err(classify_reqwest)?;
 
         if !response.status().is_redirection() {
             let status = response.status();
@@ -1346,6 +1377,17 @@ async fn get_following_safe_redirects_with_policy(
             .map_err(|error| ResolveError::negative(format!("redirect inválido: {error}")))?;
     }
     unreachable!()
+}
+
+fn is_cloudflare_challenge(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN
+        && headers
+            .get("cf-mitigated")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("challenge"))
 }
 
 fn is_preview_soft_client_error(status: reqwest::StatusCode) -> bool {
@@ -2483,6 +2525,34 @@ mod tests {
             reqwest::header::HeaderValue::from_static("cloudflare"),
         );
         assert_eq!(safe_header_class(&headers, "server"), "cloudflare");
+    }
+
+
+    #[test]
+    fn cloudflare_challenge_detection_is_explicit() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "cf-mitigated",
+            reqwest::header::HeaderValue::from_static("challenge"),
+        );
+        assert!(is_cloudflare_challenge(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers
+        ));
+        assert!(!is_cloudflare_challenge(
+            reqwest::StatusCode::OK,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn challenge_compat_ua_keeps_papo_preview_identity() {
+        let ua = CHALLENGE_COMPAT_UA.to_ascii_lowercase();
+        assert!(ua.contains("mozilla/5.0"));
+        assert!(ua.contains("paporichpreview/"));
+        assert!(ua.contains("preview"));
+        assert!(!ua.contains("discordbot"));
+        assert!(!ua.contains("googlebot"));
     }
 
 }
