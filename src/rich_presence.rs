@@ -854,23 +854,15 @@ impl DetectableIndex {
         Ok(index)
     }
 
-    fn detect(&self, system: &mut sysinfo::System) -> (bool, Option<Activity>) {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
-
-        system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing()
-                .with_exe(UpdateKind::Always)
-                .with_cmd(UpdateKind::Always),
-        );
-
+    fn detect(&self) -> (bool, Option<Activity>) {
         let mut discord = false;
         let mut found: Option<(String, String)> = None;
-        for process in system.processes().values() {
+        for process in processes() {
             let process_name = process
-                .name()
-                .to_string_lossy()
+                .path
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&process.path)
                 .to_ascii_lowercase();
             let clean_name = process_name.strip_suffix(".exe").unwrap_or(&process_name);
             if matches!(
@@ -880,34 +872,30 @@ impl DetectableIndex {
                 discord = true;
             }
 
-            let Some(path) = process.exe() else {
-                continue;
-            };
-            let normalized = path
-                .to_string_lossy()
-                .replace('\\', "/")
-                .to_ascii_lowercase();
+            let normalized = process.path.replace('\\', "/").to_ascii_lowercase();
             let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
             let Some(candidates) = self.by_name.get(basename) else {
                 continue;
             };
-            let arguments = process
-                .cmd()
-                .iter()
-                .map(|part| part.to_string_lossy())
-                .collect::<Vec<_>>()
-                .join(" ");
             if let Some(candidate) = candidates.iter().find(|candidate| {
+                let candidate_basename = candidate
+                    .executable
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&candidate.executable);
                 let name_matches = if candidate.exact {
-                    basename == candidate.executable
+                    basename == candidate_basename
                 } else {
                     normalized == candidate.executable
                         || normalized.ends_with(&format!("/{}", candidate.executable))
+                        || (!normalized.contains('/') && basename == candidate_basename)
                 };
-                let arguments_match = candidate
-                    .arguments
-                    .as_deref()
-                    .is_none_or(|required| arguments.contains(required));
+                let arguments_match = candidate.arguments.as_deref().is_none_or(|required| {
+                    process
+                        .arguments
+                        .as_deref()
+                        .is_some_and(|arguments| arguments.contains(required))
+                });
                 name_matches && arguments_match
             }) {
                 found = Some((
@@ -1075,7 +1063,7 @@ async fn run_builtin(
                     if process_activity != last_published {
                         last_published = process_activity.clone();
                         let detail = if discord_running {
-                            "Native Discord owns RPC · game detection"
+                            "Native Discord owns RPC · game detection".to_owned()
                         } else if let Some(slot) = ipc_slot {
                             if settings.game_detection {
                                 return_detail(slot, true)
@@ -1356,7 +1344,7 @@ async fn handle_rpc_stream<S>(
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
 
     let mut client_id: Option<String> = None;
     loop {
