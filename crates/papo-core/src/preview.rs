@@ -187,6 +187,20 @@ fn preview_rank(kind: PreviewKind) -> u8 {
     }
 }
 
+/// Whether a resolved preview goes to the local cache. `no-store` only keeps
+/// plain link cards in memory: that is the degraded "temporarily
+/// unavailable" card of unfurl proxies, which must not stick. Rich results
+/// and posts are kept anyway: X, YouTube and Instagram mark every page
+/// `no-store` because the HTML is personalised, not because the post
+/// changes, and what Papo stores is the extracted public metadata, refreshed
+/// when its TTL runs out.
+fn worth_storing(persistent: bool, preview: &ResolvedPreview) -> bool {
+    persistent
+        || preview.kind != PreviewKind::Link
+        || preview.post.author_name.is_some()
+        || preview.post.author_handle.is_some()
+}
+
 fn response_allows_persistence(headers: &reqwest::header::HeaderMap) -> bool {
     !headers
         .get_all(CACHE_CONTROL)
@@ -518,12 +532,13 @@ async fn process_request(
                 return;
             }
 
-            let ttl_ms = if resolved.persistent {
+            let store = worth_storing(resolved.persistent, &preview);
+            let ttl_ms = if store {
                 ready_ttl_ms(preview.kind)
             } else {
                 EPHEMERAL_READY_TTL_MS
             };
-            if resolved.persistent {
+            if store {
                 let row = preview_row(&key, &preview, now);
                 persist(&inner, row).await;
             }
@@ -3320,6 +3335,20 @@ mod tests {
             reqwest::header::HeaderValue::from_static("public, max-age=60"),
         );
         assert!(response_allows_persistence(&headers));
+    }
+
+    #[test]
+    fn no_store_only_keeps_plain_cards_out_of_the_cache() {
+        let mut preview = ready_preview("https://proxy.example/reel/1");
+        assert!(!worth_storing(false, &preview));
+        assert!(worth_storing(true, &preview));
+
+        preview.kind = PreviewKind::Video;
+        assert!(worth_storing(false, &preview));
+
+        preview.kind = PreviewKind::Link;
+        preview.post.author_handle = Some("@someone".to_owned());
+        assert!(worth_storing(false, &preview));
     }
 
     #[test]
