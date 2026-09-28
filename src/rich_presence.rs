@@ -172,6 +172,10 @@ impl Default for Snapshot {
 }
 
 impl ActivityOverride {
+    pub fn preview(&self) -> Option<Activity> {
+        self.activity(Utc::now())
+    }
+
     fn activity(&self, started: DateTime<Utc>) -> Option<Activity> {
         let name = self.name.trim();
         if !self.enabled || name.is_empty() {
@@ -947,7 +951,14 @@ async fn run_builtin(
                     }));
                 }
 
-                process_activity = detected;
+                process_activity = detected.map(|mut detected| {
+                    if let Some(previous) = process_activity.as_ref()
+                        && previous.name == detected.name
+                    {
+                        detected.started_at = previous.started_at;
+                    }
+                    detected
+                });
                 if rpc_activities.is_empty() {
                     if process_activity != last_published {
                         last_published = process_activity.clone();
