@@ -569,7 +569,7 @@ mod tests {
         let (mut manager, calls) = manager();
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
         assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel));
         manager.present_floating(rect(), rect(), 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::CurrentChannel, false);
@@ -600,7 +600,7 @@ mod tests {
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
         assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::Global));
-        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.present_floating(rect(), rect(), 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::Global, false);
         assert!(!matches!(calls.lock().unwrap().last(), Some(Call::Destroy(_))));
     }
@@ -610,7 +610,7 @@ mod tests {
         let (mut manager, _calls, _playing) = manager_with_playing(Some(false));
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
 
         assert!(!manager.should_float(
             OffscreenBehavior::Float,
@@ -623,12 +623,12 @@ mod tests {
         let (mut manager, _calls, playing) = manager_with_playing(Some(true));
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, true);
+        manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
         assert!(manager.should_float(
             OffscreenBehavior::Float,
             FloatScope::CurrentChannel,
         ));
-        manager.present_floating(rect(), rect(), 1.0, true);
+        manager.present_floating(rect(), rect(), 1.0, &[], true);
 
         *playing.lock().unwrap() = Some(false);
         assert!(manager.should_float(
