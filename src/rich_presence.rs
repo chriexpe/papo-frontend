@@ -780,8 +780,8 @@ struct RsrpcProcess {
 impl RsrpcProcess {
     async fn start(settings: &Settings) -> Result<Self, String> {
         let binary = find_rsrpc_binary()?;
+        let mut command = rsrpc_command(&binary)?;
 
-        let mut command = std::process::Command::new(binary);
         if !settings.game_detection {
             command.arg("--no-process-scanning");
         }
@@ -863,6 +863,59 @@ where
             }
         })
         .ok();
+}
+
+#[cfg(not(target_os = "android"))]
+fn rsrpc_command(binary: &std::path::Path) -> Result<std::process::Command, String> {
+    if std::env::var_os("FLATPAK_ID").is_none() {
+        return Ok(std::process::Command::new(binary));
+    }
+
+    // Flatpak has a private /proc, so a process scanner inside the sandbox
+    // cannot see the user's games. Keep the release self-contained by copying
+    // the bundled helper to Papo's host-visible app-data directory, then ask
+    // Flatpak to launch that exact binary on the host.
+    let data = crate::platform::dirs::data_dir()
+        .ok_or_else(|| "could not locate Papo data directory for rsRPC".to_owned())?;
+    let host_dir = data.join("rich-presence").join("rsrpc");
+    std::fs::create_dir_all(&host_dir)
+        .map_err(|error| format!("could not create rsRPC host directory: {error}"))?;
+    let host_binary = host_dir.join("rsrpc");
+
+    let needs_copy = match (std::fs::metadata(binary), std::fs::metadata(&host_binary)) {
+        (Ok(source), Ok(target)) => source.len() != target.len(),
+        (Ok(_), Err(_)) => true,
+        (Err(error), _) => {
+            return Err(format!(
+                "bundled rsRPC helper is unreadable ({}): {error}",
+                binary.display()
+            ));
+        }
+    };
+    if needs_copy {
+        std::fs::copy(binary, &host_binary)
+            .map_err(|error| format!("could not stage rsRPC for Flatpak host: {error}"))?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&host_binary)
+            .map_err(|error| format!("rsRPC host helper metadata: {error}"))?
+            .permissions();
+        if permissions.mode() & 0o111 == 0 {
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&host_binary, permissions)
+                .map_err(|error| format!("rsRPC host helper permissions: {error}"))?;
+        }
+    }
+
+    let mut command = std::process::Command::new("flatpak-spawn");
+    command
+        .arg("--host")
+        .arg("--watch-bus")
+        .arg(host_binary);
+    Ok(command)
 }
 
 #[cfg(not(target_os = "android"))]
