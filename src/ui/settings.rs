@@ -2951,8 +2951,8 @@ fn app_pane(
                             let color = match source {
                                 crate::rich_presence::Source::External
                                 | crate::rich_presence::Source::BuiltIn
-                                | crate::rich_presence::Source::Override => t.success,
-                                crate::rich_presence::Source::Connecting => t.warning,
+                                | crate::rich_presence::Source::Override => t.online,
+                                crate::rich_presence::Source::Connecting => t.away,
                                 crate::rich_presence::Source::Error => t.danger,
                                 _ => t.label_tertiary,
                             };
@@ -3082,7 +3082,7 @@ fn app_pane(
             });
             footnote(ui, t, s.rich_presence_external_hint);
 
-            section(ui, t, s.advanced);
+            section(ui, t, s.rich_presence_advanced);
             group(ui, t, |rows| {
                 rows.row(
                     s.rich_presence_auto_reconnect,
