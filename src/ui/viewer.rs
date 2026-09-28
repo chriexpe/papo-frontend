@@ -348,6 +348,17 @@ fn stage_image(
             Color32::WHITE,
         );
     }
+    // The stage owns drag/zoom input, so the backdrop never receives clicks
+    // inside it. Treat a plain click on stage chrome outside the painted image
+    // as a backdrop click as well.
+    if response.clicked()
+        && response
+            .interact_pointer_pos()
+            .is_some_and(|pointer| !rect.expand(space::MD).contains(pointer))
+    {
+        return Some(ViewerAction::Close);
+    }
+
     let _ = t;
     None
 }
@@ -575,6 +586,7 @@ pub fn draw_remote_image(
         .cloned();
 
     let mut content = Rect::NOTHING;
+    let mut stage_clicked_outside = false;
     if let Some(texture) = texture {
         let natural = texture.size_vec2();
         let base = (stage.width() / natural.x)
@@ -635,6 +647,10 @@ pub fn draw_remote_image(
 
         let size = natural * scale;
         content = Rect::from_center_size(stage.center() + *offset, size);
+        stage_clicked_outside = response.clicked()
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|pointer| !content.expand(space::MD).contains(pointer));
         top.painter().image(
             texture.id(),
             content,
@@ -719,8 +735,11 @@ pub fn draw_remote_image(
         x -= 38.0;
     }
 
+    let now = top.input(|input| input.time);
+    if action.is_none() && now > opened + 0.05 && stage_clicked_outside {
+        action = Some(RemoteViewerAction::Close);
+    }
     if background.clicked() && action.is_none() {
-        let now = top.input(|input| input.time);
         let pointer = background.interact_pointer_pos().unwrap_or_default();
         let on_content = content.expand(space::MD).contains(pointer);
         let on_header = pointer.y < screen.min.y + 56.0;
