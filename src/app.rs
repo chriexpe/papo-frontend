@@ -2557,6 +2557,9 @@ impl PapoApp {
                             },
                         )));
                     }
+                    // A arte da atividade manual fica neste aparelho, ao lado
+                    // dos outros ajustes locais do Rich Presence.
+                    ImagePick::ActivityArt => self.store_activity_art(&blob, &format),
                     // O nome veio do editor: a figurinha sobe direto.
                     ImagePick::Sticker => {
                         if let Some(name) = name.filter(|name| !name.is_empty()) {
@@ -3031,6 +3034,16 @@ impl PapoApp {
             match action {
                 SettingsAction::Menu(command) => self.ui.pending.push(command),
                 SettingsAction::RestartRichPresence => self.rich_presence.restart(),
+                SettingsAction::PickActivityImage => {
+                    self.dialogs.pick_image(ctx.clone(), ImagePick::ActivityArt);
+                }
+                SettingsAction::ClearActivityImage => {
+                    if let Some(path) = self.settings.rich_presence.override_activity.image.take() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    self.rich_presence
+                        .configure(self.settings.rich_presence.clone());
+                }
                 SettingsAction::PickDownloadFolder => {
                     let start = match &self.settings.downloads {
                         DownloadMode::Folder(dir) => dir.clone(),
@@ -3054,6 +3067,35 @@ impl PapoApp {
  }
 
 impl PapoApp {
+    /// Grava a arte recortada da atividade manual e passa a usá-la. Cada
+    /// escolha ganha um nome novo: o cartão guarda a textura pelo caminho, e
+    /// trocar o arquivo por baixo do mesmo nome mostraria a imagem antiga.
+    fn store_activity_art(&mut self, blob: &str, format: &str) {
+        use base64::Engine as _;
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(blob) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!("arte da atividade inválida: {error}");
+                return;
+            }
+        };
+        let Some(dir) = crate::platform::dirs::data_dir().map(|dir| dir.join("rich-presence")) else {
+            return;
+        };
+        let stamp = chrono::Utc::now().timestamp_millis();
+        let path = dir.join(format!("activity-{stamp}.{}", format.to_ascii_lowercase()));
+        if let Err(error) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, bytes)) {
+            log::warn!("não deu para gravar a arte da atividade: {error}");
+            return;
+        }
+        let manual = &mut self.settings.rich_presence.override_activity;
+        if let Some(old) = manual.image.replace(path) {
+            let _ = std::fs::remove_file(old);
+        }
+        self.rich_presence
+            .configure(self.settings.rich_presence.clone());
+    }
+
     fn project_local_activity(&mut self) {
         let activity = self.rich_presence.snapshot().activity.clone();
         for workspace in &mut self.workspaces {

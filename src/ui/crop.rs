@@ -267,6 +267,7 @@ fn editor_contents(
         ImagePick::Banner => s.crop_banner,
         ImagePick::ServerIcon => s.crop_icon,
         ImagePick::Sticker => s.sticker_new,
+        ImagePick::ActivityArt => s.crop_activity,
         _ => s.crop_avatar,
     };
     let title_galley = ui
@@ -391,6 +392,8 @@ fn editor_contents(
         ImagePick::Avatar => frame.width() / 2.0,
         ImagePick::ServerIcon => frame.width() * 0.22,
         ImagePick::Sticker => radius::CARD as f32,
+        // O mesmo canto do quadro de 56 px no cartão de atividade.
+        ImagePick::ActivityArt => frame.width() * radius::FIELD as f32 / 56.0,
         _ => radius::SHEET as f32,
     };
     let corner_band = frame.width();

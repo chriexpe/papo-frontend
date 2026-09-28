@@ -116,6 +116,9 @@ pub struct Activity {
     pub started_at: Option<DateTime<Utc>>,
     /// Com início e fim, o cartão desenha a barra de progresso.
     pub ends_at: Option<DateTime<Utc>>,
+    /// Arte quadrada da atividade: caminho local (a atividade manual deste
+    /// aparelho). Sem ela o cartão desenha o ícone do tipo.
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

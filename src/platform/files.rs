@@ -60,6 +60,8 @@ pub enum ImagePick {
     /// Figurinha do servidor. O nome é pedido depois de escolher o arquivo:
     /// digitar o nome antes de ver a imagem era pedir na ordem errada.
     Sticker,
+    /// Arte da atividade manual do Rich Presence. Fica só neste aparelho.
+    ActivityArt,
 }
 
 impl ImagePick {
@@ -70,7 +72,7 @@ impl ImagePick {
     /// em telas 3x.
     pub fn limits(self) -> (u32, u32, usize) {
         match self {
-            Self::Avatar | Self::ServerIcon => (512, 512, 2 * 1024 * 1024),
+            Self::Avatar | Self::ServerIcon | Self::ActivityArt => (512, 512, 2 * 1024 * 1024),
             Self::Banner => (1536, 512, 2 * 1024 * 1024),
             Self::Sticker => (512, 512, 256 * 1024),
         }
@@ -80,7 +82,7 @@ impl ImagePick {
     pub fn aspect(self) -> Option<f32> {
         match self {
             // Figurinha começa quadrada; o editor deixa trocar por "Original".
-            Self::Avatar | Self::ServerIcon | Self::Sticker => Some(1.0),
+            Self::Avatar | Self::ServerIcon | Self::Sticker | Self::ActivityArt => Some(1.0),
             Self::Banner => Some(3.0),
         }
     }

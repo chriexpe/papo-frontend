@@ -578,6 +578,7 @@ fn profiles(store: &mut Store) {
             state: Some("papo-frontend".into()),
             started_at: Some(now - Duration::minutes(38)),
             ends_at: None,
+            image: None,
         },
     );
     store.activities.insert(
@@ -589,6 +590,7 @@ fn profiles(store: &mut Store) {
             state: Some("David Bowie".into()),
             started_at: Some(now - Duration::seconds(94)),
             ends_at: Some(now + Duration::seconds(277)),
+            image: None,
         },
     );
     store.activities.insert(
@@ -600,6 +602,7 @@ fn profiles(store: &mut Store) {
             state: None,
             started_at: Some(now - Duration::minutes(72)),
             ends_at: None,
+            image: None,
         },
     );
 }

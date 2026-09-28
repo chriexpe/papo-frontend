@@ -266,6 +266,28 @@ pub struct Draft {
     pub deleting: Option<(String, String, String)>,
     pub loaded_audit: bool,
     pub audit: crate::ui::audit::Filter,
+    /// Host, porta e intervalo do Rich Presence enquanto são digitados.
+    pub presence: Option<PresenceDraft>,
+}
+
+/// Campos do Rich Presence que reconectam: só valem quando a pessoa sai do
+/// campo, e um valor inválido volta ao que estava.
+#[derive(Clone, Debug, Default)]
+pub struct PresenceDraft {
+    pub host: String,
+    pub port: String,
+    pub interval: String,
+}
+
+impl PresenceDraft {
+    #[cfg(not(target_os = "android"))]
+    fn from_settings(settings: &crate::rich_presence::Settings) -> Self {
+        Self {
+            host: settings.external_host.clone(),
+            port: settings.external_port.clone(),
+            interval: settings.reconnect_interval.clone(),
+        }
+    }
 }
 
 impl SettingsState {
@@ -452,6 +474,7 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
         tiled,
         pieces: Vec::new(),
         stack_next: false,
+        editing: false,
     };
     contents(&mut rows);
     let separators = std::mem::take(&mut rows.separators);
@@ -504,6 +527,8 @@ pub struct Rows<'u> {
     pieces: Vec<(egui::layers::ShapeIdx, Rect)>,
     /// A próxima linha empilha o controle embaixo do rótulo (campos).
     stack_next: bool,
+    /// O último campo desenhado está com o foco (a pessoa ainda digita).
+    editing: bool,
 }
 
 impl Rows<'_> {
@@ -781,6 +806,17 @@ impl Rows<'_> {
         self.lines = 1;
     }
 
+    /// Campo cujo valor só vale quando a pessoa termina de digitar: devolve
+    /// `true` quando ele não está com o foco, e aí o rascunho pode ser
+    /// aplicado. Serve para o que reconecta ou reinicia algo a cada mudança
+    /// (host e porta do Rich Presence), que não pode receber "1", "13",
+    /// "133" no caminho até "1337".
+    #[cfg(not(target_os = "android"))]
+    fn field_settled(&mut self, label: &str, draft: &mut String, limit: usize) -> bool {
+        self.field_hinted(label, None, draft, limit, false);
+        !self.editing
+    }
+
     fn field_hinted(
         &mut self,
         label: &str,
@@ -790,6 +826,8 @@ impl Rows<'_> {
         secret: bool,
     ) -> bool {
         let mut submitted = false;
+        #[cfg_attr(target_os = "android", allow(unused_mut))]
+        let mut editing = false;
         #[cfg_attr(target_os = "android", allow(unused_variables))]
         let lines = self.lines;
         // Contador: sempre nos campos longos (recado, bio, frase) quando têm
@@ -890,8 +928,10 @@ impl Rows<'_> {
                 );
                 submitted =
                     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                editing = response.has_focus();
             }
         });
+        self.editing = editing;
         submitted
     }
 }
@@ -1174,6 +1214,9 @@ pub enum SettingsAction {
     RestartRichPresence,
     /// Abre o seletor de pasta do sistema para os downloads.
     PickDownloadFolder,
+    /// Seletor e recorte da imagem da atividade manual.
+    PickActivityImage,
+    ClearActivityImage,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     CheckUpdates,
 }
@@ -2944,10 +2987,11 @@ fn app_pane(
         }
 
         AppPane::Activity => {
-            let manual = data.rich_presence.override_activity.preview();
-            let preview = manual
-                .as_ref()
-                .or(data.rich_presence_snapshot.activity.as_ref());
+            use crate::rich_presence::Source;
+            // The manager already applies the manual override, so the hero
+            // shows exactly what the profile shows, with a stable timer.
+            let snapshot = data.rich_presence_snapshot;
+            let preview = snapshot.activity.as_ref();
             // The activity card is taller than the empty state (and can grow
             // a timer/progress row), so reserve enough room for whichever
             // preview is actually visible.
@@ -2958,18 +3002,11 @@ fn app_pane(
                         .max_rect(area)
                         .layout(Layout::top_down(Align::Min)),
                     |ui| {
-                        let source = if data.rich_presence.override_activity.enabled {
-                            crate::rich_presence::Source::Override
-                        } else {
-                            data.rich_presence_snapshot.source.clone()
-                        };
                         ui.horizontal(|ui| {
-                            let color = match source {
-                                crate::rich_presence::Source::External
-                                | crate::rich_presence::Source::BuiltIn
-                                | crate::rich_presence::Source::Override => t.online,
-                                crate::rich_presence::Source::Connecting => t.away,
-                                crate::rich_presence::Source::Error => t.danger,
+                            let color = match snapshot.source {
+                                Source::External | Source::BuiltIn | Source::Override => t.online,
+                                Source::Connecting => t.away,
+                                Source::Error => t.danger,
                                 _ => t.label_tertiary,
                             };
                             ui.label(
@@ -2978,13 +3015,13 @@ fn app_pane(
                                     .color(color),
                             );
                             ui.label(
-                                RichText::new(rich_presence_source_label(source, s))
+                                RichText::new(rich_presence_source_label(snapshot.source.clone(), s))
                                     .font(text::subheadline())
                                     .color(t.label),
                             );
-                            if !data.rich_presence_snapshot.detail.is_empty() {
+                            if !snapshot.detail.is_empty() {
                                 ui.label(
-                                    RichText::new(format!("· {}", data.rich_presence_snapshot.detail))
+                                    RichText::new(format!("· {}", snapshot.detail))
                                         .font(text::footnote())
                                         .color(t.label_tertiary),
                                 );
@@ -3013,20 +3050,25 @@ fn app_pane(
                         switch(ui, t, &mut data.rich_presence.enabled);
                     },
                 );
-                rows.row(
-                    s.rich_presence_builtin,
-                    Some(s.rich_presence_builtin_hint),
-                    |ui, t| {
-                        switch(ui, t, &mut data.rich_presence.built_in);
-                    },
-                );
-                rows.row(
-                    s.rich_presence_game_detection,
-                    Some(s.rich_presence_game_detection_hint),
-                    |ui, t| {
-                        switch(ui, t, &mut data.rich_presence.game_detection);
-                    },
-                );
+                // Android only renders activity; there is no provider to
+                // configure there.
+                #[cfg(not(target_os = "android"))]
+                {
+                    rows.row(
+                        s.rich_presence_builtin,
+                        Some(s.rich_presence_builtin_hint),
+                        |ui, t| {
+                            switch(ui, t, &mut data.rich_presence.built_in);
+                        },
+                    );
+                    rows.row(
+                        s.rich_presence_game_detection,
+                        Some(s.rich_presence_game_detection_hint),
+                        |ui, t| {
+                            switch(ui, t, &mut data.rich_presence.game_detection);
+                        },
+                    );
+                }
             });
 
             section(ui, t, s.rich_presence_override);
@@ -3050,6 +3092,68 @@ fn app_pane(
                                 (crate::rich_presence::OverrideKind::Working, s.activity_working),
                             ],
                         );
+                    });
+                    let image = data
+                        .rich_presence
+                        .override_activity
+                        .image
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned());
+                    rows.row(s.rich_presence_override_image, None, |ui, t| {
+                        use egui_phosphor::regular as icon;
+                        // Right to left: remove, choose, then the thumbnail,
+                        // which also opens the picker.
+                        if image.is_some()
+                            && crate::ui::widgets::icon_button(
+                                ui,
+                                t,
+                                icon::TRASH,
+                                s.rich_presence_override_image_remove,
+                            )
+                            .clicked()
+                        {
+                            actions.push(SettingsAction::ClearActivityImage);
+                        }
+                        if crate::ui::widgets::icon_button(
+                            ui,
+                            t,
+                            icon::IMAGE,
+                            s.rich_presence_override_image_choose,
+                        )
+                        .clicked()
+                        {
+                            actions.push(SettingsAction::PickActivityImage);
+                        }
+                        let (slot, response) =
+                            ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+                        let corners = CornerRadius::same(radius::FIELD);
+                        match image
+                            .as_deref()
+                            .and_then(|path| super::profile::activity_art(ui.ctx(), path))
+                        {
+                            Some(texture) => {
+                                egui::Image::new((texture.id(), slot.size()))
+                                    .corner_radius(corners)
+                                    .paint_at(ui, slot);
+                            }
+                            None => {
+                                ui.painter().rect_filled(slot, corners, t.fill_soft);
+                                ui.painter().text(
+                                    slot.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    icon::IMAGE,
+                                    text::icon(14.0),
+                                    t.label_tertiary,
+                                );
+                            }
+                        }
+                        if response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(s.rich_presence_override_image_choose)
+                            .clicked()
+                        {
+                            actions.push(SettingsAction::PickActivityImage);
+                        }
                     });
                     rows.field(
                         s.rich_presence_override_name,
@@ -3081,55 +3185,71 @@ fn app_pane(
                 }
             });
 
-            section(ui, t, s.rich_presence_external);
-            group(ui, t, |rows| {
-                rows.field(
-                    s.rich_presence_host,
-                    &mut data.rich_presence.external_host,
-                    255,
-                    false,
-                );
-                rows.field(
-                    s.rich_presence_port,
-                    &mut data.rich_presence.external_port,
-                    5,
-                    false,
-                );
-            });
-            footnote(ui, t, s.rich_presence_external_hint);
+            #[cfg(not(target_os = "android"))]
+            {
+                let settings = &mut *data.rich_presence;
+                let draft = state
+                    .draft
+                    .presence
+                    .get_or_insert_with(|| PresenceDraft::from_settings(settings));
 
-            section(ui, t, s.rich_presence_advanced);
-            group(ui, t, |rows| {
-                rows.row(
-                    s.rich_presence_auto_reconnect,
-                    Some(s.rich_presence_auto_reconnect_hint),
-                    |ui, t| {
-                        switch(ui, t, &mut data.rich_presence.auto_reconnect);
-                    },
-                );
-                if data.rich_presence.auto_reconnect {
-                    rows.field(
-                        s.rich_presence_reconnect_interval,
-                        &mut data.rich_presence.reconnect_interval,
-                        3,
-                        false,
+                section(ui, t, s.rich_presence_external);
+                group(ui, t, |rows| {
+                    if rows.field_settled(s.rich_presence_host, &mut draft.host, 255) {
+                        let host = draft.host.trim();
+                        let host = if host.is_empty() { "127.0.0.1" } else { host };
+                        if settings.external_host != host {
+                            settings.external_host = host.to_owned();
+                        }
+                        draft.host = settings.external_host.clone();
+                    }
+                    if rows.field_settled(s.rich_presence_port, &mut draft.port, 5) {
+                        match draft.port.trim().parse::<u16>() {
+                            Ok(port) if port > 0 => settings.external_port = port.to_string(),
+                            _ => {}
+                        }
+                        draft.port = settings.external_port.clone();
+                    }
+                });
+                footnote(ui, t, s.rich_presence_external_hint);
+
+                section(ui, t, s.rich_presence_advanced);
+                group(ui, t, |rows| {
+                    rows.row(
+                        s.rich_presence_auto_reconnect,
+                        Some(s.rich_presence_auto_reconnect_hint),
+                        |ui, t| {
+                            switch(ui, t, &mut settings.auto_reconnect);
+                        },
                     );
-                }
-                rows.row(
-                    s.rich_presence_debug,
-                    Some(s.rich_presence_debug_hint),
-                    |ui, t| {
-                        switch(ui, t, &mut data.rich_presence.debug);
-                    },
-                );
-                if rows.action(
-                    s.rich_presence_restart,
-                    Some(s.rich_presence_restart_hint),
-                    false,
-                ) {
-                    actions.push(SettingsAction::RestartRichPresence);
-                }
-            });
+                    if settings.auto_reconnect
+                        && rows.field_settled(
+                            s.rich_presence_reconnect_interval,
+                            &mut draft.interval,
+                            3,
+                        )
+                    {
+                        if let Ok(seconds) = draft.interval.trim().parse::<u64>() {
+                            settings.reconnect_interval = seconds.clamp(1, 300).to_string();
+                        }
+                        draft.interval = settings.reconnect_interval.clone();
+                    }
+                    rows.row(
+                        s.rich_presence_debug,
+                        Some(s.rich_presence_debug_hint),
+                        |ui, t| {
+                            switch(ui, t, &mut settings.debug);
+                        },
+                    );
+                    if rows.action(
+                        s.rich_presence_restart,
+                        Some(s.rich_presence_restart_hint),
+                        false,
+                    ) {
+                        actions.push(SettingsAction::RestartRichPresence);
+                    }
+                });
+            }
         }
 
         AppPane::Alerts => {
