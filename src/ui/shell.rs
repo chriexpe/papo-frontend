@@ -4896,8 +4896,14 @@ fn rich_body(
         for token in tokens {
             match token {
                 emoji::Token::Text(text) => {
-                    for word in text.split_inclusive(' ') {
-                        if word.trim().is_empty() && word != " " {
+                    // Newlines end a word too, or a link label would swallow
+                    // the next line while the click (and the preview) only
+                    // gets the URL up to the break.
+                    for word in text
+                        .split_inclusive(' ')
+                        .flat_map(|word| word.split_inclusive('\n'))
+                    {
+                        if word.trim().is_empty() && word != " " && !word.ends_with('\n') {
                             continue;
                         }
 
