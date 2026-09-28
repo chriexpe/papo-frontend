@@ -1056,7 +1056,7 @@ fn presence_segments(
     changed
 }
 
-fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activity, narrow: bool) {
+pub(crate) fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activity, narrow: bool) {
     let (verb, glyph, base) = match activity.kind {
         ActivityKind::Listening => (
             s.activity_listening,
