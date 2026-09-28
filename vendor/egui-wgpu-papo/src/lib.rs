@@ -38,8 +38,28 @@ pub mod capture;
 pub mod winit;
 
 use std::sync::Arc;
+#[cfg(feature = "winit")]
+use std::sync::OnceLock;
 
 use epaint::mutex::RwLock;
+
+#[cfg(feature = "winit")]
+static POST_PRESENT_HOOK: OnceLock<fn(egui::ViewportId)> = OnceLock::new();
+
+/// Install one process-wide callback that runs immediately after a native
+/// WGPU surface is presented. Papo uses this narrow hook to move native child
+/// surfaces only once the egui frame they belong to has been submitted.
+#[cfg(feature = "winit")]
+pub fn set_post_present_hook(hook: fn(egui::ViewportId)) {
+    let _ = POST_PRESENT_HOOK.set(hook);
+}
+
+#[cfg(feature = "winit")]
+pub(crate) fn run_post_present_hook(viewport_id: egui::ViewportId) {
+    if let Some(hook) = POST_PRESENT_HOOK.get() {
+        hook(viewport_id);
+    }
+}
 
 /// An error produced by egui-wgpu.
 #[derive(thiserror::Error, Debug)]
