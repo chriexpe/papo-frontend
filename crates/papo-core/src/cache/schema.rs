@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -161,6 +161,14 @@ const MIGRATIONS: &[Migration] = &[Migration {
         "CREATE INDEX messages_timeline_idx
              ON messages(server_key, channel_id, pinned, created_at DESC, message_id DESC)",
     ],
+}, Migration {
+    version: 7,
+    statements: &["ALTER TABLE preview_cache ADD COLUMN post_meta TEXT"],
+}, Migration {
+    // O resolvedor passou a achar vídeo direto, autor e reações onde antes
+    // gravava a página como embed: o cache antigo só atrapalharia.
+    version: 8,
+    statements: &["DELETE FROM preview_cache"],
 }];
 
 /// Lê a versão atual do esquema (0 quando ainda não há nada).

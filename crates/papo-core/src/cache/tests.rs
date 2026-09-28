@@ -1410,6 +1410,7 @@ fn cached_preview(url: &str, title: &str, used: i64) -> CachedPreview {
         title: Some(title.to_owned()),
         description: Some("rich metadata".to_owned()),
         provider_name: Some("example".to_owned()),
+        post_meta: None,
         resolved_at: used,
         retry_after: None,
         failure_class: None,

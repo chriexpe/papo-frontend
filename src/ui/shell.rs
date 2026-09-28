@@ -425,6 +425,8 @@ pub struct LinkViewer {
     pub id: String,
     pub url: String,
     pub name: String,
+    /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
+    pub video: bool,
     pub zoom: f32,
     pub offset: Vec2,
     pub fitted: bool,
@@ -5046,8 +5048,14 @@ fn rich_body(
         for token in tokens {
             match token {
                 emoji::Token::Text(text) => {
-                    for word in text.split_inclusive(' ') {
-                        if word.trim().is_empty() && word != " " {
+                    // Newlines end a word too, or a link label would swallow
+                    // the next line while the click (and the preview) only
+                    // gets the URL up to the break.
+                    for word in text
+                        .split_inclusive(' ')
+                        .flat_map(|word| word.split_inclusive('\n'))
+                    {
+                        if word.trim().is_empty() && word != " " && !word.ends_with('\n') {
                             continue;
                         }
 
@@ -5291,6 +5299,13 @@ fn preview_card(
         .or_else(|| backend.and_then(|preview| preview.embed_url.clone()))
         .filter(|embed| papo_core::preview::safe_remote_url(embed));
 
+    let post = ready
+        .as_ref()
+        .map(|preview| preview.post.clone())
+        .unwrap_or_default();
+    // Página de post (tem autor): cabeçalho social em cima da mídia, rodapé
+    // com site e data embaixo, no lugar de provedor/título/descrição.
+    let social = post.author_name.is_some() || post.author_handle.is_some();
     let title = ready
         .as_ref()
         .and_then(|preview| preview.title.as_deref())
@@ -5337,21 +5352,11 @@ fn preview_card(
         .and_then(crate::media::remote_player_key)
         .unwrap_or_else(|| format!("link-preview-player:{id}"));
 
-    let (frame, aspect, playing, position, duration) = if video_url.is_some() {
-        match state.media.existing_player(&player_id) {
-            Some(player) => {
-                let aspect = player.aspect().clamp(0.4, 3.0);
-                let playing = player.is_playing();
-                let position = player.position();
-                let duration = player.duration();
-                let frame = player.frame(ui.ctx()).cloned();
-                (frame, aspect, playing, position, duration)
-            }
-            None => (None, 16.0 / 9.0, false, 0.0, 0.0),
-        }
-    } else {
-        (None, 16.0 / 9.0, false, 0.0, 0.0)
-    };
+    let playing = video_url.is_some()
+        && state
+            .media
+            .existing_player(&player_id)
+            .is_some_and(|player| player.is_playing());
 
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
@@ -5362,100 +5367,45 @@ fn preview_card(
     let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_width(card_width);
 
+        if social {
+            // O título só aparece quando diz mais que a linha do autor
+            // (`@x • Instagram reel`, `Nome (@x) on X` não dizem).
+            let headline = title.filter(|title| !title.contains('@'));
+            post_header(ui, state, t, id, &post, headline, description);
+            ui.add_space(space::SM);
+        }
+
         if let Some(remote) = video_url.as_deref() {
-            let aspect = if frame.is_some() {
-                aspect
-            } else {
-                image
-                    .map(|texture| {
-                        let size = texture.size_vec2();
-                        (size.x / size.y).clamp(0.4, 3.0)
-                    })
-                    .unwrap_or(16.0 / 9.0)
-            };
-            let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
-            let controls_h = 30.0;
-            let (rect, response) = ui.allocate_exact_size(
-                Vec2::new(card_width, frame_size.y + controls_h),
-                Sense::click(),
+            let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
+            let surface = attachments::video_surface(
+                ui,
+                t,
+                &mut state.media,
+                &player_id,
+                embed_id,
+                crate::media::PlaySource::Remote(remote),
+                poster,
+                card_width,
+                false,
+                &mut state.media_seek_zones,
             );
-            media_rect = Some(rect);
-            let video_rect = Rect::from_min_size(rect.min, frame_size);
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
-
-            if let Some(texture) = frame.as_ref().or(image) {
-                let source = texture.size_vec2();
-                let scale =
-                    (video_rect.width() / source.x).min(video_rect.height() / source.y);
-                let painted = Rect::from_center_size(video_rect.center(), source * scale);
-                ui.painter().image(
-                    texture.id(),
-                    painted,
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
-
-            if !playing {
-                ui.painter()
-                    .circle_filled(video_rect.center(), 28.0, Color32::from_black_alpha(155));
-                ui.painter().text(
-                    video_rect.center() + Vec2::new(1.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PLAY,
-                    text::icon(22.0),
-                    Color32::WHITE,
-                );
-            }
-
-            let controls =
-                Rect::from_min_max(egui::pos2(rect.min.x, video_rect.max.y), rect.max);
-            ui.painter().rect_filled(
-                controls,
-                CornerRadius::ZERO,
-                Color32::from_black_alpha(190),
-            );
-            let progress = if duration > 0.0 {
-                (position / duration).clamp(0.0, 1.0) as f32
-            } else {
-                0.0
-            };
-            let line = Rect::from_min_max(
-                egui::pos2(controls.min.x + space::MD, controls.center().y - 2.0),
-                egui::pos2(controls.max.x - 94.0, controls.center().y + 2.0),
-            );
-            ui.painter()
-                .rect_filled(line, CornerRadius::same(2), Color32::from_white_alpha(45));
-            if line.width() > 0.0 {
-                ui.painter().rect_filled(
-                    Rect::from_min_size(
-                        line.min,
-                        Vec2::new(line.width() * progress, line.height()),
-                    ),
-                    CornerRadius::same(2),
-                    t.accent,
-                );
-            }
-            ui.painter().text(
-                egui::pos2(controls.max.x - space::MD, controls.center().y),
-                egui::Align2::RIGHT_CENTER,
-                format!(
-                    "{} / {}",
-                    attachments::clock(position),
-                    attachments::clock(duration)
-                ),
-                text::footnote(),
-                Color32::from_white_alpha(205),
-            );
-
-            if response.clicked() {
-                let ctx = ui.ctx().clone();
+            media_rect = Some(surface.rect);
+            if surface.clicked {
                 state.webembed.destroy_active();
-                state.media.toggle_remote_player(&player_id, remote, &ctx);
-                state.media.solo(&player_id);
-                media_clicked = true;
             }
+            if let Some(attachments::Transport::Fullscreen) = surface.transport {
+                state.link_viewer = Some(LinkViewer {
+                    id: player_id.clone(),
+                    url: remote.to_owned(),
+                    name: title.unwrap_or("video").to_owned(),
+                    video: true,
+                    zoom: 1.0,
+                    offset: Vec2::ZERO,
+                    fitted: true,
+                    opened: ui.input(|input| input.time),
+                });
+            }
+            media_clicked |= surface.clicked || surface.transport.is_some();
             if playing {
                 ui.ctx().request_repaint();
             }
@@ -5527,6 +5477,7 @@ fn preview_card(
                         id: id.to_owned(),
                         url: remote.clone(),
                         name: title.unwrap_or("image").to_owned(),
+                        video: false,
                         zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
@@ -5589,6 +5540,11 @@ fn preview_card(
             ui.add_space(space::SM);
         }
 
+        if social {
+            post_footer(ui, state, t, id, &post, provider.as_deref());
+            return;
+        }
+
         if let Some(provider) = provider.as_deref() {
             ui.label(
                 RichText::new(provider)
@@ -5649,6 +5605,14 @@ fn preview_card(
             egui::StrokeKind::Inside,
         ),
     );
+    if let Some(accent) = post.accent.as_deref().and_then(hex_color) {
+        let r = radius::CARD;
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(4.0, rect.height())),
+            CornerRadius { nw: r, sw: r, ne: 0, se: 0 },
+            accent,
+        );
+    }
 
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -5698,6 +5662,179 @@ fn preview_card(
     ui.add_space(space::XS);
 }
 
+
+/// Autor, reações e legenda de um post, em cima da mídia.
+fn post_header(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    post: &papo_core::preview::PostMeta,
+    headline: Option<&str>,
+    description: Option<&str>,
+) {
+    const AVATAR: f32 = 24.0;
+    let handle = post.author_handle.as_deref();
+    let name = post
+        .author_name
+        .clone()
+        .or_else(|| handle.map(|handle| handle.trim_start_matches('@').to_owned()))
+        .unwrap_or_default();
+    let avatar = post
+        .author_avatar
+        .as_deref()
+        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|texture| texture.id());
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        if post.author_avatar.is_some() {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(AVATAR), Sense::hover());
+            match avatar {
+                Some(texture) => round_photo(ui.painter(), rect, texture, Color32::WHITE),
+                None => {
+                    ui.painter()
+                        .circle_filled(rect.center(), AVATAR / 2.0, t.fill_medium);
+                }
+            }
+        }
+        ui.label(RichText::new(name).font(text::headline()).color(t.label));
+        if let Some(handle) = handle {
+            ui.label(
+                RichText::new(handle)
+                    .font(text::footnote())
+                    .color(t.label_tertiary),
+            );
+        }
+    });
+
+    let stats = [
+        (icon::HEART, post.likes),
+        (icon::CHAT_CIRCLE, post.comments),
+        (icon::REPEAT, post.shares),
+        (icon::EYE, post.views),
+    ];
+    if stats.iter().any(|(_, count)| count.is_some()) {
+        ui.add_space(space::XXS);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XXS;
+            for (glyph, count) in stats {
+                let Some(count) = count else {
+                    continue;
+                };
+                ui.label(
+                    RichText::new(glyph)
+                        .font(text::icon(13.0))
+                        .color(t.label_secondary),
+                );
+                ui.label(
+                    RichText::new(compact_count(count))
+                        .font(text::footnote())
+                        .color(t.label_secondary),
+                );
+                ui.add_space(space::SM);
+            }
+        });
+    }
+
+    if let Some(headline) = headline {
+        ui.add_space(space::XS);
+        ui.label(RichText::new(headline).font(text::headline()).color(t.label));
+    }
+    if let Some(caption) = post.caption.as_deref().or(description) {
+        ui.add_space(space::XS);
+        // Hashtags e menções no tom de link, como o site os mostra.
+        let link = muted_link_color(ui, t);
+        let mut job = egui::text::LayoutJob::default();
+        for word in attachments::elide(caption, 400).split_inclusive(char::is_whitespace) {
+            let tagged = word.starts_with('#') || word.starts_with('@');
+            job.append(
+                word,
+                0.0,
+                egui::TextFormat {
+                    font_id: text::body(),
+                    color: if tagged { link } else { t.label },
+                    ..Default::default()
+                },
+            );
+        }
+        ui.label(job);
+    }
+}
+
+/// Ícone do site · provedor · data, embaixo do post.
+fn post_footer(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    post: &papo_core::preview::PostMeta,
+    provider: Option<&str>,
+) {
+    const ICON: f32 = 16.0;
+    let icon_texture = post
+        .site_icon
+        .as_deref()
+        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|texture| texture.id());
+    let date = post.published_at.and_then(post_date);
+    let line = [provider.map(str::to_owned), date]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if line.is_empty() && icon_texture.is_none() {
+        return;
+    }
+    ui.add_space(space::XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        if let Some(texture) = icon_texture {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(ICON), Sense::hover());
+            super::widgets::photo(
+                ui.painter(),
+                rect,
+                texture,
+                super::widgets::FULL_UV,
+                CornerRadius::same(4),
+                Color32::WHITE,
+            );
+        }
+        ui.label(RichText::new(line).font(text::caption()).color(t.label_tertiary));
+    });
+}
+
+/// Datas só-dia chegam como meia-noite UTC; converter para o fuso local
+/// jogaria o post para o dia anterior no Brasil.
+fn post_date(seconds: i64) -> Option<String> {
+    let utc = DateTime::from_timestamp(seconds, 0)?;
+    Some(if seconds.rem_euclid(86_400) == 0 {
+        utc.format("%d/%m/%Y").to_string()
+    } else {
+        utc.with_timezone(&Local).format("%d/%m/%Y, %H:%M").to_string()
+    })
+}
+
+fn compact_count(count: u64) -> String {
+    let scaled = |value: f64, suffix: &str| {
+        let text = format!("{value:.1}");
+        format!("{}{suffix}", text.trim_end_matches(".0"))
+    };
+    match count {
+        0..=9_999 => count.to_string(),
+        10_000..=999_999 => scaled(count as f64 / 1_000.0, "K"),
+        1_000_000..=999_999_999 => scaled(count as f64 / 1_000_000.0, "M"),
+        _ => scaled(count as f64 / 1_000_000_000.0, "B"),
+    }
+}
+
+fn hex_color(raw: &str) -> Option<Color32> {
+    let hex = raw.strip_prefix('#')?;
+    let value = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    Some(Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8))
+}
 
 fn webembed_inline_allowed(state: &UiState) -> bool {
     !state.webembed_blocked
@@ -6392,7 +6529,7 @@ fn link_image_viewer(
     let Some(mut link) = state.link_viewer.take() else {
         return;
     };
-    match viewer::draw_remote_image(
+    match viewer::draw_remote_media(
         ui,
         t,
         s,
@@ -6400,6 +6537,7 @@ fn link_image_viewer(
         &link.id,
         &link.url,
         &link.name,
+        link.video,
         link.opened,
         &mut link.zoom,
         &mut link.offset,

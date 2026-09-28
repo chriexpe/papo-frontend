@@ -72,6 +72,7 @@ enum Command {
     Pause,
     Seek(f64),
     Muted(bool),
+    Volume(f64),
 }
 
 pub struct Player {
@@ -198,6 +199,11 @@ impl Player {
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
         self.send(Command::Muted(muted));
+    }
+
+    /// Volume linear do `playbin` (0 a 1).
+    pub fn set_volume(&mut self, volume: f64) {
+        self.send(Command::Volume(volume.clamp(0.0, 1.0)));
     }
 
     /// Proporção do vídeo; 16:9 enquanto o primeiro quadro não chega.
@@ -351,6 +357,7 @@ fn run(
                 repaint.request_repaint();
             }
             Ok(Command::Muted(muted)) => pipeline.set_property("mute", muted),
+            Ok(Command::Volume(volume)) => pipeline.set_property("volume", volume),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // A janela soltou o player.
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
