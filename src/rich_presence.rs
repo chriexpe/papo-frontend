@@ -18,7 +18,7 @@ use crate::state::{Activity, ActivityKind};
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: &str = "1337";
 const LOCAL_BRIDGE: &str = "ws://127.0.0.1:1337";
-const RSRPC_BUILD: &str = "nightly-2026-03-29";
+const RSRPC_BUILD: &str = "pog5-rsrpc-pinned-2026-03-29";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverrideKind {
@@ -358,6 +358,13 @@ enum RunExit {
 }
 
 #[cfg(not(target_os = "android"))]
+enum WaitExit {
+    Retry,
+    Control(Control),
+    Closed,
+}
+
+#[cfg(not(target_os = "android"))]
 fn publish(
     tx: &std::sync::mpsc::Sender<Snapshot>,
     repaint: &egui::Context,
@@ -452,8 +459,16 @@ async fn worker(
                             if process.try_wait().ok().flatten().is_some() {
                                 rsrpc = None;
                             }
-                            if !wait_after_failure(&settings, &mut controls).await {
-                                return;
+                            match wait_after_failure(&settings, &mut controls).await {
+                                WaitExit::Retry => {}
+                                WaitExit::Control(Control::Configure(next)) => {
+                                    rsrpc.take();
+                                    settings = next;
+                                }
+                                WaitExit::Control(Control::Restart) => {
+                                    rsrpc.take();
+                                }
+                                WaitExit::Closed => return,
                             }
                         }
                     }
@@ -544,15 +559,11 @@ async fn worker(
                     );
                 }
 
-                if !wait_after_failure(&settings, &mut controls).await {
-                    return;
-                }
-
-                while let Ok(control) = controls.try_recv() {
-                    match control {
-                        Control::Configure(next) => settings = next,
-                        Control::Restart => {}
-                    }
+                match wait_after_failure(&settings, &mut controls).await {
+                    WaitExit::Retry => {}
+                    WaitExit::Control(Control::Configure(next)) => settings = next,
+                    WaitExit::Control(Control::Restart) => {}
+                    WaitExit::Closed => return,
                 }
             }
         }
@@ -572,14 +583,20 @@ fn external_timeout(endpoint: &str) -> std::time::Duration {
 async fn wait_after_failure(
     settings: &Settings,
     controls: &mut tokio::sync::mpsc::UnboundedReceiver<Control>,
-) -> bool {
+) -> WaitExit {
     if !settings.auto_reconnect {
-        return controls.recv().await.is_some();
+        return controls
+            .recv()
+            .await
+            .map(WaitExit::Control)
+            .unwrap_or(WaitExit::Closed);
     }
 
     tokio::select! {
-        control = controls.recv() => control.is_some(),
-        _ = tokio::time::sleep(settings.reconnect_delay()) => true,
+        control = controls.recv() => control
+            .map(WaitExit::Control)
+            .unwrap_or(WaitExit::Closed),
+        _ = tokio::time::sleep(settings.reconnect_delay()) => WaitExit::Retry,
     }
 }
 
@@ -862,32 +879,32 @@ fn rsrpc_asset() -> Result<RsrpcAsset, String> {
     let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => RsrpcAsset {
             name: "rsrpc-x86_64-unknown-linux-gnu",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-unknown-linux-gnu",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/383835874",
             sha256: "9c575b67960fe9763613702a08494bf4ab4ef0d4535fb1619abfd8279feea2db",
         },
         ("linux", "aarch64") => RsrpcAsset {
             name: "rsrpc-aarch64-unknown-linux-gnu",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-unknown-linux-gnu",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/383835872",
             sha256: "116c4d8f6b5dcd65c2bf9a2036d2e2613e780e206ed0ead72224e71c509ca551",
         },
         ("windows", "x86_64") => RsrpcAsset {
             name: "rsrpc-x86_64-pc-windows-msvc.exe",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-pc-windows-msvc.exe",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644996",
             sha256: "062e893ee5eacba02f64e24877c11fd4ae310c20a1373b436aea3a84b519a97b",
         },
         ("windows", "aarch64") => RsrpcAsset {
             name: "rsrpc-aarch64-pc-windows-msvc.exe",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-pc-windows-msvc.exe",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644999",
             sha256: "5764abea0485ae03d3588183aaa151b4d35d3cd3b132cdfd1f28ea4383729184",
         },
         ("macos", "x86_64") => RsrpcAsset {
             name: "rsrpc-x86_64-apple-darwin",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-apple-darwin",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339644997",
             sha256: "b2e5b6ac8dc1842bcc80740abaafa9ddb75aacd1322f57d851208c13f9dc13ca",
         },
         ("macos", "aarch64") => RsrpcAsset {
             name: "rsrpc-aarch64-apple-darwin",
-            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-apple-darwin",
+            url: "https://api.github.com/repos/pog5/rsrpc/releases/assets/339645000",
             sha256: "4f49a8ff5c5b568b7b4b1eeac7a701e79b07aa1b5b544342bba7c4769445bdc1",
         },
         (os, arch) => {
@@ -928,6 +945,7 @@ async fn ensure_rsrpc_binary() -> Result<std::path::PathBuf, String> {
         .map_err(|error| format!("rsRPC downloader: {error}"))?;
     let response = client
         .get(asset.url)
+        .header(reqwest::header::ACCEPT, "application/octet-stream")
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
