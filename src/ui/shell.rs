@@ -2948,6 +2948,9 @@ fn channel_pill(
     } else {
         ui.layer_id()
     };
+    if topic_open {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
@@ -3155,6 +3158,23 @@ fn channel_pill(
     Some(rect)
 }
 
+/// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
+/// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
+/// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
+/// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
+/// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
+/// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
+fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
+    egui::Area::new(layer.id)
+        .order(layer.order)
+        .fixed_pos(rect.min)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            ui.allocate_space(rect.size());
+        });
+}
+
 /// Pastilha de ações do canal, no alto à direita.
 ///
 /// Fechada, são três ícones. Aberta em busca ou em fixadas, vira uma camada
@@ -3185,6 +3205,9 @@ fn actions_pill(
         ui.layer_id()
     };
     let screen = ui.ctx().content_rect();
+    if open.is_some() {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
     let width = if open.is_some() {
@@ -3920,6 +3943,7 @@ fn search_panel(
         .collect();
 
     let result_height = ui.available_height().max(1.0);
+    let result_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
         .max_height(result_height)
@@ -3950,6 +3974,7 @@ fn search_panel(
                         channel_name: Some(&channel_name),
                         body: &body,
                         attachments: &attachments,
+                        row_width: result_width,
                     },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
@@ -4026,6 +4051,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         return;
     }
     let pinned_height = ui.available_height().max(1.0);
+    let pinned_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("lista-de-fixadas")
         .max_height(pinned_height)
@@ -4046,6 +4072,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         channel_name: None,
                         body: &body,
                         attachments: &attachments,
+                        row_width: pinned_width,
                     },
                 ) {
                     let channel = channel_id.clone();
@@ -4063,6 +4090,10 @@ struct ResultPreview<'a> {
     channel_name: Option<&'a str>,
     body: &'a str,
     attachments: &'a [crate::api::models::Attachment],
+    /// Largura do painel, medida uma vez fora do ScrollArea. Ler
+    /// `available_width()` por linha deixava cada linha herdar o transbordo
+    /// da anterior e o cartão crescia além da pastilha.
+    row_width: f32,
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -4083,11 +4114,11 @@ fn result_row(
         channel_name,
         body,
         attachments,
+        row_width,
     } = preview;
     let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
-    let row_width = ui.available_width();
     let max_text_width =
         (row_width - space::SM * 2.0 - avatar_size - space::MD).max(80.0);
     let member = author_id.and_then(|id| store.member(id));
@@ -4110,6 +4141,10 @@ fn result_row(
         ui.set_max_width(row_width);
         ui.add_space(space::XS);
         ui.horizontal(|ui| {
+            // Sem espaçamento implícito: a soma das partes é exatamente
+            // `row_width`, senão cada linha passa 16 px da pastilha.
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(space::SM);
             avatar(
                 ui,
@@ -4121,6 +4156,7 @@ fn result_row(
             );
             ui.add_space(space::MD);
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
                 ui.set_max_width(max_text_width);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
@@ -4169,7 +4205,16 @@ fn result_row(
                     attachments,
                     max_text_width,
                 );
-                panel_rich_links(ui, state, t, message_id, body, max_text_width);
+                // O fundo do cartão passa `space::MD` do conteúdo de cada
+                // lado; descontado aqui, ele termina rente à coluna.
+                panel_rich_links(
+                    ui,
+                    state,
+                    t,
+                    message_id,
+                    body,
+                    (max_text_width - space::MD).max(80.0),
+                );
             });
             ui.add_space(space::SM);
         });
