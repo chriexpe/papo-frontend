@@ -757,6 +757,10 @@ pub struct UiState {
     /// O ScrollArea corre por baixo das pastilhas/compositor, mas uma WebView
     /// nativa não pode fazer isso: ela precisa ser recortada antes do chrome.
     pub webembed_chat_clip: Option<Rect>,
+    /// Exact egui chrome rectangles that sit above a native browser surface.
+    /// Kept from the previous frame so native geometry is ready while the
+    /// scrolling message tree is being painted.
+    pub webembed_occlusions: Vec<Rect>,
     /// Superfície egui que deve ficar por cima de qualquer browser nativo.
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
@@ -903,6 +907,7 @@ impl Default for UiState {
             webembed_inline_rect: None,
             webembed_float_rect: None,
             webembed_chat_clip: None,
+            webembed_occlusions: Vec::new(),
             webembed_blocked: false,
             attachments: Vec::new(),
             replying: None,
@@ -2308,6 +2313,7 @@ fn conversation(
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
             state.webembed_chat_clip = None;
+            state.webembed_occlusions.clear();
             if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
                 crate::ui::call::dock(ui, store, state, call.as_deref_mut(), t, s);
             } else {
@@ -2341,10 +2347,21 @@ fn conversation(
         let composer_height = composer_height(ui, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
-        state.webembed_chat_clip = Some(Rect::from_min_max(
-            egui::pos2(full.min.x, full.min.y + top_inset),
-            egui::pos2(full.max.x, full.max.y - bottom_inset),
-        ));
+        #[cfg(target_os = "android")]
+        {
+            // Android's native WebView still uses rectangular clipping until
+            // its ViewGroup clip-path consumes the shared occlusion model.
+            state.webembed_chat_clip = Some(Rect::from_min_max(
+                egui::pos2(full.min.x, full.min.y + top_inset),
+                egui::pos2(full.max.x, full.max.y - bottom_inset),
+            ));
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            // Desktop native surfaces get the full scrolling clip. Actual
+            // floating chrome is subtracted as individual occluders.
+            state.webembed_chat_clip = Some(full);
+        }
 
         // Camada de conteúdo: ocupa a janela inteira e corre por baixo das
         // pastilhas.
@@ -2455,6 +2472,8 @@ fn conversation(
         let channel_rect = channel_pill(ui, store, state, t, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
+        state.webembed_occlusions =
+            webembed_chrome_occlusions(ui, store, state, full, composer_height, channel_rect, actions_rect);
         call_layers(
             ui,
             store,
@@ -5160,6 +5179,7 @@ fn preview_card(
                         image_rect,
                         clip,
                         ui.ctx().pixels_per_point(),
+                        &state.webembed_occlusions,
                         allowed,
                     );
                     webembed_paint_and_input(ui, state, embed_id, image_rect, "inline-image");
@@ -5224,6 +5244,7 @@ fn preview_card(
                     rect,
                     clip,
                     ui.ctx().pixels_per_point(),
+                    &state.webembed_occlusions,
                     allowed,
                 );
                 webembed_paint_and_input(ui, state, embed_id, rect, "inline");
@@ -5635,6 +5656,7 @@ fn webembed_floating(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
         browser_rect,
         safe,
         ui.ctx().pixels_per_point(),
+        &[],
         true,
     );
     if let Some(id) = state.webembed.active_id().map(str::to_owned) {
@@ -6593,6 +6615,71 @@ fn submit(store: &Store, state: &mut UiState) {
         notify_reply: state.reply_notify,
         attachments: std::mem::take(&mut state.attachments),
     });
+}
+
+fn webembed_chrome_occlusions(
+    ui: &egui::Ui,
+    store: &Store,
+    state: &UiState,
+    area: Rect,
+    composer_height: f32,
+    channel_rect: Option<Rect>,
+    actions_rect: Rect,
+) -> Vec<Rect> {
+    let mut rects = Vec::with_capacity(6);
+    if let Some(rect) = channel_rect {
+        rects.push(rect);
+    }
+    rects.push(actions_rect);
+
+    let side = PILL_HEIGHT;
+    let recording = state.recorder.is_some();
+    let with_record = state.show_record || recording;
+    let left_count = 1 + usize::from(with_record);
+    let left_width =
+        left_count as f32 * side + (left_count as f32 - 1.0) * space::SM + space::MD;
+    let composer = Rect::from_min_max(
+        egui::pos2(
+            area.min.x + PILL_MARGIN + left_width,
+            area.max.y - PILL_MARGIN - composer_height,
+        ),
+        egui::pos2(area.max.x - PILL_MARGIN, area.max.y - PILL_MARGIN),
+    );
+    rects.push(composer);
+
+    let line_mid = composer.max.y - COMPOSER_LINE_H / 2.0;
+    let attach = Rect::from_center_size(
+        egui::pos2(area.min.x + PILL_MARGIN + side / 2.0, line_mid),
+        Vec2::splat(side),
+    );
+    rects.push(attach);
+    if with_record {
+        rects.push(Rect::from_center_size(
+            egui::pos2(attach.center().x + side + space::SM, line_mid),
+            Vec2::splat(side),
+        ));
+    }
+
+    let names = store.typing_names();
+    if !names.is_empty() {
+        let verb = match store.typing_phrase() {
+            Some(phrase) => phrase,
+            None if names.len() == 1 => "typing",
+            None => "typing",
+        };
+        let label = ui.painter().layout_no_wrap(
+            format!("{} {verb}", names.join(", ")),
+            text::footnote(),
+            Color32::WHITE,
+        );
+        let height = 22.0;
+        rects.push(Rect::from_min_size(
+            egui::pos2(composer.min.x, composer.min.y - height - space::XS),
+            Vec2::new(label.size().x + space::LG * 2.0, height),
+        ));
+    }
+
+    rects
 }
 
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
