@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_TYPE, LOCATION, RETRY_AFTER};
+use reqwest::header::{
+    ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, LOCATION, RETRY_AFTER, USER_AGENT,
+};
 use tokio::sync::{mpsc, Semaphore};
 use url::{Host, Url};
 
@@ -21,15 +23,31 @@ use crate::cache::{now_millis, CachedPreview, ClientDb, PreviewCacheState};
 
 const HTML_MAX: usize = 2 << 20;
 const OEMBED_MAX: usize = 512 << 10;
+const ACTIVITYPUB_MAX: usize = 512 << 10;
 const OEMBED_REGISTRY_MAX: usize = 2 << 20;
 const OEMBED_REGISTRY_URL: &str = "https://oembed.com/providers.json";
 const MAX_REDIRECTS: usize = 5;
-const READY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Rich media is comparatively stable and expensive to rediscover.
+const RICH_READY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// A plain card can be a degraded crawler response, so re-probe it sooner.
+const LINK_READY_TTL_MS: i64 = 30 * 60 * 1000;
+/// no-store results stay in memory briefly but are never written to Turso.
+const EPHEMERAL_READY_TTL_MS: i64 = 5 * 60 * 1000;
 const NEGATIVE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const RETRY_BASE_MS: i64 = 5 * 60 * 1000;
 const RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1000;
 const RESOLVER_CONCURRENCY: usize = 4;
 const QUEUE_CAPACITY: usize = 128;
+/// Compatibility retry for origins whose Cloudflare policy challenges a
+/// conventional HTTP-client UA before the site's own crawler route can run.
+///
+/// The Papo token deliberately remains in the UA (and includes "Preview") so
+/// origins can still identify this as a crawler; this is not a Discord/Google
+/// impersonation.
+const CHALLENGE_COMPAT_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 PapoRichPreview/0.5";
+const CHALLENGE_COMPAT_ACCEPT: &str =
+    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+const CHALLENGE_COMPAT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewKind {
@@ -74,6 +92,122 @@ pub struct ResolvedPreview {
     pub title: Option<String>,
     pub description: Option<String>,
     pub provider_name: Option<String>,
+    /// Autor, data e reações quando a página é um post. Em caixa para não
+    /// inflar todo `PreviewState` com metadados que a maioria não tem.
+    pub post: Box<PostMeta>,
+}
+
+/// Quem publicou, quando e como o post foi recebido. Tudo opcional e sempre
+/// vindo de dados publicados (oEmbed, JSON-LD, ActivityPub, meta tags) ou da
+/// convenção de texto `N likes, N comments - autor on data: "legenda"`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PostMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_name: Option<String>,
+    /// Com `@`, como o site mostra.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_avatar: Option<String>,
+    /// O texto do post, quando dá para separá-lo do resumo da página.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+    /// Segundos Unix.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub likes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comments: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shares: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub views: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site_icon: Option<String>,
+    /// `#rrggbb` do `theme-color`, só quando é cor de marca (nem branco nem
+    /// preto de chrome).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+}
+
+impl PostMeta {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Completa o que falta; o que já existe vem da fonte mais direta.
+    fn fill_from(&mut self, other: PostMeta) {
+        macro_rules! fill {
+            ($($field:ident),*) => {$(
+                if self.$field.is_none() {
+                    self.$field = other.$field;
+                }
+            )*};
+        }
+        fill!(
+            author_name,
+            author_handle,
+            author_url,
+            author_avatar,
+            caption,
+            published_at,
+            likes,
+            comments,
+            shares,
+            views,
+            site_icon,
+            accent
+        );
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedOutcome {
+    preview: ResolvedPreview,
+    /// False when the source used Cache-Control: no-store.
+    persistent: bool,
+}
+
+fn ready_ttl_ms(kind: PreviewKind) -> i64 {
+    match kind {
+        PreviewKind::Link => LINK_READY_TTL_MS,
+        PreviewKind::Image | PreviewKind::Video | PreviewKind::Embed => RICH_READY_TTL_MS,
+    }
+}
+
+fn preview_rank(kind: PreviewKind) -> u8 {
+    match kind {
+        PreviewKind::Link => 0,
+        PreviewKind::Image => 1,
+        PreviewKind::Embed => 2,
+        PreviewKind::Video => 3,
+    }
+}
+
+/// Whether a resolved preview goes to the local cache. `no-store` only keeps
+/// plain link cards in memory: that is the degraded "temporarily
+/// unavailable" card of unfurl proxies, which must not stick. Rich results
+/// and posts are kept anyway: X, YouTube and Instagram mark every page
+/// `no-store` because the HTML is personalised, not because the post
+/// changes, and what Papo stores is the extracted public metadata, refreshed
+/// when its TTL runs out.
+fn worth_storing(persistent: bool, preview: &ResolvedPreview) -> bool {
+    persistent
+        || preview.kind != PreviewKind::Link
+        || preview.post.author_name.is_some()
+        || preview.post.author_handle.is_some()
+}
+
+fn response_allows_persistence(headers: &reqwest::header::HeaderMap) -> bool {
+    !headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|directive| directive.trim().eq_ignore_ascii_case("no-store"))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +255,7 @@ impl PreviewStats {
 struct MemoryEntry {
     state: PreviewState,
     resolved_at: i64,
+    ttl_ms: i64,
     retry_after: Option<i64>,
     in_flight: bool,
 }
@@ -130,6 +265,7 @@ impl MemoryEntry {
         Self {
             state: PreviewState::Loading,
             resolved_at: 0,
+            ttl_ms: 0,
             retry_after: None,
             in_flight: false,
         }
@@ -145,7 +281,7 @@ impl MemoryEntry {
         match self.state {
             PreviewState::Loading => true,
             PreviewState::Ready(_) | PreviewState::Negative => {
-                now.saturating_sub(self.resolved_at) >= READY_TTL_MS
+                now.saturating_sub(self.resolved_at) >= self.ttl_ms
             }
             PreviewState::RetryLater { retry_after } => retry_after <= now,
         }
@@ -294,7 +430,8 @@ async fn process_request(
     if let Some(row) = cached {
         match row_to_state(&row) {
             Some(PreviewState::Ready(preview)) => {
-                let fresh = now.saturating_sub(row.resolved_at) < READY_TTL_MS;
+                let ttl_ms = ready_ttl_ms(preview.kind);
+                let fresh = now.saturating_sub(row.resolved_at) < ttl_ms;
                 if fresh {
                     inner.stats.cache_ready.fetch_add(1, Ordering::Relaxed);
                     publish(
@@ -302,6 +439,7 @@ async fn process_request(
                         &key,
                         PreviewState::Ready(preview),
                         row.resolved_at,
+                        ttl_ms,
                         row.retry_after,
                         false,
                     );
@@ -314,6 +452,7 @@ async fn process_request(
                         &key,
                         PreviewState::Ready(preview),
                         row.resolved_at,
+                        ttl_ms,
                         row.retry_after,
                         false,
                     );
@@ -326,6 +465,7 @@ async fn process_request(
                     &key,
                     PreviewState::Ready(preview),
                     row.resolved_at,
+                    ttl_ms,
                     row.retry_after,
                     true,
                 );
@@ -339,6 +479,7 @@ async fn process_request(
                     &key,
                     PreviewState::Negative,
                     row.resolved_at,
+                    NEGATIVE_TTL_MS,
                     row.retry_after,
                     false,
                 );
@@ -350,6 +491,7 @@ async fn process_request(
                     &key,
                     PreviewState::RetryLater { retry_after },
                     row.resolved_at,
+                    0,
                     Some(retry_after),
                     false,
                 );
@@ -365,14 +507,47 @@ async fn process_request(
         .fetch_add(1, Ordering::Relaxed);
 
     match resolve_url(&client, &oembed_registry, &key, 0).await {
-        Ok(preview) => {
-            let row = preview_row(&key, &preview, now);
-            persist(&inner, row).await;
+        Ok(resolved) => {
+            let preview = resolved.preview;
+
+            if !resolved.persistent
+                && let Some((stale, mut old_row)) = stale_ready.take()
+                && preview_rank(stale.kind) > preview_rank(preview.kind)
+            {
+                let retry_after = now + EPHEMERAL_READY_TTL_MS;
+                old_row.retry_after = Some(retry_after);
+                old_row.failure_class = Some("no-store-downgrade".to_owned());
+                old_row.last_used_at = now;
+                persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(stale.kind);
+                publish(
+                    &inner,
+                    &key,
+                    PreviewState::Ready(stale),
+                    old_row.resolved_at,
+                    ttl_ms,
+                    Some(retry_after),
+                    false,
+                );
+                return;
+            }
+
+            let store = worth_storing(resolved.persistent, &preview);
+            let ttl_ms = if store {
+                ready_ttl_ms(preview.kind)
+            } else {
+                EPHEMERAL_READY_TTL_MS
+            };
+            if store {
+                let row = preview_row(&key, &preview, now);
+                persist(&inner, row).await;
+            }
             publish(
                 &inner,
                 &key,
                 PreviewState::Ready(preview),
                 now,
+                ttl_ms,
                 None,
                 false,
             );
@@ -388,11 +563,13 @@ async fn process_request(
                 old_row.failure_class = Some("transient".to_owned());
                 old_row.last_used_at = now;
                 persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(preview.kind);
                 publish(
                     &inner,
                     &key,
                     PreviewState::Ready(preview),
                     old_row.resolved_at,
+                    ttl_ms,
                     Some(retry_after),
                     false,
                 );
@@ -408,6 +585,7 @@ async fn process_request(
                     title: None,
                     description: None,
                     provider_name: None,
+                    post_meta: None,
                     resolved_at: now,
                     retry_after: Some(retry_after),
                     failure_class: Some("transient".to_owned()),
@@ -419,6 +597,7 @@ async fn process_request(
                     &key,
                     PreviewState::RetryLater { retry_after },
                     now,
+                    0,
                     Some(retry_after),
                     false,
                 );
@@ -426,19 +605,18 @@ async fn process_request(
         }
         Err(error) => {
             if let Some((preview, mut old_row)) = stale_ready {
-                // Uma falha ao refrescar nunca apaga um preview útil. Para
-                // rejeição de segurança, espera-se o TTL negativo antes de
-                // reconsiderar metadados novos.
                 let retry_after = now + NEGATIVE_TTL_MS;
                 old_row.retry_after = Some(retry_after);
                 old_row.failure_class = Some(error.class.as_str().to_owned());
                 old_row.last_used_at = now;
                 persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(preview.kind);
                 publish(
                     &inner,
                     &key,
                     PreviewState::Ready(preview),
                     old_row.resolved_at,
+                    ttl_ms,
                     Some(retry_after),
                     false,
                 );
@@ -454,6 +632,7 @@ async fn process_request(
                     title: None,
                     description: None,
                     provider_name: None,
+                    post_meta: None,
                     resolved_at: now,
                     retry_after: None,
                     failure_class: Some(error.class.as_str().to_owned()),
@@ -465,15 +644,12 @@ async fn process_request(
                     &key,
                     PreviewState::Negative,
                     now,
+                    NEGATIVE_TTL_MS,
                     None,
                     false,
                 );
             }
-            log::debug!(
-                "preview {}: {}",
-                safe_key(&key),
-                error.message
-            );
+            log::debug!("preview {}: {}", safe_key(&key), error.message);
         }
     }
 }
@@ -488,6 +664,7 @@ fn publish(
     key: &str,
     state: PreviewState,
     resolved_at: i64,
+    ttl_ms: i64,
     retry_after: Option<i64>,
     in_flight: bool,
 ) {
@@ -497,6 +674,7 @@ fn publish(
             MemoryEntry {
                 state,
                 resolved_at,
+                ttl_ms,
                 retry_after,
                 in_flight,
             },
@@ -518,6 +696,11 @@ fn row_to_state(row: &CachedPreview) -> Option<PreviewState> {
                 title: row.title.clone(),
                 description: row.description.clone(),
                 provider_name: row.provider_name.clone(),
+                post: row
+                    .post_meta
+                    .as_deref()
+                    .and_then(|raw| serde_json::from_str(raw).ok())
+                    .unwrap_or_default(),
             }))
         }
         PreviewCacheState::Negative => Some(PreviewState::Negative),
@@ -539,6 +722,9 @@ fn preview_row(key: &str, preview: &ResolvedPreview, now: i64) -> CachedPreview 
         title: preview.title.clone(),
         description: preview.description.clone(),
         provider_name: preview.provider_name.clone(),
+        post_meta: (!preview.post.is_empty())
+            .then(|| serde_json::to_string(&preview.post).ok())
+            .flatten(),
         resolved_at: now,
         retry_after: None,
         failure_class: None,
@@ -601,76 +787,104 @@ async fn resolve_url(
     oembed_registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
     source_url: &str,
     depth: usize,
-) -> Result<ResolvedPreview, ResolveError> {
+) -> Result<ResolvedOutcome, ResolveError> {
     if depth > 2 {
         return Err(ResolveError::negative("profundidade de embed excedida"));
     }
     let source = Url::parse(source_url)
         .map_err(|error| ResolveError::negative(format!("URL inválida: {error}")))?;
-    let response = get_following_safe_redirects(client, source.clone()).await?;
+    let response = get_following_safe_preview_response(client, source.clone()).await?;
     let final_url = response.url().clone();
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    let status = response.status();
+    let source_soft_failure = is_preview_soft_client_error(status);
+    let mut persistent =
+        response_allows_persistence(response.headers()) && !source_soft_failure;
+    let content_type = response_content_type(response.headers());
     let header_oembed = oembed_header_endpoint(response.headers(), &final_url);
+    let source_failure = source_soft_failure
+        .then(|| preview_status_error(status, response.headers()));
+    if source_soft_failure {
+        log_preview_soft_failure_headers(source_url, status, response.headers());
+    }
 
-    if is_video_content_type(&content_type) {
-        return Ok(ResolvedPreview {
-            source_url: source_url.to_owned(),
-            kind: PreviewKind::Video,
-            media_url: Some(final_url.to_string()),
-            image_url: None,
-            embed_url: None,
-            title: file_name_title(&final_url),
-            description: None,
-            provider_name: final_url.host_str().map(str::to_owned),
+    if !source_soft_failure && is_video_content_type(&content_type) {
+        return Ok(ResolvedOutcome {
+            preview: ResolvedPreview {
+                source_url: source_url.to_owned(),
+                kind: PreviewKind::Video,
+                media_url: Some(final_url.to_string()),
+                image_url: None,
+                embed_url: None,
+                title: file_name_title(&final_url),
+                description: None,
+                provider_name: final_url.host_str().map(str::to_owned),
+                post: Box::default(),
+            },
+            persistent,
         });
     }
-    if content_type.starts_with("image/") {
+    if !source_soft_failure && content_type.starts_with("image/") {
         let media = final_url.to_string();
-        return Ok(ResolvedPreview {
-            source_url: source_url.to_owned(),
-            kind: PreviewKind::Image,
-            media_url: Some(media.clone()),
-            image_url: Some(media),
-            embed_url: None,
-            title: file_name_title(&final_url),
-            description: None,
-            provider_name: final_url.host_str().map(str::to_owned),
+        return Ok(ResolvedOutcome {
+            preview: ResolvedPreview {
+                source_url: source_url.to_owned(),
+                kind: PreviewKind::Image,
+                media_url: Some(media.clone()),
+                image_url: Some(media),
+                embed_url: None,
+                title: file_name_title(&final_url),
+                description: None,
+                provider_name: final_url.host_str().map(str::to_owned),
+                post: Box::default(),
+            },
+            persistent,
         });
     }
 
-    if !content_type.is_empty()
-        && !content_type.starts_with("text/html")
-        && !content_type.starts_with("application/xhtml")
-    {
+    let html_like = content_type.is_empty()
+        || content_type.starts_with("text/html")
+        || content_type.starts_with("application/xhtml");
+
+    if !source_soft_failure && !html_like {
         return Err(ResolveError::negative(format!(
             "conteúdo não é HTML nem mídia visual: {content_type}"
         )));
     }
 
-    let html = read_limited(response, HTML_MAX, "página").await?;
-    let mut preview = parse_html_preview(source_url, &final_url, &html).await?;
+    // For 401/403/404, consume a bounded body for safe diagnostics and allow
+    // standard metadata discovery when the body is HTML. We never dump the
+    // response body or arbitrary headers to logs.
+    let body = read_limited(response, HTML_MAX, "página").await?;
+    if source_soft_failure {
+        log_preview_soft_failure(
+            source_url,
+            status,
+            &content_type,
+            &body,
+            source_failure.as_ref().and_then(|error| error.retry_after),
+        );
+    }
+    let html = if html_like { body.as_str() } else { "" };
+    let mut preview = parse_html_preview(source_url, &final_url, html).await?;
+    // A refused response's bare <title> names the challenge/error page
+    // ("Just a moment...", "403 Forbidden"), not the linked resource.
+    if source_soft_failure && meta_content(html, &["og:title", "twitter:title"]).is_none() {
+        preview.title = None;
+    }
 
     // Preferimos discovery publicado pela própria página. Quando ela não
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
     // em vez de codificar YouTube/TikTok/etc. no cliente.
-    let declared_oembed = oembed_endpoint(&html, &final_url).or(header_oembed);
+    let declared_oembed = oembed_endpoint(html, &final_url).or(header_oembed);
     let oembed = if let Some(endpoint) = declared_oembed {
         resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
             .await
             .ok()
     } else {
         // A registry oficial é a tabela de capacidades, não uma allowlist
-        // codificada pelo Papo. Consultá-la mesmo quando já existe OG permite
-        // promover páginas como Instagram de "card rico" para "embed rico".
+        // codificada pelo Papo. Ela também é independente da página primária:
+        // um site que recusou nosso crawler com 401/403/404 ainda pode ter um
+        // endpoint oEmbed público e perfeitamente utilizável.
         match registry_oembed_endpoint(client, oembed_registry, source_url).await {
             Some(endpoint) => resolve_oembed(
                 client,
@@ -685,7 +899,16 @@ async fn resolve_url(
         }
     };
     if let Some(oembed) = oembed {
-        merge_preview(&mut preview, oembed);
+        persistent &= oembed.persistent;
+        merge_preview(&mut preview, oembed.preview);
+    }
+
+    if preview.media_url.is_none()
+        && let Some(endpoint) = activitypub_endpoint(html, &final_url)
+        && let Ok(activity) = resolve_activitypub(client, source_url, endpoint).await
+    {
+        persistent &= activity.persistent;
+        merge_preview(&mut preview, activity.preview);
     }
 
     // Um player HTML/iframe pode, por sua vez, publicar um stream direto.
@@ -697,12 +920,13 @@ async fn resolve_url(
         && depth < 2
         && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
     {
-        if nested.media_url.is_some() {
-            preview.media_url = nested.media_url;
-            preview.kind = nested.kind;
+        persistent &= nested.persistent;
+        if nested.preview.media_url.is_some() {
+            preview.media_url = nested.preview.media_url;
+            preview.kind = nested.preview.kind;
         }
         if preview.image_url.is_none() {
-            preview.image_url = nested.image_url;
+            preview.image_url = nested.preview.image_url;
         }
     }
 
@@ -713,10 +937,33 @@ async fn resolve_url(
         && preview.description.is_none()
         && preview.image_url.is_none()
     {
+        // Embed-fix proxies often admit only verified crawler IPs, so a client
+        // resolver gets a challenge page instead of their card. They mirror
+        // the original path, though, and the registry knows that original.
+        if depth < 2
+            && let Some(origin) =
+                registry_mirror_origin(client, oembed_registry, source_url).await
+            && let Ok(mut mirrored) =
+                Box::pin(resolve_url(client, oembed_registry, &origin, depth + 1)).await
+        {
+            log::debug!(
+                "preview {}: sem metadados; usando origem espelhada {}",
+                safe_key(source_url),
+                safe_key(&origin)
+            );
+            mirrored.preview.source_url = source_url.to_owned();
+            return Ok(mirrored);
+        }
+        if let Some(error) = source_failure {
+            return Err(error);
+        }
         return Err(ResolveError::negative("página sem metadados ricos"));
     }
 
-    Ok(preview)
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
 }
 
 async fn sanitize_preview_targets(preview: &mut ResolvedPreview) {
@@ -757,8 +1004,9 @@ async fn resolve_oembed(
     source_url: &str,
     endpoint: Url,
     depth: usize,
-) -> Result<ResolvedPreview, ResolveError> {
+) -> Result<ResolvedOutcome, ResolveError> {
     let response = get_following_safe_redirects(client, endpoint).await?;
+    let mut persistent = response_allows_persistence(response.headers());
     let bytes = read_limited_bytes(response, OEMBED_MAX, "oEmbed").await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| ResolveError::negative(format!("oEmbed inválido: {error}")))?;
@@ -773,6 +1021,11 @@ async fn resolve_oembed(
         title: json_string(&value, "title"),
         description: None,
         provider_name: json_string(&value, "provider_name"),
+        post: Box::new(PostMeta {
+            author_name: json_string(&value, "author_name"),
+            author_url: json_string(&value, "author_url").filter(|url| safe_remote_url(url)),
+            ..PostMeta::default()
+        }),
     };
 
     match kind {
@@ -796,10 +1049,27 @@ async fn resolve_oembed(
                     preview.embed_url = Some(embed);
                 } else if !html.trim().is_empty() {
                     // Alguns oEmbed (ex.: blockquote + script) não oferecem
-                    // iframe URL. Registramos a página original como alvo do
-                    // futuro web player sem persistir HTML executável.
+                    // iframe URL: o script monta o iframe a partir do
+                    // permalink do snippet. Sondamos essa página de embed
+                    // (mídia direta primeiro, player dela como fallback) e só
+                    // então caímos na página original, sem persistir HTML
+                    // executável.
                     preview.kind = PreviewKind::Embed;
                     preview.embed_url = canonical_url(source_url);
+                    if let Some(page) = snippet_embed_page(html, source_url)
+                        && let Ok(probe) = probe_embed_page(client, &page).await
+                    {
+                        persistent &= probe.persistent;
+                        preview.embed_url = Some(page);
+                        if let Some(media) = probe.preview.media_url {
+                            preview.kind = PreviewKind::Video;
+                            preview.media_url = Some(media);
+                        }
+                        if preview.image_url.is_none() {
+                            preview.image_url = probe.preview.image_url;
+                        }
+                        preview.post.fill_from(*probe.preview.post);
+                    }
                 }
             }
         }
@@ -810,16 +1080,305 @@ async fn resolve_oembed(
         && let Some(embed) = preview.embed_url.clone()
         && depth < 2
         && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
-        && nested.media_url.is_some()
+        && nested.preview.media_url.is_some()
     {
-        preview.kind = nested.kind;
-        preview.media_url = nested.media_url;
+        persistent &= nested.persistent;
+        preview.kind = nested.preview.kind;
+        preview.media_url = nested.preview.media_url;
         if preview.image_url.is_none() {
-            preview.image_url = nested.image_url;
+            preview.image_url = nested.preview.image_url;
         }
     }
 
-    Ok(preview)
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
+}
+
+/// The page a blockquote+script oEmbed snippet turns into an iframe: the
+/// snippet's permalink (`data-*-permalink`, `cite`, or its first link) plus
+/// the `/embed` convention those scripts share. Only same-site permalinks.
+fn snippet_embed_page(snippet: &str, source_url: &str) -> Option<String> {
+    let source = Url::parse(source_url).ok()?;
+    let site = |url: &Url| url.host_str().map(|host| host.trim_start_matches("www.").to_owned());
+    let tags = || {
+        snippet
+            .split('<')
+            .skip(1)
+            .map(|raw| raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw))
+    };
+    let permalink = tags()
+        .find_map(|tag| html_attr(tag, "permalink"))
+        .or_else(|| {
+            tags()
+                .filter(|tag| tag_name_is(tag, "blockquote"))
+                .find_map(|tag| html_attr(tag, "cite"))
+        })
+        .or_else(|| {
+            tags()
+                .filter(|tag| tag_name_is(tag, "a"))
+                .find_map(|tag| html_attr(tag, "href"))
+        })?;
+    let mut page = Url::parse(&resolve_meta_url(&source, &permalink)?).ok()?;
+    if page.scheme() != "https" || site(&page) != site(&source) {
+        return None;
+    }
+    page.set_query(None);
+    page.set_fragment(None);
+    let path = page.path().trim_end_matches('/');
+    if path.is_empty() || path.ends_with("/embed") {
+        return None;
+    }
+    let embed_path = format!("{path}/embed/");
+    page.set_path(&embed_path);
+    let page = page.to_string();
+    safe_remote_url(&page).then_some(page)
+}
+
+/// Fetches a provider embed page and looks for a directly playable stream:
+/// published metadata first, then `<video>`, then the JSON state such pages
+/// hydrate their player from.
+async fn probe_embed_page(
+    client: &reqwest::Client,
+    page: &str,
+) -> Result<ResolvedOutcome, ResolveError> {
+    let url = Url::parse(page).map_err(|error| ResolveError::negative(error.to_string()))?;
+    let response = get_following_safe_redirects(client, url).await?;
+    let persistent = response_allows_persistence(response.headers());
+    let content_type = response_content_type(response.headers());
+    if !content_type.is_empty() && !content_type.starts_with("text/html") {
+        return Err(ResolveError::negative("página de embed não é HTML"));
+    }
+    let final_url = response.url().clone();
+    let html = read_limited(response, HTML_MAX, "embed").await?;
+    let mut preview = parse_html_preview(page, &final_url, &html).await?;
+    // Image cards also fill media_url; only a video stream counts here.
+    let media = if preview.kind == PreviewKind::Video {
+        preview.media_url.take()
+    } else {
+        html_media_url(&html, final_url.as_str()).or_else(|| embedded_json_video_url(&html))
+    };
+    preview.media_url = media.filter(|url| safe_remote_url(url));
+    if preview.post.author_avatar.is_none() {
+        preview.post.author_avatar = embedded_json_url(&html, AVATAR_KEYS, image_path);
+    }
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
+}
+
+fn video_path(url: &Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    [".mp4", ".webm", ".mov", ".m4v", ".m3u8"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+/// Player state embedded as (possibly repeatedly escaped) JSON, e.g.
+/// `"video_url":"https:\\/\\/cdn...mp4"` inside a hydration script string.
+fn embedded_json_video_url(html: &str) -> Option<String> {
+    embedded_json_url(html, &["video_url", "playable_url", "contentUrl"], video_path)
+}
+
+/// Well-known avatar keys in embedded player/profile JSON.
+const AVATAR_KEYS: &[&str] = &[
+    "profile_pic_url",
+    "profile_image_url_https",
+    "profile_image_url",
+    "channelThumbnail",
+    "avatar_url",
+    "avatar_static",
+    "avatar",
+];
+
+fn image_path(url: &Url) -> bool {
+    let path = url.path().to_ascii_lowercase();
+    [".jpg", ".jpeg", ".png", ".webp", ".gif"]
+        .iter()
+        .any(|ext| path.ends_with(ext))
+}
+
+fn embedded_json_url(html: &str, keys: &[&str], accept: fn(&Url) -> bool) -> Option<String> {
+    for key in keys {
+        let mut from = 0;
+        while let Some(rel) = html[from..].find(key) {
+            let start = from + rel + key.len();
+            from = start;
+            let rest = &html[start..];
+            // Skip the closing quote(s), escapes, colon and opening quote.
+            let value_start = rest
+                .char_indices()
+                .take(24)
+                .skip_while(|(_, ch)| matches!(ch, '\\' | '"' | ':' | ' '))
+                .map(|(index, _)| index)
+                .next()?;
+            if !rest[..value_start].contains(':') {
+                continue;
+            }
+            let value = &rest[value_start..];
+            let end = value.find('"').unwrap_or(value.len()).min(4096);
+            let url = unescape_json_url(&value[..end]);
+            let url = url.trim_end_matches('\\');
+            if let Ok(parsed) = Url::parse(url)
+                && parsed.scheme() == "https"
+                && accept(&parsed)
+                && safe_remote_url(parsed.as_str())
+            {
+                return Some(parsed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn unescape_json_url(raw: &str) -> String {
+    let mut value = raw.to_owned();
+    loop {
+        let next = value
+            .replace("\\\\", "\\")
+            .replace("\\/", "/")
+            .replace("\\u0025", "%")
+            .replace("\\u0026", "&")
+            .replace("\\u003d", "=")
+            .replace("\\u003D", "=");
+        if next == value {
+            return value;
+        }
+        value = next;
+    }
+}
+
+async fn resolve_activitypub(
+    client: &reqwest::Client,
+    source_url: &str,
+    endpoint: Url,
+) -> Result<ResolvedOutcome, ResolveError> {
+    let response = get_following_safe_redirects(client, endpoint).await?;
+    let persistent = response_allows_persistence(response.headers());
+    let base = response.url().clone();
+    let bytes = read_limited_bytes(response, ACTIVITYPUB_MAX, "ActivityPub").await?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| ResolveError::negative(format!("ActivityPub inválido: {error}")))?;
+    let mut preview = activitypub_preview(&value, source_url, &base)
+        .ok_or_else(|| ResolveError::negative("ActivityPub sem mídia utilizável"))?;
+    // Most servers reference the author by id; one bounded fetch gets the
+    // name, handle and avatar.
+    if preview.post.author_name.is_none()
+        && let Some(actor) = value
+            .get("attributedTo")
+            .and_then(|actor| actor.as_str())
+            .and_then(|raw| base.join(raw).ok())
+            .filter(|url| safe_remote_url(url.as_str()))
+        && let Ok(response) = get_following_safe_redirects(client, actor).await
+    {
+        let actor_base = response.url().clone();
+        if let Ok(bytes) = read_limited_bytes(response, ACTIVITYPUB_MAX, "ActivityPub").await
+            && let Ok(actor) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        {
+            preview.post.fill_from(activitypub_actor(&actor, &actor_base));
+        }
+    }
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
+}
+
+fn activitypub_preview(
+    value: &serde_json::Value,
+    source_url: &str,
+    base: &Url,
+) -> Option<ResolvedPreview> {
+    let attachment = value.get("attachment")?;
+    let items: Vec<&serde_json::Value> = match attachment {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![attachment],
+        _ => return None,
+    };
+
+    let mut video_url = None;
+    let mut image_url = None;
+    for item in items {
+        let media_type = item
+            .get("mediaType")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let Some(url) = activitypub_object_url(item.get("url"), base)
+            .filter(|url| safe_remote_url(url))
+        else {
+            continue;
+        };
+        if media_type.starts_with("video/") && video_url.is_none() {
+            video_url = Some(url);
+        } else if media_type.starts_with("image/") && image_url.is_none() {
+            image_url = Some(url);
+        }
+    }
+
+    let kind = if video_url.is_some() {
+        PreviewKind::Video
+    } else if image_url.is_some() {
+        PreviewKind::Image
+    } else {
+        return None;
+    };
+
+    Some(ResolvedPreview {
+        source_url: source_url.to_owned(),
+        kind,
+        media_url: video_url,
+        image_url,
+        embed_url: None,
+        title: json_string(value, "name").or_else(|| json_string(value, "summary")),
+        description: None,
+        provider_name: base.host_str().map(str::to_owned),
+        post: Box::new(activitypub_post(value, base)),
+    })
+}
+
+fn activitypub_post(value: &serde_json::Value, base: &Url) -> PostMeta {
+    let total = |key: &str| value.get(key)?.get("totalItems")?.as_u64();
+    let mut post = PostMeta {
+        published_at: value
+            .get("published")
+            .and_then(|value| value.as_str())
+            .and_then(parse_published),
+        likes: total("likes"),
+        shares: total("shares"),
+        comments: total("replies"),
+        ..PostMeta::default()
+    };
+    if let Some(actor) = value.get("attributedTo").filter(|actor| actor.is_object()) {
+        post.fill_from(activitypub_actor(actor, base));
+    }
+    post
+}
+
+fn activitypub_actor(actor: &serde_json::Value, base: &Url) -> PostMeta {
+    PostMeta {
+        author_name: json_string(actor, "name"),
+        author_handle: json_string(actor, "preferredUsername").map(|name| format!("@{name}")),
+        author_url: activitypub_object_url(actor.get("url"), base)
+            .filter(|url| safe_remote_url(url)),
+        author_avatar: activitypub_object_url(actor.get("icon"), base)
+            .filter(|url| safe_remote_url(url)),
+        ..PostMeta::default()
+    }
+}
+
+fn activitypub_object_url(value: Option<&serde_json::Value>, base: &Url) -> Option<String> {
+    let raw = match value? {
+        serde_json::Value::String(raw) => raw.as_str(),
+        serde_json::Value::Object(map) => map
+            .get("href")
+            .or_else(|| map.get("url"))
+            .and_then(|value| value.as_str())?,
+        _ => return None,
+    };
+    resolve_meta_url(base, raw)
 }
 
 async fn parse_html_preview(
@@ -870,6 +1429,19 @@ async fn parse_html_preview(
     .filter(|_| !video_type.starts_with("text/html"))
     .or_else(|| html_media_url(html, base.as_str()));
 
+    let mut post = html_post_meta(html, base, title.as_deref());
+    // Página de um post (tem autor): o estado que ela hidrata no player
+    // costuma trazer números e o stream que as meta tags omitem.
+    let post_page = post.author_name.is_some() || post.author_handle.is_some();
+    if post_page {
+        post.fill_from(hydration_post(html));
+    }
+    let direct_video = direct_video.or_else(|| {
+        post_page
+            .then(|| hydration_video(html, image_url.as_deref()))
+            .flatten()
+    });
+
     let embed_url = meta_content(html, &["twitter:player"])
         .and_then(|raw| resolve_meta_url(base, &raw))
         .filter(|url| safe_remote_url(url))
@@ -903,6 +1475,7 @@ async fn parse_html_preview(
         title,
         description,
         provider_name,
+        post: Box::new(post),
     };
 
     // JSON-LD/Schema.org is another provider-neutral capability signal used
@@ -913,6 +1486,419 @@ async fn parse_html_preview(
     }
 
     Ok(preview)
+}
+
+/// Post metadata a page publishes in its head: dates, author, icon, brand
+/// colour, plus the social-summary sentence some sites use as description.
+fn html_post_meta(html: &str, base: &Url, title: Option<&str>) -> PostMeta {
+    let mut post = PostMeta {
+        published_at: meta_content(
+            html,
+            &["article:published_time", "og:published_time", "datePublished", "date"],
+        )
+        .and_then(|raw| parse_published(&raw)),
+        author_name: meta_content(html, &["author", "article:author"])
+            .filter(|value| !value.starts_with("http"))
+            .map(|value| decode_html_text(&value)),
+        author_handle: meta_content(html, &["twitter:creator"])
+            .map(|value| decode_html_text(&value))
+            .filter(|value| value.starts_with('@') && value.len() > 1),
+        site_icon: html_site_icon(html, base),
+        accent: html_theme_accent(html),
+        ..PostMeta::default()
+    };
+    if let Some(summary) = meta_content(html, &["og:description", "description"])
+        .and_then(|raw| social_summary(&decode_html_text(&raw)))
+    {
+        post.fill_from(summary);
+    }
+    if let Some((name, handle)) = title.and_then(title_byline) {
+        post.author_name.get_or_insert(name);
+        post.author_handle.get_or_insert(handle);
+    }
+    post.fill_from(microdata_post(html, base));
+    if post.author_handle.is_none() {
+        post.author_handle = post.author_url.as_deref().and_then(profile_handle);
+    }
+    post
+}
+
+/// `Name (@handle)` titles, as X, Threads and Mastodon publish them
+/// (`hraness (@hraness) on X`).
+fn title_byline(title: &str) -> Option<(String, String)> {
+    let open = title.find(" (@")?;
+    let close = open + title[open..].find(')')?;
+    let name = title[..open].trim();
+    let handle = &title[open + 2..close];
+    (!name.is_empty() && handle.len() > 1 && !handle.contains(' '))
+        .then(|| (name.to_owned(), handle.to_owned()))
+}
+
+/// `/@handle` profile paths (YouTube, Threads, Medium, TikTok, Mastodon).
+fn profile_handle(url: &str) -> Option<String> {
+    let url = Url::parse(url).ok()?;
+    let first = url.path_segments()?.next()?;
+    (first.len() > 1 && first.starts_with('@')).then(|| first.to_owned())
+}
+
+/// schema.org microdata (`itemprop`), the in-page twin of JSON-LD.
+fn microdata_post(html: &str, base: &Url) -> PostMeta {
+    let mut post = PostMeta::default();
+    let mut interaction: Option<String> = None;
+    // `itemprop="author"` opens a Person; its name/url come right after.
+    let mut author_window = 0u8;
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        let Some(prop) = html_attr(tag, "itemprop") else {
+            continue;
+        };
+        let value = html_attr(tag, "content")
+            .or_else(|| html_attr(tag, "href"))
+            .map(|value| decode_html_text(value.trim()));
+        match prop.as_str() {
+            "author" | "creator" => {
+                author_window = 4;
+                continue;
+            }
+            "name" if author_window > 0 => {
+                if post.author_name.is_none() {
+                    post.author_name = value.filter(|name| !name.is_empty());
+                }
+            }
+            "url" if author_window > 0 => {
+                if post.author_url.is_none() {
+                    post.author_url = value
+                        .and_then(|raw| resolve_meta_url(base, &raw))
+                        .map(|url| url.replacen("http://", "https://", 1))
+                        .filter(|url| safe_remote_url(url));
+                }
+            }
+            "datePublished" | "uploadDate" => {
+                if post.published_at.is_none() {
+                    post.published_at = value.as_deref().and_then(parse_published);
+                }
+            }
+            "interactionType" => interaction = value,
+            "userInteractionCount" => {
+                let count = value.as_deref().and_then(parse_count);
+                let kind = interaction.take().unwrap_or_default();
+                let slot = if kind.ends_with("LikeAction") {
+                    &mut post.likes
+                } else if kind.ends_with("CommentAction") {
+                    &mut post.comments
+                } else if kind.ends_with("ShareAction") {
+                    &mut post.shares
+                } else if kind.ends_with("WatchAction") {
+                    &mut post.views
+                } else {
+                    continue;
+                };
+                if slot.is_none() {
+                    *slot = count;
+                }
+            }
+            _ => {}
+        }
+        author_window = author_window.saturating_sub(1);
+    }
+    post
+}
+
+/// Counters, dates and avatar from the state a post page hydrates its
+/// player with (JSON, escaped JSON or JS object literals). The keys are the
+/// field names public social APIs share, not any one site's.
+fn hydration_post(html: &str) -> PostMeta {
+    let count = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| hydration_value(html, key).and_then(parse_count))
+    };
+    PostMeta {
+        likes: count(&["favorite_count", "favourites_count", "like_count", "likes_count", "likeCount"]),
+        comments: count(&["reply_count", "replies_count", "comment_count", "comments_count", "replyCount", "commentCount"]),
+        shares: count(&["retweet_count", "reblogs_count", "repost_count", "reposts_count", "share_count", "shares_count", "repostCount", "shareCount"]),
+        views: count(&["view_count", "views_count", "viewCount", "play_count", "video_view_count"]),
+        published_at: hydration_value(html, "created_at_ms")
+            .and_then(|raw| raw.parse::<i64>().ok())
+            .map(|ms| ms / 1000)
+            .or_else(|| {
+                hydration_value(html, "taken_at_timestamp").and_then(|raw| raw.parse().ok())
+            })
+            .or_else(|| {
+                ["created_at", "publishDate", "published_at"]
+                    .iter()
+                    .find_map(|key| hydration_value(html, key).and_then(parse_published))
+            }),
+        author_avatar: hydration_image(html, AVATAR_KEYS),
+        ..PostMeta::default()
+    }
+}
+
+/// Raw scalar after the first `key` (as a whole identifier) in the page:
+/// `"key":1`, `\"key\":\"v\"`, `key:"v"`.
+fn hydration_value<'a>(html: &'a str, key: &str) -> Option<&'a str> {
+    let bytes = html.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = html[from..].find(key) {
+        let start = from + rel;
+        from = start + key.len();
+        if start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            continue;
+        }
+        let mut index = from;
+        let skip = |index: &mut usize, set: &[u8], max: usize| {
+            let begin = *index;
+            while *index < bytes.len() && *index - begin < max && set.contains(&bytes[*index]) {
+                *index += 1;
+            }
+        };
+        skip(&mut index, b"\\\"", 8);
+        skip(&mut index, b" ", 4);
+        if bytes.get(index) != Some(&b':') {
+            continue;
+        }
+        index += 1;
+        skip(&mut index, b" ", 4);
+        skip(&mut index, b"\\\"", 8);
+        let value_start = index;
+        while index < bytes.len()
+            && index - value_start < 256
+            && !matches!(bytes[index], b'"' | b',' | b'}' | b']' | b'\\')
+        {
+            index += 1;
+        }
+        let value = html[value_start..index].trim();
+        if !value.is_empty() && value != "null" {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// First https URL inside the value of any of `keys` (the value may be an
+/// object wrapping it, e.g. `avatar:{image_url:"…"}`).
+fn hydration_image(html: &str, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        let mut from = 0;
+        while let Some(rel) = html[from..].find(key) {
+            let start = from + rel + key.len();
+            from = start;
+            let window = &html[start..html.len().min(start + 600)];
+            let Some(at) = window.find("https:") else {
+                continue;
+            };
+            // Only when the URL belongs to this key, not to a later field.
+            if window[..at].matches(':').count() > 6 {
+                continue;
+            }
+            let raw = &window[at..];
+            let end = raw.find('"').unwrap_or(raw.len());
+            let url = unescape_json_url(&raw[..end]);
+            let url = url.trim_end_matches('\\');
+            if let Ok(parsed) = Url::parse(url)
+                && safe_remote_url(parsed.as_str())
+            {
+                return Some(parsed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The best `video/mp4` variant a post page hydrates its player with. Only
+/// streams that share a media id with the page's own thumbnail count, so a
+/// promo or related video elsewhere on the page never wins.
+fn hydration_video(html: &str, thumbnail: Option<&str>) -> Option<String> {
+    let tokens: Vec<&str> = thumbnail?
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 10)
+        .collect();
+    if tokens.is_empty() {
+        return None;
+    }
+    let mut best: Option<(u64, String)> = None;
+    let mut from = 0;
+    while let Some(rel) = html[from..].find("video/mp4") {
+        let at = from + rel;
+        from = at + 9;
+        let lo = html.floor_char_boundary(at.saturating_sub(400));
+        let hi = html.floor_char_boundary((at + 400).min(html.len()));
+        let window = &html[lo..hi];
+        let mut cursor = 0;
+        while let Some(rel) = window[cursor..].find("https:") {
+            let begin = cursor + rel;
+            cursor = begin + 6;
+            let raw = &window[begin..];
+            let end = raw.find('"').unwrap_or(raw.len());
+            let url = unescape_json_url(&raw[..end]);
+            let Ok(parsed) = Url::parse(url.trim_end_matches('\\')) else {
+                continue;
+            };
+            if !video_path(&parsed)
+                || !safe_remote_url(parsed.as_str())
+                || !tokens.iter().any(|token| parsed.as_str().contains(token))
+            {
+                continue;
+            }
+            let bitrate = window[..begin]
+                .rfind("bitrate")
+                .and_then(|pos| hydration_value(&window[pos..], "bitrate"))
+                .and_then(|raw| raw.parse().ok())
+                .unwrap_or(0);
+            if best.as_ref().is_none_or(|(rate, _)| bitrate > *rate) {
+                best = Some((bitrate, parsed.to_string()));
+            }
+        }
+    }
+    best.map(|(_, url)| url)
+}
+
+/// `<link rel=icon>` family, preferring the large touch icon. Formats egui
+/// can't decode (ico/svg) are skipped rather than shown broken.
+fn html_site_icon(html: &str, base: &Url) -> Option<String> {
+    let mut best: Option<(u8, String)> = None;
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        if !tag_name_is(tag, "link") {
+            continue;
+        }
+        let rel = html_attr(tag, "rel").unwrap_or_default().to_ascii_lowercase();
+        let rank = if rel.contains("apple-touch-icon") {
+            2
+        } else if rel.split_whitespace().any(|part| part == "icon") {
+            1
+        } else {
+            continue;
+        };
+        let Some(url) = html_attr(tag, "href")
+            .and_then(|href| resolve_meta_url(base, &href))
+            .filter(|url| safe_remote_url(url))
+        else {
+            continue;
+        };
+        let path = Url::parse(&url)
+            .map(|url| url.path().to_ascii_lowercase())
+            .unwrap_or_default();
+        if path.ends_with(".ico") || path.ends_with(".svg") {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(best_rank, _)| rank > *best_rank) {
+            best = Some((rank, url));
+        }
+    }
+    best.map(|(_, url)| url)
+}
+
+/// `theme-color` as a brand accent. Near-white/near-black values are page
+/// chrome (light/dark UI), not brand, so they don't count.
+fn html_theme_accent(html: &str) -> Option<String> {
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        if !tag_name_is(tag, "meta")
+            || !html_attr(tag, "name").is_some_and(|name| name.eq_ignore_ascii_case("theme-color"))
+        {
+            continue;
+        }
+        let Some(color) = html_attr(tag, "content").and_then(|raw| parse_hex_color(&raw)) else {
+            continue;
+        };
+        let [r, g, b] = color;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        if max < 40 || min > 215 || max - min < 24 {
+            continue;
+        }
+        return Some(format!("#{r:02x}{g:02x}{b:02x}"));
+    }
+    None
+}
+
+fn parse_hex_color(raw: &str) -> Option<[u8; 3]> {
+    let hex = raw.trim().strip_prefix('#')?;
+    let digits: Vec<u8> = match hex.len() {
+        3 => hex
+            .chars()
+            .map(|ch| ch.to_digit(16).map(|value| (value * 17) as u8))
+            .collect::<Option<_>>()?,
+        6 => (0..3)
+            .map(|index| u8::from_str_radix(hex.get(index * 2..index * 2 + 2)?, 16).ok())
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    Some([digits[0], digits[1], digits[2]])
+}
+
+/// RFC 3339, a bare date, or the long English date social summaries use.
+fn parse_published(raw: &str) -> Option<i64> {
+    let raw = raw.trim();
+    if let Ok(time) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(time.timestamp());
+    }
+    // `Wed Oct 10 20:19:24 +0000 2018`, the classic social API timestamp.
+    if let Ok(time) = chrono::DateTime::parse_from_str(raw, "%a %b %d %H:%M:%S %z %Y") {
+        return Some(time.timestamp());
+    }
+    for format in ["%Y-%m-%d", "%B %d, %Y", "%b %d, %Y"] {
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(raw, format) {
+            return date.and_hms_opt(0, 0, 0).map(|time| time.and_utc().timestamp());
+        }
+    }
+    None
+}
+
+/// Compact counts as sites print them: `91,638`, `96K`, `1.2M`.
+fn parse_count(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    let (number, scale) = match raw.chars().last()?.to_ascii_uppercase() {
+        'K' => (&raw[..raw.len() - 1], 1_000.0),
+        'M' => (&raw[..raw.len() - 1], 1_000_000.0),
+        'B' => (&raw[..raw.len() - 1], 1_000_000_000.0),
+        _ => (raw, 1.0),
+    };
+    let cleaned = if scale > 1.0 {
+        number.replace(',', ".")
+    } else {
+        number.replace([',', '.'], "")
+    };
+    let value: f64 = cleaned.parse().ok()?;
+    (value >= 0.0).then(|| (value * scale).round() as u64)
+}
+
+/// The social-summary description convention:
+/// `96K likes, 188 comments - author on September 21, 2026: "caption"`.
+/// Every part after the counts is optional.
+fn social_summary(text: &str) -> Option<PostMeta> {
+    let (counts, rest) = text.split_once(" - ").unwrap_or((text, ""));
+    let mut post = PostMeta::default();
+    for part in counts.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        let (number, label) = part.split_once(' ')?;
+        let count = parse_count(number)?;
+        match label.trim().to_ascii_lowercase().as_str() {
+            "like" | "likes" => post.likes = Some(count),
+            "comment" | "comments" => post.comments = Some(count),
+            "share" | "shares" | "repost" | "reposts" => post.shares = Some(count),
+            _ => return None,
+        }
+    }
+    if post.likes.is_none() && post.comments.is_none() {
+        return None;
+    }
+    let (byline, caption) = rest.split_once(": ").unwrap_or((rest, ""));
+    if let Some((author, date)) = byline.rsplit_once(" on ") {
+        let author = author.trim();
+        if !author.is_empty() && !author.contains(' ') {
+            post.author_handle = Some(format!("@{}", author.trim_start_matches('@')));
+        }
+        post.published_at = parse_published(date);
+    }
+    let caption = caption
+        .trim()
+        .trim_end_matches('.')
+        .trim_matches(|ch| matches!(ch, '"' | '\u{201c}' | '\u{201d}'))
+        .trim();
+    if !caption.is_empty() {
+        post.caption = Some(caption.to_owned());
+    }
+    Some(post)
 }
 
 fn is_video_content_type(content_type: &str) -> bool {
@@ -986,7 +1972,21 @@ fn json_ld_value_preview(
                 })
             };
 
-            if !type_is("VideoObject") && !type_is("ImageObject") && !type_is("Article") {
+            // Article/Posting subtypes (NewsArticle, SocialMediaPosting,
+            // DiscussionForumPosting…) carry the same author/date fields.
+            let post_like = map.get("@type").is_some_and(|kind| {
+                let names: Vec<&str> = match kind {
+                    serde_json::Value::String(kind) => vec![kind.as_str()],
+                    serde_json::Value::Array(kinds) => {
+                        kinds.iter().filter_map(|kind| kind.as_str()).collect()
+                    }
+                    _ => Vec::new(),
+                };
+                names
+                    .iter()
+                    .any(|name| name.ends_with("Article") || name.ends_with("Posting"))
+            });
+            if !type_is("VideoObject") && !type_is("ImageObject") && !post_like {
                 for nested in map.values() {
                     if let Some(preview) = json_ld_value_preview(nested, source_url, base) {
                         return Some(preview);
@@ -1037,10 +2037,58 @@ fn json_ld_value_preview(
                 title,
                 description,
                 provider_name,
+                post: Box::new(json_ld_post(map, base)),
             })
         }
         _ => None,
     }
+}
+
+fn json_ld_post(map: &serde_json::Map<String, serde_json::Value>, base: &Url) -> PostMeta {
+    let author = match map.get("author") {
+        Some(serde_json::Value::Array(authors)) => authors.first(),
+        other => other,
+    };
+    let mut post = PostMeta {
+        published_at: ["datePublished", "uploadDate", "dateCreated"]
+            .iter()
+            .find_map(|key| map.get(*key)?.as_str().and_then(parse_published)),
+        ..PostMeta::default()
+    };
+    match author {
+        Some(serde_json::Value::String(name)) => post.author_name = Some(name.clone()),
+        Some(author @ serde_json::Value::Object(_)) => {
+            post.author_name = json_string(author, "name");
+            post.author_handle = json_string(author, "alternateName")
+                .map(|handle| format!("@{}", handle.trim_start_matches('@')));
+            post.author_url = json_ld_url(author.get("url"), base).filter(|url| safe_remote_url(url));
+            post.author_avatar =
+                json_ld_url(author.get("image"), base).filter(|url| safe_remote_url(url));
+        }
+        _ => {}
+    }
+    let statistics = match map.get("interactionStatistic") {
+        Some(serde_json::Value::Array(items)) => items.iter().collect(),
+        Some(item) => vec![item],
+        None => Vec::new(),
+    };
+    for statistic in statistics {
+        let kind = statistic
+            .get("interactionType")
+            .and_then(|kind| kind.as_str().or_else(|| kind.get("@type")?.as_str()))
+            .unwrap_or_default();
+        let count = statistic.get("userInteractionCount").and_then(|count| {
+            count.as_u64().or_else(|| count.as_str().and_then(parse_count))
+        });
+        if kind.ends_with("LikeAction") {
+            post.likes = post.likes.or(count);
+        } else if kind.ends_with("CommentAction") {
+            post.comments = post.comments.or(count);
+        } else if kind.ends_with("ShareAction") {
+            post.shares = post.shares.or(count);
+        }
+    }
+    post
 }
 
 fn json_ld_url(value: Option<&serde_json::Value>, base: &Url) -> Option<String> {
@@ -1057,6 +2105,7 @@ fn json_ld_url(value: Option<&serde_json::Value>, base: &Url) -> Option<String> 
 }
 
 fn merge_preview(base: &mut ResolvedPreview, extra: ResolvedPreview) {
+    base.post.fill_from(*extra.post);
     if base.media_url.is_none() {
         base.media_url = extra.media_url;
     }
@@ -1086,33 +2135,64 @@ fn merge_preview(base: &mut ResolvedPreview, extra: ResolvedPreview) {
 
 async fn get_following_safe_redirects(
     client: &reqwest::Client,
+    url: Url,
+) -> Result<reqwest::Response, ResolveError> {
+    get_following_safe_redirects_with_policy(client, url, false, false).await
+}
+
+async fn get_following_safe_preview_response(
+    client: &reqwest::Client,
+    url: Url,
+) -> Result<reqwest::Response, ResolveError> {
+    let response =
+        get_following_safe_redirects_with_policy(client, url.clone(), true, false).await?;
+    if !is_cloudflare_challenge(response.status(), response.headers()) {
+        return Ok(response);
+    }
+
+    // A Managed Challenge cannot be solved by reqwest. One compatibility retry
+    // is still useful, though: some Cloudflare policies challenge unknown
+    // client-shaped UAs but permit browser-shaped crawler requests. Keep Papo's
+    // identity in the UA so the origin can continue routing us as a preview bot.
+    log::debug!(
+        "preview {}: Cloudflare challenge; tentando cabeçalhos compatíveis com navegador",
+        safe_key(url.as_str())
+    );
+    drop(response);
+    get_following_safe_redirects_with_policy(client, url, true, true).await
+}
+
+async fn get_following_safe_redirects_with_policy(
+    client: &reqwest::Client,
     mut url: Url,
+    allow_preview_client_errors: bool,
+    challenge_compat: bool,
 ) -> Result<reqwest::Response, ResolveError> {
     for hop in 0..=MAX_REDIRECTS {
         validate_destination(&url).await?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(classify_reqwest)?;
+        let mut request = client.get(url.clone());
+        if challenge_compat {
+            request = request
+                .header(USER_AGENT, CHALLENGE_COMPAT_UA)
+                .header(ACCEPT, CHALLENGE_COMPAT_ACCEPT)
+                .header(ACCEPT_LANGUAGE, CHALLENGE_COMPAT_LANGUAGE);
+        }
+        let response = request.send().await.map_err(classify_reqwest)?;
 
         if !response.status().is_redirection() {
-            if response.status().as_u16() == 429 {
+            let status = response.status();
+            if status.as_u16() == 429 {
                 let mut error = ResolveError::transient("HTTP 429");
                 error.retry_after = retry_after(response.headers().get(RETRY_AFTER));
                 return Err(error);
             }
-            if response.status().is_server_error() {
-                return Err(ResolveError::transient(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
+            if status.is_server_error() {
+                return Err(ResolveError::transient(format!("HTTP {status}")));
             }
-            if !response.status().is_success() {
-                return Err(ResolveError::negative(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
+            if !status.is_success()
+                && !(allow_preview_client_errors && is_preview_soft_client_error(status))
+            {
+                return Err(ResolveError::negative(format!("HTTP {status}")));
             }
             return Ok(response);
         }
@@ -1130,6 +2210,166 @@ async fn get_following_safe_redirects(
             .map_err(|error| ResolveError::negative(format!("redirect inválido: {error}")))?;
     }
     unreachable!()
+}
+
+fn is_cloudflare_challenge(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN
+        && headers
+            .get("cf-mitigated")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("challenge"))
+}
+
+fn is_preview_soft_client_error(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 403 | 404)
+}
+
+fn preview_status_error(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> ResolveError {
+    let mut error = if matches!(status.as_u16(), 401 | 403) {
+        // Authentication/anti-bot decisions can be environmental and often
+        // recover. Do not poison the negative cache for a full day.
+        ResolveError::transient(format!("HTTP {status}"))
+    } else {
+        ResolveError::negative(format!("HTTP {status}"))
+    };
+    error.retry_after = retry_after(headers.get(RETRY_AFTER));
+    error
+}
+
+fn response_content_type(headers: &reqwest::header::HeaderMap) -> String {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn preview_body_class(content_type: &str, body: &str) -> &'static str {
+    let prefix = body
+        .chars()
+        .take(4096)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    if prefix.contains("cf-chl-")
+        || prefix.contains("cf-mitigated")
+        || prefix.contains("just a moment")
+    {
+        "challenge-html"
+    } else if content_type.contains("json") {
+        "json"
+    } else if content_type.starts_with("text/html")
+        || content_type.starts_with("application/xhtml")
+        || prefix.contains("<html")
+        || prefix.contains("<!doctype html")
+    {
+        "html"
+    } else if content_type.starts_with("text/") {
+        "text"
+    } else if body.is_empty() {
+        "empty"
+    } else {
+        "other"
+    }
+}
+
+fn safe_header_class(
+    headers: &reqwest::header::HeaderMap,
+    name: &'static str,
+) -> &'static str {
+    let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
+        return "none";
+    };
+    let value = value.to_ascii_lowercase();
+    if value.contains("cloudflare") {
+        "cloudflare"
+    } else if value.contains("nginx") {
+        "nginx"
+    } else if value.contains("envoy") {
+        "envoy"
+    } else {
+        "other"
+    }
+}
+
+fn cache_control_class(headers: &reqwest::header::HeaderMap) -> &'static str {
+    let mut saw_header = false;
+    let mut no_store = false;
+    let mut private = false;
+    for value in headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        saw_header = true;
+        for directive in value.split(',').map(str::trim) {
+            no_store |= directive.eq_ignore_ascii_case("no-store");
+            private |= directive.eq_ignore_ascii_case("private");
+        }
+    }
+    if no_store {
+        "no-store"
+    } else if private {
+        "private"
+    } else if saw_header {
+        "cacheable"
+    } else {
+        "none"
+    }
+}
+
+fn log_preview_soft_failure_headers(
+    source_url: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) {
+    let cf_mitigated = headers
+        .get("cf-mitigated")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            if value.eq_ignore_ascii_case("challenge") {
+                "challenge"
+            } else {
+                "other"
+            }
+        })
+        .unwrap_or("none");
+    log::debug!(
+        "preview {}: source status={} cache_control={} server={} cf_mitigated={}",
+        safe_key(source_url),
+        status.as_u16(),
+        cache_control_class(headers),
+        safe_header_class(headers, "server"),
+        cf_mitigated,
+    );
+}
+
+fn log_preview_soft_failure(
+    source_url: &str,
+    status: reqwest::StatusCode,
+    content_type: &str,
+    body: &str,
+    retry_after_ms: Option<i64>,
+) {
+    log::debug!(
+        "preview {}: source status={} content_type={} body_class={} body_bytes={} retry_after={}",
+        safe_key(source_url),
+        status.as_u16(),
+        if content_type.is_empty() { "none" } else { content_type },
+        preview_body_class(content_type, body),
+        body.len().min(HTML_MAX),
+        if retry_after_ms.is_some() { "present" } else { "none" },
+    );
 }
 
 async fn validate_destination(url: &Url) -> Result<(), ResolveError> {
@@ -1402,6 +2642,73 @@ async fn registry_oembed_endpoint(
     None
 }
 
+async fn registry_mirror_origin(
+    client: &reqwest::Client,
+    registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
+    source_url: &str,
+) -> Option<String> {
+    let entries = registry
+        .get_or_try_init(|| async { load_oembed_registry(client).await })
+        .await
+        .ok()?;
+    let source = Url::parse(&canonical_url(source_url)?).ok()?;
+    registry_mirror_candidate(entries, &source)
+}
+
+/// Maps a mirror URL (same path, host label wrapping a provider's domain
+/// label, e.g. `xxprovider.tld/post/1` → `provider.com/post/1`) back to the
+/// registry scheme it mirrors. Short labels are ignored so one-letter brands
+/// don't match arbitrary hosts.
+fn registry_mirror_candidate(entries: &[OEmbedRegistryEndpoint], source: &Url) -> Option<String> {
+    const MIN_BRAND_LEN: usize = 4;
+    let source_host = source.host_str()?.to_ascii_lowercase();
+    let source_labels: Vec<&str> = source_host.split('.').collect();
+    let source_labels = &source_labels[..source_labels.len().saturating_sub(1)];
+
+    for entry in entries {
+        for scheme in &entry.schemes {
+            let Some(rest) = scheme.strip_prefix("https://") else {
+                continue;
+            };
+            let Some((host_pattern, _)) = rest.split_once('/') else {
+                continue;
+            };
+            let host_pattern = host_pattern.to_ascii_lowercase();
+            let host = host_pattern.trim_start_matches("*.");
+            if host.contains('*') {
+                continue;
+            }
+            let labels: Vec<&str> = host.split('.').collect();
+            let [.., brand, _tld] = labels.as_slice() else {
+                continue;
+            };
+            if brand.len() < MIN_BRAND_LEN
+                || !source_labels
+                    .iter()
+                    .any(|label| label.len() > brand.len() && label.contains(brand))
+            {
+                continue;
+            }
+            let concrete_host = if host_pattern.starts_with("*.") {
+                format!("www.{host}")
+            } else {
+                host.to_owned()
+            };
+            let mut candidate = source.clone();
+            if candidate.set_host(Some(&concrete_host)).is_err()
+                || candidate.set_port(None).is_err()
+            {
+                continue;
+            }
+            let candidate = candidate.to_string();
+            if safe_remote_url(&candidate) && wildcard_url_match(scheme, &candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 async fn load_oembed_registry(
     client: &reqwest::Client,
 ) -> Result<Vec<OEmbedRegistryEndpoint>, ResolveError> {
@@ -1513,6 +2820,37 @@ fn oembed_endpoint(html: &str, base: &Url) -> Option<Url> {
             .any(|part| part.eq_ignore_ascii_case("alternate"))
             || !mime.eq_ignore_ascii_case("application/json+oembed")
         {
+            continue;
+        }
+        let href = html_attr(tag, "href")?;
+        let url = base.join(&decode_html_url(&href)).ok()?;
+        if safe_remote_url(url.as_str()) {
+            return Some(url);
+        }
+    }
+    None
+}
+
+fn activitypub_endpoint(html: &str, base: &Url) -> Option<Url> {
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        if !tag_name_is(tag, "link") {
+            continue;
+        }
+        let rel = html_attr(tag, "rel").unwrap_or_default();
+        if !rel
+            .split_ascii_whitespace()
+            .any(|part| part.eq_ignore_ascii_case("alternate"))
+        {
+            continue;
+        }
+        let mime = html_attr(tag, "type")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let is_activity = mime.starts_with("application/activity+json")
+            || (mime.starts_with("application/ld+json")
+                && mime.contains("activitystreams"));
+        if !is_activity {
             continue;
         }
         let href = html_attr(tag, "href")?;
@@ -1668,19 +3006,49 @@ fn resolve_candidate_url(base: &str, value: &str) -> Option<String> {
 }
 
 fn decode_html_url(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&#38;", "&")
-        .replace("&#x26;", "&")
+    decode_html_text(value)
 }
 
+/// Single pass, so `&amp;lt;` stays `&lt;`; numeric references cover the
+/// `&#064;`/`&#x2022;` style that crawler-facing pages emit for non-ASCII.
 fn decode_html_text(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let decoded = rest[1..].find(';').filter(|end| *end <= 10).and_then(|end| {
+            let entity = &rest[1..=end];
+            let ch = match entity {
+                "amp" => Some('&'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "nbsp" => Some('\u{a0}'),
+                _ => entity
+                    .strip_prefix("#x")
+                    .or_else(|| entity.strip_prefix("#X"))
+                    .map(|hex| u32::from_str_radix(hex, 16))
+                    .or_else(|| entity.strip_prefix('#').map(str::parse::<u32>))
+                    .and_then(Result::ok)
+                    .and_then(char::from_u32),
+            }?;
+            Some((ch, end + 2))
+        });
+        match decoded {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn json_string(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -1826,6 +3194,7 @@ mod tests {
             title: Some("Preview".to_owned()),
             description: None,
             provider_name: Some("example".to_owned()),
+            post: Box::default(),
         }
     }
 
@@ -1850,7 +3219,8 @@ mod tests {
             url.clone(),
             MemoryEntry {
                 state: PreviewState::Ready(ready_preview(&url)),
-                resolved_at: now_millis() - READY_TTL_MS - 1,
+                resolved_at: now_millis() - RICH_READY_TTL_MS - 1,
+                ttl_ms: RICH_READY_TTL_MS,
                 retry_after: None,
                 in_flight: false,
             },
@@ -1880,6 +3250,7 @@ mod tests {
                     retry_after: future,
                 },
                 resolved_at: now_millis(),
+                ttl_ms: 0,
                 retry_after: Some(future),
                 in_flight: false,
             },
@@ -1949,4 +3320,355 @@ mod tests {
             Some("https://video.example/oembed?url=https%3A%2F%2Fvideo.example%2Fwatch%2F1")
         );
     }
+
+    #[test]
+    fn cache_control_no_store_is_never_persistent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("public, max-age=60, no-store"),
+        );
+        assert!(!response_allows_persistence(&headers));
+
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("public, max-age=60"),
+        );
+        assert!(response_allows_persistence(&headers));
+    }
+
+    #[test]
+    fn no_store_only_keeps_plain_cards_out_of_the_cache() {
+        let mut preview = ready_preview("https://proxy.example/reel/1");
+        assert!(!worth_storing(false, &preview));
+        assert!(worth_storing(true, &preview));
+
+        preview.kind = PreviewKind::Video;
+        assert!(worth_storing(false, &preview));
+
+        preview.kind = PreviewKind::Link;
+        preview.post.author_handle = Some("@someone".to_owned());
+        assert!(worth_storing(false, &preview));
+    }
+
+    #[test]
+    fn plain_cards_refresh_sooner_than_rich_media() {
+        assert!(ready_ttl_ms(PreviewKind::Link) < ready_ttl_ms(PreviewKind::Video));
+        assert!(ready_ttl_ms(PreviewKind::Link) < ready_ttl_ms(PreviewKind::Embed));
+    }
+
+    fn registry_entry(provider: &str, schemes: &[&str]) -> OEmbedRegistryEndpoint {
+        OEmbedRegistryEndpoint {
+            provider_name: provider.to_owned(),
+            url: format!("https://{provider}.example/oembed"),
+            schemes: schemes.iter().map(|scheme| (*scheme).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn mirror_hosts_map_back_to_registry_scheme() {
+        let entries = [
+            registry_entry("x", &["https://x.com/*/status/*"]),
+            registry_entry(
+                "photos",
+                &["https://photoapp.com/*/p/*", "https://www.photoapp.com/reel/*"],
+            ),
+            registry_entry("posts", &["https://*.postsite.com/*/status/*"]),
+        ];
+        let map = |raw: &str| registry_mirror_candidate(&entries, &Url::parse(raw).unwrap());
+
+        assert_eq!(
+            map("https://www.g.ogphotoapp.net/reel/Abc/?s=1").as_deref(),
+            Some("https://www.photoapp.com/reel/Abc/?s=1")
+        );
+        assert_eq!(
+            map("https://fxpostsite.com/user/status/9").as_deref(),
+            Some("https://www.postsite.com/user/status/9")
+        );
+        // The provider itself, paths outside its schemes and short brands
+        // never map.
+        assert_eq!(map("https://www.photoapp.com/reel/Abc/"), None);
+        assert_eq!(map("https://ogphotoapp.net/about"), None);
+        assert_eq!(map("https://fixupx.com/user/status/9"), None);
+    }
+
+    #[test]
+    fn blockquote_snippet_points_at_same_site_embed_page() {
+        let snippet = r#"<blockquote class="x-media" data-x-permalink="https://www.photoapp.com/reel/Abc/?utm_source=ig_embed&amp;x=1" data-x-version="14"><a href="https://elsewhere.example/">x</a></blockquote><script async src="//www.photoapp.com/embed.js"></script>"#;
+        assert_eq!(
+            snippet_embed_page(snippet, "https://www.photoapp.com/reel/Abc/?s=1").as_deref(),
+            Some("https://www.photoapp.com/reel/Abc/embed/")
+        );
+        let cite = r#"<blockquote cite="https://posts.example/u/1"><p>hi</p></blockquote>"#;
+        assert_eq!(
+            snippet_embed_page(cite, "https://posts.example/u/1").as_deref(),
+            Some("https://posts.example/u/1/embed/")
+        );
+        // A permalink on another site is not the provider's embed.
+        let foreign = r#"<blockquote><a href="https://elsewhere.example/p/1">x</a></blockquote>"#;
+        assert_eq!(snippet_embed_page(foreign, "https://posts.example/u/1"), None);
+    }
+
+    #[test]
+    fn embedded_player_json_yields_escaped_video_url() {
+        let html = r#"<script>s.handle("{\"shortcode_media\":{\"is_video\":true,\"video_url\":\"https:\\\/\\\/cdn.example\\\/o1\\\/v\\\/clip.mp4?_nc_cat=1\\u0026oe=6AC0\",\"thumbnail\":\"https:\\\/\\\/cdn.example\\\/t.jpg\"}}")</script>"#;
+        assert_eq!(
+            embedded_json_video_url(html).as_deref(),
+            Some("https://cdn.example/o1/v/clip.mp4?_nc_cat=1&oe=6AC0")
+        );
+        assert_eq!(
+            embedded_json_video_url(r#"{"video_url":"https://cdn.example/page.html"}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn social_summary_description_becomes_post_meta() {
+        let post = social_summary(
+            "96K likes, 188 comments - mogswamp on September 21, 2026: \"A hand stitched texture pack? \n\n#minecraft\". ",
+        )
+        .unwrap();
+        assert_eq!(post.likes, Some(96_000));
+        assert_eq!(post.comments, Some(188));
+        assert_eq!(post.author_handle.as_deref(), Some("@mogswamp"));
+        assert_eq!(post.published_at, parse_published("2026-09-21"));
+        assert_eq!(
+            post.caption.as_deref(),
+            Some("A hand stitched texture pack? \n\n#minecraft")
+        );
+        assert_eq!(social_summary("1 like - someone"), Some(PostMeta {
+            likes: Some(1),
+            ..PostMeta::default()
+        }));
+        // Ordinary descriptions are not mistaken for summaries.
+        assert_eq!(social_summary("A blog about cats - and dogs"), None);
+        assert_eq!(parse_count("91,638"), Some(91_638));
+        assert_eq!(parse_count("1.2M"), Some(1_200_000));
+    }
+
+    #[test]
+    fn theme_color_counts_only_as_brand_accent() {
+        let chrome = r##"<meta name="theme-color" content="#ffffff"><meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">"##;
+        assert_eq!(html_theme_accent(chrome), None);
+        let brand = r##"<meta name="theme-color" content="#FF0069">"##;
+        assert_eq!(html_theme_accent(brand).as_deref(), Some("#ff0069"));
+    }
+
+    #[test]
+    fn json_ld_social_posting_carries_author_date_and_stats() {
+        let base = Url::parse("https://posts.example/p/1").unwrap();
+        let html = r#"<script type="application/ld+json">{
+            "@type": "SocialMediaPosting",
+            "headline": "Hello",
+            "datePublished": "2026-09-21T11:31:00Z",
+            "author": {"name": "Demo", "alternateName": "demo", "image": "https://posts.example/a.png"},
+            "interactionStatistic": [
+                {"interactionType": "https://schema.org/LikeAction", "userInteractionCount": 91638},
+                {"interactionType": {"@type": "CommentAction"}, "userInteractionCount": "187"}
+            ]
+        }</script>"#;
+        let preview = json_ld_preview(html, base.as_str(), &base).unwrap();
+        assert_eq!(preview.post.author_name.as_deref(), Some("Demo"));
+        assert_eq!(preview.post.author_handle.as_deref(), Some("@demo"));
+        assert_eq!(preview.post.author_avatar.as_deref(), Some("https://posts.example/a.png"));
+        assert_eq!(preview.post.likes, Some(91_638));
+        assert_eq!(preview.post.comments, Some(187));
+        assert_eq!(preview.post.published_at, parse_published("2026-09-21T11:31:00Z"));
+    }
+
+    #[test]
+    fn byline_microdata_and_hydration_fill_post_meta() {
+        assert_eq!(
+            title_byline("hraness (@hraness) on X"),
+            Some(("hraness".to_owned(), "@hraness".to_owned()))
+        );
+        assert_eq!(title_byline("Cats (and dogs)"), None);
+
+        let base = Url::parse("https://video.example/watch?v=1").unwrap();
+        let html = r#"
+            <meta itemprop="name" content="Video title">
+            <span itemprop="author"><link itemprop="url" href="http://video.example/@Chan"><link itemprop="name" content="Chan"></span>
+            <meta itemprop="interactionType" content="https://schema.org/LikeAction">
+            <meta itemprop="userInteractionCount" content="19426647">
+            <meta itemprop="interactionType" content="https://schema.org/WatchAction">
+            <meta itemprop="userInteractionCount" content="1820999528">
+            <meta itemprop="datePublished" content="2009-10-24T23:57:33-07:00">"#;
+        let post = microdata_post(html, &base);
+        assert_eq!(post.author_name.as_deref(), Some("Chan"));
+        assert_eq!(post.author_url.as_deref(), Some("https://video.example/@Chan"));
+        assert_eq!(post.likes, Some(19_426_647));
+        assert_eq!(post.views, Some(1_820_999_528));
+        assert_eq!(profile_handle("https://video.example/@Chan").as_deref(), Some("@Chan"));
+
+        let state = r#"legacy:{bookmark_count:1917,favorite_count:4358,quote_count:393,reply_count:673,retweet_count:98},created_at_ms:1790110438000,avatar:$R[27]={image_url:"https://cdn.example/profile/a_normal.jpg"}"#;
+        let post = hydration_post(state);
+        assert_eq!(post.likes, Some(4358));
+        assert_eq!(post.comments, Some(673));
+        assert_eq!(post.shares, Some(98));
+        assert_eq!(post.published_at, Some(1_790_110_438));
+        assert_eq!(post.author_avatar.as_deref(), Some("https://cdn.example/profile/a_normal.jpg"));
+    }
+
+    #[test]
+    fn hydrated_video_must_match_the_page_thumbnail() {
+        let state = r#"variants:[{content_type:"video/mp4",bitrate:256000,url:"https://cdn.example/v/2102501611842965504/480x270/a.mp4"},{bitrate:2176000,content_type:"video/mp4",url:"https://cdn.example/v/2102501611842965504/1280x720/b.mp4"}],promo:{content_type:"video/mp4",bitrate:9000000,url:"https://cdn.example/ads/9999999999999/c.mp4"}"#;
+        assert_eq!(
+            hydration_video(state, Some("https://img.example/thumb/2102501611842965504/img/x.jpg"))
+                .as_deref(),
+            Some("https://cdn.example/v/2102501611842965504/1280x720/b.mp4")
+        );
+        assert_eq!(hydration_video(state, Some("https://img.example/unrelated.jpg")), None);
+    }
+
+    #[test]
+    fn html_text_decodes_numeric_entities_once() {
+        assert_eq!(
+            decode_html_text("Diego &#xf8ff; (&#064;diego) &#x2022; reel &amp;lt; &bogus; &"),
+            "Diego \u{f8ff} (@diego) \u{2022} reel &lt; &bogus; &"
+        );
+    }
+
+    #[test]
+    fn discovers_activitypub_alternate_without_provider_table() {
+        let base = Url::parse("https://proxy.example/reel/abc").unwrap();
+        let html = r#"<link href="/users/demo/statuses/1"
+                           rel="alternate"
+                           type="application/activity+json">"#;
+        assert_eq!(
+            activitypub_endpoint(html, &base)
+                .map(|url| url.to_string())
+                .as_deref(),
+            Some("https://proxy.example/users/demo/statuses/1")
+        );
+    }
+
+    #[test]
+    fn activitypub_video_attachment_promotes_to_direct_media() {
+        let base = Url::parse("https://proxy.example/users/demo/statuses/1").unwrap();
+        let value = serde_json::json!({
+            "type": "Note",
+            "name": "Demo reel",
+            "attachment": [
+                {
+                    "type": "Document",
+                    "mediaType": "video/mp4",
+                    "url": "/offload/abc/1"
+                }
+            ]
+        });
+        let preview =
+            activitypub_preview(&value, "https://proxy.example/reel/abc", &base).unwrap();
+        assert_eq!(preview.kind, PreviewKind::Video);
+        assert_eq!(
+            preview.media_url.as_deref(),
+            Some("https://proxy.example/offload/abc/1")
+        );
+        assert_eq!(preview.title.as_deref(), Some("Demo reel"));
+    }
+
+    #[tokio::test]
+    async fn unfurl_proxy_og_video_is_native_video_not_webembed() {
+        let base = Url::parse("https://proxy.example/reel/abc").unwrap();
+        let html = r#"
+            <meta property="og:title" content="Creator (@creator)">
+            <meta property="og:image" content="/offload/abc/1?thumbnail=1">
+            <meta property="og:video" content="/offload/abc/1">
+            <meta property="og:video:secure_url" content="/offload/abc/1">
+            <meta property="og:video:type" content="video/mp4">
+            <link href="/users/creator/statuses/1"
+                  rel="alternate"
+                  type="application/activity+json">
+        "#;
+        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        assert_eq!(preview.kind, PreviewKind::Video);
+        assert_eq!(
+            preview.media_url.as_deref(),
+            Some("https://proxy.example/offload/abc/1")
+        );
+        assert!(preview.embed_url.is_none());
+    }
+
+
+    #[test]
+    fn primary_403_is_retryable_but_404_is_negative() {
+        let headers = reqwest::header::HeaderMap::new();
+        let forbidden = preview_status_error(reqwest::StatusCode::FORBIDDEN, &headers);
+        assert_eq!(forbidden.class, FailureClass::Transient);
+
+        let unauthorized = preview_status_error(reqwest::StatusCode::UNAUTHORIZED, &headers);
+        assert_eq!(unauthorized.class, FailureClass::Transient);
+
+        let missing = preview_status_error(reqwest::StatusCode::NOT_FOUND, &headers);
+        assert_eq!(missing.class, FailureClass::Negative);
+    }
+
+    #[test]
+    fn primary_soft_failures_are_limited_to_401_403_404() {
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::FORBIDDEN));
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_preview_soft_client_error(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_preview_soft_client_error(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn error_body_diagnostics_are_bounded_classifications_only() {
+        assert_eq!(
+            preview_body_class(
+                "text/html",
+                "<!doctype html><html><title>Just a moment...</title><div class=\"cf-chl-test\"></div>"
+            ),
+            "challenge-html"
+        );
+        assert_eq!(
+            preview_body_class("application/problem+json", r#"{"error":"forbidden"}"#),
+            "json"
+        );
+        assert_eq!(preview_body_class("text/plain", "Forbidden"), "text");
+        assert_eq!(preview_body_class("", ""), "empty");
+    }
+
+    #[test]
+    fn cache_control_diagnostics_do_not_log_raw_header_values() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("private, no-store, token=secret"),
+        );
+        assert_eq!(cache_control_class(&headers), "no-store");
+        headers.insert(
+            reqwest::header::SERVER,
+            reqwest::header::HeaderValue::from_static("cloudflare"),
+        );
+        assert_eq!(safe_header_class(&headers, "server"), "cloudflare");
+    }
+
+
+    #[test]
+    fn cloudflare_challenge_detection_is_explicit() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "cf-mitigated",
+            reqwest::header::HeaderValue::from_static("challenge"),
+        );
+        assert!(is_cloudflare_challenge(
+            reqwest::StatusCode::FORBIDDEN,
+            &headers
+        ));
+        assert!(!is_cloudflare_challenge(
+            reqwest::StatusCode::OK,
+            &headers
+        ));
+    }
+
+    #[test]
+    fn challenge_compat_ua_keeps_papo_preview_identity() {
+        let ua = CHALLENGE_COMPAT_UA.to_ascii_lowercase();
+        assert!(ua.contains("mozilla/5.0"));
+        assert!(ua.contains("paporichpreview/"));
+        assert!(ua.contains("preview"));
+        assert!(!ua.contains("discordbot"));
+        assert!(!ua.contains("googlebot"));
+    }
+
 }

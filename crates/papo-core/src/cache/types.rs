@@ -80,6 +80,9 @@ pub struct CachedPreview {
     pub title: Option<String>,
     pub description: Option<String>,
     pub provider_name: Option<String>,
+    /// `PostMeta` serializado (JSON); colunas próprias seriam uma migração
+    /// por campo novo.
+    pub post_meta: Option<String>,
     pub resolved_at: i64,
     pub retry_after: Option<i64>,
     pub failure_class: Option<String>,

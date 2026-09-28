@@ -31,6 +31,13 @@ pub const COMPACT_BREAKPOINT: f32 = 820.0;
 /// ainda pode ser um toque, e roubar o movimento cedo demais faria a rolagem
 /// engasgar a cada encostada.
 const SWIPE_SLOP: f32 = 6.0;
+/// No Android, uma mensagem segura um pequeno "slop" maior enquanto decide
+/// entre toque longo e gesto. Isso evita que tremor natural do dedo transforme
+/// um hold em scroll/reply antes de o menu poder abrir.
+#[cfg(target_os = "android")]
+const LONG_PRESS_SLOP: f32 = 12.0;
+#[cfg(target_os = "android")]
+const LONG_PRESS_SECONDS: f64 = 0.45;
 /// O quanto o movimento precisa ser mais horizontal que vertical para ser
 /// nosso. Sem isto, rolar a conversa arrastaria a gaveta junto.
 const SWIPE_AXIS_BIAS: f32 = 1.25;
@@ -54,17 +61,17 @@ pub const IDENTITY_PILL_HEIGHT: f32 = 46.0;
 /// em dois valores diferentes como estava.
 pub const PILL_INSET: f32 = space::MD;
 /// Altura das pastilhas flutuantes e respiro entre elas e a borda.
-const PILL_HEIGHT: f32 = 36.0;
-const PILL_MARGIN: f32 = 12.0;
+pub(crate) const PILL_HEIGHT: f32 = 36.0;
+pub(crate) const PILL_MARGIN: f32 = 12.0;
 /// Raio das pastilhas flutuantes — o mesmo canto do realce interno.
-const PILL_RADIUS: f32 = 12.0;
+pub(crate) const PILL_RADIUS: f32 = 12.0;
 /// Largura da pastilha esticada, e teto da parte de baixo dela.
 const PANEL_WIDTH: f32 = 380.0;
 const PANEL_MAX_BODY: f32 = 360.0;
 /// Quanto tempo a mensagem alcançada fica piscando, e quantas piscadas.
 const BLINK_SECONDS: f64 = 1.4;
 const BLINKS: f64 = 2.0;
-const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
+pub(crate) const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
@@ -258,6 +265,10 @@ pub struct MobileServers<'a> {
 struct MobileGesture {
     origin: egui::Pos2,
     last: egui::Pos2,
+    /// Quando o toque começou; separado de `last_time`, que muda enquanto
+    /// o dedo se move.
+    #[cfg(target_os = "android")]
+    started: f64,
     /// Quando `last` foi visto, para tirar a velocidade do piparote.
     last_time: f64,
     /// Velocidade horizontal recente, em pontos por segundo. Vai sendo
@@ -414,6 +425,8 @@ pub struct LinkViewer {
     pub id: String,
     pub url: String,
     pub name: String,
+    /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
+    pub video: bool,
     pub zoom: f32,
     pub offset: Vec2,
     pub fitted: bool,
@@ -1918,14 +1931,6 @@ fn channel_menu(
         ui.set_max_width(MENU_W);
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        ui.add_space(space::XXS);
-        ui.label(
-            RichText::new(s.channel_notifications)
-                .font(text::caption())
-                .color(t.label_tertiary),
-        );
-        ui.add_space(space::XXS);
-
         let current = match channel.notification_settings.as_str() {
             "all" => "all",
             "off" => "off",
@@ -2406,6 +2411,7 @@ fn conversation(
             if state.compact {
                 handle_mobile_gesture(
                     ui,
+                    store,
                     state,
                     full,
                     PILL_MARGIN * 2.0 + PILL_HEIGHT,
@@ -2559,7 +2565,7 @@ fn conversation(
         );
 
         if state.compact {
-            handle_mobile_gesture(ui, state, full, top_inset, bottom_inset);
+            handle_mobile_gesture(ui, store, state, full, top_inset, bottom_inset);
         }
     });
 }
@@ -2635,11 +2641,15 @@ fn decide_intent(delta: Vec2, surface: MobileSurface, message: &Option<String>) 
 
 fn handle_mobile_gesture(
     ui: &egui::Ui,
+    store: &Store,
     state: &mut UiState,
     area: Rect,
     top_inset: f32,
     bottom_inset: f32,
 ) {
+    #[cfg(not(target_os = "android"))]
+    let _ = store;
+
     let (pressed, released, down, pos, time) = ui.input(|input| {
         (
             input.pointer.any_pressed(),
@@ -2683,12 +2693,17 @@ fn handle_mobile_gesture(
             || state.webembed_blocked
             || media_seek
             || state
+                .webembed_inline_rect
+                .is_some_and(|rect| rect.contains(origin))
+            || state
                 .webembed_float_rect
                 .is_some_and(|rect| rect.contains(origin))
             || (state.mobile_surface == MobileSurface::Chat && controls);
         state.mobile_gesture = Some(MobileGesture {
             origin,
             last: origin,
+            #[cfg(target_os = "android")]
+            started: time,
             last_time: time,
             velocity: 0.0,
             message_id,
@@ -2716,7 +2731,50 @@ fn handle_mobile_gesture(
         active.last_time = time;
 
         let delta = pos - active.origin;
-        if active.intent.is_none() && delta.length() >= SWIPE_SLOP {
+
+        #[cfg(target_os = "android")]
+        {
+            // Long-press is a time + movement-tolerance gesture, not a
+            // secondary-click side effect. Keep repainting while the finger is
+            // still so the timer can mature even when Android sends no motion.
+            if down
+                && active.intent.is_none()
+                && active.message_id.is_some()
+                && !active.blocked
+                && delta.length() <= LONG_PRESS_SLOP
+            {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(50));
+                if time - active.started >= LONG_PRESS_SECONDS
+                    && let Some(message_id) = active.message_id.clone()
+                    && store.message(&message_id).is_some_and(|message| !message.pending)
+                {
+                    // A small anchor rect also absorbs the release click, so
+                    // opening the menu does not immediately dismiss it.
+                    state.popup = Some(Popup {
+                        kind: PopupKind::Menu,
+                        message_id,
+                        anchor: Rect::from_center_size(
+                            active.origin,
+                            Vec2::splat(LONG_PRESS_SLOP * 2.0),
+                        ),
+                        at_pointer: true,
+                        opened: time,
+                    });
+                    active.blocked = true;
+                }
+            }
+        }
+
+        #[cfg(target_os = "android")]
+        let intent_slop = if active.message_id.is_some() {
+            LONG_PRESS_SLOP
+        } else {
+            SWIPE_SLOP
+        };
+        #[cfg(not(target_os = "android"))]
+        let intent_slop = SWIPE_SLOP;
+        if active.intent.is_none() && !active.blocked && delta.length() >= intent_slop {
             active.intent = Some(decide_intent(delta, state.mobile_surface, &active.message_id));
         }
 
@@ -2892,6 +2950,9 @@ fn channel_pill(
     } else {
         ui.layer_id()
     };
+    if topic_open {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
@@ -3099,6 +3160,23 @@ fn channel_pill(
     Some(rect)
 }
 
+/// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
+/// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
+/// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
+/// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
+/// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
+/// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
+fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
+    egui::Area::new(layer.id)
+        .order(layer.order)
+        .fixed_pos(rect.min)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            ui.allocate_space(rect.size());
+        });
+}
+
 /// Pastilha de ações do canal, no alto à direita.
 ///
 /// Fechada, são três ícones. Aberta em busca ou em fixadas, vira uma camada
@@ -3129,6 +3207,9 @@ fn actions_pill(
         ui.layer_id()
     };
     let screen = ui.ctx().content_rect();
+    if open.is_some() {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
     let width = if open.is_some() {
@@ -3201,10 +3282,16 @@ fn actions_pill(
         UiBuilder::new()
             .max_rect(body_rect.shrink(space::SM))
             .layout(Layout::top_down(Align::Min)),
-        |ui| match kind {
-            PanelKind::Search => search_panel(ui, store, state, t, s),
-            PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
-            PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+        |ui| {
+            // Rich cards/media can be taller than the visible panel body.
+            // Keep both painting and hit-testing inside the stretched pill;
+            // the inner ScrollAreas own the overflow.
+            ui.set_clip_rect(ui.clip_rect().intersect(body_rect.shrink(space::SM)));
+            match kind {
+                PanelKind::Search => search_panel(ui, store, state, t, s),
+                PanelKind::Pinned => pinned_panel(ui, store, state, t, s),
+                PanelKind::Topic => unreachable!("topic is rendered by channel_pill"),
+            }
         },
     );
 
@@ -3845,15 +3932,36 @@ fn search_panel(
                     .unwrap_or_else(|| "?".to_owned()),
                 result.created_at.map(|at| at.with_timezone(&Local)),
                 result.content.clone(),
+                if result.attachments.is_empty() {
+                    store
+                        .message(&result.id)
+                        .map(|message| message.attachments.clone())
+                        .unwrap_or_default()
+                } else {
+                    result.attachments.clone()
+                },
             )
         })
         .collect();
 
+    let result_height = ui.available_height().max(1.0);
+    let result_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
+        .max_height(result_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (channel_id, message_id, channel_name, author_id, author_name, at, body) in found {
+            for (
+                channel_id,
+                message_id,
+                channel_name,
+                author_id,
+                author_name,
+                at,
+                body,
+                attachments,
+            ) in found
+            {
                 if result_row(
                     ui,
                     store,
@@ -3867,6 +3975,8 @@ fn search_panel(
                         at,
                         channel_name: Some(&channel_name),
                         body: &body,
+                        attachments: &attachments,
+                        row_width: result_width,
                     },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
@@ -3929,6 +4039,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                     .unwrap_or_else(|| "?".into()),
                 message.at,
                 body,
+                message.attachments.clone(),
             )
         })
         .collect();
@@ -3941,11 +4052,14 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         );
         return;
     }
+    let pinned_height = ui.available_height().max(1.0);
+    let pinned_width = ui.available_width().max(1.0);
     egui::ScrollArea::vertical()
         .id_salt("lista-de-fixadas")
+        .max_height(pinned_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, author_id, author_name, at, body) in pinned {
+            for (message_id, author_id, author_name, at, body, attachments) in pinned {
                 if result_row(
                     ui,
                     store,
@@ -3959,6 +4073,8 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         at: Some(at),
                         channel_name: None,
                         body: &body,
+                        attachments: &attachments,
+                        row_width: pinned_width,
                     },
                 ) {
                     let channel = channel_id.clone();
@@ -3975,6 +4091,11 @@ struct ResultPreview<'a> {
     at: Option<DateTime<Local>>,
     channel_name: Option<&'a str>,
     body: &'a str,
+    attachments: &'a [crate::api::models::Attachment],
+    /// Largura do painel, medida uma vez fora do ScrollArea. Ler
+    /// `available_width()` por linha deixava cada linha herdar o transbordo
+    /// da anterior e o cartão crescia além da pastilha.
+    row_width: f32,
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -3994,11 +4115,12 @@ fn result_row(
         at,
         channel_name,
         body,
+        attachments,
+        row_width,
     } = preview;
     let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
-    let row_width = ui.available_width();
     let max_text_width =
         (row_width - space::SM * 2.0 - avatar_size - space::MD).max(80.0);
     let member = author_id.and_then(|id| store.member(id));
@@ -4021,6 +4143,10 @@ fn result_row(
         ui.set_max_width(row_width);
         ui.add_space(space::XS);
         ui.horizontal(|ui| {
+            // Sem espaçamento implícito: a soma das partes é exatamente
+            // `row_width`, senão cada linha passa 16 px da pastilha.
+            let spacing = ui.spacing().item_spacing.x;
+            ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_space(space::SM);
             avatar(
                 ui,
@@ -4032,6 +4158,7 @@ fn result_row(
             );
             ui.add_space(space::MD);
             ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.x = spacing;
                 ui.set_max_width(max_text_width);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
@@ -4070,8 +4197,26 @@ fn result_row(
                         false,
                         max_text_width,
                     );
-                    panel_rich_links(ui, state, t, message_id, body, max_text_width);
                 }
+                panel_attachments(
+                    ui,
+                    state,
+                    t,
+                    s,
+                    message_id,
+                    attachments,
+                    max_text_width,
+                );
+                // O fundo do cartão passa `space::MD` do conteúdo de cada
+                // lado; descontado aqui, ele termina rente à coluna.
+                panel_rich_links(
+                    ui,
+                    state,
+                    t,
+                    message_id,
+                    body,
+                    (max_text_width - space::MD).max(80.0),
+                );
             });
             ui.add_space(space::SM);
         });
@@ -4081,10 +4226,19 @@ fn result_row(
     let row = inner.response.rect;
     let response = inner.response;
     if response.hovered() {
-        ui.painter().set(
-            backdrop,
-            egui::epaint::RectShape::filled(row, CornerRadius::same(radius::CARD), t.fill_soft),
-        );
+        let highlight = row
+            .intersect(ui.clip_rect())
+            .shrink2(Vec2::new(space::XXS, 0.0));
+        if highlight.is_positive() {
+            ui.painter().set(
+                backdrop,
+                egui::epaint::RectShape::filled(
+                    highlight,
+                    CornerRadius::same(radius::CARD),
+                    t.fill_soft,
+                ),
+            );
+        }
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.add_space(space::XXS);
@@ -4894,8 +5048,14 @@ fn rich_body(
         for token in tokens {
             match token {
                 emoji::Token::Text(text) => {
-                    for word in text.split_inclusive(' ') {
-                        if word.trim().is_empty() && word != " " {
+                    // Newlines end a word too, or a link label would swallow
+                    // the next line while the click (and the preview) only
+                    // gets the URL up to the break.
+                    for word in text
+                        .split_inclusive(' ')
+                        .flat_map(|word| word.split_inclusive('\n'))
+                    {
+                        if word.trim().is_empty() && word != " " && !word.ends_with('\n') {
                             continue;
                         }
 
@@ -5027,6 +5187,45 @@ fn rich_links_from_message(
     }
 }
 
+fn panel_attachments(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    message_id: &str,
+    attachments: &[crate::api::models::Attachment],
+    width: f32,
+) {
+    if attachments.is_empty() {
+        return;
+    }
+    if let Some(action) = attachments::draw(
+        ui,
+        t,
+        s,
+        &mut state.media,
+        message_id,
+        attachments,
+        width,
+        &mut state.media_seek_zones,
+    ) {
+        match action {
+            MediaAction::Open { message_id, index } => {
+                state.viewer = Some(Viewer::with_attachments(
+                    message_id,
+                    index,
+                    attachments.to_vec(),
+                ));
+                state.media.pause_all();
+            }
+            MediaAction::Download { id, name } => {
+                state.actions.push(ChatAction::Download { id, name });
+            }
+            MediaAction::Reveal(id) => state.media.reveal(&id),
+        }
+    }
+}
+
 fn panel_rich_links(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -5100,6 +5299,13 @@ fn preview_card(
         .or_else(|| backend.and_then(|preview| preview.embed_url.clone()))
         .filter(|embed| papo_core::preview::safe_remote_url(embed));
 
+    let post = ready
+        .as_ref()
+        .map(|preview| preview.post.clone())
+        .unwrap_or_default();
+    // Página de post (tem autor): cabeçalho social em cima da mídia, rodapé
+    // com site e data embaixo, no lugar de provedor/título/descrição.
+    let social = post.author_name.is_some() || post.author_handle.is_some();
     let title = ready
         .as_ref()
         .and_then(|preview| preview.title.as_deref())
@@ -5146,21 +5352,11 @@ fn preview_card(
         .and_then(crate::media::remote_player_key)
         .unwrap_or_else(|| format!("link-preview-player:{id}"));
 
-    let (frame, aspect, playing, position, duration) = if video_url.is_some() {
-        match state.media.existing_player(&player_id) {
-            Some(player) => {
-                let aspect = player.aspect().clamp(0.4, 3.0);
-                let playing = player.is_playing();
-                let position = player.position();
-                let duration = player.duration();
-                let frame = player.frame(ui.ctx()).cloned();
-                (frame, aspect, playing, position, duration)
-            }
-            None => (None, 16.0 / 9.0, false, 0.0, 0.0),
-        }
-    } else {
-        (None, 16.0 / 9.0, false, 0.0, 0.0)
-    };
+    let playing = video_url.is_some()
+        && state
+            .media
+            .existing_player(&player_id)
+            .is_some_and(|player| player.is_playing());
 
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
@@ -5171,100 +5367,45 @@ fn preview_card(
     let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_width(card_width);
 
+        if social {
+            // O título só aparece quando diz mais que a linha do autor
+            // (`@x • Instagram reel`, `Nome (@x) on X` não dizem).
+            let headline = title.filter(|title| !title.contains('@'));
+            post_header(ui, state, t, id, &post, headline, description);
+            ui.add_space(space::SM);
+        }
+
         if let Some(remote) = video_url.as_deref() {
-            let aspect = if frame.is_some() {
-                aspect
-            } else {
-                image
-                    .map(|texture| {
-                        let size = texture.size_vec2();
-                        (size.x / size.y).clamp(0.4, 3.0)
-                    })
-                    .unwrap_or(16.0 / 9.0)
-            };
-            let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
-            let controls_h = 30.0;
-            let (rect, response) = ui.allocate_exact_size(
-                Vec2::new(card_width, frame_size.y + controls_h),
-                Sense::click(),
+            let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
+            let surface = attachments::video_surface(
+                ui,
+                t,
+                &mut state.media,
+                &player_id,
+                embed_id,
+                crate::media::PlaySource::Remote(remote),
+                poster,
+                card_width,
+                false,
+                &mut state.media_seek_zones,
             );
-            media_rect = Some(rect);
-            let video_rect = Rect::from_min_size(rect.min, frame_size);
-            ui.painter()
-                .rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
-
-            if let Some(texture) = frame.as_ref().or(image) {
-                let source = texture.size_vec2();
-                let scale =
-                    (video_rect.width() / source.x).min(video_rect.height() / source.y);
-                let painted = Rect::from_center_size(video_rect.center(), source * scale);
-                ui.painter().image(
-                    texture.id(),
-                    painted,
-                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
-            }
-
-            if !playing {
-                ui.painter()
-                    .circle_filled(video_rect.center(), 28.0, Color32::from_black_alpha(155));
-                ui.painter().text(
-                    video_rect.center() + Vec2::new(1.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PLAY,
-                    text::icon(22.0),
-                    Color32::WHITE,
-                );
-            }
-
-            let controls =
-                Rect::from_min_max(egui::pos2(rect.min.x, video_rect.max.y), rect.max);
-            ui.painter().rect_filled(
-                controls,
-                CornerRadius::ZERO,
-                Color32::from_black_alpha(190),
-            );
-            let progress = if duration > 0.0 {
-                (position / duration).clamp(0.0, 1.0) as f32
-            } else {
-                0.0
-            };
-            let line = Rect::from_min_max(
-                egui::pos2(controls.min.x + space::MD, controls.center().y - 2.0),
-                egui::pos2(controls.max.x - 94.0, controls.center().y + 2.0),
-            );
-            ui.painter()
-                .rect_filled(line, CornerRadius::same(2), Color32::from_white_alpha(45));
-            if line.width() > 0.0 {
-                ui.painter().rect_filled(
-                    Rect::from_min_size(
-                        line.min,
-                        Vec2::new(line.width() * progress, line.height()),
-                    ),
-                    CornerRadius::same(2),
-                    t.accent,
-                );
-            }
-            ui.painter().text(
-                egui::pos2(controls.max.x - space::MD, controls.center().y),
-                egui::Align2::RIGHT_CENTER,
-                format!(
-                    "{} / {}",
-                    attachments::clock(position),
-                    attachments::clock(duration)
-                ),
-                text::footnote(),
-                Color32::from_white_alpha(205),
-            );
-
-            if response.clicked() {
-                let ctx = ui.ctx().clone();
+            media_rect = Some(surface.rect);
+            if surface.clicked {
                 state.webembed.destroy_active();
-                state.media.toggle_remote_player(&player_id, remote, &ctx);
-                state.media.solo(&player_id);
-                media_clicked = true;
             }
+            if let Some(attachments::Transport::Fullscreen) = surface.transport {
+                state.link_viewer = Some(LinkViewer {
+                    id: player_id.clone(),
+                    url: remote.to_owned(),
+                    name: title.unwrap_or("video").to_owned(),
+                    video: true,
+                    zoom: 1.0,
+                    offset: Vec2::ZERO,
+                    fitted: true,
+                    opened: ui.input(|input| input.time),
+                });
+            }
+            media_clicked |= surface.clicked || surface.transport.is_some();
             if playing {
                 ui.ctx().request_repaint();
             }
@@ -5336,6 +5477,7 @@ fn preview_card(
                         id: id.to_owned(),
                         url: remote.clone(),
                         name: title.unwrap_or("image").to_owned(),
+                        video: false,
                         zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
@@ -5398,6 +5540,11 @@ fn preview_card(
             ui.add_space(space::SM);
         }
 
+        if social {
+            post_footer(ui, state, t, id, &post, provider.as_deref());
+            return;
+        }
+
         if let Some(provider) = provider.as_deref() {
             ui.label(
                 RichText::new(provider)
@@ -5458,6 +5605,14 @@ fn preview_card(
             egui::StrokeKind::Inside,
         ),
     );
+    if let Some(accent) = post.accent.as_deref().and_then(hex_color) {
+        let r = radius::CARD;
+        ui.painter().rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(4.0, rect.height())),
+            CornerRadius { nw: r, sw: r, ne: 0, se: 0 },
+            accent,
+        );
+    }
 
     if hover.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -5507,6 +5662,179 @@ fn preview_card(
     ui.add_space(space::XS);
 }
 
+
+/// Autor, reações e legenda de um post, em cima da mídia.
+fn post_header(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    post: &papo_core::preview::PostMeta,
+    headline: Option<&str>,
+    description: Option<&str>,
+) {
+    const AVATAR: f32 = 24.0;
+    let handle = post.author_handle.as_deref();
+    let name = post
+        .author_name
+        .clone()
+        .or_else(|| handle.map(|handle| handle.trim_start_matches('@').to_owned()))
+        .unwrap_or_default();
+    let avatar = post
+        .author_avatar
+        .as_deref()
+        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|texture| texture.id());
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        if post.author_avatar.is_some() {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(AVATAR), Sense::hover());
+            match avatar {
+                Some(texture) => round_photo(ui.painter(), rect, texture, Color32::WHITE),
+                None => {
+                    ui.painter()
+                        .circle_filled(rect.center(), AVATAR / 2.0, t.fill_medium);
+                }
+            }
+        }
+        ui.label(RichText::new(name).font(text::headline()).color(t.label));
+        if let Some(handle) = handle {
+            ui.label(
+                RichText::new(handle)
+                    .font(text::footnote())
+                    .color(t.label_tertiary),
+            );
+        }
+    });
+
+    let stats = [
+        (icon::HEART, post.likes),
+        (icon::CHAT_CIRCLE, post.comments),
+        (icon::REPEAT, post.shares),
+        (icon::EYE, post.views),
+    ];
+    if stats.iter().any(|(_, count)| count.is_some()) {
+        ui.add_space(space::XXS);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XXS;
+            for (glyph, count) in stats {
+                let Some(count) = count else {
+                    continue;
+                };
+                ui.label(
+                    RichText::new(glyph)
+                        .font(text::icon(13.0))
+                        .color(t.label_secondary),
+                );
+                ui.label(
+                    RichText::new(compact_count(count))
+                        .font(text::footnote())
+                        .color(t.label_secondary),
+                );
+                ui.add_space(space::SM);
+            }
+        });
+    }
+
+    if let Some(headline) = headline {
+        ui.add_space(space::XS);
+        ui.label(RichText::new(headline).font(text::headline()).color(t.label));
+    }
+    if let Some(caption) = post.caption.as_deref().or(description) {
+        ui.add_space(space::XS);
+        // Hashtags e menções no tom de link, como o site os mostra.
+        let link = muted_link_color(ui, t);
+        let mut job = egui::text::LayoutJob::default();
+        for word in attachments::elide(caption, 400).split_inclusive(char::is_whitespace) {
+            let tagged = word.starts_with('#') || word.starts_with('@');
+            job.append(
+                word,
+                0.0,
+                egui::TextFormat {
+                    font_id: text::body(),
+                    color: if tagged { link } else { t.label },
+                    ..Default::default()
+                },
+            );
+        }
+        ui.label(job);
+    }
+}
+
+/// Ícone do site · provedor · data, embaixo do post.
+fn post_footer(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    id: &str,
+    post: &papo_core::preview::PostMeta,
+    provider: Option<&str>,
+) {
+    const ICON: f32 = 16.0;
+    let icon_texture = post
+        .site_icon
+        .as_deref()
+        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|texture| texture.id());
+    let date = post.published_at.and_then(post_date);
+    let line = [provider.map(str::to_owned), date]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if line.is_empty() && icon_texture.is_none() {
+        return;
+    }
+    ui.add_space(space::XS);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::XS;
+        if let Some(texture) = icon_texture {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(ICON), Sense::hover());
+            super::widgets::photo(
+                ui.painter(),
+                rect,
+                texture,
+                super::widgets::FULL_UV,
+                CornerRadius::same(4),
+                Color32::WHITE,
+            );
+        }
+        ui.label(RichText::new(line).font(text::caption()).color(t.label_tertiary));
+    });
+}
+
+/// Datas só-dia chegam como meia-noite UTC; converter para o fuso local
+/// jogaria o post para o dia anterior no Brasil.
+fn post_date(seconds: i64) -> Option<String> {
+    let utc = DateTime::from_timestamp(seconds, 0)?;
+    Some(if seconds.rem_euclid(86_400) == 0 {
+        utc.format("%d/%m/%Y").to_string()
+    } else {
+        utc.with_timezone(&Local).format("%d/%m/%Y, %H:%M").to_string()
+    })
+}
+
+fn compact_count(count: u64) -> String {
+    let scaled = |value: f64, suffix: &str| {
+        let text = format!("{value:.1}");
+        format!("{}{suffix}", text.trim_end_matches(".0"))
+    };
+    match count {
+        0..=9_999 => count.to_string(),
+        10_000..=999_999 => scaled(count as f64 / 1_000.0, "K"),
+        1_000_000..=999_999_999 => scaled(count as f64 / 1_000_000.0, "M"),
+        _ => scaled(count as f64 / 1_000_000_000.0, "B"),
+    }
+}
+
+fn hex_color(raw: &str) -> Option<Color32> {
+    let hex = raw.strip_prefix('#')?;
+    let value = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 6)?;
+    Some(Color32::from_rgb((value >> 16) as u8, (value >> 8) as u8, value as u8))
+}
 
 fn webembed_inline_allowed(state: &UiState) -> bool {
     !state.webembed_blocked
@@ -6055,9 +6383,14 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if let Some(mut viewer) = state.viewer.take() {
-        let attachments = store
-            .message(&viewer.message_id)
-            .map(|message| message.attachments.clone())
+        let attachments = viewer
+            .source_attachments()
+            .map(<[_]>::to_vec)
+            .or_else(|| {
+                store
+                    .message(&viewer.message_id)
+                    .map(|message| message.attachments.clone())
+            })
             .unwrap_or_default();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
             Some(ViewerAction::Close) => state.media.pause_all(),
@@ -6196,7 +6529,7 @@ fn link_image_viewer(
     let Some(mut link) = state.link_viewer.take() else {
         return;
     };
-    match viewer::draw_remote_image(
+    match viewer::draw_remote_media(
         ui,
         t,
         s,
@@ -6204,6 +6537,7 @@ fn link_image_viewer(
         &link.id,
         &link.url,
         &link.name,
+        link.video,
         link.opened,
         &mut link.zoom,
         &mut link.offset,

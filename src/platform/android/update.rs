@@ -6,6 +6,7 @@
 
 #![cfg(target_os = "android")]
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -28,6 +29,7 @@ pub struct Available {
 pub enum Event {
     Current,
     Available(Available),
+    Progress { downloaded: u64, total: Option<u64> },
     Ready { release: Available, installer: PathBuf },
     Error(String),
 }
@@ -104,7 +106,7 @@ impl Updater {
         let _ = std::thread::Builder::new()
             .name("papo-update-download".into())
             .spawn(move || {
-                let event = match download_release(&release) {
+                let event = match download_release(&release, &sender) {
                     Ok(installer) => Event::Ready { release, installer },
                     Err(error) => Event::Error(error),
                 };
@@ -117,6 +119,7 @@ impl Updater {
         let event = self.events.try_recv().ok()?;
         match event {
             Event::Current | Event::Available(_) | Event::Error(_) => self.checking = false,
+            Event::Progress { .. } => {}
             Event::Ready { .. } => {
                 self.checking = false;
                 self.downloading = false;
@@ -195,15 +198,29 @@ fn check_latest() -> Result<Option<Available>, String> {
     }))
 }
 
-fn download_release(release: &Available) -> Result<PathBuf, String> {
+fn download_release(release: &Available, sender: &mpsc::Sender<Event>) -> Result<PathBuf, String> {
     let client = client()?;
-    let apk = client
+    let mut response = client
         .get(&release.installer_url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| format!("download do APK: {error}"))?
-        .bytes()
-        .map_err(|error| format!("leitura do APK: {error}"))?;
+        .map_err(|error| format!("download do APK: {error}"))?;
+    let total = response.content_length();
+    let mut apk = Vec::with_capacity(total.unwrap_or(0).min(usize::MAX as u64) as usize);
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut downloaded = 0_u64;
+    loop {
+        let read = response
+            .read(&mut buffer)
+            .map_err(|error| format!("leitura do APK: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        apk.extend_from_slice(&buffer[..read]);
+        downloaded += read as u64;
+        let _ = sender.send(Event::Progress { downloaded, total });
+        super::wake::request();
+    }
     let checksum = client
         .get(&release.checksum_url)
         .send()
