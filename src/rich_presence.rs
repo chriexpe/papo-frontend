@@ -1166,13 +1166,19 @@ async fn run_unix_ipc(
 ) -> std::io::Result<()> {
     let (guard, slot) = bind_unix_ipc().await?;
     let _ = sender.send(BuiltinEvent::ListenerReady(slot));
+    let mut clients = tokio::task::JoinSet::new();
     loop {
-        let (stream, _) = guard.listener.accept().await?;
-        let tx = sender.clone();
-        tokio::spawn(async move {
-            let socket = next_socket_id();
-            let _ = handle_rpc_stream(stream, socket, tx).await;
-        });
+        tokio::select! {
+            accepted = guard.listener.accept() => {
+                let (stream, _) = accepted?;
+                let tx = sender.clone();
+                clients.spawn(async move {
+                    let socket = next_socket_id();
+                    let _ = handle_rpc_stream(stream, socket, tx).await;
+                });
+            }
+            Some(_) = clients.join_next(), if !clients.is_empty() => {}
+        }
     }
 }
 
@@ -1206,6 +1212,7 @@ async fn run_windows_ipc(
     let path = format!(r"\\.\pipe\discord-ipc-{slot}");
     let _ = sender.send(BuiltinEvent::ListenerReady(slot));
     let mut next = Some(first);
+    let mut clients = tokio::task::JoinSet::new();
 
     loop {
         let server = match next.take() {
@@ -1214,10 +1221,11 @@ async fn run_windows_ipc(
         };
         server.connect().await?;
         let tx = sender.clone();
-        tokio::spawn(async move {
+        clients.spawn(async move {
             let socket = next_socket_id();
             let _ = handle_rpc_stream(server, socket, tx).await;
         });
+        while clients.try_join_next().is_some() {}
     }
 }
 
