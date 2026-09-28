@@ -72,13 +72,29 @@ build-options:
     CARGO_HOME: /run/build/papo/cargo
 
 modules:
+  # Rich Presence fallback, built from the revision in
+  # packaging/rsrpc/REVISION (scripts/flatpak-sources.sh checks they match).
+  - name: rsrpc
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/rsrpc/cargo
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked --verbose
+      - install -Dm755 target/release/rsrpc /app/libexec/papo/rsrpc
+    sources:
+      - type: git
+        url: https://github.com/pog5/rsrpc.git
+        commit: 572b609d400d44244dc90c05c06410a47d0d039c
+      - rsrpc-cargo-sources.json
+
   - name: papo
     buildsystem: simple
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       - cargo --offline build --release --verbose
       - install -Dm755 target/release/papo /app/bin/papo
-      - install -Dm755 rsrpc /app/libexec/papo/rsrpc
       - install -Dm644 packaging/io.github.chriexpe.Papo.desktop
         /app/share/applications/io.github.chriexpe.Papo.desktop
       - install -Dm644 packaging/io.github.chriexpe.Papo.metainfo.xml
@@ -101,15 +117,3 @@ modules:
           - build-dir
           - repo
       - cargo-sources.json
-      - type: file
-        url: https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-unknown-linux-gnu
-        sha256: 9c575b67960fe9763613702a08494bf4ab4ef0d4535fb1619abfd8279feea2db
-        dest-filename: rsrpc
-        only-arches:
-          - x86_64
-      - type: file
-        url: https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-unknown-linux-gnu
-        sha256: 116c4d8f6b5dcd65c2bf9a2036d2e2613e780e206ed0ead72224e71c509ca551
-        dest-filename: rsrpc
-        only-arches:
-          - aarch64

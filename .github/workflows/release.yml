@@ -52,22 +52,18 @@ jobs:
 
       - run: cargo build --release --locked
 
-      - name: Bundle rsRPC helper
+      # rsRPC is built from the revision pinned in packaging/rsrpc/REVISION,
+      # so every artifact carries the same, source-matching helper.
+      - uses: actions/cache@v4
+        with:
+          path: rsrpc-build
+          key: rsrpc-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('packaging/rsrpc/REVISION') }}
+
+      - name: Build rsRPC helper
         run: |
           set -euo pipefail
-          case "${{ matrix.arch }}" in
-            x86_64)
-              url="https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-unknown-linux-gnu"
-              sha="9c575b67960fe9763613702a08494bf4ab4ef0d4535fb1619abfd8279feea2db"
-              ;;
-            aarch64)
-              url="https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-unknown-linux-gnu"
-              sha="116c4d8f6b5dcd65c2bf9a2036d2e2613e780e206ed0ead72224e71c509ca551"
-              ;;
-          esac
-          curl --fail --location --retry 3 "$url" -o rsrpc-helper
-          echo "$sha  rsrpc-helper" | sha256sum -c -
-          chmod 755 rsrpc-helper
+          [ -x rsrpc-build/bin/rsrpc ] || scripts/build-rsrpc.sh rsrpc-build
+          install -m755 rsrpc-build/bin/rsrpc rsrpc-helper
 
       - name: Montar o tarball
         run: |
@@ -154,15 +150,20 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
-      - name: Bundle rsRPC helper
+      - uses: actions/cache@v4
+        with:
+          path: rsrpc-build
+          key: rsrpc-${{ runner.os }}-x86_64-${{ hashFiles('packaging/rsrpc/REVISION') }}
+
+      - name: Build rsRPC helper
         shell: pwsh
         run: |
-          $url = 'https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-pc-windows-msvc.exe'
-          Invoke-WebRequest -Uri $url -OutFile rsrpc.exe
-          $sha = (Get-FileHash rsrpc.exe -Algorithm SHA256).Hash.ToLower()
-          if ($sha -ne '062e893ee5eacba02f64e24877c11fd4ae310c20a1373b436aea3a84b519a97b') {
-            throw "rsRPC checksum mismatch: $sha"
+          if (-not (Test-Path rsrpc-build/bin/rsrpc.exe)) {
+            $revision = (Get-Content packaging/rsrpc/REVISION -Raw).Trim()
+            cargo install --locked --git https://github.com/pog5/rsrpc.git --rev $revision --root rsrpc-build rsrpc
+            if ($LASTEXITCODE -ne 0) { throw 'rsRPC build failed' }
           }
+          Copy-Item rsrpc-build/bin/rsrpc.exe rsrpc.exe
 
       - name: Assemble self-contained bundle
         shell: pwsh

@@ -30,11 +30,16 @@ optdepends=(
     'xdg-desktop-portal: seletor de arquivos do sistema'
     'noto-fonts-emoji: emoji colorido'
 )
-makedepends=('rust' 'cargo' 'pkgconf')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+makedepends=('rust' 'cargo' 'pkgconf' 'git')
+# O rsRPC é o fallback do Rich Presence; mesma revisão de
+# packaging/rsrpc/REVISION, compilada do fonte como nos outros pacotes.
+_rsrpc_commit=572b609d400d44244dc90c05c06410a47d0d039c
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "rsrpc::git+https://github.com/pog5/rsrpc.git#commit=$_rsrpc_commit")
 # Preencha com `makepkg -g` depois de publicar a etiqueta: só aí o tarball
-# do GitHub existe para ter soma.
-sha256sums=('SKIP')
+# do GitHub existe para ter soma. O git já é conferido pelo commit.
+sha256sums=('SKIP'
+            'SKIP')
 
 _app_id=io.github.chriexpe.Papo
 
@@ -43,6 +48,9 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --release --locked --all-features
+
+    cd "$srcdir/rsrpc"
+    cargo build --release --locked
 }
 
 check() {
@@ -66,4 +74,9 @@ package() {
             "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$_app_id.png"
     done
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # No Arch os auxiliares ficam em /usr/lib/<pacote>, não em libexec.
+    install -Dm755 "$srcdir/rsrpc/target/release/rsrpc" "$pkgdir/usr/lib/$pkgname/rsrpc"
+    install -Dm644 packaging/rsrpc/LICENSE "$pkgdir/usr/share/licenses/$pkgname/RSRPC-LICENSE"
+    install -Dm644 packaging/rsrpc/NOTICE "$pkgdir/usr/share/licenses/$pkgname/RSRPC-NOTICE"
 }
