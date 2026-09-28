@@ -16,13 +16,14 @@ use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use windows::{
     Win32::{
         Foundation::{E_POINTER, HWND, RECT},
+        Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF},
         System::Com::{
             COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW,
-            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN,
-            WS_CLIPSIBLINGS,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, SetWindowRgn, ShowWindow, WS_CHILD,
+            WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
         },
     },
     core::{BOOL, Interface as _, PWSTR, w},
@@ -231,6 +232,29 @@ impl LiveWebView {
         let clip_width = (clipped.width() * scale).round().max(1.0) as i32;
         let clip_height = (clipped.height() * scale).round().max(1.0) as i32;
 
+        // Shape the native host around egui chrome instead of sacrificing
+        // entire top/bottom bands. Chromium keeps its full logical viewport;
+        // only the child HWND's visible/input region gets holes punched out.
+        let host_region = unsafe { CreateRectRgn(0, 0, clip_width, clip_height) };
+        for occluder in &viewport.occlusions {
+            let cut = occluder.intersect(clipped);
+            if cut.width() <= 0.5 || cut.height() <= 0.5 {
+                continue;
+            }
+            let left = ((cut.min.x * scale).round() as i32 - clip_left).clamp(0, clip_width);
+            let top = ((cut.min.y * scale).round() as i32 - clip_top).clamp(0, clip_height);
+            let right = ((cut.max.x * scale).round() as i32 - clip_left).clamp(0, clip_width);
+            let bottom = ((cut.max.y * scale).round() as i32 - clip_top).clamp(0, clip_height);
+            if right <= left || bottom <= top {
+                continue;
+            }
+            let cut_region = unsafe { CreateRectRgn(left, top, right, bottom) };
+            unsafe {
+                CombineRgn(Some(host_region), Some(host_region), Some(cut_region), RGN_DIFF);
+                let _ = DeleteObject(HGDIOBJ(cut_region.0));
+            }
+        }
+
         // The clipping HWND occupies only the visible intersection. The actual
         // WebView keeps its full logical size and is translated inside that
         // child window, so scrolling never causes YouTube/other providers to
@@ -257,6 +281,15 @@ impl LiveWebView {
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )
             .map_err(|error| format!("posicionar host WebView2: {error}"))?;
+
+            if SetWindowRgn(self.host, Some(host_region), true) == 0 {
+                // Ownership transfers only on success.
+                let _ = DeleteObject(HGDIOBJ(host_region.0));
+                return Err(format!(
+                    "recortar host WebView2: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
 
             self.controller
                 .SetBounds(RECT {
