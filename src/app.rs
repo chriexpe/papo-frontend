@@ -3399,9 +3399,10 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
-        if self.rich_presence.pump() {
-            self.project_local_activity();
-        }
+        self.rich_presence.pump();
+        // Project every frame, not only on activity changes: a workspace may
+        // finish authentication after the current activity was already found.
+        self.project_local_activity();
 
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.pump_updater(&ctx);
