@@ -21,12 +21,14 @@ use tray_icon::{
 pub enum TrayCommand {
     Toggle,
     Show,
+    RestartRichPresence,
     Quit,
 }
 
 #[derive(Clone, Debug)]
 pub struct TrayLabels {
     pub open: String,
+    pub restart_rich_presence: String,
     pub quit: String,
     pub tooltip: String,
 }
@@ -34,6 +36,7 @@ pub struct TrayLabels {
 pub struct Tray {
     icon: TrayIcon,
     open: MenuItem,
+    restart_rich_presence: MenuItem,
     quit: MenuItem,
     commands: mpsc::Receiver<TrayCommand>,
     quit_requested: Arc<AtomicBool>,
@@ -51,9 +54,17 @@ impl Tray {
         let menu = Menu::new();
         let open = MenuItem::new(&labels.open, true, None);
         let separator = PredefinedMenuItem::separator();
+        let restart_rich_presence = MenuItem::new(&labels.restart_rich_presence, true, None);
+        let separator_after_presence = PredefinedMenuItem::separator();
         let quit = MenuItem::new(&labels.quit, true, None);
         if menu
-            .append_items(&[&open, &separator, &quit])
+            .append_items(&[
+                &open,
+                &separator,
+                &restart_rich_presence,
+                &separator_after_presence,
+                &quit,
+            ])
             .is_err()
         {
             return None;
@@ -78,6 +89,7 @@ impl Tray {
         let quit_requested = Arc::new(AtomicBool::new(false));
 
         let open_id = open.id().clone();
+        let restart_rich_presence_id = restart_rich_presence.id().clone();
         let quit_id = quit.id().clone();
         let menu_tx = tx.clone();
         let menu_repaint = repaint.clone();
@@ -85,6 +97,9 @@ impl Tray {
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if event.id == open_id {
                 let _ = menu_tx.send(TrayCommand::Show);
+                menu_repaint.request_repaint();
+            } else if event.id == restart_rich_presence_id {
+                let _ = menu_tx.send(TrayCommand::RestartRichPresence);
                 menu_repaint.request_repaint();
             } else if event.id == quit_id {
                 menu_quit.store(true, Ordering::Release);
@@ -115,6 +130,7 @@ impl Tray {
         Some(Self {
             icon: tray,
             open,
+            restart_rich_presence,
             quit,
             commands: rx,
             quit_requested,
@@ -145,6 +161,10 @@ impl Tray {
     pub fn set_labels(&self, labels: TrayLabels) {
         if self.open.text() != labels.open {
             self.open.set_text(&labels.open);
+        }
+        if self.restart_rich_presence.text() != labels.restart_rich_presence {
+            self.restart_rich_presence
+                .set_text(&labels.restart_rich_presence);
         }
         if self.quit.text() != labels.quit {
             self.quit.set_text(&labels.quit);

@@ -8,6 +8,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$OutputDir,
 
+    [Parameter(Mandatory = $true)]
+    [string]$RsRpcExe,
+
     [bool]$IncludeVCRuntime = $true
 )
 
@@ -15,6 +18,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path $GStreamerRoot).Path
 $exe = (Resolve-Path $PapoExe).Path
+$rsrpc = (Resolve-Path $RsRpcExe).Path
 
 if (Test-Path $OutputDir) {
     Remove-Item -Recurse -Force $OutputDir
@@ -24,7 +28,10 @@ New-Item -ItemType Directory -Force (Join-Path $OutputDir 'gstreamer-1.0') | Out
 New-Item -ItemType Directory -Force (Join-Path $OutputDir 'gio-modules') | Out-Null
 
 Copy-Item $exe (Join-Path $OutputDir 'papo.exe')
+Copy-Item $rsrpc (Join-Path $OutputDir 'rsrpc.exe')
 Copy-Item (Join-Path $PSScriptRoot '..\..\LICENSE') (Join-Path $OutputDir 'LICENSE')
+Copy-Item (Join-Path $PSScriptRoot '..\rsrpc\LICENSE') (Join-Path $OutputDir 'RSRPC-LICENSE')
+Copy-Item (Join-Path $PSScriptRoot '..\rsrpc\NOTICE') (Join-Path $OutputDir 'RSRPC-NOTICE')
 
 if ($IncludeVCRuntime) {
     # GStreamer and some of its native dependencies are built with MSVC and can
@@ -113,6 +120,9 @@ foreach ($name in @('COPYING', 'COPYING.LIB', 'LICENSE', 'LICENSE.txt')) {
 
 $required = @(
     'papo.exe',
+    'rsrpc.exe',
+    'RSRPC-LICENSE',
+    'RSRPC-NOTICE',
     'gstreamer-1.0',
     'gst-plugin-scanner.exe'
 )

@@ -1056,7 +1056,7 @@ fn presence_segments(
     changed
 }
 
-fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activity, narrow: bool) {
+pub(crate) fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activity, narrow: bool) {
     let (verb, glyph, base) = match activity.kind {
         ActivityKind::Listening => (
             s.activity_listening,
@@ -1089,15 +1089,24 @@ fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activit
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = space::LG;
         let (slot, _) = ui.allocate_exact_size(Vec2::splat(art), Sense::hover());
-        ui.painter()
-            .rect_filled(slot, CornerRadius::same(radius::FIELD), base);
-        ui.painter().text(
-            slot.center(),
-            Align2::CENTER_CENTER,
-            glyph,
-            text::icon(art * 0.45),
-            Color32::WHITE,
-        );
+        match activity.image.as_deref().and_then(|path| activity_art(ui.ctx(), path)) {
+            Some(texture) => {
+                egui::Image::new((texture.id(), slot.size()))
+                    .corner_radius(CornerRadius::same(radius::FIELD))
+                    .paint_at(ui, slot);
+            }
+            None => {
+                ui.painter()
+                    .rect_filled(slot, CornerRadius::same(radius::FIELD), base);
+                ui.painter().text(
+                    slot.center(),
+                    Align2::CENTER_CENTER,
+                    glyph,
+                    text::icon(art * 0.45),
+                    Color32::WHITE,
+                );
+            }
+        }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             let (title, first, second) = if listening {
@@ -1145,6 +1154,32 @@ fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activity: &Activit
             }
         });
     });
+}
+
+/// Arte da atividade guardada em disco. Decodifica uma vez por arquivo e
+/// versão (a data de modificação muda quando a pessoa troca a imagem) e
+/// guarda a textura na memória do egui; uma falha também fica guardada,
+/// para não reler o arquivo a cada quadro.
+pub(crate) fn activity_art(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let id = egui::Id::new(("activity-art", path, modified));
+    if let Some(cached) = ctx.data(|data| data.get_temp::<Option<egui::TextureHandle>>(id)) {
+        return cached;
+    }
+    let texture = image::open(path)
+        .map_err(|error| log::warn!("arte da atividade não abriu ({path}): {error}"))
+        .ok()
+        .map(|decoded| {
+            let rgba = decoded.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            ctx.load_texture(
+                format!("activity-art:{path}"),
+                egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+                egui::TextureOptions::LINEAR,
+            )
+        });
+    ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
+    texture
 }
 
 fn progress_bar(

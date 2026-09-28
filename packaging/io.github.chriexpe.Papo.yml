@@ -54,6 +54,10 @@ finish-args:
   - --talk-name=org.freedesktop.Notifications
   # Restaurar a janela minimizada no Plasma (scripts do KWin).
   - --talk-name=org.kde.KWin
+  # Rich Presence fallback: rsRPC must run on the host so its process scanner
+  # sees host games instead of Flatpak's private /proc. Papo only uses this
+  # to launch the exact helper bundled with the Flatpak.
+  - --talk-name=org.freedesktop.Flatpak
   # Ler o tema, a cor de destaque e a fonte do sistema.
   - --filesystem=xdg-config/kdeglobals:ro
   - --filesystem=xdg-config/gtk-3.0:ro
@@ -68,6 +72,23 @@ build-options:
     CARGO_HOME: /run/build/papo/cargo
 
 modules:
+  # Rich Presence fallback, built from the revision in
+  # packaging/rsrpc/REVISION (scripts/flatpak-sources.sh checks they match).
+  - name: rsrpc
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/rsrpc/cargo
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked --verbose
+      - install -Dm755 target/release/rsrpc /app/libexec/papo/rsrpc
+    sources:
+      - type: git
+        url: https://github.com/pog5/rsrpc.git
+        commit: 572b609d400d44244dc90c05c06410a47d0d039c
+      - rsrpc-cargo-sources.json
+
   - name: papo
     buildsystem: simple
     build-commands:
@@ -81,6 +102,8 @@ modules:
       - for icon in assets/icons/*.png; do size="${icon##*/}"; size="${size%.png}";
         install -Dm644 "$icon"
         "/app/share/icons/hicolor/${size}x${size}/apps/io.github.chriexpe.Papo.png"; done
+      - install -Dm644 packaging/rsrpc/LICENSE /app/share/doc/papo/RSRPC-LICENSE
+      - install -Dm644 packaging/rsrpc/NOTICE /app/share/doc/papo/RSRPC-NOTICE
       - mkdir -p /app/lib/ffmpeg
     sources:
       - type: dir

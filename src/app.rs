@@ -331,6 +331,10 @@ pub struct Settings {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub downloads: DownloadMode,
+    /// Rich Presence deste dispositivo. Não é sincronizado com a conta:
+    /// processo local, bridge arRPC e override são propriedades da máquina.
+    #[serde(default)]
+    pub rich_presence: crate::rich_presence::Settings,
     /// Marcas de leitura de quando havia um servidor só; migradas na
     /// primeira abertura e depois vazias.
     #[serde(default)]
@@ -389,6 +393,7 @@ impl Default for Settings {
             webembed_float_pos: None,
             trusted_link_hosts: std::collections::BTreeSet::new(),
             downloads: DownloadMode::default(),
+            rich_presence: crate::rich_presence::Settings::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
             pending_user_settings: std::collections::HashMap::new(),
@@ -655,6 +660,7 @@ pub struct PapoApp {
     active: usize,
     ui: UiState,
     settings: Settings,
+    rich_presence: crate::rich_presence::Manager,
     system: SystemTheme,
     tokens: Tokens,
     roles: crate::ui::roles::RolesState,
@@ -904,6 +910,9 @@ impl PapoApp {
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
+        let rich_presence =
+            crate::rich_presence::Manager::new(settings.rich_presence.clone(), cc.egui_ctx.clone());
+
         Self {
             workspaces,
             cache,
@@ -932,6 +941,7 @@ impl PapoApp {
             focused: true,
             quitting: false,
             settings,
+            rich_presence,
             system,
             tokens,
             roles: Default::default(),
@@ -947,6 +957,7 @@ impl PapoApp {
                         "app" => {
                             sheet.open = Some(crate::ui::settings::Surface::App);
                             sheet.app_pane = match pane {
+                                "atividade" | "activity" => crate::ui::settings::AppPane::Activity,
                                 "aparencia" => crate::ui::settings::AppPane::Appearance,
                                 "avisos" => crate::ui::settings::AppPane::Alerts,
                                 "arquivos" => crate::ui::settings::AppPane::Files,
@@ -1105,6 +1116,7 @@ impl PapoApp {
                     }
                 }
                 TrayCommand::Show => self.show_window(ctx),
+                TrayCommand::RestartRichPresence => self.rich_presence.restart(),
                 TrayCommand::Quit => self.quit(ctx),
             }
         }
@@ -2732,6 +2744,9 @@ impl PapoApp {
                             },
                         )));
                     }
+                    // A arte da atividade manual fica neste aparelho, ao lado
+                    // dos outros ajustes locais do Rich Presence.
+                    ImagePick::ActivityArt => self.store_activity_art(&blob, &format),
                     // O nome veio do editor: a figurinha sobe direto.
                     ImagePick::Sticker => {
                         if let Some(name) = name.filter(|name| !name.is_empty()) {
@@ -3072,6 +3087,7 @@ impl PapoApp {
         };
 
         let mut ask_download = self.settings.downloads == DownloadMode::Ask;
+        let before_rich_presence = self.settings.rich_presence.clone();
         // O início automático é estado do sistema, não um ajuste guardado: o
         // que vale é o arquivo em disco, então ele é lido e escrito à parte.
         let autostart_before = crate::platform::autostart::is_enabled();
@@ -3137,6 +3153,8 @@ impl PapoApp {
                 self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
                 webembed_scope: &mut self.settings.webembed_scope,
+                rich_presence: &mut self.settings.rich_presence,
+                rich_presence_snapshot: self.rich_presence.snapshot(),
                 ask_download: &mut ask_download,
                 download_dir: match &self.settings.downloads {
                     DownloadMode::Folder(dir) => Some(dir.display().to_string()),
@@ -3188,6 +3206,11 @@ impl PapoApp {
             self.queue_portable_settings();
         }
 
+        if before_rich_presence != self.settings.rich_presence {
+            self.rich_presence
+                .configure(self.settings.rich_presence.clone());
+        }
+
         if autostart != autostart_before
             && let Err(error) = crate::platform::autostart::set(autostart)
         {
@@ -3197,6 +3220,17 @@ impl PapoApp {
         for action in actions {
             match action {
                 SettingsAction::Menu(command) => self.ui.pending.push(command),
+                SettingsAction::RestartRichPresence => self.rich_presence.restart(),
+                SettingsAction::PickActivityImage => {
+                    self.dialogs.pick_image(ctx.clone(), ImagePick::ActivityArt);
+                }
+                SettingsAction::ClearActivityImage => {
+                    if let Some(path) = self.settings.rich_presence.override_activity.image.take() {
+                        let _ = std::fs::remove_file(path);
+                    }
+                    self.rich_presence
+                        .configure(self.settings.rich_presence.clone());
+                }
                 SettingsAction::PickDownloadFolder => {
                     let start = match &self.settings.downloads {
                         DownloadMode::Folder(dir) => dir.clone(),
@@ -3220,6 +3254,53 @@ impl PapoApp {
  }
 
 impl PapoApp {
+    /// Grava a arte recortada da atividade manual e passa a usá-la. Cada
+    /// escolha ganha um nome novo: o cartão guarda a textura pelo caminho, e
+    /// trocar o arquivo por baixo do mesmo nome mostraria a imagem antiga.
+    fn store_activity_art(&mut self, blob: &str, format: &str) {
+        use base64::Engine as _;
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(blob) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                log::warn!("arte da atividade inválida: {error}");
+                return;
+            }
+        };
+        let Some(dir) = crate::platform::dirs::data_dir().map(|dir| dir.join("rich-presence")) else {
+            return;
+        };
+        let stamp = chrono::Utc::now().timestamp_millis();
+        let path = dir.join(format!("activity-{stamp}.{}", format.to_ascii_lowercase()));
+        if let Err(error) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, bytes)) {
+            log::warn!("não deu para gravar a arte da atividade: {error}");
+            return;
+        }
+        let manual = &mut self.settings.rich_presence.override_activity;
+        if let Some(old) = manual.image.replace(path) {
+            let _ = std::fs::remove_file(old);
+        }
+        self.rich_presence
+            .configure(self.settings.rich_presence.clone());
+    }
+
+    fn project_local_activity(&mut self) {
+        let activity = self.rich_presence.snapshot().activity.clone();
+        for workspace in &mut self.workspaces {
+            let me = workspace.runtime.store.me.clone();
+            if me.is_empty() {
+                continue;
+            }
+            match activity.clone() {
+                Some(activity) => {
+                    workspace.runtime.store.activities.insert(me, activity);
+                }
+                None => {
+                    workspace.runtime.store.activities.remove(&me);
+                }
+            }
+        }
+    }
+
     fn ensure_active_drafts_loaded(&mut self) {
         let index = self.active;
         let owner = self.workspaces[index]
@@ -3546,6 +3627,11 @@ impl eframe::App for PapoApp {
             self.pump_memory_pressure(&ctx);
         }
         self.attach_window(frame);
+
+        self.rich_presence.pump();
+        // Project every frame, not only on activity changes: a workspace may
+        // finish authentication after the current activity was already found.
+        self.project_local_activity();
 
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.pump_updater(&ctx);
@@ -4071,6 +4157,7 @@ fn tray_labels(settings: &Settings) -> TrayLabels {
     let s = settings.lang.strings();
     TrayLabels {
         open: s.tray_open.to_owned(),
+        restart_rich_presence: s.rich_presence_restart.to_owned(),
         quit: s.tray_quit.to_owned(),
         tooltip: s.tray_tooltip.to_owned(),
     }

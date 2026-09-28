@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Monta o .deb a partir de um binário já compilado.
 #
-#   packaging/deb/build.sh <versão> <arquitetura-debian> <binário>
+#   packaging/deb/build.sh <versão> <arquitetura-debian> <binário> <rsrpc>
 #
 # Feito com dpkg-deb direto para não depender do cargo-deb: são quatro
 # arquivos e um control, e assim o workflow instala uma ferramenta a menos.
@@ -9,15 +9,19 @@ set -euo pipefail
 version="${1:?versão}"
 arch="${2:?arquitetura (amd64 ou arm64)}"
 binary="${3:?caminho do binário}"
+rsrpc="${4:?caminho do rsRPC}"
 
 cd "$(dirname "$0")/../.."
 app=io.github.chriexpe.Papo
 root="$(mktemp -d)/papo_${version}_${arch}"
 
 install -Dm755 "$binary" "$root/usr/bin/papo"
+install -Dm755 "$rsrpc" "$root/usr/libexec/papo/rsrpc"
 install -Dm644 "packaging/$app.desktop" "$root/usr/share/applications/$app.desktop"
 install -Dm644 "packaging/$app.metainfo.xml" "$root/usr/share/metainfo/$app.metainfo.xml"
 install -Dm644 LICENSE "$root/usr/share/doc/papo/copyright"
+install -Dm644 packaging/rsrpc/LICENSE "$root/usr/share/doc/papo/RSRPC-LICENSE"
+install -Dm644 packaging/rsrpc/NOTICE "$root/usr/share/doc/papo/RSRPC-NOTICE"
 for icon in assets/icons/*.png; do
     size="$(basename "$icon" .png)"
     install -Dm644 "$icon" "$root/usr/share/icons/hicolor/${size}x${size}/apps/$app.png"

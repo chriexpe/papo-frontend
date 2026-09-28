@@ -11,6 +11,7 @@ pub mod i18n;
 pub mod media;
 pub mod platform;
 pub mod render;
+pub mod rich_presence;
 pub mod state;
 pub mod storage;
 pub mod ui;

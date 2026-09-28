@@ -131,6 +131,20 @@ jobs:
         run: choco install innosetup -y --no-progress
       - name: Check native Windows build
         run: cargo check --locked --workspace
+      - uses: actions/cache@v4
+        with:
+          path: rsrpc-build
+          key: rsrpc-${{ runner.os }}-x86_64-${{ hashFiles('packaging/rsrpc/REVISION') }}
+
+      - name: Build rsRPC helper
+        shell: pwsh
+        run: |
+          if (-not (Test-Path rsrpc-build/bin/rsrpc.exe)) {
+            $revision = (Get-Content packaging/rsrpc/REVISION -Raw).Trim()
+            cargo install --locked --git https://github.com/pog5/rsrpc.git --rev $revision --root rsrpc-build rsrpc
+            if ($LASTEXITCODE -ne 0) { throw 'rsRPC build failed' }
+          }
+          Copy-Item rsrpc-build/bin/rsrpc.exe rsrpc.exe
       - name: Build and smoke-test self-contained bundle
         shell: pwsh
         run: |
@@ -138,6 +152,7 @@ jobs:
           ./packaging/windows/bundle.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
             -PapoExe target/debug/papo.exe `
+            -RsRpcExe rsrpc.exe `
             -OutputDir papo-windows-smoke
 
           $gstBin = Join-Path $env:GSTREAMER_ROOT 'bin'
@@ -153,6 +168,9 @@ jobs:
           if ($check -notmatch 'GStreamer') {
             throw 'Bundled Papo did not initialize GStreamer'
           }
+          if (-not (Test-Path '.\papo-windows-smoke\rsrpc.exe')) {
+            throw 'Bundled Windows artifact is missing rsrpc.exe'
+          }
 
       - name: Compile Windows installer
         shell: pwsh
@@ -160,6 +178,7 @@ jobs:
           ./packaging/windows/build-installer.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
             -PapoExe target/debug/papo.exe `
+            -RsRpcExe rsrpc.exe `
             -Version ci `
             -OutputDir installer-out
 

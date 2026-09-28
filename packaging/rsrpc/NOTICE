@@ -1,0 +1,13 @@
+rsRPC
+=====
+
+Bundled by Papo as the native Rich Presence fallback provider.
+
+Upstream source: https://github.com/pog5/rsrpc
+Pinned upstream revision: 572b609d400d44244dc90c05c06410a47d0d039c
+License: GNU General Public License version 3
+
+Papo's release pipelines build the helper from that exact revision without
+modifications (scripts/build-rsrpc.sh, and the rsrpc module of the Flatpak
+manifest). The corresponding source is the upstream repository at the
+revision above. See LICENSE in this directory for the license text.

@@ -36,7 +36,7 @@ egui = "0.36"
 egui_extras = { version = "0.36", features = ["image", "svg"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
@@ -60,6 +60,7 @@ egui-phosphor = { version = "0.14", features = ["regular"] }
 fontdb = { version = "0.23", default-features = false, features = ["fs"] }
 base64 = "0.22"
 swash = "0.2"
+ring = "0.17"
 
 # ---------------------------------------------------------------------------
 # Área de trabalho
@@ -120,7 +121,6 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
-ring = "0.17"
 semver = "1"
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,19 @@ jobs:
 
       - run: cargo build --release --locked
 
+      # rsRPC is built from the revision pinned in packaging/rsrpc/REVISION,
+      # so every artifact carries the same, source-matching helper.
+      - uses: actions/cache@v4
+        with:
+          path: rsrpc-build
+          key: rsrpc-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('packaging/rsrpc/REVISION') }}
+
+      - name: Build rsRPC helper
+        run: |
+          set -euo pipefail
+          [ -x rsrpc-build/bin/rsrpc ] || scripts/build-rsrpc.sh rsrpc-build
+          install -m755 rsrpc-build/bin/rsrpc rsrpc-helper
+
       - name: Montar o tarball
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -60,6 +73,7 @@ jobs:
           app=io.github.chriexpe.Papo
 
           install -Dm755 target/release/papo "$name/bin/papo"
+          install -Dm755 rsrpc-helper "$name/libexec/papo/rsrpc"
           install -Dm644 "packaging/$app.desktop" "$name/share/applications/$app.desktop"
           install -Dm644 "packaging/$app.metainfo.xml" "$name/share/metainfo/$app.metainfo.xml"
           for icon in assets/icons/*.png; do
@@ -68,6 +82,8 @@ jobs:
               "$name/share/icons/hicolor/${size}x${size}/apps/$app.png"
           done
           install -Dm644 LICENSE "$name/LICENSE"
+          install -Dm644 packaging/rsrpc/LICENSE "$name/share/doc/papo/RSRPC-LICENSE"
+          install -Dm644 packaging/rsrpc/NOTICE "$name/share/doc/papo/RSRPC-NOTICE"
           install -Dm755 packaging/install.sh "$name/install.sh"
           install -Dm755 scripts/deps.sh "$name/deps.sh"
 
@@ -83,7 +99,7 @@ jobs:
             x86_64) debarch=amd64 ;;
             aarch64) debarch=arm64 ;;
           esac
-          packaging/deb/build.sh "$version" "$debarch" target/release/papo
+          packaging/deb/build.sh "$version" "$debarch" target/release/papo rsrpc-helper
           # O lintian pega erro de empacotamento que o dpkg-deb deixa passar.
           sudo apt-get install -y --no-install-recommends lintian
           lintian --fail-on error,warning --suppress-tags \
@@ -134,6 +150,21 @@ jobs:
       - name: Build
         run: cargo build --release --locked
 
+      - uses: actions/cache@v4
+        with:
+          path: rsrpc-build
+          key: rsrpc-${{ runner.os }}-x86_64-${{ hashFiles('packaging/rsrpc/REVISION') }}
+
+      - name: Build rsRPC helper
+        shell: pwsh
+        run: |
+          if (-not (Test-Path rsrpc-build/bin/rsrpc.exe)) {
+            $revision = (Get-Content packaging/rsrpc/REVISION -Raw).Trim()
+            cargo install --locked --git https://github.com/pog5/rsrpc.git --rev $revision --root rsrpc-build rsrpc
+            if ($LASTEXITCODE -ne 0) { throw 'rsRPC build failed' }
+          }
+          Copy-Item rsrpc-build/bin/rsrpc.exe rsrpc.exe
+
       - name: Assemble self-contained bundle
         shell: pwsh
         run: |
@@ -146,6 +177,7 @@ jobs:
           ./packaging/windows/bundle.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
             -PapoExe target/release/papo.exe `
+            -RsRpcExe rsrpc.exe `
             -OutputDir $name
 
           # Prove the copied runtime works without relying on GStreamer's bin
@@ -181,6 +213,7 @@ jobs:
           ./packaging/windows/build-installer.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
             -PapoExe target/release/papo.exe `
+            -RsRpcExe rsrpc.exe `
             -Version $version `
             -OutputDir installer-out
           $setup = Get-ChildItem installer-out -Filter 'Papo-*-Setup.exe' -File |

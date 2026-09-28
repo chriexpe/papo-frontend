@@ -21,8 +21,10 @@ fi
 
 bin="${XDG_BIN_HOME:-$HOME/.local/bin}"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
+prefix="$(dirname "$bin")"
 
 install -Dm755 "$here/bin/papo" "$bin/papo"
+install -Dm755 "$here/libexec/papo/rsrpc" "$prefix/libexec/papo/rsrpc"
 cp -r "$here/share/." "$data/"
 
 command -v update-desktop-database >/dev/null 2>&1 &&
