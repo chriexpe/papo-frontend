@@ -86,6 +86,9 @@ gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["wayland", "x11"] }
+# O Mutter não desenha barra de título para clientes Wayland: sem as
+# decorações do próprio winit, a janela ficaria sem barra no GNOME.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita"] }
 ksni = { version = "0.3", default-features = false, features = ["tokio", "blocking"] }
 wayland-protocols = { version = "0.32", features = ["client"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
