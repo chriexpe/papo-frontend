@@ -1849,6 +1849,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Activity, s.rich_presence_builtin),
         (AppPane::Activity, s.rich_presence_game_detection),
         (AppPane::Activity, s.rich_presence_auto_reconnect),
+        (AppPane::Activity, s.rich_presence_reconnect_interval),
         (AppPane::Activity, s.rich_presence_debug),
         (AppPane::Activity, s.rich_presence_external),
         (AppPane::Activity, s.rich_presence_override),
@@ -3091,6 +3092,14 @@ fn app_pane(
                         switch(ui, t, &mut data.rich_presence.auto_reconnect);
                     },
                 );
+                if data.rich_presence.auto_reconnect {
+                    rows.field(
+                        s.rich_presence_reconnect_interval,
+                        &mut data.rich_presence.reconnect_interval,
+                        3,
+                        false,
+                    );
+                }
                 rows.row(
                     s.rich_presence_debug,
                     Some(s.rich_presence_debug_hint),
