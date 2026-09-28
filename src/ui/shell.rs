@@ -3920,14 +3920,9 @@ fn search_panel(
         .collect();
 
     let result_height = ui.available_height().max(1.0);
-    let result_width = ui.available_width().max(1.0);
-    let panel_clip = ui.clip_rect();
     egui::ScrollArea::vertical()
         .id_salt("resultados-da-busca")
-        .max_width(result_width)
         .max_height(result_height)
-        .min_scrolled_height(result_height)
-        .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (
@@ -3955,7 +3950,6 @@ fn search_panel(
                         channel_name: Some(&channel_name),
                         body: &body,
                         attachments: &attachments,
-                        panel_clip,
                     },
                 ) {
                     go_to(store, state, ui, &channel_id, &message_id);
@@ -4032,14 +4026,9 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         return;
     }
     let pinned_height = ui.available_height().max(1.0);
-    let pinned_width = ui.available_width().max(1.0);
-    let panel_clip = ui.clip_rect();
     egui::ScrollArea::vertical()
         .id_salt("lista-de-fixadas")
-        .max_width(pinned_width)
         .max_height(pinned_height)
-        .min_scrolled_height(pinned_height)
-        .scroll_source(egui::containers::scroll_area::ScrollSource::ALL)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (message_id, author_id, author_name, at, body, attachments) in pinned {
@@ -4057,7 +4046,6 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         channel_name: None,
                         body: &body,
                         attachments: &attachments,
-                        panel_clip,
                     },
                 ) {
                     let channel = channel_id.clone();
@@ -4075,7 +4063,6 @@ struct ResultPreview<'a> {
     channel_name: Option<&'a str>,
     body: &'a str,
     attachments: &'a [crate::api::models::Attachment],
-    panel_clip: Rect,
 }
 
 /// Miniatura de uma mensagem: avatar, autor, idade e o texto. O realce acompanha
@@ -4096,7 +4083,6 @@ fn result_row(
         channel_name,
         body,
         attachments,
-        panel_clip,
     } = preview;
     let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
@@ -4195,7 +4181,6 @@ fn result_row(
     if response.hovered() {
         let highlight = row
             .intersect(ui.clip_rect())
-            .intersect(panel_clip)
             .shrink2(Vec2::new(space::XXS, 0.0));
         if highlight.is_positive() {
             ui.painter().set(
