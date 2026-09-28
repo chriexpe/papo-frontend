@@ -77,8 +77,13 @@ modules:
   - name: rsrpc
     buildsystem: simple
     build-options:
+      # Stripped by cargo like Papo's own binary (`strip = true`), so
+      # flatpak-builder has no debuginfo to split and never needs eu-strip,
+      # which the CI runners do not have.
+      no-debuginfo: true
       env:
         CARGO_HOME: /run/build/rsrpc/cargo
+        CARGO_PROFILE_RELEASE_STRIP: 'true'
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
       - cargo --offline build --release --locked --verbose
