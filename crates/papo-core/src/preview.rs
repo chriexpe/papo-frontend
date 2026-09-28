@@ -761,7 +761,7 @@ async fn resolve_url(
     // Preferimos discovery publicado pela própria página. Quando ela não
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
     // em vez de codificar YouTube/TikTok/etc. no cliente.
-    let declared_oembed = oembed_endpoint(&html, &final_url).or(header_oembed);
+    let declared_oembed = oembed_endpoint(html, &final_url).or(header_oembed);
     let oembed = if let Some(endpoint) = declared_oembed {
         resolve_oembed(client, oembed_registry, source_url, endpoint, depth)
             .await
@@ -790,7 +790,7 @@ async fn resolve_url(
     }
 
     if preview.media_url.is_none()
-        && let Some(endpoint) = activitypub_endpoint(&html, &final_url)
+        && let Some(endpoint) = activitypub_endpoint(html, &final_url)
         && let Ok(activity) = resolve_activitypub(client, source_url, endpoint).await
     {
         persistent &= activity.persistent;
