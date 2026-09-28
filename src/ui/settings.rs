@@ -1944,9 +1944,17 @@ fn spotlight(ui: &egui::Ui, rect: Rect, label: &str) {
 /// conteúdo é desenhado por `draw` dentro da área útil.
 fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui::Ui, Rect)) {
     ui.add_space(space::MD);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height + space::LG * 2.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), height + space::LG * 2.0),
+        Sense::hover(),
+    );
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
     draw(ui, rect.shrink(space::LG));
+    // Some previews draw through a bounded child Ui. Keep the parent cursor
+    // explicitly below the reserved card so the following settings section
+    // can never start on top of the preview.
+    ui.advance_cursor_after_rect(rect);
 }
 
 /// Texto de apoio à direita da prévia, quando sobra espaço.
@@ -2937,7 +2945,11 @@ fn app_pane(
             let preview = manual
                 .as_ref()
                 .or(data.rich_presence_snapshot.activity.as_ref());
-            hero(ui, t, 112.0, |ui, area| {
+            // The activity card is taller than the empty state (and can grow
+            // a timer/progress row), so reserve enough room for whichever
+            // preview is actually visible.
+            let preview_height = if preview.is_some() { 132.0 } else { 58.0 };
+            hero(ui, t, preview_height, |ui, area| {
                 ui.scope_builder(
                     UiBuilder::new()
                         .max_rect(area)
@@ -3025,7 +3037,10 @@ fn app_pane(
                 );
                 if data.rich_presence.override_activity.enabled {
                     rows.row(s.rich_presence_override_type, None, |ui, t| {
-                        segmented(
+                        // Three fixed activity kinds fit comfortably in the
+                        // control column; keep them as a proper segmented
+                        // selector instead of dropping into the generic popup.
+                        tabs(
                             ui,
                             t,
                             &mut data.rich_presence.override_activity.kind,
