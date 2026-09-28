@@ -1035,8 +1035,10 @@ mod tests {
 
     #[test]
     fn reconnect_interval_is_bounded() {
-        let mut settings = Settings::default();
-        settings.reconnect_interval = "0".to_owned();
+        let mut settings = Settings {
+            reconnect_interval: "0".to_owned(),
+            ..Settings::default()
+        };
         assert_eq!(settings.reconnect_delay(), std::time::Duration::from_secs(1));
         settings.reconnect_interval = "9999".to_owned();
         assert_eq!(settings.reconnect_delay(), std::time::Duration::from_secs(300));
