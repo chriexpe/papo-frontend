@@ -2473,7 +2473,7 @@ fn conversation(
         let actions_rect = actions_pill(ui, store, state, t, s, full);
         composer(ui, store, state, t, s, full, composer_height);
         state.webembed_occlusions =
-            webembed_chrome_occlusions(ui, store, state, full, composer_height, channel_rect, actions_rect);
+            webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
         call_layers(
             ui,
             store,
@@ -6621,6 +6621,7 @@ fn webembed_chrome_occlusions(
     ui: &egui::Ui,
     store: &Store,
     state: &UiState,
+    s: &Strings,
     area: Rect,
     composer_height: f32,
     channel_rect: Option<Rect>,
@@ -6664,8 +6665,8 @@ fn webembed_chrome_occlusions(
     if !names.is_empty() {
         let verb = match store.typing_phrase() {
             Some(phrase) => phrase,
-            None if names.len() == 1 => "typing",
-            None => "typing",
+            None if names.len() == 1 => s.typing_one,
+            None => s.typing_many,
         };
         let label = ui.painter().layout_no_wrap(
             format!("{} {verb}", names.join(", ")),
