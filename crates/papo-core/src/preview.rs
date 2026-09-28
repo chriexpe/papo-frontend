@@ -686,22 +686,21 @@ async fn resolve_url(
     }
     let source = Url::parse(source_url)
         .map_err(|error| ResolveError::negative(format!("URL inválida: {error}")))?;
-    let response = get_following_safe_redirects(client, source.clone()).await?;
+    let response = get_following_safe_preview_response(client, source.clone()).await?;
     let final_url = response.url().clone();
-    let mut persistent = response_allows_persistence(response.headers());
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    let status = response.status();
+    let source_soft_failure = is_preview_soft_client_error(status);
+    let mut persistent =
+        response_allows_persistence(response.headers()) && !source_soft_failure;
+    let content_type = response_content_type(response.headers());
     let header_oembed = oembed_header_endpoint(response.headers(), &final_url);
+    let source_failure = source_soft_failure
+        .then(|| preview_status_error(status, response.headers()));
+    if source_soft_failure {
+        log_preview_soft_failure_headers(source_url, status, response.headers());
+    }
 
-    if is_video_content_type(&content_type) {
+    if !source_soft_failure && is_video_content_type(&content_type) {
         return Ok(ResolvedOutcome {
             preview: ResolvedPreview {
                 source_url: source_url.to_owned(),
@@ -716,7 +715,7 @@ async fn resolve_url(
             persistent,
         });
     }
-    if content_type.starts_with("image/") {
+    if !source_soft_failure && content_type.starts_with("image/") {
         let media = final_url.to_string();
         return Ok(ResolvedOutcome {
             preview: ResolvedPreview {
@@ -733,17 +732,31 @@ async fn resolve_url(
         });
     }
 
-    if !content_type.is_empty()
-        && !content_type.starts_with("text/html")
-        && !content_type.starts_with("application/xhtml")
-    {
+    let html_like = content_type.is_empty()
+        || content_type.starts_with("text/html")
+        || content_type.starts_with("application/xhtml");
+
+    if !source_soft_failure && !html_like {
         return Err(ResolveError::negative(format!(
             "conteúdo não é HTML nem mídia visual: {content_type}"
         )));
     }
 
-    let html = read_limited(response, HTML_MAX, "página").await?;
-    let mut preview = parse_html_preview(source_url, &final_url, &html).await?;
+    // For 401/403/404, consume a bounded body for safe diagnostics and allow
+    // standard metadata discovery when the body is HTML. We never dump the
+    // response body or arbitrary headers to logs.
+    let body = read_limited(response, HTML_MAX, "página").await?;
+    if source_soft_failure {
+        log_preview_soft_failure(
+            source_url,
+            status,
+            &content_type,
+            &body,
+            source_failure.as_ref().and_then(|error| error.retry_after),
+        );
+    }
+    let html = if html_like { body.as_str() } else { "" };
+    let mut preview = parse_html_preview(source_url, &final_url, html).await?;
 
     // Preferimos discovery publicado pela própria página. Quando ela não
     // publica, usamos a registry oficial do oEmbed como fallback de dados,
@@ -755,8 +768,9 @@ async fn resolve_url(
             .ok()
     } else {
         // A registry oficial é a tabela de capacidades, não uma allowlist
-        // codificada pelo Papo. Consultá-la mesmo quando já existe OG permite
-        // promover páginas como Instagram de "card rico" para "embed rico".
+        // codificada pelo Papo. Ela também é independente da página primária:
+        // um site que recusou nosso crawler com 401/403/404 ainda pode ter um
+        // endpoint oEmbed público e perfeitamente utilizável.
         match registry_oembed_endpoint(client, oembed_registry, source_url).await {
             Some(endpoint) => resolve_oembed(
                 client,
@@ -809,6 +823,9 @@ async fn resolve_url(
         && preview.description.is_none()
         && preview.image_url.is_none()
     {
+        if let Some(error) = source_failure {
+            return Err(error);
+        }
         return Err(ResolveError::negative("página sem metadados ricos"));
     }
 
@@ -1273,7 +1290,22 @@ fn merge_preview(base: &mut ResolvedPreview, extra: ResolvedPreview) {
 
 async fn get_following_safe_redirects(
     client: &reqwest::Client,
+    url: Url,
+) -> Result<reqwest::Response, ResolveError> {
+    get_following_safe_redirects_with_policy(client, url, false).await
+}
+
+async fn get_following_safe_preview_response(
+    client: &reqwest::Client,
+    url: Url,
+) -> Result<reqwest::Response, ResolveError> {
+    get_following_safe_redirects_with_policy(client, url, true).await
+}
+
+async fn get_following_safe_redirects_with_policy(
+    client: &reqwest::Client,
     mut url: Url,
+    allow_preview_client_errors: bool,
 ) -> Result<reqwest::Response, ResolveError> {
     for hop in 0..=MAX_REDIRECTS {
         validate_destination(&url).await?;
@@ -1284,22 +1316,19 @@ async fn get_following_safe_redirects(
             .map_err(classify_reqwest)?;
 
         if !response.status().is_redirection() {
-            if response.status().as_u16() == 429 {
+            let status = response.status();
+            if status.as_u16() == 429 {
                 let mut error = ResolveError::transient("HTTP 429");
                 error.retry_after = retry_after(response.headers().get(RETRY_AFTER));
                 return Err(error);
             }
-            if response.status().is_server_error() {
-                return Err(ResolveError::transient(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
+            if status.is_server_error() {
+                return Err(ResolveError::transient(format!("HTTP {status}")));
             }
-            if !response.status().is_success() {
-                return Err(ResolveError::negative(format!(
-                    "HTTP {}",
-                    response.status()
-                )));
+            if !status.is_success()
+                && !(allow_preview_client_errors && is_preview_soft_client_error(status))
+            {
+                return Err(ResolveError::negative(format!("HTTP {status}")));
             }
             return Ok(response);
         }
@@ -1317,6 +1346,155 @@ async fn get_following_safe_redirects(
             .map_err(|error| ResolveError::negative(format!("redirect inválido: {error}")))?;
     }
     unreachable!()
+}
+
+fn is_preview_soft_client_error(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 401 | 403 | 404)
+}
+
+fn preview_status_error(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> ResolveError {
+    let mut error = if matches!(status.as_u16(), 401 | 403) {
+        // Authentication/anti-bot decisions can be environmental and often
+        // recover. Do not poison the negative cache for a full day.
+        ResolveError::transient(format!("HTTP {status}"))
+    } else {
+        ResolveError::negative(format!("HTTP {status}"))
+    };
+    error.retry_after = retry_after(headers.get(RETRY_AFTER));
+    error
+}
+
+fn response_content_type(headers: &reqwest::header::HeaderMap) -> String {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+fn preview_body_class(content_type: &str, body: &str) -> &'static str {
+    let prefix = body
+        .chars()
+        .take(4096)
+        .collect::<String>()
+        .to_ascii_lowercase();
+
+    if prefix.contains("cf-chl-")
+        || prefix.contains("cf-mitigated")
+        || prefix.contains("just a moment")
+    {
+        "challenge-html"
+    } else if content_type.contains("json") {
+        "json"
+    } else if content_type.starts_with("text/html")
+        || content_type.starts_with("application/xhtml")
+        || prefix.contains("<html")
+        || prefix.contains("<!doctype html")
+    {
+        "html"
+    } else if content_type.starts_with("text/") {
+        "text"
+    } else if body.is_empty() {
+        "empty"
+    } else {
+        "other"
+    }
+}
+
+fn safe_header_class(
+    headers: &reqwest::header::HeaderMap,
+    name: &'static str,
+) -> &'static str {
+    let Some(value) = headers.get(name).and_then(|value| value.to_str().ok()) else {
+        return "none";
+    };
+    let value = value.to_ascii_lowercase();
+    if value.contains("cloudflare") {
+        "cloudflare"
+    } else if value.contains("nginx") {
+        "nginx"
+    } else if value.contains("envoy") {
+        "envoy"
+    } else {
+        "other"
+    }
+}
+
+fn cache_control_class(headers: &reqwest::header::HeaderMap) -> &'static str {
+    let mut saw_header = false;
+    let mut no_store = false;
+    let mut private = false;
+    for value in headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+    {
+        saw_header = true;
+        for directive in value.split(',').map(str::trim) {
+            no_store |= directive.eq_ignore_ascii_case("no-store");
+            private |= directive.eq_ignore_ascii_case("private");
+        }
+    }
+    if no_store {
+        "no-store"
+    } else if private {
+        "private"
+    } else if saw_header {
+        "cacheable"
+    } else {
+        "none"
+    }
+}
+
+fn log_preview_soft_failure_headers(
+    source_url: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) {
+    let cf_mitigated = headers
+        .get("cf-mitigated")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            if value.eq_ignore_ascii_case("challenge") {
+                "challenge"
+            } else {
+                "other"
+            }
+        })
+        .unwrap_or("none");
+    log::debug!(
+        "preview {}: source status={} cache_control={} server={} cf_mitigated={}",
+        safe_key(source_url),
+        status.as_u16(),
+        cache_control_class(headers),
+        safe_header_class(headers, "server"),
+        cf_mitigated,
+    );
+}
+
+fn log_preview_soft_failure(
+    source_url: &str,
+    status: reqwest::StatusCode,
+    content_type: &str,
+    body: &str,
+    retry_after_ms: Option<i64>,
+) {
+    log::debug!(
+        "preview {}: source status={} content_type={} body_class={} body_bytes={} retry_after={}",
+        safe_key(source_url),
+        status.as_u16(),
+        if content_type.is_empty() { "none" } else { content_type },
+        preview_body_class(content_type, body),
+        body.len().min(HTML_MAX),
+        if retry_after_ms.is_some() { "present" } else { "none" },
+    );
 }
 
 async fn validate_destination(url: &Url) -> Result<(), ResolveError> {
@@ -2250,6 +2428,61 @@ mod tests {
             Some("https://proxy.example/offload/abc/1")
         );
         assert!(preview.embed_url.is_none());
+    }
+
+
+    #[test]
+    fn primary_403_is_retryable_but_404_is_negative() {
+        let headers = reqwest::header::HeaderMap::new();
+        let forbidden = preview_status_error(reqwest::StatusCode::FORBIDDEN, &headers);
+        assert_eq!(forbidden.class, FailureClass::Transient);
+
+        let unauthorized = preview_status_error(reqwest::StatusCode::UNAUTHORIZED, &headers);
+        assert_eq!(unauthorized.class, FailureClass::Transient);
+
+        let missing = preview_status_error(reqwest::StatusCode::NOT_FOUND, &headers);
+        assert_eq!(missing.class, FailureClass::Negative);
+    }
+
+    #[test]
+    fn primary_soft_failures_are_limited_to_401_403_404() {
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::FORBIDDEN));
+        assert!(is_preview_soft_client_error(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_preview_soft_client_error(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(!is_preview_soft_client_error(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn error_body_diagnostics_are_bounded_classifications_only() {
+        assert_eq!(
+            preview_body_class(
+                "text/html",
+                "<!doctype html><html><title>Just a moment...</title><div class=\"cf-chl-test\"></div>"
+            ),
+            "challenge-html"
+        );
+        assert_eq!(
+            preview_body_class("application/problem+json", r#"{"error":"forbidden"}"#),
+            "json"
+        );
+        assert_eq!(preview_body_class("text/plain", "Forbidden"), "text");
+        assert_eq!(preview_body_class("", ""), "empty");
+    }
+
+    #[test]
+    fn cache_control_diagnostics_do_not_log_raw_header_values() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("private, no-store, token=secret"),
+        );
+        assert_eq!(cache_control_class(&headers), "no-store");
+        headers.insert(
+            reqwest::header::SERVER,
+            reqwest::header::HeaderValue::from_static("cloudflare"),
+        );
+        assert_eq!(safe_header_class(&headers, "server"), "cloudflare");
     }
 
 }
