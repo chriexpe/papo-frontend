@@ -212,7 +212,10 @@ pub fn dropdown<'a>(row: &Response, surface: Rect, value: Rect, compact: bool) -
 /// ficarem alinhados com ou sem ela. Devolve `true` no clique.
 pub fn menu_option(ui: &mut Ui, t: &Tokens, label: &str, selected: bool) -> bool {
     let galley = ui.painter().layout_no_wrap(label.to_owned(), text::body(), t.label);
-    let width = (galley.size().x + 20.0 + space::MD * 2.0).max(ui.available_width());
+    // Popup menus are intrinsically sized. Using the popup's available width
+    // here can mean "the rest of the viewport", which made this tiny selector
+    // balloon across the chat after the settings/menu rework.
+    let width = galley.size().x + 20.0 + space::MD * 2.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
     if response.hovered() {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);

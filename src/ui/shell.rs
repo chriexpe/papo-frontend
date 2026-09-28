@@ -1471,7 +1471,7 @@ fn channels_sidebar(
                                             state.collapsed_categories.insert(category.id.clone());
                                         }
                                     }
-                                    channel_menu(&header, category, state, s, store.can_manage_channels());
+                                    channel_menu(&header, category, state, t, s, store.can_manage_channels());
                                     if !collapsed {
                                         for channel in children {
                                             sidebar_channel(ui, store, state, t, s, channel, width);
@@ -1785,7 +1785,7 @@ fn sidebar_channel(
             state.mobile_surface = MobileSurface::Chat;
         }
     }
-    channel_menu(&row, channel, state, s, store.can_manage_channels());
+    channel_menu(&row, channel, state, t, s, store.can_manage_channels());
     if voice {
         crate::ui::call::roster(ui, store, state, t, s, &channel.id, width);
     }
@@ -1901,33 +1901,59 @@ fn channel_row(
     response
 }
 
-/// Menu do botão direito de um canal: renomear e excluir.
+/// Menu do botão direito de um canal. Mantém o comportamento nativo de
+/// context-menu (incluindo long-press), mas usa a mesma linguagem visual do
+/// menu de mensagem: largura curta, ícones, seleção explícita e ação destrutiva.
 fn channel_menu(
     response: &egui::Response,
     channel: &crate::state::Channel,
     state: &mut UiState,
+    t: &Tokens,
     s: &Strings,
     can_manage: bool,
 ) {
     response.context_menu(|ui| {
-        ui.label(s.channel_notifications);
-        for (label, setting) in [
-            (s.notify_all, "all"),
-            (s.notify_mentions, "only_mentions"),
-            (s.notify_off, "off"),
+        const MENU_W: f32 = 212.0;
+        ui.set_min_width(MENU_W);
+        ui.set_max_width(MENU_W);
+        ui.spacing_mut().item_spacing.y = 0.0;
+
+        ui.add_space(space::XXS);
+        ui.label(
+            RichText::new(s.channel_notifications)
+                .font(text::caption())
+                .color(t.label_tertiary),
+        );
+        ui.add_space(space::XXS);
+
+        let current = match channel.notification_settings.as_str() {
+            "all" => "all",
+            "off" => "off",
+            _ => "only_mentions",
+        };
+        for (glyph, label, setting) in [
+            (icon::BELL, s.notify_all, "all"),
+            (icon::AT, s.notify_mentions, "only_mentions"),
+            (icon::X, s.notify_off, "off"),
         ] {
-            if ui.button(label).clicked() {
-                state.actions.push(ChatAction::ChannelNotifications {
-                    channel_id: channel.id.clone(),
-                    setting,
-                });
+            if channel_context_row(ui, t, glyph, label, current == setting, false) {
+                if current != setting {
+                    state.actions.push(ChatAction::ChannelNotifications {
+                        channel_id: channel.id.clone(),
+                        setting,
+                    });
+                }
                 ui.close();
             }
         }
+
         if can_manage {
+            ui.add_space(space::XS);
             ui.separator();
+            ui.add_space(space::XS);
+
             // A posição é trocada com o vizinho; o backend recebe as duas.
-            if ui.button(s.move_up).clicked() {
+            if channel_context_row(ui, t, icon::ARROW_UP, s.move_up, false, false) {
                 state.actions.push(ChatAction::MoveChannel {
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
@@ -1936,7 +1962,7 @@ fn channel_menu(
                 });
                 ui.close();
             }
-            if ui.button(s.move_down).clicked() {
+            if channel_context_row(ui, t, icon::ARROW_DOWN, s.move_down, false, false) {
                 state.actions.push(ChatAction::MoveChannel {
                     channel_id: channel.id.clone(),
                     old_position: channel.position,
@@ -1945,16 +1971,11 @@ fn channel_menu(
                 });
                 ui.close();
             }
-            ui.separator();
-            if ui.button(s.edit).clicked() {
+            if channel_context_row(ui, t, icon::PENCIL_SIMPLE, s.edit, false, false) {
                 state.actions.push(ChatAction::EditChannel(channel.id.clone()));
                 ui.close();
             }
-            if ui
-                .button(s.delete_channel)
-                .on_hover_text(s.delete_channel_confirm)
-                .clicked()
-            {
+            if channel_context_row(ui, t, icon::TRASH, s.delete_channel, false, true) {
                 state
                     .actions
                     .push(ChatAction::RequestDeleteChannel(channel.id.clone()));
@@ -1962,6 +1983,56 @@ fn channel_menu(
             }
         }
     });
+}
+
+fn channel_context_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    glyph: &str,
+    label: &str,
+    selected: bool,
+    destructive: bool,
+) -> bool {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(radius::CONTROL),
+            if destructive {
+                t.danger.gamma_multiply(0.18)
+            } else {
+                t.fill_soft
+            },
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let color = if destructive { t.danger } else { t.label };
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::MD, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        glyph,
+        text::icon(14.0),
+        color,
+    );
+    ui.painter().text(
+        egui::pos2(rect.min.x + space::MD + 22.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        text::body(),
+        color,
+    );
+    if selected {
+        ui.painter().text(
+            egui::pos2(rect.max.x - space::MD, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            icon::CHECK,
+            text::icon(13.0),
+            t.accent,
+        );
+    }
+    response.clicked()
 }
 
 /// Linha «criar canal», no lugar onde estariam os canais.
@@ -3840,7 +3911,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .filter(|message| message.pinned)
         .map(|message| {
             let body = if !message.content.trim().is_empty() {
-                store.display_mentions(&message.content)
+                message.content.clone()
             } else {
                 message
                     .attachments
@@ -3924,7 +3995,7 @@ fn result_row(
         channel_name,
         body,
     } = preview;
-    let body = store.display_mentions(body);
+    let shown_body = store.display_mentions(body);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let avatar_size = 30.0;
     let row_width = ui.available_width();
@@ -3942,7 +4013,10 @@ fn result_row(
             .map(|handle| handle.id())
     });
 
-    let inner = ui.scope(|ui| {
+    // Register the row before its children. Clickable URLs and preview media
+    // are added later and therefore win overlapping clicks instead of jumping
+    // to the source message.
+    let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_min_width(row_width);
         ui.set_max_width(row_width);
         ui.add_space(space::XS);
@@ -3982,9 +4056,21 @@ fn result_row(
                         );
                     }
                 });
-                if !body.trim().is_empty() {
+                if !shown_body.trim().is_empty() {
                     ui.add_space(space::XXS);
-                    ui.label(RichText::new(&body).font(text::body()).color(t.label));
+                    let tokens = emoji::tokenize(&shown_body, &store.emojis);
+                    rich_body(
+                        ui,
+                        t,
+                        s,
+                        store,
+                        state,
+                        &tokens,
+                        t.label,
+                        false,
+                        max_text_width,
+                    );
+                    panel_rich_links(ui, state, t, message_id, body, max_text_width);
                 }
             });
             ui.add_space(space::SM);
@@ -3993,11 +4079,7 @@ fn result_row(
     });
 
     let row = inner.response.rect;
-    let response = ui.interact(
-        row,
-        ui.id().with(("message-preview", message_id)),
-        Sense::click(),
-    );
+    let response = inner.response;
     if response.hovered() {
         ui.painter().set(
             backdrop,
@@ -4900,7 +4982,17 @@ fn link_previews(
             continue;
         };
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
-        preview_card(ui, state, t, &preview.id, &embed_id, url, Some(preview), width);
+        preview_card(
+            ui,
+            state,
+            t,
+            &preview.id,
+            &embed_id,
+            url,
+            Some(preview),
+            width,
+            true,
+        );
     }
 }
 
@@ -4931,7 +5023,33 @@ fn rich_links_from_message(
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width);
+        preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+    }
+}
+
+fn panel_rich_links(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    message_id: &str,
+    content: &str,
+    width: f32,
+) {
+    use std::hash::{Hash, Hasher};
+
+    let mut seen = std::collections::HashSet::new();
+    for url in papo_core::preview::extract_https_urls(content) {
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut hasher);
+        let id = format!("rich-{:016x}", hasher.finish());
+        // A result can be visible in the panel while the same message is still
+        // painted in the timeline behind it. Scope the widget occurrence so
+        // egui/WebEmbed IDs never collide across those two surfaces.
+        let embed_id = format!("embed:panel:{message_id}:{id}");
+        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false);
     }
 }
 
@@ -4944,6 +5062,7 @@ fn preview_card(
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
+    allow_webembed: bool,
 ) {
     use papo_core::preview::{PreviewKind, PreviewState};
 
@@ -5169,7 +5288,7 @@ fn preview_card(
             );
 
             if let Some(embed) = embed_url.as_deref() {
-                if state.webembed.is_active(embed_id) {
+                if allow_webembed && state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
                     let clip = state
                         .webembed_chat_clip
@@ -5198,8 +5317,12 @@ fn preview_card(
                     );
                 }
 
-                if response.clicked() && !state.webembed.is_active(embed_id) {
-                    if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+                if response.clicked()
+                    && (!allow_webembed || !state.webembed.is_active(embed_id))
+                {
+                    if allow_webembed
+                        && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+                    {
                         state.media.pause_all();
                         ui.ctx().request_repaint();
                     } else {
@@ -5234,7 +5357,7 @@ fn preview_card(
                 Color32::from_black_alpha(225),
             );
 
-            if state.webembed.is_active(embed_id) {
+            if allow_webembed && state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
                 let clip = state
                     .webembed_chat_clip
@@ -5259,8 +5382,12 @@ fn preview_card(
                     Color32::WHITE,
                 );
             }
-            if response.clicked() && !state.webembed.is_active(embed_id) {
-                if state.webembed.activate(embed_id.to_owned(), embed.to_owned()) {
+            if response.clicked()
+                && (!allow_webembed || !state.webembed.is_active(embed_id))
+            {
+                if allow_webembed
+                    && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+                {
                     state.media.pause_all();
                     ui.ctx().request_repaint();
                 } else {
