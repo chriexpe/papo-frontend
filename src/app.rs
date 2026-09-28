@@ -1341,7 +1341,7 @@ impl PapoApp {
                 let rounding = egui::CornerRadius::same(24);
                 #[cfg(target_os = "windows")]
                 let rounding =
-                    egui::CornerRadius::same(crate::ui::shell::PILL_RADIUS);
+                    egui::CornerRadius::same(crate::ui::shell::PILL_RADIUS as u8);
                 ui.painter().rect(
                     rect,
                     rounding,

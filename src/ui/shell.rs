@@ -267,6 +267,7 @@ struct MobileGesture {
     last: egui::Pos2,
     /// Quando o toque começou; separado de `last_time`, que muda enquanto
     /// o dedo se move.
+    #[cfg(target_os = "android")]
     started: f64,
     /// Quando `last` foi visto, para tirar a velocidade do piparote.
     last_time: f64,
@@ -2699,6 +2700,7 @@ fn handle_mobile_gesture(
         state.mobile_gesture = Some(MobileGesture {
             origin,
             last: origin,
+            #[cfg(target_os = "android")]
             started: time,
             last_time: time,
             velocity: 0.0,
