@@ -1,12 +1,14 @@
 //! Desktop Rich Presence acquisition.
 //!
-//! Papo prefers an already-running arRPC-compatible bridge. That lets
-//! Equibop/Vesktop/arRPC and Papo consume the same local activity without
-//! duplicating process scanners or competing for Discord RPC IPC slots.
-//! When no bridge exists, the built-in collector implements only the pieces
-//! Papo needs: Discord RPC SET_ACTIVITY plus a lightweight process detector.
-//! Android never starts a collector; it only renders activities received
-//! from Papo servers.
+//! Papo is a consumer first. If an arRPC-compatible JSON bridge already
+//! exists, Papo connects to it and does not start another provider.
+//! Otherwise Papo starts a pinned native rsrpc build as the fallback provider
+//! and consumes the exact same arRPC-compatible bridge on localhost:1337.
+//!
+//! No Node/Bun/npm runtime is involved. The fallback is one native binary,
+//! downloaded only when needed, checksum-verified, and kept in Papo's cache.
+//! Android never starts a provider; it only renders activities received from
+//! Papo servers.
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,8 @@ use crate::state::{Activity, ActivityKind};
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: &str = "1337";
+const LOCAL_BRIDGE: &str = "ws://127.0.0.1:1337";
+const RSRPC_BUILD: &str = "nightly-2026-03-29";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OverrideKind {
@@ -46,10 +50,8 @@ pub struct ActivityOverride {
     pub details: String,
     #[serde(default)]
     pub state: String,
-    /// Starts a timer when the override becomes active.
     #[serde(default = "yes")]
     pub elapsed: bool,
-    /// Optional total duration. Empty/zero means no end timestamp.
     #[serde(default)]
     pub duration_minutes: String,
 }
@@ -72,13 +74,17 @@ impl Default for ActivityOverride {
 pub struct Settings {
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// Prefer the Papo collector when a shared local arRPC bridge is absent.
+    /// Start rsrpc only when the configured arRPC-compatible bridge is absent.
     #[serde(default = "yes")]
     pub built_in: bool,
+    /// Passed to rsrpc; disabling this keeps RPC activity but disables its
+    /// process-scanning fallback.
     #[serde(default = "yes")]
     pub game_detection: bool,
     #[serde(default = "yes")]
     pub auto_reconnect: bool,
+    #[serde(default = "default_reconnect_interval")]
+    pub reconnect_interval: String,
     #[serde(default)]
     pub debug: bool,
     #[serde(default = "default_host")]
@@ -96,6 +102,7 @@ impl Default for Settings {
             built_in: true,
             game_detection: true,
             auto_reconnect: true,
+            reconnect_interval: default_reconnect_interval(),
             debug: false,
             external_host: default_host(),
             external_port: default_port(),
@@ -116,17 +123,17 @@ fn default_port() -> String {
     DEFAULT_PORT.to_owned()
 }
 
+fn default_reconnect_interval() -> String {
+    "5".to_owned()
+}
+
 impl Settings {
     pub fn external_port_number(&self) -> u16 {
         self.external_port.trim().parse().unwrap_or(1337)
     }
 
-    fn endpoint(&self, shared_local: bool) -> String {
-        let host = if shared_local {
-            DEFAULT_HOST
-        } else {
-            self.external_host.trim()
-        };
+    fn endpoint(&self) -> String {
+        let host = self.external_host.trim();
         let host = if host.parse::<std::net::Ipv6Addr>().is_ok() {
             format!("[{host}]")
         } else if host.is_empty() {
@@ -134,12 +141,17 @@ impl Settings {
         } else {
             host.to_owned()
         };
-        let port = if shared_local {
-            1337
-        } else {
-            self.external_port_number()
-        };
-        format!("ws://{host}:{port}")
+        format!("ws://{host}:{}", self.external_port_number())
+    }
+
+    fn reconnect_delay(&self) -> std::time::Duration {
+        let seconds = self
+            .reconnect_interval
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(5)
+            .clamp(1, 300);
+        std::time::Duration::from_secs(seconds)
     }
 }
 
@@ -285,7 +297,6 @@ impl Manager {
         }
     }
 
-    /// Drain worker updates. Returns true when the visible state changed.
     pub fn pump(&mut self) -> bool {
         #[cfg(target_os = "android")]
         {
@@ -343,7 +354,6 @@ enum Control {
 enum RunExit {
     Control(Control),
     Disconnected(String),
-    PreferExternal,
     Closed,
 }
 
@@ -370,8 +380,11 @@ async fn worker(
     events: std::sync::mpsc::Sender<Snapshot>,
     repaint: egui::Context,
 ) {
+    let mut rsrpc: Option<RsrpcProcess> = None;
+
     loop {
         if !settings.enabled {
+            rsrpc.take();
             publish(
                 &events,
                 &repaint,
@@ -388,13 +401,14 @@ async fn worker(
         }
 
         if settings.override_activity.enabled {
-            let activity = settings.override_activity.activity(Utc::now());
+            // Manual activity does not need a local activity provider.
+            rsrpc.take();
             publish(
                 &events,
                 &repaint,
                 Source::Override,
                 "Manual override",
-                activity,
+                settings.override_activity.activity(Utc::now()),
             );
             match controls.recv().await {
                 Some(Control::Configure(next)) => settings = next,
@@ -404,11 +418,61 @@ async fn worker(
             continue;
         }
 
-        // With the built-in collector enabled, a shared local arRPC bridge
-        // always wins. Equibop/Vesktop can therefore own collection while
-        // Papo is merely another bridge subscriber.
-        let shared_local = settings.built_in;
-        let endpoint = settings.endpoint(shared_local);
+        if let Some(process) = rsrpc.as_mut() {
+            match process.try_wait() {
+                Ok(Some(status)) => {
+                    let detail = format!("rsRPC exited ({status})");
+                    rsrpc = None;
+                    publish(&events, &repaint, Source::Error, detail, None);
+                }
+                Ok(None) => {
+                    match run_bridge(
+                        &settings,
+                        LOCAL_BRIDGE,
+                        Source::BuiltIn,
+                        std::time::Duration::from_secs(2),
+                        &mut controls,
+                        &events,
+                        &repaint,
+                    )
+                    .await
+                    {
+                        RunExit::Control(Control::Configure(next)) => {
+                            rsrpc.take();
+                            settings = next;
+                        }
+                        RunExit::Control(Control::Restart) => {
+                            rsrpc.take();
+                        }
+                        RunExit::Closed => return,
+                        RunExit::Disconnected(error) => {
+                            if settings.debug {
+                                log::debug!("rich presence: rsRPC bridge disconnected: {error}");
+                            }
+                            if process.try_wait().ok().flatten().is_some() {
+                                rsrpc = None;
+                            }
+                            if !wait_after_failure(&settings, &mut controls).await {
+                                return;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    rsrpc = None;
+                    publish(
+                        &events,
+                        &repaint,
+                        Source::Error,
+                        format!("rsRPC status: {error}"),
+                        None,
+                    );
+                }
+            }
+        }
+
+        let endpoint = settings.endpoint();
         publish(
             &events,
             &repaint,
@@ -416,10 +480,12 @@ async fn worker(
             endpoint.clone(),
             None,
         );
-        match run_external(
+
+        match run_bridge(
             &settings,
             &endpoint,
-            shared_local,
+            Source::External,
+            external_timeout(&endpoint),
             &mut controls,
             &events,
             &repaint,
@@ -432,100 +498,123 @@ async fn worker(
             }
             RunExit::Control(Control::Restart) => continue,
             RunExit::Closed => return,
-            RunExit::Disconnected(error) if settings.built_in => {
+            RunExit::Disconnected(external_error) => {
                 if settings.debug {
-                    log::debug!("rich presence: shared arRPC unavailable: {error}");
+                    log::debug!(
+                        "rich presence: arRPC-compatible bridge unavailable: {external_error}"
+                    );
                 }
-            }
-            RunExit::Disconnected(error) => {
-                publish(&events, &repaint, Source::Error, error, None);
-                if !settings.auto_reconnect {
-                    match controls.recv().await {
-                        Some(Control::Configure(next)) => settings = next,
-                        Some(Control::Restart) => {}
-                        None => return,
+
+                if settings.built_in {
+                    // Avoid a race where another provider claimed :1337 after
+                    // the initial probe but before the fallback starts.
+                    if local_bridge_port_open().await {
+                        continue;
                     }
-                    continue;
-                }
-                match wait_or_control(&mut controls, std::time::Duration::from_secs(2)).await {
-                    Some(Control::Configure(next)) => settings = next,
-                    Some(Control::Restart) => {}
-                    None if controls.is_closed() => return,
-                    None => {}
-                }
-                continue;
-            }
-            RunExit::PreferExternal => continue,
-        }
 
-        // Shared bridge was absent: use Papo's own Discord-compatible
-        // collector. It never opens a localhost bridge of its own.
-        match run_builtin(
-            &settings,
-            &mut controls,
-            &events,
-            &repaint,
-        )
-        .await
-        {
-            RunExit::Control(Control::Configure(next)) => settings = next,
-            RunExit::Control(Control::Restart) | RunExit::PreferExternal => {}
-            RunExit::Disconnected(error) => {
-                publish(&events, &repaint, Source::Error, error, None);
-                match wait_or_control(&mut controls, std::time::Duration::from_secs(2)).await {
-                    Some(Control::Configure(next)) => settings = next,
-                    Some(Control::Restart) => {}
-                    None if controls.is_closed() => return,
-                    None => {}
+                    publish(
+                        &events,
+                        &repaint,
+                        Source::Connecting,
+                        "Starting rsRPC fallback",
+                        None,
+                    );
+                    match RsrpcProcess::start(&settings).await {
+                        Ok(process) => {
+                            rsrpc = Some(process);
+                            continue;
+                        }
+                        Err(error) => {
+                            publish(
+                                &events,
+                                &repaint,
+                                Source::Error,
+                                format!("rsRPC fallback: {error}"),
+                                None,
+                            );
+                        }
+                    }
+                } else {
+                    publish(
+                        &events,
+                        &repaint,
+                        Source::Error,
+                        external_error,
+                        None,
+                    );
+                }
+
+                if !wait_after_failure(&settings, &mut controls).await {
+                    return;
+                }
+
+                while let Ok(control) = controls.try_recv() {
+                    match control {
+                        Control::Configure(next) => settings = next,
+                        Control::Restart => {}
+                    }
                 }
             }
-            RunExit::Closed => return,
         }
     }
 }
 
 #[cfg(not(target_os = "android"))]
-async fn wait_or_control(
+fn external_timeout(endpoint: &str) -> std::time::Duration {
+    if endpoint == LOCAL_BRIDGE {
+        std::time::Duration::from_millis(450)
+    } else {
+        std::time::Duration::from_secs(4)
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+async fn wait_after_failure(
+    settings: &Settings,
     controls: &mut tokio::sync::mpsc::UnboundedReceiver<Control>,
-    duration: std::time::Duration,
-) -> Option<Control> {
+) -> bool {
+    if !settings.auto_reconnect {
+        return controls.recv().await.is_some();
+    }
+
     tokio::select! {
-        control = controls.recv() => control,
-        _ = tokio::time::sleep(duration) => None,
+        control = controls.recv() => control.is_some(),
+        _ = tokio::time::sleep(settings.reconnect_delay()) => true,
     }
 }
 
 #[cfg(not(target_os = "android"))]
-async fn run_external(
+async fn run_bridge(
     settings: &Settings,
     endpoint: &str,
-    shared_local: bool,
+    source: Source,
+    timeout: std::time::Duration,
     controls: &mut tokio::sync::mpsc::UnboundedReceiver<Control>,
     events: &std::sync::mpsc::Sender<Snapshot>,
     repaint: &egui::Context,
 ) -> RunExit {
     use futures_util::StreamExt;
 
-    let timeout = if shared_local {
-        std::time::Duration::from_millis(450)
-    } else {
-        std::time::Duration::from_secs(4)
-    };
     let connection = tokio::time::timeout(timeout, tokio_tungstenite::connect_async(endpoint)).await;
     let (stream, _) = match connection {
         Ok(Ok(connection)) => connection,
         Ok(Err(error)) => {
-            return RunExit::Disconnected(format!("arRPC {endpoint}: {error}"));
+            return RunExit::Disconnected(format!("{endpoint}: {error}"));
         }
         Err(_) => {
-            return RunExit::Disconnected(format!("arRPC {endpoint}: connection timed out"));
+            return RunExit::Disconnected(format!("{endpoint}: connection timed out"));
         }
     };
 
     if settings.debug {
-        log::debug!("rich presence: connected to shared arRPC bridge {endpoint}");
+        log::debug!("rich presence: connected to {endpoint}");
     }
-    publish(events, repaint, Source::External, endpoint, None);
+
+    let detail = match source {
+        Source::BuiltIn => format!("rsRPC · {endpoint}"),
+        _ => endpoint.to_owned(),
+    };
+    publish(events, repaint, source.clone(), detail.clone(), None);
 
     let (_, mut reader) = stream.split();
     let mut activities: std::collections::HashMap<String, (u64, Activity)> =
@@ -539,11 +628,11 @@ async fn run_external(
             }
             message = reader.next() => {
                 let Some(message) = message else {
-                    return RunExit::Disconnected(format!("arRPC {endpoint}: connection closed"));
+                    return RunExit::Disconnected(format!("{endpoint}: connection closed"));
                 };
                 let message = match message {
                     Ok(message) => message,
-                    Err(error) => return RunExit::Disconnected(format!("arRPC {endpoint}: {error}")),
+                    Err(error) => return RunExit::Disconnected(format!("{endpoint}: {error}")),
                 };
                 let text = match message {
                     tokio_tungstenite::tungstenite::Message::Text(text) => text,
@@ -554,10 +643,11 @@ async fn run_external(
                         }
                     }
                     tokio_tungstenite::tungstenite::Message::Close(_) => {
-                        return RunExit::Disconnected(format!("arRPC {endpoint}: connection closed"));
+                        return RunExit::Disconnected(format!("{endpoint}: connection closed"));
                     }
                     _ => continue,
                 };
+
                 if let Some((socket, activity)) = parse_bridge_message(text.as_ref()) {
                     revision = revision.wrapping_add(1);
                     match activity {
@@ -572,9 +662,9 @@ async fn run_external(
                         .values()
                         .max_by_key(|(seen, _)| *seen)
                         .map(|(_, activity)| activity.clone());
-                    publish(events, repaint, Source::External, endpoint, current);
+                    publish(events, repaint, source.clone(), detail.clone(), current);
                 } else if settings.debug {
-                    log::debug!("rich presence: ignored unrecognized arRPC bridge frame");
+                    log::debug!("rich presence: ignored unrecognized bridge frame");
                 }
             }
         }
@@ -602,6 +692,7 @@ fn parse_bridge_message(text: &str) -> Option<(String, Option<Activity>)> {
                 .map(|pid| pid.to_string())
         })
         .unwrap_or_else(|| "activity".to_owned());
+
     let activity = value
         .get("activity")
         .filter(|activity| !activity.is_null())
@@ -619,6 +710,7 @@ fn activity_from_value(value: &serde_json::Value) -> Option<Activity> {
         2 => ActivityKind::Listening,
         _ => ActivityKind::Playing,
     };
+
     let application_id = value
         .get("application_id")
         .and_then(serde_json::Value::as_str);
@@ -628,6 +720,7 @@ fn activity_from_value(value: &serde_json::Value) -> Option<Activity> {
         .filter(|name| !name.trim().is_empty())
         .map(str::to_owned)
         .or_else(|| application_id.map(|id| format!("App {id}")))?;
+
     let timestamps = value.get("timestamps");
     Some(Activity {
         kind,
@@ -662,500 +755,240 @@ fn timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp_millis(millis)
 }
 
-// -------------------------------------------------------------------------
-// Built-in collector
-// -------------------------------------------------------------------------
-
+#[cfg(not(target_os = "android"))]
+struct RsrpcProcess {
+    child: std::process::Child,
+}
 
 #[cfg(not(target_os = "android"))]
-struct ProcessInfo {
-    path: String,
-    arguments: Option<String>,
-}
+impl RsrpcProcess {
+    async fn start(settings: &Settings) -> Result<Self, String> {
+        let binary = ensure_rsrpc_binary().await?;
 
-#[cfg(target_os = "linux")]
-fn processes() -> Vec<ProcessInfo> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().parse::<u32>().is_ok())
-        .filter_map(|entry| {
-            let root = entry.path();
-            let path = std::fs::read_link(root.join("exe"))
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned())
-                .or_else(|| {
-                    std::fs::read(root.join("cmdline"))
-                        .ok()
-                        .and_then(|bytes| bytes.split(|byte| *byte == 0).next().map(Vec::from))
-                        .and_then(|bytes| String::from_utf8(bytes).ok())
-                })?;
-            let arguments = std::fs::read(root.join("cmdline"))
-                .ok()
-                .map(|bytes| {
-                    bytes
-                        .split(|byte| *byte == 0)
-                        .filter(|part| !part.is_empty())
-                        .skip(1)
-                        .map(|part| String::from_utf8_lossy(part))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .filter(|args| !args.is_empty());
-            Some(ProcessInfo { path, arguments })
-        })
-        .collect()
-}
+        let mut command = std::process::Command::new(binary);
+        if !settings.game_detection {
+            command.arg("--no-process-scanning");
+        }
+        if settings.debug {
+            command.arg("--debug");
+        }
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
 
-#[cfg(target_os = "macos")]
-fn processes() -> Vec<ProcessInfo> {
-    let Ok(output) = std::process::Command::new("/bin/ps")
-        .args(["-axo", "comm=,args="])
-        .output()
-    else {
-        return Vec::new();
-    };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            let split = line.find(char::is_whitespace)?;
-            let path = line[..split].to_owned();
-            let arguments = line[split..].trim();
-            Some(ProcessInfo {
-                path,
-                arguments: (!arguments.is_empty()).then(|| arguments.to_owned()),
-            })
-        })
-        .collect()
-}
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
 
-#[cfg(target_os = "windows")]
-fn processes() -> Vec<ProcessInfo> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("could not start rsRPC: {error}"))?;
 
-    let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
-        return Vec::new();
-    };
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-    let mut found = Vec::new();
-    if unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok() {
+        if let Some(stdout) = child.stdout.take() {
+            pipe_rsrpc_log(stdout, "stdout");
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pipe_rsrpc_log(stderr, "stderr");
+        }
+
+        let mut process = Self { child };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
         loop {
-            let len = entry
-                .szExeFile
-                .iter()
-                .position(|unit| *unit == 0)
-                .unwrap_or(entry.szExeFile.len());
-            let path = String::from_utf16_lossy(&entry.szExeFile[..len]);
-            if !path.is_empty() {
-                found.push(ProcessInfo {
-                    path,
-                    // Toolhelp intentionally keeps this lightweight. Games
-                    // whose Discord detectable rule requires command-line
-                    // matching can still publish through RPC/arRPC.
-                    arguments: None,
-                });
+            if local_bridge_port_open().await {
+                log::debug!("rich presence: rsRPC fallback is ready on 127.0.0.1:1337");
+                return Ok(process);
             }
-            if unsafe { Process32NextW(snapshot, &mut entry) }.is_err() {
-                break;
+            if let Some(status) = process
+                .try_wait()
+                .map_err(|error| format!("rsRPC status: {error}"))?
+            {
+                return Err(format!("rsRPC exited before bridge startup ({status})"));
             }
+            if std::time::Instant::now() >= deadline {
+                process.stop();
+                return Err("rsRPC did not open port 1337 within 6 seconds".to_owned());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
-    let _ = unsafe { CloseHandle(snapshot) };
-    found
-}
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "android")))]
-fn processes() -> Vec<ProcessInfo> {
-    Vec::new()
-}
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
+    }
 
-#[cfg(not(target_os = "android"))]
-#[derive(Clone, Debug, Deserialize)]
-struct DetectableApplication {
-    id: String,
-    name: String,
-    #[serde(default)]
-    executables: Vec<DetectableExecutable>,
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 #[cfg(not(target_os = "android"))]
-#[derive(Clone, Debug, Deserialize)]
-struct DetectableExecutable {
-    name: String,
-    #[serde(default)]
-    is_launcher: bool,
-    os: Option<String>,
-    arguments: Option<String>,
+impl Drop for RsrpcProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[cfg(not(target_os = "android"))]
-#[derive(Clone, Debug)]
-struct DetectableCandidate {
-    application_id: String,
-    app_name: String,
-    executable: String,
-    exact: bool,
-    arguments: Option<String>,
-}
-
-#[cfg(not(target_os = "android"))]
-#[derive(Default)]
-struct DetectableIndex {
-    by_name: std::collections::HashMap<String, Vec<DetectableCandidate>>,
-}
-
-#[cfg(not(target_os = "android"))]
-impl DetectableIndex {
-    fn from_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        let applications: Vec<DetectableApplication> = serde_json::from_slice(bytes)?;
-        let mut index = Self::default();
-        for application in applications {
-            for executable in application.executables {
-                if executable.is_launcher || !executable_for_this_os(executable.os.as_deref()) {
-                    continue;
-                }
-                let mut name = executable.name.replace('\\', "/").to_ascii_lowercase();
-                let exact = name.starts_with('>');
-                if exact {
-                    name.remove(0);
-                }
-                while name.starts_with('/') {
-                    name.remove(0);
-                }
-                let basename = name.rsplit('/').next().unwrap_or(&name).to_owned();
-                if basename.is_empty() {
-                    continue;
-                }
-                index
-                    .by_name
-                    .entry(basename)
-                    .or_default()
-                    .push(DetectableCandidate {
-                        application_id: application.id.clone(),
-                        app_name: application.name.clone(),
-                        executable: name,
-                        exact,
-                        arguments: executable.arguments,
-                    });
+fn pipe_rsrpc_log<R>(reader: R, stream: &'static str)
+where
+    R: std::io::Read + Send + 'static,
+{
+    std::thread::Builder::new()
+        .name(format!("papo-rsrpc-{stream}"))
+        .spawn(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(reader);
+            for line in reader.lines().map_while(Result::ok) {
+                log::debug!("rsRPC {stream}: {line}");
             }
+        })
+        .ok();
+}
+
+#[cfg(not(target_os = "android"))]
+#[derive(Clone, Copy)]
+struct RsrpcAsset {
+    name: &'static str,
+    url: &'static str,
+    sha256: &'static str,
+}
+
+#[cfg(not(target_os = "android"))]
+fn rsrpc_asset() -> Result<RsrpcAsset, String> {
+    let asset = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => RsrpcAsset {
+            name: "rsrpc-x86_64-unknown-linux-gnu",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-unknown-linux-gnu",
+            sha256: "9c575b67960fe9763613702a08494bf4ab4ef0d4535fb1619abfd8279feea2db",
+        },
+        ("linux", "aarch64") => RsrpcAsset {
+            name: "rsrpc-aarch64-unknown-linux-gnu",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-unknown-linux-gnu",
+            sha256: "116c4d8f6b5dcd65c2bf9a2036d2e2613e780e206ed0ead72224e71c509ca551",
+        },
+        ("windows", "x86_64") => RsrpcAsset {
+            name: "rsrpc-x86_64-pc-windows-msvc.exe",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-pc-windows-msvc.exe",
+            sha256: "062e893ee5eacba02f64e24877c11fd4ae310c20a1373b436aea3a84b519a97b",
+        },
+        ("windows", "aarch64") => RsrpcAsset {
+            name: "rsrpc-aarch64-pc-windows-msvc.exe",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-pc-windows-msvc.exe",
+            sha256: "5764abea0485ae03d3588183aaa151b4d35d3cd3b132cdfd1f28ea4383729184",
+        },
+        ("macos", "x86_64") => RsrpcAsset {
+            name: "rsrpc-x86_64-apple-darwin",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-x86_64-apple-darwin",
+            sha256: "b2e5b6ac8dc1842bcc80740abaafa9ddb75aacd1322f57d851208c13f9dc13ca",
+        },
+        ("macos", "aarch64") => RsrpcAsset {
+            name: "rsrpc-aarch64-apple-darwin",
+            url: "https://github.com/pog5/rsrpc/releases/download/nightly/rsrpc-aarch64-apple-darwin",
+            sha256: "4f49a8ff5c5b568b7b4b1eeac7a701e79b07aa1b5b544342bba7c4769445bdc1",
+        },
+        (os, arch) => {
+            return Err(format!("no rsRPC build for {os}/{arch}"));
         }
-        Ok(index)
-    }
-
-    fn detect(&self) -> (bool, Option<Activity>) {
-        let mut discord = false;
-        let mut found: Option<(String, String)> = None;
-        for process in processes() {
-            let process_name = process
-                .path
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(&process.path)
-                .to_ascii_lowercase();
-            let clean_name = process_name.strip_suffix(".exe").unwrap_or(&process_name);
-            if matches!(
-                clean_name,
-                "discord" | "discordcanary" | "discordptb" | "discorddevelopment"
-            ) {
-                discord = true;
-            }
-
-            let normalized = process.path.replace('\\', "/").to_ascii_lowercase();
-            let basename = normalized.rsplit('/').next().unwrap_or(&normalized);
-            let Some(candidates) = self.by_name.get(basename) else {
-                continue;
-            };
-            if let Some(candidate) = candidates.iter().find(|candidate| {
-                let candidate_basename = candidate
-                    .executable
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&candidate.executable);
-                let name_matches = if candidate.exact {
-                    basename == candidate_basename
-                } else {
-                    normalized == candidate.executable
-                        || normalized.ends_with(&format!("/{}", candidate.executable))
-                        || (!normalized.contains('/') && basename == candidate_basename)
-                };
-                let arguments_match = candidate.arguments.as_deref().is_none_or(|required| {
-                    process
-                        .arguments
-                        .as_deref()
-                        .is_some_and(|arguments| arguments.contains(required))
-                });
-                name_matches && arguments_match
-            }) {
-                found = Some((
-                    candidate.application_id.clone(),
-                    candidate.app_name.clone(),
-                ));
-                break;
-            }
-        }
-
-        let activity = found.map(|(_, name)| Activity {
-            kind: ActivityKind::Playing,
-            name,
-            details: None,
-            state: None,
-            started_at: Some(Utc::now()),
-            ends_at: None,
-        });
-        (discord, activity)
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-fn executable_for_this_os(os: Option<&str>) -> bool {
-    match os {
-        None => true,
-        Some("win32") => cfg!(target_os = "windows"),
-        Some("darwin") => cfg!(target_os = "macos"),
-        Some("linux") => cfg!(target_os = "linux"),
-        Some(_) => false,
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-async fn load_cached_detectables() -> (DetectableIndex, bool) {
-    let path = crate::platform::dirs::cache_dir().join("rich-presence-detectable.json");
-    let stale = std::fs::metadata(&path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_none_or(|age| age > std::time::Duration::from_secs(7 * 24 * 60 * 60));
-    let index = match tokio::fs::read(&path).await {
-        Ok(bytes) => DetectableIndex::from_json(&bytes).unwrap_or_default(),
-        Err(_) => DetectableIndex::default(),
     };
-    (index, stale)
+    Ok(asset)
 }
 
 #[cfg(not(target_os = "android"))]
-async fn fetch_detectables() -> Result<DetectableIndex, String> {
-    const URL: &str = "https://discord.com/api/v9/applications/detectable";
+async fn ensure_rsrpc_binary() -> Result<std::path::PathBuf, String> {
+    let asset = rsrpc_asset()?;
+    let dir = crate::platform::dirs::cache_dir()
+        .join("rich-presence")
+        .join("rsrpc")
+        .join(RSRPC_BUILD);
+    let path = dir.join(if cfg!(target_os = "windows") {
+        "rsrpc.exe"
+    } else {
+        "rsrpc"
+    });
+
+    if let Ok(bytes) = tokio::fs::read(&path).await
+        && sha256_hex(&bytes) == asset.sha256
+    {
+        ensure_executable(&path).await?;
+        return Ok(path);
+    }
+
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|error| format!("rsRPC cache directory: {error}"))?;
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
         .user_agent(concat!("Papo/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("rsRPC downloader: {error}"))?;
     let response = client
-        .get(URL)
+        .get(asset.url)
         .send()
         .await
-        .map_err(|error| error.to_string())?
-        .error_for_status()
-        .map_err(|error| error.to_string())?;
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    let index = DetectableIndex::from_json(&bytes).map_err(|error| error.to_string())?;
-    let path = crate::platform::dirs::cache_dir().join("rich-presence-detectable.json");
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|error| format!("rsRPC download: {error}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("rsRPC download body: {error}"))?;
+    if bytes.len() > 32 * 1024 * 1024 {
+        return Err(format!("rsRPC download is unexpectedly large: {} bytes", bytes.len()));
     }
-    let _ = tokio::fs::write(path, &bytes).await;
-    Ok(index)
+
+    let actual = sha256_hex(&bytes);
+    if actual != asset.sha256 {
+        return Err(format!(
+            "rsRPC checksum mismatch for {} (expected {}, got {})",
+            asset.name, asset.sha256, actual
+        ));
+    }
+
+    let temp = dir.join(format!("{}.download", asset.name));
+    tokio::fs::write(&temp, &bytes)
+        .await
+        .map_err(|error| format!("save rsRPC: {error}"))?;
+    tokio::fs::rename(&temp, &path)
+        .await
+        .map_err(|error| format!("install rsRPC: {error}"))?;
+    ensure_executable(&path).await?;
+
+    Ok(path)
 }
 
 #[cfg(not(target_os = "android"))]
-enum BuiltinEvent {
-    Rpc {
-        socket: u64,
-        activity: Option<Activity>,
-    },
-    ListenerReady(u32),
-    ListenerError(String),
+fn sha256_hex(bytes: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
-#[cfg(not(target_os = "android"))]
-async fn run_builtin(
-    settings: &Settings,
-    controls: &mut tokio::sync::mpsc::UnboundedReceiver<Control>,
-    events: &std::sync::mpsc::Sender<Snapshot>,
-    repaint: &egui::Context,
-) -> RunExit {
-    let (mut detector, stale) = load_cached_detectables().await;
-    let mut refresh = if settings.game_detection && (stale || detector.by_name.is_empty()) {
-        Some(tokio::spawn(fetch_detectables()))
-    } else {
-        None
-    };
+#[cfg(all(not(target_os = "android"), unix))]
+async fn ensure_executable(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
 
-    let (ipc_tx, mut ipc_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ipc_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut ipc_slot: Option<u32> = None;
-    let mut rpc_activities: std::collections::HashMap<u64, (u64, Activity)> =
-        std::collections::HashMap::new();
-    let mut revision = 0u64;
-    let mut process_activity: Option<Activity> = None;
-    let mut last_published: Option<Activity> = None;
-    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut external_probe = tokio::time::interval(std::time::Duration::from_secs(5));
-    external_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    external_probe.tick().await;
-
-    publish(
-        events,
-        repaint,
-        Source::BuiltIn,
-        "Built-in collector",
-        None,
-    );
-
-    loop {
-        tokio::select! {
-            control = controls.recv() => {
-                if let Some(task) = ipc_task.take() {
-                    task.abort();
-                }
-                return control.map(RunExit::Control).unwrap_or(RunExit::Closed);
-            }
-            _ = ticker.tick() => {
-                let (discord_running, detected) = if settings.game_detection && !detector.by_name.is_empty() {
-                    detector.detect()
-                } else {
-                    // Even with game detection disabled we still need to know
-                    // whether native Discord owns RPC priority.
-                    let empty = DetectableIndex::default();
-                    empty.detect()
-                };
-
-                if discord_running {
-                    if let Some(task) = ipc_task.take() {
-                        task.abort();
-                        ipc_slot = None;
-                        rpc_activities.clear();
-                        if settings.debug {
-                            log::debug!("rich presence: native Discord detected; releasing Papo IPC");
-                        }
-                    }
-                } else if ipc_task.is_none() {
-                    let sender = ipc_tx.clone();
-                    ipc_task = Some(tokio::spawn(async move {
-                        if let Err(error) = run_ipc(sender.clone()).await {
-                            let _ = sender.send(BuiltinEvent::ListenerError(error.to_string()));
-                        }
-                    }));
-                }
-
-                process_activity = detected.map(|mut detected| {
-                    if let Some(previous) = process_activity.as_ref()
-                        && previous.name == detected.name
-                    {
-                        detected.started_at = previous.started_at;
-                    }
-                    detected
-                });
-                if rpc_activities.is_empty() && process_activity != last_published {
-                    last_published = process_activity.clone();
-                    let detail = if discord_running {
-                        "Native Discord owns RPC · game detection".to_owned()
-                    } else if let Some(slot) = ipc_slot {
-                        return_detail(slot, settings.game_detection)
-                    } else {
-                        "Built-in collector".to_owned()
-                    };
-                    publish(events, repaint, Source::BuiltIn, detail, process_activity.clone());
-                }
-            }
-            event = ipc_rx.recv() => {
-                let Some(event) = event else {
-                    return RunExit::Disconnected("built-in IPC stopped".to_owned());
-                };
-                match event {
-                    BuiltinEvent::ListenerReady(slot) => {
-                        ipc_slot = Some(slot);
-                        let detail = return_detail(slot, settings.game_detection);
-                        publish(events, repaint, Source::BuiltIn, detail, last_published.clone());
-                    }
-                    BuiltinEvent::ListenerError(error) => {
-                        ipc_task = None;
-                        ipc_slot = None;
-                        if settings.debug {
-                            log::debug!("rich presence: IPC listener: {error}");
-                        }
-                    }
-                    BuiltinEvent::Rpc { socket, activity } => {
-                        revision = revision.wrapping_add(1);
-                        match activity {
-                            Some(activity) => {
-                                rpc_activities.insert(socket, (revision, activity));
-                            }
-                            None => {
-                                rpc_activities.remove(&socket);
-                            }
-                        }
-                        let current = rpc_activities
-                            .values()
-                            .max_by_key(|(seen, _)| *seen)
-                            .map(|(_, activity)| activity.clone())
-                            .or_else(|| process_activity.clone());
-                        if current != last_published {
-                            last_published = current.clone();
-                            let detail = ipc_slot
-                                .map(|slot| return_detail(slot, settings.game_detection))
-                                .unwrap_or_else(|| "Built-in collector".to_owned());
-                            publish(events, repaint, Source::BuiltIn, detail, current);
-                        }
-                    }
-                }
-            }
-            result = async {
-                match refresh.as_mut() {
-                    Some(task) => Some(task.await),
-                    None => std::future::pending().await,
-                }
-            }, if refresh.is_some() => {
-                refresh = None;
-                match result {
-                    Some(Ok(Ok(index))) => {
-                        if settings.debug {
-                            log::debug!(
-                                "rich presence: refreshed detectable database ({} executable keys)",
-                                index.by_name.len()
-                            );
-                        }
-                        detector = index;
-                    }
-                    Some(Ok(Err(error))) if settings.debug => {
-                        log::debug!("rich presence: detectable database refresh failed: {error}");
-                    }
-                    Some(Err(error)) if settings.debug => {
-                        log::debug!("rich presence: detectable database task failed: {error}");
-                    }
-                    _ => {}
-                }
-            }
-            _ = external_probe.tick(), if settings.auto_reconnect => {
-                if local_bridge_port_open().await {
-                    if let Some(task) = ipc_task.take() {
-                        task.abort();
-                    }
-                    return RunExit::PreferExternal;
-                }
-            }
-        }
+    let mut permissions = tokio::fs::metadata(path)
+        .await
+        .map_err(|error| format!("rsRPC metadata: {error}"))?
+        .permissions();
+    if permissions.mode() & 0o111 == 0 {
+        permissions.set_mode(0o700);
+        tokio::fs::set_permissions(path, permissions)
+            .await
+            .map_err(|error| format!("rsRPC permissions: {error}"))?;
     }
+    Ok(())
 }
 
-#[cfg(not(target_os = "android"))]
-fn return_detail(slot: u32, game_detection: bool) -> String {
-    if game_detection {
-        format!("Built-in · discord-ipc-{slot} · game detection")
-    } else {
-        format!("Built-in · discord-ipc-{slot}")
-    }
+#[cfg(all(not(target_os = "android"), not(unix)))]
+async fn ensure_executable(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -1166,297 +999,6 @@ async fn local_bridge_port_open() -> bool {
     )
     .await
     .is_ok_and(|result| result.is_ok())
-}
-
-#[cfg(not(target_os = "android"))]
-async fn run_ipc(sender: tokio::sync::mpsc::UnboundedSender<BuiltinEvent>) -> std::io::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        run_windows_ipc(sender).await
-    }
-    #[cfg(unix)]
-    {
-        run_unix_ipc(sender).await
-    }
-    #[cfg(not(any(target_os = "windows", unix)))]
-    {
-        let _ = sender;
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Discord IPC is unsupported on this platform",
-        ))
-    }
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-struct UnixListenerGuard {
-    listener: tokio::net::UnixListener,
-    path: std::path::PathBuf,
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-impl Drop for UnixListenerGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-fn unix_socket_base() -> (std::path::PathBuf, bool) {
-    for key in ["XDG_RUNTIME_DIR", "TMPDIR", "TMP", "TEMP"] {
-        if let Ok(value) = std::env::var(key)
-            && !value.is_empty()
-        {
-            return (std::path::PathBuf::from(value), true);
-        }
-    }
-    (std::path::PathBuf::from("/tmp"), false)
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-async fn bind_unix_ipc() -> std::io::Result<(UnixListenerGuard, u32)> {
-    let (base, private_dir) = unix_socket_base();
-    for slot in 0..10u32 {
-        let path = base.join(format!("discord-ipc-{slot}"));
-        if path.exists() {
-            let live = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                tokio::net::UnixStream::connect(&path),
-            )
-            .await
-            .is_ok_and(|result| result.is_ok());
-            if live {
-                continue;
-            }
-            // Never unlink somebody else's well-known socket from /tmp.
-            if private_dir {
-                let _ = std::fs::remove_file(&path);
-            } else {
-                continue;
-            }
-        }
-        match tokio::net::UnixListener::bind(&path) {
-            Ok(listener) => {
-                return Ok((UnixListenerGuard { listener, path }, slot));
-            }
-            Err(error) if matches!(
-                error.kind(),
-                std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
-            ) => continue,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AddrInUse,
-        "all discord-ipc slots are occupied",
-    ))
-}
-
-#[cfg(all(not(target_os = "android"), unix))]
-async fn run_unix_ipc(
-    sender: tokio::sync::mpsc::UnboundedSender<BuiltinEvent>,
-) -> std::io::Result<()> {
-    let (guard, slot) = bind_unix_ipc().await?;
-    let _ = sender.send(BuiltinEvent::ListenerReady(slot));
-    let mut clients = tokio::task::JoinSet::new();
-    loop {
-        tokio::select! {
-            accepted = guard.listener.accept() => {
-                let (stream, _) = accepted?;
-                let tx = sender.clone();
-                clients.spawn(async move {
-                    let socket = next_socket_id();
-                    let _ = handle_rpc_stream(stream, socket, tx).await;
-                });
-            }
-            Some(_) = clients.join_next(), if !clients.is_empty() => {}
-        }
-    }
-}
-
-#[cfg(all(not(target_os = "android"), target_os = "windows"))]
-async fn bind_windows_ipc() -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeServer, u32)> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-    for slot in 0..10u32 {
-        let path = format!(r"\\.\pipe\discord-ipc-{slot}");
-        match ServerOptions::new().first_pipe_instance(true).create(&path) {
-            Ok(server) => return Ok((server, slot)),
-            Err(error) if matches!(
-                error.kind(),
-                std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
-            ) => continue,
-            Err(_) => continue,
-        }
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AddrInUse,
-        "all discord-ipc slots are occupied",
-    ))
-}
-
-#[cfg(all(not(target_os = "android"), target_os = "windows"))]
-async fn run_windows_ipc(
-    sender: tokio::sync::mpsc::UnboundedSender<BuiltinEvent>,
-) -> std::io::Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
-    let (first, slot) = bind_windows_ipc().await?;
-    let path = format!(r"\\.\pipe\discord-ipc-{slot}");
-    let _ = sender.send(BuiltinEvent::ListenerReady(slot));
-    let mut next = Some(first);
-    let mut clients = tokio::task::JoinSet::new();
-
-    loop {
-        let server = match next.take() {
-            Some(server) => server,
-            None => ServerOptions::new().create(&path)?,
-        };
-        server.connect().await?;
-        let tx = sender.clone();
-        clients.spawn(async move {
-            let socket = next_socket_id();
-            let _ = handle_rpc_stream(server, socket, tx).await;
-        });
-        while clients.try_join_next().is_some() {}
-    }
-}
-
-#[cfg(not(target_os = "android"))]
-fn next_socket_id() -> u64 {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-}
-
-#[cfg(not(target_os = "android"))]
-async fn handle_rpc_stream<S>(
-    mut stream: S,
-    socket: u64,
-    sender: tokio::sync::mpsc::UnboundedSender<BuiltinEvent>,
-) -> std::io::Result<()>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-{
-    use tokio::io::AsyncReadExt;
-
-    let mut client_id: Option<String> = None;
-    loop {
-        let mut header = [0u8; 8];
-        if stream.read_exact(&mut header).await.is_err() {
-            break;
-        }
-        let opcode = u32::from_le_bytes(header[0..4].try_into().unwrap());
-        let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
-        if length > 256 * 1024 {
-            break;
-        }
-        let mut payload = vec![0u8; length];
-        stream.read_exact(&mut payload).await?;
-
-        match opcode {
-            0 => {
-                let value: serde_json::Value = match serde_json::from_slice(&payload) {
-                    Ok(value) => value,
-                    Err(_) => break,
-                };
-                let Some(id) = value
-                    .get("client_id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-                else {
-                    break;
-                };
-                client_id = Some(id);
-                let ready = serde_json::json!({
-                    "cmd": "DISPATCH",
-                    "data": {
-                        "v": 1,
-                        "config": {
-                            "cdn_host": "cdn.discordapp.com",
-                            "api_endpoint": "//discord.com/api",
-                            "environment": "production"
-                        },
-                        "user": {
-                            "id": "1045800378228281345",
-                            "username": "papo",
-                            "discriminator": "0",
-                            "global_name": "Papo",
-                            "avatar": null,
-                            "avatar_decoration_data": null,
-                            "bot": false,
-                            "flags": 0,
-                            "premium_type": 0
-                        }
-                    },
-                    "evt": "READY",
-                    "nonce": null
-                });
-                write_rpc_packet(&mut stream, 1, &serde_json::to_vec(&ready).unwrap()).await?;
-            }
-            1 => {
-                let value: serde_json::Value = match serde_json::from_slice(&payload) {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                };
-                if value.get("cmd").and_then(serde_json::Value::as_str) != Some("SET_ACTIVITY") {
-                    continue;
-                }
-                let app_id = client_id.as_deref().unwrap_or_default();
-                let activity_value = value
-                    .get("args")
-                    .and_then(|args| args.get("activity"));
-                let activity = activity_value
-                    .filter(|activity| !activity.is_null())
-                    .and_then(|activity| {
-                        let mut activity = activity.clone();
-                        if let Some(object) = activity.as_object_mut() {
-                            object.insert(
-                                "application_id".to_owned(),
-                                serde_json::Value::String(app_id.to_owned()),
-                            );
-                        }
-                        activity_from_value(&activity)
-                    });
-                let _ = sender.send(BuiltinEvent::Rpc { socket, activity });
-
-                let response = serde_json::json!({
-                    "cmd": "SET_ACTIVITY",
-                    "data": activity_value.cloned().unwrap_or(serde_json::Value::Null),
-                    "evt": null,
-                    "nonce": value.get("nonce").cloned().unwrap_or(serde_json::Value::Null)
-                });
-                write_rpc_packet(&mut stream, 1, &serde_json::to_vec(&response).unwrap()).await?;
-            }
-            2 => break,
-            3 => {
-                // Discord IPC ping/pong uses the same opaque payload.
-                write_rpc_packet(&mut stream, 4, &payload).await?;
-            }
-            4 => {}
-            _ => break,
-        }
-    }
-    let _ = sender.send(BuiltinEvent::Rpc {
-        socket,
-        activity: None,
-    });
-    Ok(())
-}
-
-#[cfg(not(target_os = "android"))]
-async fn write_rpc_packet<S>(
-    stream: &mut S,
-    opcode: u32,
-    payload: &[u8],
-) -> std::io::Result<()>
-where
-    S: tokio::io::AsyncWrite + Unpin,
-{
-    use tokio::io::AsyncWriteExt;
-    stream.write_all(&opcode.to_le_bytes()).await?;
-    stream
-        .write_all(&(payload.len() as u32).to_le_bytes())
-        .await?;
-    stream.write_all(payload).await
 }
 
 #[cfg(test)]
@@ -1509,5 +1051,14 @@ mod tests {
         let (socket, activity) = parse_bridge_message(clear).unwrap();
         assert_eq!(socket, "game");
         assert!(activity.is_none());
+    }
+
+    #[test]
+    fn reconnect_interval_is_bounded() {
+        let mut settings = Settings::default();
+        settings.reconnect_interval = "0".to_owned();
+        assert_eq!(settings.reconnect_delay(), std::time::Duration::from_secs(1));
+        settings.reconnect_interval = "9999".to_owned();
+        assert_eq!(settings.reconnect_delay(), std::time::Duration::from_secs(300));
     }
 }
