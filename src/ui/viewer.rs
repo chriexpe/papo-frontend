@@ -8,7 +8,7 @@ use egui_phosphor::regular as icon;
 
 use crate::api::models::{Attachment, Kind};
 use crate::i18n::Strings;
-use crate::media::{FileState, MediaStore};
+use crate::media::{FileState, MediaStore, PlaySource};
 
 use super::attachments::{clock, elide, size_label};
 use super::theme::{radius, space, text, Tokens};
@@ -392,8 +392,23 @@ fn stage_player(
     };
 
     let video = matches!(attachment.kind(), Kind::Video);
+    stage_playback(ui, t, media, &attachment.id, PlaySource::File(&path), video, stage, content)
+}
+
+/// O palco de tela cheia de um player, venha ele de anexo ou de link.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stage_playback(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    id: &str,
+    source: PlaySource<'_>,
+    video: bool,
+    stage: Rect,
+    content: &mut Rect,
+) -> Option<ViewerAction> {
     let ctx = ui.ctx().clone();
-    let player = media.start_player(&attachment.id, &path, video, &ctx)?;
+    let player = media.start_source(id, source, video, &ctx)?;
     let playing = player.is_playing();
     let position = player.position();
     let duration = player.duration();
@@ -442,10 +457,10 @@ fn stage_player(
     // Um clique no vídeo alterna play/pause, como se espera.
     let surface = ui.interact(frame_rect, ui.id().with("viewer-video"), Sense::click());
     if surface.clicked() {
-        if let Some(player) = media.existing_player(&attachment.id) {
+        if let Some(player) = media.existing_player(id) {
             player.toggle();
         }
-        media.solo(&attachment.id);
+        media.solo(id);
     }
     if !playing && video {
         ui.painter()
@@ -483,15 +498,22 @@ fn stage_player(
         Color32::WHITE,
     );
     if play_response.clicked() {
-        if let Some(player) = media.existing_player(&attachment.id) {
+        if let Some(player) = media.existing_player(id) {
             player.toggle();
         }
-        media.solo(&attachment.id);
+        media.solo(id);
     }
+
+    // Alto-falante entre a linha do tempo e o relógio, igual ao do cartão.
+    let speaker = Rect::from_center_size(
+        egui::pos2(bar.max.x - 128.0, bar.center().y),
+        Vec2::splat(24.0),
+    );
+    super::attachments::volume_control(ui, t, media, id, id, speaker);
 
     let line = Rect::from_min_max(
         egui::pos2(play.max.x + space::LG, bar.center().y - 3.0),
-        egui::pos2(bar.max.x - 110.0, bar.center().y + 3.0),
+        egui::pos2(speaker.min.x - space::MD, bar.center().y + 3.0),
     );
     let progress = if duration > 0.0 {
         (position / duration).clamp(0.0, 1.0) as f32
@@ -516,7 +538,7 @@ fn stage_player(
         .filter(|_| seek.dragged() || seek.clicked())
     {
         let ratio = ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64;
-        if let Some(player) = media.existing_player(&attachment.id) {
+        if let Some(player) = media.existing_player(id) {
             let duration = player.duration();
             player.seek(duration * ratio);
         }
@@ -542,17 +564,18 @@ pub enum RemoteViewerAction {
     Download { path: std::path::PathBuf, name: String },
 }
 
-/// Same fullscreen image UI used for attachment images, backed by a public
-/// rich-preview image instead of a server attachment.
+/// Same fullscreen UI used for attachments, backed by a public rich-preview
+/// image or video instead of a server attachment.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_remote_image(
+pub fn draw_remote_media(
     ui: &mut egui::Ui,
-    _t: &Tokens,
+    t: &Tokens,
     s: &Strings,
     media: &mut MediaStore,
     id: &str,
     url: &str,
     name: &str,
+    video: bool,
     opened: f64,
     zoom: &mut f32,
     offset: &mut Vec2,
@@ -560,7 +583,7 @@ pub fn draw_remote_image(
 ) -> Option<RemoteViewerAction> {
     let screen = ui.ctx().viewport_rect();
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("papo-viewer"));
-    let top = ui.new_child(
+    let mut top = ui.new_child(
         egui::UiBuilder::new()
             .layer_id(layer)
             .max_rect(screen)
@@ -580,14 +603,29 @@ pub fn draw_remote_image(
         egui::pos2(screen.min.x + space::XXXL, screen.min.y + 64.0),
         egui::pos2(screen.max.x - space::XXXL, screen.max.y - 64.0),
     );
-    let texture = media
-        .remote_image(id, url)
-        .and_then(|texture| texture.frame(top.ctx()))
-        .cloned();
+    let texture = (!video)
+        .then(|| {
+            media
+                .remote_image(id, url)
+                .and_then(|texture| texture.frame(top.ctx()))
+                .cloned()
+        })
+        .flatten();
 
     let mut content = Rect::NOTHING;
     let mut stage_clicked_outside = false;
-    if let Some(texture) = texture {
+    if video {
+        stage_playback(
+            &mut top,
+            t,
+            media,
+            id,
+            PlaySource::Remote(url),
+            true,
+            stage,
+            &mut content,
+        );
+    } else if let Some(texture) = texture {
         let natural = texture.size_vec2();
         let base = (stage.width() / natural.x)
             .min(stage.height() / natural.y)
@@ -687,11 +725,16 @@ pub fn draw_remote_image(
 
     let mut action = None;
     let mut x = header.max.x - space::XXL - 16.0;
-    for (glyph, tag) in [
-        (icon::X, "close"),
-        (icon::DOWNLOAD_SIMPLE, "download"),
-        (icon::ARROWS_IN, "fit"),
-    ] {
+    let buttons: &[(&str, &str)] = if video {
+        &[(icon::X, "close")]
+    } else {
+        &[
+            (icon::X, "close"),
+            (icon::DOWNLOAD_SIMPLE, "download"),
+            (icon::ARROWS_IN, "fit"),
+        ]
+    };
+    for &(glyph, tag) in buttons {
         let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
         let response = top
             .interact(rect, top.id().with(("remote-viewer", tag)), Sense::click())

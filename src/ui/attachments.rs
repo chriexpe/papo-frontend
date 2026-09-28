@@ -6,11 +6,10 @@
 use egui::{Color32, CornerRadius, Rect, Sense, Stroke, Vec2};
 use egui_phosphor::regular as icon;
 
-use std::path::Path;
 
 use crate::api::models::{Attachment, Kind};
 use crate::i18n::Strings;
-use crate::media::{FileState, MediaStore};
+use crate::media::{FileState, MediaStore, PlaySource};
 
 use super::theme::{radius, space, text, Tokens};
 
@@ -216,6 +215,60 @@ fn video(
     };
 
     let ctx = ui.ctx().clone();
+    let poster = media
+        .poster(&attachment.id, &path)
+        .and_then(|texture| texture.frame(&ctx))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let surface = video_surface(
+        ui,
+        t,
+        media,
+        &attachment.id,
+        &attachment.id,
+        PlaySource::File(&path),
+        poster,
+        card_width,
+        true,
+        seek_zones,
+    );
+    match surface.transport? {
+        Transport::Fullscreen => Some(MediaAction::Open {
+            message_id: message_id.to_owned(),
+            index,
+        }),
+        Transport::Download => Some(MediaAction::Download {
+            id: attachment.id.clone(),
+            name: attachment.name().to_owned(),
+        }),
+    }
+}
+
+pub struct VideoSurface {
+    pub rect: Rect,
+    /// O quadro em si foi clicado (play/pause), não a barra.
+    pub clicked: bool,
+    pub transport: Option<Transport>,
+}
+
+/// O cartão de vídeo da conversa: quadro (ou capa), botão grande de play e a
+/// barra de controles. Anexo e preview de link passam por aqui, então os dois
+/// têm os mesmos controles.
+#[allow(clippy::too_many_arguments)]
+pub fn video_surface(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    id: &str,
+    // Widgets precisam de chave própria: o mesmo vídeo (mesmo player) pode
+    // aparecer em vários cartões no mesmo quadro.
+    widget_key: &str,
+    source: PlaySource<'_>,
+    poster: Option<(egui::TextureId, Vec2)>,
+    card_width: f32,
+    download: bool,
+    seek_zones: &mut Vec<Rect>,
+) -> VideoSurface {
+    let ctx = ui.ctx().clone();
     // Antes do primeiro play não existe pipeline, e é esse o ponto: rolar a
     // conversa passava por aqui e montava um decodificador por vídeo.
     //
@@ -223,23 +276,18 @@ fn video(
     // empréstimos seguidos do mesmo lugar, e nenhum pode sobreviver ao
     // próximo.
     let live = media
-        .existing_player(&attachment.id)
+        .existing_player(id)
         .and_then(|player| player.frame(&ctx))
         .map(|texture| (texture.id(), texture.size_vec2()));
-    let (player_aspect, playing, position, duration) =
-        match media.existing_player(&attachment.id) {
-            Some(player) => (
-                Some(player.aspect().clamp(0.4, 3.0)),
-                player.is_playing(),
-                player.position(),
-                player.duration(),
-            ),
-            None => (None, false, 0.0, 0.0),
-        };
-    let poster = media
-        .poster(&attachment.id, &path)
-        .and_then(|texture| texture.frame(&ctx))
-        .map(|texture| (texture.id(), texture.size_vec2()));
+    let (player_aspect, playing, position, duration) = match media.existing_player(id) {
+        Some(player) => (
+            Some(player.aspect().clamp(0.4, 3.0)),
+            player.is_playing(),
+            player.position(),
+            player.duration(),
+        ),
+        None => (None, false, 0.0, 0.0),
+    };
 
     // A proporção sai do que existir de mais concreto: o quadro que está
     // tocando, depois a capa, depois o que o player disse. O 16:9 é só o
@@ -259,7 +307,7 @@ fn video(
 
     ui.painter().rect_filled(rect, corner, Color32::BLACK);
 
-    // Tocando, é o quadro do player; parado, a capa tirada do arquivo.
+    // Tocando, é o quadro do player; parado, a capa.
     if let Some((texture, natural)) = shown {
         let size = fit(natural, frame_size);
         let centered = Rect::from_center_size(frame_rect.center(), size);
@@ -285,43 +333,19 @@ fn video(
         );
     }
 
-    let mut action = None;
     if response.clicked() {
-        media.toggle_player(&attachment.id, &path, true, &ctx);
-        media.solo(&attachment.id);
+        media.toggle_source(id, source, &ctx);
+        media.solo(id);
     }
 
     let controls = Rect::from_min_size(
         egui::pos2(rect.min.x, frame_rect.max.y),
         Vec2::new(card_width, CONTROLS_H),
     );
-    if let Some(command) = transport(
-        ui,
-        t,
-        media,
-        &attachment.id,
-        &path,
-        controls,
-        position,
-        duration,
-        true,
+    let transport = transport(
+        ui, t, media, id, widget_key, source, controls, position, duration, true, download,
         seek_zones,
-    ) {
-        match command {
-            Transport::Fullscreen => {
-                action = Some(MediaAction::Open {
-                    message_id: message_id.to_owned(),
-                    index,
-                })
-            }
-            Transport::Download => {
-                action = Some(MediaAction::Download {
-                    id: attachment.id.clone(),
-                    name: attachment.name().to_owned(),
-                })
-            }
-        }
-    }
+    );
 
     ui.painter().rect_stroke(
         rect,
@@ -329,7 +353,11 @@ fn video(
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
-    action
+    VideoSurface {
+        rect,
+        clicked: response.clicked(),
+        transport,
+    }
 }
 
 #[allow(clippy::ptr_arg)]
@@ -728,7 +756,7 @@ fn video_placeholder(
     None
 }
 
-enum Transport {
+pub enum Transport {
     Fullscreen,
     Download,
 }
@@ -740,11 +768,13 @@ fn transport(
     t: &Tokens,
     media: &mut MediaStore,
     id: &str,
-    path: &Path,
+    key: &str,
+    source: PlaySource<'_>,
     rect: Rect,
     position: f64,
     duration: f64,
     fullscreen: bool,
+    download: bool,
     _seek_zones: &mut Vec<Rect>,
 ) -> Option<Transport> {
     let mut outcome = None;
@@ -759,9 +789,9 @@ fn transport(
         .map(|player| player.is_playing())
         .unwrap_or(false);
     let play = Rect::from_center_size(egui::pos2(x + 10.0, mid), Vec2::splat(24.0));
-    if control(ui, play, if playing { icon::PAUSE } else { icon::PLAY }, id, "play") {
+    if control(ui, play, if playing { icon::PAUSE } else { icon::PLAY }, key, "play") {
         let ctx = ui.ctx().clone();
-        media.toggle_player(id, path, true, &ctx);
+        media.toggle_source(id, source, &ctx);
         media.solo(id);
     }
     x = play.max.x + space::SM;
@@ -769,33 +799,18 @@ fn transport(
     let time = format!("{} / {}", clock(position), clock(duration));
     let time_width = 78.0;
     let right = rect.max.x - space::MD;
-    let mute = Rect::from_center_size(egui::pos2(right - 10.0 - 28.0 * 2.0, mid), Vec2::splat(24.0));
-    let download = Rect::from_center_size(egui::pos2(right - 10.0 - 28.0, mid), Vec2::splat(24.0));
-    let expand = Rect::from_center_size(egui::pos2(right - 10.0, mid), Vec2::splat(24.0));
+    // Botões da direita para a esquerda; sem download (vídeo de link), o
+    // som encosta na tela cheia em vez de deixar um buraco.
+    let slot = |n: f32| Rect::from_center_size(egui::pos2(right - 10.0 - 28.0 * n, mid), Vec2::splat(24.0));
+    let expand = slot(0.0);
+    let download_rect = slot(1.0);
+    let mute = slot(if download { 2.0 } else { 1.0 });
 
-    let muted = media
-        .existing_player(id)
-        .map(|player| player.muted)
-        .unwrap_or(false);
-    if control(
-        ui,
-        mute,
-        if muted {
-            icon::SPEAKER_SIMPLE_X
-        } else {
-            icon::SPEAKER_SIMPLE_HIGH
-        },
-        id,
-        "mute",
-    ) && let Some(player) = media.existing_player(id)
-    {
-        let muted = player.muted;
-        player.set_muted(!muted);
-    }
-    if control(ui, download, icon::DOWNLOAD_SIMPLE, id, "dl") {
+    volume_control(ui, t, media, id, key, mute);
+    if download && control(ui, download_rect, icon::DOWNLOAD_SIMPLE, key, "dl") {
         outcome = Some(Transport::Download);
     }
-    if fullscreen && control(ui, expand, icon::ARROWS_OUT, id, "full") {
+    if fullscreen && control(ui, expand, icon::ARROWS_OUT, key, "full") {
         outcome = Some(Transport::Fullscreen);
     }
 
@@ -828,7 +843,7 @@ fn transport(
             _seek_zones.push(seek_rect);
             let response = ui.interact(
                 seek_rect,
-                ui.id().with(("seek", id)),
+                ui.id().with(("seek", key)),
                 Sense::click(),
             );
             if let Some(ratio) = android_seek_ratio(ui, &response, line)
@@ -843,7 +858,7 @@ fn transport(
         {
             let response = ui.interact(
                 seek_rect,
-                ui.id().with(("seek", id)),
+                ui.id().with(("seek", key)),
                 Sense::click_and_drag(),
             );
             if let Some(pointer) = response
@@ -925,6 +940,130 @@ fn android_seek_ratio(ui: &egui::Ui, response: &egui::Response, line: Rect) -> O
 
     (axis == 1)
         .then(|| ((pointer.x - line.min.x) / line.width()).clamp(0.0, 1.0) as f64)
+}
+
+/// Alto-falante do player: clique alterna mudo; passar o mouse abre o
+/// controle vertical de volume em cima dele. O nível é um só para todos os
+/// players ([`MediaStore::set_volume`]).
+pub(super) fn volume_control(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    id: &str,
+    key: &str,
+    button: Rect,
+) {
+    let muted = media.existing_player(id).is_some_and(|player| player.muted);
+    let level = media.volume();
+    let glyph = if muted || level <= 0.0 {
+        icon::SPEAKER_SIMPLE_X
+    } else if level < 0.5 {
+        icon::SPEAKER_SIMPLE_LOW
+    } else {
+        icon::SPEAKER_SIMPLE_HIGH
+    };
+    if control(ui, button, glyph, key, "mute") {
+        let player = media.existing_player(id);
+        log::debug!("volume: mute clicado (player aberto: {})", player.is_some());
+        if let Some(player) = player {
+            let muted = player.muted;
+            player.set_muted(!muted);
+        }
+    }
+
+    // Toque não tem hover; no Android o volume fica com as teclas do
+    // aparelho e o botão só silencia.
+    #[cfg(not(target_os = "android"))]
+    volume_popup(ui, t, media, id, key, button);
+    #[cfg(target_os = "android")]
+    let _ = t;
+}
+
+#[cfg(not(target_os = "android"))]
+fn volume_popup(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    id: &str,
+    key: &str,
+    button: Rect,
+) {
+    const W: f32 = 28.0;
+    const H: f32 = 108.0;
+    let popup = Rect::from_min_size(
+        egui::pos2(button.center().x - W / 2.0, button.min.y - space::XS - H),
+        Vec2::new(W, H),
+    );
+    let ctx = ui.ctx().clone();
+    let open_id = ui.id().with(("volume-open", key));
+    let drag_id = ui.id().with(("volume-drag", key));
+    let pointer = ctx.pointer_hover_pos();
+    // Botão, vão e controle formam uma região só, então atravessar o vão
+    // entre os dois não fecha o controle.
+    let bridge = button.union(popup).expand(space::XS);
+    let was_open = ctx.data(|data| data.get_temp::<bool>(open_id)).unwrap_or(false);
+    let dragging = ctx.data(|data| data.get_temp::<bool>(drag_id)).unwrap_or(false);
+    let open = pointer.is_some_and(|pointer| button.contains(pointer))
+        || dragging
+        || (was_open && pointer.is_some_and(|pointer| bridge.contains(pointer)));
+    ctx.data_mut(|data| data.insert_temp(open_id, open));
+    if !open {
+        return;
+    }
+
+    // Interação no mesmo layer do botão (registrada depois dele, então ganha
+    // o que estiver em cima do vídeo) e desenho no layer da frente, para o
+    // controle não ficar atrás do quadro. Um `Area` próprio disputava o
+    // clique do alto-falante no teste de acerto do egui.
+    let response = ui.interact(popup, ui.id().with(("volume", key)), Sense::click_and_drag());
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        ui.id().with(("volume-layer", key)),
+    ));
+    painter.rect_filled(
+        popup,
+        CornerRadius::same(radius::CONTROL),
+        Color32::from_black_alpha(215),
+    );
+    let track = Rect::from_center_size(
+        popup.center(),
+        Vec2::new(4.0, popup.height() - space::MD * 2.0),
+    );
+
+    let mut level = media.volume();
+    if let Some(pointer) = response
+        .interact_pointer_pos()
+        .filter(|_| response.dragged() || response.clicked())
+    {
+        level = ((track.max.y - pointer.y) / track.height()).clamp(0.0, 1.0);
+    }
+    let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+    if response.hovered() && scroll.abs() > 0.1 {
+        level = (level + scroll * 0.002).clamp(0.0, 1.0);
+    }
+    if (level - media.volume()).abs() > f32::EPSILON {
+        media.set_volume(level);
+        if let Some(player) = media.existing_player(id)
+            && player.muted
+            && level > 0.0
+        {
+            player.set_muted(false);
+        }
+    }
+    ctx.data_mut(|data| data.insert_temp(drag_id, response.dragged()));
+
+    let muted = media.existing_player(id).is_some_and(|player| player.muted);
+    let shown = if muted { 0.0 } else { media.volume() };
+    painter.rect_filled(track, CornerRadius::same(2), Color32::from_white_alpha(45));
+    let filled = Rect::from_min_max(
+        egui::pos2(track.min.x, track.max.y - track.height() * shown),
+        track.max,
+    );
+    painter.rect_filled(filled, CornerRadius::same(2), t.accent);
+    painter.circle_filled(egui::pos2(track.center().x, filled.min.y), 5.0, Color32::WHITE);
+    if response.hovered() || response.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 }
 
 fn control(ui: &mut egui::Ui, rect: Rect, glyph: &str, id: &str, tag: &str) -> bool {

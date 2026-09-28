@@ -821,6 +821,14 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
     }
 }
 
+/// De onde o player lê: arquivo de anexo já em disco ou vídeo público de um
+/// preview de link.
+#[derive(Clone, Copy, Debug)]
+pub enum PlaySource<'a> {
+    File(&'a Path),
+    Remote(&'a str),
+}
+
 pub fn remote_player_key(url: &str) -> Option<String> {
     let canonical = papo_core::preview::canonical_url(url)?;
     Some(format!("remote-player:{}", remote_resource_id(&canonical)))
@@ -1002,6 +1010,9 @@ pub struct MediaStore {
     files: HashMap<String, FileState>,
     waveforms: HashMap<String, Vec<f32>>,
     players: HashMap<String, DirectMediaPlayer>,
+    /// Nível do controle de volume (0 a 1), um só para todos os players:
+    /// quem acerta o volume uma vez não quer refazer em cada vídeo.
+    volume: f32,
     playback: Arc<dyn PlaybackBackend>,
     limits: MediaLimits,
     player_last_used: HashMap<String, Instant>,
@@ -1048,6 +1059,7 @@ impl MediaStore {
             files: HashMap::new(),
             waveforms: HashMap::new(),
             players: HashMap::new(),
+            volume: 1.0,
             playback,
             limits,
             player_last_used: HashMap::new(),
@@ -1532,6 +1544,8 @@ impl MediaStore {
                 kind,
                 ctx.clone(),
             )?;
+            let mut player = player;
+            player.set_volume(self.volume);
             self.players.insert(id.to_owned(), player);
         }
         self.touch_player(id);
@@ -1571,6 +1585,8 @@ impl MediaStore {
                 DirectMediaKind::Video,
                 ctx.clone(),
             )?;
+            let mut player = player;
+            player.set_volume(self.volume);
             self.players.insert(id.to_owned(), player);
         }
         self.touch_player(id);
@@ -1586,6 +1602,40 @@ impl MediaStore {
             player.play();
         } else {
             player.toggle();
+        }
+    }
+
+    /// Abre (ou devolve) o player de qualquer origem. É o que deixa anexo e
+    /// vídeo de link dividirem o mesmo cartão, barra e tela cheia.
+    pub fn start_source(
+        &mut self,
+        id: &str,
+        source: PlaySource<'_>,
+        video: bool,
+        ctx: &egui::Context,
+    ) -> Option<&mut DirectMediaPlayer> {
+        match source {
+            PlaySource::File(path) => self.start_player(id, path, video, ctx),
+            PlaySource::Remote(url) => self.start_remote_player(id, url, ctx),
+        }
+    }
+
+    pub fn toggle_source(&mut self, id: &str, source: PlaySource<'_>, ctx: &egui::Context) {
+        match source {
+            PlaySource::File(path) => self.toggle_player(id, path, true, ctx),
+            PlaySource::Remote(url) => self.toggle_remote_player(id, url, ctx),
+        }
+    }
+
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+
+    /// Muda o volume de todos os players, abertos e futuros.
+    pub fn set_volume(&mut self, level: f32) {
+        self.volume = level.clamp(0.0, 1.0);
+        for player in self.players.values_mut() {
+            player.set_volume(self.volume);
         }
     }
 
@@ -1659,6 +1709,7 @@ mod lifecycle_tests {
         fn toggle(&mut self) { self.playing = !self.playing; }
         fn seek(&mut self, _seconds: f64) { self.playing = true; }
         fn set_muted(&mut self, muted: bool) { self.muted = muted; }
+        fn set_volume(&mut self, _volume: f64) {}
         fn is_playing(&self) -> bool { self.playing }
         fn position(&self) -> f64 { 0.0 }
         fn duration(&self) -> f64 { 1.0 }
