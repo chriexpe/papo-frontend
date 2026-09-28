@@ -16,13 +16,15 @@ use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use windows::{
     Win32::{
         Foundation::{E_POINTER, HWND, RECT},
-        Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF},
+        Graphics::Gdi::{
+            CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF, SetWindowRgn,
+        },
         System::Com::{
             COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
         },
         UI::WindowsAndMessaging::{
             CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW,
-            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, SetWindowRgn, ShowWindow, WS_CHILD,
+            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD,
             WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
         },
     },
@@ -867,7 +869,7 @@ impl WebEmbedBackend for WindowsWebEmbedBackend {
         if self.current_id.as_deref() != Some(id) {
             return None;
         }
-        self.live.as_ref().and_then(LiveWebView::is_playing)
+        self.live.as_ref().and_then(|live| live.is_playing())
     }
 }
 
