@@ -150,15 +150,11 @@ pub fn main() -> eframe::Result<()> {
         }
     }
 
-    // Onde não há menu global, a janela ganha a barra que desenhamos; onde
-    // há (Plasma), quem desenha é o compositor.
-    let own_chrome = !platform::desktop::uses_global_menu();
     let options = eframe::NativeOptions {
         renderer: render::desktop_renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Papo")
             .with_app_id(APP_ID)
-            .with_decorations(!own_chrome)
             .with_inner_size([1160.0, 740.0])
             .with_min_inner_size([360.0, 480.0])
             .with_icon(window_icon()),

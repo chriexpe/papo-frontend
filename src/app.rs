@@ -5,7 +5,9 @@ use egui::Color32;
 use crate::i18n::Lang;
 use crate::media::Media;
 use crate::platform::files::{self, Chosen, Dialogs, ImagePick};
-use crate::platform::menu::{MenuCommand, MenuModel, MenuNode};
+use crate::platform::menu::MenuCommand;
+#[cfg(target_os = "linux")]
+use crate::platform::menu::{MenuModel, MenuNode};
 use crate::platform::desktop;
 #[cfg(target_os = "linux")]
 use crate::platform::activate::Activator;
@@ -705,10 +707,6 @@ pub struct PapoApp {
     window_attached: bool,
     /// Servidor de mentira: a rede é ignorada.
     demo: bool,
-    /// Nós desenhamos a barra de título, porque esta área de trabalho não
-    /// tem menu global para onde mandar o menu.
-    own_chrome: bool,
-    header: crate::ui::headerbar::HeaderState,
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
     /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
@@ -992,11 +990,6 @@ impl PapoApp {
             minimized: false,
             window_attached: false,
             demo,
-            // No Android não há janela para decorar — nem barra nossa com
-            // minimizar/fechar, nem menu global. Os ajustes continuam à mão
-            // pela pastilha da conta, que é por onde o layout compacto abre.
-            own_chrome: !cfg!(target_os = "android") && !desktop::uses_global_menu(),
-            header: crate::ui::headerbar::HeaderState::default(),
             add_server_previous: None,
             #[cfg(target_os = "android")]
             _runtime_lease: runtime_lease,
@@ -2619,25 +2612,6 @@ impl PapoApp {
         }
     }
 
-    /// Barra de título própria, onde não existe menu global.
-    fn draw_header(&mut self, ui: &mut egui::Ui) {
-        if !self.own_chrome {
-            return;
-        }
-        let model = build_menu(&self.settings, &self.workspaces[self.active].runtime.store);
-        // O nome do servidor na tela é o que a barra tem de mais útil a
-        // dizer; sem sessão, sobra o nome do aplicativo.
-        let title = match &self.ws().runtime.store.server {
-            Some(server) if !server.name.is_empty() => {
-                format!("Papo — {}", server.name)
-            }
-            _ => "Papo".to_owned(),
-        };
-        let commands =
-            crate::ui::headerbar::draw(ui, &mut self.header, &model, &title, &self.tokens);
-        self.ui.pending.extend(commands);
-    }
-
     /// Trilho de servidores e o que ele pediu.
     /// As entradas do trilho, com o ícone de cada servidor já em textura.
     fn rail_entries(&mut self, ctx: &egui::Context) -> Vec<crate::ui::rail::Entry> {
@@ -2796,17 +2770,11 @@ impl PapoApp {
         }
         let screen = ctx.content_rect();
         let left = crate::ui::rail::RAIL_WIDTH + crate::ui::shell::SIDEBAR_WIDTH;
-        // A nossa barra de título é opaca: o desfoque começa abaixo dela.
-        let top = if self.own_chrome {
-            crate::ui::headerbar::HEADER_HEIGHT as i32
-        } else {
-            0
-        };
-        let height = screen.height() as i32 - top;
-        let mut regions = vec![(0, top, left as i32, height)];
+        let height = screen.height() as i32;
+        let mut regions = vec![(0, 0, left as i32, height)];
         if self.settings.show_members {
             let width = crate::ui::shell::MEMBERS_WIDTH as i32;
-            regions.push((screen.width() as i32 - width, top, width, height));
+            regions.push((screen.width() as i32 - width, 0, width, height));
         }
         blur.set_regions(&regions);
     }
@@ -3765,7 +3733,6 @@ impl eframe::App for PapoApp {
         }
 
         let strings = self.settings.lang.strings();
-        self.draw_header(ui);
 
         let compact_chat = matches!(
             self.workspaces[self.active].runtime.store.screen,
@@ -3890,9 +3857,11 @@ impl eframe::App for PapoApp {
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_pill(&ctx);
         self.pump_files(&ctx);
-
-        if self.own_chrome {
-            crate::ui::headerbar::resize_handles(&ctx);
+        #[cfg(not(target_os = "android"))]
+        {
+            let store = &self.workspaces[self.active].runtime.store;
+            let shortcuts = shortcut_commands(&ctx, store);
+            self.ui.pending.extend(shortcuts);
         }
 
         let pending = std::mem::take(&mut self.ui.pending);
@@ -4009,6 +3978,33 @@ fn appearance_for(settings: &Settings, system: &SystemTheme) -> Appearance {
 }
 
 /// Árvore do menu global, montada a partir do estado atual.
+/// Os atalhos que o menu anuncia. O menu global só os mostra, e fora do
+/// Plasma nem menu há: quem os atende é a própria janela.
+#[cfg(not(target_os = "android"))]
+fn shortcut_commands(ctx: &egui::Context, store: &Store) -> Vec<MenuCommand> {
+    use egui::{Key, KeyboardShortcut, Modifiers};
+
+    let shortcuts = [
+        (Key::Comma, MenuCommand::Preferences),
+        (Key::Q, MenuCommand::Quit),
+        (Key::N, MenuCommand::NewChannel),
+        (Key::F, MenuCommand::Search),
+        (Key::U, MenuCommand::ToggleMembers),
+    ];
+    ctx.input_mut(|input| {
+        shortcuts
+            .into_iter()
+            .filter(|(key, _)| {
+                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, *key))
+            })
+            .map(|(_, command)| command)
+            // O menu desabilita o item para quem não pode criar canais.
+            .filter(|command| *command != MenuCommand::NewChannel || store.can_manage_channels())
+            .collect()
+    })
+}
+
+#[cfg(target_os = "linux")]
 fn build_menu(settings: &Settings, store: &Store) -> MenuModel {
     let s = settings.lang.strings();
     MenuModel::new(vec![
