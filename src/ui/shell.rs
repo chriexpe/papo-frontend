@@ -2644,6 +2644,9 @@ fn handle_mobile_gesture(
     top_inset: f32,
     bottom_inset: f32,
 ) {
+    #[cfg(not(target_os = "android"))]
+    let _ = store;
+
     let (pressed, released, down, pos, time) = ui.input(|input| {
         (
             input.pointer.any_pressed(),
@@ -2759,11 +2762,14 @@ fn handle_mobile_gesture(
             }
         }
 
-        let mut intent_slop = SWIPE_SLOP;
         #[cfg(target_os = "android")]
-        if active.message_id.is_some() {
-            intent_slop = LONG_PRESS_SLOP;
-        }
+        let intent_slop = if active.message_id.is_some() {
+            LONG_PRESS_SLOP
+        } else {
+            SWIPE_SLOP
+        };
+        #[cfg(not(target_os = "android"))]
+        let intent_slop = SWIPE_SLOP;
         if active.intent.is_none() && !active.blocked && delta.length() >= intent_slop {
             active.intent = Some(decide_intent(delta, state.mobile_surface, &active.message_id));
         }

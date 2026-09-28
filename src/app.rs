@@ -1284,7 +1284,11 @@ impl PapoApp {
                     }
                 });
             });
-        if !keep && !self.update_waiting_permission {
+        #[cfg(target_os = "android")]
+        let waiting_permission = self.update_waiting_permission;
+        #[cfg(target_os = "windows")]
+        let waiting_permission = false;
+        if !keep && !waiting_permission {
             self.update_available = None;
         }
     }
@@ -1333,12 +1337,11 @@ impl PapoApp {
             .show(ctx, |ui| {
                 ui.set_min_size(size);
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-                let rounding = egui::CornerRadius::same(
-                    #[cfg(target_os = "android")]
-                    { 24 }
-                    #[cfg(target_os = "windows")]
-                    { crate::ui::shell::PILL_RADIUS }
-                );
+                #[cfg(target_os = "android")]
+                let rounding = egui::CornerRadius::same(24);
+                #[cfg(target_os = "windows")]
+                let rounding =
+                    egui::CornerRadius::same(crate::ui::shell::PILL_RADIUS);
                 ui.painter().rect(
                     rect,
                     rounding,

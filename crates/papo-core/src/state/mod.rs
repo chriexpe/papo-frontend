@@ -4385,6 +4385,7 @@ mod tests {
             author_id: Some("u1".to_owned()),
             author_username: Some("ana".to_owned()),
             created_at: Some(at),
+            attachments: Vec::new(),
         };
 
         store.apply(Update::SearchResults {
