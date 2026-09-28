@@ -30,7 +30,6 @@ papo-core = { path = "crates/papo-core" }
 # eframe são exclusivos — nunca ligar os dois.
 eframe = { version = "0.36", default-features = false, features = [
     "default_fonts",
-    "glow",
     "persistence",
 ] }
 egui = "0.36"
@@ -68,6 +67,7 @@ swash = "0.2"
 # GStreamer, bandeja, menu global, diálogos do portal e as pastas do XDG só
 # existem aqui. No Android cada um desses tem um substituto em `stub/`.
 [target.'cfg(not(target_os = "android"))'.dependencies]
+eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 env_logger = "0.11"
 directories = "6"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
@@ -102,11 +102,6 @@ libc = "0.2"
 # Windows
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "windows")'.dependencies]
-# WGPU stays the Windows default because Windows can expose only the legacy
-# OpenGL 1.1 system driver even when Direct3D is available. Glow remains
-# compiled by the common eframe dependency for explicit development/testing;
-# Papo's current in-app blur callback still depends on that backend.
-eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
 # Direct native WebView2 COM bindings. Papo owns the WebEmbed policy; Edge owns
 # the child HWND, browser rendering and pointer/keyboard interaction.
 webview2-com = "0.39.1"
@@ -131,7 +126,7 @@ semver = "1"
 # Android
 # ---------------------------------------------------------------------------
 [target.'cfg(target_os = "android")'.dependencies]
-eframe = { version = "0.36", default-features = false, features = ["android-game-activity"] }
+eframe = { version = "0.36", default-features = false, features = ["android-game-activity", "glow"] }
 # A mesma versão que o winit usa: o `AndroidApp` que chega no `android_main`
 # tem de ser o tipo do winit, não um homônimo de outra versão.
 android-activity = { version = "0.6", features = ["game-activity"] }
@@ -162,3 +157,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+
+# Papo needs a render-pass barrier for backend-neutral backdrop effects.
+# This is a narrow egui-wgpu 0.36.2 patch; keep it isolated so it can be
+# dropped as soon as the hook is available upstream.
+[patch.crates-io]
+egui-wgpu = { path = "vendor/egui-wgpu-papo" }

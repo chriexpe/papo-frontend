@@ -1288,32 +1288,44 @@ fn mobile_drawers(
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
 /// dela entra borrado, e a tinta translúcida vem por cima.
 pub(super) fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
-    if !state.translucent {
+    if !state.translucent || state.glass.is_none() {
         return;
     }
-    let Some(glass) = state.glass.clone() else {
-        return;
-    };
-    let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
-        let viewport = info.viewport_in_pixels();
-        if let Ok(mut glass) = glass.lock() {
-            glass.render(
-                painter.gl(),
-                (
-                    viewport.left_px,
-                    viewport.top_px,
-                    viewport.width_px,
-                    viewport.height_px,
-                ),
-                info.screen_size_px[1] as i32,
-                corner * info.pixels_per_point,
-            );
-        }
-    });
-    ui.painter().add(egui::PaintCallback {
+
+    #[cfg(target_os = "android")]
+    {
+        let Some(glass) = state.glass.clone() else {
+            return;
+        };
+        let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
+            let viewport = info.viewport_in_pixels();
+            if let Ok(mut glass) = glass.lock() {
+                glass.render(
+                    painter.gl(),
+                    (
+                        viewport.left_px,
+                        viewport.top_px,
+                        viewport.width_px,
+                        viewport.height_px,
+                    ),
+                    info.screen_size_px[1] as i32,
+                    corner * info.pixels_per_point,
+                );
+            }
+        });
+        ui.painter().add(egui::PaintCallback {
+            rect,
+            callback: std::sync::Arc::new(callback),
+        });
+    }
+
+    #[cfg(not(target_os = "android"))]
+    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
         rect,
-        callback: std::sync::Arc::new(callback),
-    });
+        super::glass::GlassCallback {
+            corner_points: corner,
+        },
+    ));
 }
 // ---------------------------------------------------------------------------
 // Coluna esquerda — canais

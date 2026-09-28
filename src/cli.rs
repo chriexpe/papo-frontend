@@ -1,25 +1,6 @@
 //! Os comandos de linha e a abertura da janela na área de trabalho.
 
-use papo::{APP_ID, api, app, media, platform, storage, voice};
-
-#[cfg(target_os = "windows")]
-fn windows_renderer() -> eframe::Renderer {
-    match std::env::var("PAPO_RENDERER").as_deref() {
-        // WGPU is the safe Windows default. Some otherwise supported Windows
-        // machines (including our self-contained smoke environment) expose
-        // only the legacy OpenGL 1.1 system driver; forcing Glow there makes
-        // egui_glow abort before the first frame because it requires GL 2.0+.
-        //
-        // Glow remains opt-in for development/testing on machines with a
-        // suitable OpenGL driver while the in-app blur still depends on it.
-        Ok("glow") => eframe::Renderer::Glow,
-        Ok("wgpu") | Err(_) => eframe::Renderer::Wgpu,
-        Ok(other) => {
-            log::warn!("PAPO_RENDERER={other:?} desconhecido; usando wgpu");
-            eframe::Renderer::Wgpu
-        }
-    }
-}
+use papo::{APP_ID, api, app, media, platform, render, storage, voice};
 
 pub fn main() -> eframe::Result<()> {
     env_logger::init_from_env(env_logger::Env::default().default_filter_or("warn,papo=debug"));
@@ -173,8 +154,7 @@ pub fn main() -> eframe::Result<()> {
     // há (Plasma), quem desenha é o compositor.
     let own_chrome = !platform::desktop::uses_global_menu();
     let options = eframe::NativeOptions {
-        #[cfg(target_os = "windows")]
-        renderer: windows_renderer(),
+        renderer: render::desktop_renderer(),
         viewport: egui::ViewportBuilder::default()
             .with_title("Papo")
             .with_app_id(APP_ID)

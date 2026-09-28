@@ -6,6 +6,10 @@ pub mod call;
 pub mod crop;
 pub mod emoji;
 pub mod emoji_raster;
+#[cfg(target_os = "android")]
+pub mod glass;
+#[cfg(not(target_os = "android"))]
+#[path = "glass_wgpu.rs"]
 pub mod glass;
 pub mod profile;
 pub mod headerbar;
