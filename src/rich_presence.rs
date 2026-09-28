@@ -584,9 +584,7 @@ async fn run_external(
 #[cfg(not(target_os = "android"))]
 fn parse_bridge_message(text: &str) -> Option<(String, Option<Activity>)> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
-    if value.get("activity").is_none() {
-        return None;
-    }
+    value.get("activity")?;
     let socket = value
         .get("socketId")
         .and_then(serde_json::Value::as_str)
@@ -1059,22 +1057,16 @@ async fn run_builtin(
                     }
                     detected
                 });
-                if rpc_activities.is_empty() {
-                    if process_activity != last_published {
-                        last_published = process_activity.clone();
-                        let detail = if discord_running {
-                            "Native Discord owns RPC · game detection".to_owned()
-                        } else if let Some(slot) = ipc_slot {
-                            if settings.game_detection {
-                                return_detail(slot, true)
-                            } else {
-                                return_detail(slot, false)
-                            }
-                        } else {
-                            "Built-in collector".to_owned()
-                        };
-                        publish(events, repaint, Source::BuiltIn, detail, process_activity.clone());
-                    }
+                if rpc_activities.is_empty() && process_activity != last_published {
+                    last_published = process_activity.clone();
+                    let detail = if discord_running {
+                        "Native Discord owns RPC · game detection".to_owned()
+                    } else if let Some(slot) = ipc_slot {
+                        return_detail(slot, settings.game_detection)
+                    } else {
+                        "Built-in collector".to_owned()
+                    };
+                    publish(events, repaint, Source::BuiltIn, detail, process_activity.clone());
                 }
             }
             event = ipc_rx.recv() => {
