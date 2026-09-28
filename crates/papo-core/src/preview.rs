@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use reqwest::header::{CONTENT_TYPE, LOCATION, RETRY_AFTER};
+use reqwest::header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION, RETRY_AFTER};
 use tokio::sync::{mpsc, Semaphore};
 use url::{Host, Url};
 
@@ -21,10 +21,16 @@ use crate::cache::{now_millis, CachedPreview, ClientDb, PreviewCacheState};
 
 const HTML_MAX: usize = 2 << 20;
 const OEMBED_MAX: usize = 512 << 10;
+const ACTIVITYPUB_MAX: usize = 512 << 10;
 const OEMBED_REGISTRY_MAX: usize = 2 << 20;
 const OEMBED_REGISTRY_URL: &str = "https://oembed.com/providers.json";
 const MAX_REDIRECTS: usize = 5;
-const READY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Rich media is comparatively stable and expensive to rediscover.
+const RICH_READY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// A plain card can be a degraded crawler response, so re-probe it sooner.
+const LINK_READY_TTL_MS: i64 = 30 * 60 * 1000;
+/// no-store results stay in memory briefly but are never written to Turso.
+const EPHEMERAL_READY_TTL_MS: i64 = 5 * 60 * 1000;
 const NEGATIVE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const RETRY_BASE_MS: i64 = 5 * 60 * 1000;
 const RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1000;
@@ -76,6 +82,38 @@ pub struct ResolvedPreview {
     pub provider_name: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+struct ResolvedOutcome {
+    preview: ResolvedPreview,
+    /// False when the source used Cache-Control: no-store.
+    persistent: bool,
+}
+
+fn ready_ttl_ms(kind: PreviewKind) -> i64 {
+    match kind {
+        PreviewKind::Link => LINK_READY_TTL_MS,
+        PreviewKind::Image | PreviewKind::Video | PreviewKind::Embed => RICH_READY_TTL_MS,
+    }
+}
+
+fn preview_rank(kind: PreviewKind) -> u8 {
+    match kind {
+        PreviewKind::Link => 0,
+        PreviewKind::Image => 1,
+        PreviewKind::Embed => 2,
+        PreviewKind::Video => 3,
+    }
+}
+
+fn response_allows_persistence(headers: &reqwest::header::HeaderMap) -> bool {
+    !headers
+        .get_all(CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|directive| directive.trim().eq_ignore_ascii_case("no-store"))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PreviewState {
     Loading,
@@ -121,6 +159,7 @@ impl PreviewStats {
 struct MemoryEntry {
     state: PreviewState,
     resolved_at: i64,
+    ttl_ms: i64,
     retry_after: Option<i64>,
     in_flight: bool,
 }
@@ -130,6 +169,7 @@ impl MemoryEntry {
         Self {
             state: PreviewState::Loading,
             resolved_at: 0,
+            ttl_ms: 0,
             retry_after: None,
             in_flight: false,
         }
@@ -145,7 +185,7 @@ impl MemoryEntry {
         match self.state {
             PreviewState::Loading => true,
             PreviewState::Ready(_) | PreviewState::Negative => {
-                now.saturating_sub(self.resolved_at) >= READY_TTL_MS
+                now.saturating_sub(self.resolved_at) >= self.ttl_ms
             }
             PreviewState::RetryLater { retry_after } => retry_after <= now,
         }
@@ -294,7 +334,8 @@ async fn process_request(
     if let Some(row) = cached {
         match row_to_state(&row) {
             Some(PreviewState::Ready(preview)) => {
-                let fresh = now.saturating_sub(row.resolved_at) < READY_TTL_MS;
+                let ttl_ms = ready_ttl_ms(preview.kind);
+                let fresh = now.saturating_sub(row.resolved_at) < ttl_ms;
                 if fresh {
                     inner.stats.cache_ready.fetch_add(1, Ordering::Relaxed);
                     publish(
@@ -302,6 +343,7 @@ async fn process_request(
                         &key,
                         PreviewState::Ready(preview),
                         row.resolved_at,
+                        ttl_ms,
                         row.retry_after,
                         false,
                     );
@@ -314,6 +356,7 @@ async fn process_request(
                         &key,
                         PreviewState::Ready(preview),
                         row.resolved_at,
+                        ttl_ms,
                         row.retry_after,
                         false,
                     );
@@ -326,6 +369,7 @@ async fn process_request(
                     &key,
                     PreviewState::Ready(preview),
                     row.resolved_at,
+                    ttl_ms,
                     row.retry_after,
                     true,
                 );
@@ -339,6 +383,7 @@ async fn process_request(
                     &key,
                     PreviewState::Negative,
                     row.resolved_at,
+                    NEGATIVE_TTL_MS,
                     row.retry_after,
                     false,
                 );
@@ -350,6 +395,7 @@ async fn process_request(
                     &key,
                     PreviewState::RetryLater { retry_after },
                     row.resolved_at,
+                    0,
                     Some(retry_after),
                     false,
                 );
@@ -365,14 +411,46 @@ async fn process_request(
         .fetch_add(1, Ordering::Relaxed);
 
     match resolve_url(&client, &oembed_registry, &key, 0).await {
-        Ok(preview) => {
-            let row = preview_row(&key, &preview, now);
-            persist(&inner, row).await;
+        Ok(resolved) => {
+            let preview = resolved.preview;
+
+            if !resolved.persistent
+                && let Some((stale, mut old_row)) = stale_ready.take()
+                && preview_rank(stale.kind) > preview_rank(preview.kind)
+            {
+                let retry_after = now + EPHEMERAL_READY_TTL_MS;
+                old_row.retry_after = Some(retry_after);
+                old_row.failure_class = Some("no-store-downgrade".to_owned());
+                old_row.last_used_at = now;
+                persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(stale.kind);
+                publish(
+                    &inner,
+                    &key,
+                    PreviewState::Ready(stale),
+                    old_row.resolved_at,
+                    ttl_ms,
+                    Some(retry_after),
+                    false,
+                );
+                return;
+            }
+
+            let ttl_ms = if resolved.persistent {
+                ready_ttl_ms(preview.kind)
+            } else {
+                EPHEMERAL_READY_TTL_MS
+            };
+            if resolved.persistent {
+                let row = preview_row(&key, &preview, now);
+                persist(&inner, row).await;
+            }
             publish(
                 &inner,
                 &key,
                 PreviewState::Ready(preview),
                 now,
+                ttl_ms,
                 None,
                 false,
             );
@@ -388,11 +466,13 @@ async fn process_request(
                 old_row.failure_class = Some("transient".to_owned());
                 old_row.last_used_at = now;
                 persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(preview.kind);
                 publish(
                     &inner,
                     &key,
                     PreviewState::Ready(preview),
                     old_row.resolved_at,
+                    ttl_ms,
                     Some(retry_after),
                     false,
                 );
@@ -419,6 +499,7 @@ async fn process_request(
                     &key,
                     PreviewState::RetryLater { retry_after },
                     now,
+                    0,
                     Some(retry_after),
                     false,
                 );
@@ -426,19 +507,18 @@ async fn process_request(
         }
         Err(error) => {
             if let Some((preview, mut old_row)) = stale_ready {
-                // Uma falha ao refrescar nunca apaga um preview útil. Para
-                // rejeição de segurança, espera-se o TTL negativo antes de
-                // reconsiderar metadados novos.
                 let retry_after = now + NEGATIVE_TTL_MS;
                 old_row.retry_after = Some(retry_after);
                 old_row.failure_class = Some(error.class.as_str().to_owned());
                 old_row.last_used_at = now;
                 persist(&inner, old_row.clone()).await;
+                let ttl_ms = ready_ttl_ms(preview.kind);
                 publish(
                     &inner,
                     &key,
                     PreviewState::Ready(preview),
                     old_row.resolved_at,
+                    ttl_ms,
                     Some(retry_after),
                     false,
                 );
@@ -465,15 +545,12 @@ async fn process_request(
                     &key,
                     PreviewState::Negative,
                     now,
+                    NEGATIVE_TTL_MS,
                     None,
                     false,
                 );
             }
-            log::debug!(
-                "preview {}: {}",
-                safe_key(&key),
-                error.message
-            );
+            log::debug!("preview {}: {}", safe_key(&key), error.message);
         }
     }
 }
@@ -488,6 +565,7 @@ fn publish(
     key: &str,
     state: PreviewState,
     resolved_at: i64,
+    ttl_ms: i64,
     retry_after: Option<i64>,
     in_flight: bool,
 ) {
@@ -497,6 +575,7 @@ fn publish(
             MemoryEntry {
                 state,
                 resolved_at,
+                ttl_ms,
                 retry_after,
                 in_flight,
             },
@@ -601,7 +680,7 @@ async fn resolve_url(
     oembed_registry: &tokio::sync::OnceCell<Vec<OEmbedRegistryEndpoint>>,
     source_url: &str,
     depth: usize,
-) -> Result<ResolvedPreview, ResolveError> {
+) -> Result<ResolvedOutcome, ResolveError> {
     if depth > 2 {
         return Err(ResolveError::negative("profundidade de embed excedida"));
     }
@@ -609,6 +688,7 @@ async fn resolve_url(
         .map_err(|error| ResolveError::negative(format!("URL inválida: {error}")))?;
     let response = get_following_safe_redirects(client, source.clone()).await?;
     let final_url = response.url().clone();
+    let mut persistent = response_allows_persistence(response.headers());
     let content_type = response
         .headers()
         .get(CONTENT_TYPE)
@@ -622,28 +702,34 @@ async fn resolve_url(
     let header_oembed = oembed_header_endpoint(response.headers(), &final_url);
 
     if is_video_content_type(&content_type) {
-        return Ok(ResolvedPreview {
-            source_url: source_url.to_owned(),
-            kind: PreviewKind::Video,
-            media_url: Some(final_url.to_string()),
-            image_url: None,
-            embed_url: None,
-            title: file_name_title(&final_url),
-            description: None,
-            provider_name: final_url.host_str().map(str::to_owned),
+        return Ok(ResolvedOutcome {
+            preview: ResolvedPreview {
+                source_url: source_url.to_owned(),
+                kind: PreviewKind::Video,
+                media_url: Some(final_url.to_string()),
+                image_url: None,
+                embed_url: None,
+                title: file_name_title(&final_url),
+                description: None,
+                provider_name: final_url.host_str().map(str::to_owned),
+            },
+            persistent,
         });
     }
     if content_type.starts_with("image/") {
         let media = final_url.to_string();
-        return Ok(ResolvedPreview {
-            source_url: source_url.to_owned(),
-            kind: PreviewKind::Image,
-            media_url: Some(media.clone()),
-            image_url: Some(media),
-            embed_url: None,
-            title: file_name_title(&final_url),
-            description: None,
-            provider_name: final_url.host_str().map(str::to_owned),
+        return Ok(ResolvedOutcome {
+            preview: ResolvedPreview {
+                source_url: source_url.to_owned(),
+                kind: PreviewKind::Image,
+                media_url: Some(media.clone()),
+                image_url: Some(media),
+                embed_url: None,
+                title: file_name_title(&final_url),
+                description: None,
+                provider_name: final_url.host_str().map(str::to_owned),
+            },
+            persistent,
         });
     }
 
@@ -685,7 +771,16 @@ async fn resolve_url(
         }
     };
     if let Some(oembed) = oembed {
-        merge_preview(&mut preview, oembed);
+        persistent &= oembed.persistent;
+        merge_preview(&mut preview, oembed.preview);
+    }
+
+    if preview.media_url.is_none()
+        && let Some(endpoint) = activitypub_endpoint(&html, &final_url)
+        && let Ok(activity) = resolve_activitypub(client, source_url, endpoint).await
+    {
+        persistent &= activity.persistent;
+        merge_preview(&mut preview, activity.preview);
     }
 
     // Um player HTML/iframe pode, por sua vez, publicar um stream direto.
@@ -697,12 +792,13 @@ async fn resolve_url(
         && depth < 2
         && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
     {
-        if nested.media_url.is_some() {
-            preview.media_url = nested.media_url;
-            preview.kind = nested.kind;
+        persistent &= nested.persistent;
+        if nested.preview.media_url.is_some() {
+            preview.media_url = nested.preview.media_url;
+            preview.kind = nested.preview.kind;
         }
         if preview.image_url.is_none() {
-            preview.image_url = nested.image_url;
+            preview.image_url = nested.preview.image_url;
         }
     }
 
@@ -716,7 +812,10 @@ async fn resolve_url(
         return Err(ResolveError::negative("página sem metadados ricos"));
     }
 
-    Ok(preview)
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
 }
 
 async fn sanitize_preview_targets(preview: &mut ResolvedPreview) {
@@ -757,8 +856,9 @@ async fn resolve_oembed(
     source_url: &str,
     endpoint: Url,
     depth: usize,
-) -> Result<ResolvedPreview, ResolveError> {
+) -> Result<ResolvedOutcome, ResolveError> {
     let response = get_following_safe_redirects(client, endpoint).await?;
+    let mut persistent = response_allows_persistence(response.headers());
     let bytes = read_limited_bytes(response, OEMBED_MAX, "oEmbed").await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|error| ResolveError::negative(format!("oEmbed inválido: {error}")))?;
@@ -810,16 +910,103 @@ async fn resolve_oembed(
         && let Some(embed) = preview.embed_url.clone()
         && depth < 2
         && let Ok(nested) = Box::pin(resolve_url(client, oembed_registry, &embed, depth + 1)).await
-        && nested.media_url.is_some()
+        && nested.preview.media_url.is_some()
     {
-        preview.kind = nested.kind;
-        preview.media_url = nested.media_url;
+        persistent &= nested.persistent;
+        preview.kind = nested.preview.kind;
+        preview.media_url = nested.preview.media_url;
         if preview.image_url.is_none() {
-            preview.image_url = nested.image_url;
+            preview.image_url = nested.preview.image_url;
         }
     }
 
-    Ok(preview)
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
+}
+
+async fn resolve_activitypub(
+    client: &reqwest::Client,
+    source_url: &str,
+    endpoint: Url,
+) -> Result<ResolvedOutcome, ResolveError> {
+    let response = get_following_safe_redirects(client, endpoint).await?;
+    let persistent = response_allows_persistence(response.headers());
+    let base = response.url().clone();
+    let bytes = read_limited_bytes(response, ACTIVITYPUB_MAX, "ActivityPub").await?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| ResolveError::negative(format!("ActivityPub inválido: {error}")))?;
+    let preview = activitypub_preview(&value, source_url, &base)
+        .ok_or_else(|| ResolveError::negative("ActivityPub sem mídia utilizável"))?;
+    Ok(ResolvedOutcome {
+        preview,
+        persistent,
+    })
+}
+
+fn activitypub_preview(
+    value: &serde_json::Value,
+    source_url: &str,
+    base: &Url,
+) -> Option<ResolvedPreview> {
+    let attachment = value.get("attachment")?;
+    let items: Vec<&serde_json::Value> = match attachment {
+        serde_json::Value::Array(items) => items.iter().collect(),
+        serde_json::Value::Object(_) => vec![attachment],
+        _ => return None,
+    };
+
+    let mut video_url = None;
+    let mut image_url = None;
+    for item in items {
+        let media_type = item
+            .get("mediaType")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let Some(url) = activitypub_object_url(item.get("url"), base)
+            .filter(|url| safe_remote_url(url))
+        else {
+            continue;
+        };
+        if media_type.starts_with("video/") && video_url.is_none() {
+            video_url = Some(url);
+        } else if media_type.starts_with("image/") && image_url.is_none() {
+            image_url = Some(url);
+        }
+    }
+
+    let kind = if video_url.is_some() {
+        PreviewKind::Video
+    } else if image_url.is_some() {
+        PreviewKind::Image
+    } else {
+        return None;
+    };
+
+    Some(ResolvedPreview {
+        source_url: source_url.to_owned(),
+        kind,
+        media_url: video_url,
+        image_url,
+        embed_url: None,
+        title: json_string(value, "name").or_else(|| json_string(value, "summary")),
+        description: None,
+        provider_name: base.host_str().map(str::to_owned),
+    })
+}
+
+fn activitypub_object_url(value: Option<&serde_json::Value>, base: &Url) -> Option<String> {
+    let raw = match value? {
+        serde_json::Value::String(raw) => raw.as_str(),
+        serde_json::Value::Object(map) => map
+            .get("href")
+            .or_else(|| map.get("url"))
+            .and_then(|value| value.as_str())?,
+        _ => return None,
+    };
+    resolve_meta_url(base, raw)
 }
 
 async fn parse_html_preview(
@@ -1524,6 +1711,37 @@ fn oembed_endpoint(html: &str, base: &Url) -> Option<Url> {
     None
 }
 
+fn activitypub_endpoint(html: &str, base: &Url) -> Option<Url> {
+    for raw in html.split('<').skip(1) {
+        let tag = raw.split_once('>').map(|(tag, _)| tag).unwrap_or(raw);
+        if !tag_name_is(tag, "link") {
+            continue;
+        }
+        let rel = html_attr(tag, "rel").unwrap_or_default();
+        if !rel
+            .split_ascii_whitespace()
+            .any(|part| part.eq_ignore_ascii_case("alternate"))
+        {
+            continue;
+        }
+        let mime = html_attr(tag, "type")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let is_activity = mime.starts_with("application/activity+json")
+            || (mime.starts_with("application/ld+json")
+                && mime.contains("activitystreams"));
+        if !is_activity {
+            continue;
+        }
+        let href = html_attr(tag, "href")?;
+        let url = base.join(&decode_html_url(&href)).ok()?;
+        if safe_remote_url(url.as_str()) {
+            return Some(url);
+        }
+    }
+    None
+}
+
 fn html_media_url(html: &str, base: &str) -> Option<String> {
     let base = Url::parse(base).ok()?;
     for tag_name in ["video", "source"] {
@@ -1850,7 +2068,8 @@ mod tests {
             url.clone(),
             MemoryEntry {
                 state: PreviewState::Ready(ready_preview(&url)),
-                resolved_at: now_millis() - READY_TTL_MS - 1,
+                resolved_at: now_millis() - RICH_READY_TTL_MS - 1,
+                ttl_ms: RICH_READY_TTL_MS,
                 retry_after: None,
                 in_flight: false,
             },
@@ -1880,6 +2099,7 @@ mod tests {
                     retry_after: future,
                 },
                 resolved_at: now_millis(),
+                ttl_ms: 0,
                 retry_after: Some(future),
                 in_flight: false,
             },
@@ -1949,4 +2169,87 @@ mod tests {
             Some("https://video.example/oembed?url=https%3A%2F%2Fvideo.example%2Fwatch%2F1")
         );
     }
+
+    #[test]
+    fn cache_control_no_store_is_never_persistent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("public, max-age=60, no-store"),
+        );
+        assert!(!response_allows_persistence(&headers));
+
+        headers.insert(
+            CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("public, max-age=60"),
+        );
+        assert!(response_allows_persistence(&headers));
+    }
+
+    #[test]
+    fn plain_cards_refresh_sooner_than_rich_media() {
+        assert!(ready_ttl_ms(PreviewKind::Link) < ready_ttl_ms(PreviewKind::Video));
+        assert!(ready_ttl_ms(PreviewKind::Link) < ready_ttl_ms(PreviewKind::Embed));
+    }
+
+    #[test]
+    fn discovers_activitypub_alternate_without_provider_table() {
+        let base = Url::parse("https://proxy.example/reel/abc").unwrap();
+        let html = r#"<link href="/users/demo/statuses/1"
+                           rel="alternate"
+                           type="application/activity+json">"#;
+        assert_eq!(
+            activitypub_endpoint(html, &base)
+                .map(|url| url.to_string())
+                .as_deref(),
+            Some("https://proxy.example/users/demo/statuses/1")
+        );
+    }
+
+    #[test]
+    fn activitypub_video_attachment_promotes_to_direct_media() {
+        let base = Url::parse("https://proxy.example/users/demo/statuses/1").unwrap();
+        let value = serde_json::json!({
+            "type": "Note",
+            "name": "Demo reel",
+            "attachment": [
+                {
+                    "type": "Document",
+                    "mediaType": "video/mp4",
+                    "url": "/offload/abc/1"
+                }
+            ]
+        });
+        let preview =
+            activitypub_preview(&value, "https://proxy.example/reel/abc", &base).unwrap();
+        assert_eq!(preview.kind, PreviewKind::Video);
+        assert_eq!(
+            preview.media_url.as_deref(),
+            Some("https://proxy.example/offload/abc/1")
+        );
+        assert_eq!(preview.title.as_deref(), Some("Demo reel"));
+    }
+
+    #[tokio::test]
+    async fn unfurl_proxy_og_video_is_native_video_not_webembed() {
+        let base = Url::parse("https://proxy.example/reel/abc").unwrap();
+        let html = r#"
+            <meta property="og:title" content="Creator (@creator)">
+            <meta property="og:image" content="/offload/abc/1?thumbnail=1">
+            <meta property="og:video" content="/offload/abc/1">
+            <meta property="og:video:secure_url" content="/offload/abc/1">
+            <meta property="og:video:type" content="video/mp4">
+            <link href="/users/creator/statuses/1"
+                  rel="alternate"
+                  type="application/activity+json">
+        "#;
+        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+        assert_eq!(preview.kind, PreviewKind::Video);
+        assert_eq!(
+            preview.media_url.as_deref(),
+            Some("https://proxy.example/offload/abc/1")
+        );
+        assert!(preview.embed_url.is_none());
+    }
+
 }
