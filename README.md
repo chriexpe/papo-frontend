@@ -48,6 +48,17 @@ cargo install cargo-ndk
 scripts/android.sh --run
 ```
 
+Notificações por push (FCM) precisam da configuração do app Android no projeto Firebase, os campos do `google-services.json`. Ela não fica no repositório: vem do ambiente ou de `~/.gradle/gradle.properties`.
+
+```properties
+PAPO_FIREBASE_APP_ID=1:…:android:…      # client[].client_info.mobilesdk_app_id
+PAPO_FIREBASE_API_KEY=AIza…             # client[].api_key[].current_key
+PAPO_FIREBASE_PROJECT_ID=papo           # project_info.project_id
+PAPO_FIREBASE_SENDER_ID=…               # project_info.project_number
+```
+
+Sem ela o APK sai sem FCM, e as notificações com o app fechado ficam com a verificação periódica do WorkManager.
+
 O projeto requer **Rust 1.98+**.
 
 ```bash

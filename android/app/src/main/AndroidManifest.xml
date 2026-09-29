@@ -63,6 +63,23 @@
                 android:resource="@xml/update_file_paths" />
         </provider>
 
+        <!-- FCM. As mensagens do backend trazem o bloco `notification`: com o
+             app fora da tela o Android as desenha sozinho, neste canal e com
+             este ícone — os mesmos das notificações do próprio Papo. -->
+        <service
+            android:name=".PapoMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="messages" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_message_notification" />
+
         <service
             android:name=".CallService"
             android:exported="false"

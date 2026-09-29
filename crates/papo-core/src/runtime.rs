@@ -55,6 +55,10 @@ pub enum RuntimeEffect {
         notify_reply: bool,
     },
     Call(Box<CallRuntimeEffect>),
+    PushDevice {
+        token: String,
+        registered: bool,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -62,6 +66,7 @@ pub struct RuntimeNotificationView {
     pub server_label: String,
     pub visible_server: bool,
     pub notifications_enabled: bool,
+    pub push_registered: bool,
 }
 
 #[derive(Debug, Default)]
@@ -146,6 +151,7 @@ impl ServerRuntime {
             server_label: crate::server_key(&url),
             visible_server: false,
             notifications_enabled,
+            push_registered: false,
         };
         Self::open_with_mode(
             url,
@@ -272,6 +278,7 @@ impl ServerRuntime {
             },
             visible_server: view.visible_server,
             notifications_enabled: view.notifications_enabled,
+            push_registered: view.push_registered,
             channels: self
                 .store
                 .channels
@@ -437,6 +444,43 @@ impl ServerRuntime {
 
     /// Explicit destructive lifecycle. Ordinary Drop intentionally does not
     /// clear any durable namespace or credential.
+    /// Tira o token de push da conta sem depender do transporte deste
+    /// runtime, que está para ser derrubado (servidor removido do trilho).
+    /// Melhor esforço: sem rede, o backend descarta o token quando o FCM
+    /// passar a recusá-lo.
+    pub fn release_push_device(&self, token: String) {
+        let Some(session_token) = self.net.session.token() else {
+            return;
+        };
+        let session = Arc::new(crate::api::client::Session::default());
+        session.set_token(Some(session_token));
+        let url = self.url.clone();
+        let scope = self.server_key.clone();
+        let spawned = std::thread::Builder::new()
+            .name("papo-push-release".to_owned())
+            .spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                let Ok(api) = crate::api::client::Api::new(&url, session) else {
+                    return;
+                };
+                let result = runtime.block_on(tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    api.unregister_push_device(&token),
+                ));
+                if !matches!(result, Ok(Ok(()))) {
+                    log::info!("runtime {scope}: push não removido ao esquecer o servidor");
+                }
+            });
+        if let Err(error) = spawned {
+            log::warn!("runtime {}: thread de push: {error}", self.server_key);
+        }
+    }
+
     pub fn forget_server(&self) {
         self.notification.remove_context(&self.server_key);
         self.cache.clear_server(&self.server_key);
@@ -447,6 +491,12 @@ impl ServerRuntime {
         let mut effects = Vec::new();
         match update {
             Update::ServerUnlocked => effects.push(RuntimeEffect::ServerUnlocked),
+            Update::PushDevice { token, registered } => {
+                effects.push(RuntimeEffect::PushDevice {
+                    token: token.clone(),
+                    registered: *registered,
+                });
+            }
             Update::Server(Some(server)) if !server.name.is_empty() => {
                 effects.push(RuntimeEffect::ServerLabelChanged(server.name.clone()));
             }

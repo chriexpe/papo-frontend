@@ -16,8 +16,8 @@ use super::scheduler::{
     ReconcileScheduler, StartedReconcile, TaskOwner,
 };
 use super::models::{
-    Channel, Emoji, Message, Notification, ReactionRequest, Server, UserConfig, UserSettings,
-    UserSummary, Whoami,
+    Channel, Emoji, Message, Notification, PushDeviceRequest, ReactionRequest, Server,
+    UserConfig, UserSettings, UserSummary, Whoami,
 };
 use super::ws::{self, Connection, Event};
 use crate::storage::{Secret, SecretStore};
@@ -426,6 +426,18 @@ pub enum Command {
     /// Sinalização crua da call (oferta, resposta, candidato, mudo…), já em
     /// JSON: quem a escreve é a thread da call.
     VoiceSignal(String),
+    /// Registra o token de push deste aparelho na conta da sessão. Sucesso
+    /// significa que o servidor passa a entregar as notificações em segundo
+    /// plano por FCM.
+    RegisterPushDevice {
+        token: String,
+        device_name: Option<String>,
+    },
+    /// Tira o token da conta. Vem antes do `Logout`, que encerra a sessão
+    /// que autoriza esta chamada.
+    UnregisterPushDevice {
+        token: String,
+    },
     Logout,
 }
 
@@ -535,6 +547,12 @@ pub enum Update {
     },
     Connection(Connection),
     Error(String),
+    /// Resultado do registro de push: `registered` só é verdadeiro quando o
+    /// servidor aceitou este `token`.
+    PushDevice {
+        token: String,
+        registered: bool,
+    },
     /// Terminal marker used only by the bounded background transport.
     BackgroundFinished(BackgroundRunResult),
 }
@@ -3232,6 +3250,36 @@ async fn handle(
                 Update::AuthFailed(error.to_string()),
             ),
         },
+        Command::RegisterPushDevice { token, device_name } => {
+            let device = PushDeviceRequest {
+                token: token.clone(),
+                platform: Some("android".to_owned()),
+                device_name,
+            };
+            let registered = match api.register_push_device(&device).await {
+                Ok(()) => true,
+                Err(error) => {
+                    // Servidor sem push (404) ou falha passageira: quem cobre
+                    // este servidor continua sendo a reconciliação periódica.
+                    log::info!("runtime {storage_key}: push não registrado: {error}");
+                    false
+                }
+            };
+            publish(updates, wake, Update::PushDevice { token, registered });
+        }
+        Command::UnregisterPushDevice { token } => {
+            if let Err(error) = api.unregister_push_device(&token).await {
+                log::info!("runtime {storage_key}: push não removido: {error}");
+            }
+            publish(
+                updates,
+                wake,
+                Update::PushDevice {
+                    token,
+                    registered: false,
+                },
+            );
+        }
         Command::Logout => {
             let _ = api.logout().await;
             session.set_token(None);

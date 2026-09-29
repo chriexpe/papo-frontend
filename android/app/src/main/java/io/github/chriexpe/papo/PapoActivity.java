@@ -108,6 +108,12 @@ public class PapoActivity extends GameActivity {
     private static native void nativeNetworkChanged(boolean available, long epoch, String transport);
     private static native void nativeSetPipSurface(Surface surface);
     private static native void nativeMessageNotificationTapped(String payload);
+    private static native void nativePushTokenChanged(String token, String deviceName);
+
+    /** Entrega o token FCM ao Rust. Só chamar com o libpapo carregado. */
+    static void deliverPushToken(String token, String deviceName) {
+        nativePushTokenChanged(token, deviceName == null ? "" : deviceName);
+    }
 
     /** Voltar do sistema fechou o que o Rust tinha aberto. Em `src/platform/android/back.rs`. */
     private static native void nativeBackPressed();
@@ -1351,7 +1357,11 @@ public class PapoActivity extends GameActivity {
     }
 
     private void handleMessageNotificationIntent(Intent intent) {
-        if (intent == null || !intent.hasExtra(EXTRA_MESSAGE_ID)) {
+        if (intent == null) {
+            return;
+        }
+        if (!intent.hasExtra(EXTRA_MESSAGE_ID)) {
+            handlePushNotificationIntent(intent);
             return;
         }
         try {
@@ -1368,6 +1378,35 @@ public class PapoActivity extends GameActivity {
             intent.removeExtra(EXTRA_MESSAGE_CHANNEL);
             intent.removeExtra(EXTRA_MESSAGE_ID);
             intent.removeExtra(EXTRA_NOTIFICATION_ID);
+        }
+    }
+
+    /**
+     * Toque numa notificação do FCM que o próprio Android desenhou: o
+     * {@code data} do push vira extras da Activity. Não há endereço do
+     * servidor, então o Rust acha o servidor pelo canal.
+     */
+    private void handlePushNotificationIntent(Intent intent) {
+        if (!intent.hasExtra("google.message_id")
+                || !intent.hasExtra("channel_id")
+                || !intent.hasExtra("message_id")) {
+            return;
+        }
+        try {
+            final String notificationId = intent.getStringExtra("notification_id");
+            final JSONObject target = new JSONObject()
+                    .put("server_url", "")
+                    .put("channel_id", intent.getStringExtra("channel_id"))
+                    .put("message_id", intent.getStringExtra("message_id"))
+                    .put("notification_id", notificationId == null ? "" : notificationId);
+            nativeMessageNotificationTapped(target.toString());
+        } catch (Exception error) {
+            Log.e("papo-push", "alvo inválido do push", error);
+        } finally {
+            intent.removeExtra("google.message_id");
+            intent.removeExtra("channel_id");
+            intent.removeExtra("message_id");
+            intent.removeExtra("notification_id");
         }
     }
 
@@ -1785,6 +1824,7 @@ public class PapoActivity extends GameActivity {
         ensurePipLayer();
         ensureMessageNotificationChannel();
         handleMessageNotificationIntent(getIntent());
+        PapoPush.start(this);
 
         final View root = getWindow().getDecorView();
         root.setOnApplyWindowInsetsListener((view, insets) -> {
