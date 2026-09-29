@@ -3,7 +3,7 @@
 # Pacote para Arch e derivados (o autor usa CachyOS). Compila do fonte e
 # instala o binário, o .desktop, os ícones e os metadados da loja.
 pkgname=papo
-pkgver=0.6.0
+pkgver=0.6.5
 pkgrel=1
 pkgdesc="Cliente nativo do Papo — chat self-hosted"
 arch=('x86_64' 'aarch64')

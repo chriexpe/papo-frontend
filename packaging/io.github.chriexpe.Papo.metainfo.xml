@@ -67,6 +67,18 @@
   </content_rating>
 
   <releases>
+    <release version="0.6.5" date="2026-09-29">
+      <description>
+        <p>Notificações por push no Android e barra de título do sistema no desktop.</p>
+        <p xml:lang="en">Push notifications on Android and the system title bar on desktop.</p>
+        <ul>
+          <li>Android: menções chegam na hora pelo FCM, mesmo com o app fechado, em servidores com push</li>
+          <li xml:lang="en">Android: mentions arrive instantly through FCM, even with the app closed, on servers with push</li>
+          <li>Desktop: barra de título do sistema em todas as plataformas, corrigindo a interface deslocada no Windows 10</li>
+          <li xml:lang="en">Desktop: the system title bar everywhere, fixing the offset interface on Windows 10</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-09-28">
       <description>
         <p>Rich Presence no desktop, prévias de link mais ricas com player de vídeo próprio e ajustes de busca, fixadas e gestos.</p>
