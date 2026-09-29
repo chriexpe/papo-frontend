@@ -351,7 +351,8 @@ jobs:
           PAPO_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           PAPO_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           PAPO_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # Sem estes, o APK sai sem FCM (só reconciliação periódica).
+          # A release exige FCM: o Gradle falha se algum destes faltar.
+          PAPO_REQUIRE_FIREBASE: "1"
           PAPO_FIREBASE_APP_ID: ${{ secrets.PAPO_FIREBASE_APP_ID }}
           PAPO_FIREBASE_API_KEY: ${{ secrets.PAPO_FIREBASE_API_KEY }}
           PAPO_FIREBASE_PROJECT_ID: ${{ secrets.PAPO_FIREBASE_PROJECT_ID }}

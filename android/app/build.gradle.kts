@@ -42,6 +42,12 @@ val firebaseConfig = mapOf(
     "gcm_defaultSenderId" to firebaseValue("PAPO_FIREBASE_SENDER_ID"),
 )
 val firebaseConfigured = firebaseConfig.values.all { it != null }
+// A release oficial exige FCM: sem esta trava, um secret faltando no CI
+// publicaria um APK sem push sem ninguém perceber.
+if (!firebaseConfigured && System.getenv("PAPO_REQUIRE_FIREBASE") == "1") {
+    val missing = firebaseConfig.filterValues { it == null }.keys
+    error("PAPO_REQUIRE_FIREBASE=1, mas a configuração do Firebase está incompleta: $missing")
+}
 if (!firebaseConfigured && firebaseConfig.values.any { it != null }) {
     logger.warn("Papo: configuração do Firebase incompleta; o APK sai sem FCM")
 }
