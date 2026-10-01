@@ -544,9 +544,11 @@ pub struct SearchRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
+    pub channel_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mentions: Option<String>,
+    pub mention: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -555,8 +557,6 @@ pub struct SearchRequest {
     pub date_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contains_attachment: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contains_link: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1132,15 +1132,35 @@ mod tests {
         let body = serde_json::to_string(&SearchRequest {
             text: Some("oi".to_owned()),
             author: None,
-            channel: None,
-            mentions: None,
+            channel_id: None,
+            mention: None,
+            has: None,
             order: Some("desc".to_owned()),
             date_start: None,
             date_end: None,
             contains_attachment: None,
-            contains_link: None,
         })
         .unwrap();
         assert_eq!(body, r#"{"text":"oi","order":"desc"}"#);
+
+        let filters = serde_json::to_value(SearchRequest {
+            text: None,
+            author: None,
+            channel_id: Some("channel-id".to_owned()),
+            mention: Some("user-id".to_owned()),
+            has: Some("link".to_owned()),
+            order: None,
+            date_start: None,
+            date_end: None,
+            contains_attachment: Some(true),
+        })
+        .unwrap();
+        assert_eq!(filters["channel_id"], "channel-id");
+        assert_eq!(filters["mention"], "user-id");
+        assert_eq!(filters["has"], "link");
+        assert_eq!(filters["contains_attachment"], true);
+        assert!(filters.get("channel").is_none());
+        assert!(filters.get("mentions").is_none());
+        assert!(filters.get("contains_link").is_none());
     }
 }
