@@ -396,7 +396,10 @@ pub fn mentions_user(text: &str, owner_user_id: &str, owner_name: &str, author_i
     }
     let lower = text.to_lowercase();
     (!owner_user_id.is_empty()
-        && lower.contains(&format!("<@{}>", owner_user_id.to_lowercase())))
+        && lower.contains(&format!(
+            "@mention(<@{}>)",
+            owner_user_id.to_lowercase()
+        )))
         || (!owner_name.is_empty()
             && lower.contains(&format!("@{}", owner_name.to_lowercase())))
         || lower.contains("@everyone")
@@ -405,20 +408,27 @@ pub fn mentions_user(text: &str, owner_user_id: &str, owner_name: &str, author_i
 
 fn display_mentions(members: &HashMap<String, String>, text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
+    let prefix: Vec<char> = "@mention(<@".chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
-            let mut end = i + 2;
-            while end < chars.len() && chars[end] != '>' {
+        if i + prefix.len() < chars.len()
+            && chars[i..i + prefix.len()]
+                .iter()
+                .copied()
+                .eq(prefix.iter().copied())
+        {
+            let id_start = i + prefix.len();
+            let mut end = id_start;
+            while end + 1 < chars.len() && !(chars[end] == '>' && chars[end + 1] == ')') {
                 end += 1;
             }
-            if end < chars.len() {
-                let id: String = chars[i + 2..end].iter().collect();
+            if end + 1 < chars.len() {
+                let id: String = chars[id_start..end].iter().collect();
                 if let Some(name) = members.get(&id) {
                     out.push('@');
                     out.push_str(name);
-                    i = end + 1;
+                    i = end + 2;
                     continue;
                 }
             }
@@ -558,7 +568,7 @@ mod tests {
         let temp = TempDb::new("message-once");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
         coordinator.sync_context(context("srv", "me", true, true));
-        let msg = message("m1", "geral", "bia", "oi <@me>");
+        let msg = message("m1", "geral", "bia", "oi @mention(<@me>)");
 
         assert_eq!(
             coordinator.handle_message("srv", &msg, CandidateSource::Live),
@@ -668,7 +678,7 @@ mod tests {
         let temp = TempDb::new("disabled");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
         coordinator.sync_context(context("srv", "me", false, true));
-        let msg = message("m1", "geral", "bia", "<@me>");
+        let msg = message("m1", "geral", "bia", "@mention(<@me>)");
 
         assert_eq!(
             coordinator.handle_message("srv", &msg, CandidateSource::Live),
@@ -687,7 +697,7 @@ mod tests {
         let temp = TempDb::new("visible");
         let (coordinator, deliveries) = coordinator(temp.db(), true);
         coordinator.sync_context(context("srv", "me", true, true));
-        let msg = message("m1", "geral", "bia", "<@me>");
+        let msg = message("m1", "geral", "bia", "@mention(<@me>)");
 
         assert_eq!(
             coordinator.handle_message("srv", &msg, CandidateSource::Live),
@@ -711,7 +721,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv-a",
-                &message("a", "outro", "bia", "<@me>"),
+                &message("a", "outro", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Delivered
@@ -719,7 +729,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv-b",
-                &message("b", "geral", "bia", "<@me>"),
+                &message("b", "geral", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Delivered
@@ -738,7 +748,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "outro", "bia", "<@me>"),
+                &message("m1", "outro", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Suppressed(SuppressionReason::PushDelivered)
@@ -749,7 +759,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m2", "outro", "bia", "<@me>"),
+                &message("m2", "outro", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Delivered
@@ -766,7 +776,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "me", "<@me>"),
+                &message("m1", "geral", "me", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Ignored
@@ -792,7 +802,7 @@ mod tests {
             });
             let (coordinator, deliveries) = coordinator(temp.db(), false);
             coordinator.sync_context(context("srv", "me", true, true));
-            let msg = message("m1", "geral", "bia", "<@me>");
+            let msg = message("m1", "geral", "bia", "@mention(<@me>)");
             assert_eq!(
                 coordinator.handle_message("srv", &msg, source),
                 NotificationOutcome::Ignored
@@ -846,7 +856,7 @@ mod tests {
         let temp = TempDb::new("background-message");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
         coordinator.sync_context(context("srv", "me", true, false));
-        let msg = message("m1", "geral", "bia", "<@me>");
+        let msg = message("m1", "geral", "bia", "@mention(<@me>)");
 
         assert_eq!(
             coordinator.handle_message("srv", &msg, CandidateSource::Background),
@@ -904,7 +914,7 @@ mod tests {
     fn account_and_server_partitions_are_independent() {
         let temp = TempDb::new("partitions");
         let (coordinator, deliveries) = coordinator(temp.db(), false);
-        let msg = message("same", "geral", "bia", "<@me>");
+        let msg = message("same", "geral", "bia", "@mention(<@me>)");
 
         coordinator.sync_context(context("srv-a", "me", true, true));
         assert_eq!(
@@ -913,7 +923,7 @@ mod tests {
         );
 
         coordinator.sync_context(context("srv-a", "other", true, true));
-        let other_msg = message("same", "geral", "bia", "<@other>");
+        let other_msg = message("same", "geral", "bia", "@mention(<@other>)");
         assert_eq!(
             coordinator.handle_message("srv-a", &other_msg, CandidateSource::Live),
             NotificationOutcome::Delivered
@@ -936,7 +946,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "bia", "<@me>"),
+                &message("m1", "geral", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::LedgerUnavailable
@@ -960,7 +970,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "bia", "oi <@me>"),
+                &message("m1", "geral", "bia", "oi @mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Delivered
@@ -981,7 +991,7 @@ mod tests {
             assert_eq!(
                 coordinator.handle_message(
                     "srv",
-                    &message("m1", "geral", "bia", "<@me>"),
+                    &message("m1", "geral", "bia", "@mention(<@me>)"),
                     CandidateSource::Live,
                 ),
                 NotificationOutcome::Delivered
@@ -994,7 +1004,7 @@ mod tests {
         assert_eq!(
             coordinator.handle_message(
                 "srv",
-                &message("m1", "geral", "bia", "<@me>"),
+                &message("m1", "geral", "bia", "@mention(<@me>)"),
                 CandidateSource::Live,
             ),
             NotificationOutcome::Duplicate
@@ -1021,7 +1031,7 @@ mod tests {
             threads.push(std::thread::spawn(move || {
                 coordinator.handle_message(
                     "srv",
-                    &message("m1", "geral", "bia", "<@me>"),
+                    &message("m1", "geral", "bia", "@mention(<@me>)"),
                     CandidateSource::Live,
                 )
             }));
