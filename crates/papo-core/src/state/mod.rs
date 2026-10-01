@@ -625,7 +625,7 @@ impl Store {
             .find(|member| member.username.eq_ignore_ascii_case(username))
     }
 
-    /// Canonicaliza menções visíveis (`@nickname`) para `<@user_id>`.
+    /// Canonicaliza menções visíveis (`@nickname`) para `@mention(<@user_id>)`.
     ///
     /// Bindings produzidos pelo autocomplete/edit têm prioridade e eliminam
     /// a ambiguidade de nicknames repetidos. Texto digitado manualmente só é
@@ -661,9 +661,9 @@ impl Store {
                         .copied()
                         .eq(label.iter().copied())
                 {
-                    out.push_str("<@");
+                    out.push_str("@mention(<@");
                     out.push_str(&binding.user_id);
-                    out.push('>');
+                    out.push_str(">)");
                     i = end;
                     continue;
                 }
@@ -706,9 +706,9 @@ impl Store {
                 let end = i + 1 + first.name.chars().count();
                 let boundary_ok = end >= chars.len() || mention_boundary(chars[end]);
                 if same_label == 1 && boundary_ok {
-                    out.push_str("<@");
+                    out.push_str("@mention(<@");
                     out.push_str(&first.id);
-                    out.push('>');
+                    out.push_str(">)");
                     i = end;
                     continue;
                 }
@@ -733,13 +733,20 @@ impl Store {
         let mut bindings = Vec::new();
         let mut i = 0;
         while i < chars.len() {
-            if chars[i] == '<' && i + 3 < chars.len() && chars[i + 1] == '@' {
-                let mut end = i + 2;
-                while end < chars.len() && chars[end] != '>' {
+            let prefix: Vec<char> = "@mention(<@".chars().collect();
+            if i + prefix.len() < chars.len()
+                && chars[i..i + prefix.len()]
+                    .iter()
+                    .copied()
+                    .eq(prefix.iter().copied())
+            {
+                let id_start = i + prefix.len();
+                let mut end = id_start;
+                while end + 1 < chars.len() && !(chars[end] == '>' && chars[end + 1] == ')') {
                     end += 1;
                 }
-                if end < chars.len() {
-                    let id: String = chars[i + 2..end].iter().collect();
+                if end + 1 < chars.len() {
+                    let id: String = chars[id_start..end].iter().collect();
                     if let Some(member) = self.member(&id) {
                         let start = out.chars().count();
                         out.push('@');
@@ -749,7 +756,7 @@ impl Store {
                             label: member.name.clone(),
                             user_id: member.id.clone(),
                         });
-                        i = end + 1;
+                        i = end + 2;
                         continue;
                     }
                 }
@@ -3131,7 +3138,7 @@ mod tests {
         let encoded = store.encode_mentions("oi @Chris", &[binding]);
         assert_eq!(
             encoded,
-            "oi <@550e8400-e29b-41d4-a716-446655440000>"
+            "oi @mention(<@550e8400-e29b-41d4-a716-446655440000>)"
         );
 
         store.members[0].name = "Christian H".to_owned();
@@ -3163,7 +3170,7 @@ mod tests {
             label: "Chris".to_owned(),
             user_id: "id-b".to_owned(),
         };
-        assert_eq!(store.encode_mentions("@Chris", &[binding]), "<@id-b>");
+        assert_eq!(store.encode_mentions("@Chris", &[binding]), "@mention(<@id-b>)");
     }
 
     #[test]
@@ -3202,7 +3209,7 @@ mod tests {
 
         assert_eq!(
             store.encode_mentions("oi @Ana Maria! @everyone @todos", &[]),
-            "oi <@id-ana>! @everyone @todos"
+            "oi @mention(<@id-ana>)! @everyone @todos"
         );
     }
 
@@ -3654,7 +3661,7 @@ mod tests {
     #[test]
     fn live_aplica_unread_e_mencao_uma_vez() {
         let mut store = store_para_proveniencia();
-        let message = wire_message("m-live", "outro", "<@eu> oi");
+        let message = wire_message("m-live", "outro", "@mention(<@eu>) oi");
 
         store.apply(Update::Event(Box::new(Event::Message(Box::new(message.clone())))));
         store.apply(Update::Event(Box::new(Event::Message(Box::new(message)))));
@@ -3682,7 +3689,7 @@ mod tests {
                 mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
                     "m-reconcile",
                     "outro",
-                    "<@eu> antigo",
+                    "@mention(<@eu>) antigo",
                 )),
             },
         );
@@ -3712,7 +3719,7 @@ mod tests {
                 mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
                     "m-cache",
                     "outro",
-                    "<@eu> cache",
+                    "@mention(<@eu>) cache",
                 )),
             },
         );
@@ -3735,7 +3742,7 @@ mod tests {
     #[test]
     fn local_nao_parece_atividade_remota() {
         let mut store = store_para_proveniencia();
-        let pending_id = store.push_pending("outro", "<@eu> local", None);
+        let pending_id = store.push_pending("outro", "@mention(<@eu>) local", None);
 
         assert!(store.message(&pending_id).is_some_and(|message| message.pending));
         let channel = store.channel("outro").expect("canal existe");
@@ -4026,7 +4033,7 @@ mod tests {
                 mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
                     "m-a",
                     "outro",
-                    "<@eu> a",
+                    "@mention(<@eu>) a",
                 )),
             },
         );
@@ -4037,7 +4044,7 @@ mod tests {
                 mutation: TimelineMutation::MessageUpsert(mensagem_convertida(
                     "m-b",
                     "outro",
-                    "<@eu> b",
+                    "@mention(<@eu>) b",
                 )),
             },
         );
