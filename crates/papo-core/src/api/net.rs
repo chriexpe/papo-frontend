@@ -420,6 +420,8 @@ pub enum Command {
     Typing {
         channel_id: String,
     },
+    /// Publica Rich Presence efêmero desta conexão; None limpa.
+    SetActivity(Option<crate::state::Activity>),
     /// Entra na call do canal: busca os servidores ICE e só então pede a
     /// entrada pelo socket, porque sem ICE a oferta não teria como sair.
     JoinVoice {
@@ -1446,6 +1448,7 @@ async fn worker(
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
     let mut worker_connection = Connection::Offline;
+    let mut current_activity: Option<crate::state::Activity> = None;
     let mut network_gate = NetworkGate::default();
     let mut outgoing: Vec<CachedOutgoing> = Vec::new();
     let mut outgoing_owner: Option<String> = None;
@@ -1649,6 +1652,12 @@ async fn worker(
                     if !network_gate.explicitly_unavailable() {
                         let _ = probe_tx.send(());
                     }
+                    continue;
+                }
+
+                if let Command::SetActivity(activity) = &command {
+                    current_activity = activity.clone();
+                    let _ = outbound_tx.send(ws::activity_update(current_activity.as_ref()));
                     continue;
                 }
 
@@ -2068,6 +2077,9 @@ async fn worker(
                     );
                 }
                 worker_connection = status;
+                if status == Connection::Online && previous_connection != Connection::Online {
+                    let _ = outbound_tx.send(ws::activity_update(current_activity.as_ref()));
+                }
                 diagnostics_dirty = true;
                 if previous_connection != worker_connection || previous_generation != runtime_generation {
                     log::info!(
@@ -2794,7 +2806,8 @@ async fn handle(
         Command::Refresh
         | Command::LoadMessages { .. }
         | Command::ProbeConnection
-        | Command::NetworkHint(_) => {}
+        | Command::NetworkHint(_)
+        | Command::SetActivity(_) => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {
