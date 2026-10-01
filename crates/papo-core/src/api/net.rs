@@ -268,6 +268,10 @@ pub enum Command {
         role_id: String,
         permissions: crate::api::models::ChannelPermissions,
     },
+    RemoveChannelRolePermission {
+        channel_id: String,
+        role_id: String,
+    },
     DeleteChannel {
         channel_id: String,
     },
@@ -2838,6 +2842,22 @@ async fn handle(
                 .await
             {
                 Ok(_) => match api.channel_permissions(&channel_id).await {
+                    Ok(response) => publish(
+                        updates,
+                        wake,
+                        Update::ChannelPermissions {
+                            channel_id: response.channel_id,
+                            permissions: response.permissions,
+                        },
+                    ),
+                    Err(error) => report(storage_key, updates, wake, error),
+                },
+                Err(error) => report(storage_key, updates, wake, error),
+            }
+        }
+        Command::RemoveChannelRolePermission { channel_id, role_id } => {
+            match api.remove_channel_role_permission(&channel_id, &role_id).await {
+                Ok(()) => match api.channel_permissions(&channel_id).await {
                     Ok(response) => publish(
                         updates,
                         wake,

@@ -2024,6 +2024,11 @@ impl PapoApp {
                 role_id,
                 permissions,
             }),
+            ChatAction::RemoveChannelRolePermission { channel_id, role_id } => {
+                ws.runtime
+                    .net
+                    .send(Command::RemoveChannelRolePermission { channel_id, role_id })
+            }
             ChatAction::DeleteChannel(channel_id) => {
                 ws.runtime.net.send(Command::DeleteChannel { channel_id })
             }
@@ -2277,6 +2282,17 @@ impl PapoApp {
                             permissions,
                         });
                     }
+                }
+            }
+            ChatAction::RemoveChannelRolePermission { channel_id, role_id } => {
+                if let Some(channel) = ws
+                    .runtime
+                    .store
+                    .channels
+                    .iter_mut()
+                    .find(|channel| channel.id == channel_id)
+                {
+                    channel.permissions.retain(|entry| entry.role_id != role_id);
                 }
             }
             // A call de mentira não abre microfone nenhum: serve para o

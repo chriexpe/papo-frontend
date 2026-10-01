@@ -3817,11 +3817,29 @@ fn server_pane(
                             }
                         });
                         ui.add_space(space::SM);
+                        let existing_override = channel
+                            .permissions
+                            .iter()
+                            .any(|entry| entry.role_id == permission.role_id);
                         let mut cancel_permission = false;
                         let mut save_permission = None;
+                        let mut remove_permission = None;
                         actions_row(ui, |ui| {
                             if row_button(ui, t, s.cancel, Emphasis::Quiet) {
                                 cancel_permission = true;
+                            }
+                            if existing_override
+                                && row_button(
+                                    ui,
+                                    t,
+                                    s.channel_permission_remove,
+                                    Emphasis::Danger,
+                                )
+                            {
+                                remove_permission = Some((
+                                    permission.channel_id.clone(),
+                                    permission.role_id.clone(),
+                                ));
                             }
                             if row_button(ui, t, s.save, Emphasis::Primary) {
                                 save_permission = Some((
@@ -3832,6 +3850,15 @@ fn server_pane(
                             }
                         });
                         if cancel_permission {
+                            draft.channel_permission = None;
+                        }
+                        if let Some((channel_id, role_id)) = remove_permission {
+                            actions.push(SettingsAction::Chat(
+                                ChatAction::RemoveChannelRolePermission {
+                                    channel_id,
+                                    role_id,
+                                },
+                            ));
                             draft.channel_permission = None;
                         }
                         if let Some((channel_id, role_id, permissions)) = save_permission {
