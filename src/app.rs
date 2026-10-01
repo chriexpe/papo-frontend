@@ -2024,6 +2024,11 @@ impl PapoApp {
                 role_id,
                 permissions,
             }),
+            ChatAction::RemoveChannelRolePermission { channel_id, role_id } => {
+                ws.runtime
+                    .net
+                    .send(Command::RemoveChannelRolePermission { channel_id, role_id })
+            }
             ChatAction::DeleteChannel(channel_id) => {
                 ws.runtime.net.send(Command::DeleteChannel { channel_id })
             }
