@@ -3602,10 +3602,10 @@ fn search_request_from_panel(
 ) -> Option<crate::api::models::SearchRequest> {
     let mut text = Vec::new();
     let mut author = None;
-    let mut channel = None;
-    let mut mentions = None;
+    let mut channel_id = None;
+    let mut mention = None;
     let mut contains_attachment = panel.search_attachments.then_some(true);
-    let mut contains_link = None;
+    let mut has = None;
 
     for token in panel.query.split_whitespace() {
         let Some((prefix, value)) = token.split_once(':') else {
@@ -3621,21 +3621,21 @@ fn search_request_from_panel(
                 }
             }
             "em" | "in" | "channel" => {
-                if channel.is_none()
+                if channel_id.is_none()
                     && let Some(id) = search_channel_id(store, value)
                 {
-                    channel = Some(id);
+                    channel_id = Some(id);
                 }
             }
             "mentions" | "menciona" | "mention" => {
-                if mentions.is_none()
+                if mention.is_none()
                     && let Some(id) = search_member_id(store, value)
                 {
-                    mentions = Some(id);
+                    mention = Some(id);
                 }
             }
             "tem" | "has" => match value.to_lowercase().as_str() {
-                "link" => contains_link = Some(true),
+                "link" => has = Some("link".to_owned()),
                 "anexo" | "arquivo" | "attachment" | "file" => {
                     contains_attachment = Some(true)
                 }
@@ -3648,10 +3648,10 @@ fn search_request_from_panel(
     let text = text.join(" ");
     if text.trim().is_empty()
         && author.is_none()
-        && channel.is_none()
-        && mentions.is_none()
+        && channel_id.is_none()
+        && mention.is_none()
         && contains_attachment.is_none()
-        && contains_link.is_none()
+        && has.is_none()
     {
         return None;
     }
@@ -3659,15 +3659,15 @@ fn search_request_from_panel(
     Some(crate::api::models::SearchRequest {
         text: (!text.trim().is_empty()).then(|| text.trim().to_owned()),
         author,
-        channel,
-        mentions,
+        channel_id,
+        mention,
+        has,
         order: Some(
             if panel.search_oldest_first { "asc" } else { "desc" }.to_owned(),
         ),
         date_start: None,
         date_end: None,
         contains_attachment,
-        contains_link,
     })
 }
 
