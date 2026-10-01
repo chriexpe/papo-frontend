@@ -500,6 +500,15 @@ impl Api {
         .await
     }
 
+    pub async fn remove_channel_role_permission(
+        &self,
+        channel_id: &str,
+        role_id: &str,
+    ) -> ApiResult<()> {
+        self.delete::<()>(&format!("/channels/{channel_id}/role/{role_id}"), None)
+            .await
+    }
+
     pub async fn messages(&self, channel_id: &str) -> ApiResult<MessageList> {
         self.get(&format!("/channels/{channel_id}/messages")).await
     }
