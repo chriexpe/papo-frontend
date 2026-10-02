@@ -4366,7 +4366,9 @@ fn result_row(
                         );
                     }
                 });
-                if !shown_body.trim().is_empty() {
+                if !shown_body.trim().is_empty()
+                    && direct_media_message_url(state, body).is_none()
+                {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
                     rich_body(
@@ -5073,7 +5075,9 @@ fn message_body(
             return;
     }
 
-    if !message.content.is_empty() {
+    if !message.content.is_empty()
+        && direct_media_message_url(state, &message.content).is_none()
+    {
         let shown_content = store.display_mentions(&message.content);
         let color = if message.pending {
             t.label_secondary
@@ -5227,6 +5231,53 @@ fn message_body(
             });
         }
     }
+}
+
+/// URL única que ocupa a mensagem inteira. Texto misturado com link nunca
+/// entra aqui: esconder o endereço só faz sentido quando a própria mídia é a
+/// mensagem.
+fn single_message_url(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    let canonical = papo_core::preview::canonical_url(trimmed)?;
+    let urls = papo_core::preview::extract_https_urls(trimmed);
+    (urls.len() == 1 && urls[0] == canonical).then_some(canonical)
+}
+
+fn obvious_direct_media_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let path = parsed.path().to_ascii_lowercase();
+    [
+        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg",
+        ".mp4", ".m4v", ".webm", ".mov", ".mkv", ".avi", ".m3u8",
+    ]
+    .iter()
+    .any(|extension| path.ends_with(extension))
+}
+
+/// Retorna o link quando a mensagem inteira é uma imagem/vídeo direto.
+/// Extensões óbvias escondem o texto já no primeiro quadro; URLs opacas de
+/// CDN entram assim que o coordenador confirma que o recurso é mídia visual.
+fn direct_media_message_url(state: &UiState, content: &str) -> Option<String> {
+    let url = single_message_url(content)?;
+    if obvious_direct_media_url(&url) {
+        return Some(url);
+    }
+
+    let preview = state.previews.as_ref()?.get_or_request(&url)?;
+    let papo_core::preview::PreviewState::Ready(preview) = preview else {
+        return None;
+    };
+    let direct_visual = matches!(
+        preview.kind,
+        papo_core::preview::PreviewKind::Image | papo_core::preview::PreviewKind::Video
+    ) && preview.embed_url.is_none()
+        && preview.description.is_none()
+        && preview.post.author_name.is_none()
+        && preview.post.author_handle.is_none()
+        && preview.post.caption.is_none();
+    direct_visual.then_some(url)
 }
 
 /// Texto entremeado de emoji: cada emoji vira imagem, o resto é palavra
@@ -6871,6 +6922,7 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
+    let copy_link = direct_media_message_url(state, &message.content);
 
     let mut items: Vec<(&str, &str, MessageCommand)> = vec![
         (icon::SMILEY_STICKER, s.add_reaction, MessageCommand::React),
@@ -6879,7 +6931,11 @@ fn context_menu(
     if mine {
         items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
     }
-    items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    if copy_link.is_some() {
+        items.push((icon::COPY, s.copy_link, MessageCommand::CopyLink));
+    } else {
+        items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    }
     items.push((
         icon::PUSH_PIN,
         if message.pinned { s.unpin } else { s.pin },
@@ -6976,6 +7032,11 @@ fn context_menu(
             MessageCommand::Copy => {
                 ui.ctx().copy_text(store.display_mentions(&message.content));
             }
+            MessageCommand::CopyLink => {
+                if let Some(link) = copy_link {
+                    ui.ctx().copy_text(link);
+                }
+            }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
                 message_id: message.id.clone(),
                 pin: !message.pinned,
@@ -7003,6 +7064,7 @@ enum MessageCommand {
     Reply,
     Edit,
     Copy,
+    CopyLink,
     Pin,
     Download,
     Delete,
@@ -8469,6 +8531,30 @@ pub fn presence_color(t: &Tokens, presence: Presence) -> Color32 {
 }
 
 
+
+#[cfg(test)]
+mod direct_media_tests {
+    use super::{obvious_direct_media_url, single_message_url};
+
+    #[test]
+    fn mensagem_so_de_url_e_detectada_sem_engolir_texto_misto() {
+        assert_eq!(
+            single_message_url("  https://cdn.example.test/cat.png  ").as_deref(),
+            Some("https://cdn.example.test/cat.png")
+        );
+        assert!(single_message_url("olha https://cdn.example.test/cat.png").is_none());
+        assert!(single_message_url("https://a.test/a.png https://b.test/b.png").is_none());
+    }
+
+    #[test]
+    fn extensoes_visuais_obvias_sao_escondidas_imediatamente() {
+        assert!(obvious_direct_media_url(
+            "https://cdn.example.test/file.webp?width=800"
+        ));
+        assert!(obvious_direct_media_url("https://cdn.example.test/movie.mp4"));
+        assert!(!obvious_direct_media_url("https://example.test/post/123"));
+    }
+}
 
 #[cfg(test)]
 mod sugestao {
