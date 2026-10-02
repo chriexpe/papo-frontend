@@ -2509,7 +2509,7 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
-                message_list(ui, store, state, t, s, full, viewport);
+                message_list(ui, store, state, t, s, full);
                 ui.add_space(bottom_inset);
 
                 request_older = viewport.min.y <= top_inset + 360.0
@@ -4635,7 +4635,6 @@ fn message_list(
     t: &Tokens,
     s: &Strings,
     area: Rect,
-    viewport: Rect,
 ) {
     let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
@@ -4826,7 +4825,7 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
-        if viewport.contains(row.center()) && !message.pending {
+        if ui.clip_rect().contains(row.center()) && !message.pending {
             state.visible_messages.push(message.id.clone());
         }
         if state.compact && state.panel.is_none() {
