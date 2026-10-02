@@ -1752,7 +1752,7 @@ fn channel_tree(
     let touch_layout = tiles(ui);
     let row_h = if touch_layout { 46.0 } else { TREE_ROW };
     let tool_side = if touch_layout { 32.0 } else { 24.0 };
-    let tool_gap = if touch_layout { 4.0 } else { 4.0 };
+    let tool_gap = 4.0;
     let tools_w = tool_side * 2.0 + tool_gap + space::SM * 2.0;
     for (index, (channel, parent)) in visible.iter().enumerate() {
         let is_category = items[index].2;
