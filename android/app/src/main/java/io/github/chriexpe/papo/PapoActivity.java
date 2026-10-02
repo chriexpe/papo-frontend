@@ -3,6 +3,8 @@ package io.github.chriexpe.papo;
 import android.Manifest;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -109,6 +111,7 @@ public class PapoActivity extends GameActivity {
     private static native void nativeSetPipSurface(Surface surface);
     private static native void nativeMessageNotificationTapped(String payload);
     private static native void nativePushTokenChanged(String token, String deviceName);
+    private static native void nativeClipboardFilesPasted(String[] paths, String[] names);
 
     /** Entrega o token FCM ao Rust. Só chamar com o libpapo carregado. */
     static void deliverPushToken(String token, String deviceName) {
@@ -703,6 +706,14 @@ public class PapoActivity extends GameActivity {
             if (!mutatingNativeEditor && nativeEditorKey != null) {
                 nativeEditorSelectionChanged(nativeEditorKey, start, end);
             }
+        }
+
+        @Override
+        public boolean onTextContextMenuItem(int id) {
+            if (id == android.R.id.paste && pasteClipboardAttachments()) {
+                return true;
+            }
+            return super.onTextContextMenuItem(id);
         }
 
         @Override
@@ -1600,6 +1611,64 @@ public class PapoActivity extends GameActivity {
         // Copiar pode demorar (o arquivo pode estar na nuvem): fora da
         // thread da interface, senão a janela congela no meio da escolha.
         new Thread(() -> copyAll(chosen)).start();
+    }
+
+    private boolean pasteClipboardAttachments() {
+        final ClipboardManager clipboard =
+                (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null || !clipboard.hasPrimaryClip()) {
+            return false;
+        }
+        final ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null) {
+            return false;
+        }
+
+        final List<Uri> chosen = new ArrayList<>();
+        for (int i = 0; i < clip.getItemCount(); i++) {
+            final Uri uri = clip.getItemAt(i).getUri();
+            if (uri != null) {
+                chosen.add(uri);
+            }
+        }
+        if (chosen.isEmpty()) {
+            return false;
+        }
+
+        new Thread(() -> copyClipboardAll(chosen), "papo-clipboard").start();
+        return true;
+    }
+
+    private void copyClipboardAll(List<Uri> chosen) {
+        final List<String> paths = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        final File dir = new File(getCacheDir(), "anexos");
+        dir.mkdirs();
+
+        for (Uri uri : chosen) {
+            final String name = displayName(uri);
+            final File dest = new File(dir, System.nanoTime() + "-" + name);
+            try (InputStream in = getContentResolver().openInputStream(uri);
+                    OutputStream out = new FileOutputStream(dest)) {
+                if (in == null) {
+                    continue;
+                }
+                final byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+                paths.add(dest.getAbsolutePath());
+                names.add(name);
+            } catch (Exception error) {
+                Log.e("papo", "não deu para colar o anexo " + uri, error);
+            }
+        }
+
+        if (!paths.isEmpty()) {
+            nativeClipboardFilesPasted(
+                    paths.toArray(new String[0]), names.toArray(new String[0]));
+        }
     }
 
     private void copyAll(List<Uri> chosen) {
