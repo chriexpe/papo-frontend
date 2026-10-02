@@ -168,6 +168,10 @@ pub enum ChatAction {
     },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
+    /// Abre/cria a conversa direta com uma pessoa.
+    OpenDirectMessage(String),
+    /// Oculta uma conversa direta da rail.
+    HideDirectMessage(String),
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
@@ -263,6 +267,8 @@ pub enum MobileSurface {
 pub struct MobileServers<'a> {
     pub entries: &'a [super::rail::Entry],
     pub active: usize,
+    pub direct_unread: u32,
+    pub direct_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -673,6 +679,8 @@ pub struct Stash {
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
+    pub dm_surface: bool,
+    pub last_server_channel: String,
     pub last_channel: String,
     pub topic_since: Option<f64>,
 }
@@ -694,6 +702,8 @@ impl Stash {
             viewer: None,
             link_viewer: None,
             popup: None,
+            dm_surface: false,
+            last_server_channel: String::new(),
             last_channel: String::new(),
             topic_since: None,
         }
@@ -718,6 +728,8 @@ impl Stash {
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
+        std::mem::swap(&mut self.dm_surface, &mut ui.dm_surface);
+        std::mem::swap(&mut self.last_server_channel, &mut ui.last_server_channel);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
     }
@@ -812,6 +824,10 @@ pub struct UiState {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
+    /// A superfície de mensagens diretas substitui a coluna de canais.
+    pub dm_surface: bool,
+    /// Último canal comum antes de entrar em mensagens diretas.
+    pub last_server_channel: String,
     /// Cartão de perfil aberto.
     pub profile: Option<super::profile::ProfileCard>,
     /// Cartão do servidor aberto (a pastilha do servidor descomprimida).
@@ -966,6 +982,8 @@ impl Default for UiState {
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
+            dm_surface: false,
+            last_server_channel: String::new(),
             profile: None,
             server_card: None,
             collapsed_categories: Default::default(),
