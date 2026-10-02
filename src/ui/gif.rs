@@ -30,6 +30,12 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     }
 
     let safe = ui.ctx().content_rect();
+    // Match the search/pinned panel fix from #66: a raw Foreground child is
+    // not enough for egui's layer hit-testing, so mouse-wheel input would be
+    // routed to the chat behind the picker. Register this modal layer as an
+    // Area before drawing any of its widgets.
+    super::shell::claim_overlay_layer(ui.ctx(), ui.layer_id(), safe);
+
     let size = Vec2::new(
         PICKER_W.min((safe.width() - space::XL).max(260.0)),
         PICKER_H.min((safe.height() - space::XL).max(300.0)),
@@ -67,6 +73,9 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
             .max_rect(body_rect)
             .layout(Layout::top_down(Align::Min)),
     );
+    // Keep painting and hit-testing inside the body; its ScrollAreas own the
+    // overflow while the pinned search field remains outside the scroll.
+    body.set_clip_rect(body.clip_rect().intersect(body_rect));
 
     if !crate::klipy::available() {
         body.add_space(space::LG);
@@ -172,11 +181,18 @@ fn draw_home(
     );
     ui.add_space(space::SM);
 
+    let grid_width = ui.available_width().max(1.0);
+    let grid_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
+        .id_salt("klipy-home-grid")
+        .max_height(grid_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let width = ui.available_width();
-            let tile_w = ((width - TILE_GAP) / 2.0).max(100.0);
+            // Horizontal and vertical gutters must be identical. The old code
+            // combined egui's row spacing with explicit add_space(), doubling
+            // only the vertical gap.
+            ui.spacing_mut().item_spacing.y = TILE_GAP;
+            let tile_w = ((grid_width - TILE_GAP) / 2.0).max(100.0);
 
             let favourite_preview = state
                 .gif_favourites
@@ -215,7 +231,6 @@ fn draw_home(
                     klipy.show_trending();
                 }
             });
-            ui.add_space(TILE_GAP);
 
             let categories = klipy.browser.categories.clone();
             for row in categories.chunks(2) {
@@ -227,7 +242,6 @@ fn draw_home(
                         }
                     }
                 });
-                ui.add_space(TILE_GAP);
             }
         });
 }
@@ -349,11 +363,15 @@ fn draw_item_grid(
     paged: bool,
 ) {
     let mut chosen: Option<GifItem> = None;
+    let grid_width = ui.available_width().max(1.0);
+    let grid_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
+        .id_salt("klipy-result-grid")
+        .max_height(grid_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            let width = ui.available_width();
-            let tile_w = ((width - TILE_GAP) / 2.0).max(100.0);
+            ui.spacing_mut().item_spacing.y = TILE_GAP;
+            let tile_w = ((grid_width - TILE_GAP) / 2.0).max(100.0);
             for row in items.chunks(2) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = TILE_GAP;
@@ -363,7 +381,6 @@ fn draw_item_grid(
                         }
                     }
                 });
-                ui.add_space(TILE_GAP);
             }
             if paged && klipy.browser.has_more {
                 let loading = klipy.browser.loading;
