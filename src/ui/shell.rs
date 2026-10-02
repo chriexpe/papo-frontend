@@ -840,6 +840,14 @@ pub struct UiState {
     pub topic_since: Option<f64>,
     /// A descrição aparece ao abrir o canal (ajuste do usuário).
     pub reveal_topic: bool,
+    /// Canais com não lidas abrem no head; o bloco pulado continua acessível.
+    pub open_at_newest: bool,
+    /// Canal esperando a primeira navegação depois de ser aberto.
+    open_channel_pending: Option<String>,
+    /// Mensagens realmente expostas na área legível deste quadro.
+    pub visible_message_ids: Vec<String>,
+    /// Último movimento observado da timeline; os atalhos somem enquanto rola.
+    last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
     /// Gravação em curso.
@@ -959,6 +967,10 @@ impl Default for UiState {
             last_channel: String::new(),
             topic_since: None,
             reveal_topic: true,
+            open_at_newest: true,
+            open_channel_pending: None,
+            visible_message_ids: Vec::new(),
+            last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
             recorder: None,
             error: None,
@@ -1037,6 +1049,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.visible_message_ids.clear();
     state.webembed_inline_rect = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens. A compensação
@@ -1083,6 +1096,7 @@ pub fn draw(
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
+        state.open_channel_pending = Some(next_channel);
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2474,7 +2488,11 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
-                message_list(ui, store, state, t, s, full);
+                let readable = Rect::from_min_max(
+                    egui::pos2(full.min.x, full.min.y + top_inset),
+                    egui::pos2(full.max.x, full.max.y - bottom_inset),
+                );
+                message_list(ui, store, state, t, s, full, readable);
                 ui.add_space(bottom_inset);
 
                 request_older = viewport.min.y <= top_inset + 360.0
@@ -4351,6 +4369,7 @@ fn message_list(
     t: &Tokens,
     s: &Strings,
     area: Rect,
+    readable: Rect,
 ) {
     let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
@@ -4541,6 +4560,11 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        let visible_height = row.intersect(readable).height().max(0.0);
+        let seen_threshold = (row.height() * 0.55).min(32.0);
+        if !message.pending && visible_height >= seen_threshold {
+            state.visible_message_ids.push(message.id.clone());
+        }
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state
