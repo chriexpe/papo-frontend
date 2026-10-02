@@ -1890,6 +1890,8 @@ fn channel_tree(
     t: &Tokens,
     s: &Strings,
     store: &Store,
+    media: &mut crate::media::MediaStore,
+    channel_emoji_monochrome: bool,
     collapsed: &mut std::collections::HashSet<String>,
     dragging: &mut Option<String>,
 ) -> Option<TreeAction> {
@@ -1967,15 +1969,27 @@ fn channel_tree(
             x += 18.0;
         }
         let tools_w = if hovered { 60.0 } else { 0.0 };
-        let name = if is_category { channel.name.to_uppercase() } else { channel.name.clone() };
-        let name_rect = crate::ui::widgets::text_fit(
-            ui.painter(),
+        let name_rect = super::emoji::draw_channel_name(
+            ui,
+            t,
+            media,
+            store,
+            &channel.name,
             egui::pos2(x, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            &name,
-            if is_category { text::subheadline() } else { text::body() },
-            if is_category { t.label_secondary } else { t.label }.gamma_multiply(alpha),
+            if is_category {
+                text::subheadline()
+            } else {
+                text::body()
+            },
+            if is_category {
+                t.label_secondary
+            } else {
+                t.label
+            }
+            .gamma_multiply(alpha),
             rect.max.x - tools_w - space::MD - x,
+            channel_emoji_monochrome,
+            is_category,
         );
         if let Some(topic) = channel.topic.as_deref().filter(|topic| !topic.is_empty() && !is_category) {
             let left = name_rect.max.x + space::SM;
@@ -4121,7 +4135,16 @@ fn server_pane(
             if channels.is_empty() {
                 group(ui, t, |rows| rows.row(s.no_channels_yet, None, |_, _| {}));
             } else {
-                match channel_tree(ui, t, s, data.store, data.collapsed, &mut state.drag_channel) {
+                match channel_tree(
+                    ui,
+                    t,
+                    s,
+                    data.store,
+                    data.media,
+                    *data.channel_emoji_monochrome,
+                    data.collapsed,
+                    &mut state.drag_channel,
+                ) {
                     Some(TreeAction::Edit(id)) => {
                         draft.deleting = None;
                         draft.channel_permission = None;
