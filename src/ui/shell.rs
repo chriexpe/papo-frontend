@@ -3368,7 +3368,7 @@ fn channel_pill(
 /// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
 /// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
 /// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
-fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
+pub(super) fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
     egui::Area::new(layer.id)
         .order(layer.order)
         .fixed_pos(rect.min)
