@@ -811,8 +811,10 @@ fn banner_buttons(
             ui.close();
         }
     });
-    // Conversa privada: o atalho existe, mas o backend ainda não tem DM.
-    slot(ui, icon::CHAT_CIRCLE, s.profile_dm_soon, false, "conversa");
+    if slot(ui, icon::CHAT_CIRCLE, s.profile_dm_soon, true, "conversa").0 {
+        state.actions.push(ChatAction::OpenDirectMessage(member.id.clone()));
+        outcome.close = true;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -830,46 +832,22 @@ fn footer_contents(
 ) {
     let row_h: f32 = if compact { 44.0 } else { 34.0 };
     if member.id != store.me {
-        // Mensagem direta ainda não existe no servidor: o campo mostra onde
-        // ela vai morar, e diz que ainda não chegou.
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), row_h.max(36.0)),
-            Sense::hover(),
-        );
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
-        ui.painter().text(
-            egui::pos2(rect.min.x + space::MD + 7.0, rect.center().y),
-            Align2::CENTER_CENTER,
-            icon::CHAT_CIRCLE,
-            text::icon(14.0),
-            t.label_tertiary,
-        );
-        let soon = ui.painter().layout_no_wrap(
-            s.profile_soon.to_uppercase(),
-            text::caption(),
-            t.label_tertiary,
-        );
-        let soon_x = rect.max.x - space::MD - soon.size().x;
-        ui.painter().galley(
-            egui::pos2(soon_x, rect.center().y - soon.size().y / 2.0),
-            soon,
-            t.label_tertiary,
-        );
-        let label_left = rect.min.x + space::MD + 20.0;
-        ui.painter()
-            .with_clip_rect(Rect::from_x_y_ranges(
-                label_left..=soon_x - space::SM,
-                rect.y_range(),
-            ))
-            .text(
-                egui::pos2(label_left, rect.center().y),
-                Align2::LEFT_CENTER,
-                format!("{} @{}", s.profile_message_to, member.username),
-                text::body(),
-                t.label_tertiary,
-            );
-        response.on_hover_text(s.profile_dm_soon);
+        let label = format!("{} @{}", s.profile_message_to, member.username);
+        if action_row(
+            ui,
+            t,
+            Some(icon::CHAT_CIRCLE),
+            None,
+            &label,
+            true,
+            row_h.max(36.0),
+        )
+        .on_hover_text(s.profile_dm_soon)
+        .clicked()
+        {
+            state.actions.push(ChatAction::OpenDirectMessage(member.id.clone()));
+            outcome.close = true;
+        }
         return;
     }
 
