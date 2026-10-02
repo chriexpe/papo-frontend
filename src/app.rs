@@ -316,6 +316,10 @@ pub struct Settings {
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
+    /// Emoji dentro do nome de canal segue a cor do rótulo em vez das cores
+    /// originais. É só apresentação local: o nome salvo não muda.
+    #[serde(default = "enabled")]
+    pub channel_emoji_monochrome: bool,
     /// Como o seu cartão de perfil abre: da pastilha ou flutuante.
     #[serde(default)]
     pub self_card: crate::ui::profile::SelfCardStyle,
@@ -398,6 +402,7 @@ impl Default for Settings {
             topic_reveal: true,
             open_at_newest: true,
             record_button: true,
+            channel_emoji_monochrome: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
@@ -966,6 +971,7 @@ impl PapoApp {
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.open_at_newest = settings.open_at_newest;
         ui_state.show_record = settings.record_button;
+        ui_state.channel_emoji_monochrome = settings.channel_emoji_monochrome;
         ui_state.self_card = settings.self_card;
         ui_state.webembed_behavior = settings.webembed_offscreen;
         ui_state.webembed_scope = settings.webembed_scope;
@@ -3222,6 +3228,7 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.open_at_newest,
             self.settings.record_button,
+            self.settings.channel_emoji_monochrome,
             self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
@@ -3267,6 +3274,7 @@ impl PapoApp {
                 topic_reveal: &mut self.settings.topic_reveal,
                 open_at_newest: &mut self.settings.open_at_newest,
                 record_button: &mut self.settings.record_button,
+                channel_emoji_monochrome: &mut self.settings.channel_emoji_monochrome,
                 self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
                 webembed_scope: &mut self.settings.webembed_scope,
@@ -3302,15 +3310,17 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.open_at_newest,
             self.settings.record_button,
+            self.settings.channel_emoji_monochrome,
             self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
         );
         if before_primary != after_primary || before_secondary != after_secondary {
+            self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
-            if ask_download != before_secondary.6 {
+            if ask_download != before_secondary.7 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -4013,6 +4023,7 @@ impl eframe::App for PapoApp {
                     || self.ui.server_card.is_some();
                 self.ui.server_url = self.workspaces[active].runtime.url.clone();
                 self.ui.server_count = self.workspaces.len();
+                self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];

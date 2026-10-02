@@ -850,6 +850,8 @@ pub struct UiState {
     last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
+    /// Emoji no nome de canal usa a mesma cor do rótulo.
+    pub channel_emoji_monochrome: bool,
     /// Gravação em curso.
     pub recorder: Option<crate::media::player::Recorder>,
     /// Recado curto de erro da própria interface, com o instante em que
@@ -972,6 +974,7 @@ impl Default for UiState {
             visible_message_ids: Vec::new(),
             last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
+            channel_emoji_monochrome: true,
             recorder: None,
             error: None,
             chat_scroll_metrics: None,
@@ -1495,7 +1498,16 @@ fn channels_sidebar(
                                         .collect();
                                     let collapsed = state.collapsed_categories.contains(&category.id);
                                     let unread = collapsed && children.iter().any(|c| c.unread || c.mentions > 0);
-                                    let header = category_header(ui, t, &category.name, collapsed, unread, width);
+                                    let header = category_header(
+                                        ui,
+                                        store,
+                                        state,
+                                        t,
+                                        &category.name,
+                                        collapsed,
+                                        unread,
+                                        width,
+                                    );
                                     if header.clicked() {
                                         if collapsed {
                                             state.collapsed_categories.remove(&category.id);
@@ -1792,6 +1804,8 @@ fn sidebar_channel(
     let here = voice && store.call.channel_id == channel.id;
     let row = channel_row(
         ui,
+        store,
+        state,
         t,
         if voice { icon::SPEAKER_HIGH } else { icon::HASH },
         &channel.name,
@@ -1825,32 +1839,59 @@ fn sidebar_channel(
 
 /// Cabeçalho de categoria: a seta diz se está aberta; recolhida, um ponto
 /// avisa que tem coisa nova lá dentro.
-fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, unread: bool, width: f32) -> egui::Response {
+fn category_header(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    name: &str,
+    collapsed: bool,
+    unread: bool,
+    width: f32,
+) -> egui::Response {
     ui.add_space(space::SM);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
     let hovered = response.hovered();
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let ink = if hovered { t.label_secondary } else { t.label_tertiary };
+    let ink = if hovered {
+        t.label_secondary
+    } else {
+        t.label_tertiary
+    };
     ui.painter().text(
         egui::pos2(rect.min.x + space::XS + 5.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        if collapsed { icon::CARET_RIGHT } else { icon::CARET_DOWN },
+        if collapsed {
+            icon::CARET_RIGHT
+        } else {
+            icon::CARET_DOWN
+        },
         text::icon(10.0),
         ink,
     );
-    super::widgets::text_fit(
-        ui.painter(),
-        egui::pos2(rect.min.x + space::XS + 14.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        &name.to_uppercase(),
+    let left = rect.min.x + space::XS + 14.0;
+    emoji::draw_channel_name(
+        ui,
+        t,
+        &mut state.media,
+        store,
+        name,
+        egui::pos2(left, rect.center().y),
         text::caption(),
         ink,
-        rect.width() - 30.0,
+        (rect.max.x - space::MD - left).max(0.0),
+        state.channel_emoji_monochrome,
+        true,
     );
     if unread {
-        ui.painter().circle_filled(egui::pos2(rect.max.x - space::MD, rect.center().y), 3.0, t.label);
+        ui.painter().circle_filled(
+            egui::pos2(rect.max.x - space::MD, rect.center().y),
+            3.0,
+            t.label,
+        );
     }
     response
 }
@@ -1858,6 +1899,8 @@ fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, u
 #[allow(clippy::too_many_arguments)]
 fn channel_row(
     ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
     t: &Tokens,
     glyph: &str,
     name: &str,
@@ -1888,7 +1931,7 @@ fn channel_row(
         text::body()
     };
 
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.text(
         egui::pos2(rect.min.x + space::MD, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1896,16 +1939,26 @@ fn channel_row(
         text::icon(14.0),
         if selected { t.accent } else { t.label_tertiary },
     );
-    // O nome para antes do contador de menções, com reticências.
-    let reserve = if mentions > 0 { 28.0 + space::MD } else { space::MD };
-    super::widgets::text_fit(
-        painter,
-        egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
+    // O # / alto-falante continua sendo o tipo do canal. Emoji pertence ao
+    // nome e começa logo depois dele, como no exemplo "# 🖥 Desenvolvimento".
+    let reserve = if mentions > 0 {
+        28.0 + space::MD
+    } else {
+        space::MD
+    };
+    let name_left = rect.min.x + space::MD + 20.0;
+    emoji::draw_channel_name(
+        ui,
+        t,
+        &mut state.media,
+        store,
         name,
+        egui::pos2(name_left, rect.center().y),
         font,
         label_color,
-        rect.max.x - reserve - (rect.min.x + space::MD + 20.0),
+        rect.max.x - reserve - name_left,
+        state.channel_emoji_monochrome,
+        false,
     );
 
     if mentions > 0 {
@@ -3142,7 +3195,15 @@ fn channel_pill(
     let painter = ui.painter();
     let glyph =
         painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
-    let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
+    let (channel_name_emojis, channel_name_text) =
+        emoji::channel_name_leading(&channel.name, &store.emojis);
+    let name =
+        painter.layout_no_wrap(channel_name_text, text::title3(), t.label);
+    let channel_name_icons_width = if channel_name_emojis.is_empty() {
+        0.0
+    } else {
+        channel_name_emojis.len() as f32 * 18.0
+    };
     let topic = topic_text.map(|topic| {
         const TOPIC_SNIPPET_CHARS: usize = 80;
         let mut chars = topic.chars();
@@ -3183,7 +3244,12 @@ fn channel_pill(
         }
     };
 
-    let base_width = space::LG + glyph.size().x + space::SM + name.size().x + space::LG;
+    let base_width = space::LG
+        + glyph.size().x
+        + space::SM
+        + channel_name_icons_width
+        + name.size().x
+        + space::LG;
     let topic_width = topic
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
@@ -3236,13 +3302,30 @@ fn channel_pill(
 
     let mid = header.center().y;
     let mut x = header.min.x + space::LG;
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.galley(
         egui::pos2(x, mid - glyph.size().y / 2.0),
         glyph.clone(),
         t.label_tertiary,
     );
     x += glyph.size().x + space::SM;
+    for channel_emoji in &channel_name_emojis {
+        let art = Rect::from_center_size(
+            egui::pos2(x + 7.5, mid),
+            Vec2::splat(15.0),
+        );
+        emoji::draw_channel_name_emoji(
+            ui,
+            t,
+            &mut state.media,
+            store,
+            channel_emoji,
+            art,
+            state.channel_emoji_monochrome,
+            t.label,
+        );
+        x += 18.0;
+    }
     painter.galley(
         egui::pos2(x, mid - name.size().y / 2.0),
         name.clone(),
