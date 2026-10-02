@@ -515,6 +515,42 @@ fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
 }
 
 #[test]
+fn read_state_roundtrips_and_is_account_scoped() {
+    let temp = TempDb::new("read-state");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::SetOwner {
+                owner_user_id: "me".to_owned(),
+                me_name: "Me".to_owned(),
+                me_username: "me".to_owned(),
+            },
+            CacheOp::ReplaceChannels(vec![channel("geral", 0)]),
+            CacheOp::UpsertReadState(CachedReadState {
+                owner_user_id: "me".to_owned(),
+                channel_id: "geral".to_owned(),
+                frontier_at: Some(1_234),
+                seen_ids: vec!["m8".to_owned(), "m9".to_owned()],
+                updated_at: 2_000,
+            }),
+        ],
+    );
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    assert_eq!(snapshot.read_states.len(), 1);
+    assert_eq!(snapshot.read_states[0].owner_user_id, "me");
+    assert_eq!(snapshot.read_states[0].channel_id, "geral");
+    assert_eq!(snapshot.read_states[0].frontier_at, Some(1_234));
+    assert_eq!(snapshot.read_states[0].seen_ids, vec!["m8", "m9"]);
+
+    db.submit("srv", vec![CacheOp::ClearServer]);
+    db.flush();
+    assert!(db.load_snapshot("srv").is_none());
+}
+
+#[test]
 fn retention_is_hard_bounded() {
     let temp = TempDb::new("retention");
     let db = open(&temp);
