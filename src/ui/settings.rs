@@ -244,6 +244,9 @@ impl ChannelDraft {
                 ChannelKind::Voice => "voice".to_owned(),
                 ChannelKind::Category => "category".to_owned(),
                 ChannelKind::Text => "text".to_owned(),
+                // DMs are not server-admin channels and never appear in this
+                // settings projection.
+                ChannelKind::Direct => "dm".to_owned(),
             },
         }
     }
