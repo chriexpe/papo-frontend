@@ -2163,6 +2163,37 @@ impl PapoApp {
             }
             ChatAction::ResetUser(user_id) => ws.runtime.net.send(Command::ResetUser { user_id }),
             ChatAction::LoadProfile(user_id) => ws.runtime.net.send(Command::LoadProfile { user_id }),
+            ChatAction::OpenDirectMessage(user_id) => {
+                if !self.ui.dm_surface
+                    && ws.runtime.store.channel(&ws.runtime.store.selected_channel).is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                {
+                    self.ui.last_server_channel = ws.runtime.store.selected_channel.clone();
+                }
+                self.ui.dm_surface = true;
+                if let Some(dm) = ws
+                    .runtime
+                    .store
+                    .direct_messages
+                    .iter()
+                    .find(|dm| dm.user.id == user_id)
+                {
+                    ws.runtime.store.selected_channel = dm.id.clone();
+                }
+                ws.runtime.net.send(Command::OpenDirectMessage { user_id });
+            }
+            ChatAction::HideDirectMessage(dm_id) => {
+                ws.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
+                if ws.runtime.store.selected_channel == dm_id {
+                    ws.runtime.store.selected_channel = ws
+                        .runtime
+                        .store
+                        .direct_messages
+                        .iter()
+                        .find(|dm| dm.id != dm_id)
+                        .map(|dm| dm.id.clone())
+                        .unwrap_or_default();
+                }
+            }
             ChatAction::SetPresence(status) => ws.runtime.net.send(Command::SetStatus { status }),
             ChatAction::EditProfile | ChatAction::MarkServerRead | ChatAction::LeaveServer => {}
             // Entrar já foi tratado antes do `match`, porque mexe em todos
@@ -2462,6 +2493,8 @@ impl PapoApp {
             }
             // Sem rede na demonstração: estas ações não têm efeito local.
             ChatAction::LoadOlderMessages
+            | ChatAction::OpenDirectMessage(_)
+            | ChatAction::HideDirectMessage(_)
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
@@ -2807,7 +2840,16 @@ impl PapoApp {
 
     fn draw_rail(&mut self, ui: &mut egui::Ui, s: &'static crate::i18n::Strings, ctx: &egui::Context) {
         let entries = self.rail_entries(ctx);
-        if let Some(action) = crate::ui::rail::draw(ui, &entries, self.active, &self.tokens, s) {
+        let direct_unread = self.workspaces[self.active].runtime.store.direct_unread_total();
+        if let Some(action) = crate::ui::rail::draw(
+            ui,
+            &entries,
+            self.active,
+            direct_unread,
+            self.ui.dm_surface,
+            &self.tokens,
+            s,
+        ) {
             self.handle_rail_action(action, ctx);
         }
     }
@@ -2817,6 +2859,36 @@ impl PapoApp {
             crate::ui::rail::RailAction::Select(index) => {
                 self.add_server_previous = None;
                 self.activate(index, ctx);
+                self.ui.dm_surface = false;
+                let store = &mut self.workspaces[index].runtime.store;
+                if store.channel(&store.selected_channel).is_some_and(|channel| channel.kind == crate::state::ChannelKind::Direct)
+                    || store.selected_channel.is_empty()
+                {
+                    if let Some(channel) = store
+                        .channels
+                        .iter()
+                        .find(|channel| channel.kind == crate::state::ChannelKind::Text)
+                    {
+                        store.selected_channel = channel.id.clone();
+                    }
+                }
+                self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+            }
+            crate::ui::rail::RailAction::DirectMessages => {
+                let store = &mut self.workspaces[self.active].runtime.store;
+                if !self.ui.dm_surface
+                    && store.channel(&store.selected_channel).is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                {
+                    self.ui.last_server_channel = store.selected_channel.clone();
+                }
+                self.ui.dm_surface = true;
+                if !store.channel(&store.selected_channel).is_some_and(|channel| channel.kind == crate::state::ChannelKind::Direct) {
+                    store.selected_channel = store
+                        .direct_messages
+                        .first()
+                        .map(|dm| dm.id.clone())
+                        .unwrap_or_default();
+                }
                 self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
             }
             crate::ui::rail::RailAction::Add => self.add_server(ctx),
@@ -4076,6 +4148,8 @@ impl eframe::App for PapoApp {
                         mobile_entries.as_ref().map(|entries| shell::MobileServers {
                             entries,
                             active,
+                            direct_unread: ws.runtime.store.direct_unread_total(),
+                            direct_active: self.ui.dm_surface,
                         }),
                     )
                 };
