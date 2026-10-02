@@ -2349,7 +2349,7 @@ fn timeline_nav_controls(
     }
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("timeline-nav-layer"));
-    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(area));
+    let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(area));
     let right = area.max.x - PILL_MARGIN;
     let mut bottom = area.max.y - bottom_inset - space::MD;
     let mut rects = Vec::with_capacity(controls.len());
