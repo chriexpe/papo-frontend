@@ -2815,6 +2815,27 @@ fn conversation(
     egui::CentralPanel::default().frame(frame).show(root, |ui| {
         let full = ui.max_rect();
 
+        if state.dm_surface && store.selected_direct_message().is_none() {
+            state.webembed_chat_clip = None;
+            state.webembed_occlusions.clear();
+            let icon_pos = egui::pos2(full.center().x, full.center().y - 14.0);
+            ui.painter().text(
+                icon_pos,
+                Align2::CENTER_CENTER,
+                icon::CHAT_CIRCLE,
+                text::icon(30.0),
+                t.label_tertiary,
+            );
+            ui.painter().text(
+                egui::pos2(full.center().x, full.center().y + 20.0),
+                Align2::CENTER_CENTER,
+                s.direct_messages,
+                text::headline(),
+                t.label_secondary,
+            );
+            return;
+        }
+
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
