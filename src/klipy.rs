@@ -17,7 +17,10 @@ const SEARCH_DEBOUNCE: f64 = 0.28;
 const ITEM_BATCH: usize = 32;
 
 pub fn app_key() -> Option<&'static str> {
-    option_env!("PAPO_KLIPY_APP_KEY").filter(|key| !key.trim().is_empty())
+    option_env!("PAPO_KLIPY_APP_KEY").filter(|key| {
+        let key = key.trim();
+        !key.is_empty() && key != "@PAPO_KLIPY_APP_KEY@"
+    })
 }
 
 pub fn available() -> bool {
