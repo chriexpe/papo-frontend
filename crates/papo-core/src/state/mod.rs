@@ -1708,18 +1708,273 @@ impl Store {
         self.channels.iter().any(|channel| channel.unread)
     }
 
-    /// O canal foi visto agora: zera o realce e guarda a marca.
+    fn message_key(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
+        self.message(message_id).map(|message| {
+            (
+                message.at.with_timezone(&Utc),
+                message.id.clone(),
+            )
+        })
+    }
+
+    fn frontier_key(&self, channel_id: &str) -> Option<(DateTime<Utc>, String)> {
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.read_at.zip(state.read_message_id.clone()))
+            .or_else(|| {
+                self.read_marks
+                    .get(channel_id)
+                    .copied()
+                    .map(|at| (at, String::new()))
+            })
+    }
+
+    fn persist_read_state(&mut self, channel_id: &str) {
+        if self.me.is_empty() {
+            return;
+        }
+        let Some(state) = self.read_states.get(channel_id) else {
+            return;
+        };
+        self.pending_cache.push(CacheOp::UpsertReadState(
+            state.to_cached(&self.me, channel_id),
+        ));
+    }
+
+    fn refresh_channel_read_badge(&mut self, channel_id: &str) {
+        let frontier = self.frontier_key(channel_id);
+        let has_newer = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending && message.author_id != self.me)
+            .any(|message| {
+                let key = (message.at.with_timezone(&Utc), message.id.clone());
+                frontier.as_ref().is_none_or(|mark| key > *mark)
+            });
+        let mentions = self
+            .read_states
+            .get(channel_id)
+            .map_or(0, |state| state.unread_mentions.len() as u32);
+        if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == channel_id) {
+            channel.unread = has_newer || mentions > 0;
+            channel.mentions = mentions;
+        }
+    }
+
+    /// Registra apenas mensagens que realmente cruzaram a viewport. Saltos
+    /// podem criar buracos; por isso cada linha visível entra primeiro no set
+    /// fora de ordem e a fronteira só anda enquanto o próximo item cronológico
+    /// também tiver sido visto.
+    pub fn observe_visible_messages(&mut self, channel_id: &str, visible: &[String]) {
+        if channel_id.is_empty() || visible.is_empty() {
+            return;
+        }
+
+        let mut ordered: Vec<(DateTime<Utc>, String)> = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+            .collect();
+        ordered.sort();
+
+        let legacy = self.read_marks.get(channel_id).copied();
+        let state = self.read_states.entry(channel_id.to_owned()).or_insert_with(|| {
+            ChannelReadState {
+                read_at: legacy,
+                ..ChannelReadState::default()
+            }
+        });
+
+        for id in visible {
+            if let Some((at, _)) = ordered.iter().find(|(_, candidate)| candidate == id) {
+                let after = match (state.read_at, state.read_message_id.as_deref()) {
+                    (Some(read_at), Some(read_id)) => (*at, id.as_str()) > (read_at, read_id),
+                    (Some(read_at), None) => *at > read_at,
+                    (None, _) => true,
+                };
+                if after {
+                    state.seen_out_of_order.insert(id.clone());
+                }
+            }
+            state.unread_mentions.retain(|mention| mention != id);
+        }
+
+        loop {
+            let next = match (state.read_at, state.read_message_id.as_deref()) {
+                (Some(read_at), Some(read_id)) => {
+                    let Some(position) = ordered
+                        .iter()
+                        .position(|(at, id)| *at == read_at && id == read_id)
+                    else {
+                        break;
+                    };
+                    ordered.get(position + 1).cloned()
+                }
+                (Some(read_at), None) => ordered.iter().find(|(at, _)| *at > read_at).cloned(),
+                (None, _) => ordered.first().cloned(),
+            };
+            let Some((at, id)) = next else {
+                break;
+            };
+            if !state.seen_out_of_order.remove(&id) {
+                break;
+            }
+            state.read_at = Some(at);
+            state.read_message_id = Some(id);
+        }
+
+        if let Some(read_at) = state.read_at {
+            self.read_marks.insert(channel_id.to_owned(), read_at);
+        }
+
+        if state
+            .jump_forward
+            .as_ref()
+            .is_some_and(|target| state.read_message_id.as_ref() == Some(target))
+        {
+            state.jump_back = None;
+            state.jump_forward = None;
+            state.seen_out_of_order.clear();
+        }
+
+        self.refresh_channel_read_badge(channel_id);
+        self.persist_read_state(channel_id);
+    }
+
+    pub fn first_unread_loaded(&self, channel_id: &str) -> Option<String> {
+        let frontier = self.frontier_key(channel_id);
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+            .find(|key| frontier.as_ref().is_none_or(|mark| key > mark))
+            .map(|(_, id)| id)
+    }
+
+    pub fn newest_loaded(&self, channel_id: &str) -> Option<String> {
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .last()
+            .map(|message| message.id.clone())
+    }
+
+    pub fn jump_back_target(&self, channel_id: &str) -> Option<String> {
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_back.clone())
+    }
+
+    pub fn next_mention_target(&self, channel_id: &str) -> Option<String> {
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.unread_mentions.front().cloned())
+    }
+
+    /// Decide o destino do botão para baixo sem mover checkpoints existentes.
+    /// Se o checkpoint anterior já está visível/foi alcançado, um segundo salto
+    /// aposenta aquele bloco e congela um novo destino no head atual.
+    pub fn prepare_newer_jump(
+        &mut self,
+        channel_id: &str,
+        latest_visible: Option<&str>,
+    ) -> Option<String> {
+        let newest = self.newest_loaded(channel_id)?;
+        let first_unread = self.first_unread_loaded(channel_id)?;
+        let existing = self
+            .read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_forward.clone());
+
+        if let Some(target) = existing {
+            let reached = latest_visible.is_some_and(|visible| {
+                if visible == target {
+                    return true;
+                }
+                self.message_key(visible)
+                    .zip(self.message_key(&target))
+                    .is_some_and(|(visible, target)| visible >= target)
+            });
+            if !reached {
+                return Some(target);
+            }
+            if target == newest {
+                return None;
+            }
+
+            if let Some((at, id)) = self.message_key(&target) {
+                let state = self.read_states.entry(channel_id.to_owned()).or_default();
+                state.read_at = Some(at);
+                state.read_message_id = Some(id);
+                state.seen_out_of_order.clear();
+                state.unread_mentions.retain(|mention| {
+                    self.message_key(mention)
+                        .is_none_or(|mention_key| mention_key > (at, target.clone()))
+                });
+            }
+        }
+
+        let next_back = if existing.is_some() {
+            self.messages_in(channel_id)
+                .filter(|message| !message.pending)
+                .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+                .find(|key| {
+                    self.frontier_key(channel_id)
+                        .as_ref()
+                        .is_none_or(|frontier| key > frontier)
+                })
+                .map(|(_, id)| id)
+                .unwrap_or(first_unread)
+        } else {
+            first_unread
+        };
+
+        let state = self.read_states.entry(channel_id.to_owned()).or_default();
+        state.jump_back = Some(next_back);
+        state.jump_forward = Some(newest.clone());
+        self.refresh_channel_read_badge(channel_id);
+        self.persist_read_state(channel_id);
+        Some(newest)
+    }
+
+    /// Abertura opcional no head usa exatamente a mesma máquina de checkpoints
+    /// do botão para baixo: a lacuna pulada continua acessível pela ampulheta.
+    pub fn prepare_open_at_newest(&mut self, channel_id: &str) -> Option<String> {
+        if self
+            .read_states
+            .get(channel_id)
+            .is_some_and(|state| state.jump_forward.is_some())
+        {
+            return self
+                .read_states
+                .get(channel_id)
+                .and_then(|state| state.jump_forward.clone());
+        }
+        self.prepare_newer_jump(channel_id, None)
+    }
+
+    /// Ação explícita de "marcar lido": ao contrário de viewport normal, aqui
+    /// é intencional consumir tudo até o head atual.
     pub fn mark_read(&mut self, channel_id: &str) {
         let now = Utc::now();
-        self.read_marks.insert(channel_id.to_owned(), now);
-        if let Some(channel) = self
-            .channels
-            .iter_mut()
-            .find(|channel| channel.id == channel_id)
-        {
-            channel.unread = false;
-            channel.mentions = 0;
+        let newest = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .last()
+            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()));
+        let state = self.read_states.entry(channel_id.to_owned()).or_default();
+        if let Some((at, id)) = newest {
+            state.read_at = Some(at);
+            state.read_message_id = Some(id);
+        } else {
+            state.read_at = Some(now);
+            state.read_message_id = None;
         }
+        state.seen_out_of_order.clear();
+        state.unread_mentions.clear();
+        state.jump_back = None;
+        state.jump_forward = None;
+        self.read_marks
+            .insert(channel_id.to_owned(), state.read_at.unwrap_or(now));
+        self.refresh_channel_read_badge(channel_id);
+        self.persist_read_state(channel_id);
     }
 
     /// Ids de notificação do canal para confirmar no servidor; some da lista
