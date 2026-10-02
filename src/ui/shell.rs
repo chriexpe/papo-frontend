@@ -7966,6 +7966,35 @@ fn composer(
                 };
 
             #[cfg(not(target_os = "android"))]
+            {
+                let paste_shortcut = ui.ctx().memory(|memory| memory.has_focus(edit_id))
+                    && ui.input(|input| {
+                        input.modifiers.command && input.key_pressed(egui::Key::V)
+                    });
+                if paste_shortcut {
+                    let pasted = crate::platform::clipboard::attachments();
+                    if !pasted.is_empty() {
+                        state.attachments.extend(pasted);
+                        // Do not let the text editor also paste a textual
+                        // representation (file:// URI/path) of the attachment.
+                        ui.input_mut(|input| {
+                            input.events.retain(|event| {
+                                !matches!(
+                                    event,
+                                    egui::Event::Key {
+                                        key: egui::Key::V,
+                                        pressed: true,
+                                        modifiers,
+                                        ..
+                                    } if modifiers.command
+                                ) && !matches!(event, egui::Event::Paste(_))
+                            });
+                        });
+                    }
+                }
+            }
+
+            #[cfg(not(target_os = "android"))]
             let (field_focused, caret) = {
                 let ime_changed =
                     crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
