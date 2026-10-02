@@ -3831,6 +3831,67 @@ mod tests {
         convert(wire_message(id, channel_id, content), "eu")
     }
 
+    fn timeline_de_leitura() -> Store {
+        let mut store = store_para_proveniencia();
+        let base = Local::now();
+        for (index, id) in ["m1", "m2", "m3"].into_iter().enumerate() {
+            let mut message = mensagem_convertida(id, "outro", if id == "m3" {
+                "@mention(<@eu>) terceira"
+            } else {
+                "normal"
+            });
+            message.author_id = "outro".to_owned();
+            message.at = base + chrono::Duration::seconds(index as i64);
+            store.messages.push(message);
+        }
+        store.sort_messages();
+        store
+            .read_marks
+            .insert("outro".to_owned(), (base - chrono::Duration::seconds(1)).with_timezone(&Utc));
+        if let Some(channel) = store.channels.iter_mut().find(|channel| channel.id == "outro") {
+            channel.unread = true;
+            channel.mentions = 1;
+        }
+        store
+    }
+
+    #[test]
+    fn salto_marca_so_destino_como_visto_sem_fechar_buraco() {
+        let mut store = timeline_de_leitura();
+
+        store.mark_message_seen("outro", "m2", false);
+
+        assert!(!store.message_seen(store.message("m1").unwrap()));
+        assert!(store.message_seen(store.message("m2").unwrap()));
+        assert!(!store.message_seen(store.message("m3").unwrap()));
+        assert_eq!(
+            store.oldest_unseen_message("outro").map(|message| message.id.as_str()),
+            Some("m1")
+        );
+        assert!(store.channel("outro").is_some_and(|channel| channel.unread));
+    }
+
+    #[test]
+    fn aceitar_checkpoint_fecha_bloco_anterior_mas_preserva_o_novo() {
+        let mut store = timeline_de_leitura();
+        store.mark_message_seen("outro", "m2", false);
+
+        store.mark_through_message("outro", "m2");
+
+        assert!(store.message_seen(store.message("m1").unwrap()));
+        assert!(store.message_seen(store.message("m2").unwrap()));
+        assert!(!store.message_seen(store.message("m3").unwrap()));
+        assert_eq!(
+            store.oldest_unseen_message("outro").map(|message| message.id.as_str()),
+            Some("m3")
+        );
+        assert_eq!(
+            store.oldest_unseen_mention("outro").map(|message| message.id.as_str()),
+            Some("m3")
+        );
+        assert_eq!(store.channel("outro").map(|channel| channel.mentions), Some(1));
+    }
+
     #[test]
     fn live_aplica_unread_e_mencao_uma_vez() {
         let mut store = store_para_proveniencia();
