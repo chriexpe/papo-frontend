@@ -309,6 +309,9 @@ pub struct Settings {
     /// A descrição do canal aparece ao abri-lo.
     #[serde(default = "enabled")]
     pub topic_reveal: bool,
+    /// Abre canais com coisa nova no fim, mantendo o bloco não lido como retorno.
+    #[serde(default = "enabled")]
+    pub auto_jump_latest: bool,
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
@@ -392,6 +395,7 @@ impl Default for Settings {
             reply_notifications: true,
             badge: true,
             topic_reveal: true,
+            auto_jump_latest: true,
             record_button: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
@@ -921,6 +925,7 @@ impl PapoApp {
         ui_state.show_members = settings.show_members;
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
+        ui_state.auto_jump_latest = settings.auto_jump_latest;
         ui_state.show_record = settings.record_button;
         ui_state.self_card = settings.self_card;
         ui_state.webembed_behavior = settings.webembed_offscreen;
@@ -3158,6 +3163,7 @@ impl PapoApp {
         );
         let before_secondary = (
             self.settings.topic_reveal,
+            self.settings.auto_jump_latest,
             self.settings.record_button,
             self.settings.self_card,
             self.settings.webembed_offscreen,
@@ -3202,6 +3208,7 @@ impl PapoApp {
                 autostart: &mut autostart,
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
+                auto_jump_latest: &mut self.settings.auto_jump_latest,
                 record_button: &mut self.settings.record_button,
                 self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
@@ -3236,6 +3243,7 @@ impl PapoApp {
         );
         let after_secondary = (
             self.settings.topic_reveal,
+            self.settings.auto_jump_latest,
             self.settings.record_button,
             self.settings.self_card,
             self.settings.webembed_offscreen,
@@ -3244,7 +3252,8 @@ impl PapoApp {
         );
         if before_primary != after_primary || before_secondary != after_secondary {
             self.ui.self_card = self.settings.self_card;
-            if ask_download != before_secondary.5 {
+            self.ui.auto_jump_latest = self.settings.auto_jump_latest;
+            if ask_download != before_secondary.6 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
