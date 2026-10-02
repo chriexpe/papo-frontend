@@ -1923,7 +1923,7 @@ impl Store {
             .get(channel_id)
             .and_then(|state| state.jump_forward.clone());
 
-        if let Some(target) = existing {
+        if let Some(target) = existing.clone() {
             let reached = latest_visible.is_some_and(|visible| {
                 if visible == target {
                     return true;
@@ -1940,14 +1940,28 @@ impl Store {
             }
 
             if let Some((at, id)) = self.message_key(&target) {
+                let retained_mentions: VecDeque<String> = self
+                    .read_states
+                    .get(channel_id)
+                    .map(|state| {
+                        state
+                            .unread_mentions
+                            .iter()
+                            .filter(|mention| {
+                                self.message_key(mention)
+                                    .is_none_or(|mention_key| {
+                                        mention_key > (at, target.clone())
+                                    })
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let state = self.read_states.entry(channel_id.to_owned()).or_default();
                 state.read_at = Some(at);
                 state.read_message_id = Some(id);
                 state.seen_out_of_order.clear();
-                state.unread_mentions.retain(|mention| {
-                    self.message_key(mention)
-                        .is_none_or(|mention_key| mention_key > (at, target.clone()))
-                });
+                state.unread_mentions = retained_mentions;
             }
         }
 
