@@ -953,6 +953,7 @@ impl Store {
             channels,
             members,
             messages,
+            read_states,
             cached_channels,
         } = snapshot;
         let hydrated = cached_channels.clone();
@@ -961,6 +962,7 @@ impl Store {
             server,
             channels,
             members,
+            read_states,
             cached_channels,
         });
         for message in messages {
@@ -4267,6 +4269,7 @@ mod tests {
                 attachments: Vec::new(),
                 reactions: Vec::new(),
             }],
+            read_states: Vec::new(),
             cached_channels: ["geral".to_owned()].into_iter().collect(),
         }
     }
