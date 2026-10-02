@@ -205,6 +205,8 @@ impl Default for SettingsState {
 pub struct ChannelDraft {
     pub id: Option<String>,
     pub name: String,
+    pub emoji_query: String,
+    pub emoji_group: usize,
     pub topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     pub kind: String,
@@ -223,6 +225,8 @@ impl ChannelDraft {
         Self {
             id: None,
             name: String::new(),
+            emoji_query: String::new(),
+            emoji_group: 0,
             topic: String::new(),
             kind: "text".to_owned(),
         }
@@ -233,6 +237,8 @@ impl ChannelDraft {
         Self {
             id: Some(channel.id.clone()),
             name: channel.name.clone(),
+            emoji_query: String::new(),
+            emoji_group: 0,
             topic: channel.topic.clone().unwrap_or_default(),
             kind: match channel.kind {
                 ChannelKind::Voice => "voice".to_owned(),
@@ -803,6 +809,163 @@ impl Rows<'_> {
         self.ui.advance_cursor_after_rect(rect);
     }
 
+    /// Campo de nome de canal com o mesmo seletor de emoji da conversa
+    /// embutido à esquerda. O emoji continua sendo texto do próprio nome:
+    /// Unicode entra literal e emoji do servidor entra como `:apelido:`.
+    fn channel_name_field(
+        &mut self,
+        label: &str,
+        editor: &mut ChannelDraft,
+        store: &Store,
+        media: &mut crate::media::MediaStore,
+        s: &Strings,
+    ) {
+        if self.tiled {
+            self.stack_next = true;
+        }
+        self.row(label, None, |ui, t| {
+            let width = ui.available_width();
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+
+            let picker_rect =
+                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
+            let picker = ui.interact(
+                picker_rect,
+                ui.id().with((
+                    "settings-channel-name-emoji",
+                    editor.id.as_deref().unwrap_or("new"),
+                )),
+                Sense::click(),
+            );
+            if picker.hovered() {
+                ui.painter().rect_filled(
+                    picker_rect.shrink(2.0),
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_medium,
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter().text(
+                picker_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::SMILEY,
+                text::icon(14.0),
+                if picker.hovered() {
+                    t.label
+                } else {
+                    t.label_tertiary
+                },
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
+                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let field_rect = Rect::from_min_max(
+                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
+                rect.max,
+            );
+            let edit_id = ui.id().with((
+                "settings-channel-name",
+                editor.id.as_deref().unwrap_or("new"),
+            ));
+
+            #[cfg(target_os = "android")]
+            {
+                let key = format!("settings:{edit_id:?}");
+                let _ = crate::platform::native_field::show(
+                    ui.ctx(),
+                    &key,
+                    &mut editor.name,
+                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
+                    "",
+                    crate::platform::native_field::Mode::Text,
+                    32,
+                    false,
+                    t.label,
+                    t.label_tertiary,
+                    text::body().size,
+                );
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &editor.name);
+                let response = ui.put(
+                    field_rect,
+                    egui::TextEdit::singleline(&mut editor.name)
+                        .id(edit_id)
+                        .char_limit(32)
+                        .font(text::body())
+                        .frame(false)
+                        .margin(egui::Margin::symmetric(
+                            space::MD as i8,
+                            space::XS as i8,
+                        )),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &editor.name,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Text,
+                );
+            }
+
+            let mut chosen = None;
+            egui::Popup::menu(&picker).show(|ui| {
+                ui.set_max_height(380.0);
+                chosen = super::emoji::picker(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    media,
+                    &mut editor.emoji_query,
+                    &mut editor.emoji_group,
+                    false,
+                );
+                if chosen.is_some() {
+                    ui.close();
+                }
+            });
+
+            if let Some(chosen) = chosen {
+                let prefix = match chosen {
+                    crate::state::Emoji::Unicode(glyph) => glyph,
+                    crate::state::Emoji::Custom(id) => store
+                        .emojis
+                        .iter()
+                        .find(|custom| custom.id == id)
+                        .map(|custom| format!(":{}:", custom.name))
+                        .unwrap_or_default(),
+                };
+                if !prefix.is_empty() {
+                    let next = if editor.name.trim().is_empty() {
+                        format!("{prefix} ")
+                    } else {
+                        format!("{prefix} {}", editor.name.trim_start())
+                    };
+                    if next.chars().count() <= 32 {
+                        editor.name = next;
+                    }
+                }
+            }
+        });
+    }
+
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         self.field_hinted(label, None, value, limit, secret)
@@ -1252,6 +1415,7 @@ pub struct Context<'a> {
     pub topic_reveal: &'a mut bool,
     pub open_at_newest: &'a mut bool,
     pub record_button: &'a mut bool,
+    pub channel_emoji_monochrome: &'a mut bool,
     pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
     pub webembed_offscreen: &'a mut crate::webembed::OffscreenBehavior,
     pub webembed_scope: &'a mut crate::webembed::FloatScope,
@@ -1915,6 +2079,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Appearance, s.topic_reveal),
         (AppPane::Appearance, s.open_at_newest),
         (AppPane::Appearance, s.record_button),
+        (AppPane::Appearance, s.channel_emoji_monochrome),
         (AppPane::Appearance, s.webembed_offscreen),
         (AppPane::Appearance, s.webembed_scope),
         (AppPane::Appearance, s.self_card),
@@ -2949,6 +3114,13 @@ fn app_pane(
                     switch(ui, t, data.record_button);
                 });
                 rows.row(
+                    s.channel_emoji_monochrome,
+                    Some(s.channel_emoji_monochrome_hint),
+                    |ui, t| {
+                        switch(ui, t, data.channel_emoji_monochrome);
+                    },
+                );
+                rows.row(
                     s.webembed_offscreen,
                     Some(s.webembed_offscreen_hint),
                     |ui, t| {
@@ -3700,7 +3872,13 @@ fn server_pane(
                     },
                 );
                 group(ui, t, |rows| {
-                    rows.field(s.channel_name, &mut editor.name, 32, false);
+                    rows.channel_name_field(
+                        s.channel_name,
+                        editor,
+                        data.store,
+                        data.media,
+                        s,
+                    );
 
                     rows.row(s.channel_kind, None, |ui, t| {
                         if editor.id.is_some() {
