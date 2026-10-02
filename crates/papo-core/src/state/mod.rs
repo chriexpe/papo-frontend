@@ -1816,11 +1816,17 @@ impl Store {
 
     /// Menções somadas de todos os canais: é o número do badge.
     pub fn mention_total(&self) -> u32 {
-        self.channels.iter().map(|channel| channel.mentions).sum()
+        self.channels
+            .iter()
+            .filter(|channel| channel.kind != ChannelKind::Direct)
+            .map(|channel| channel.mentions)
+            .sum()
     }
 
     pub fn has_unread(&self) -> bool {
-        self.channels.iter().any(|channel| channel.unread)
+        self.channels
+            .iter()
+            .any(|channel| channel.kind != ChannelKind::Direct && channel.unread)
     }
 
     fn message_key(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
