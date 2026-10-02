@@ -70,6 +70,9 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/papo/cargo
+    # Release CI substitutes this placeholder from the repository secret.
+    # Local Flatpak builds intentionally get a picker-disabled binary.
+    PAPO_KLIPY_APP_KEY: '@PAPO_KLIPY_APP_KEY@'
 
 modules:
   # Rich Presence fallback, built from the revision in

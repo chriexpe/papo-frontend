@@ -1,6 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icons");
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-env-changed=PAPO_KLIPY_APP_KEY");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

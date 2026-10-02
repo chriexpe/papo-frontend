@@ -8,6 +8,7 @@
 pub mod api;
 pub mod app;
 pub mod i18n;
+pub mod klipy;
 pub mod media;
 pub mod platform;
 pub mod render;

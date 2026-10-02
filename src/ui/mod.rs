@@ -8,6 +8,7 @@ pub mod emoji;
 pub mod emoji_raster;
 #[cfg(target_os = "android")]
 pub mod glass;
+pub mod gif;
 #[cfg(not(target_os = "android"))]
 #[path = "glass_wgpu.rs"]
 pub mod glass;
