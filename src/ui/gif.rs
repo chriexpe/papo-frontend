@@ -552,11 +552,12 @@ pub fn message(
         .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
 
     if let Some(item) = item.as_ref() {
-        let still = item.still_url.as_deref().unwrap_or(&item.preview_url);
+        // Chat GIFs autoplay exactly like the picker. Keep the provider media
+        // ephemeral, but advance animated frames while the message is visible.
         if let Some(texture) = state
             .media
-            .remote_ephemeral(&format!("klipy-chat-{slug}"), still)
-            .and_then(|texture| texture.first_frame())
+            .remote_ephemeral(&format!("klipy-chat-{slug}"), &item.preview_url)
+            .and_then(|texture| texture.frame(ui.ctx()))
             .cloned()
         {
             paint_cover(ui, rect, &texture);
