@@ -1763,6 +1763,11 @@ impl PapoApp {
                 });
             }
         }
+
+        // A viewport também produz estado durável (fronteira de leitura e
+        // vistos esparsos). Não espere um update de rede para descarregá-lo:
+        // offline e fechamento logo após rolar precisam persistir igual.
+        ws.runtime.flush_store_cache_ops();
     }
 
     /// Executa o que a conversa pediu.
