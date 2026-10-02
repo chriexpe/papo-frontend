@@ -1931,7 +1931,7 @@ fn channel_row(
         text::body()
     };
 
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.text(
         egui::pos2(rect.min.x + space::MD, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -3302,7 +3302,7 @@ fn channel_pill(
 
     let mid = header.center().y;
     let mut x = header.min.x + space::LG;
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.galley(
         egui::pos2(x, mid - glyph.size().y / 2.0),
         glyph.clone(),
