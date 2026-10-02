@@ -232,6 +232,15 @@ impl CachedServer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedReadState {
+    pub owner_user_id: String,
+    pub channel_id: String,
+    pub frontier_at: Option<i64>,
+    pub seen_ids: Vec<String>,
+    pub updated_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedChannel {
     pub id: String,
     pub name: String,
@@ -459,6 +468,7 @@ pub struct CachedServerMetadata {
     pub server: Option<CachedServer>,
     pub channels: Vec<CachedChannel>,
     pub members: Vec<CachedMember>,
+    pub read_states: Vec<CachedReadState>,
     /// Canais que têm um snapshot/cache persistido, inclusive quando vazio.
     pub cached_channels: HashSet<String>,
 }
@@ -468,6 +478,7 @@ impl CachedServerMetadata {
         self.server.is_none()
             && self.channels.is_empty()
             && self.members.is_empty()
+            && self.read_states.is_empty()
             && self.cached_channels.is_empty()
     }
 }
@@ -491,6 +502,7 @@ pub struct CachedServerSnapshot {
     pub channels: Vec<CachedChannel>,
     pub members: Vec<CachedMember>,
     pub messages: Vec<CachedMessage>,
+    pub read_states: Vec<CachedReadState>,
     /// Canais com um snapshot gravado, mesmo vazio.
     pub cached_channels: HashSet<String>,
 }
@@ -501,6 +513,7 @@ impl CachedServerSnapshot {
             && self.channels.is_empty()
             && self.members.is_empty()
             && self.messages.is_empty()
+            && self.read_states.is_empty()
             && self.cached_channels.is_empty()
     }
 }
@@ -548,6 +561,7 @@ pub enum CacheOp {
         owner_user_id: String,
         channel_id: String,
     },
+    UpsertReadState(CachedReadState),
     /// Apaga somente estado reconstruível do servidor, preservando intenções
     /// de envio e rascunhos particionados por conta.
     ClearCachedData,
@@ -568,6 +582,7 @@ impl CacheOp {
                 | CacheOp::SetOwner { .. }
                 | CacheOp::UpsertDraft(_)
                 | CacheOp::DeleteDraft { .. }
+                | CacheOp::UpsertReadState(_)
         )
     }
 }
