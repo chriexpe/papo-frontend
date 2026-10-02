@@ -1709,20 +1709,27 @@ impl PapoApp {
         ws.ensure_channel_cache_hydrated();
         ws.ensure_channel_reconciled();
 
-        // Com a janela à frente, o canal aberto está sendo lido agora.
+        // Foco por si só não significa "li o canal". A timeline avança a
+        // fronteira somente para mensagens realmente vistas. As notificações
+        // remotas podem ser confirmadas quando todas as menções não lidas
+        // deste canal já desapareceram dessa projeção.
         if focused && !ws.runtime.store.selected_channel.is_empty() {
             let channel_id = ws.runtime.store.selected_channel.clone();
-            ws.runtime.store.mark_read(&channel_id);
-            // O servidor também precisa saber, ou a menção volta no próximo
-            // dispositivo.
-            let ids = ws.runtime.store.take_open_notifications(&channel_id);
-            if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
-                #[cfg(target_os = "android")]
-                crate::platform::android_message::clear_channel(&ws.runtime.url, &channel_id);
-                ws.runtime.net.send(Command::MarkNotificationsRead {
-                    user_id: ws.runtime.store.me.clone(),
-                    ids,
-                });
+            let mentions_left = ws
+                .runtime
+                .store
+                .channel(&channel_id)
+                .is_some_and(|channel| channel.mentions > 0);
+            if !mentions_left {
+                let ids = ws.runtime.store.take_open_notifications(&channel_id);
+                if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
+                    #[cfg(target_os = "android")]
+                    crate::platform::android_message::clear_channel(&ws.runtime.url, &channel_id);
+                    ws.runtime.net.send(Command::MarkNotificationsRead {
+                        user_id: ws.runtime.store.me.clone(),
+                        ids,
+                    });
+                }
             }
         }
 
