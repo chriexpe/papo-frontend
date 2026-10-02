@@ -10,7 +10,7 @@ use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
     now_millis, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
-    CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
+    CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
 };
 
 pub use call::{CallState, Phase, Stage};
@@ -51,6 +51,43 @@ pub struct Channel {
     pub unread: bool,
     /// Quantas dessas citam você.
     pub mentions: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ChannelReadState {
+    pub read_at: Option<DateTime<Utc>>,
+    pub read_message_id: Option<String>,
+    pub seen_out_of_order: HashSet<String>,
+    pub unread_mentions: VecDeque<String>,
+    pub jump_back: Option<String>,
+    pub jump_forward: Option<String>,
+}
+
+impl ChannelReadState {
+    fn from_cached(state: CachedReadState) -> Self {
+        Self {
+            read_at: state.read_at.and_then(DateTime::from_timestamp_millis),
+            read_message_id: state.read_message_id,
+            seen_out_of_order: state.seen_out_of_order.into_iter().collect(),
+            unread_mentions: state.unread_mentions.into_iter().collect(),
+            jump_back: state.jump_back,
+            jump_forward: state.jump_forward,
+        }
+    }
+
+    fn to_cached(&self, owner_user_id: &str, channel_id: &str) -> CachedReadState {
+        CachedReadState {
+            owner_user_id: owner_user_id.to_owned(),
+            channel_id: channel_id.to_owned(),
+            read_at: self.read_at.map(|at| at.timestamp_millis()),
+            read_message_id: self.read_message_id.clone(),
+            seen_out_of_order: self.seen_out_of_order.iter().cloned().collect(),
+            unread_mentions: self.unread_mentions.iter().cloned().collect(),
+            jump_back: self.jump_back.clone(),
+            jump_forward: self.jump_forward.clone(),
+            updated_at: now_millis(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -435,6 +472,8 @@ pub struct Store {
     /// Até quando cada canal foi visto; é o que define o não lido, já que o
     /// backend registra `last_read_message` mas nunca o escreve.
     pub read_marks: HashMap<String, DateTime<Utc>>,
+    /// Estado preciso de leitura e navegação por mensagem.
+    pub read_states: HashMap<String, ChannelReadState>,
     /// Notificações já contadas, para não somar a mesma menção duas vezes.
     counted_notifications: HashSet<String>,
     /// Notificações por canal ainda não confirmadas no servidor.
@@ -504,6 +543,7 @@ impl Default for Store {
             next_refresh_request_id: 0,
             typing: HashMap::new(),
             read_marks: HashMap::new(),
+            read_states: HashMap::new(),
             counted_notifications: HashSet::new(),
             open_notifications: HashMap::new(),
             error: None,
@@ -900,6 +940,11 @@ impl Store {
             .collect();
 
         self.messages.clear();
+        self.read_states = metadata
+            .read_states
+            .into_iter()
+            .map(|state| (state.channel_id.clone(), ChannelReadState::from_cached(state)))
+            .collect();
         self.cached_channels = metadata.cached_channels;
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
@@ -939,6 +984,7 @@ impl Store {
             server,
             channels,
             members,
+            read_states: Vec::new(),
             cached_channels,
         });
         for message in messages {
@@ -970,6 +1016,7 @@ impl Store {
         self.history_loading.clear();
         self.pending_cache.clear();
         self.outgoing_states.clear();
+        self.read_states.clear();
         self.selected_channel.clear();
     }
 
