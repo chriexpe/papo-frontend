@@ -264,6 +264,21 @@ impl From<&Channel> for CachedChannel {
     }
 }
 
+/// Estado durável de leitura/navegação de um canal. A fronteira contígua usa
+/// read_at + read_message_id; mensagens vistas depois de um salto ficam em
+/// seen_out_of_order até a lacuna anterior ser consumida.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CachedReadState {
+    pub owner_user_id: String,
+    pub channel_id: String,
+    pub read_at: Option<i64>,
+    pub read_message_id: Option<String>,
+    pub seen_out_of_order: Vec<String>,
+    pub jump_back: Option<String>,
+    pub jump_forward: Option<String>,
+    pub updated_at: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CachedMember {
     pub id: String,
@@ -459,6 +474,8 @@ pub struct CachedServerMetadata {
     pub server: Option<CachedServer>,
     pub channels: Vec<CachedChannel>,
     pub members: Vec<CachedMember>,
+    /// Estado de leitura por canal para o dono restaurado deste servidor.
+    pub read_states: Vec<CachedReadState>,
     /// Canais que têm um snapshot/cache persistido, inclusive quando vazio.
     pub cached_channels: HashSet<String>,
 }
@@ -468,6 +485,7 @@ impl CachedServerMetadata {
         self.server.is_none()
             && self.channels.is_empty()
             && self.members.is_empty()
+            && self.read_states.is_empty()
             && self.cached_channels.is_empty()
     }
 }
@@ -516,6 +534,7 @@ pub enum CacheOp {
     },
     ReplaceChannels(Vec<CachedChannel>),
     ReplaceMembers(Vec<CachedMember>),
+    UpsertReadState(CachedReadState),
     ReplaceChannelSnapshot {
         channel_id: String,
         messages: Vec<CachedMessage>,
@@ -566,6 +585,7 @@ impl CacheOp {
             CacheOp::ClearServer
                 | CacheOp::ClearCachedData
                 | CacheOp::SetOwner { .. }
+                | CacheOp::UpsertReadState(_)
                 | CacheOp::UpsertDraft(_)
                 | CacheOp::DeleteDraft { .. }
         )
