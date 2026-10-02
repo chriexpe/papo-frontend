@@ -1668,13 +1668,35 @@ impl Store {
     /// Uma mensagem conta como vista se ficou para trás da fronteira contígua
     /// ou se foi vista isoladamente depois de um salto.
     pub fn message_seen(&self, message: &Message) -> bool {
-        self.read_marks
-            .get(&message.channel_id)
-            .is_some_and(|mark| message.at.with_timezone(&Utc) <= *mark)
+        message.author_id == self.me
+            || self
+                .read_marks
+                .get(&message.channel_id)
+                .is_some_and(|mark| message.at.with_timezone(&Utc) <= *mark)
             || self
                 .seen_messages
                 .get(&message.channel_id)
                 .is_some_and(|seen| seen.contains(&message.id))
+    }
+
+    pub fn oldest_unseen_message(&self, channel_id: &str) -> Option<&Message> {
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending && !self.message_seen(message))
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+    }
+
+    pub fn newest_message(&self, channel_id: &str) -> Option<&Message> {
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+    }
+
+    pub fn oldest_unseen_mention(&self, channel_id: &str) -> Option<&Message> {
+        self.messages_in(channel_id)
+            .filter(|message| {
+                !message.pending && !self.message_seen(message) && self.mentions_me(message)
+            })
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
     }
 
     /// Marca uma mensagem vista. `contiguous` só deve ser usado quando a
@@ -1707,6 +1729,30 @@ impl Store {
                 .entry(channel_id.to_owned())
                 .or_default()
                 .insert(message_id.to_owned());
+        }
+        self.refresh_unread(channel_id);
+    }
+
+    /// Fecha explicitamente qualquer buraco até `message_id`. É a semântica
+    /// do segundo salto para baixo: o bloco anterior é aceito como lido e o
+    /// que chegou depois dele vira o novo bloco não lido.
+    pub fn mark_through_message(&mut self, channel_id: &str, message_id: &str) {
+        let Some(message) = self.message(message_id).cloned() else {
+            return;
+        };
+        let at = message.at.with_timezone(&Utc);
+        self.read_marks.insert(channel_id.to_owned(), at);
+        if let Some(seen) = self.seen_messages.remove(channel_id) {
+            let kept: HashSet<String> = seen
+                .into_iter()
+                .filter(|id| {
+                    self.message(id)
+                        .is_some_and(|candidate| candidate.at.with_timezone(&Utc) > at)
+                })
+                .collect();
+            if !kept.is_empty() {
+                self.seen_messages.insert(channel_id.to_owned(), kept);
+            }
         }
         self.refresh_unread(channel_id);
     }
