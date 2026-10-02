@@ -1250,6 +1250,7 @@ pub struct Context<'a> {
     pub autostart: &'a mut bool,
     pub badge: &'a mut bool,
     pub topic_reveal: &'a mut bool,
+    pub auto_jump_latest: &'a mut bool,
     pub record_button: &'a mut bool,
     pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
     pub webembed_offscreen: &'a mut crate::webembed::OffscreenBehavior,
@@ -1912,6 +1913,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Appearance, s.theme),
         (AppPane::Appearance, s.translucency),
         (AppPane::Appearance, s.topic_reveal),
+        (AppPane::Appearance, s.auto_jump_latest),
         (AppPane::Appearance, s.record_button),
         (AppPane::Appearance, s.webembed_offscreen),
         (AppPane::Appearance, s.webembed_scope),
@@ -2940,6 +2942,13 @@ fn app_pane(
                 rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
                     switch(ui, t, data.topic_reveal);
                 });
+                rows.row(
+                    s.auto_jump_latest,
+                    Some(s.auto_jump_latest_hint),
+                    |ui, t| {
+                        switch(ui, t, data.auto_jump_latest);
+                    },
+                );
                 rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
                     switch(ui, t, data.record_button);
                 });
