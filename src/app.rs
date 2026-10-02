@@ -337,6 +337,12 @@ pub struct Settings {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub downloads: DownloadMode,
+    /// Device-local KLIPY identifier and favourite slugs. GIF media itself is
+    /// never persisted; favourites resolve fresh provider URLs when needed.
+    #[serde(default)]
+    pub klipy_customer_id: String,
+    #[serde(default)]
+    pub gif_favourites: std::collections::BTreeSet<String>,
     /// Rich Presence deste dispositivo. Não é sincronizado com a conta:
     /// processo local, bridge arRPC e override são propriedades da máquina.
     #[serde(default)]
@@ -405,6 +411,8 @@ impl Default for Settings {
             webembed_float_pos: None,
             trusted_link_hosts: std::collections::BTreeSet::new(),
             downloads: DownloadMode::default(),
+            klipy_customer_id: String::new(),
+            gif_favourites: std::collections::BTreeSet::new(),
             rich_presence: crate::rich_presence::Settings::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -420,6 +428,10 @@ impl Settings {
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
         self.server_url = normalise_server_url(&self.server_url);
+        if self.klipy_customer_id.is_empty() {
+            self.klipy_customer_id = crate::klipy::new_customer_id();
+        }
+        self.gif_favourites.retain(|slug| crate::klipy::valid_slug(slug));
         self.trusted_link_hosts = std::mem::take(&mut self.trusted_link_hosts)
             .into_iter()
             .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
@@ -934,6 +946,13 @@ impl PapoApp {
         ui_state.webembed_float_width = settings.webembed_float_width;
         ui_state.webembed_float_pos = settings.webembed_float_pos;
         ui_state.trusted_link_hosts = settings.trusted_link_hosts.clone();
+        ui_state.klipy_customer_id = settings.klipy_customer_id.clone();
+        ui_state.gif_favourites = settings.gif_favourites.clone();
+        ui_state.gif_locale = match settings.lang {
+            Lang::PtBr => "pt_BR",
+            Lang::En => "en_US",
+        }
+        .to_owned();
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -2161,7 +2180,6 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
-            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -2411,7 +2429,6 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
-            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -3950,6 +3967,13 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
+                self.ui.klipy_customer_id = self.settings.klipy_customer_id.clone();
+                self.ui.gif_favourites = self.settings.gif_favourites.clone();
+                self.ui.gif_locale = match self.settings.lang {
+                    Lang::PtBr => "pt_BR",
+                    Lang::En => "en_US",
+                }
+                .to_owned();
                 // O voltar do sistema tem um dono por quadro, decidido aqui:
                 // o editor de recorte, senão os ajustes, senão o que está
                 // aberto por cima da conversa (cartões). Espalhar essa
@@ -3986,6 +4010,8 @@ impl eframe::App for PapoApp {
                 self.settings.webembed_float_width = self.ui.webembed_float_width;
                 self.settings.webembed_float_pos = self.ui.webembed_float_pos;
                 self.settings.trusted_link_hosts = self.ui.trusted_link_hosts.clone();
+                self.settings.klipy_customer_id = self.ui.klipy_customer_id.clone();
+                self.settings.gif_favourites = self.ui.gif_favourites.clone();
                 let draft_channel_after = self.ui.last_channel.clone();
                 if !draft_channel_after.is_empty() {
                     self.ui.capture_draft(&draft_channel_after);
