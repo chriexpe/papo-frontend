@@ -940,6 +940,9 @@ impl PapoApp {
         let rich_presence =
             crate::rich_presence::Manager::new(settings.rich_presence.clone(), cc.egui_ctx.clone());
 
+        #[cfg(target_os = "linux")]
+        crate::platform::shutdown::spawn(cc.egui_ctx.clone());
+
         Self {
             workspaces,
             cache,
@@ -1126,6 +1129,13 @@ impl PapoApp {
             .is_some_and(Tray::take_quit_requested)
         {
             self.quitting = true;
+        }
+
+        #[cfg(target_os = "linux")]
+        if crate::platform::shutdown::requested() {
+            // A session is going away. Never turn the compositor's shutdown
+            // close into "minimize to tray", otherwise Papo can hold logout up.
+            self.quit(ctx);
         }
 
         while let Some(command) = self.tray.as_ref().and_then(Tray::try_recv) {
