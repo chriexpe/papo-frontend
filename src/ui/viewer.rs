@@ -179,7 +179,6 @@ pub fn draw(
             .on_hover_text(match tag {
                 "close" => s.close,
                 "download" => s.viewer_download,
-                "favourite" => if favourite == Some(true) { s.gif_unfavourite } else { s.gif_favourite },
                 _ => s.viewer_fit,
             });
         if response.hovered() {
@@ -194,11 +193,7 @@ pub fn draw(
             egui::Align2::CENTER_CENTER,
             glyph,
             text::icon(17.0),
-            if tag == "favourite" && favourite == Some(true) {
-                t.away
-            } else {
-                Color32::WHITE
-            },
+            Color32::WHITE,
         );
         if response.clicked() {
             match tag {
