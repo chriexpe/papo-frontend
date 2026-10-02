@@ -1876,6 +1876,32 @@ impl Store {
             .and_then(|state| state.jump_back.clone())
     }
 
+    pub fn jump_forward_target(&self, channel_id: &str) -> Option<String> {
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_forward.clone())
+    }
+
+    pub fn read_anchor_id(&self, channel_id: &str) -> Option<String> {
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.read_message_id.clone())
+    }
+
+    pub fn read_anchor_target(&self, channel_id: &str) -> Option<String> {
+        if let Some(id) = self.read_anchor_id(channel_id)
+            && self.message(&id).is_some()
+        {
+            return Some(id);
+        }
+
+        let mark = self.read_marks.get(channel_id).copied()?;
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending && message.at.with_timezone(&Utc) <= mark)
+            .last()
+            .map(|message| message.id.clone())
+    }
+
     pub fn next_mention_target(&self, channel_id: &str) -> Option<String> {
         self.read_states
             .get(channel_id)
