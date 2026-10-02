@@ -902,14 +902,13 @@ impl Rows<'_> {
             #[cfg(not(target_os = "android"))]
             {
                 let _ =
-                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &editor.name);
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut editor.name);
                 let response = ui.put(
                     field_rect,
                     egui::TextEdit::singleline(&mut editor.name)
                         .id(edit_id)
                         .char_limit(32)
                         .font(text::body())
-                        .frame(false)
                         .margin(egui::Margin::symmetric(
                             space::MD as i8,
                             space::XS as i8,
@@ -918,7 +917,7 @@ impl Rows<'_> {
                 let _ = crate::platform::ime::sync_text_edit(
                     ui.ctx(),
                     edit_id,
-                    &editor.name,
+                    &mut editor.name,
                     response.has_focus(),
                     crate::platform::ime::Kind::Text,
                 );
