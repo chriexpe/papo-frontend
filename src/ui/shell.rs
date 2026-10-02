@@ -73,6 +73,16 @@ const PANEL_MAX_BODY: f32 = 360.0;
 const BLINK_SECONDS: f64 = 1.4;
 const BLINKS: f64 = 2.0;
 pub(crate) const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
+const DM_ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 2.0 + space::XXS + space::XS * 2.0;
+
+fn actions_pill_closed_width(dm_surface: bool) -> f32 {
+    if dm_surface {
+        DM_ACTIONS_PILL_WIDTH
+    } else {
+        ACTIONS_PILL_WIDTH
+    }
+}
+
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
@@ -1657,15 +1667,6 @@ fn direct_messages_sidebar(
                                         )
                                         .and_then(|texture| texture.frame(&ctx))
                                         .map(|handle| handle.id());
-                                    let status = member
-                                        .and_then(|member| member.status_message.as_deref())
-                                        .filter(|status| !status.trim().is_empty())
-                                        .unwrap_or_else(|| match presence {
-                                            Presence::Online => s.online,
-                                            Presence::Away => s.away,
-                                            Presence::Busy => s.busy,
-                                            Presence::Offline => s.offline,
-                                        });
                                     let preview = dm
                                         .last_message
                                         .as_ref()
@@ -1683,7 +1684,6 @@ fn direct_messages_sidebar(
                                         t,
                                         &initials,
                                         name,
-                                        status,
                                         preview,
                                         presence_color(t, presence),
                                         unread,
@@ -1717,7 +1717,6 @@ fn direct_message_row(
     t: &Tokens,
     initials: &str,
     name: &str,
-    status: &str,
     preview: &str,
     dot: Color32,
     unread: u32,
@@ -1725,7 +1724,7 @@ fn direct_message_row(
     width: f32,
     avatar: Option<egui::TextureId>,
 ) -> egui::Response {
-    let height = 64.0;
+    let height = 54.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if selected {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
@@ -1766,7 +1765,7 @@ fn direct_message_row(
     ));
     super::widgets::text_fit(
         &painter,
-        egui::pos2(text_left, rect.center().y - 15.0),
+        egui::pos2(text_left, rect.center().y - 9.0),
         Align2::LEFT_CENTER,
         name,
         if unread > 0 { text::headline() } else { text::body() },
@@ -1775,16 +1774,7 @@ fn direct_message_row(
     );
     super::widgets::text_fit(
         &painter,
-        egui::pos2(text_left, rect.center().y + 1.0),
-        Align2::LEFT_CENTER,
-        status,
-        text::caption(),
-        t.label_tertiary,
-        (text_right - text_left).max(1.0),
-    );
-    super::widgets::text_fit(
-        &painter,
-        egui::pos2(text_left, rect.center().y + 17.0),
+        egui::pos2(text_left, rect.center().y + 10.0),
         Align2::LEFT_CENTER,
         preview,
         text::footnote(),
@@ -3740,7 +3730,31 @@ fn direct_message_pill(
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|handle| handle.id());
 
-    let width = 260.0_f32.min((area.width() - PILL_MARGIN * 2.0).max(PILL_HEIGHT));
+    // A pastilha acompanha o conteúdo real, como as outras identidades da
+    // interface. O maior entre nome e recado define a parte textual; o teto
+    // respeita a pastilha de ações à direita.
+    let painter = ui.painter();
+    let name_width = painter
+        .layout_no_wrap(name.to_owned(), text::headline(), t.label)
+        .size()
+        .x;
+    let subtitle_width = painter
+        .layout_no_wrap(subtitle.to_owned(), text::footnote(), t.label_tertiary)
+        .size()
+        .x;
+    let desired_width = space::SM
+        + 28.0
+        + space::MD
+        + name_width.max(subtitle_width)
+        + space::SM;
+    let max_width = (
+        area.width()
+            - PILL_MARGIN * 2.0
+            - actions_pill_closed_width(true)
+            - space::SM
+    )
+    .max(PILL_HEIGHT);
+    let width = desired_width.clamp(PILL_HEIGHT, max_width);
     let rect = Rect::from_min_size(
         area.min + Vec2::splat(PILL_MARGIN),
         Vec2::new(width, PILL_HEIGHT),
@@ -3822,10 +3836,11 @@ fn actions_pill(
     }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
+    let closed_width = actions_pill_closed_width(state.dm_surface);
     let width = if open.is_some() {
-        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
+        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(closed_width))
     } else {
-        ACTIONS_PILL_WIDTH
+        closed_width
     };
     // A altura acompanha o conteúdo até um teto; a conversa continua visível
     // embaixo, que é a vantagem de esticar em vez de abrir janela.
