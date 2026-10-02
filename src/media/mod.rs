@@ -80,6 +80,19 @@ static STARTUP_CACHE_SWEEP: Once = Once::new();
 
 const INLINE_MAX: u32 = 1600;
 const FULL_MAX: u32 = 4096;
+
+// KLIPY/provider GIFs are transient UI media, not full-size attachments.
+// Inline decodes are sized by the caller and hard-capped here; the viewer
+// gets a larger profile. Animation has both a frame and decoded-byte bound.
+const EPHEMERAL_INLINE_MAX: u32 = 512;
+const EPHEMERAL_VIEWER_MAX: u32 = 1024;
+const EPHEMERAL_GIF_MAX_FRAMES: usize = 48;
+const EPHEMERAL_VIEWER_GIF_MAX_FRAMES: usize = 120;
+const EPHEMERAL_GIF_MAX_BYTES: usize = 8 * 1024 * 1024;
+const EPHEMERAL_VIEWER_GIF_MAX_BYTES: usize = 32 * 1024 * 1024;
+// Keep transient animation pressure isolated from the normal chat working set.
+const EPHEMERAL_TEXTURE_BUDGET: usize = 80 * 1024 * 1024;
+
 /// O banner ocupa no máximo a largura do cartão; 1024 sobra para telas 3x.
 const BANNER_MAX: u32 = 1024;
 
@@ -126,6 +139,9 @@ pub enum Request {
     RemoteEphemeral {
         id: String,
         url: String,
+        max: u32,
+        max_frames: usize,
+        max_bytes: usize,
     },
 }
 
@@ -491,7 +507,13 @@ async fn run(
                 Err(error) => Loaded::Failed { key, error },
             }
         }
-        Request::RemoteEphemeral { id, url } => {
+        Request::RemoteEphemeral {
+            id,
+            url,
+            max,
+            max_frames,
+            max_bytes,
+        } => {
             let key = ephemeral_image_key(&id);
             let Some(client) = remote_client else {
                 return Loaded::Failed {
@@ -500,7 +522,13 @@ async fn run(
                 };
             };
             match papo_core::preview::fetch_bounded_remote_bytes(client, &url, 12 << 20).await {
-                Ok(bytes) => decode(key, &bytes, FULL_MAX),
+                Ok(bytes) => decode_with_gif_limits(
+                    key,
+                    &bytes,
+                    max,
+                    max_frames,
+                    max_bytes,
+                ),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
@@ -569,8 +597,18 @@ async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> 
 
 /// Decodifica bytes em textura; GIF vira animação.
 fn decode(key: String, bytes: &[u8], max: u32) -> Loaded {
+    decode_with_gif_limits(key, bytes, max, 240, usize::MAX)
+}
+
+fn decode_with_gif_limits(
+    key: String,
+    bytes: &[u8],
+    max: u32,
+    max_frames: usize,
+    max_bytes: usize,
+) -> Loaded {
     if bytes.starts_with(b"GIF8")
-        && let Some(frames) = decode_gif(bytes, max)
+        && let Some(frames) = decode_gif(bytes, max, max_frames, max_bytes)
     {
         if frames.len() > 1 {
             return Loaded::Animation { key, frames };
@@ -595,12 +633,40 @@ fn decode(key: String, bytes: &[u8], max: u32) -> Loaded {
     }
 }
 
-fn decode_gif(bytes: &[u8], max: u32) -> Option<Vec<(ColorImage, f32)>> {
+fn decoded_animation_bytes(frames: &[(ColorImage, f32)]) -> usize {
+    frames
+        .iter()
+        .map(|(image, _)| image.size[0] * image.size[1] * 4)
+        .sum()
+}
+
+fn compact_animation_frames(frames: Vec<(ColorImage, f32)>) -> Vec<(ColorImage, f32)> {
+    let mut iter = frames.into_iter();
+    let mut compact = Vec::new();
+    while let Some((image, mut delay)) = iter.next() {
+        if let Some((_dropped, dropped_delay)) = iter.next() {
+            delay += dropped_delay;
+        }
+        compact.push((image, delay));
+    }
+    compact
+}
+
+fn decode_gif(
+    bytes: &[u8],
+    max: u32,
+    max_frames: usize,
+    max_bytes: usize,
+) -> Option<Vec<(ColorImage, f32)>> {
     use image::AnimationDecoder;
     let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
-    let frames = decoder.into_frames().take(240);
+    let max_frames = max_frames.max(1);
+    let max_bytes = max_bytes.max(4);
     let mut out = Vec::new();
-    for frame in frames {
+    let mut stride = 1usize;
+    let mut source_index = 0usize;
+
+    for frame in decoder.into_frames().take(240) {
         let Ok(frame) = frame else { break };
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = if denominator == 0 {
@@ -608,8 +674,21 @@ fn decode_gif(bytes: &[u8], max: u32) -> Option<Vec<(ColorImage, f32)>> {
         } else {
             (numerator as f32 / denominator as f32 / 1000.0).max(0.02)
         };
-        let buffer = image::DynamicImage::ImageRgba8(frame.into_buffer());
-        out.push((to_color_image(buffer, max), delay));
+
+        if source_index % stride == 0 || out.is_empty() {
+            let buffer = image::DynamicImage::ImageRgba8(frame.into_buffer());
+            out.push((to_color_image(buffer, max), delay));
+        } else if let Some((_, kept_delay)) = out.last_mut() {
+            *kept_delay += delay;
+        }
+        source_index = source_index.saturating_add(1);
+
+        while out.len() > 1
+            && (out.len() > max_frames || decoded_animation_bytes(&out) > max_bytes)
+        {
+            out = compact_animation_frames(out);
+            stride = stride.saturating_mul(2);
+        }
     }
     (!out.is_empty()).then_some(out)
 }
@@ -874,14 +953,19 @@ fn remote_resource_id(canonical_url: &str) -> String {
 }
 
 fn texture_eviction_class(key: &str) -> u8 {
-    if key.starts_with("full:") || key.starts_with("remote-image:") {
+    // Transient provider media is always the first reconstructed class to go.
+    // It must never displace visible chat thumbnails just because it was added
+    // later and happened to fall into the generic catch-all class.
+    if key.starts_with("ephemeral-image:") {
         0
-    } else if key.starts_with("poster:") {
+    } else if key.starts_with("full:") || key.starts_with("remote-image:") {
         1
-    } else if key.starts_with("thumb:") || key.starts_with("preview:") {
+    } else if key.starts_with("poster:") {
         2
-    } else {
+    } else if key.starts_with("thumb:") || key.starts_with("preview:") {
         3
+    } else {
+        4
     }
 }
 
@@ -992,9 +1076,12 @@ impl Texture {
                     return frames.first();
                 }
                 let mut time = (ctx.input(|input| input.time) as f32) % total;
-                ctx.request_repaint_after(std::time::Duration::from_millis(40));
                 for (index, delay) in delays.iter().enumerate() {
                     if time < *delay {
+                        // Wake for the next visual frame rather than forcing a
+                        // fixed repaint loop for every animated texture.
+                        let until_next = (*delay - time).max(0.04);
+                        ctx.request_repaint_after(Duration::from_secs_f32(until_next));
                         return frames.get(index);
                     }
                     time -= delay;
@@ -1211,6 +1298,7 @@ impl MediaStore {
             log::debug!("media evicted_player reason=idle");
         }
         self.enforce_player_cap();
+        self.trim_ephemeral_to(EPHEMERAL_TEXTURE_BUDGET);
         self.trim_textures_to(self.limits.texture_budget);
     }
 
@@ -1246,6 +1334,39 @@ impl MediaStore {
             log::debug!("media evicted_player reason=cap");
         }
         true
+    }
+
+    fn trim_ephemeral_to(&mut self, budget: usize) {
+        let mut total: usize = self
+            .textures
+            .iter()
+            .filter(|(key, _)| key.starts_with("ephemeral-image:"))
+            .map(|(_, texture)| texture_bytes(texture))
+            .sum();
+        if total <= budget {
+            return;
+        }
+
+        let mut aged: Vec<(u64, String)> = self
+            .textures
+            .iter()
+            .filter(|(key, texture)| {
+                key.starts_with("ephemeral-image:") && !matches!(texture, Texture::Loading)
+            })
+            .map(|(key, _)| (self.used.get(key).copied().unwrap_or(0), key.clone()))
+            .collect();
+        aged.sort_unstable();
+
+        for (_, key) in aged {
+            if total <= budget {
+                break;
+            }
+            if let Some(texture) = self.textures.remove(&key) {
+                total = total.saturating_sub(texture_bytes(&texture));
+                self.used.remove(&key);
+                log::debug!("media evicted_texture reason=ephemeral-budget");
+            }
+        }
     }
 
     fn trim_textures_to(&mut self, budget: usize) {
@@ -1447,14 +1568,59 @@ impl MediaStore {
     /// Provider-owned public media that may live in GPU memory while visible
     /// but must never become part of Papo's persistent remote-media cache.
     pub fn remote_ephemeral(&mut self, id: &str, url: &str) -> Option<&Texture> {
+        self.remote_ephemeral_sized(id, url, 320)
+    }
+
+    /// Inline provider GIF decoded close to its physical display size. The
+    /// bucket is part of the cache identity, so a larger surface can request a
+    /// better decode without duplicating equal-size occurrences.
+    pub fn remote_ephemeral_sized(
+        &mut self,
+        _id: &str,
+        url: &str,
+        max: u32,
+    ) -> Option<&Texture> {
+        self.remote_ephemeral_limited(
+            url,
+            max.clamp(96, EPHEMERAL_INLINE_MAX),
+            EPHEMERAL_GIF_MAX_FRAMES,
+            EPHEMERAL_GIF_MAX_BYTES,
+        )
+    }
+
+    /// Fullscreen provider GIFs get a larger decode profile, still bounded.
+    pub fn remote_ephemeral_full(&mut self, _id: &str, url: &str) -> Option<&Texture> {
+        self.remote_ephemeral_limited(
+            url,
+            EPHEMERAL_VIEWER_MAX,
+            EPHEMERAL_VIEWER_GIF_MAX_FRAMES,
+            EPHEMERAL_VIEWER_GIF_MAX_BYTES,
+        )
+    }
+
+    fn remote_ephemeral_limited(
+        &mut self,
+        url: &str,
+        max: u32,
+        max_frames: usize,
+        max_bytes: usize,
+    ) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
-        let identity = format!("{id}:{}", remote_resource_id(&canonical));
+        // Canonical URL + decode profile is the resource identity. Picker,
+        // category and chat occurrences at the same size share one animation.
+        let identity = format!(
+            "{}:{max}:{max_frames}:{max_bytes}",
+            remote_resource_id(&canonical)
+        );
         let key = ephemeral_image_key(&identity);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::RemoteEphemeral {
                 id: identity,
                 url: canonical,
+                max,
+                max_frames,
+                max_bytes,
             });
         }
         self.touch(&key);
@@ -2014,6 +2180,45 @@ mod lifecycle_tests {
             media.textures.get("thumb:pendente"),
             Some(Texture::Loading)
         ));
+    }
+
+    #[test]
+    fn ephemeral_media_is_evicted_before_chat_thumbnails() {
+        assert!(
+            texture_eviction_class("ephemeral-image:x") < texture_eviction_class("thumb:x")
+        );
+        assert!(
+            texture_eviction_class("ephemeral-image:x") < texture_eviction_class("preview:x")
+        );
+    }
+
+    #[test]
+    fn ephemeral_budget_does_not_evict_chat_textures() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(10_000);
+        media
+            .textures
+            .insert("ephemeral-image:a".into(), textura(&ctx, "ephemeral-a", 10, 10));
+        media
+            .textures
+            .insert("ephemeral-image:b".into(), textura(&ctx, "ephemeral-b", 10, 10));
+        media
+            .textures
+            .insert("thumb:chat".into(), textura(&ctx, "chat-thumb", 10, 10));
+        media.used.insert("ephemeral-image:a".into(), 1);
+        media.used.insert("ephemeral-image:b".into(), 2);
+        media.used.insert("thumb:chat".into(), 3);
+
+        media.trim_ephemeral_to(400);
+
+        assert!(media.textures.contains_key("thumb:chat"));
+        let ephemeral_bytes: usize = media
+            .textures
+            .iter()
+            .filter(|(key, _)| key.starts_with("ephemeral-image:"))
+            .map(|(_, texture)| texture_bytes(texture))
+            .sum();
+        assert!(ephemeral_bytes <= 400);
     }
 
     #[test]
