@@ -1274,6 +1274,30 @@ impl TursoCache {
         }
         drop(rows);
 
+        if let Some(owner_user_id) = snapshot.owner_user_id.clone() {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT channel_id, frontier_at, seen_ids, updated_at
+                     FROM channel_read_state
+                     WHERE server_key = ?1 AND owner_user_id = ?2
+                     ORDER BY updated_at, channel_id",
+                    [server_key, owner_user_id.as_str()],
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let seen_ids: String = row.get(2)?;
+                snapshot.read_states.push(CachedReadState {
+                    owner_user_id: owner_user_id.clone(),
+                    channel_id: row.get(0)?,
+                    frontier_at: row.get(1)?,
+                    seen_ids: serde_json::from_str(&seen_ids).unwrap_or_default(),
+                    updated_at: row.get(3)?,
+                });
+            }
+            drop(rows);
+        }
+
         let mut rows = self
             .conn
             .query(
