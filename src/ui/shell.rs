@@ -1647,7 +1647,7 @@ fn direct_messages_sidebar(
                                         .map(|member| member.name.as_str())
                                         .unwrap_or_else(|| dm.user.display_name());
                                     let initials = member
-                                        .map(Member::initials)
+                                        .map(|member| member.initials())
                                         .unwrap_or_else(|| initials_of(name));
                                     let avatar = state
                                         .media
@@ -3394,6 +3394,9 @@ fn channel_pill(
     area: Rect,
 ) -> Option<Rect> {
     let channel = store.channel(&store.selected_channel).cloned()?;
+    if channel.kind == ChannelKind::Direct {
+        return direct_message_pill(ui, store, state, t, area);
+    }
     let topic_text = channel
         .topic
         .as_deref()
@@ -3653,6 +3656,72 @@ fn channel_pill(
     Some(rect)
 }
 
+fn direct_message_pill(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    area: Rect,
+) -> Option<Rect> {
+    let dm = store.selected_direct_message()?;
+    let member = store.member(&dm.user.id);
+    let name = member
+        .map(|member| member.name.as_str())
+        .unwrap_or_else(|| dm.user.display_name());
+    let initials = member
+        .map(|member| member.initials())
+        .unwrap_or_else(|| initials_of(name));
+    let presence = member
+        .map(|member| member.presence)
+        .unwrap_or(Presence::Offline);
+    let subtitle = member
+        .and_then(|member| member.status_message.as_deref())
+        .filter(|status| !status.trim().is_empty())
+        .unwrap_or_else(|| match presence {
+            Presence::Online => "Online",
+            Presence::Away => "Away",
+            Presence::Busy => "Busy",
+            Presence::Offline => "Offline",
+        });
+    let avatar = state
+        .media
+        .avatar(
+            &dm.user.id,
+            store.avatars.get(&dm.user.id).map(String::as_str),
+        )
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|handle| handle.id());
+
+    let width = 260.0_f32.min((area.width() - PILL_MARGIN * 2.0).max(PILL_HEIGHT));
+    let rect = Rect::from_min_size(
+        area.min + Vec2::splat(PILL_MARGIN),
+        Vec2::new(width, PILL_HEIGHT),
+    );
+    let hit = identity_pill(
+        ui,
+        state,
+        t,
+        rect,
+        &initials,
+        name,
+        subtitle,
+        Some((presence_color(t, presence), avatar)),
+        None,
+        t.accent,
+        false,
+        "direct-message-pill",
+    );
+    if matches!(hit, PillHit::Body) {
+        super::profile::open(
+            state,
+            &dm.user.id,
+            super::profile::Anchor::Beside(rect),
+            ui.input(|input| input.time),
+        );
+    }
+    Some(rect)
+}
+
 /// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
 /// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
 /// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
@@ -3735,7 +3804,9 @@ fn actions_pill(
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
-                if icon_button(ui, t, icon::USERS, s.members).clicked() {
+                if !state.dm_surface
+                    && icon_button(ui, t, icon::USERS, s.members).clicked()
+                {
                     if state.compact {
                         state.mobile_surface = MobileSurface::People;
                     } else {
@@ -8274,7 +8345,14 @@ fn composer(
             .max_rect(field)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            let hint = format!("{} #{}…", s.composer_hint, channel_name);
+            let hint = if store
+                .channel(&store.selected_channel)
+                .is_some_and(|channel| channel.kind == ChannelKind::Direct)
+            {
+                format!("{} {}…", s.composer_hint, channel_name)
+            } else {
+                format!("{} #{}…", s.composer_hint, channel_name)
+            };
             let edit_id = Id::new("caixa-de-mensagem");
             // As setas e o Enter pertencem à lista de sugestões enquanto ela
             // estiver aberta; sem tirá-los da caixa de texto, a seta moveria
