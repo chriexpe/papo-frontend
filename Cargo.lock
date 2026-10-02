@@ -4076,6 +4076,7 @@ name = "papo"
 version = "0.6.5"
 dependencies = [
  "android-activity",
+ "arboard",
  "android_logger",
  "anyhow",
  "base64",
