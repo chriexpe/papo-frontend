@@ -1719,8 +1719,8 @@ fn tree_drop(
     (new.max(1), parent)
 }
 
-/// Categorias e canais com alça de arrastar; editar e apagar aparecem ao
-/// passar o ponteiro. Soltar reordena (e troca de categoria) num pedido só.
+/// Categorias e canais com alça de arrastar e ações fixas à direita.
+/// Soltar reordena (e troca de categoria) num pedido só.
 fn channel_tree(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -1749,22 +1749,18 @@ fn channel_tree(
     let mut action = None;
     let mut rects = Vec::with_capacity(visible.len());
     let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
+    let touch_layout = tiles(ui);
+    let row_h = if touch_layout { 46.0 } else { TREE_ROW };
+    let tool_side = if touch_layout { 32.0 } else { 24.0 };
+    let tool_gap = if touch_layout { 4.0 } else { 4.0 };
+    let tools_w = tool_side * 2.0 + tool_gap + space::SM * 2.0;
     for (index, (channel, parent)) in visible.iter().enumerate() {
         let is_category = items[index].2;
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TREE_ROW), Sense::click());
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
         rects.push(rect);
         let being_dragged = dragging.as_deref() == Some(channel.id.as_str());
-        // The edit/delete controls overlap this row. Once they appear they
-        // become the top-most egui interaction under the pointer, which makes
-        // `response.hovered()` on the parent row false on the next frame and
-        // causes the controls to blink in and out. Visibility belongs to the
-        // row's geometry, not to whichever child currently owns hover.
-        let hovered = ui.input(|input| {
-            input
-                .pointer
-                .hover_pos()
-                .is_some_and(|pointer| rect.intersect(ui.clip_rect()).contains(pointer))
-        }) || being_dragged;
+        let hovered = response.hovered() || being_dragged;
         if hovered {
             ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
         }
@@ -1772,8 +1768,12 @@ fn channel_tree(
         let indent = if parent.is_some() { TREE_INDENT } else { 0.0 };
 
         // Alça: é por ela que se arrasta, para o clique no resto da linha
-        // continuar sendo clique.
-        let grip = Rect::from_min_size(egui::pos2(rect.min.x + indent, rect.min.y), Vec2::new(22.0, TREE_ROW));
+        // continuar sendo clique. No layout de toque ela cresce junto da linha.
+        let grip_w = if touch_layout { 28.0 } else { 22.0 };
+        let grip = Rect::from_min_size(
+            egui::pos2(rect.min.x + indent, rect.min.y),
+            Vec2::new(grip_w, row_h),
+        );
         let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
         if grip_response.hovered() || grip_response.dragged() {
             ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
@@ -1812,7 +1812,6 @@ fn channel_tree(
             ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
             x += 18.0;
         }
-        let tools_w = if hovered { 60.0 } else { 0.0 };
         let name = if is_category { channel.name.to_uppercase() } else { channel.name.clone() };
         let name_rect = crate::ui::widgets::text_fit(
             ui.painter(),
@@ -1831,17 +1830,39 @@ fn channel_tree(
             }
         }
 
-        // Editar e apagar só aparecem na linha sob o ponteiro.
-        if hovered && dragging.is_none() {
+        // Editar e apagar são ações fixas. Em toque elas ganham alvos maiores;
+        // no desktop continuam compactas e recebem apenas o realce de hover.
+        // A coluna fica reservada até durante drag, então o texto nunca muda
+        // de largura quando o estado da linha muda.
+        if dragging.is_none() {
             let mut right = rect.max.x - space::SM;
-            for (glyph, danger, which) in [(icon::TRASH, true, 1), (icon::PENCIL_SIMPLE, false, 0)] {
-                let tool = Rect::from_min_size(egui::pos2(right - 24.0, rect.center().y - 12.0), Vec2::splat(24.0));
-                right -= 28.0;
-                let tool_response = ui.interact(tool, egui::Id::new(("ferramenta-canal", &channel.id, which)), Sense::click());
+            for (glyph, danger, which) in
+                [(icon::TRASH, true, 1), (icon::PENCIL_SIMPLE, false, 0)]
+            {
+                let tool = Rect::from_min_size(
+                    egui::pos2(right - tool_side, rect.center().y - tool_side / 2.0),
+                    Vec2::splat(tool_side),
+                );
+                right -= tool_side + tool_gap;
+                let tool_response = ui.interact(
+                    tool,
+                    egui::Id::new(("ferramenta-canal", &channel.id, which)),
+                    Sense::click(),
+                );
                 if tool_response.hovered() {
-                    ui.painter().rect_filled(tool, CornerRadius::same(radius::CONTROL), t.fill_medium);
+                    ui.painter().rect_filled(
+                        tool,
+                        CornerRadius::same(radius::CONTROL),
+                        t.fill_medium,
+                    );
                 }
-                ui.painter().text(tool.center(), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), if danger { t.danger } else { t.label_secondary });
+                ui.painter().text(
+                    tool.center(),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    text::icon(if touch_layout { 15.0 } else { 13.0 }),
+                    if danger { t.danger } else { t.label_secondary },
+                );
                 if tool_response.clicked() {
                     action = Some(if which == 1 {
                         TreeAction::Delete(channel.id.clone(), channel.name.clone())
