@@ -4577,10 +4577,10 @@ fn read_navigation_buttons(
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing.y = GAP;
             ui.vertical(|ui| {
-                if let Some(mention_id) = unseen_mention {
-                    if read_nav_button(ui, state, t, egui_phosphor::regular::BELL, s.jump_mention) {
-                        jump_to_id(state, ui, mention_id);
-                    }
+                if let Some(mention_id) = unseen_mention
+                    && read_nav_button(ui, state, t, egui_phosphor::regular::BELL, s.jump_mention)
+                {
+                    jump_to_id(state, ui, mention_id);
                 }
 
                 if show_return
