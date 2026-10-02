@@ -1734,19 +1734,19 @@ impl Store {
                 .is_some_and(|seen| seen.contains(&message.id))
     }
 
-    pub fn oldest_unseen_message(&self, channel_id: &str) -> Option<&Message> {
+    pub fn oldest_unseen_message<'a>(&'a self, channel_id: &'a str) -> Option<&'a Message> {
         self.messages_in(channel_id)
             .filter(|message| !message.pending && !self.message_seen(message))
             .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
     }
 
-    pub fn newest_message(&self, channel_id: &str) -> Option<&Message> {
+    pub fn newest_message<'a>(&'a self, channel_id: &'a str) -> Option<&'a Message> {
         self.messages_in(channel_id)
             .filter(|message| !message.pending)
             .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
     }
 
-    pub fn oldest_unseen_mention(&self, channel_id: &str) -> Option<&Message> {
+    pub fn oldest_unseen_mention<'a>(&'a self, channel_id: &'a str) -> Option<&'a Message> {
         self.messages_in(channel_id)
             .filter(|message| {
                 !message.pending && !self.message_seen(message) && self.mentions_me(message)
