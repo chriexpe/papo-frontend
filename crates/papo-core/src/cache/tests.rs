@@ -180,6 +180,59 @@ fn metadata_restore_does_not_require_loading_timelines() {
 }
 
 #[test]
+fn read_navigation_state_survives_reconstructible_cache_clear() {
+    let temp = TempDb::new("read-navigation");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::SetOwner {
+                owner_user_id: "me".to_owned(),
+                me_name: "Me".to_owned(),
+                me_username: "me".to_owned(),
+            },
+            CacheOp::UpsertReadState(CachedReadState {
+                owner_user_id: "me".to_owned(),
+                channel_id: "geral".to_owned(),
+                read_at: Some(1_000),
+                read_message_id: Some("m1".to_owned()),
+                seen_out_of_order: vec!["m5".to_owned()],
+                unread_mentions: vec!["m4".to_owned()],
+                jump_back: Some("m2".to_owned()),
+                jump_forward: Some("m5".to_owned()),
+                updated_at: 2_000,
+            }),
+        ],
+    );
+    db.flush();
+
+    // Session/cache invalidation drops reconstructible timeline projections,
+    // not the user's read cursor. SetOwner is what makes that owner-scoped row
+    // visible again after authentication.
+    db.submit("srv", vec![CacheOp::ClearCachedData]);
+    db.flush();
+    db.submit(
+        "srv",
+        vec![CacheOp::SetOwner {
+            owner_user_id: "me".to_owned(),
+            me_name: "Me".to_owned(),
+            me_username: "me".to_owned(),
+        }],
+    );
+    db.flush();
+
+    let metadata = db.load_metadata("srv").expect("metadata");
+    assert_eq!(metadata.read_states.len(), 1);
+    let state = &metadata.read_states[0];
+    assert_eq!(state.channel_id, "geral");
+    assert_eq!(state.read_message_id.as_deref(), Some("m1"));
+    assert_eq!(state.seen_out_of_order, vec!["m5".to_owned()]);
+    assert_eq!(state.unread_mentions, vec!["m4".to_owned()]);
+    assert_eq!(state.jump_back.as_deref(), Some("m2"));
+    assert_eq!(state.jump_forward.as_deref(), Some("m5"));
+}
+
+#[test]
 fn channel_cache_pages_are_bounded_and_cursor_stable() {
     let temp = TempDb::new("channel-pages");
     let db = open(&temp);
