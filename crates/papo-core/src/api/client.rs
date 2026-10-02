@@ -440,6 +440,28 @@ impl Api {
         Ok(list.channels)
     }
 
+    /// Conversas diretas visíveis na rail desta conta.
+    pub async fn direct_messages(&self) -> ApiResult<Vec<DirectConversation>> {
+        let list: DirectConversationList = self.get("/dms").await?;
+        Ok(list.dms)
+    }
+
+    /// Abre uma conversa 1:1 existente ou cria a conversa canônica do par.
+    pub async fn open_direct_message(&self, user_id: &str) -> ApiResult<DirectConversation> {
+        self.post(
+            "/dms",
+            &OpenDirectMessageRequest {
+                user_id: user_id.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Oculta a conversa da rail deste usuário sem apagar o histórico.
+    pub async fn hide_direct_message(&self, dm_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/dms/{dm_id}"), None).await
+    }
+
     /// Cria um canal. Exige a permissão `manage_channels`: sem ela o backend
     /// responde 403 e o motivo chega no corpo, que é o que a janela mostra.
     pub async fn create_channel(
