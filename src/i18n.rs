@@ -154,6 +154,9 @@ pub struct Strings {
     pub viewer_download: &'static str,
     pub viewer_fit: &'static str,
     pub no_pinned: &'static str,
+    pub jump_newer: &'static str,
+    pub jump_unread: &'static str,
+    pub jump_mention: &'static str,
 
     // Painéis da folha de ajustes
     pub pane_account: &'static str,
@@ -322,6 +325,8 @@ pub struct Strings {
     pub badge_hint: &'static str,
     pub topic_reveal: &'static str,
     pub topic_reveal_hint: &'static str,
+    pub auto_jump_latest: &'static str,
+    pub auto_jump_latest_hint: &'static str,
 
     // Ajustes
     pub settings: &'static str,
@@ -614,6 +619,9 @@ pub static PT_BR: Strings = Strings {
     viewer_download: "Baixar",
     viewer_fit: "Ajustar à tela",
     no_pinned: "Nenhuma mensagem fixada neste canal.",
+    jump_newer: "Ir para mensagens mais novas",
+    jump_unread: "Voltar ao início do bloco não lido",
+    jump_mention: "Ir para a próxima menção",
     pane_account: "Conta",
     pane_alerts: "Avisos",
     pane_files: "Arquivos",
@@ -773,6 +781,8 @@ pub static PT_BR: Strings = Strings {
     badge_hint: "Mostra quantas menções esperam por você; sem menção, só o ponto de não lido.",
     topic_reveal: "Mostrar a descrição ao abrir o canal",
     topic_reveal_hint: "A descrição aparece por alguns segundos e recolhe na direção do nome.",
+    auto_jump_latest: "Ir para a mensagem mais nova ao abrir",
+    auto_jump_latest_hint: "Mantém o bloco não lido guardado para você voltar pelo botão de histórico.",
 
     settings: "Ajustes",
     appearance: "Aparência",
@@ -1063,6 +1073,9 @@ pub static EN: Strings = Strings {
     viewer_download: "Download",
     viewer_fit: "Fit to screen",
     no_pinned: "No pinned messages in this channel.",
+    jump_newer: "Go to newer messages",
+    jump_unread: "Return to the start of the unread block",
+    jump_mention: "Go to the next mention",
     pane_account: "Account",
     pane_alerts: "Alerts",
     pane_files: "Files",
@@ -1222,6 +1235,8 @@ pub static EN: Strings = Strings {
     badge_hint: "Shows how many mentions are waiting; without a mention, just the unread dot.",
     topic_reveal: "Show the topic when a channel opens",
     topic_reveal_hint: "The topic appears for a few seconds, then slides back into the name.",
+    auto_jump_latest: "Jump to the newest message when opening a channel",
+    auto_jump_latest_hint: "Keeps the unread block as a history target so you can jump back to it.",
 
     settings: "Settings",
     appearance: "Appearance",
