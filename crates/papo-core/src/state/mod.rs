@@ -10,7 +10,7 @@ use crate::api::net::{RefreshTicket, Update};
 use crate::api::ws::{Connection, Event};
 use crate::cache::{
     now_millis, CachedChannel, CachedMember, CachedMessage, CachedMessagePage, CachedOutgoing,
-    CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
+    CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp, OutgoingState,
 };
 
 pub use call::{CallState, Phase, Stage};
@@ -868,6 +868,24 @@ impl Store {
             });
         }
 
+        // A configuração antiga em Settings é fallback/migração. Havendo
+        // estado Turso da conta, ele vence canal a canal.
+        for read in &metadata.read_states {
+            if let Some(frontier_at) = read.frontier_at
+                && let Some(frontier) = DateTime::<Utc>::from_timestamp_millis(frontier_at)
+            {
+                self.read_marks.insert(read.channel_id.clone(), frontier);
+            }
+            if read.seen_ids.is_empty() {
+                self.seen_messages.remove(&read.channel_id);
+            } else {
+                self.seen_messages.insert(
+                    read.channel_id.clone(),
+                    read.seen_ids.iter().cloned().collect(),
+                );
+            }
+        }
+
         self.channels = metadata
             .channels
             .into_iter()
@@ -1665,6 +1683,39 @@ impl Store {
         self.channels.iter().any(|channel| channel.unread)
     }
 
+    fn queue_read_state(&mut self, channel_id: &str) {
+        if self.me.is_empty() {
+            return;
+        }
+        let mut seen_ids: Vec<String> = self
+            .seen_messages
+            .get(channel_id)
+            .map(|seen| seen.iter().cloned().collect())
+            .unwrap_or_default();
+        seen_ids.sort();
+        let state = CachedReadState {
+            owner_user_id: self.me.clone(),
+            channel_id: channel_id.to_owned(),
+            frontier_at: self
+                .read_marks
+                .get(channel_id)
+                .map(|mark| mark.timestamp_millis()),
+            seen_ids,
+            updated_at: now_millis(),
+        };
+        // Leitura muda várias vezes durante uma rolagem. Só a versão mais
+        // recente deste canal precisa chegar ao worker.
+        self.pending_cache.retain(|op| {
+            !matches!(
+                op,
+                CacheOp::UpsertReadState(previous)
+                    if previous.owner_user_id == state.owner_user_id
+                        && previous.channel_id == state.channel_id
+            )
+        });
+        self.pending_cache.push(CacheOp::UpsertReadState(state));
+    }
+
     /// Uma mensagem conta como vista se ficou para trás da fronteira contígua
     /// ou se foi vista isoladamente depois de um salto.
     pub fn message_seen(&self, message: &Message) -> bool {
@@ -1731,6 +1782,7 @@ impl Store {
                 .insert(message_id.to_owned());
         }
         self.refresh_unread(channel_id);
+        self.queue_read_state(channel_id);
     }
 
     /// Fecha explicitamente qualquer buraco até `message_id`. É a semântica
@@ -1755,6 +1807,7 @@ impl Store {
             }
         }
         self.refresh_unread(channel_id);
+        self.queue_read_state(channel_id);
     }
 
     fn refresh_unread(&mut self, channel_id: &str) {
