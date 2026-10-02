@@ -17,6 +17,15 @@ const TILE_GAP: f32 = 8.0;
 const RESULT_H: f32 = 126.0;
 const CATEGORY_H: f32 = 104.0;
 
+fn ephemeral_decode_max(ui: &egui::Ui, rect: Rect) -> u32 {
+    let physical = (rect.width().max(rect.height()) * ui.ctx().pixels_per_point())
+        .ceil()
+        .max(1.0) as u32;
+    // Stable 64px buckets avoid creating a new cache identity for tiny layout
+    // changes while staying close to the actual physical display size.
+    ((physical.saturating_add(63) / 64) * 64).clamp(128, 512)
+}
+
 pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) {
     let Some(opened) = state.gif_picker_opened else {
         return;
@@ -261,10 +270,17 @@ fn category_tile(
     ui.painter()
         .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
 
-    if let Some(url) = preview_url
+    // ScrollArea lays out offscreen rows too. Do not let layout itself fetch
+    // and decode every category GIF; only visible/near-visible cards animate.
+    if rect.intersects(ui.clip_rect().expand(32.0))
+        && let Some(url) = preview_url
         && let Some(texture) = state
             .media
-            .remote_ephemeral(&format!("klipy-category-{id}"), url)
+            .remote_ephemeral_sized(
+                &format!("klipy-category-{id}"),
+                url,
+                ephemeral_decode_max(ui, rect),
+            )
             .and_then(|texture| texture.frame(ui.ctx()))
             .cloned()
     {
@@ -413,11 +429,16 @@ fn gif_tile(
     ui.painter()
         .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
 
-    if let Some(texture) = state
-        .media
-        .remote_ephemeral(&format!("klipy-picker-{}", item.slug), &item.preview_url)
-        .and_then(|texture| texture.frame(ui.ctx()))
-        .cloned()
+    if rect.intersects(ui.clip_rect().expand(32.0))
+        && let Some(texture) = state
+            .media
+            .remote_ephemeral_sized(
+                &format!("klipy-picker-{}", item.slug),
+                &item.preview_url,
+                ephemeral_decode_max(ui, rect),
+            )
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned()
     {
         paint_cover(ui, rect, &texture);
     } else {
@@ -568,13 +589,18 @@ pub fn message(
         .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
 
     if let Some(item) = item.as_ref() {
-        // Chat GIFs autoplay exactly like the picker. Keep the provider media
-        // ephemeral, but advance animated frames while the message is visible.
-        if let Some(texture) = state
-            .media
-            .remote_ephemeral(&format!("klipy-chat-{slug}"), &item.preview_url)
-            .and_then(|texture| texture.frame(ui.ctx()))
-            .cloned()
+        // Chat GIFs autoplay exactly like the picker, but clipped messages do
+        // not keep animations resident or schedule repaints.
+        if rect.intersects(ui.clip_rect().expand(96.0))
+            && let Some(texture) = state
+                .media
+                .remote_ephemeral_sized(
+                    &format!("klipy-chat-{slug}"),
+                    &item.preview_url,
+                    ephemeral_decode_max(ui, rect),
+                )
+                .and_then(|texture| texture.frame(ui.ctx()))
+                .cloned()
         {
             paint_cover(ui, rect, &texture);
         }
