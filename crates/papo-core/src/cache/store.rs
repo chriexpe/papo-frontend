@@ -10,8 +10,8 @@ use turso::{Builder, Connection, Value};
 use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
-    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerMetadata,
-    CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedReadState, CachedServer,
+    CachedServerMetadata, CachedServerSnapshot, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
     CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
@@ -179,6 +179,30 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 integer(super::types::now_millis()),
             ],
         }],
+        CacheOp::UpsertReadState(state) => vec![Stmt {
+            sql: "INSERT INTO channel_read_state (
+                      server_key, owner_user_id, channel_id, read_at, read_message_id,
+                      seen_out_of_order, jump_back, jump_forward, updated_at
+                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                  ON CONFLICT(server_key, owner_user_id, channel_id) DO UPDATE SET
+                      read_at = excluded.read_at,
+                      read_message_id = excluded.read_message_id,
+                      seen_out_of_order = excluded.seen_out_of_order,
+                      jump_back = excluded.jump_back,
+                      jump_forward = excluded.jump_forward,
+                      updated_at = excluded.updated_at",
+            params: vec![
+                text(server_key),
+                text(&state.owner_user_id),
+                text(&state.channel_id),
+                state.read_at.map(Value::Integer).unwrap_or(Value::Null),
+                opt_text(state.read_message_id.as_deref()),
+                text(&encode_json(&state.seen_out_of_order)),
+                opt_text(state.jump_back.as_deref()),
+                opt_text(state.jump_forward.as_deref()),
+                integer(state.updated_at),
+            ],
+        }],
         CacheOp::ReplaceChannels(channels) => {
             let mut statements = vec![Stmt {
                 sql: "DELETE FROM channels WHERE server_key = ?1",
@@ -225,6 +249,14 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             });
             statements.push(Stmt {
                 sql: "DELETE FROM channel_cache_state
+                      WHERE server_key = ?1
+                        AND channel_id NOT IN (
+                            SELECT channel_id FROM channels WHERE server_key = ?1
+                        )",
+                params: vec![text(server_key)],
+            });
+            statements.push(Stmt {
+                sql: "DELETE FROM channel_read_state
                       WHERE server_key = ?1
                         AND channel_id NOT IN (
                             SELECT channel_id FROM channels WHERE server_key = ?1
@@ -409,6 +441,10 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 params: vec![text(server_key)],
             },
             Stmt {
+                sql: "DELETE FROM channel_read_state WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
                 sql: "DELETE FROM server_cache WHERE server_key = ?1",
                 params: vec![text(server_key)],
             },
@@ -424,6 +460,10 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
             Stmt {
                 sql: "DELETE FROM send_queue WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM channel_read_state WHERE server_key = ?1",
                 params: vec![text(server_key)],
             },
             Stmt {
@@ -1030,6 +1070,32 @@ impl TursoCache {
             });
         }
         drop(rows);
+
+        if let Some(owner) = metadata.owner_user_id.as_deref() {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT channel_id, read_at, read_message_id, seen_out_of_order,
+                            jump_back, jump_forward, updated_at
+                     FROM channel_read_state
+                     WHERE server_key = ?1 AND owner_user_id = ?2",
+                    [server_key, owner],
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let seen: String = row.get(3)?;
+                metadata.read_states.push(CachedReadState {
+                    owner_user_id: owner.to_owned(),
+                    channel_id: row.get(0)?,
+                    read_at: row.get(1)?,
+                    read_message_id: row.get(2)?,
+                    seen_out_of_order: serde_json::from_str(&seen).unwrap_or_default(),
+                    jump_back: row.get(4)?,
+                    jump_forward: row.get(5)?,
+                    updated_at: row.get(6)?,
+                });
+            }
+        }
 
         let mut rows = self
             .conn
