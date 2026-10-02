@@ -425,6 +425,16 @@ pub struct Jump {
     pub since: f64,
 }
 
+#[derive(Clone, Debug, Default)]
+struct ReadNavigation {
+    /// Primeiro ponto do bloco que ficou para trás quando saltamos.
+    return_target: Option<String>,
+    /// Destino congelado do botão de mensagens mais novas.
+    newer_checkpoint: Option<String>,
+    /// O canal já recebeu sua navegação inicial nesta sessão.
+    initialized: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct LinkViewer {
     pub id: String,
@@ -673,6 +683,7 @@ pub struct Stash {
     pub popup: Option<Popup>,
     pub last_channel: String,
     pub topic_since: Option<f64>,
+    read_navigation: std::collections::HashMap<String, ReadNavigation>,
 }
 
 impl Stash {
@@ -694,6 +705,7 @@ impl Stash {
             popup: None,
             last_channel: String::new(),
             topic_since: None,
+            read_navigation: std::collections::HashMap::new(),
         }
     }
 
@@ -718,6 +730,7 @@ impl Stash {
         std::mem::swap(&mut self.popup, &mut ui.popup);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
+        std::mem::swap(&mut self.read_navigation, &mut ui.read_navigation);
     }
 }
 
@@ -840,6 +853,9 @@ pub struct UiState {
     pub topic_since: Option<f64>,
     /// A descrição aparece ao abrir o canal (ajuste do usuário).
     pub reveal_topic: bool,
+    /// Ao abrir um canal com coisa nova, salta para o fim mantendo o bloco
+    /// não lido como destino de retorno.
+    pub auto_jump_latest: bool,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
     /// Gravação em curso.
@@ -847,6 +863,14 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
+    /// Navegação contextual de leitura por canal.
+    read_navigation: std::collections::HashMap<String, ReadNavigation>,
+    /// Mensagens cujo centro esteve dentro da viewport neste quadro.
+    visible_messages: Vec<String>,
+    /// Offset observado no quadro anterior para detectar rolagem em curso.
+    last_scroll_sample: Option<(String, f32)>,
+    /// Último instante em que o offset realmente mudou.
+    last_scroll_activity: f64,
     /// Última geometria observada da conversa, usada para preservar o ponto
     /// visual quando uma página antiga entra antes do conteúdo visível.
     chat_scroll_metrics: Option<(String, f32, f32)>,
@@ -959,9 +983,14 @@ impl Default for UiState {
             last_channel: String::new(),
             topic_since: None,
             reveal_topic: true,
+            auto_jump_latest: true,
             show_record: true,
             recorder: None,
             error: None,
+            read_navigation: std::collections::HashMap::new(),
+            visible_messages: Vec::new(),
+            last_scroll_sample: None,
+            last_scroll_activity: f64::NEG_INFINITY,
             chat_scroll_metrics: None,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
