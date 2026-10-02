@@ -274,6 +274,7 @@ pub struct CachedReadState {
     pub read_at: Option<i64>,
     pub read_message_id: Option<String>,
     pub seen_out_of_order: Vec<String>,
+    pub unread_mentions: Vec<String>,
     pub jump_back: Option<String>,
     pub jump_forward: Option<String>,
     pub updated_at: i64,
