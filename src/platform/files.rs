@@ -403,6 +403,8 @@ impl Dialogs {
 /// aqui até lá; o `poll` do lado da janela não muda em nada.
 #[cfg(target_os = "android")]
 static ANSWER: Mutex<Option<mpsc::Sender<Chosen>>> = Mutex::new(None);
+#[cfg(target_os = "android")]
+static CLIPBOARD_ATTACHMENTS: Mutex<Vec<Upload>> = Mutex::new(Vec::new());
 
 /// Recebe os anexos escolhidos, já copiados para o cache pela Activity.
 ///
@@ -450,6 +452,50 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFilesPick
         let _ = sender.send(answer);
     }
     super::wake::request();
+}
+
+/// Recebe arquivos/imagens colados no compositor Android.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeClipboardFilesPasted(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    paths: jni::objects::JObjectArray,
+    names: jni::objects::JObjectArray,
+) {
+    let count = env.get_array_length(&paths).unwrap_or(0);
+    let mut uploads = Vec::new();
+    for index in 0..count {
+        let Ok(path) = env.get_object_array_element(&paths, index) else {
+            continue;
+        };
+        let Ok(name) = env.get_object_array_element(&names, index) else {
+            continue;
+        };
+        let (path, name): (jni::objects::JString, jni::objects::JString) =
+            (path.into(), name.into());
+        let (Ok(path), Ok(name)) = (env.get_string(&path), env.get_string(&name)) else {
+            continue;
+        };
+        let path = PathBuf::from(String::from(path));
+        let mut upload = describe(&path);
+        upload.name = String::from(name);
+        uploads.push(upload);
+    }
+    if !uploads.is_empty() {
+        if let Ok(mut pending) = CLIPBOARD_ATTACHMENTS.lock() {
+            pending.extend(uploads);
+        }
+        super::wake::request();
+    }
+}
+
+#[cfg(target_os = "android")]
+pub fn take_clipboard_attachments() -> Vec<Upload> {
+    CLIPBOARD_ATTACHMENTS
+        .lock()
+        .map(|mut pending| std::mem::take(&mut *pending))
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "android")]

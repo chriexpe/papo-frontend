@@ -5,6 +5,8 @@ pub mod activate;
 #[path = "linux/appmenu.rs"]
 pub mod appmenu;
 pub mod autostart;
+#[cfg(not(target_os = "android"))]
+pub mod clipboard;
 pub mod client_db;
 
 /// O Papo está rodando empacotado no Flatpak? Vale para o que o sandbox
@@ -110,6 +112,9 @@ pub mod launcher;
 #[cfg(target_os = "linux")]
 #[path = "linux/notify.rs"]
 pub mod notify;
+#[cfg(target_os = "linux")]
+#[path = "linux/shutdown.rs"]
+pub mod shutdown;
 #[cfg(target_os = "linux")]
 #[path = "linux/tray.rs"]
 pub mod tray;
