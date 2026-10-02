@@ -1791,7 +1791,15 @@ impl PapoApp {
                 return;
             }
             ChatAction::MarkServerRead => {
-                self.workspaces[self.active].runtime.store.mark_all_read();
+                let ws = &mut self.workspaces[self.active];
+                ws.runtime.store.mark_all_read();
+                let ids = ws.runtime.store.take_all_open_notifications();
+                if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
+                    ws.runtime.net.send(Command::MarkNotificationsRead {
+                        user_id: ws.runtime.store.me.clone(),
+                        ids,
+                    });
+                }
                 return;
             }
             ChatAction::LeaveServer => {
