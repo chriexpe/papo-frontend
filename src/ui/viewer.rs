@@ -633,7 +633,7 @@ pub fn draw_remote_media(
     let texture = (!video)
         .then(|| {
             let texture = if ephemeral {
-                media.remote_ephemeral(id, url)
+                media.remote_ephemeral_full(id, url)
             } else {
                 media.remote_image(id, url)
             };
