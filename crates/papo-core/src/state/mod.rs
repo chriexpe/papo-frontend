@@ -1520,19 +1520,33 @@ impl Store {
     }
 
     fn apply_live_message_effects(&mut self, message: &Message, first_delivery: bool) {
-        if first_delivery {
+        if first_delivery && message.author_id != self.me {
             let mention = self.mentions_me(message);
-            if message.channel_id != self.selected_channel
-                && message.author_id != self.me
-                && let Some(channel) = self
+            if let Some(channel) = self
+                .channels
+                .iter_mut()
+                .find(|channel| channel.id == message.channel_id)
+            {
+                // Canal aberto não equivale mais a "lido": a viewport decide
+                // isso depois do frame. Até lá a chegada é genuinamente nova.
+                channel.unread = true;
+            }
+            if mention {
+                let state = self
+                    .read_states
+                    .entry(message.channel_id.clone())
+                    .or_default();
+                if !state.unread_mentions.contains(&message.id) {
+                    state.unread_mentions.push_back(message.id.clone());
+                }
+                if let Some(channel) = self
                     .channels
                     .iter_mut()
                     .find(|channel| channel.id == message.channel_id)
-            {
-                channel.unread = true;
-                if mention {
-                    channel.mentions += 1;
+                {
+                    channel.mentions = state.unread_mentions.len() as u32;
                 }
+                self.persist_read_state(&message.channel_id);
             }
         }
 
@@ -2613,14 +2627,25 @@ impl Store {
                     if !newer {
                         continue;
                     }
+                    if let Some(message_id) = notification.message_id.clone() {
+                        let state = self.read_states.entry(channel_id.clone()).or_default();
+                        if !state.unread_mentions.contains(&message_id) {
+                            state.unread_mentions.push_back(message_id);
+                        }
+                    }
+                    let mention_count = self
+                        .read_states
+                        .get(&channel_id)
+                        .map_or(0, |state| state.unread_mentions.len() as u32);
                     if let Some(channel) = self
                         .channels
                         .iter_mut()
                         .find(|channel| channel.id == channel_id)
                     {
-                        channel.mentions += 1;
+                        channel.mentions = mention_count;
                         channel.unread = true;
                     }
+                    self.persist_read_state(&channel_id);
                     self.open_notifications
                         .entry(channel_id)
                         .or_default()
