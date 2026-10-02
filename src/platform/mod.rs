@@ -111,6 +111,9 @@ pub mod launcher;
 #[path = "linux/notify.rs"]
 pub mod notify;
 #[cfg(target_os = "linux")]
+#[path = "linux/shutdown.rs"]
+pub mod shutdown;
+#[cfg(target_os = "linux")]
 #[path = "linux/tray.rs"]
 pub mod tray;
 #[cfg(target_os = "windows")]
