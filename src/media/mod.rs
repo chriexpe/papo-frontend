@@ -675,7 +675,7 @@ fn decode_gif(
             (numerator as f32 / denominator as f32 / 1000.0).max(0.02)
         };
 
-        if source_index % stride == 0 || out.is_empty() {
+        if source_index.is_multiple_of(stride) || out.is_empty() {
             let buffer = image::DynamicImage::ImageRgba8(frame.into_buffer());
             out.push((to_color_image(buffer, max), delay));
         } else if let Some((_, kept_delay)) = out.last_mut() {
