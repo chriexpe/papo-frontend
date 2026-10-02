@@ -477,7 +477,7 @@ pub struct Store {
     /// Notificações já contadas, para não somar a mesma menção duas vezes.
     counted_notifications: HashSet<String>,
     /// Notificações por canal ainda não confirmadas no servidor.
-    open_notifications: HashMap<String, Vec<String>>,
+    open_notifications: HashMap<String, Vec<(String, Option<String>)>>,
     pub error: Option<String>,
     pub busy: bool,
     /// O servidor é fechado e ainda espera a senha do servidor. A tela de
@@ -1991,12 +1991,41 @@ impl Store {
         self.persist_read_state(channel_id);
     }
 
-    /// Ids de notificação do canal para confirmar no servidor; some da lista
-    /// ao ser entregue.
+    /// Notificações cujo alvo realmente apareceu na viewport. Abrir o canal
+    /// ou saltar por cima não confirma nada no servidor.
+    pub fn take_seen_notifications(
+        &mut self,
+        channel_id: &str,
+        visible_message_ids: &[String],
+    ) -> Vec<String> {
+        let visible: HashSet<&str> = visible_message_ids.iter().map(String::as_str).collect();
+        let Some(entries) = self.open_notifications.get_mut(channel_id) else {
+            return Vec::new();
+        };
+        let mut seen = Vec::new();
+        entries.retain(|(notification_id, message_id)| {
+            let consumed = message_id
+                .as_deref()
+                .is_some_and(|message_id| visible.contains(message_id));
+            if consumed {
+                seen.push(notification_id.clone());
+            }
+            !consumed
+        });
+        if entries.is_empty() {
+            self.open_notifications.remove(channel_id);
+        }
+        seen
+    }
+
+    /// Confirma tudo do canal apenas para ações explícitas de "marcar lido".
     pub fn take_open_notifications(&mut self, channel_id: &str) -> Vec<String> {
         self.open_notifications
             .remove(channel_id)
             .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
     }
 
     pub fn mark_all_read(&mut self) {
@@ -2649,7 +2678,7 @@ impl Store {
                     self.open_notifications
                         .entry(channel_id)
                         .or_default()
-                        .push(notification.id);
+                        .push((notification.id, notification.message_id));
                 }
             }
             Update::Event(event) => self.apply_event(*event),
