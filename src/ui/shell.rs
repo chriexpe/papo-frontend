@@ -840,6 +840,14 @@ pub struct UiState {
     pub topic_since: Option<f64>,
     /// A descrição aparece ao abrir o canal (ajuste do usuário).
     pub reveal_topic: bool,
+    /// Canais com não lidas abrem no head; o bloco pulado continua acessível.
+    pub open_at_newest: bool,
+    /// Canal esperando a primeira navegação depois de ser aberto.
+    open_channel_pending: Option<String>,
+    /// Mensagens realmente expostas na área legível deste quadro.
+    pub visible_message_ids: Vec<String>,
+    /// Último movimento observado da timeline; os atalhos somem enquanto rola.
+    last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
     /// Gravação em curso.
@@ -959,6 +967,10 @@ impl Default for UiState {
             last_channel: String::new(),
             topic_since: None,
             reveal_topic: true,
+            open_at_newest: true,
+            open_channel_pending: None,
+            visible_message_ids: Vec::new(),
+            last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
             recorder: None,
             error: None,
@@ -1037,6 +1049,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.visible_message_ids.clear();
     state.webembed_inline_rect = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens. A compensação
@@ -1083,6 +1096,7 @@ pub fn draw(
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
+        state.open_channel_pending = Some(next_channel);
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2274,6 +2288,112 @@ fn pill_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {
     );
 }
 
+/// Atalhos contextuais da timeline. São botões independentes, não uma barra:
+/// cada um só existe enquanto há um destino útil e todos somem durante scroll.
+fn timeline_nav_controls(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+    bottom_inset: f32,
+) -> Vec<Rect> {
+    const SIZE: f32 = 38.0;
+    const GAP: f32 = 8.0;
+    const SETTLE_SECONDS: f64 = 0.28;
+
+    if state.panel.is_some()
+        || state.viewer.is_some()
+        || state.link_viewer.is_some()
+        || state.webembed_blocked
+    {
+        return Vec::new();
+    }
+
+    let now = ui.input(|input| input.time);
+    let actively_scrolling = now - state.last_scroll_activity < SETTLE_SECONDS
+        || ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
+    if actively_scrolling {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(90));
+        return Vec::new();
+    }
+
+    let channel_id = store.selected_channel.clone();
+    if channel_id.is_empty() {
+        return Vec::new();
+    }
+
+    let latest_visible = state.visible_message_ids.last().cloned();
+    let newest = store.newest_loaded(&channel_id);
+    let forward = store.jump_forward_target(&channel_id);
+    let show_newer = newest.as_ref().is_some_and(|newest| {
+        latest_visible.as_ref() != Some(newest)
+            || forward.as_ref().is_some_and(|target| latest_visible.as_ref() != Some(target))
+    });
+    let back = store.jump_back_target(&channel_id);
+    let mention = store.next_mention_target(&channel_id);
+
+    let mut controls: Vec<(&'static str, &'static str, u8)> = Vec::new();
+    if show_newer {
+        controls.push((icon::ARROW_DOWN, s.jump_newer, 0));
+    }
+    if back.is_some() {
+        controls.push((icon::HOURGLASS, s.jump_back_unread, 1));
+    }
+    if mention.is_some() {
+        controls.push((icon::BELL, s.jump_mention, 2));
+    }
+    if controls.is_empty() {
+        return Vec::new();
+    }
+
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("timeline-nav-layer"));
+    let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(area));
+    let right = area.max.x - PILL_MARGIN;
+    let mut bottom = area.max.y - bottom_inset - space::MD;
+    let mut rects = Vec::with_capacity(controls.len());
+
+    for (glyph, tip, kind) in controls {
+        let rect = Rect::from_min_max(
+            egui::pos2(right - SIZE, bottom - SIZE),
+            egui::pos2(right, bottom),
+        );
+        pill_surface(&top, state, t, rect);
+        let response = top
+            .interact(rect, Id::new(("timeline-nav", kind)), Sense::click())
+            .on_hover_text(tip);
+        if response.hovered() {
+            top.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        top.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(17.0),
+            t.label,
+        );
+
+        if response.clicked() {
+            let target = match kind {
+                0 => store.prepare_newer_jump(&channel_id, latest_visible.as_deref()),
+                1 => back.clone(),
+                2 => mention.clone(),
+                _ => None,
+            };
+            if let Some(message_id) = target {
+                go_to(store, state, &top, &channel_id, &message_id);
+                state.last_scroll_activity = now;
+            }
+        }
+
+        rects.push(rect);
+        bottom = rect.min.y - GAP;
+    }
+
+    rects
+}
+
 /// Aviso de conexão, centralizado no alto: só aparece quando o socket não
 /// está de pé.
 fn connection_pill(
@@ -2449,6 +2569,44 @@ fn conversation(
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             let channel_id = store.selected_channel.clone();
+
+            // Resolver a abertura só depois que a primeira página existe. Se a
+            // fronteira durável ficou fora da página quente, trazemos páginas
+            // antigas até encontrá-la; usar "a mais velha carregada" quebraria
+            // justamente a semântica do bloco não lido.
+            if state.open_channel_pending.as_deref() == Some(channel_id.as_str())
+                && store.newest_loaded(&channel_id).is_some()
+            {
+                let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
+                let anchor_missing = store.read_anchor_needs_history(&channel_id);
+                if unread && anchor_missing && store.can_load_older(&channel_id) {
+                    state.actions.push(ChatAction::LoadOlderMessages);
+                } else {
+                    let target = if unread && state.open_at_newest {
+                        store.prepare_open_at_newest(&channel_id)
+                    } else if unread {
+                        store
+                            .read_anchor_target(&channel_id)
+                            .or_else(|| store.first_unread_loaded(&channel_id))
+                    } else {
+                        None
+                    };
+                    if let Some(message_id) = target {
+                        state.jump = Some(Jump {
+                            message_id,
+                            found: None,
+                            since: ui.input(|input| input.time),
+                        });
+                    }
+                    state.open_channel_pending = None;
+                }
+            }
+
+            let previous_offset = state
+                .chat_scroll_metrics
+                .as_ref()
+                .filter(|(previous_channel, _, _)| previous_channel == &channel_id)
+                .map(|(_, offset, _)| *offset);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
@@ -2474,7 +2632,11 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
-                message_list(ui, store, state, t, s, full);
+                let readable = Rect::from_min_max(
+                    egui::pos2(full.min.x, full.min.y + top_inset),
+                    egui::pos2(full.max.x, full.max.y - bottom_inset),
+                );
+                message_list(ui, store, state, t, s, full, readable);
                 ui.add_space(bottom_inset);
 
                 request_older = viewport.min.y <= top_inset + 360.0
@@ -2524,6 +2686,12 @@ fn conversation(
                 ui.ctx().request_discard("preview/mídia mudou acima da viewport");
             }
 
+            if previous_offset
+                .is_some_and(|offset| (offset - output.state.offset.y).abs() > 0.75)
+                || ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1)
+            {
+                state.last_scroll_activity = ui.input(|input| input.time);
+            }
             state.chat_scroll_metrics = Some((
                 channel_id,
                 output.state.offset.y,
@@ -2553,9 +2721,19 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
+        let nav_rects = timeline_nav_controls(
+            ui,
+            store,
+            state,
+            t,
+            s,
+            full,
+            bottom_inset,
+        );
         composer(ui, store, state, t, s, full, composer_height);
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
+        state.webembed_occlusions.extend(nav_rects);
         call_layers(
             ui,
             store,
@@ -4351,6 +4529,7 @@ fn message_list(
     t: &Tokens,
     s: &Strings,
     area: Rect,
+    readable: Rect,
 ) {
     let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
@@ -4541,6 +4720,11 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        let visible_height = row.intersect(readable).height().max(0.0);
+        let seen_threshold = (row.height() * 0.55).min(32.0);
+        if !message.pending && visible_height >= seen_threshold {
+            state.visible_message_ids.push(message.id.clone());
+        }
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state

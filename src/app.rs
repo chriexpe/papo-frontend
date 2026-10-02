@@ -309,6 +309,10 @@ pub struct Settings {
     /// A descrição do canal aparece ao abri-lo.
     #[serde(default = "enabled")]
     pub topic_reveal: bool,
+    /// Ao abrir um canal com não lidas, começa no head e preserva o bloco
+    /// pulado como checkpoint de retorno.
+    #[serde(default = "enabled")]
+    pub open_at_newest: bool,
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
@@ -392,6 +396,7 @@ impl Default for Settings {
             reply_notifications: true,
             badge: true,
             topic_reveal: true,
+            open_at_newest: true,
             record_button: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
@@ -921,6 +926,7 @@ impl PapoApp {
         ui_state.show_members = settings.show_members;
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
+        ui_state.open_at_newest = settings.open_at_newest;
         ui_state.show_record = settings.record_button;
         ui_state.self_card = settings.self_card;
         ui_state.webembed_behavior = settings.webembed_offscreen;
@@ -1704,20 +1710,30 @@ impl PapoApp {
         ws.ensure_channel_cache_hydrated();
         ws.ensure_channel_reconciled();
 
-        // Com a janela à frente, o canal aberto está sendo lido agora.
+        // Foco sozinho não significa leitura. Só as linhas realmente expostas
+        // pela viewport no frame anterior avançam a fronteira durável.
         if focused && !ws.runtime.store.selected_channel.is_empty() {
             let channel_id = ws.runtime.store.selected_channel.clone();
-            ws.runtime.store.mark_read(&channel_id);
-            // O servidor também precisa saber, ou a menção volta no próximo
-            // dispositivo.
-            let ids = ws.runtime.store.take_open_notifications(&channel_id);
-            if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
-                #[cfg(target_os = "android")]
-                crate::platform::android_message::clear_channel(&ws.runtime.url, &channel_id);
-                ws.runtime.net.send(Command::MarkNotificationsRead {
-                    user_id: ws.runtime.store.me.clone(),
-                    ids,
-                });
+            let visible = self.ui.visible_message_ids.clone();
+            if !visible.is_empty() {
+                ws.runtime
+                    .store
+                    .observe_visible_messages(&channel_id, &visible);
+
+                // O backend recebe exatamente as notificações cujas mensagens
+                // ficaram visíveis; saltar por cima não confirma o intervalo.
+                let ids = ws
+                    .runtime
+                    .store
+                    .take_seen_notifications(&channel_id, &visible);
+                if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
+                    #[cfg(target_os = "android")]
+                    crate::platform::android_message::clear_channel(&ws.runtime.url, &channel_id);
+                    ws.runtime.net.send(Command::MarkNotificationsRead {
+                        user_id: ws.runtime.store.me.clone(),
+                        ids,
+                    });
+                }
             }
         }
 
@@ -1775,7 +1791,15 @@ impl PapoApp {
                 return;
             }
             ChatAction::MarkServerRead => {
-                self.workspaces[self.active].runtime.store.mark_all_read();
+                let ws = &mut self.workspaces[self.active];
+                ws.runtime.store.mark_all_read();
+                let ids = ws.runtime.store.take_all_open_notifications();
+                if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
+                    ws.runtime.net.send(Command::MarkNotificationsRead {
+                        user_id: ws.runtime.store.me.clone(),
+                        ids,
+                    });
+                }
                 return;
             }
             ChatAction::LeaveServer => {
@@ -3158,6 +3182,7 @@ impl PapoApp {
         );
         let before_secondary = (
             self.settings.topic_reveal,
+            self.settings.open_at_newest,
             self.settings.record_button,
             self.settings.self_card,
             self.settings.webembed_offscreen,
@@ -3202,6 +3227,7 @@ impl PapoApp {
                 autostart: &mut autostart,
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
+                open_at_newest: &mut self.settings.open_at_newest,
                 record_button: &mut self.settings.record_button,
                 self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
@@ -3236,6 +3262,7 @@ impl PapoApp {
         );
         let after_secondary = (
             self.settings.topic_reveal,
+            self.settings.open_at_newest,
             self.settings.record_button,
             self.settings.self_card,
             self.settings.webembed_offscreen,
@@ -3244,7 +3271,8 @@ impl PapoApp {
         );
         if before_primary != after_primary || before_secondary != after_secondary {
             self.ui.self_card = self.settings.self_card;
-            if ask_download != before_secondary.5 {
+            self.ui.open_at_newest = self.settings.open_at_newest;
+            if ask_download != before_secondary.6 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {

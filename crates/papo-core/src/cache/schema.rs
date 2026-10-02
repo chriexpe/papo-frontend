@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -169,6 +169,25 @@ const MIGRATIONS: &[Migration] = &[Migration {
     // gravava a página como embed: o cache antigo só atrapalharia.
     version: 8,
     statements: &["DELETE FROM preview_cache"],
+}, Migration {
+    version: 9,
+    statements: &[
+        "CREATE TABLE channel_read_state (
+             server_key TEXT NOT NULL,
+             owner_user_id TEXT NOT NULL,
+             channel_id TEXT NOT NULL,
+             read_at INTEGER,
+             read_message_id TEXT,
+             seen_out_of_order TEXT NOT NULL DEFAULT '[]',
+             unread_mentions TEXT NOT NULL DEFAULT '[]',
+             jump_back TEXT,
+             jump_forward TEXT,
+             updated_at INTEGER NOT NULL,
+             PRIMARY KEY (server_key, owner_user_id, channel_id)
+         )",
+        "CREATE INDEX channel_read_state_owner_idx
+             ON channel_read_state(server_key, owner_user_id, updated_at DESC)",
+    ],
 }];
 
 /// Lê a versão atual do esquema (0 quando ainda não há nada).

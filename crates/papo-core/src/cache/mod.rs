@@ -15,7 +15,7 @@ pub use store::TursoCache;
 pub use types::{
     new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedMember,
     CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing, CachedPreview,
-    CachedReaction, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp,
+    CachedReaction, CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp,
     ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
     OutgoingState, PreviewCacheState, CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT,
     OUTGOING_LIMIT, PINNED_RETENTION, PREVIEW_CACHE_LIMIT,

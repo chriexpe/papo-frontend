@@ -322,6 +322,11 @@ pub struct Strings {
     pub badge_hint: &'static str,
     pub topic_reveal: &'static str,
     pub topic_reveal_hint: &'static str,
+    pub open_at_newest: &'static str,
+    pub open_at_newest_hint: &'static str,
+    pub jump_newer: &'static str,
+    pub jump_back_unread: &'static str,
+    pub jump_mention: &'static str,
 
     // Ajustes
     pub settings: &'static str,
@@ -773,6 +778,11 @@ pub static PT_BR: Strings = Strings {
     badge_hint: "Mostra quantas menções esperam por você; sem menção, só o ponto de não lido.",
     topic_reveal: "Mostrar a descrição ao abrir o canal",
     topic_reveal_hint: "A descrição aparece por alguns segundos e recolhe na direção do nome.",
+    open_at_newest: "Abrir canais na mensagem mais nova",
+    open_at_newest_hint: "Ao abrir um canal com mensagens novas, vai direto ao fim sem marcar o bloco pulado como lido; a ampulheta leva de volta.",
+    jump_newer: "Ir para mensagens mais novas",
+    jump_back_unread: "Voltar ao bloco não lido",
+    jump_mention: "Ir para a próxima menção",
 
     settings: "Ajustes",
     appearance: "Aparência",
@@ -1222,6 +1232,11 @@ pub static EN: Strings = Strings {
     badge_hint: "Shows how many mentions are waiting; without a mention, just the unread dot.",
     topic_reveal: "Show the topic when a channel opens",
     topic_reveal_hint: "The topic appears for a few seconds, then slides back into the name.",
+    open_at_newest: "Open channels at the newest message",
+    open_at_newest_hint: "When a channel has new messages, open at the bottom without marking the skipped block read; the hourglass returns to it.",
+    jump_newer: "Go to newer messages",
+    jump_back_unread: "Return to unread block",
+    jump_mention: "Go to next mention",
 
     settings: "Settings",
     appearance: "Appearance",
