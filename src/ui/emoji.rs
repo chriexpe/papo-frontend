@@ -628,6 +628,82 @@ pub fn reaction_width(emoji: &Emoji) -> f32 {
     }
 }
 
+/// Prefixo persistido no nome do canal para transportar um ícone sem
+/// inventar um segundo contrato no backend. Unicode vai como o próprio
+/// grapheme; emoji do servidor usa a mesma forma `:apelido:` das mensagens.
+pub fn channel_icon_wire_len(
+    icon: Option<&Emoji>,
+    custom: &[crate::state::CustomEmoji],
+) -> usize {
+    match icon {
+        Some(Emoji::Unicode(glyph)) => glyph.chars().count() + 1,
+        Some(Emoji::Custom(id)) => custom
+            .iter()
+            .find(|emoji| &emoji.id == id)
+            .map(|emoji| emoji.name.chars().count() + 3)
+            .unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Junta o ícone escolhido ao nome que o backend já persiste. O espaço
+/// depois do prefixo é deliberado: além de legível no wire, permite
+/// distinguir este ícone controlado pela UI de um emoji que faça parte do
+/// nome digitado pelo usuário.
+pub fn channel_name(
+    label: &str,
+    icon: Option<&Emoji>,
+    custom: &[crate::state::CustomEmoji],
+) -> String {
+    let label = label.trim();
+    match icon {
+        Some(Emoji::Unicode(glyph)) if !glyph.is_empty() => format!("{glyph} {label}"),
+        Some(Emoji::Custom(id)) => custom
+            .iter()
+            .find(|emoji| &emoji.id == id)
+            .map(|emoji| format!(":{}: {label}", emoji.name))
+            .unwrap_or_else(|| label.to_owned()),
+        _ => label.to_owned(),
+    }
+}
+
+/// Separa o prefixo que foi criado por `channel_name`. Um emoji digitado
+/// manualmente continua sendo parte do nome a menos que esteja no formato
+/// "emoji + espaço + nome"; o mesmo vale para `:apelido:`.
+pub fn split_channel_name<'a>(
+    name: &'a str,
+    custom: &[crate::state::CustomEmoji],
+) -> (Option<Emoji>, &'a str) {
+    let Some(first) = tokenize(name, custom).into_iter().next() else {
+        return (None, name);
+    };
+    match first {
+        Token::Unicode(glyph) if name.starts_with(&glyph) => {
+            let rest = &name[glyph.len()..];
+            if rest.chars().next().is_some_and(char::is_whitespace) {
+                (Some(Emoji::Unicode(glyph)), rest.trim_start())
+            } else {
+                (None, name)
+            }
+        }
+        Token::Custom(id) => {
+            let Some(custom) = custom.iter().find(|emoji| emoji.id == id) else {
+                return (None, name);
+            };
+            let prefix = format!(":{}:", custom.name);
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                return (None, name);
+            };
+            if rest.chars().next().is_some_and(char::is_whitespace) {
+                (Some(Emoji::Custom(id)), rest.trim_start())
+            } else {
+                (None, name)
+            }
+        }
+        _ => (None, name),
+    }
+}
+
 /// Espaço reservado a um popup, alinhado à âncora sem sair da janela.
 pub fn popup_area(ui: &egui::Ui, anchor: egui::Rect, size: Vec2) -> egui::Rect {
     let screen = ui.ctx().viewport_rect();
@@ -798,5 +874,33 @@ mod tests {
     fn dois_pontos_solto_continua_texto() {
         let tokens = tokenize("horário: 10:30", &[]);
         assert_eq!(tokens, vec![Token::Text("horário: 10:30".into())]);
+    }
+
+    #[test]
+    fn nome_de_canal_separa_icone_unicode() {
+        let (icon, label) = split_channel_name("🎮 jogos", &[]);
+        assert_eq!(icon, Some(Emoji::Unicode("🎮".into())));
+        assert_eq!(label, "jogos");
+        assert_eq!(channel_name(label, icon.as_ref(), &[]), "🎮 jogos");
+    }
+
+    #[test]
+    fn nome_de_canal_separa_emoji_do_servidor() {
+        let custom = vec![crate::state::CustomEmoji {
+            id: "party".into(),
+            name: "festa".into(),
+            blob: None,
+        }];
+        let (icon, label) = split_channel_name(":festa: geral", &custom);
+        assert_eq!(icon, Some(Emoji::Custom("party".into())));
+        assert_eq!(label, "geral");
+        assert_eq!(channel_name(label, icon.as_ref(), &custom), ":festa: geral");
+    }
+
+    #[test]
+    fn emoji_digitado_sem_separador_continua_no_nome() {
+        let (icon, label) = split_channel_name("🎮jogos", &[]);
+        assert_eq!(icon, None);
+        assert_eq!(label, "🎮jogos");
     }
 }

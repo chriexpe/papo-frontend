@@ -1752,7 +1752,8 @@ impl PapoApp {
                     return;
                 }
                 if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
-                    self.sheet.open_edit_channel(&channel);
+                    let emojis = self.workspaces[self.active].runtime.store.emojis.clone();
+                    self.sheet.open_edit_channel(&channel, &emojis);
                     let net = &self.workspaces[self.active].runtime.net;
                     net.send(Command::LoadRoles);
                     net.send(Command::LoadChannelPermissions {
@@ -1766,7 +1767,8 @@ impl PapoApp {
                     return;
                 }
                 if let Some(channel) = self.workspaces[self.active].runtime.store.channel(id).cloned() {
-                    self.sheet.open_delete_channel(&channel);
+                    let emojis = self.workspaces[self.active].runtime.store.emojis.clone();
+                    self.sheet.open_delete_channel(&channel, &emojis);
                 }
                 return;
             }

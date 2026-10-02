@@ -204,7 +204,13 @@ impl Default for SettingsState {
 #[derive(Clone, Debug)]
 pub struct ChannelDraft {
     pub id: Option<String>,
+    /// Nome sem o ícone de canal; o prefixo só volta ao wire ao salvar.
     pub name: String,
+    /// Ícone opcional. Unicode é persistido diretamente; custom usa
+    /// `:apelido:`, a mesma representação das mensagens.
+    pub icon: Option<crate::state::Emoji>,
+    pub emoji_query: String,
+    pub emoji_group: usize,
     pub topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     pub kind: String,
@@ -223,16 +229,26 @@ impl ChannelDraft {
         Self {
             id: None,
             name: String::new(),
+            icon: None,
+            emoji_query: String::new(),
+            emoji_group: 0,
             topic: String::new(),
             kind: "text".to_owned(),
         }
     }
 
-    pub fn edit(channel: &crate::state::Channel) -> Self {
+    pub fn edit(
+        channel: &crate::state::Channel,
+        custom: &[crate::state::CustomEmoji],
+    ) -> Self {
         use crate::state::ChannelKind;
+        let (icon, name) = super::emoji::split_channel_name(&channel.name, custom);
         Self {
             id: Some(channel.id.clone()),
-            name: channel.name.clone(),
+            name: name.to_owned(),
+            icon,
+            emoji_query: String::new(),
+            emoji_group: 0,
             topic: channel.topic.clone().unwrap_or_default(),
             kind: match channel.kind {
                 ChannelKind::Voice => "voice".to_owned(),
@@ -300,26 +316,31 @@ impl SettingsState {
         self.draft.deleting = None;
     }
 
-    pub fn open_edit_channel(&mut self, channel: &crate::state::Channel) {
+    pub fn open_edit_channel(
+        &mut self,
+        channel: &crate::state::Channel,
+        custom: &[crate::state::CustomEmoji],
+    ) {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.mobile_page = true;
-        self.draft.channel = Some(ChannelDraft::edit(channel));
+        self.draft.channel = Some(ChannelDraft::edit(channel, custom));
         self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
 
-    pub fn open_delete_channel(&mut self, channel: &crate::state::Channel) {
+    pub fn open_delete_channel(
+        &mut self,
+        channel: &crate::state::Channel,
+        custom: &[crate::state::CustomEmoji],
+    ) {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.mobile_page = true;
         self.draft.channel = None;
         self.draft.channel_permission = None;
-        self.draft.deleting = Some((
-            channel.id.clone(),
-            channel.name.clone(),
-            String::new(),
-        ));
+        let (_, name) = super::emoji::split_channel_name(&channel.name, custom);
+        self.draft.deleting = Some((channel.id.clone(), name.to_owned(), String::new()));
     }
 
     /// Ajustes → Conta, com o formulário relido do estado: é para onde o
@@ -801,6 +822,158 @@ impl Rows<'_> {
         // no pé do controle, acima do fim da faixa, e a linha seguinte
         // começaria por cima desta (no celular, as peças se sobrepunham).
         self.ui.advance_cursor_after_rect(rect);
+    }
+
+    /// Nome do canal com o seletor de emoji dentro do próprio campo. O
+    /// conteúdo do popup é exatamente o mesmo seletor da conversa, inclusive
+    /// os emojis customizados deste servidor.
+    fn channel_name_field(
+        &mut self,
+        label: &str,
+        editor: &mut ChannelDraft,
+        store: &Store,
+        media: &mut crate::media::MediaStore,
+        s: &Strings,
+    ) {
+        if self.tiled {
+            self.stack_next = true;
+        }
+        self.row(label, None, |ui, t| {
+            let width = ui.available_width();
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
+
+            let picker_rect =
+                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
+            let picker = ui.interact(
+                picker_rect,
+                ui.id().with((
+                    "settings-channel-emoji",
+                    editor.id.as_deref().unwrap_or("new"),
+                )),
+                Sense::click(),
+            );
+            if picker.hovered() {
+                ui.painter().rect_filled(
+                    picker_rect.shrink(2.0),
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_medium,
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            let art = Rect::from_center_size(picker_rect.center(), Vec2::splat(16.0));
+            if let Some(icon) = editor.icon.as_ref() {
+                super::emoji::draw_reaction(ui, t, media, store, icon, art);
+            } else {
+                ui.painter().text(
+                    art.center(),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::regular::SMILEY,
+                    text::icon(14.0),
+                    t.label_tertiary,
+                );
+            }
+            ui.painter().line_segment(
+                [
+                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
+                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let field_rect = Rect::from_min_max(
+                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
+                rect.max,
+            );
+            let limit = 32usize
+                .saturating_sub(super::emoji::channel_icon_wire_len(
+                    editor.icon.as_ref(),
+                    &store.emojis,
+                ))
+                .max(1);
+            let edit_id = ui.id().with((
+                "settings-channel-name",
+                editor.id.as_deref().unwrap_or("new"),
+            ));
+
+            #[cfg(target_os = "android")]
+            {
+                let key = format!("settings:{edit_id:?}");
+                let _ = crate::platform::native_field::show(
+                    ui.ctx(),
+                    &key,
+                    &mut editor.name,
+                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
+                    "",
+                    crate::platform::native_field::Mode::Text,
+                    limit,
+                    false,
+                    t.label,
+                    t.label_tertiary,
+                    text::body().size,
+                );
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &editor.name);
+                let response = ui.put(
+                    field_rect,
+                    egui::TextEdit::singleline(&mut editor.name)
+                        .id(edit_id)
+                        .char_limit(limit)
+                        .font(text::body())
+                        .frame(false)
+                        .margin(egui::Margin::symmetric(
+                            space::MD as i8,
+                            space::XS as i8,
+                        )),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &editor.name,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Text,
+                );
+            }
+
+            let mut chosen = None;
+            egui::Popup::menu(&picker).show(|ui| {
+                ui.set_max_height(380.0);
+                chosen = super::emoji::picker(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    media,
+                    &mut editor.emoji_query,
+                    &mut editor.emoji_group,
+                    false,
+                );
+                if chosen.is_some() {
+                    ui.close();
+                }
+            });
+            if let Some(chosen) = chosen {
+                // Escolher o mesmo de novo funciona como "sem ícone", sem
+                // adicionar um segundo controle dentro do campo.
+                editor.icon = if editor.icon.as_ref() == Some(&chosen) {
+                    None
+                } else {
+                    Some(chosen)
+                };
+            }
+        });
     }
 
     /// Linha com um campo de texto ocupando a direita.
@@ -3695,7 +3868,13 @@ fn server_pane(
                     },
                 );
                 group(ui, t, |rows| {
-                    rows.field(s.channel_name, &mut editor.name, 32, false);
+                    rows.channel_name_field(
+                        s.channel_name,
+                        editor,
+                        data.store,
+                        data.media,
+                        s,
+                    );
 
                     rows.row(s.channel_kind, None, |ui, t| {
                         if editor.id.is_some() {
@@ -3729,11 +3908,17 @@ fn server_pane(
                 });
 
                 ui.add_space(space::SM);
+                let wire_name = super::emoji::channel_name(
+                    &editor.name,
+                    editor.icon.as_ref(),
+                    &data.store.emojis,
+                );
                 actions_row(ui, |ui| {
                     if row_button(ui, t, s.cancel, Emphasis::Quiet) {
                         close_editor = true;
                     }
-                    let ready = !editor.name.trim().is_empty();
+                    let ready = !editor.name.trim().is_empty()
+                        && wire_name.chars().count() <= 32;
                     if ready
                         && row_button(
                             ui,
@@ -3746,7 +3931,7 @@ fn server_pane(
                             Emphasis::Primary,
                         )
                     {
-                        let name = editor.name.trim().to_owned();
+                        let name = wire_name.clone();
                         let topic = (editor.kind != "category")
                             .then(|| editor.topic.trim().to_owned());
                         match editor.id.clone() {
@@ -3916,7 +4101,15 @@ fn server_pane(
             // Apagar pede o nome digitado: é o que separa "quis" de
             // "esbarrou". A confirmação fica acima da árvore.
             if let Some((id, expected, typed)) = draft.deleting.as_mut() {
-                let name = channels.iter().find(|c| &c.id == id).map(|c| c.name.clone()).unwrap_or_default();
+                let name = channels
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .map(|c| {
+                        super::emoji::split_channel_name(&c.name, &data.store.emojis)
+                            .1
+                            .to_owned()
+                    })
+                    .unwrap_or_default();
                 let id = id.clone();
                 group(ui, t, |rows| {
                     rows.row(&name, Some(s.delete_type_name), |ui, t| {
