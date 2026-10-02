@@ -2580,6 +2580,12 @@ fn conversation(
             {
                 let visible = state.visible_messages.clone();
                 for message_id in visible {
+                    let already_seen = store
+                        .message(&message_id)
+                        .is_some_and(|message| store.message_seen(message));
+                    if already_seen {
+                        continue;
+                    }
                     let contiguous = store
                         .oldest_unseen_message(&channel_id)
                         .is_some_and(|message| message.id == message_id);
@@ -4447,11 +4453,23 @@ fn prepare_read_navigation(
         }
     }
 
-    let oldest_unseen = store
-        .oldest_unseen_message(channel_id)
-        .map(|message| message.id.clone());
     let newest = store
         .newest_message(channel_id)
+        .map(|message| message.id.clone());
+
+    // Migração/primeiro uso: Papo sempre tratou um canal sem marca local e
+    // sem indicador de não lido como já visto. Não transforme todo o cache
+    // histórico em "novo" só porque o cursor preciso ainda não existia.
+    let has_frontier = store.read_marks.contains_key(channel_id);
+    let channel_unread = store.channel(channel_id).is_some_and(|channel| channel.unread);
+    if !has_frontier && !channel_unread
+        && let Some(newest_id) = newest.as_deref()
+    {
+        store.mark_through_message(channel_id, newest_id);
+    }
+
+    let oldest_unseen = store
+        .oldest_unseen_message(channel_id)
         .map(|message| message.id.clone());
     let nav = state
         .read_navigation
