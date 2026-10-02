@@ -1902,6 +1902,18 @@ impl Store {
             .map(|message| message.id.clone())
     }
 
+    pub fn read_anchor_needs_history(&self, channel_id: &str) -> bool {
+        if let Some(id) = self.read_anchor_id(channel_id) {
+            return self.message(&id).is_none();
+        }
+        let Some(mark) = self.read_marks.get(channel_id).copied() else {
+            return false;
+        };
+        !self
+            .messages_in(channel_id)
+            .any(|message| !message.pending && message.at.with_timezone(&Utc) <= mark)
+    }
+
     pub fn next_mention_target(&self, channel_id: &str) -> Option<String> {
         self.read_states
             .get(channel_id)
@@ -3015,27 +3027,40 @@ impl Store {
             // A sinalização é da thread da call, não do estado da tela.
             Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {}
             Event::Notification { id, message_id, .. } => {
-                // O evento não traz o canal; achamos pela mensagem quando ela
-                // já está em memória. O resto vem da listagem REST.
-                if !self.counted_notifications.insert(id) {
+                // O evento não traz o canal. Se a mensagem ainda não chegou,
+                // deixamos a listagem REST resolver depois em vez de consumir
+                // o id sem conseguir guardar o alvo.
+                let Some(message_id) = message_id else {
                     return;
-                }
-                let Some(channel_id) = message_id
-                    .and_then(|id| self.message(&id).map(|message| message.channel_id.clone()))
+                };
+                let Some(channel_id) = self
+                    .message(&message_id)
+                    .map(|message| message.channel_id.clone())
                 else {
                     return;
                 };
-                if channel_id == self.selected_channel {
+                if !self.counted_notifications.insert(id.clone()) {
                     return;
                 }
+
+                let state = self.read_states.entry(channel_id.clone()).or_default();
+                if !state.unread_mentions.contains(&message_id) {
+                    state.unread_mentions.push_back(message_id.clone());
+                }
+                let mention_count = state.unread_mentions.len() as u32;
                 if let Some(channel) = self
                     .channels
                     .iter_mut()
                     .find(|channel| channel.id == channel_id)
                 {
-                    channel.mentions += 1;
+                    channel.mentions = mention_count;
                     channel.unread = true;
                 }
+                self.open_notifications
+                    .entry(channel_id.clone())
+                    .or_default()
+                    .push((id, Some(message_id)));
+                self.persist_read_state(&channel_id);
             }
             Event::Reaction {
                 message_id,
