@@ -2068,6 +2068,14 @@ impl Store {
             .collect()
     }
 
+    pub fn take_all_open_notifications(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.open_notifications)
+            .into_values()
+            .flatten()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
     pub fn mark_all_read(&mut self) {
         let ids: Vec<String> = self.channels.iter().map(|c| c.id.clone()).collect();
         for id in ids {
