@@ -60,6 +60,17 @@ pub fn draw(
         )))
         .show(root, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
+
+            // Mensagens diretas são uma superfície fixa da conta ativa, não
+            // um servidor. Mantê-las no topo evita que o atalho salte de
+            // posição quando o usuário troca de backend.
+            if entries.get(active).is_some_and(|entry| entry.signed_in) {
+                if direct_tile(ui, direct_unread, direct_active, t, s) {
+                    action = Some(RailAction::DirectMessages);
+                }
+                ui.add_space(GAP);
+            }
+
             for (index, entry) in entries.iter().enumerate() {
                 if let Some(chosen) = tile(ui, entry, index == active && !direct_active, t, s) {
                     action = Some(match chosen {
@@ -68,12 +79,6 @@ pub fn draw(
                     });
                 }
                 ui.add_space(GAP);
-                if index == active && entry.signed_in {
-                    if direct_tile(ui, direct_unread, direct_active, t, s) {
-                        action = Some(RailAction::DirectMessages);
-                    }
-                    ui.add_space(GAP);
-                }
             }
             if add_button(ui, t, s) {
                 action = Some(RailAction::Add);
