@@ -432,9 +432,12 @@ pub struct Store {
     next_refresh_request_id: u64,
     /// Quem está digitando, por canal.
     typing: HashMap<String, HashSet<String>>,
-    /// Até quando cada canal foi visto; é o que define o não lido, já que o
-    /// backend registra `last_read_message` mas nunca o escreve.
+    /// Fronteira contígua de leitura por canal. Mensagens posteriores podem
+    /// estar em `seen_messages` sem fechar o buraco entre elas e esta marca.
     pub read_marks: HashMap<String, DateTime<Utc>>,
+    /// Mensagens vistas fora da fronteira contígua, normalmente por um salto.
+    /// Assim um jump pode mostrar o destino sem fingir que tudo no caminho foi lido.
+    pub seen_messages: HashMap<String, HashSet<String>>,
     /// Notificações já contadas, para não somar a mesma menção duas vezes.
     counted_notifications: HashSet<String>,
     /// Notificações por canal ainda não confirmadas no servidor.
@@ -504,6 +507,7 @@ impl Default for Store {
             next_refresh_request_id: 0,
             typing: HashMap::new(),
             read_marks: HashMap::new(),
+            seen_messages: HashMap::new(),
             counted_notifications: HashSet::new(),
             open_notifications: HashMap::new(),
             error: None,
@@ -1475,8 +1479,8 @@ impl Store {
     fn apply_live_message_effects(&mut self, message: &Message, first_delivery: bool) {
         if first_delivery {
             let mention = self.mentions_me(message);
-            if message.channel_id != self.selected_channel
-                && message.author_id != self.me
+            if message.author_id != self.me
+                && !self.message_seen(message)
                 && let Some(channel) = self
                     .channels
                     .iter_mut()
@@ -1661,15 +1665,82 @@ impl Store {
         self.channels.iter().any(|channel| channel.unread)
     }
 
-    /// O canal foi visto agora: zera o realce e guarda a marca.
+    /// Uma mensagem conta como vista se ficou para trás da fronteira contígua
+    /// ou se foi vista isoladamente depois de um salto.
+    pub fn message_seen(&self, message: &Message) -> bool {
+        self.read_marks
+            .get(&message.channel_id)
+            .is_some_and(|mark| message.at.with_timezone(&Utc) <= *mark)
+            || self
+                .seen_messages
+                .get(&message.channel_id)
+                .is_some_and(|seen| seen.contains(&message.id))
+    }
+
+    /// Marca uma mensagem vista. `contiguous` só deve ser usado quando a
+    /// viewport está avançando a partir da fronteira antiga, nunca por jump.
+    pub fn mark_message_seen(&mut self, channel_id: &str, message_id: &str, contiguous: bool) {
+        let Some(message) = self.message(message_id).cloned() else {
+            return;
+        };
+        if contiguous {
+            let at = message.at.with_timezone(&Utc);
+            let mark = self.read_marks.entry(channel_id.to_owned()).or_insert(at);
+            if at > *mark {
+                *mark = at;
+            }
+            let frontier = *mark;
+            if let Some(seen) = self.seen_messages.remove(channel_id) {
+                let kept: HashSet<String> = seen
+                    .into_iter()
+                    .filter(|id| {
+                        self.message(id)
+                            .is_some_and(|candidate| candidate.at.with_timezone(&Utc) > frontier)
+                    })
+                    .collect();
+                if !kept.is_empty() {
+                    self.seen_messages.insert(channel_id.to_owned(), kept);
+                }
+            }
+        } else {
+            self.seen_messages
+                .entry(channel_id.to_owned())
+                .or_default()
+                .insert(message_id.to_owned());
+        }
+        self.refresh_unread(channel_id);
+    }
+
+    fn refresh_unread(&mut self, channel_id: &str) {
+        let mut unread = false;
+        let mut mentions = 0_u32;
+        for message in self.messages.iter().filter(|message| {
+            message.channel_id == channel_id && message.author_id != self.me && !message.pending
+        }) {
+            if !self.message_seen(message) {
+                unread = true;
+                if self.mentions_me(message) {
+                    mentions = mentions.saturating_add(1);
+                }
+            }
+        }
+        if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == channel_id) {
+            channel.unread = unread;
+            channel.mentions = mentions;
+        }
+    }
+
+    /// Marca explicitamente o canal inteiro como lido, avançando até a última
+    /// mensagem conhecida. Usado pelo comando de "marcar servidor como lido".
     pub fn mark_read(&mut self, channel_id: &str) {
-        let now = Utc::now();
-        self.read_marks.insert(channel_id.to_owned(), now);
-        if let Some(channel) = self
-            .channels
-            .iter_mut()
-            .find(|channel| channel.id == channel_id)
+        if let Some(last) = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .max_by_key(|message| (message.at, message.id.clone()))
+            .cloned()
         {
+            self.mark_message_seen(channel_id, &last.id, true);
+        } else if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == channel_id) {
             channel.unread = false;
             channel.mentions = 0;
         }
@@ -1775,6 +1846,7 @@ impl Store {
                 self.screen = Screen::Auth;
                 self.error = was.error;
                 self.read_marks = was.read_marks;
+                self.seen_messages = was.seen_messages;
                 // Sessão inválida: estado reconstruível não atravessa a
                 // autenticação, mas filas/ledger particionados pelo owner
                 // antigo continuam duráveis caso a mesma conta retorne.
