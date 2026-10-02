@@ -179,6 +179,7 @@ const MIGRATIONS: &[Migration] = &[Migration {
              read_at INTEGER,
              read_message_id TEXT,
              seen_out_of_order TEXT NOT NULL DEFAULT '[]',
+             unread_mentions TEXT NOT NULL DEFAULT '[]',
              jump_back TEXT,
              jump_forward TEXT,
              updated_at INTEGER NOT NULL,
