@@ -2864,7 +2864,13 @@ impl PapoApp {
                 if store.channel(&store.selected_channel).is_some_and(|channel| channel.kind == crate::state::ChannelKind::Direct)
                     || store.selected_channel.is_empty()
                 {
-                    if let Some(channel) = store
+                    let remembered = self.ui.last_server_channel.clone();
+                    if store
+                        .channel(&remembered)
+                        .is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                    {
+                        store.selected_channel = remembered;
+                    } else if let Some(channel) = store
                         .channels
                         .iter()
                         .find(|channel| channel.kind == crate::state::ChannelKind::Text)
@@ -4136,6 +4142,8 @@ impl eframe::App for PapoApp {
                 self.ui.server_count = self.workspaces.len();
                 self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
                 let draft_channel_before = self.ui.last_channel.clone();
+                let direct_unread = self.workspaces[active].runtime.store.direct_unread_total();
+                let direct_active = self.ui.dm_surface;
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
                     shell::draw(
@@ -4148,8 +4156,8 @@ impl eframe::App for PapoApp {
                         mobile_entries.as_ref().map(|entries| shell::MobileServers {
                             entries,
                             active,
-                            direct_unread: ws.runtime.store.direct_unread_total(),
-                            direct_active: self.ui.dm_surface,
+                            direct_unread,
+                            direct_active,
                         }),
                     )
                 };
