@@ -1892,6 +1892,35 @@ async fn worker(
                             }
                         }
                     }
+                    Command::OpenDirectMessage { user_id } => {
+                        match api.open_direct_message(&user_id).await {
+                            Ok(dm) => {
+                                outgoing_channels.invalidate();
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::DirectMessageOpened(Box::new(dm)),
+                                );
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
+                    Command::HideDirectMessage { dm_id } => {
+                        match api.hide_direct_message(&dm_id).await {
+                            Ok(()) => {
+                                outgoing_channels.invalidate();
+                                match api.direct_messages().await {
+                                    Ok(dms) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::DirectMessages(dms),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -2811,17 +2840,10 @@ async fn handle(
             ),
             }
         }
-        Command::OpenDirectMessage { user_id } => match api.open_direct_message(&user_id).await {
-            Ok(dm) => publish(updates, wake, Update::DirectMessageOpened(Box::new(dm))),
-            Err(error) => report(storage_key, updates, wake, error),
-        },
-        Command::HideDirectMessage { dm_id } => match api.hide_direct_message(&dm_id).await {
-            Ok(()) => match api.direct_messages().await {
-                Ok(dms) => publish(updates, wake, Update::DirectMessages(dms)),
-                Err(error) => report(storage_key, updates, wake, error),
-            },
-            Err(error) => report(storage_key, updates, wake, error),
-        },
+        Command::OpenDirectMessage { .. } | Command::HideDirectMessage { .. } => {
+            // Consumidos no laço do worker, onde também invalidam a validação
+            // da fila durável.
+        }
         Command::CreateServer { name } => match api.create_server(&name).await {
             Ok(_) => {
                 let id = me.lock().ok().and_then(|slot| slot.clone());
