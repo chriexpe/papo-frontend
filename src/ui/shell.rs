@@ -4082,7 +4082,8 @@ fn search_shortcuts(
                 .channels
                 .iter()
                 .filter(|channel| {
-                    needle.is_empty() || channel.name.to_lowercase().contains(&needle)
+                    channel.kind != ChannelKind::Direct
+                        && (needle.is_empty() || channel.name.to_lowercase().contains(&needle))
                 })
                 .collect();
             channels.sort_by_key(|channel| {
@@ -4193,7 +4194,10 @@ fn search_request_from_panel(
 ) -> Option<crate::api::models::SearchRequest> {
     let mut text = Vec::new();
     let mut author = None;
-    let mut channel_id = None;
+    let mut channel_id = store
+        .channel(&store.selected_channel)
+        .filter(|channel| channel.kind == ChannelKind::Direct)
+        .map(|channel| channel.id.clone());
     let mut mention = None;
     let mut contains_attachment = panel.search_attachments.then_some(true);
     let mut has = None;
