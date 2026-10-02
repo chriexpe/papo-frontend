@@ -620,6 +620,211 @@ pub fn draw_unicode(
     );
 }
 
+/// Desenha um emoji usado dentro de nome de canal.
+///
+/// Em modo monocromático, Unicode volta ao glifo vetorial do egui e emoji
+/// custom ganha uma textura em tons de cinza, tingida exatamente com a cor
+/// do rótulo. Fora dele, usa o mesmo caminho colorido das mensagens.
+pub fn draw_channel_name_emoji(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    store: &Store,
+    emoji: &Emoji,
+    rect: egui::Rect,
+    monochrome: bool,
+    color: Color32,
+) {
+    if !monochrome {
+        draw_reaction(ui, t, media, store, emoji, rect);
+        return;
+    }
+
+    match emoji {
+        Emoji::Unicode(text) => {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                egui::FontId::proportional(rect.height() * 0.85),
+                color,
+            );
+        }
+        Emoji::Custom(id) => {
+            let Some(custom) = store.emojis.iter().find(|custom| &custom.id == id) else {
+                return;
+            };
+            let Some(blob) = custom.blob.as_deref() else {
+                return;
+            };
+            if let Some(texture) = channel_custom_mono_texture(ui.ctx(), id, blob) {
+                ui.painter().image(
+                    texture.id(),
+                    rect,
+                    egui::Rect::from_min_max(
+                        egui::pos2(0.0, 0.0),
+                        egui::pos2(1.0, 1.0),
+                    ),
+                    color,
+                );
+            }
+        }
+    }
+}
+
+fn channel_custom_mono_texture(
+    ctx: &egui::Context,
+    id: &str,
+    blob: &str,
+) -> Option<egui::TextureHandle> {
+    let cache_id = egui::Id::new(("channel-name-mono-emoji", id));
+    if let Some(texture) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(cache_id)) {
+        return Some(texture);
+    }
+
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(blob.as_bytes())
+        .ok()?;
+    let decoded = image::load_from_memory(&bytes).ok()?;
+    let decoded = if decoded.width().max(decoded.height()) > 96 {
+        decoded.resize(96, 96, image::imageops::FilterType::CatmullRom)
+    } else {
+        decoded
+    };
+    let rgba = decoded.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    let pixels = rgba
+        .pixels()
+        .map(|pixel| {
+            let [r, g, b, a] = pixel.0;
+            // Luminância preserva os detalhes internos; a textura cinza é
+            // tingida no draw com a mesma cor do nome do canal.
+            let luma = ((r as u16 * 54 + g as u16 * 183 + b as u16 * 19) / 256) as u8;
+            Color32::from_rgba_unmultiplied(luma, luma, luma, a)
+        })
+        .collect();
+    let image = egui::ColorImage {
+        size,
+        source_size: egui::Vec2::new(size[0] as f32, size[1] as f32),
+        pixels,
+    };
+    let texture = ctx.load_texture(
+        format!("channel-name-mono:{id}"),
+        image,
+        egui::TextureOptions::LINEAR,
+    );
+    ctx.data_mut(|data| data.insert_temp(cache_id, texture.clone()));
+    Some(texture)
+}
+
+/// Divide só os emojis no começo do nome. Eles continuam sendo parte do
+/// próprio `name` no backend; isto é apenas apresentação.
+pub fn channel_name_leading(
+    name: &str,
+    custom: &[crate::state::CustomEmoji],
+) -> (Vec<Emoji>, String) {
+    let mut leading = Vec::new();
+    let mut text = String::new();
+    let mut prefix = true;
+
+    for token in tokenize(name, custom) {
+        if prefix {
+            match token {
+                Token::Unicode(value) => leading.push(Emoji::Unicode(value)),
+                Token::Custom(id) => leading.push(Emoji::Custom(id)),
+                Token::Text(value) if value.trim().is_empty() => {}
+                Token::Text(value) => {
+                    prefix = false;
+                    text.push_str(value.trim_start());
+                }
+            }
+        } else {
+            match token {
+                Token::Text(value) | Token::Unicode(value) => text.push_str(&value),
+                Token::Custom(id) => {
+                    if let Some(custom) = custom.iter().find(|custom| custom.id == id) {
+                        text.push(':');
+                        text.push_str(&custom.name);
+                        text.push(':');
+                    }
+                }
+            }
+        }
+    }
+
+    (leading, text)
+}
+
+/// Desenha o nome de canal depois do #/alto-falante, mantendo o emoji dentro
+/// do nome e apenas escolhendo se ele aparece monocromático ou original.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_channel_name(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    media: &mut MediaStore,
+    store: &Store,
+    name: &str,
+    pos: egui::Pos2,
+    font: egui::FontId,
+    color: Color32,
+    max_width: f32,
+    monochrome: bool,
+    uppercase: bool,
+) -> egui::Rect {
+    let (leading, mut label) = channel_name_leading(name, &store.emojis);
+    if uppercase {
+        label = label.to_uppercase();
+    }
+
+    let icon_side = font.size.max(13.0);
+    let icon_gap = 3.0;
+    let icons_width = if leading.is_empty() {
+        0.0
+    } else {
+        leading.len() as f32 * (icon_side + icon_gap)
+    };
+    let text_width = (max_width - icons_width).max(0.0);
+    let mut job = egui::text::LayoutJob::simple_singleline(label, font, color);
+    job.wrap.max_width = text_width;
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    let galley = ui.painter().layout_job(job);
+
+    let total_width = (icons_width + galley.size().x).min(max_width.max(0.0));
+    let height = galley.size().y.max(icon_side);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(pos.x, pos.y - height / 2.0),
+        egui::vec2(total_width, height),
+    );
+    let painter = ui.painter().with_clip_rect(egui::Rect::from_min_size(
+        egui::pos2(pos.x, rect.min.y),
+        egui::vec2(max_width.max(0.0), height),
+    ));
+
+    let mut x = pos.x;
+    for emoji in &leading {
+        let art = egui::Rect::from_center_size(
+            egui::pos2(x + icon_side / 2.0, pos.y),
+            egui::Vec2::splat(icon_side),
+        );
+        // draw_channel_name_emoji uses ui's painter; apply the same clip by
+        // temporarily narrowing the UI clip.
+        let old_clip = ui.clip_rect();
+        ui.set_clip_rect(painter.clip_rect());
+        draw_channel_name_emoji(ui, t, media, store, emoji, art, monochrome, color);
+        ui.set_clip_rect(old_clip);
+        x += icon_side + icon_gap;
+    }
+    painter.galley(
+        egui::pos2(x, pos.y - galley.size().y / 2.0),
+        galley,
+        color,
+    );
+    rect
+}
+
 /// Largura que a reação ocupa; o emoji custom é quadrado.
 pub fn reaction_width(emoji: &Emoji) -> f32 {
     match emoji {

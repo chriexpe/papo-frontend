@@ -20,7 +20,7 @@ use crate::platform::launcher::{Badge, Launcher};
 #[cfg(target_os = "linux")]
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Wake};
-use crate::state::{Phase, Screen, Store};
+use crate::state::{Activity, Phase, Screen, Store};
 use papo_core::cache::{CachedMessagePage, ClientDb};
 use papo_core::notification::{NotificationCoordinator, NotificationSink};
 use papo_core::runtime::{
@@ -316,6 +316,10 @@ pub struct Settings {
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
+    /// Emoji dentro do nome de canal segue a cor do rótulo em vez das cores
+    /// originais. É só apresentação local: o nome salvo não muda.
+    #[serde(default = "enabled")]
+    pub channel_emoji_monochrome: bool,
     /// Como o seu cartão de perfil abre: da pastilha ou flutuante.
     #[serde(default)]
     pub self_card: crate::ui::profile::SelfCardStyle,
@@ -337,6 +341,12 @@ pub struct Settings {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub downloads: DownloadMode,
+    /// Device-local KLIPY identifier and favourite slugs. GIF media itself is
+    /// never persisted; favourites resolve fresh provider URLs when needed.
+    #[serde(default)]
+    pub klipy_customer_id: String,
+    #[serde(default)]
+    pub gif_favourites: std::collections::BTreeSet<String>,
     /// Rich Presence deste dispositivo. Não é sincronizado com a conta:
     /// processo local, bridge arRPC e override são propriedades da máquina.
     #[serde(default)]
@@ -398,6 +408,7 @@ impl Default for Settings {
             topic_reveal: true,
             open_at_newest: true,
             record_button: true,
+            channel_emoji_monochrome: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
             webembed_offscreen: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
@@ -405,6 +416,8 @@ impl Default for Settings {
             webembed_float_pos: None,
             trusted_link_hosts: std::collections::BTreeSet::new(),
             downloads: DownloadMode::default(),
+            klipy_customer_id: String::new(),
+            gif_favourites: std::collections::BTreeSet::new(),
             rich_presence: crate::rich_presence::Settings::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
@@ -420,6 +433,10 @@ impl Settings {
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
         self.server_url = normalise_server_url(&self.server_url);
+        if self.klipy_customer_id.is_empty() {
+            self.klipy_customer_id = crate::klipy::new_customer_id();
+        }
+        self.gif_favourites.retain(|slug| crate::klipy::valid_slug(slug));
         self.trusted_link_hosts = std::mem::take(&mut self.trusted_link_hosts)
             .into_iter()
             .map(|host| host.trim_end_matches('.').to_ascii_lowercase())
@@ -537,6 +554,9 @@ pub struct Workspace {
     /// Quantas mudanças de câmera a thread da call já publicou quando
     /// olhamos pela última vez.
     camera_revision: u64,
+    /// Última atividade local entregue ao runtime deste servidor. O Option
+    /// externo distingue "ainda não publicamos" de "publicamos sem atividade".
+    published_activity: Option<Option<Activity>>,
     /// Último config remoto aplicado à UI enquanto este servidor estava ativo.
     applied_user_config: Option<crate::api::models::UserConfig>,
     /// Config já enviado nesta conexão; evita PUT a cada frame.
@@ -596,6 +616,7 @@ impl Workspace {
             call_ready: false,
             watching: Vec::new(),
             camera_revision: 0,
+            published_activity: None,
             applied_user_config: None,
             sent_user_config: None,
             cache_pages: Vec::new(),
@@ -674,6 +695,40 @@ impl Workspace {
             icon: None,
         }
     }
+}
+
+fn activity_for_server(activity: &Activity) -> Activity {
+    use base64::Engine as _;
+
+    const MAX_RAW_IMAGE: usize = 190 * 1024;
+
+    let mut wire = activity.clone();
+    wire.image = activity.image.as_deref().and_then(|path| {
+        if path.starts_with("data:image/") {
+            return Some(path.to_owned());
+        }
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.len() > MAX_RAW_IMAGE {
+            log::warn!("rich presence: activity art is too large to publish");
+            return None;
+        }
+        let mime = match std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => "image/png",
+        };
+        Some(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
+    });
+    wire
 }
 
 pub struct PapoApp {
@@ -928,12 +983,20 @@ impl PapoApp {
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.open_at_newest = settings.open_at_newest;
         ui_state.show_record = settings.record_button;
+        ui_state.channel_emoji_monochrome = settings.channel_emoji_monochrome;
         ui_state.self_card = settings.self_card;
         ui_state.webembed_behavior = settings.webembed_offscreen;
         ui_state.webembed_scope = settings.webembed_scope;
         ui_state.webembed_float_width = settings.webembed_float_width;
         ui_state.webembed_float_pos = settings.webembed_float_pos;
         ui_state.trusted_link_hosts = settings.trusted_link_hosts.clone();
+        ui_state.klipy_customer_id = settings.klipy_customer_id.clone();
+        ui_state.gif_favourites = settings.gif_favourites.clone();
+        ui_state.gif_locale = match settings.lang {
+            Lang::PtBr => "pt_BR",
+            Lang::En => "en_US",
+        }
+        .to_owned();
         ui_state.glass = glass;
         workspaces[active].stash.swap(&mut ui_state);
 
@@ -2171,7 +2234,6 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
-            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -2421,7 +2483,6 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
-            ChatAction::PickGif => self.dialogs.pick_animations(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -3199,6 +3260,7 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.open_at_newest,
             self.settings.record_button,
+            self.settings.channel_emoji_monochrome,
             self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
@@ -3244,6 +3306,7 @@ impl PapoApp {
                 topic_reveal: &mut self.settings.topic_reveal,
                 open_at_newest: &mut self.settings.open_at_newest,
                 record_button: &mut self.settings.record_button,
+                channel_emoji_monochrome: &mut self.settings.channel_emoji_monochrome,
                 self_card: &mut self.settings.self_card,
                 webembed_offscreen: &mut self.settings.webembed_offscreen,
                 webembed_scope: &mut self.settings.webembed_scope,
@@ -3279,15 +3342,17 @@ impl PapoApp {
             self.settings.topic_reveal,
             self.settings.open_at_newest,
             self.settings.record_button,
+            self.settings.channel_emoji_monochrome,
             self.settings.self_card,
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
         );
         if before_primary != after_primary || before_secondary != after_secondary {
+            self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
-            if ask_download != before_secondary.6 {
+            if ask_download != before_secondary.7 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
@@ -3382,6 +3447,14 @@ impl PapoApp {
     fn project_local_activity(&mut self) {
         let activity = self.rich_presence.snapshot().activity.clone();
         for workspace in &mut self.workspaces {
+            if workspace.published_activity.as_ref() != Some(&activity) {
+                workspace.published_activity = Some(activity.clone());
+                workspace
+                    .runtime
+                    .net
+                    .send(Command::SetActivity(activity.as_ref().map(activity_for_server)));
+            }
+
             let me = workspace.runtime.store.me.clone();
             if me.is_empty() {
                 continue;
@@ -3965,6 +4038,13 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_float_width = self.settings.webembed_float_width;
                 self.ui.webembed_float_pos = self.settings.webembed_float_pos;
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
+                self.ui.klipy_customer_id = self.settings.klipy_customer_id.clone();
+                self.ui.gif_favourites = self.settings.gif_favourites.clone();
+                self.ui.gif_locale = match self.settings.lang {
+                    Lang::PtBr => "pt_BR",
+                    Lang::En => "en_US",
+                }
+                .to_owned();
                 // O voltar do sistema tem um dono por quadro, decidido aqui:
                 // o editor de recorte, senão os ajustes, senão o que está
                 // aberto por cima da conversa (cartões). Espalhar essa
@@ -3982,6 +4062,7 @@ impl eframe::App for PapoApp {
                     || self.ui.server_card.is_some();
                 self.ui.server_url = self.workspaces[active].runtime.url.clone();
                 self.ui.server_count = self.workspaces.len();
+                self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
                 let draft_channel_before = self.ui.last_channel.clone();
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -4001,6 +4082,8 @@ impl eframe::App for PapoApp {
                 self.settings.webembed_float_width = self.ui.webembed_float_width;
                 self.settings.webembed_float_pos = self.ui.webembed_float_pos;
                 self.settings.trusted_link_hosts = self.ui.trusted_link_hosts.clone();
+                self.settings.klipy_customer_id = self.ui.klipy_customer_id.clone();
+                self.settings.gif_favourites = self.ui.gif_favourites.clone();
                 let draft_channel_after = self.ui.last_channel.clone();
                 if !draft_channel_after.is_empty() {
                     self.ui.capture_draft(&draft_channel_after);

@@ -19,6 +19,7 @@ use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store}
 use super::attachments::{self, MediaAction};
 use super::emoji;
 use super::glass::SharedGlass;
+use super::gif;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
@@ -134,8 +135,6 @@ pub enum ChatAction {
     },
     /// Abre o seletor de arquivos do sistema.
     PickFiles,
-    /// O mesmo seletor, filtrado em imagens animadas.
-    PickGif,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
     /// Abre a criação inline em Ajustes do servidor → Canais.
@@ -432,6 +431,9 @@ pub struct LinkViewer {
     pub name: String,
     /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
     pub video: bool,
+    /// KLIPY/public provider media stays memory-only and can expose Favourite.
+    pub ephemeral: bool,
+    pub favourite_slug: Option<String>,
     pub zoom: f32,
     pub offset: Vec2,
     pub fitted: bool,
@@ -797,6 +799,14 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
+    /// Direct KLIPY picker/client state is global to the window. Provider
+    /// media stays in MediaStore GPU memory only; only favourite slugs persist.
+    pub klipy: Option<crate::klipy::Store>,
+    pub gif_picker_anchor: Option<Rect>,
+    pub gif_picker_opened: Option<f64>,
+    pub gif_favourites: std::collections::BTreeSet<String>,
+    pub klipy_customer_id: String,
+    pub gif_locale: String,
     /// Hosts explicitly trusted by the user for opening links without asking.
     /// This is window/global state and is mirrored to persisted Settings.
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
@@ -850,6 +860,8 @@ pub struct UiState {
     last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
+    /// Emoji no nome de canal usa a mesma cor do rótulo.
+    pub channel_emoji_monochrome: bool,
     /// Gravação em curso.
     pub recorder: Option<crate::media::player::Recorder>,
     /// Recado curto de erro da própria interface, com o instante em que
@@ -945,6 +957,12 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
+            klipy: None,
+            gif_picker_anchor: None,
+            gif_picker_opened: None,
+            gif_favourites: std::collections::BTreeSet::new(),
+            klipy_customer_id: String::new(),
+            gif_locale: "en_US".to_owned(),
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
@@ -972,6 +990,7 @@ impl Default for UiState {
             visible_message_ids: Vec::new(),
             last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
+            channel_emoji_monochrome: true,
             recorder: None,
             error: None,
             chat_scroll_metrics: None,
@@ -1057,6 +1076,9 @@ pub fn draw(
     // viewport; outras mídias mantêm o relayout já usado pelo shell.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
+    }
+    if let Some(klipy) = state.klipy.as_mut() {
+        klipy.pump(ui.ctx());
     }
 
     // Resultado de um canal que nunca carregou: a busca não pode ficar
@@ -1495,7 +1517,16 @@ fn channels_sidebar(
                                         .collect();
                                     let collapsed = state.collapsed_categories.contains(&category.id);
                                     let unread = collapsed && children.iter().any(|c| c.unread || c.mentions > 0);
-                                    let header = category_header(ui, t, &category.name, collapsed, unread, width);
+                                    let header = category_header(
+                                        ui,
+                                        store,
+                                        state,
+                                        t,
+                                        &category.name,
+                                        collapsed,
+                                        unread,
+                                        width,
+                                    );
                                     if header.clicked() {
                                         if collapsed {
                                             state.collapsed_categories.remove(&category.id);
@@ -1792,6 +1823,8 @@ fn sidebar_channel(
     let here = voice && store.call.channel_id == channel.id;
     let row = channel_row(
         ui,
+        store,
+        state,
         t,
         if voice { icon::SPEAKER_HIGH } else { icon::HASH },
         &channel.name,
@@ -1825,32 +1858,59 @@ fn sidebar_channel(
 
 /// Cabeçalho de categoria: a seta diz se está aberta; recolhida, um ponto
 /// avisa que tem coisa nova lá dentro.
-fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, unread: bool, width: f32) -> egui::Response {
+fn category_header(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    name: &str,
+    collapsed: bool,
+    unread: bool,
+    width: f32,
+) -> egui::Response {
     ui.add_space(space::SM);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
     let hovered = response.hovered();
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let ink = if hovered { t.label_secondary } else { t.label_tertiary };
+    let ink = if hovered {
+        t.label_secondary
+    } else {
+        t.label_tertiary
+    };
     ui.painter().text(
         egui::pos2(rect.min.x + space::XS + 5.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        if collapsed { icon::CARET_RIGHT } else { icon::CARET_DOWN },
+        if collapsed {
+            icon::CARET_RIGHT
+        } else {
+            icon::CARET_DOWN
+        },
         text::icon(10.0),
         ink,
     );
-    super::widgets::text_fit(
-        ui.painter(),
-        egui::pos2(rect.min.x + space::XS + 14.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        &name.to_uppercase(),
+    let left = rect.min.x + space::XS + 14.0;
+    emoji::draw_channel_name(
+        ui,
+        t,
+        &mut state.media,
+        store,
+        name,
+        egui::pos2(left, rect.center().y),
         text::caption(),
         ink,
-        rect.width() - 30.0,
+        (rect.max.x - space::MD - left).max(0.0),
+        state.channel_emoji_monochrome,
+        true,
     );
     if unread {
-        ui.painter().circle_filled(egui::pos2(rect.max.x - space::MD, rect.center().y), 3.0, t.label);
+        ui.painter().circle_filled(
+            egui::pos2(rect.max.x - space::MD, rect.center().y),
+            3.0,
+            t.label,
+        );
     }
     response
 }
@@ -1858,6 +1918,8 @@ fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, u
 #[allow(clippy::too_many_arguments)]
 fn channel_row(
     ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
     t: &Tokens,
     glyph: &str,
     name: &str,
@@ -1888,7 +1950,7 @@ fn channel_row(
         text::body()
     };
 
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.text(
         egui::pos2(rect.min.x + space::MD, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -1896,16 +1958,26 @@ fn channel_row(
         text::icon(14.0),
         if selected { t.accent } else { t.label_tertiary },
     );
-    // O nome para antes do contador de menções, com reticências.
-    let reserve = if mentions > 0 { 28.0 + space::MD } else { space::MD };
-    super::widgets::text_fit(
-        painter,
-        egui::pos2(rect.min.x + space::MD + 20.0, rect.center().y),
-        egui::Align2::LEFT_CENTER,
+    // O # / alto-falante continua sendo o tipo do canal. Emoji pertence ao
+    // nome e começa logo depois dele, como no exemplo "# 🖥 Desenvolvimento".
+    let reserve = if mentions > 0 {
+        28.0 + space::MD
+    } else {
+        space::MD
+    };
+    let name_left = rect.min.x + space::MD + 20.0;
+    emoji::draw_channel_name(
+        ui,
+        t,
+        &mut state.media,
+        store,
         name,
+        egui::pos2(name_left, rect.center().y),
         font,
         label_color,
-        rect.max.x - reserve - (rect.min.x + space::MD + 20.0),
+        rect.max.x - reserve - name_left,
+        state.channel_emoji_monochrome,
+        false,
     );
 
     if mentions > 0 {
@@ -3142,7 +3214,15 @@ fn channel_pill(
     let painter = ui.painter();
     let glyph =
         painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
-    let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
+    let (channel_name_emojis, channel_name_text) =
+        emoji::channel_name_leading(&channel.name, &store.emojis);
+    let name =
+        painter.layout_no_wrap(channel_name_text, text::title3(), t.label);
+    let channel_name_icons_width = if channel_name_emojis.is_empty() {
+        0.0
+    } else {
+        channel_name_emojis.len() as f32 * 18.0
+    };
     let topic = topic_text.map(|topic| {
         const TOPIC_SNIPPET_CHARS: usize = 80;
         let mut chars = topic.chars();
@@ -3183,7 +3263,12 @@ fn channel_pill(
         }
     };
 
-    let base_width = space::LG + glyph.size().x + space::SM + name.size().x + space::LG;
+    let base_width = space::LG
+        + glyph.size().x
+        + space::SM
+        + channel_name_icons_width
+        + name.size().x
+        + space::LG;
     let topic_width = topic
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
@@ -3236,13 +3321,30 @@ fn channel_pill(
 
     let mid = header.center().y;
     let mut x = header.min.x + space::LG;
-    let painter = ui.painter();
+    let painter = ui.painter().clone();
     painter.galley(
         egui::pos2(x, mid - glyph.size().y / 2.0),
         glyph.clone(),
         t.label_tertiary,
     );
     x += glyph.size().x + space::SM;
+    for channel_emoji in &channel_name_emojis {
+        let art = Rect::from_center_size(
+            egui::pos2(x + 7.5, mid),
+            Vec2::splat(15.0),
+        );
+        emoji::draw_channel_name_emoji(
+            ui,
+            t,
+            &mut state.media,
+            store,
+            channel_emoji,
+            art,
+            state.channel_emoji_monochrome,
+            t.label,
+        );
+        x += 18.0;
+    }
     painter.galley(
         egui::pos2(x, mid - name.size().y / 2.0),
         name.clone(),
@@ -3349,7 +3451,7 @@ fn channel_pill(
 /// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
 /// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
 /// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
-fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
+pub(super) fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
     egui::Area::new(layer.id)
         .order(layer.order)
         .fixed_pos(rect.min)
@@ -5075,20 +5177,22 @@ fn message_body(
             return;
     }
 
-    if !message.content.is_empty()
-        && direct_media_message_url(state, &message.content).is_none()
-    {
-        let shown_content = store.display_mentions(&message.content);
-        let color = if message.pending {
-            t.label_secondary
-        } else {
-            t.label
-        };
-        let tokens = emoji::tokenize(&shown_content, &store.emojis);
-        // URL hit-testing needs individual widgets even for otherwise plain
-        // text. Keeping a separate LayoutJob fast path made normal messages
-        // skip the hyperlink path entirely.
-        rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+    if !message.content.is_empty() {
+        if let Some(slug) = crate::klipy::message_slug(&message.content).map(str::to_owned) {
+            gif::message(ui, state, t, s, &slug, width);
+        } else if direct_media_message_url(state, &message.content).is_none() {
+            let shown_content = store.display_mentions(&message.content);
+            let color = if message.pending {
+                t.label_secondary
+            } else {
+                t.label
+            };
+            let tokens = emoji::tokenize(&shown_content, &store.emojis);
+            // URL hit-testing needs individual widgets even for otherwise plain
+            // text. Keeping a separate LayoutJob fast path made normal messages
+            // skip the hyperlink path entirely.
+            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+        }
     }
 
     if message.pending {
@@ -5667,6 +5771,8 @@ fn preview_card(
                     url: remote.to_owned(),
                     name: title.unwrap_or("video").to_owned(),
                     video: true,
+                    ephemeral: false,
+                    favourite_slug: None,
                     zoom: 1.0,
                     offset: Vec2::ZERO,
                     fitted: true,
@@ -5746,7 +5852,9 @@ fn preview_card(
                         url: remote.clone(),
                         name: title.unwrap_or("image").to_owned(),
                         video: false,
-                        zoom: 1.0,
+                        ephemeral: false,
+                    favourite_slug: None,
+                    zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
                         opened: ui.input(|input| input.time),
@@ -6646,6 +6754,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
         }
     }
 
+    if state.gif_picker_opened.is_some() {
+        gif::picker_popup(&mut top, state, t, s);
+    }
+
     if state.link_viewer.is_some() {
         link_image_viewer(ui, state, t, s);
     }
@@ -6806,6 +6918,10 @@ fn link_image_viewer(
         &link.url,
         &link.name,
         link.video,
+        link.ephemeral,
+        link.favourite_slug
+            .as_ref()
+            .map(|slug| state.gif_favourites.contains(slug)),
         link.opened,
         &mut link.zoom,
         &mut link.offset,
@@ -6814,6 +6930,12 @@ fn link_image_viewer(
         Some(viewer::RemoteViewerAction::Close) => {}
         Some(viewer::RemoteViewerAction::Download { path, name }) => {
             state.actions.push(ChatAction::SaveCachedImage { path, name });
+            state.link_viewer = Some(link);
+        }
+        Some(viewer::RemoteViewerAction::ToggleFavourite) => {
+            if let Some(slug) = link.favourite_slug.clone() {
+                gif::toggle_favourite(state, &slug);
+            }
             state.link_viewer = Some(link);
         }
         None => state.link_viewer = Some(link),
@@ -6922,7 +7044,11 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content);
+    let copy_link = direct_media_message_url(state, &message.content).or_else(|| {
+        crate::klipy::message_slug(&message.content)
+            .and_then(|slug| state.klipy.as_mut()?.item(slug, ui.ctx()))
+            .map(|item| item.gif_url)
+    });
 
     let mut items: Vec<(&str, &str, MessageCommand)> = vec![
         (icon::SMILEY_STICKER, s.add_reaction, MessageCommand::React),
@@ -7863,7 +7989,14 @@ fn composer(
         });
     }
     if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
-        state.actions.push(ChatAction::PickGif);
+        state.gif_picker_anchor = Some(gif_rect);
+        state.gif_picker_opened = Some(opened);
+        if state.klipy.is_none() {
+            state.klipy = Some(crate::klipy::Store::new(ui.ctx().clone()));
+        }
+        if let Some(klipy) = state.klipy.as_mut() {
+            klipy.open_picker(&state.gif_locale, &state.klipy_customer_id);
+        }
     }
 
     let send = ui.interact(send_rect, Id::new("composer-send"), Sense::click());

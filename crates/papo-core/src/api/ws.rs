@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::client::{Api, Session};
 use super::models::{LinkPreview, Message};
+use crate::state::Activity;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// Depois de mandar um heartbeat o backend responde com heartbeat_ack. Sem
@@ -78,6 +79,11 @@ pub enum Event {
         nickname: Option<String>,
     },
     PresenceSync(Vec<PresenceMember>),
+    Activity {
+        user_id: String,
+        activity: Option<Activity>,
+    },
+    ActivitySync(Vec<ActivityMember>),
     AvatarUpdated {
         user_id: String,
     },
@@ -219,6 +225,18 @@ pub struct PresenceMember {
 struct PresenceSyncPayload {
     #[serde(default)]
     members: Vec<PresenceMember>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivityMember {
+    pub user_id: String,
+    pub activity: Activity,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivitySyncPayload {
+    #[serde(default)]
+    members: Vec<ActivityMember>,
 }
 
 /// Mantém a conexão viva até o canal de saída fechar.
@@ -387,6 +405,14 @@ async fn connect(
     }
 }
 
+pub fn activity_update(activity: Option<&Activity>) -> String {
+    serde_json::json!({
+        "type": "activity_update",
+        "activity": activity,
+    })
+    .to_string()
+}
+
 fn is_heartbeat_ack(text: &str) -> bool {
     serde_json::from_str::<Envelope>(text)
         .is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
@@ -429,6 +455,14 @@ fn parse(text: &str) -> Option<Event> {
         "presence_sync" => {
             let payload: PresenceSyncPayload = serde_json::from_str(text).ok()?;
             Some(Event::PresenceSync(payload.members))
+        }
+        "activity_update" => Some(Event::Activity {
+            user_id: string("user_id")?,
+            activity: serde_json::from_value(value.get("activity")?.clone()).ok()?,
+        }),
+        "activity_sync" => {
+            let payload: ActivitySyncPayload = serde_json::from_str(text).ok()?;
+            Some(Event::ActivitySync(payload.members))
         }
         "avatar_update" => Some(Event::AvatarUpdated {
             user_id: string("user_id")?,
@@ -579,6 +613,59 @@ mod tests {
                 && typing.as_deref() == Some("digitando…")
                 && nickname.as_deref() == Some("Ana")
         ));
+    }
+
+    #[test]
+    fn le_rich_presence_update_e_sync() {
+        let event = parse(r#"{"type":"activity_update","user_id":"u1","activity":{"kind":"playing","name":"Hades II","details":"Fields","started_at":"2023-11-14T22:13:20Z"}}"#);
+        assert!(matches!(
+            event,
+            Some(Event::Activity {
+                ref user_id,
+                activity: Some(ref activity),
+            }) if user_id == "u1"
+                && activity.name == "Hades II"
+                && activity.details.as_deref() == Some("Fields")
+        ));
+
+        let event = parse(r#"{"type":"activity_update","user_id":"u1","activity":null}"#);
+        assert!(matches!(
+            event,
+            Some(Event::Activity {
+                ref user_id,
+                activity: None,
+            }) if user_id == "u1"
+        ));
+
+        let event = parse(r#"{"type":"activity_sync","members":[{"user_id":"u2","activity":{"kind":"working","name":"Zed"}}]}"#);
+        assert!(matches!(
+            event,
+            Some(Event::ActivitySync(ref members))
+                if members.len() == 1
+                    && members[0].user_id == "u2"
+                    && members[0].activity.name == "Zed"
+        ));
+    }
+
+    #[test]
+    fn serializa_rich_presence_para_o_backend() {
+        let activity = Activity {
+            kind: crate::state::ActivityKind::Listening,
+            name: "Spotify".to_owned(),
+            details: Some("Track".to_owned()),
+            state: Some("Artist".to_owned()),
+            started_at: None,
+            ends_at: None,
+            image: None,
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&activity_update(Some(&activity))).unwrap();
+        assert_eq!(value["type"], "activity_update");
+        assert_eq!(value["activity"]["kind"], "listening");
+        assert_eq!(value["activity"]["name"], "Spotify");
+
+        let clear: serde_json::Value = serde_json::from_str(&activity_update(None)).unwrap();
+        assert!(clear["activity"].is_null());
     }
 
     #[test]
