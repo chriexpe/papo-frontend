@@ -1657,6 +1657,15 @@ fn direct_messages_sidebar(
                                         )
                                         .and_then(|texture| texture.frame(&ctx))
                                         .map(|handle| handle.id());
+                                    let status = member
+                                        .and_then(|member| member.status_message.as_deref())
+                                        .filter(|status| !status.trim().is_empty())
+                                        .unwrap_or_else(|| match presence {
+                                            Presence::Online => s.online,
+                                            Presence::Away => s.away,
+                                            Presence::Busy => s.busy,
+                                            Presence::Offline => s.offline,
+                                        });
                                     let preview = dm
                                         .last_message
                                         .as_ref()
@@ -1669,6 +1678,7 @@ fn direct_messages_sidebar(
                                         t,
                                         &initials,
                                         name,
+                                        status,
                                         preview,
                                         presence_color(t, presence),
                                         dm.unread_count,
@@ -1702,6 +1712,7 @@ fn direct_message_row(
     t: &Tokens,
     initials: &str,
     name: &str,
+    status: &str,
     preview: &str,
     dot: Color32,
     unread: u32,
@@ -1709,7 +1720,7 @@ fn direct_message_row(
     width: f32,
     avatar: Option<egui::TextureId>,
 ) -> egui::Response {
-    let height = 54.0;
+    let height = 64.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if selected {
         ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
@@ -1750,7 +1761,7 @@ fn direct_message_row(
     ));
     super::widgets::text_fit(
         &painter,
-        egui::pos2(text_left, rect.center().y - 9.0),
+        egui::pos2(text_left, rect.center().y - 15.0),
         Align2::LEFT_CENTER,
         name,
         if unread > 0 { text::headline() } else { text::body() },
@@ -1759,7 +1770,16 @@ fn direct_message_row(
     );
     super::widgets::text_fit(
         &painter,
-        egui::pos2(text_left, rect.center().y + 10.0),
+        egui::pos2(text_left, rect.center().y + 1.0),
+        Align2::LEFT_CENTER,
+        status,
+        text::caption(),
+        t.label_tertiary,
+        (text_right - text_left).max(1.0),
+    );
+    super::widgets::text_fit(
+        &painter,
+        egui::pos2(text_left, rect.center().y + 17.0),
         Align2::LEFT_CENTER,
         preview,
         text::footnote(),
@@ -2800,7 +2820,7 @@ fn conversation(
             } else {
                 crate::ui::call::lobby(ui, store, state, t, s);
             }
-            let channel_rect = channel_pill(ui, store, state, t, full);
+            let channel_rect = channel_pill(ui, store, state, t, s, full);
             call_layers(
                 ui,
                 store,
@@ -2999,7 +3019,7 @@ fn conversation(
 
         // Camada funcional: tudo flutua.
         connection_pill(ui, store, state, t, s, full);
-        let channel_rect = channel_pill(ui, store, state, t, full);
+        let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
         let nav_rects = timeline_nav_controls(
             ui,
@@ -3391,11 +3411,12 @@ fn channel_pill(
     store: &Store,
     state: &mut UiState,
     t: &Tokens,
+    s: &Strings,
     area: Rect,
 ) -> Option<Rect> {
     let channel = store.channel(&store.selected_channel).cloned()?;
     if channel.kind == ChannelKind::Direct {
-        return direct_message_pill(ui, store, state, t, area);
+        return direct_message_pill(ui, store, state, t, s, area);
     }
     let topic_text = channel
         .topic
@@ -3661,6 +3682,7 @@ fn direct_message_pill(
     store: &Store,
     state: &mut UiState,
     t: &Tokens,
+    s: &Strings,
     area: Rect,
 ) -> Option<Rect> {
     let dm = store.selected_direct_message()?;
@@ -3678,10 +3700,10 @@ fn direct_message_pill(
         .and_then(|member| member.status_message.as_deref())
         .filter(|status| !status.trim().is_empty())
         .unwrap_or_else(|| match presence {
-            Presence::Online => "Online",
-            Presence::Away => "Away",
-            Presence::Busy => "Busy",
-            Presence::Offline => "Offline",
+            Presence::Online => s.online,
+            Presence::Away => s.away,
+            Presence::Busy => s.busy,
+            Presence::Offline => s.offline,
         });
     let avatar = state
         .media
