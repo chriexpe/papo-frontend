@@ -20,6 +20,8 @@ pub enum ChannelKind {
     Text,
     Voice,
     Category,
+    /// Canal interno que sustenta uma conversa direta 1:1.
+    Direct,
 }
 
 impl ChannelKind {
@@ -27,6 +29,7 @@ impl ChannelKind {
         match kind {
             "voice" => Self::Voice,
             "category" => Self::Category,
+            "dm" => Self::Direct,
             _ => Self::Text,
         }
     }
@@ -430,6 +433,9 @@ pub struct Store {
     pub connection: Connection,
     pub server: Option<Server>,
     pub channels: Vec<Channel>,
+    /// Conversas 1:1 visíveis para esta conta. O id de cada uma também vive
+    /// em `channels` como `ChannelKind::Direct`, para reaproveitar a timeline.
+    pub direct_messages: Vec<models::DirectConversation>,
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
@@ -522,6 +528,7 @@ impl Default for Store {
             connection: Connection::Offline,
             server: None,
             channels: Vec::new(),
+            direct_messages: Vec::new(),
             members: Vec::new(),
             messages: Vec::new(),
             emojis: Vec::new(),
@@ -581,6 +588,76 @@ impl Store {
         self.channels.iter().find(|channel| channel.id == id)
     }
 
+    pub fn direct_message(&self, id: &str) -> Option<&models::DirectConversation> {
+        self.direct_messages.iter().find(|dm| dm.id == id)
+    }
+
+    pub fn selected_direct_message(&self) -> Option<&models::DirectConversation> {
+        self.direct_message(&self.selected_channel)
+    }
+
+    pub fn direct_unread_total(&self) -> u32 {
+        self.direct_messages
+            .iter()
+            .map(|dm| dm.unread_count)
+            .sum()
+    }
+
+    fn upsert_direct_message(&mut self, dm: models::DirectConversation) {
+        let id = dm.id.clone();
+        let name = dm.user.display_name().to_owned();
+        let unread = dm.unread_count > 0;
+        if let Some(existing) = self.direct_messages.iter_mut().find(|known| known.id == id) {
+            *existing = dm;
+        } else {
+            self.direct_messages.push(dm);
+        }
+        self.direct_messages.sort_by(|a, b| {
+            let a_at = a
+                .last_message
+                .as_ref()
+                .and_then(|message| message.created_at)
+                .unwrap_or(a.created_at);
+            let b_at = b
+                .last_message
+                .as_ref()
+                .and_then(|message| message.created_at)
+                .unwrap_or(b.created_at);
+            b_at.cmp(&a_at).then_with(|| a.id.cmp(&b.id))
+        });
+
+        if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == id) {
+            channel.name = name;
+            channel.unread = unread;
+            channel.mentions = 0;
+            channel.kind = ChannelKind::Direct;
+        } else {
+            self.channels.push(Channel {
+                id,
+                name,
+                kind: ChannelKind::Direct,
+                topic: None,
+                position: i32::MAX,
+                permissions: Vec::new(),
+                notification_settings: "all".to_owned(),
+                parent_id: None,
+                unread,
+                mentions: 0,
+            });
+        }
+    }
+
+    fn replace_direct_messages(&mut self, dms: Vec<models::DirectConversation>) {
+        let keep: HashSet<String> = dms.iter().map(|dm| dm.id.clone()).collect();
+        self.channels.retain(|channel| {
+            channel.kind != ChannelKind::Direct || keep.contains(&channel.id)
+        });
+        self.direct_messages.clear();
+        for dm in dms {
+            self.upsert_direct_message(dm);
+        }
+    }
+
     /// Canais na ordem de exibição, cada um com a sua categoria.
     ///
     /// A ordem é hierárquica: os de fora de categoria e as categorias pela
@@ -592,7 +669,12 @@ impl Store {
     /// (servidor sem categoria de verdade), a categoria é dona dos canais
     /// que vêm depois dela até a próxima categoria.
     pub fn channel_layout(&self) -> Vec<(usize, Option<String>)> {
-        let mut order: Vec<usize> = (0..self.channels.len()).collect();
+        let mut order: Vec<usize> = self
+            .channels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, channel)| (channel.kind != ChannelKind::Direct).then_some(index))
+            .collect();
         order.sort_by_key(|&index| self.channels[index].position);
         let explicit = self.channels.iter().any(|channel| channel.parent_id.is_some());
         let is_category = |id: &str| self.channel(id).is_some_and(|c| c.kind == ChannelKind::Category);
@@ -2298,6 +2380,12 @@ impl Store {
                     .iter()
                     .map(|channel| (channel.id.clone(), (channel.unread, channel.mentions)))
                     .collect();
+                let direct_channels: Vec<Channel> = self
+                    .channels
+                    .iter()
+                    .filter(|channel| channel.kind == ChannelKind::Direct)
+                    .cloned()
+                    .collect();
                 self.channels = channels
                     .into_iter()
                     .filter(|channel| channel.kind != "category")
@@ -2330,6 +2418,7 @@ impl Store {
                         }
                     })
                     .collect();
+                self.channels.extend(direct_channels);
                 self.channels.sort_by_key(|channel| channel.position);
                 // O canal escolhido pode ter sido apagado — daqui ou de outra
                 // janela. Sem isto a conversa ficaria apontando para um id
@@ -2353,6 +2442,23 @@ impl Store {
                 let cached: Vec<CachedChannel> =
                     self.channels.iter().map(CachedChannel::from).collect();
                 self.pending_cache.push(CacheOp::ReplaceChannels(cached));
+            }
+            Update::DirectMessages(dms) => {
+                self.replace_direct_messages(dms);
+                if self.selected_channel.is_empty()
+                    && let Some(first) = self
+                        .channels
+                        .iter()
+                        .find(|channel| channel.kind == ChannelKind::Text)
+                {
+                    self.selected_channel = first.id.clone();
+                }
+            }
+            Update::DirectMessageOpened(dm) => {
+                let id = dm.id.clone();
+                self.upsert_direct_message(*dm);
+                self.selected_channel = id;
+                self.busy = false;
             }
             Update::Roles(roles) => {
                 self.roles = roles;
@@ -3015,6 +3121,9 @@ impl Store {
                 for member in members {
                     self.activities.insert(member.user_id, member.activity);
                 }
+            }
+            Event::DirectMessageUpdated(dm) => {
+                self.upsert_direct_message(*dm);
             }
             Event::ChannelCreated {
                 id,
