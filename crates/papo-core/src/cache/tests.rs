@@ -547,7 +547,9 @@ fn read_state_roundtrips_and_is_account_scoped() {
 
     db.submit("srv", vec![CacheOp::ClearServer]);
     db.flush();
-    assert!(db.load_snapshot("srv").is_none());
+    let cleared = db.load_snapshot("srv").expect("cache remains readable after clear");
+    assert!(cleared.is_empty());
+    assert!(cleared.read_states.is_empty());
 }
 
 #[test]
