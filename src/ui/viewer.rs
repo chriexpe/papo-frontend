@@ -179,6 +179,7 @@ pub fn draw(
             .on_hover_text(match tag {
                 "close" => s.close,
                 "download" => s.viewer_download,
+                "favourite" => if favourite == Some(true) { s.gif_unfavourite } else { s.gif_favourite },
                 _ => s.viewer_fit,
             });
         if response.hovered() {
@@ -193,7 +194,11 @@ pub fn draw(
             egui::Align2::CENTER_CENTER,
             glyph,
             text::icon(17.0),
-            Color32::WHITE,
+            if tag == "favourite" && favourite == Some(true) {
+                t.away
+            } else {
+                Color32::WHITE
+            },
         );
         if response.clicked() {
             match tag {
@@ -586,6 +591,7 @@ pub(super) fn stage_playback(
 pub enum RemoteViewerAction {
     Close,
     Download { path: std::path::PathBuf, name: String },
+    ToggleFavourite,
 }
 
 /// Same fullscreen UI used for attachments, backed by a public rich-preview
@@ -600,6 +606,8 @@ pub fn draw_remote_media(
     url: &str,
     name: &str,
     video: bool,
+    ephemeral: bool,
+    favourite: Option<bool>,
     opened: f64,
     zoom: &mut f32,
     offset: &mut Vec2,
@@ -629,8 +637,12 @@ pub fn draw_remote_media(
     );
     let texture = (!video)
         .then(|| {
-            media
-                .remote_image(id, url)
+            let texture = if ephemeral {
+                media.remote_ephemeral(id, url)
+            } else {
+                media.remote_image(id, url)
+            };
+            texture
                 .and_then(|texture| texture.frame(top.ctx()))
                 .cloned()
         })
@@ -749,16 +761,20 @@ pub fn draw_remote_media(
 
     let mut action = None;
     let mut x = header.max.x - space::XXL - 16.0;
-    let buttons: &[(&str, &str)] = if video {
-        &[(icon::X, "close")]
+    let buttons: Vec<(&str, &str)> = if video {
+        vec![(icon::X, "close")]
     } else {
-        &[
-            (icon::X, "close"),
-            (icon::DOWNLOAD_SIMPLE, "download"),
-            (icon::ARROWS_IN, "fit"),
-        ]
+        let mut buttons = vec![(icon::X, "close")];
+        if favourite.is_some() {
+            buttons.push((icon::STAR, "favourite"));
+        }
+        if !ephemeral {
+            buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
+        }
+        buttons.push((icon::ARROWS_IN, "fit"));
+        buttons
     };
-    for &(glyph, tag) in buttons {
+    for &(glyph, tag) in &buttons {
         let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
         let response = top
             .interact(rect, top.id().with(("remote-viewer", tag)), Sense::click())
@@ -792,6 +808,7 @@ pub fn draw_remote_media(
                         });
                     }
                 }
+                "favourite" => action = Some(RemoteViewerAction::ToggleFavourite),
                 _ => {
                     *zoom = 1.0;
                     *offset = Vec2::ZERO;
