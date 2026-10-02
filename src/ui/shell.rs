@@ -1203,8 +1203,12 @@ pub fn draw(
         // aqui, e um arrasto pela metade não pode sobrar guardado.
         state.drawer = Drawer::default();
         state.reply_drag = None;
-        channels_sidebar(ui, store, state, t, s, live);
-        if state.show_members {
+        if state.dm_surface {
+            direct_messages_sidebar(ui, store, state, t, s);
+        } else {
+            channels_sidebar(ui, store, state, t, s, live);
+        }
+        if state.show_members && !state.dm_surface {
             members_sidebar(ui, store, state, t, s, false);
         }
         conversation(ui, store, state, call, t, s, stage);
@@ -1319,8 +1323,20 @@ fn mobile_drawers(
                 .show(root.ctx(), |ui| {
                     ui.set_min_size(rect.size());
                     ui.set_max_size(rect.size());
-                    let action = super::rail::draw(ui, servers.entries, servers.active, t, s);
-                    channels_sidebar(ui, store, state, t, s, live);
+                    let action = super::rail::draw(
+                        ui,
+                        servers.entries,
+                        servers.active,
+                        servers.direct_unread,
+                        servers.direct_active,
+                        t,
+                        s,
+                    );
+                    if state.dm_surface {
+                        direct_messages_sidebar(ui, store, state, t, s);
+                    } else {
+                        channels_sidebar(ui, store, state, t, s, live);
+                    }
                     action
                 });
             response.inner
@@ -1592,6 +1608,180 @@ fn channels_sidebar(
             }
             account_pill(ui, store, state, t, s, full);
         });
+}
+
+fn direct_messages_sidebar(
+    root: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let ctx = root.ctx().clone();
+    egui::Panel::left("direct-messages")
+        .exact_size(SIDEBAR_WIDTH)
+        .resizable(false)
+        .frame(sidebar_frame(t))
+        .show(root, |ui| {
+            let full = ui.max_rect();
+            let list = Rect::from_min_max(
+                egui::pos2(full.min.x, full.min.y + space::MD),
+                full.max,
+            );
+            ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(space::MD);
+                            ui.vertical(|ui| {
+                                let width = SIDEBAR_WIDTH - space::MD * 2.0;
+                                section_caption(ui, t, s.direct_messages);
+                                let dms = store.direct_messages.clone();
+                                for dm in dms {
+                                    let member = store.member(&dm.user.id);
+                                    let presence = member
+                                        .map(|member| member.presence)
+                                        .unwrap_or(Presence::Offline);
+                                    let name = member
+                                        .map(|member| member.name.as_str())
+                                        .unwrap_or_else(|| dm.user.display_name());
+                                    let initials = member
+                                        .map(Member::initials)
+                                        .unwrap_or_else(|| initials_of(name));
+                                    let avatar = state
+                                        .media
+                                        .avatar(
+                                            &dm.user.id,
+                                            store.avatars.get(&dm.user.id).map(String::as_str),
+                                        )
+                                        .and_then(|texture| texture.frame(&ctx))
+                                        .map(|handle| handle.id());
+                                    let preview = dm
+                                        .last_message
+                                        .as_ref()
+                                        .and_then(|message| message.content.as_deref())
+                                        .map(str::trim)
+                                        .filter(|text| !text.is_empty())
+                                        .unwrap_or(" ");
+                                    let row = direct_message_row(
+                                        ui,
+                                        t,
+                                        &initials,
+                                        name,
+                                        preview,
+                                        presence_color(t, presence),
+                                        dm.unread_count,
+                                        store.selected_channel == dm.id,
+                                        width,
+                                        avatar,
+                                    );
+                                    if row.clicked() {
+                                        store.selected_channel = dm.id.clone();
+                                        state.mobile_surface = MobileSurface::Chat;
+                                    }
+                                    row.context_menu(|ui| {
+                                        if ui.button(s.hide_direct_message).clicked() {
+                                            state.actions.push(ChatAction::HideDirectMessage(dm.id.clone()));
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                                ui.add_space(IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0);
+                            });
+                        });
+                    });
+            });
+            account_pill(ui, store, state, t, s, full);
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn direct_message_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    initials: &str,
+    name: &str,
+    preview: &str,
+    dot: Color32,
+    unread: u32,
+    selected: bool,
+    width: f32,
+    avatar: Option<egui::TextureId>,
+) -> egui::Response {
+    let height = 54.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if selected {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let avatar_rect = Rect::from_center_size(
+        egui::pos2(rect.min.x + space::SM + 18.0, rect.center().y),
+        Vec2::splat(36.0),
+    );
+    match avatar {
+        Some(texture) => round_photo(ui.painter(), avatar_rect, texture, Color32::WHITE),
+        None => {
+            ui.painter().circle_filled(avatar_rect.center(), 18.0, t.accent.gamma_multiply(0.24));
+            ui.painter().text(
+                avatar_rect.center(),
+                Align2::CENTER_CENTER,
+                initials,
+                text::footnote(),
+                t.accent,
+            );
+        }
+    }
+    let dot_pos = avatar_rect.right_bottom() - Vec2::splat(2.0);
+    ui.painter().circle_filled(dot_pos, 5.0, t.glass_opaque);
+    ui.painter().circle_filled(dot_pos, 3.5, dot);
+
+    let text_left = avatar_rect.max.x + space::MD;
+    let badge_reserve = if unread > 0 { 34.0 } else { space::SM };
+    let text_right = rect.max.x - badge_reserve;
+    let painter = ui.painter().with_clip_rect(Rect::from_x_y_ranges(
+        text_left..=text_right,
+        rect.y_range(),
+    ));
+    super::widgets::text_fit(
+        &painter,
+        egui::pos2(text_left, rect.center().y - 9.0),
+        Align2::LEFT_CENTER,
+        name,
+        if unread > 0 { text::headline() } else { text::body() },
+        if selected || unread > 0 { t.label } else { t.label_secondary },
+        (text_right - text_left).max(1.0),
+    );
+    super::widgets::text_fit(
+        &painter,
+        egui::pos2(text_left, rect.center().y + 10.0),
+        Align2::LEFT_CENTER,
+        preview,
+        text::footnote(),
+        t.label_tertiary,
+        (text_right - text_left).max(1.0),
+    );
+    if unread > 0 {
+        let value = if unread > 99 { "99+".to_owned() } else { unread.to_string() };
+        let badge = Rect::from_center_size(
+            egui::pos2(rect.max.x - space::SM - 11.0, rect.center().y),
+            Vec2::new(22.0, 18.0),
+        );
+        ui.painter().rect_filled(badge, CornerRadius::same(9), t.accent);
+        ui.painter().text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            value,
+            text::caption(),
+            t.accent_label,
+        );
+    }
+    response
 }
 
 fn rgb([r, g, b]: [u8; 3]) -> Color32 {
