@@ -53,7 +53,7 @@ pub struct Channel {
     pub mentions: u32,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelReadState {
     pub read_at: Option<DateTime<Utc>>,
     pub read_message_id: Option<String>,
@@ -1790,6 +1790,19 @@ impl Store {
             .collect();
         ordered.sort();
 
+        let frontier_before = self.frontier_key(channel_id);
+        let own_after_frontier: Vec<String> = self
+            .messages_in(channel_id)
+            .filter(|message| !message.pending && message.author_id == self.me)
+            .filter_map(|message| {
+                let key = (message.at.with_timezone(&Utc), message.id.clone());
+                frontier_before
+                    .as_ref()
+                    .is_none_or(|frontier| key > *frontier)
+                    .then_some(message.id.clone())
+            })
+            .collect();
+        let previous = self.read_states.get(channel_id).cloned();
         let legacy = self.read_marks.get(channel_id).copied();
         let state = self.read_states.entry(channel_id.to_owned()).or_insert_with(|| {
             ChannelReadState {
@@ -1797,6 +1810,10 @@ impl Store {
                 ..ChannelReadState::default()
             }
         });
+
+        // Mensagens do próprio usuário nunca abrem uma lacuna de "não lido".
+        // Elas só são consumidas quando tudo que veio antes delas também foi.
+        state.seen_out_of_order.extend(own_after_frontier);
 
         for id in visible {
             if let Some((at, _)) = ordered.iter().find(|(_, candidate)| candidate == id) {
@@ -1850,8 +1867,11 @@ impl Store {
             state.seen_out_of_order.clear();
         }
 
-        self.refresh_channel_read_badge(channel_id);
-        self.persist_read_state(channel_id);
+        let changed = self.read_states.get(channel_id) != previous.as_ref();
+        if changed {
+            self.refresh_channel_read_badge(channel_id);
+            self.persist_read_state(channel_id);
+        }
     }
 
     pub fn first_unread_loaded(&self, channel_id: &str) -> Option<String> {
@@ -1969,10 +1989,25 @@ impl Store {
                             .collect()
                     })
                     .unwrap_or_default();
+                let retained_seen: HashSet<String> = self
+                    .read_states
+                    .get(channel_id)
+                    .map(|state| {
+                        state
+                            .seen_out_of_order
+                            .iter()
+                            .filter(|message_id| {
+                                self.message_key(message_id)
+                                    .is_some_and(|key| key > (at, target.clone()))
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let state = self.read_states.entry(channel_id.to_owned()).or_default();
                 state.read_at = Some(at);
                 state.read_message_id = Some(id);
-                state.seen_out_of_order.clear();
+                state.seen_out_of_order = retained_seen;
                 state.unread_mentions = retained_mentions;
             }
         }
