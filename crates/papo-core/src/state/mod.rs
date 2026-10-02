@@ -4966,4 +4966,113 @@ mod tests {
             "falha ao buscar pins não pode zerar o cache"
         );
     }
+
+    fn navigation_message(id: &str, second: i64) -> Message {
+        Message {
+            id: id.to_owned(),
+            channel_id: "geral".to_owned(),
+            author_id: "outro".to_owned(),
+            content: id.to_owned(),
+            at: (Utc::now() + chrono::Duration::seconds(second)).with_timezone(&Local),
+            edited: false,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
+            pending: false,
+        }
+    }
+
+    fn navigation_store(count: usize) -> Store {
+        let mut store = Store {
+            me: "eu".to_owned(),
+            selected_channel: "geral".to_owned(),
+            channels: vec![Channel {
+                id: "geral".to_owned(),
+                name: "Geral".to_owned(),
+                kind: ChannelKind::Text,
+                topic: None,
+                position: 0,
+                permissions: Vec::new(),
+                notification_settings: "only_mentions".to_owned(),
+                parent_id: None,
+                unread: true,
+                mentions: 0,
+            }],
+            ..Store::default()
+        };
+        store.messages = (1..=count)
+            .map(|index| navigation_message(&format!("m{index}"), index as i64))
+            .collect();
+        let first = store.messages[0].clone();
+        store.read_states.insert(
+            "geral".to_owned(),
+            ChannelReadState {
+                read_at: Some(first.at.with_timezone(&Utc)),
+                read_message_id: Some(first.id),
+                ..ChannelReadState::default()
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn jump_does_not_mark_the_interval_it_skips() {
+        let mut store = navigation_store(6);
+
+        store.observe_visible_messages("geral", &["m6".to_owned()]);
+
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(state.read_message_id.as_deref(), Some("m1"));
+        assert!(state.seen_out_of_order.contains("m6"));
+    }
+
+    #[test]
+    fn forward_checkpoint_stays_frozen_until_it_is_reached() {
+        let mut store = navigation_store(6);
+        assert_eq!(
+            store.prepare_newer_jump("geral", Some("m1")).as_deref(),
+            Some("m6")
+        );
+        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m2"));
+
+        store.messages.push(navigation_message("m7", 7));
+        store.messages.push(navigation_message("m8", 8));
+
+        // Voltar para o bloco antigo e apertar ↓ ainda retorna ao checkpoint
+        // congelado, não ao head que continuou andando.
+        assert_eq!(
+            store.prepare_newer_jump("geral", Some("m2")).as_deref(),
+            Some("m6")
+        );
+
+        // Só quando o checkpoint foi alcançado o próximo ↓ aposenta o bloco
+        // anterior e cria uma nova geração m7..m8.
+        assert_eq!(
+            store.prepare_newer_jump("geral", Some("m6")).as_deref(),
+            Some("m8")
+        );
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(state.read_message_id.as_deref(), Some("m6"));
+        assert_eq!(state.jump_back.as_deref(), Some("m7"));
+        assert_eq!(state.jump_forward.as_deref(), Some("m8"));
+    }
+
+    #[test]
+    fn mentions_are_consumed_only_when_their_message_is_visible() {
+        let mut store = navigation_store(6);
+        let state = store.read_states.get_mut("geral").unwrap();
+        state.unread_mentions = VecDeque::from(["m3".to_owned(), "m5".to_owned()]);
+
+        store.observe_visible_messages("geral", &["m3".to_owned()]);
+
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(
+            state.unread_mentions.iter().cloned().collect::<Vec<_>>(),
+            vec!["m5".to_owned()]
+        );
+        assert_eq!(store.next_mention_target("geral").as_deref(), Some("m5"));
+    }
+
 }
