@@ -76,12 +76,15 @@ impl ChannelReadState {
     }
 
     fn to_cached(&self, owner_user_id: &str, channel_id: &str) -> CachedReadState {
+        let mut seen_out_of_order: Vec<String> =
+            self.seen_out_of_order.iter().cloned().collect();
+        seen_out_of_order.sort();
         CachedReadState {
             owner_user_id: owner_user_id.to_owned(),
             channel_id: channel_id.to_owned(),
             read_at: self.read_at.map(|at| at.timestamp_millis()),
             read_message_id: self.read_message_id.clone(),
-            seen_out_of_order: self.seen_out_of_order.iter().cloned().collect(),
+            seen_out_of_order,
             unread_mentions: self.unread_mentions.iter().cloned().collect(),
             jump_back: self.jump_back.clone(),
             jump_forward: self.jump_forward.clone(),
