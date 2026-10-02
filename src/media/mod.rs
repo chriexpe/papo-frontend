@@ -121,6 +121,12 @@ pub enum Request {
         id: String,
         url: String,
     },
+    /// Public image fetched for a transient provider surface (KLIPY). Unlike
+    /// rich-preview media this is never written to Papo's disk cache.
+    RemoteEphemeral {
+        id: String,
+        url: String,
+    },
 }
 
 impl Request {
@@ -138,6 +144,7 @@ impl Request {
             Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
             Self::RemoteImage { .. } => "remote-image",
+            Self::RemoteEphemeral { .. } => "remote-ephemeral",
         }
     }
 }
@@ -481,6 +488,19 @@ async fn run(
                     }
                     decode(key, &bytes, FULL_MAX)
                 }
+                Err(error) => Loaded::Failed { key, error },
+            }
+        }
+        Request::RemoteEphemeral { id, url } => {
+            let key = ephemeral_image_key(&id);
+            let Some(client) = remote_client else {
+                return Loaded::Failed {
+                    key,
+                    error: "cliente de mídia remota indisponível".into(),
+                };
+            };
+            match papo_core::preview::fetch_bounded_remote_bytes(client, &url, 12 << 20).await {
+                Ok(bytes) => decode(key, &bytes, FULL_MAX),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
@@ -943,6 +963,10 @@ fn remote_image_key(id: &str) -> String {
     format!("remote-image:{id}")
 }
 
+fn ephemeral_image_key(id: &str) -> String {
+    format!("ephemeral-image:{id}")
+}
+
 // ---------------------------------------------------------------------------
 // Estado do lado da interface
 // ---------------------------------------------------------------------------
@@ -978,6 +1002,16 @@ impl Texture {
                 frames.last()
             }
             _ => None,
+        }
+    }
+
+    /// Stable first frame for timeline thumbnails. Animated GIFs only advance
+    /// in surfaces that explicitly call `frame`, such as the picker/viewer.
+    pub fn first_frame(&self) -> Option<&TextureHandle> {
+        match self {
+            Texture::Ready(handle) => Some(handle),
+            Texture::Animated { frames, .. } => frames.first(),
+            Texture::Loading | Texture::Failed => None,
         }
     }
 }
@@ -1405,6 +1439,23 @@ impl MediaStore {
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::RemoteImage { id, url: canonical });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
+    /// Provider-owned public media that may live in GPU memory while visible
+    /// but must never become part of Papo's persistent remote-media cache.
+    pub fn remote_ephemeral(&mut self, id: &str, url: &str) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let identity = format!("{id}:{}", remote_resource_id(&canonical));
+        let key = ephemeral_image_key(&identity);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::RemoteEphemeral {
+                id: identity,
+                url: canonical,
+            });
         }
         self.touch(&key);
         self.textures.get(&key)
