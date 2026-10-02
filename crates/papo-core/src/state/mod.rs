@@ -599,7 +599,12 @@ impl Store {
     pub fn direct_unread_total(&self) -> u32 {
         self.direct_messages
             .iter()
-            .map(|dm| dm.unread_count)
+            .map(|dm| {
+                self.channel(&dm.id)
+                    .filter(|channel| channel.unread)
+                    .map(|_| dm.unread_count.max(1))
+                    .unwrap_or(0)
+            })
             .sum()
     }
 
