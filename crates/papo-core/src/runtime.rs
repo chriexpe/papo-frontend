@@ -256,6 +256,13 @@ impl ServerRuntime {
         }
     }
 
+    pub fn flush_store_cache_ops(&mut self) {
+        let cache_ops = self.store.take_cache_ops();
+        if !cache_ops.is_empty() {
+            self.cache.submit(&self.server_key, cache_ops);
+        }
+    }
+
     pub fn sender(&self) -> NetSender {
         self.net.sender()
     }
@@ -342,10 +349,7 @@ impl ServerRuntime {
             self.cached_owner = None;
         }
 
-        let cache_ops = self.store.take_cache_ops();
-        if !cache_ops.is_empty() {
-            self.cache.submit(&self.server_key, cache_ops);
-        }
+        self.flush_store_cache_ops();
 
         if refresh_after_online && self.mode == RuntimeMode::Interactive {
             self.net.send(Command::Refresh);
