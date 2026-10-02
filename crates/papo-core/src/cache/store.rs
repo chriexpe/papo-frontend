@@ -231,14 +231,6 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                         )",
                 params: vec![text(server_key)],
             });
-            statements.push(Stmt {
-                sql: "DELETE FROM channel_read_state
-                      WHERE server_key = ?1
-                        AND channel_id NOT IN (
-                            SELECT channel_id FROM channels WHERE server_key = ?1
-                        )",
-                params: vec![text(server_key)],
-            });
             statements
         }
         CacheOp::ReplaceMembers(members) => {
