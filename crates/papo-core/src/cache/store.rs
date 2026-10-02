@@ -443,10 +443,6 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channel_read_state WHERE server_key = ?1",
-                params: vec![text(server_key)],
-            },
-            Stmt {
                 sql: "DELETE FROM server_cache WHERE server_key = ?1",
                 params: vec![text(server_key)],
             },
