@@ -2483,6 +2483,7 @@ fn conversation(
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             let channel_id = store.selected_channel.clone();
+            prepare_read_navigation(ui, store, state, &channel_id);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
@@ -2570,15 +2571,20 @@ fn conversation(
             }
             state.last_scroll_sample = Some((channel_id.clone(), output.state.offset.y));
 
-            // Só o que realmente esteve na viewport conta como visto. O primeiro
-            // não lido avança a fronteira; destinos saltados ficam no conjunto
-            // esparso até o buraco anterior ser percorrido ou explicitamente aceito.
-            let visible = state.visible_messages.clone();
-            for message_id in visible {
-                let contiguous = store
-                    .oldest_unseen_message(&channel_id)
-                    .is_some_and(|message| message.id == message_id);
-                store.mark_message_seen(&channel_id, &message_id, contiguous);
+            // Só o que realmente esteve na viewport conta como visto. Enquanto
+            // ainda estamos buscando a página que contém a fronteira persistida,
+            // não promovemos nada: a lista atual pode ser apenas o rabo do bloco.
+            let boundary_missing = read_boundary_missing(store, &channel_id);
+            if !(boundary_missing
+                && (store.loading_older(&channel_id) || store.can_load_older(&channel_id)))
+            {
+                let visible = state.visible_messages.clone();
+                for message_id in visible {
+                    let contiguous = store
+                        .oldest_unseen_message(&channel_id)
+                        .is_some_and(|message| message.id == message_id);
+                    store.mark_message_seen(&channel_id, &message_id, contiguous);
+                }
             }
 
             state.chat_scroll_metrics = Some((
@@ -4406,6 +4412,93 @@ fn jump_to_id(state: &mut UiState, ui: &egui::Ui, message_id: String) {
     });
 }
 
+fn read_boundary_missing(store: &Store, channel_id: &str) -> bool {
+    store.read_marks.get(channel_id).is_some_and(|mark| {
+        store
+            .messages_in(channel_id)
+            .filter(|message| !message.pending && !message.pinned)
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+            .is_some_and(|oldest| oldest.at.with_timezone(&chrono::Utc) > *mark)
+    })
+}
+
+fn prepare_read_navigation(
+    ui: &egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    channel_id: &str,
+) {
+    if channel_id.is_empty()
+        || state
+            .read_navigation
+            .get(channel_id)
+            .is_some_and(|nav| nav.initialized)
+    {
+        return;
+    }
+
+    if read_boundary_missing(store, channel_id) {
+        if store.loading_older(channel_id) {
+            return;
+        }
+        if store.can_load_older(channel_id) {
+            state.actions.push(ChatAction::LoadOlderMessages);
+            return;
+        }
+    }
+
+    let oldest_unseen = store
+        .oldest_unseen_message(channel_id)
+        .map(|message| message.id.clone());
+    let newest = store
+        .newest_message(channel_id)
+        .map(|message| message.id.clone());
+    let nav = state
+        .read_navigation
+        .entry(channel_id.to_owned())
+        .or_default();
+    nav.initialized = true;
+    if let Some(oldest_unseen) = oldest_unseen {
+        if state.auto_jump_latest {
+            nav.return_target = Some(oldest_unseen);
+            nav.newer_checkpoint = newest.clone();
+            if let Some(newest) = newest {
+                jump_to_id(state, ui, newest);
+            }
+        } else {
+            jump_to_id(state, ui, oldest_unseen);
+        }
+    }
+}
+
+fn read_nav_button(
+    ui: &mut egui::Ui,
+    state: &UiState,
+    t: &Tokens,
+    glyph: &str,
+    tip: &str,
+) -> bool {
+    const BUTTON: f32 = 38.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(BUTTON), Sense::click());
+    pill_surface(ui, state, t, rect);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        text::icon(17.0),
+        if response.hovered() {
+            t.label
+        } else {
+            t.label_secondary
+        },
+    );
+    let response = response.on_hover_text(tip);
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.clicked()
+}
+
 fn read_navigation_buttons(
     ui: &egui::Ui,
     store: &mut Store,
@@ -4418,48 +4511,6 @@ fn read_navigation_buttons(
     let channel_id = store.selected_channel.clone();
     if channel_id.is_empty() {
         return;
-    }
-
-    // Antes da primeira navegação do canal, garante que a página contendo a
-    // fronteira antiga chegou. Se o cache ainda tem história, pede mais uma
-    // página e adia a decisão; isso evita chamar a mensagem 401 de "primeira
-    // não lida" quando a verdadeira fronteira estava antes da página 400.
-    let initialized = state
-        .read_navigation
-        .get(&channel_id)
-        .is_some_and(|nav| nav.initialized);
-    if !initialized {
-        let frontier_missing = store.read_marks.get(&channel_id).is_some_and(|mark| {
-            store
-                .messages_in(&channel_id)
-                .filter(|message| !message.pending && !message.pinned)
-                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
-                .is_some_and(|oldest| oldest.at.with_timezone(&chrono::Utc) > *mark)
-        });
-        if frontier_missing && store.can_load_older(&channel_id) {
-            state.actions.push(ChatAction::LoadOlderMessages);
-            return;
-        }
-
-        let oldest_unseen = store
-            .oldest_unseen_message(&channel_id)
-            .map(|message| message.id.clone());
-        let newest = store
-            .newest_message(&channel_id)
-            .map(|message| message.id.clone());
-        let nav = state.read_navigation.entry(channel_id.clone()).or_default();
-        nav.initialized = true;
-        if let Some(oldest_unseen) = oldest_unseen {
-            if state.auto_jump_latest {
-                nav.return_target = Some(oldest_unseen);
-                nav.newer_checkpoint = newest.clone();
-                if let Some(newest) = newest {
-                    jump_to_id(state, ui, newest);
-                }
-            } else {
-                jump_to_id(state, ui, oldest_unseen);
-            }
-        }
     }
 
     let now = ui.input(|input| input.time);
@@ -4494,7 +4545,6 @@ fn read_navigation_buttons(
         return;
     }
 
-    const BUTTON: f32 = 38.0;
     const GAP: f32 = 8.0;
     egui::Area::new(Id::new("read-navigation-buttons"))
         .order(egui::Order::Foreground)
@@ -4505,36 +4555,18 @@ fn read_navigation_buttons(
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing.y = GAP;
             ui.vertical(|ui| {
-                let mut button = |ui: &mut egui::Ui, id: &'static str, glyph: &str, tip: &str| {
-                    let (rect, response) =
-                        ui.allocate_exact_size(Vec2::splat(BUTTON), Sense::click());
-                    pill_surface(ui, state, t, rect);
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        glyph,
-                        text::icon(17.0),
-                        if response.hovered() { t.label } else { t.label_secondary },
-                    );
-                    let response = response.on_hover_text(tip);
-                    if response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    let _ = id;
-                    response.clicked()
-                };
-
                 if let Some(mention_id) = unseen_mention {
-                    if button(ui, "mention", egui_phosphor::regular::BELL, s.jump_mention) {
+                    if read_nav_button(ui, state, t, egui_phosphor::regular::BELL, s.jump_mention) {
                         jump_to_id(state, ui, mention_id);
                     }
                 }
 
                 if show_return
                     && let Some(target) = return_target
-                    && button(
+                    && read_nav_button(
                         ui,
-                        "return",
+                        state,
+                        t,
                         egui_phosphor::regular::CLOCK_COUNTER_CLOCKWISE,
                         s.jump_unread,
                     )
@@ -4543,7 +4575,7 @@ fn read_navigation_buttons(
                 }
 
                 if let Some(target) = down_target
-                    && button(ui, "newer", egui_phosphor::regular::ARROW_DOWN, s.jump_newer)
+                    && read_nav_button(ui, state, t, egui_phosphor::regular::ARROW_DOWN, s.jump_newer)
                 {
                     let checkpoint_visible = checkpoint
                         .as_ref()
