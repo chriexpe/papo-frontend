@@ -1970,11 +1970,19 @@ impl Store {
         latest_visible: Option<&str>,
     ) -> Option<String> {
         let newest = self.newest_loaded(channel_id)?;
-        let first_unread = self.first_unread_loaded(channel_id)?;
         let existing = self
             .read_states
             .get(channel_id)
             .and_then(|state| state.jump_forward.clone());
+
+        // O mesmo botão também é o "voltar ao fim" normal. Sem bloco não
+        // lido e sem checkpoint ativo, não inventa uma ampulheta.
+        if existing.is_none()
+            && !self.channel(channel_id).is_some_and(|channel| channel.unread)
+        {
+            return Some(newest);
+        }
+        let first_unread = self.first_unread_loaded(channel_id)?;
 
         if let Some(target) = existing.clone() {
             let reached = latest_visible.is_some_and(|visible| {
