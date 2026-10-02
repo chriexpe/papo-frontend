@@ -943,7 +943,17 @@ impl Store {
         self.read_states = metadata
             .read_states
             .into_iter()
-            .map(|state| (state.channel_id.clone(), ChannelReadState::from_cached(state)))
+            .map(|state| {
+                let channel_id = state.channel_id.clone();
+                let restored = ChannelReadState::from_cached(state);
+                if let Some(read_at) = restored.read_at {
+                    self.read_marks
+                        .entry(channel_id.clone())
+                        .and_modify(|mark| *mark = (*mark).max(read_at))
+                        .or_insert(read_at);
+                }
+                (channel_id, restored)
+            })
             .collect();
         self.cached_channels = metadata.cached_channels;
         self.hydrated_channels.clear();
@@ -1810,6 +1820,9 @@ impl Store {
                 ..ChannelReadState::default()
             }
         });
+        if state.read_at.is_none() && state.read_message_id.is_none() {
+            state.read_at = legacy;
+        }
 
         // Mensagens do próprio usuário nunca abrem uma lacuna de "não lido".
         // Elas só são consumidas quando tudo que veio antes delas também foi.
@@ -1935,9 +1948,14 @@ impl Store {
     }
 
     pub fn next_mention_target(&self, channel_id: &str) -> Option<String> {
-        self.read_states
-            .get(channel_id)
-            .and_then(|state| state.unread_mentions.front().cloned())
+        let state = self.read_states.get(channel_id)?;
+        state
+            .unread_mentions
+            .iter()
+            .filter_map(|id| self.message_key(id).map(|key| (key, id)))
+            .min_by(|(left, _), (right, _)| left.cmp(right))
+            .map(|(_, id)| id.clone())
+            .or_else(|| state.unread_mentions.front().cloned())
     }
 
     /// Decide o destino do botão para baixo sem mover checkpoints existentes.
