@@ -6758,6 +6758,10 @@ fn link_image_viewer(
         &link.url,
         &link.name,
         link.video,
+        link.ephemeral,
+        link.favourite_slug
+            .as_ref()
+            .map(|slug| state.gif_favourites.contains(slug)),
         link.opened,
         &mut link.zoom,
         &mut link.offset,
@@ -6766,6 +6770,12 @@ fn link_image_viewer(
         Some(viewer::RemoteViewerAction::Close) => {}
         Some(viewer::RemoteViewerAction::Download { path, name }) => {
             state.actions.push(ChatAction::SaveCachedImage { path, name });
+            state.link_viewer = Some(link);
+        }
+        Some(viewer::RemoteViewerAction::ToggleFavourite) => {
+            if let Some(slug) = link.favourite_slug.clone() {
+                gif::toggle_favourite(state, &slug);
+            }
             state.link_viewer = Some(link);
         }
         None => state.link_viewer = Some(link),
