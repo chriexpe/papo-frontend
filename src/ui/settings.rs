@@ -1754,7 +1754,17 @@ fn channel_tree(
         let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), TREE_ROW), Sense::click());
         rects.push(rect);
         let being_dragged = dragging.as_deref() == Some(channel.id.as_str());
-        let hovered = response.hovered() || being_dragged;
+        // The edit/delete controls overlap this row. Once they appear they
+        // become the top-most egui interaction under the pointer, which makes
+        // `response.hovered()` on the parent row false on the next frame and
+        // causes the controls to blink in and out. Visibility belongs to the
+        // row's geometry, not to whichever child currently owns hover.
+        let hovered = ui.input(|input| {
+            input
+                .pointer
+                .hover_pos()
+                .is_some_and(|pointer| rect.intersect(ui.clip_rect()).contains(pointer))
+        }) || being_dragged;
         if hovered {
             ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
         }
