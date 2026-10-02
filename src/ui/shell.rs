@@ -1066,6 +1066,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.visible_messages.clear();
     state.webembed_inline_rect = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens. A compensação
@@ -1112,6 +1113,10 @@ pub fn draw(
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
+        state.read_navigation
+            .entry(next_channel)
+            .or_default()
+            .initialized = false;
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2503,7 +2508,7 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
-                message_list(ui, store, state, t, s, full);
+                message_list(ui, store, state, t, s, full, viewport);
                 ui.add_space(bottom_inset);
 
                 request_older = viewport.min.y <= top_inset + 360.0
@@ -2553,6 +2558,29 @@ fn conversation(
                 ui.ctx().request_discard("preview/mídia mudou acima da viewport");
             }
 
+            let now = ui.input(|input| input.time);
+            let moved = state
+                .last_scroll_sample
+                .as_ref()
+                .is_some_and(|(sample_channel, offset)| {
+                    sample_channel == &channel_id && (output.state.offset.y - *offset).abs() > 0.5
+                });
+            if moved {
+                state.last_scroll_activity = now;
+            }
+            state.last_scroll_sample = Some((channel_id.clone(), output.state.offset.y));
+
+            // Só o que realmente esteve na viewport conta como visto. O primeiro
+            // não lido avança a fronteira; destinos saltados ficam no conjunto
+            // esparso até o buraco anterior ser percorrido ou explicitamente aceito.
+            let visible = state.visible_messages.clone();
+            for message_id in visible {
+                let contiguous = store
+                    .oldest_unseen_message(&channel_id)
+                    .is_some_and(|message| message.id == message_id);
+                store.mark_message_seen(&channel_id, &message_id, contiguous);
+            }
+
             state.chat_scroll_metrics = Some((
                 channel_id,
                 output.state.offset.y,
@@ -2582,6 +2610,7 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
+        read_navigation_buttons(ui, store, state, t, s, full, bottom_inset);
         composer(ui, store, state, t, s, full, composer_height);
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
@@ -4369,6 +4398,182 @@ fn go_to(
     });
 }
 
+fn jump_to_id(state: &mut UiState, ui: &egui::Ui, message_id: String) {
+    state.jump = Some(Jump {
+        message_id,
+        found: None,
+        since: ui.input(|input| input.time),
+    });
+}
+
+fn read_navigation_buttons(
+    ui: &egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    _area: Rect,
+    bottom_inset: f32,
+) {
+    let channel_id = store.selected_channel.clone();
+    if channel_id.is_empty() {
+        return;
+    }
+
+    // Antes da primeira navegação do canal, garante que a página contendo a
+    // fronteira antiga chegou. Se o cache ainda tem história, pede mais uma
+    // página e adia a decisão; isso evita chamar a mensagem 401 de "primeira
+    // não lida" quando a verdadeira fronteira estava antes da página 400.
+    let initialized = state
+        .read_navigation
+        .get(&channel_id)
+        .is_some_and(|nav| nav.initialized);
+    if !initialized {
+        let frontier_missing = store.read_marks.get(&channel_id).is_some_and(|mark| {
+            store
+                .messages_in(&channel_id)
+                .filter(|message| !message.pending && !message.pinned)
+                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                .is_some_and(|oldest| oldest.at.with_timezone(&chrono::Utc) > *mark)
+        });
+        if frontier_missing && store.can_load_older(&channel_id) {
+            state.actions.push(ChatAction::LoadOlderMessages);
+            return;
+        }
+
+        let oldest_unseen = store
+            .oldest_unseen_message(&channel_id)
+            .map(|message| message.id.clone());
+        let newest = store
+            .newest_message(&channel_id)
+            .map(|message| message.id.clone());
+        let nav = state.read_navigation.entry(channel_id.clone()).or_default();
+        nav.initialized = true;
+        if let Some(oldest_unseen) = oldest_unseen {
+            if state.auto_jump_latest {
+                nav.return_target = Some(oldest_unseen);
+                nav.newer_checkpoint = newest.clone();
+                if let Some(newest) = newest {
+                    jump_to_id(state, ui, newest);
+                }
+            } else {
+                jump_to_id(state, ui, oldest_unseen);
+            }
+        }
+    }
+
+    let now = ui.input(|input| input.time);
+    if now - state.last_scroll_activity < 0.30 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(320));
+        return;
+    }
+
+    let visible: std::collections::HashSet<&str> =
+        state.visible_messages.iter().map(String::as_str).collect();
+    let newest = store
+        .newest_message(&channel_id)
+        .map(|message| message.id.clone());
+    let unseen_mention = store
+        .oldest_unseen_mention(&channel_id)
+        .map(|message| message.id.clone());
+    let (return_target, checkpoint) = state
+        .read_navigation
+        .get(&channel_id)
+        .map(|nav| (nav.return_target.clone(), nav.newer_checkpoint.clone()))
+        .unwrap_or_default();
+
+    let down_target = checkpoint
+        .clone()
+        .filter(|id| !visible.contains(id.as_str()))
+        .or_else(|| newest.clone().filter(|id| !visible.contains(id.as_str())));
+    let show_return = return_target
+        .as_ref()
+        .is_some_and(|id| !visible.contains(id.as_str()));
+
+    if down_target.is_none() && !show_return && unseen_mention.is_none() {
+        return;
+    }
+
+    const BUTTON: f32 = 38.0;
+    const GAP: f32 = 8.0;
+    egui::Area::new(Id::new("read-navigation-buttons"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::RIGHT_BOTTOM,
+            Vec2::new(-space::XL, -(bottom_inset + space::MD)),
+        )
+        .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing.y = GAP;
+            ui.vertical(|ui| {
+                let mut button = |ui: &mut egui::Ui, id: &'static str, glyph: &str, tip: &str| {
+                    let (rect, response) =
+                        ui.allocate_exact_size(Vec2::splat(BUTTON), Sense::click());
+                    pill_surface(ui, state, t, rect);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        glyph,
+                        text::icon(17.0),
+                        if response.hovered() { t.label } else { t.label_secondary },
+                    );
+                    let response = response.on_hover_text(tip);
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let _ = id;
+                    response.clicked()
+                };
+
+                if let Some(mention_id) = unseen_mention {
+                    if button(ui, "mention", egui_phosphor::regular::BELL, s.jump_mention) {
+                        jump_to_id(state, ui, mention_id);
+                    }
+                }
+
+                if show_return
+                    && let Some(target) = return_target
+                    && button(
+                        ui,
+                        "return",
+                        egui_phosphor::regular::CLOCK_COUNTER_CLOCKWISE,
+                        s.jump_unread,
+                    )
+                {
+                    jump_to_id(state, ui, target);
+                }
+
+                if let Some(target) = down_target
+                    && button(ui, "newer", egui_phosphor::regular::ARROW_DOWN, s.jump_newer)
+                {
+                    let checkpoint_visible = checkpoint
+                        .as_ref()
+                        .is_some_and(|id| visible.contains(id.as_str()));
+                    if checkpoint_visible
+                        && let Some(previous) = checkpoint.clone()
+                    {
+                        store.mark_through_message(&channel_id, &previous);
+                        let next_return = store
+                            .oldest_unseen_message(&channel_id)
+                            .map(|message| message.id.clone());
+                        if let Some(nav) = state.read_navigation.get_mut(&channel_id) {
+                            nav.return_target = next_return;
+                            nav.newer_checkpoint = newest.clone();
+                        }
+                    } else if checkpoint.is_none() {
+                        let return_target = store
+                            .oldest_unseen_message(&channel_id)
+                            .map(|message| message.id.clone());
+                        if let Some(nav) = state.read_navigation.get_mut(&channel_id) {
+                            nav.return_target = return_target;
+                            nav.newer_checkpoint = newest.clone();
+                        }
+                    }
+                    jump_to_id(state, ui, target);
+                }
+            });
+        });
+}
+
 // ---------------------------------------------------------------------------
 // Lista de mensagens
 // ---------------------------------------------------------------------------
@@ -4380,6 +4585,7 @@ fn message_list(
     t: &Tokens,
     s: &Strings,
     area: Rect,
+    viewport: Rect,
 ) {
     let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
     if messages.is_empty() {
@@ -4570,6 +4776,9 @@ fn message_list(
         }
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
+        if viewport.contains(row.center()) && !message.pending {
+            state.visible_messages.push(message.id.clone());
+        }
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
             state
