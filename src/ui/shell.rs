@@ -4468,8 +4468,8 @@ fn read_navigation_buttons(
         return;
     }
 
-    let visible: std::collections::HashSet<&str> =
-        state.visible_messages.iter().map(String::as_str).collect();
+    let visible: std::collections::HashSet<String> =
+        state.visible_messages.iter().cloned().collect();
     let newest = store
         .newest_message(&channel_id)
         .map(|message| message.id.clone());
@@ -4484,11 +4484,11 @@ fn read_navigation_buttons(
 
     let down_target = checkpoint
         .clone()
-        .filter(|id| !visible.contains(id.as_str()))
-        .or_else(|| newest.clone().filter(|id| !visible.contains(id.as_str())));
+        .filter(|id| !visible.contains(id))
+        .or_else(|| newest.clone().filter(|id| !visible.contains(id)));
     let show_return = return_target
         .as_ref()
-        .is_some_and(|id| !visible.contains(id.as_str()));
+        .is_some_and(|id| !visible.contains(id));
 
     if down_target.is_none() && !show_return && unseen_mention.is_none() {
         return;
@@ -4547,7 +4547,7 @@ fn read_navigation_buttons(
                 {
                     let checkpoint_visible = checkpoint
                         .as_ref()
-                        .is_some_and(|id| visible.contains(id.as_str()));
+                        .is_some_and(|id| visible.contains(id));
                     if checkpoint_visible
                         && let Some(previous) = checkpoint.clone()
                     {
