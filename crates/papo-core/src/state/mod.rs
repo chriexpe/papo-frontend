@@ -1101,6 +1101,7 @@ impl Store {
         self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
         self.server = None;
         self.channels.clear();
+        self.direct_messages.clear();
         self.members.clear();
         self.messages.clear();
         self.cached_channels.clear();
