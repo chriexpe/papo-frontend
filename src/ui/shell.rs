@@ -1673,6 +1673,11 @@ fn direct_messages_sidebar(
                                         .map(str::trim)
                                         .filter(|text| !text.is_empty())
                                         .unwrap_or(" ");
+                                    let unread = store
+                                        .channel(&dm.id)
+                                        .filter(|channel| channel.unread)
+                                        .map(|_| dm.unread_count.max(1))
+                                        .unwrap_or(0);
                                     let row = direct_message_row(
                                         ui,
                                         t,
@@ -1681,7 +1686,7 @@ fn direct_messages_sidebar(
                                         status,
                                         preview,
                                         presence_color(t, presence),
-                                        dm.unread_count,
+                                        unread,
                                         store.selected_channel == dm.id,
                                         width,
                                         avatar,
