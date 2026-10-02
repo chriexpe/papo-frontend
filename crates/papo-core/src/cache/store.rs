@@ -10,8 +10,8 @@ use turso::{Builder, Connection, Value};
 use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
-    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedServer, CachedServerMetadata,
-    CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedReadState, CachedServer,
+    CachedServerMetadata, CachedServerSnapshot, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
     CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
@@ -231,6 +231,14 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                         )",
                 params: vec![text(server_key)],
             });
+            statements.push(Stmt {
+                sql: "DELETE FROM channel_read_state
+                      WHERE server_key = ?1
+                        AND channel_id NOT IN (
+                            SELECT channel_id FROM channels WHERE server_key = ?1
+                        )",
+                params: vec![text(server_key)],
+            });
             statements
         }
         CacheOp::ReplaceMembers(members) => {
@@ -391,6 +399,23 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                   WHERE server_key = ?1 AND owner_user_id = ?2 AND channel_id = ?3",
             params: vec![text(server_key), text(owner_user_id), text(channel_id)],
         }],
+        CacheOp::UpsertReadState(state) => vec![Stmt {
+            sql: "INSERT INTO channel_read_state (
+                      server_key, owner_user_id, channel_id, frontier_at, seen_ids, updated_at
+                  ) VALUES (?1,?2,?3,?4,?5,?6)
+                  ON CONFLICT(server_key, owner_user_id, channel_id) DO UPDATE SET
+                      frontier_at = excluded.frontier_at,
+                      seen_ids = excluded.seen_ids,
+                      updated_at = excluded.updated_at",
+            params: vec![
+                text(server_key),
+                text(&state.owner_user_id),
+                text(&state.channel_id),
+                state.frontier_at.map(Value::Integer).unwrap_or(Value::Null),
+                text(&encode_json(&state.seen_ids)),
+                integer(state.updated_at),
+            ],
+        }],
         CacheOp::ClearCachedData => vec![
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
@@ -414,6 +439,10 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
         ],
         CacheOp::ClearServer => vec![
+            Stmt {
+                sql: "DELETE FROM channel_read_state WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            },
             Stmt {
                 sql: "DELETE FROM drafts WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -1030,6 +1059,30 @@ impl TursoCache {
             });
         }
         drop(rows);
+
+        if let Some(owner_user_id) = metadata.owner_user_id.clone() {
+            let mut rows = self
+                .conn
+                .query(
+                    "SELECT channel_id, frontier_at, seen_ids, updated_at
+                     FROM channel_read_state
+                     WHERE server_key = ?1 AND owner_user_id = ?2
+                     ORDER BY updated_at, channel_id",
+                    [server_key, owner_user_id.as_str()],
+                )
+                .await?;
+            while let Some(row) = rows.next().await? {
+                let seen_ids: String = row.get(2)?;
+                metadata.read_states.push(CachedReadState {
+                    owner_user_id: owner_user_id.clone(),
+                    channel_id: row.get(0)?,
+                    frontier_at: row.get(1)?,
+                    seen_ids: serde_json::from_str(&seen_ids).unwrap_or_default(),
+                    updated_at: row.get(3)?,
+                });
+            }
+            drop(rows);
+        }
 
         let mut rows = self
             .conn
