@@ -2765,6 +2765,11 @@ impl PapoApp {
 
     /// Respostas dos diálogos do sistema e arquivos soltos na janela.
     fn pump_files(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "android")]
+        self.ui
+            .attachments
+            .extend(crate::platform::files::take_clipboard_attachments());
+
         for chosen in self.dialogs.poll() {
             match chosen {
                 Chosen::Files(uploads) => self.ui.attachments.extend(uploads),
