@@ -2578,10 +2578,7 @@ fn conversation(
                 && store.newest_loaded(&channel_id).is_some()
             {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
-                let anchor_id = store.read_anchor_id(&channel_id);
-                let anchor_missing = anchor_id
-                    .as_ref()
-                    .is_some_and(|id| store.message(id).is_none());
+                let anchor_missing = store.read_anchor_needs_history(&channel_id);
                 if unread && anchor_missing && store.can_load_older(&channel_id) {
                     state.actions.push(ChatAction::LoadOlderMessages);
                 } else {
