@@ -68,7 +68,7 @@ pub fn draw(
                     });
                 }
                 ui.add_space(GAP);
-                if index == active {
+                if index == active && entry.signed_in {
                     if direct_tile(ui, direct_unread, direct_active, t, s) {
                         action = Some(RailAction::DirectMessages);
                     }
