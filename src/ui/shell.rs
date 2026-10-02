@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Datelike, Local};
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder,
-    Vec2,
+    Align, Align2, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke,
+    UiBuilder, Vec2,
 };
 use egui_phosphor::regular as icon;
 
