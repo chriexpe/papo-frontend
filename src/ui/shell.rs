@@ -6884,6 +6884,9 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
+    let klipy_link = crate::klipy::message_slug(&message.content)
+        .and_then(|slug| state.klipy.as_mut()?.item(slug, ui.ctx()))
+        .map(|item| item.gif_url);
 
     let mut items: Vec<(&str, &str, MessageCommand)> = vec![
         (icon::SMILEY_STICKER, s.add_reaction, MessageCommand::React),
@@ -6892,7 +6895,11 @@ fn context_menu(
     if mine {
         items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
     }
-    items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    if klipy_link.is_some() {
+        items.push((icon::COPY, s.copy_link, MessageCommand::CopyLink));
+    } else {
+        items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    }
     items.push((
         icon::PUSH_PIN,
         if message.pinned { s.unpin } else { s.pin },
@@ -6989,6 +6996,11 @@ fn context_menu(
             MessageCommand::Copy => {
                 ui.ctx().copy_text(store.display_mentions(&message.content));
             }
+            MessageCommand::CopyLink => {
+                if let Some(link) = klipy_link {
+                    ui.ctx().copy_text(link);
+                }
+            }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
                 message_id: message.id.clone(),
                 pin: !message.pinned,
@@ -7016,6 +7028,7 @@ enum MessageCommand {
     Reply,
     Edit,
     Copy,
+    CopyLink,
     Pin,
     Download,
     Delete,
