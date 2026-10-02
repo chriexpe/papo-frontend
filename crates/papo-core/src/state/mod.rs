@@ -986,6 +986,8 @@ impl Store {
         self.channels.clear();
         self.members.clear();
         self.messages.clear();
+        self.read_marks.clear();
+        self.seen_messages.clear();
         self.cached_channels.clear();
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
