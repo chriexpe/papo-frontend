@@ -69,7 +69,7 @@ ring = "0.17"
 # existem aqui. No Android cada um desses tem um substituto em `stub/`.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 eframe = { version = "0.36", default-features = false, features = ["wgpu"] }
-clipboard-rs = { version = "0.3.5", features = ["wayland"] }
+arboard = "3.6.1"
 env_logger = "0.11"
 directories = "6"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
