@@ -265,7 +265,7 @@ fn category_tile(
         && let Some(texture) = state
             .media
             .remote_ephemeral(&format!("klipy-category-{id}"), url)
-            .and_then(|texture| texture.first_frame())
+            .and_then(|texture| texture.frame(ui.ctx()))
             .cloned()
     {
         paint_cover(ui, rect, &texture);
