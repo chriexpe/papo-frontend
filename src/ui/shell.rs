@@ -19,6 +19,7 @@ use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store}
 use super::attachments::{self, MediaAction};
 use super::emoji;
 use super::glass::SharedGlass;
+use super::gif;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
@@ -134,8 +135,6 @@ pub enum ChatAction {
     },
     /// Abre o seletor de arquivos do sistema.
     PickFiles,
-    /// O mesmo seletor, filtrado em imagens animadas.
-    PickGif,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
     /// Abre a criação inline em Ajustes do servidor → Canais.
@@ -432,6 +431,9 @@ pub struct LinkViewer {
     pub name: String,
     /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
     pub video: bool,
+    /// KLIPY/public provider media stays memory-only and can expose Favourite.
+    pub ephemeral: bool,
+    pub favourite_slug: Option<String>,
     pub zoom: f32,
     pub offset: Vec2,
     pub fitted: bool,
@@ -797,6 +799,14 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
+    /// Direct KLIPY picker/client state is global to the window. Provider
+    /// media stays in MediaStore GPU memory only; only favourite slugs persist.
+    pub klipy: Option<crate::klipy::Store>,
+    pub gif_picker_anchor: Option<Rect>,
+    pub gif_picker_opened: Option<f64>,
+    pub gif_favourites: std::collections::BTreeSet<String>,
+    pub klipy_customer_id: String,
+    pub gif_locale: String,
     /// Hosts explicitly trusted by the user for opening links without asking.
     /// This is window/global state and is mirrored to persisted Settings.
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
@@ -945,6 +955,12 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
+            klipy: None,
+            gif_picker_anchor: None,
+            gif_picker_opened: None,
+            gif_favourites: std::collections::BTreeSet::new(),
+            klipy_customer_id: String::new(),
+            gif_locale: "en_US".to_owned(),
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
@@ -1057,6 +1073,9 @@ pub fn draw(
     // viewport; outras mídias mantêm o relayout já usado pelo shell.
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
+    }
+    if let Some(klipy) = state.klipy.as_mut() {
+        klipy.pump(ui.ctx());
     }
 
     // Resultado de um canal que nunca carregou: a busca não pode ficar
@@ -5046,17 +5065,21 @@ fn message_body(
     }
 
     if !message.content.is_empty() {
-        let shown_content = store.display_mentions(&message.content);
-        let color = if message.pending {
-            t.label_secondary
+        if let Some(slug) = crate::klipy::message_slug(&message.content).map(str::to_owned) {
+            gif::message(ui, state, t, s, &slug, width);
         } else {
-            t.label
-        };
-        let tokens = emoji::tokenize(&shown_content, &store.emojis);
-        // URL hit-testing needs individual widgets even for otherwise plain
-        // text. Keeping a separate LayoutJob fast path made normal messages
-        // skip the hyperlink path entirely.
-        rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+            let shown_content = store.display_mentions(&message.content);
+            let color = if message.pending {
+                t.label_secondary
+            } else {
+                t.label
+            };
+            let tokens = emoji::tokenize(&shown_content, &store.emojis);
+            // URL hit-testing needs individual widgets even for otherwise plain
+            // text. Keeping a separate LayoutJob fast path made normal messages
+            // skip the hyperlink path entirely.
+            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+        }
     }
 
     if message.pending {
@@ -5588,6 +5611,8 @@ fn preview_card(
                     url: remote.to_owned(),
                     name: title.unwrap_or("video").to_owned(),
                     video: true,
+                    ephemeral: false,
+                    favourite_slug: None,
                     zoom: 1.0,
                     offset: Vec2::ZERO,
                     fitted: true,
@@ -5667,7 +5692,9 @@ fn preview_card(
                         url: remote.clone(),
                         name: title.unwrap_or("image").to_owned(),
                         video: false,
-                        zoom: 1.0,
+                        ephemeral: false,
+                    favourite_slug: None,
+                    zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
                         opened: ui.input(|input| input.time),
@@ -6565,6 +6592,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             }
             PopupKind::Menu => context_menu(&mut top, store, state, t, s, &popup),
         }
+    }
+
+    if state.gif_picker_opened.is_some() {
+        gif::picker_popup(&mut top, state, t, s);
     }
 
     if state.link_viewer.is_some() {
@@ -7773,7 +7804,14 @@ fn composer(
         });
     }
     if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
-        state.actions.push(ChatAction::PickGif);
+        state.gif_picker_anchor = Some(gif_rect);
+        state.gif_picker_opened = Some(opened);
+        if state.klipy.is_none() {
+            state.klipy = Some(crate::klipy::Store::new(ui.ctx().clone()));
+        }
+        if let Some(klipy) = state.klipy.as_mut() {
+            klipy.open_picker(&state.gif_locale, &state.klipy_customer_id);
+        }
     }
 
     let send = ui.interact(send_rect, Id::new("composer-send"), Sense::click());
