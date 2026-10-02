@@ -349,9 +349,6 @@ pub struct Settings {
     /// escreve.
     #[serde(default)]
     pub server_marks: ReadMarks,
-    /// Vistos esparsos complementares às marcas contíguas.
-    #[serde(default)]
-    pub server_seen_messages: SeenMessages,
     /// Ajustes portáteis alterados localmente e ainda não confirmados pelo
     /// servidor. A chave é o server_key; persiste para sobreviver offline.
     #[serde(default)]
@@ -373,11 +370,6 @@ pub struct Settings {
 pub type ReadMarks = std::collections::HashMap<
     String,
     std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
->;
-/// Mensagens vistas depois de um salto, por servidor → canal → ids.
-pub type SeenMessages = std::collections::HashMap<
-    String,
-    std::collections::HashMap<String, std::collections::HashSet<String>>,
 >;
 
 fn enabled() -> bool {
@@ -415,7 +407,6 @@ impl Default for Settings {
             rich_presence: crate::rich_presence::Settings::default(),
             read_marks: std::collections::HashMap::new(),
             server_marks: ReadMarks::new(),
-            server_seen_messages: SeenMessages::new(),
             pending_user_settings: std::collections::HashMap::new(),
             cached_user_settings: std::collections::HashMap::new(),
             push_devices: std::collections::HashMap::new(),
@@ -563,15 +554,15 @@ impl Workspace {
     fn open(
         entry: &ServerEntry,
         marks: &ReadMarks,
-        seen_messages: &SeenMessages,
         ctx: &egui::Context,
         cache: &std::sync::Arc<ClientDb>,
         notification: &std::sync::Arc<NotificationCoordinator>,
     ) -> Self {
         let server_key = crate::state::server_key(&entry.url);
         let mut store = Store::default();
+        // Marca antiga em Settings é só migração/fallback; o estado preciso
+        // (incluindo vistos esparsos) vem do Turso e substitui canal a canal.
         store.read_marks = marks.get(&server_key).cloned().unwrap_or_default();
-        store.seen_messages = seen_messages.get(&server_key).cloned().unwrap_or_default();
 
         let repaint = ctx.clone();
         let runtime = ServerRuntime::open_with_store(
@@ -880,7 +871,6 @@ impl PapoApp {
                 Workspace::open(
                     entry,
                     &settings.server_marks,
-                    &settings.server_seen_messages,
                     &cc.egui_ctx,
                     &cache,
                     &notification,
@@ -912,7 +902,6 @@ impl PapoApp {
                         .push(Workspace::open(
                             &entry,
                             &settings.server_marks,
-                            &settings.server_seen_messages,
                             &cc.egui_ctx,
                             &cache,
                             &notification,
@@ -1544,7 +1533,6 @@ impl PapoApp {
         let mut fresh = Workspace::open(
             &entry,
             &self.settings.server_marks,
-            &self.settings.server_seen_messages,
             ctx,
             &self.cache,
             &self.notification,
@@ -1619,7 +1607,6 @@ impl PapoApp {
         let mut workspace = Workspace::open(
             &entry,
             &self.settings.server_marks,
-            &self.settings.server_seen_messages,
             ctx,
             &self.cache,
             &self.notification,
@@ -1648,7 +1635,6 @@ impl PapoApp {
         self.workspaces[index].stash.swap(&mut self.ui);
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
-        self.settings.server_seen_messages.remove(&key);
         if let Some(token) = self.settings.push_devices.remove(&key) {
             self.workspaces[index].runtime.release_push_device(token);
         }
@@ -1688,7 +1674,6 @@ impl PapoApp {
         }
         let key = crate::state::server_key(&self.workspaces[index].runtime.url);
         self.settings.server_marks.remove(&key);
-        self.settings.server_seen_messages.remove(&key);
         if let Some(token) = self.settings.push_devices.remove(&key) {
             self.workspaces[index].runtime.release_push_device(token);
         }
@@ -4095,13 +4080,10 @@ impl eframe::App for PapoApp {
             if Some(index) == draft {
                 continue;
             }
-            let key = crate::state::server_key(&ws.runtime.url);
-            self.settings
-                .server_marks
-                .insert(key.clone(), ws.runtime.store.read_marks.clone());
-            self.settings
-                .server_seen_messages
-                .insert(key, ws.runtime.store.seen_messages.clone());
+            self.settings.server_marks.insert(
+                crate::state::server_key(&ws.runtime.url),
+                ws.runtime.store.read_marks.clone(),
+            );
         }
 
         // O rascunho do botão + é estado de UI, não um servidor. Em especial
