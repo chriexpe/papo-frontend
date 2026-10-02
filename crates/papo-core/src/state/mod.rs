@@ -654,12 +654,19 @@ impl Store {
 
     fn replace_direct_messages(&mut self, dms: Vec<models::DirectConversation>) {
         let keep: HashSet<String> = dms.iter().map(|dm| dm.id.clone()).collect();
+        let selected_direct_gone = self
+            .channel(&self.selected_channel)
+            .is_some_and(|channel| channel.kind == ChannelKind::Direct)
+            && !keep.contains(&self.selected_channel);
         self.channels.retain(|channel| {
             channel.kind != ChannelKind::Direct || keep.contains(&channel.id)
         });
         self.direct_messages.clear();
         for dm in dms {
             self.upsert_direct_message(dm);
+        }
+        if selected_direct_gone {
+            self.selected_channel.clear();
         }
     }
 
