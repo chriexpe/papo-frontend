@@ -488,7 +488,6 @@ fn draw_search(
             egui::TextEdit::singleline(&mut klipy.browser.query)
                 .hint_text(s.gif_search_klipy)
                 .desired_width(f32::INFINITY)
-                .frame(false)
                 .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
         );
     }
