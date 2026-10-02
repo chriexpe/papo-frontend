@@ -2622,10 +2622,14 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
-        read_navigation_buttons(ui, store, state, t, s, full, bottom_inset);
+        let read_nav_rect =
+            read_navigation_buttons(ui, store, state, t, s, full, bottom_inset);
         composer(ui, store, state, t, s, full, composer_height);
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
+        if let Some(rect) = read_nav_rect {
+            state.webembed_occlusions.push(rect);
+        }
         call_layers(
             ui,
             store,
@@ -4525,16 +4529,16 @@ fn read_navigation_buttons(
     s: &Strings,
     _area: Rect,
     bottom_inset: f32,
-) {
+) -> Option<Rect> {
     let channel_id = store.selected_channel.clone();
     if channel_id.is_empty() {
-        return;
+        return None;
     }
 
     let now = ui.input(|input| input.time);
     if now - state.last_scroll_activity < 0.30 {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(320));
-        return;
+        return None;
     }
 
     let visible: std::collections::HashSet<String> =
@@ -4560,11 +4564,11 @@ fn read_navigation_buttons(
         .is_some_and(|id| !visible.contains(id));
 
     if down_target.is_none() && !show_return && unseen_mention.is_none() {
-        return;
+        return None;
     }
 
     const GAP: f32 = 8.0;
-    egui::Area::new(Id::new("read-navigation-buttons"))
+    let shown = egui::Area::new(Id::new("read-navigation-buttons"))
         .order(egui::Order::Foreground)
         .anchor(
             egui::Align2::RIGHT_BOTTOM,
@@ -4622,6 +4626,7 @@ fn read_navigation_buttons(
                 }
             });
         });
+    Some(shown.response.rect)
 }
 
 // ---------------------------------------------------------------------------
