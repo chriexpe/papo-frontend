@@ -1161,23 +1161,39 @@ pub(crate) fn activity_block(ui: &mut egui::Ui, t: &Tokens, s: &Strings, activit
 /// guarda a textura na memória do egui; uma falha também fica guardada,
 /// para não reler o arquivo a cada quadro.
 pub(crate) fn activity_art(ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
-    let modified = std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    use base64::Engine as _;
+
+    let data_uri = path.strip_prefix("data:image/");
+    let modified = data_uri
+        .is_none()
+        .then(|| std::fs::metadata(path).and_then(|meta| meta.modified()).ok())
+        .flatten();
     let id = egui::Id::new(("activity-art", path, modified));
     if let Some(cached) = ctx.data(|data| data.get_temp::<Option<egui::TextureHandle>>(id)) {
         return cached;
     }
-    let texture = image::open(path)
-        .map_err(|error| log::warn!("arte da atividade não abriu ({path}): {error}"))
-        .ok()
-        .map(|decoded| {
-            let rgba = decoded.to_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            ctx.load_texture(
-                format!("activity-art:{path}"),
-                egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
-                egui::TextureOptions::LINEAR,
-            )
-        });
+
+    let decoded = if data_uri.is_some() {
+        path.split_once(";base64,")
+            .and_then(|(_, encoded)| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .ok()
+            })
+            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+    } else {
+        image::open(path).ok()
+    };
+
+    let texture = decoded.map(|decoded| {
+        let rgba = decoded.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        ctx.load_texture(
+            format!("activity-art:{id:?}"),
+            egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()),
+            egui::TextureOptions::LINEAR,
+        )
+    });
     ctx.data_mut(|data| data.insert_temp(id, texture.clone()));
     texture
 }

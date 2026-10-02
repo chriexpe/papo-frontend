@@ -20,7 +20,7 @@ use crate::platform::launcher::{Badge, Launcher};
 #[cfg(target_os = "linux")]
 use crate::platform::{appmenu::AppMenuSurface, blur::BlurSurface, global_menu::GlobalMenu};
 use crate::api::net::{Command, Wake};
-use crate::state::{Phase, Screen, Store};
+use crate::state::{Activity, Phase, Screen, Store};
 use papo_core::cache::{CachedMessagePage, ClientDb};
 use papo_core::notification::{NotificationCoordinator, NotificationSink};
 use papo_core::runtime::{
@@ -537,6 +537,9 @@ pub struct Workspace {
     /// Quantas mudanças de câmera a thread da call já publicou quando
     /// olhamos pela última vez.
     camera_revision: u64,
+    /// Última atividade local entregue ao runtime deste servidor. O Option
+    /// externo distingue "ainda não publicamos" de "publicamos sem atividade".
+    published_activity: Option<Option<Activity>>,
     /// Último config remoto aplicado à UI enquanto este servidor estava ativo.
     applied_user_config: Option<crate::api::models::UserConfig>,
     /// Config já enviado nesta conexão; evita PUT a cada frame.
@@ -596,6 +599,7 @@ impl Workspace {
             call_ready: false,
             watching: Vec::new(),
             camera_revision: 0,
+            published_activity: None,
             applied_user_config: None,
             sent_user_config: None,
             cache_pages: Vec::new(),
@@ -674,6 +678,40 @@ impl Workspace {
             icon: None,
         }
     }
+}
+
+fn activity_for_server(activity: &Activity) -> Activity {
+    use base64::Engine as _;
+
+    const MAX_RAW_IMAGE: usize = 190 * 1024;
+
+    let mut wire = activity.clone();
+    wire.image = activity.image.as_deref().and_then(|path| {
+        if path.starts_with("data:image/") {
+            return Some(path.to_owned());
+        }
+        let bytes = std::fs::read(path).ok()?;
+        if bytes.len() > MAX_RAW_IMAGE {
+            log::warn!("rich presence: activity art is too large to publish");
+            return None;
+        }
+        let mime = match std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+        {
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            Some("gif") => "image/gif",
+            _ => "image/png",
+        };
+        Some(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
+    });
+    wire
 }
 
 pub struct PapoApp {
@@ -3367,6 +3405,14 @@ impl PapoApp {
     fn project_local_activity(&mut self) {
         let activity = self.rich_presence.snapshot().activity.clone();
         for workspace in &mut self.workspaces {
+            if workspace.published_activity.as_ref() != Some(&activity) {
+                workspace.published_activity = Some(activity.clone());
+                workspace
+                    .runtime
+                    .net
+                    .send(Command::SetActivity(activity.as_ref().map(activity_for_server)));
+            }
+
             let me = workspace.runtime.store.me.clone();
             if me.is_empty() {
                 continue;

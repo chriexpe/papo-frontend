@@ -141,10 +141,9 @@ pub struct ProfileDetails {
 
 /// O que a pessoa está fazendo agora: ouvindo, jogando, trabalhando.
 ///
-/// Hoje só a demonstração preenche isto. O backend ainda não transporta
-/// atividade; quando transportar, o evento alimenta este mesmo modelo e o
-/// cartão não muda.
-#[derive(Debug, Clone, PartialEq)]
+/// Modelo canônico compartilhado entre a detecção local, o transporte
+/// WebSocket do backend e o cartão de perfil.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Activity {
     pub kind: ActivityKind,
     /// Aplicativo ou jogo.
@@ -161,7 +160,8 @@ pub struct Activity {
     pub image: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ActivityKind {
     Listening,
     Playing,
@@ -2996,6 +2996,25 @@ impl Store {
                     }
                 }
                 self.sort_members();
+            }
+            Event::Activity {
+                user_id,
+                activity,
+            } => {
+                match activity {
+                    Some(activity) => {
+                        self.activities.insert(user_id, activity);
+                    }
+                    None => {
+                        self.activities.remove(&user_id);
+                    }
+                }
+            }
+            Event::ActivitySync(members) => {
+                self.activities.clear();
+                for member in members {
+                    self.activities.insert(member.user_id, member.activity);
+                }
             }
             Event::ChannelCreated {
                 id,
