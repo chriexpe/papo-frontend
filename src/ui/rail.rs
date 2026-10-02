@@ -6,6 +6,7 @@
 //! esperam em cada um.
 
 use egui::{Align2, Color32, CornerRadius, Rect, RichText, Sense, Stroke, Vec2};
+use egui_phosphor::regular as icon;
 
 use crate::i18n::Strings;
 
@@ -33,6 +34,7 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RailAction {
     Select(usize),
+    DirectMessages,
     Add,
     Remove(usize),
 }
@@ -42,6 +44,8 @@ pub fn draw(
     root: &mut egui::Ui,
     entries: &[Entry],
     active: usize,
+    direct_unread: u32,
+    direct_active: bool,
     t: &Tokens,
     s: &Strings,
 ) -> Option<RailAction> {
@@ -57,13 +61,19 @@ pub fn draw(
         .show(root, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             for (index, entry) in entries.iter().enumerate() {
-                if let Some(chosen) = tile(ui, entry, index == active, t, s) {
+                if let Some(chosen) = tile(ui, entry, index == active && !direct_active, t, s) {
                     action = Some(match chosen {
                         Tile::Click => RailAction::Select(index),
                         Tile::Remove => RailAction::Remove(index),
                     });
                 }
                 ui.add_space(GAP);
+                if index == active {
+                    if direct_tile(ui, direct_unread, direct_active, t, s) {
+                        action = Some(RailAction::DirectMessages);
+                    }
+                    ui.add_space(GAP);
+                }
             }
             if add_button(ui, t, s) {
                 action = Some(RailAction::Add);
@@ -76,6 +86,51 @@ pub fn draw(
 enum Tile {
     Click,
     Remove,
+}
+
+fn direct_tile(
+    ui: &mut egui::Ui,
+    unread: u32,
+    active: bool,
+    t: &Tokens,
+    s: &Strings,
+) -> bool {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON), Sense::click());
+    let hovered = response.hovered();
+    let corner = if active || hovered { radius::SHEET } else { 16 };
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(corner),
+        if active {
+            t.accent
+        } else if hovered {
+            t.fill_medium
+        } else {
+            t.fill_soft
+        },
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        icon::CHAT_CIRCLE,
+        text::icon(21.0),
+        if active { t.accent_label } else { t.label_secondary },
+    );
+    let marker_height = if active { 24.0 } else if unread > 0 { 8.0 } else { 0.0 };
+    if marker_height > 0.0 {
+        let marker = Rect::from_center_size(
+            egui::pos2(rect.left() - space::SM, rect.center().y),
+            Vec2::new(3.0, marker_height),
+        );
+        ui.painter().rect_filled(marker, CornerRadius::same(2), t.label);
+    }
+    if unread > 0 {
+        badge(ui, rect, unread, t);
+    }
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response.on_hover_text(s.direct_messages).clicked()
 }
 
 fn tile(ui: &mut egui::Ui, entry: &Entry, active: bool, t: &Tokens, s: &Strings) -> Option<Tile> {
