@@ -4993,6 +4993,37 @@ fn message_body(
             #[cfg(not(target_os = "android"))]
             let save = {
                 let edit_id = Id::new(("editar-mensagem", id));
+                // TextEdit consumes Enter before we can inspect its Response, so
+                // decide and remove the submit event first. Shift+Enter is left
+                // untouched and remains the explicit newline gesture.
+                let submit = ui.ctx().memory(|memory| memory.has_focus(edit_id))
+                    && ui.input_mut(|input| {
+                        let submit = input.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: egui::Key::Enter,
+                                    pressed: true,
+                                    modifiers,
+                                    ..
+                                } if !modifiers.shift
+                            )
+                        });
+                        if submit {
+                            input.events.retain(|event| {
+                                !matches!(
+                                    event,
+                                    egui::Event::Key {
+                                        key: egui::Key::Enter,
+                                        pressed: true,
+                                        modifiers,
+                                        ..
+                                    } if !modifiers.shift
+                                )
+                            });
+                        }
+                        submit
+                    });
                 let response = ui.add(
                     egui::TextEdit::multiline(&mut buffer_copy)
                         .id(edit_id)
@@ -5004,10 +5035,7 @@ fn message_body(
                 if std::mem::take(&mut state.edit_focus_pending) {
                     response.request_focus();
                 }
-                response.has_focus()
-                    && ui.input(|input| {
-                        input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
-                    })
+                submit
             };
 
             *buffer = buffer_copy;
