@@ -3,20 +3,21 @@
 //! egui handles text paste itself. Files and bitmap clipboard payloads are
 //! intentionally converted into the same Upload objects as picker/drop input.
 
-use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext};
+use arboard::Clipboard;
 use papo_core::api::client::Upload;
-use std::path::{Path, PathBuf};
 
 pub fn attachments() -> Vec<Upload> {
-    let Ok(clipboard) = ClipboardContext::new() else {
+    let Ok(mut clipboard) = Clipboard::new() else {
         return Vec::new();
     };
 
+    // Native file-list payloads should win over bitmap fallbacks. File managers
+    // frequently also publish text/HTML versions of the same copy operation.
     let files = clipboard
-        .get_files()
+        .get()
+        .file_list()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|entry| clipboard_path(&entry))
         .filter(|path| path.is_file())
         .map(|path| super::files::describe(&path))
         .collect::<Vec<_>>();
@@ -37,7 +38,13 @@ pub fn attachments() -> Vec<Upload> {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     let path = root.join(format!("clipboard-{nanos}.png"));
-    if let Err(error) = image.save_to_path(path.to_string_lossy().as_ref()) {
+    if let Err(error) = image::save_buffer(
+        &path,
+        image.bytes.as_ref(),
+        image.width as u32,
+        image.height as u32,
+        image::ColorType::Rgba8,
+    ) {
         log::warn!("clipboard image: {error}");
         return Vec::new();
     }
@@ -45,38 +52,4 @@ pub fn attachments() -> Vec<Upload> {
     let mut upload = super::files::describe(&path);
     upload.name = "clipboard.png".to_owned();
     vec![upload]
-}
-
-fn clipboard_path(value: &str) -> Option<PathBuf> {
-    if let Ok(url) = url::Url::parse(value)
-        && url.scheme() == "file"
-    {
-        return url.to_file_path().ok();
-    }
-    let path = Path::new(value);
-    path.is_absolute().then(|| path.to_path_buf())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::clipboard_path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn accepts_file_uris_and_absolute_paths() {
-        assert_eq!(
-            clipboard_path("file:///tmp/papo.png"),
-            Some(PathBuf::from("/tmp/papo.png"))
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            clipboard_path("/tmp/papo.png"),
-            Some(PathBuf::from("/tmp/papo.png"))
-        );
-    }
-
-    #[test]
-    fn rejects_non_file_urls() {
-        assert_eq!(clipboard_path("https://example.com/image.png"), None);
-    }
 }
