@@ -1481,7 +1481,19 @@ fn channels_sidebar(
                                         .collect();
                                     let collapsed = state.collapsed_categories.contains(&category.id);
                                     let unread = collapsed && children.iter().any(|c| c.unread || c.mentions > 0);
-                                    let header = category_header(ui, t, &category.name, collapsed, unread, width);
+                                    let (category_icon, category_name) =
+                                        emoji::split_channel_name(&category.name, &store.emojis);
+                                    let header = category_header(
+                                        ui,
+                                        t,
+                                        store,
+                                        &mut state.media,
+                                        category_name,
+                                        category_icon.as_ref(),
+                                        collapsed,
+                                        unread,
+                                        width,
+                                    );
                                     if header.clicked() {
                                         if collapsed {
                                             state.collapsed_categories.remove(&category.id);
@@ -1776,16 +1788,31 @@ fn sidebar_channel(
 ) {
     let voice = channel.kind == ChannelKind::Voice;
     let here = voice && store.call.channel_id == channel.id;
+    let (channel_icon, channel_name) =
+        emoji::split_channel_name(&channel.name, &store.emojis);
     let row = channel_row(
         ui,
         t,
-        if voice { icon::SPEAKER_HIGH } else { icon::HASH },
-        &channel.name,
+        if channel_icon.is_some() {
+            ""
+        } else if voice {
+            icon::SPEAKER_HIGH
+        } else {
+            icon::HASH
+        },
+        channel_name,
         if voice { here } else { store.selected_channel == channel.id },
         !voice && channel.unread,
         if voice { 0 } else { channel.mentions },
         width,
     );
+    if let Some(channel_icon) = channel_icon.as_ref() {
+        let art = Rect::from_center_size(
+            egui::pos2(row.rect.min.x + space::MD + 7.0, row.rect.center().y),
+            Vec2::splat(16.0),
+        );
+        emoji::draw_reaction(ui, t, &mut state.media, store, channel_icon, art);
+    }
     if row.clicked() {
         if voice {
             // Um clique entra, como se espera de uma sala de voz: ela não é
@@ -1811,32 +1838,64 @@ fn sidebar_channel(
 
 /// Cabeçalho de categoria: a seta diz se está aberta; recolhida, um ponto
 /// avisa que tem coisa nova lá dentro.
-fn category_header(ui: &mut egui::Ui, t: &Tokens, name: &str, collapsed: bool, unread: bool, width: f32) -> egui::Response {
+fn category_header(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    store: &Store,
+    media: &mut crate::media::MediaStore,
+    name: &str,
+    channel_icon: Option<&Emoji>,
+    collapsed: bool,
+    unread: bool,
+    width: f32,
+) -> egui::Response {
     ui.add_space(space::SM);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::click());
     let hovered = response.hovered();
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let ink = if hovered { t.label_secondary } else { t.label_tertiary };
+    let ink = if hovered {
+        t.label_secondary
+    } else {
+        t.label_tertiary
+    };
     ui.painter().text(
         egui::pos2(rect.min.x + space::XS + 5.0, rect.center().y),
         egui::Align2::CENTER_CENTER,
-        if collapsed { icon::CARET_RIGHT } else { icon::CARET_DOWN },
+        if collapsed {
+            icon::CARET_RIGHT
+        } else {
+            icon::CARET_DOWN
+        },
         text::icon(10.0),
         ink,
     );
+    let mut text_left = rect.min.x + space::XS + 14.0;
+    if let Some(channel_icon) = channel_icon {
+        let art = Rect::from_center_size(
+            egui::pos2(text_left + 7.0, rect.center().y),
+            Vec2::splat(14.0),
+        );
+        emoji::draw_reaction(ui, t, media, store, channel_icon, art);
+        text_left += 18.0;
+    }
     super::widgets::text_fit(
         ui.painter(),
-        egui::pos2(rect.min.x + space::XS + 14.0, rect.center().y),
+        egui::pos2(text_left, rect.center().y),
         egui::Align2::LEFT_CENTER,
         &name.to_uppercase(),
         text::caption(),
         ink,
-        rect.width() - 30.0,
+        (rect.max.x - space::MD - text_left).max(0.0),
     );
     if unread {
-        ui.painter().circle_filled(egui::pos2(rect.max.x - space::MD, rect.center().y), 3.0, t.label);
+        ui.painter().circle_filled(
+            egui::pos2(rect.max.x - space::MD, rect.center().y),
+            3.0,
+            t.label,
+        );
     }
     response
 }
@@ -2962,9 +3021,13 @@ fn channel_pill(
     let ui = &mut top;
 
     let painter = ui.painter();
-    let glyph =
-        painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
-    let name = painter.layout_no_wrap(channel.name.clone(), text::title3(), t.label);
+    let (channel_icon, channel_name) =
+        emoji::split_channel_name(&channel.name, &store.emojis);
+    let glyph = channel_icon.is_none().then(|| {
+        painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary)
+    });
+    let leading_width = glyph.as_ref().map(|glyph| glyph.size().x).unwrap_or(16.0);
+    let name = painter.layout_no_wrap(channel_name.to_owned(), text::title3(), t.label);
     let topic = topic_text.map(|topic| {
         const TOPIC_SNIPPET_CHARS: usize = 80;
         let mut chars = topic.chars();
@@ -3005,7 +3068,7 @@ fn channel_pill(
         }
     };
 
-    let base_width = space::LG + glyph.size().x + space::SM + name.size().x + space::LG;
+    let base_width = space::LG + leading_width + space::SM + name.size().x + space::LG;
     let topic_width = topic
         .as_ref()
         .map(|topic| space::LG + 1.0 + space::LG + topic.size().x)
@@ -3059,12 +3122,20 @@ fn channel_pill(
     let mid = header.center().y;
     let mut x = header.min.x + space::LG;
     let painter = ui.painter();
-    painter.galley(
-        egui::pos2(x, mid - glyph.size().y / 2.0),
-        glyph.clone(),
-        t.label_tertiary,
-    );
-    x += glyph.size().x + space::SM;
+    if let Some(channel_icon) = channel_icon.as_ref() {
+        let art = Rect::from_center_size(
+            egui::pos2(x + leading_width / 2.0, mid),
+            Vec2::splat(16.0),
+        );
+        emoji::draw_reaction(ui, t, &mut state.media, store, channel_icon, art);
+    } else if let Some(glyph) = glyph.as_ref() {
+        painter.galley(
+            egui::pos2(x, mid - glyph.size().y / 2.0),
+            glyph.clone(),
+            t.label_tertiary,
+        );
+    }
+    x += leading_width + space::SM;
     painter.galley(
         egui::pos2(x, mid - name.size().y / 2.0),
         name.clone(),
@@ -3495,18 +3566,23 @@ fn search_shortcuts(
             let mut channels: Vec<_> = store
                 .channels
                 .iter()
-                .filter(|channel| {
-                    needle.is_empty() || channel.name.to_lowercase().contains(&needle)
+                .map(|channel| {
+                    let (_, name) =
+                        emoji::split_channel_name(&channel.name, &store.emojis);
+                    (channel, name)
+                })
+                .filter(|(_, name)| {
+                    needle.is_empty() || name.to_lowercase().contains(&needle)
                 })
                 .collect();
-            channels.sort_by_key(|channel| {
-                let name = channel.name.to_lowercase();
+            channels.sort_by_key(|(_, channel_name)| {
+                let name = channel_name.to_lowercase();
                 (!name.starts_with(&needle), name)
             });
-            for channel in channels.into_iter().take(6) {
+            for (_, channel_name) in channels.into_iter().take(6) {
                 out.push(SearchShortcut {
-                    label: format!("em: #{}", channel.name),
-                    replacement: format!("em:#{}", channel.name),
+                    label: format!("em: #{channel_name}"),
+                    replacement: format!("em:#{channel_name}"),
                 });
             }
         }
@@ -3597,7 +3673,12 @@ fn search_channel_id(store: &Store, raw: &str) -> Option<String> {
     store
         .channels
         .iter()
-        .find(|channel| channel.name.eq_ignore_ascii_case(value) || channel.id == value)
+        .find(|channel| {
+            let (_, name) = emoji::split_channel_name(&channel.name, &store.emojis);
+            name.eq_ignore_ascii_case(value)
+                || channel.name.eq_ignore_ascii_case(value)
+                || channel.id == value
+        })
         .map(|channel| channel.id.clone())
 }
 
@@ -3929,7 +4010,9 @@ fn search_panel(
             (
                 result.channel_id.clone(),
                 result.id.clone(),
-                result.channel_name.clone(),
+                emoji::split_channel_name(&result.channel_name, &store.emojis)
+                    .1
+                    .to_owned(),
                 member.map(|member| member.id.clone()),
                 member
                     .map(|member| member.name.clone())
@@ -7545,7 +7628,11 @@ fn composer(
 
     let channel_name = store
         .channel(&store.selected_channel)
-        .map(|c| c.name.clone())
+        .map(|channel| {
+            emoji::split_channel_name(&channel.name, &store.emojis)
+                .1
+                .to_owned()
+        })
         .unwrap_or_default();
 
     // Botões do lado direito, de fora para dentro: enviar, gif, figurinha,

@@ -268,7 +268,15 @@ fn contents(
         .channels
         .iter()
         .filter(|channel| channel.kind != ChannelKind::Category)
-        .map(|channel| (channel.id.clone(), channel.name.clone(), channel.kind, ChannelNotifyMode::parse(&channel.notification_settings)))
+        .map(|channel| {
+            let (_, name) = super::emoji::split_channel_name(&channel.name, &store.emojis);
+            (
+                channel.id.clone(),
+                name.to_owned(),
+                channel.kind,
+                ChannelNotifyMode::parse(&channel.notification_settings),
+            )
+        })
         .collect();
     if !channels.is_empty() {
         section(ui, t, width, s.card_alerts, |ui| {

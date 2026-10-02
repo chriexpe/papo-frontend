@@ -1898,6 +1898,7 @@ fn channel_tree(
     t: &Tokens,
     s: &Strings,
     store: &Store,
+    media: &mut crate::media::MediaStore,
     collapsed: &mut std::collections::HashSet<String>,
     dragging: &mut Option<String>,
 ) -> Option<TreeAction> {
@@ -1951,6 +1952,8 @@ fn channel_tree(
             if hovered { t.label_secondary } else { t.label_tertiary }.gamma_multiply(alpha),
         );
 
+        let (channel_icon, channel_name) =
+            super::emoji::split_channel_name(&channel.name, &store.emojis);
         let mut x = grip.max.x + space::XS;
         if is_category {
             let folded = collapsed.contains(&channel.id);
@@ -1969,13 +1972,43 @@ fn channel_tree(
                 }
             }
             x += 16.0;
+            if let Some(channel_icon) = channel_icon.as_ref() {
+                let art = Rect::from_center_size(
+                    egui::pos2(x + 7.0, rect.center().y),
+                    Vec2::splat(14.0),
+                );
+                super::emoji::draw_reaction(ui, t, media, store, channel_icon, art);
+                x += 18.0;
+            }
         } else {
-            let glyph = if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH };
-            ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+            if let Some(channel_icon) = channel_icon.as_ref() {
+                let art = Rect::from_center_size(
+                    egui::pos2(x + 7.0, rect.center().y),
+                    Vec2::splat(14.0),
+                );
+                super::emoji::draw_reaction(ui, t, media, store, channel_icon, art);
+            } else {
+                let glyph = if channel.kind == crate::state::ChannelKind::Voice {
+                    icon::SPEAKER_HIGH
+                } else {
+                    icon::HASH
+                };
+                ui.painter().text(
+                    egui::pos2(x + 6.0, rect.center().y),
+                    egui::Align2::CENTER_CENTER,
+                    glyph,
+                    text::icon(13.0),
+                    t.label_tertiary.gamma_multiply(alpha),
+                );
+            }
             x += 18.0;
         }
         let tools_w = if hovered { 60.0 } else { 0.0 };
-        let name = if is_category { channel.name.to_uppercase() } else { channel.name.clone() };
+        let name = if is_category {
+            channel_name.to_uppercase()
+        } else {
+            channel_name.to_owned()
+        };
         let name_rect = crate::ui::widgets::text_fit(
             ui.painter(),
             egui::pos2(x, rect.center().y),
@@ -2006,7 +2039,7 @@ fn channel_tree(
                 ui.painter().text(tool.center(), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), if danger { t.danger } else { t.label_secondary });
                 if tool_response.clicked() {
                     action = Some(if which == 1 {
-                        TreeAction::Delete(channel.id.clone(), channel.name.clone())
+                        TreeAction::Delete(channel.id.clone(), channel_name.to_owned())
                     } else {
                         TreeAction::Edit(channel.id.clone())
                     });
@@ -4131,7 +4164,15 @@ fn server_pane(
             if channels.is_empty() {
                 group(ui, t, |rows| rows.row(s.no_channels_yet, None, |_, _| {}));
             } else {
-                match channel_tree(ui, t, s, data.store, data.collapsed, &mut state.drag_channel) {
+                match channel_tree(
+                    ui,
+                    t,
+                    s,
+                    data.store,
+                    data.media,
+                    data.collapsed,
+                    &mut state.drag_channel,
+                ) {
                     Some(TreeAction::Edit(id)) => {
                         draft.deleting = None;
                         draft.channel_permission = None;
@@ -4310,7 +4351,11 @@ fn audit_pane(
             .channels
             .iter()
             .filter(|channel| channel.kind != crate::state::ChannelKind::Category)
-            .map(|channel| (Some(channel.id.as_str()), format!("#{}", channel.name))),
+            .map(|channel| {
+                let (_, name) =
+                    super::emoji::split_channel_name(&channel.name, &data.store.emojis);
+                (Some(channel.id.as_str()), format!("#{name}"))
+            }),
     );
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(space::SM, space::SM);
@@ -4389,7 +4434,13 @@ fn audit_pane(
     let store = data.store;
     let lookup = |id: &str| store.member(id).map(|member| (member.name.clone(), member.username.clone()));
     let person = |id: &str| store.member(id).map(|member| member.name.clone());
-    let channel = |id: &str| store.channel(id).map(|channel| channel.name.clone());
+    let channel = |id: &str| {
+        store.channel(id).map(|channel| {
+            super::emoji::split_channel_name(&channel.name, &store.emojis)
+                .1
+                .to_owned()
+        })
+    };
     let names = audit::Names { person: &person, channel: &channel };
     let shown: Vec<&crate::api::models::AuditLogEntry> =
         store.audit_logs.iter().filter(|entry| filter.keeps(entry, &lookup, now)).collect();
