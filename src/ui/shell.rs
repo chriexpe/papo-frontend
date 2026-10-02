@@ -2288,6 +2288,112 @@ fn pill_surface(ui: &egui::Ui, state: &UiState, t: &Tokens, rect: Rect) {
     );
 }
 
+/// Atalhos contextuais da timeline. São botões independentes, não uma barra:
+/// cada um só existe enquanto há um destino útil e todos somem durante scroll.
+fn timeline_nav_controls(
+    ui: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+    bottom_inset: f32,
+) -> Vec<Rect> {
+    const SIZE: f32 = 38.0;
+    const GAP: f32 = 8.0;
+    const SETTLE_SECONDS: f64 = 0.28;
+
+    if state.panel.is_some()
+        || state.viewer.is_some()
+        || state.link_viewer.is_some()
+        || state.webembed_blocked
+    {
+        return Vec::new();
+    }
+
+    let now = ui.input(|input| input.time);
+    let actively_scrolling = now - state.last_scroll_activity < SETTLE_SECONDS
+        || ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1);
+    if actively_scrolling {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(90));
+        return Vec::new();
+    }
+
+    let channel_id = store.selected_channel.clone();
+    if channel_id.is_empty() {
+        return Vec::new();
+    }
+
+    let latest_visible = state.visible_message_ids.last().cloned();
+    let newest = store.newest_loaded(&channel_id);
+    let forward = store.jump_forward_target(&channel_id);
+    let show_newer = newest.as_ref().is_some_and(|newest| {
+        latest_visible.as_ref() != Some(newest)
+            || forward.as_ref().is_some_and(|target| latest_visible.as_ref() != Some(target))
+    });
+    let back = store.jump_back_target(&channel_id);
+    let mention = store.next_mention_target(&channel_id);
+
+    let mut controls: Vec<(&'static str, &'static str, u8)> = Vec::new();
+    if show_newer {
+        controls.push((icon::ARROW_DOWN, s.jump_newer, 0));
+    }
+    if back.is_some() {
+        controls.push((icon::HOURGLASS, s.jump_back_unread, 1));
+    }
+    if mention.is_some() {
+        controls.push((icon::BELL, s.jump_mention, 2));
+    }
+    if controls.is_empty() {
+        return Vec::new();
+    }
+
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("timeline-nav-layer"));
+    let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(area));
+    let right = area.max.x - PILL_MARGIN;
+    let mut bottom = area.max.y - bottom_inset - space::MD;
+    let mut rects = Vec::with_capacity(controls.len());
+
+    for (glyph, tip, kind) in controls {
+        let rect = Rect::from_min_max(
+            egui::pos2(right - SIZE, bottom - SIZE),
+            egui::pos2(right, bottom),
+        );
+        pill_surface(&top, state, t, rect);
+        let response = top
+            .interact(rect, Id::new(("timeline-nav", kind)), Sense::click())
+            .on_hover_text(tip);
+        if response.hovered() {
+            top.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        top.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(17.0),
+            t.label,
+        );
+
+        if response.clicked() {
+            let target = match kind {
+                0 => store.prepare_newer_jump(&channel_id, latest_visible.as_deref()),
+                1 => back.clone(),
+                2 => mention.clone(),
+                _ => None,
+            };
+            if let Some(message_id) = target {
+                go_to(store, state, &top, &channel_id, &message_id);
+                state.last_scroll_activity = now;
+            }
+        }
+
+        rects.push(rect);
+        bottom = rect.min.y - GAP;
+    }
+
+    rects
+}
+
 /// Aviso de conexão, centralizado no alto: só aparece quando o socket não
 /// está de pé.
 fn connection_pill(
@@ -2463,6 +2569,47 @@ fn conversation(
         // pastilhas.
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             let channel_id = store.selected_channel.clone();
+
+            // Resolver a abertura só depois que a primeira página existe. Se a
+            // fronteira durável ficou fora da página quente, trazemos páginas
+            // antigas até encontrá-la; usar "a mais velha carregada" quebraria
+            // justamente a semântica do bloco não lido.
+            if state.open_channel_pending.as_deref() == Some(channel_id.as_str())
+                && store.newest_loaded(&channel_id).is_some()
+            {
+                let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
+                let anchor_id = store.read_anchor_id(&channel_id);
+                let anchor_missing = anchor_id
+                    .as_ref()
+                    .is_some_and(|id| store.message(id).is_none());
+                if unread && anchor_missing && store.can_load_older(&channel_id) {
+                    state.actions.push(ChatAction::LoadOlderMessages);
+                } else {
+                    let target = if unread && state.open_at_newest {
+                        store.prepare_open_at_newest(&channel_id)
+                    } else if unread {
+                        store
+                            .read_anchor_target(&channel_id)
+                            .or_else(|| store.first_unread_loaded(&channel_id))
+                    } else {
+                        None
+                    };
+                    if let Some(message_id) = target {
+                        state.jump = Some(Jump {
+                            message_id,
+                            found: None,
+                            since: ui.input(|input| input.time),
+                        });
+                    }
+                    state.open_channel_pending = None;
+                }
+            }
+
+            let previous_offset = state
+                .chat_scroll_metrics
+                .as_ref()
+                .filter(|(previous_channel, _, _)| previous_channel == &channel_id)
+                .map(|(_, offset, _)| *offset);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
@@ -2542,6 +2689,12 @@ fn conversation(
                 ui.ctx().request_discard("preview/mídia mudou acima da viewport");
             }
 
+            if previous_offset
+                .is_some_and(|offset| (offset - output.state.offset.y).abs() > 0.75)
+                || ui.input(|input| input.smooth_scroll_delta.y.abs() > 0.1)
+            {
+                state.last_scroll_activity = ui.input(|input| input.time);
+            }
             state.chat_scroll_metrics = Some((
                 channel_id,
                 output.state.offset.y,
@@ -2571,9 +2724,19 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
+        let nav_rects = timeline_nav_controls(
+            ui,
+            store,
+            state,
+            t,
+            s,
+            full,
+            bottom_inset,
+        );
         composer(ui, store, state, t, s, full, composer_height);
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
+        state.webembed_occlusions.extend(nav_rects);
         call_layers(
             ui,
             store,
