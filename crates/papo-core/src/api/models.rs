@@ -227,6 +227,31 @@ pub struct ChannelLastMessage {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// Conversa direta 1:1. O `id` também é o `channel_id` usado por todo o
+/// pipeline normal de mensagens, anexos, reações, replies e pins.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectConversation {
+    pub id: String,
+    pub user: UserSummary,
+    pub created_at: DateTime<Utc>,
+    pub last_message: Option<ChannelLastMessage>,
+    pub last_read_message: Option<String>,
+    pub last_read_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub unread_count: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DirectConversationList {
+    #[serde(default)]
+    pub dms: Vec<DirectConversation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenDirectMessageRequest {
+    pub user_id: String,
+}
+
 /// Criação de canal (`POST /channels`). O `type` do contrato é uma das três
 /// palavras `text`, `voice` ou `category`; o tópico só vale para os dois
 /// primeiros, então vai fora quando está vazio.
