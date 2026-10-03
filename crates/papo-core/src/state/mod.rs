@@ -5278,4 +5278,61 @@ mod tests {
         assert_eq!(store.next_mention_target("geral").as_deref(), Some("m5"));
     }
 
+    #[test]
+    fn visible_head_clears_stale_unread_badge_even_when_cursor_does_not_move() {
+        let mut store = navigation_store(3);
+        let newest = store.messages[2].clone();
+        {
+            let state = store.read_states.get_mut("geral").unwrap();
+            state.read_at = Some(newest.at.with_timezone(&Utc));
+            state.read_message_id = Some(newest.id.clone());
+        }
+        store.channels[0].unread = true;
+
+        store.observe_visible_messages("geral", &[newest.id]);
+
+        assert!(!store.channels[0].unread);
+    }
+
+    #[test]
+    fn reached_checkpoint_is_not_exposed_as_hourglass_target() {
+        let mut store = navigation_store(4);
+        {
+            let newest = store.messages[3].clone();
+            let state = store.read_states.get_mut("geral").unwrap();
+            state.read_at = Some(newest.at.with_timezone(&Utc));
+            state.read_message_id = Some(newest.id.clone());
+            state.jump_back = Some("m2".to_owned());
+            state.jump_forward = Some(newest.id);
+        }
+
+        assert_eq!(store.jump_back_target("geral"), None);
+        assert_eq!(store.jump_forward_target("geral"), None);
+        assert_eq!(store.prepare_open_at_newest("geral"), None);
+        let state = store.read_states.get("geral").unwrap();
+        assert!(state.jump_back.is_none());
+        assert!(state.jump_forward.is_none());
+    }
+
+    #[test]
+    fn reaching_forward_checkpoint_keeps_seen_messages_after_it() {
+        let mut store = navigation_store(6);
+        {
+            let state = store.read_states.get_mut("geral").unwrap();
+            state.jump_back = Some("m2".to_owned());
+            state.jump_forward = Some("m4".to_owned());
+            state.seen_out_of_order.insert("m5".to_owned());
+        }
+
+        store.observe_visible_messages(
+            "geral",
+            &["m2".to_owned(), "m3".to_owned(), "m4".to_owned()],
+        );
+
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(state.read_message_id.as_deref(), Some("m5"));
+        assert!(state.jump_back.is_none());
+        assert!(state.jump_forward.is_none());
+    }
+
 }
