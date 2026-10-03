@@ -1413,39 +1413,30 @@ impl PapoApp {
         }
 
         let screen = ctx.content_rect();
-        #[cfg(target_os = "android")]
-        let (size, pos) = {
-            let width = (screen.width() - 48.0).clamp(240.0, 380.0);
-            let size = egui::vec2(width, 48.0);
-            (size, screen.center() - size * 0.5)
-        };
-        #[cfg(target_os = "windows")]
-        let (size, pos) = {
-            // The closed search/pinned/actions pill is anchored 12 px from the
-            // chat area's top-right edge. Keep update progress as a separate
-            // sibling immediately to its left rather than occupying the chat.
-            let actions_width =
-                crate::ui::shell::ACTIONS_PILL_WIDTH + crate::ui::shell::PILL_MARGIN;
-            let width = 270.0;
-            let size = egui::vec2(width, crate::ui::shell::PILL_HEIGHT);
-            let right = screen.max.x - actions_width - crate::ui::shell::PILL_MARGIN;
-            let pos = egui::pos2(
-                right - width,
-                screen.min.y + crate::ui::shell::PILL_MARGIN,
-            );
-            (size, pos)
-        };
+        // Use the same top-center corridor as the ordinary compact call pill.
+        // The update capsule is only slightly larger, but keeps the exact same
+        // center line so it reads as part of the chat chrome rather than as a
+        // window-level overlay.
+        let area = self.ui.call_pill_area.unwrap_or(screen);
+        let height = crate::ui::shell::PILL_HEIGHT + 6.0;
+        let width = (area.width() - crate::ui::shell::PILL_MARGIN)
+            .clamp(1.0, 300.0);
+        let size = egui::vec2(width, height);
+        let call_center_y = area.min.y
+            + crate::ui::shell::PILL_MARGIN
+            + crate::ui::shell::PILL_HEIGHT / 2.0;
+        let pos = egui::pos2(
+            area.center().x - width / 2.0,
+            call_center_y - height / 2.0,
+        );
+
         egui::Area::new(egui::Id::new("papo-update-progress-pill"))
             .order(egui::Order::Foreground)
             .fixed_pos(pos)
             .show(ctx, |ui| {
                 ui.set_min_size(size);
                 let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-                #[cfg(target_os = "android")]
-                let rounding = egui::CornerRadius::same(24);
-                #[cfg(target_os = "windows")]
-                let rounding =
-                    egui::CornerRadius::same(crate::ui::shell::PILL_RADIUS as u8);
+                let rounding = egui::CornerRadius::same((size.y / 2.0) as u8);
                 ui.painter().rect(
                     rect,
                     rounding,

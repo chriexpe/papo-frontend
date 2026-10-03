@@ -850,6 +850,10 @@ pub struct UiState {
     pub collapsed_categories: std::collections::HashSet<String>,
     /// Onde a pastilha do servidor está neste quadro: é a base do cartão.
     pub server_pill: Option<Rect>,
+    /// Corredor superior onde a pastilha compacta da call é centralizada.
+    /// Outros avisos transitórios que ocupam a mesma função visual usam esta
+    /// geometria em vez de se ancorar na janela inteira.
+    pub call_pill_area: Option<Rect>,
     /// Endereço e quantidade de servidores, que o cartão mostra e usa.
     pub server_url: String,
     pub server_count: usize,
@@ -1001,6 +1005,7 @@ impl Default for UiState {
             server_card: None,
             collapsed_categories: Default::default(),
             server_pill: None,
+            call_pill_area: None,
             server_url: String::new(),
             server_count: 1,
             back: false,
@@ -1101,6 +1106,7 @@ pub fn draw(
     state.media_seek_zones.clear();
     state.visible_message_ids.clear();
     state.webembed_inline_rect = None;
+    state.call_pill_area = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens. A compensação
     // fina dos previews é feita por cartão, onde sabemos se ele está acima da
@@ -3516,6 +3522,10 @@ fn call_layers(
     } else {
         full
     };
+    // Export the exact corridor used by the compact call pill. The updater
+    // renders after the shell, so keeping this geometry in UiState lets it
+    // occupy the same visual slot without guessing from the whole window.
+    state.call_pill_area = Some(pill_area);
 
     match stage {
         Some(Stage::Floating) => {
