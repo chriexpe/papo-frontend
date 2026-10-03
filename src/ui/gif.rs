@@ -69,14 +69,9 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         egui::pos2(inner.min.x, inner.max.y - SEARCH_H),
         inner.max,
     );
-    let attribution_h = 16.0;
     let body_rect = Rect::from_min_max(
         inner.min,
-        egui::pos2(inner.max.x, search_rect.min.y - space::SM - attribution_h),
-    );
-    let attribution_rect = Rect::from_min_max(
-        egui::pos2(inner.min.x, body_rect.max.y),
-        egui::pos2(inner.max.x, search_rect.min.y - space::XXS),
+        egui::pos2(inner.max.x, search_rect.min.y - space::SM),
     );
 
     let mut giphy = state.giphy.take().expect("GIPHY store initialized");
@@ -122,14 +117,6 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
             }
         }
     }
-
-    ui.painter().text(
-        attribution_rect.right_center(),
-        egui::Align2::RIGHT_CENTER,
-        "Powered by GIPHY",
-        text::caption(),
-        t.label_tertiary,
-    );
 
     draw_search(ui, state, t, s, &mut giphy, search_rect);
 
@@ -196,13 +183,6 @@ fn draw_home(
     s: &Strings,
     giphy: &mut crate::giphy::Store,
 ) {
-    ui.label(
-        RichText::new(s.gif_categories.to_uppercase())
-            .font(text::caption())
-            .color(t.label_tertiary),
-    );
-    ui.add_space(space::SM);
-
     let grid_width = ui.available_width().max(1.0);
     let grid_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
@@ -542,6 +522,17 @@ fn draw_search(
                 .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
         );
     }
+
+    // GIPHY attribution belongs to the search control instead of consuming a
+    // separate row in the picker. Keep it tucked into the lower-right corner
+    // so the home grid can use the full rounded sheet.
+    ui.painter().text(
+        rect.max - Vec2::new(space::SM, space::XXS),
+        egui::Align2::RIGHT_BOTTOM,
+        "Powered by GIPHY",
+        text::caption(),
+        t.label_tertiary,
+    );
 
     if giphy.browser.query != before {
         giphy.query_changed(ui.input(|input| input.time));
