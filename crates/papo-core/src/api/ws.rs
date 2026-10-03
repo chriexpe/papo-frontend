@@ -631,7 +631,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn le_presence_sync_com_canais_de_voz() {
         let event = parse(r#"{"type":"presence_sync","members":[{"user_id":"u1","status":"online","status_message":null,"user_voice":["voz-1","voz-2"]}]}"#);
         assert!(matches!(
@@ -653,6 +652,7 @@ mod tests {
         ));
     }
 
+    #[test]
     fn le_presence_com_metadados_completos() {
         let event = parse(r#"{"type":"presence_update","user_id":"u1","status":"away","status_message":"almoço","typing":"digitando…","nickname":"Ana"}"#);
         assert!(matches!(
