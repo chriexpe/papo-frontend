@@ -2911,35 +2911,62 @@ fn conversation(
         ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
             let channel_id = store.selected_channel.clone();
 
-            // Resolver a abertura só depois que a primeira página existe. Se a
-            // fronteira durável ficou fora da página quente, trazemos páginas
-            // antigas até encontrá-la; usar "a mais velha carregada" quebraria
-            // justamente a semântica do bloco não lido.
-            if state.open_channel_pending.as_deref() == Some(channel_id.as_str())
-                && store.newest_loaded(&channel_id).is_some()
-            {
+            // A abertura de um canal tem uma fase própria. O primeiro quadro
+            // com conteúdo serve para resolver e medir a posição inicial; ele
+            // nunca deve chegar à tela. Isso evita depender de `stick_to_bottom`
+            // para corrigir, no fim do quadro, um ScrollArea que começou em 0.
+            //
+            // Se a fronteira durável ficou fora da página quente, trazemos
+            // páginas antigas até encontrá-la antes de estabilizar a abertura.
+            let opening_pass =
+                state.open_channel_pending.as_deref() == Some(channel_id.as_str());
+            let mut opening_at_bottom = false;
+            let mut opening_at_message = false;
+            if opening_pass && store.newest_loaded(&channel_id).is_some() {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
                 let anchor_missing = store.read_anchor_needs_history(&channel_id);
                 if unread && anchor_missing && store.can_load_older(&channel_id) {
                     state.actions.push(ChatAction::LoadOlderMessages);
-                } else {
-                    let target = if unread && state.open_at_newest {
-                        store.prepare_open_at_newest(&channel_id)
-                    } else if unread {
-                        store
-                            .read_anchor_target(&channel_id)
-                            .or_else(|| store.first_unread_loaded(&channel_id))
-                    } else {
-                        None
-                    };
-                    if let Some(message_id) = target {
+                } else if unread && state.open_at_newest {
+                    // Preserva a máquina de checkpoints/ampulheta. Quando o
+                    // destino é o head carregado, a posição correta é o fim da
+                    // timeline; um checkpoint congelado anterior continua
+                    // sendo um salto explícito para aquela mensagem.
+                    let newest = store.newest_loaded(&channel_id);
+                    match store.prepare_open_at_newest(&channel_id) {
+                        Some(message_id)
+                            if newest.as_deref() == Some(message_id.as_str()) =>
+                        {
+                            opening_at_bottom = true;
+                        }
+                        Some(message_id) => {
+                            state.jump = Some(Jump {
+                                message_id,
+                                found: None,
+                                since: ui.input(|input| input.time),
+                            });
+                            opening_at_message = true;
+                        }
+                        None => {
+                            opening_at_bottom = true;
+                        }
+                    }
+                } else if unread {
+                    if let Some(message_id) = store
+                        .read_anchor_target(&channel_id)
+                        .or_else(|| store.first_unread_loaded(&channel_id))
+                    {
                         state.jump = Some(Jump {
                             message_id,
                             found: None,
                             since: ui.input(|input| input.time),
                         });
+                        opening_at_message = true;
+                    } else {
+                        opening_at_bottom = true;
                     }
-                    state.open_channel_pending = None;
+                } else {
+                    opening_at_bottom = true;
                 }
             }
 
@@ -2956,6 +2983,10 @@ fn conversation(
                     egui::containers::scroll_area::ScrollSource::ALL
                 })
                 .auto_shrink([false, false])
+                // Um salto que resolve a abertura não pode animar a partir da
+                // posição velha/zero. O quadro que calcula o alvo é descartado
+                // e o próximo já nasce na posição final.
+                .animated(!(opening_at_bottom || opening_at_message))
                 .stick_to_bottom(true);
             if let Some((forced_channel, offset)) = state.forced_chat_scroll.take() {
                 if forced_channel == channel_id {
@@ -2964,8 +2995,7 @@ fn conversation(
                     state.forced_chat_scroll = Some((forced_channel, offset));
                 }
             }
-            let mut request_older = false;
-            let output = scroll.show_viewport(ui, |ui, viewport| {
+            let output = scroll.show_viewport(ui, |ui, _viewport| {
                 let web_scroll = state
                     .webembed
                     .take_scroll_delta_points(ui.ctx().pixels_per_point());
@@ -2975,25 +3005,51 @@ fn conversation(
                 ui.add_space(top_inset);
                 // `message_list` mede cada linha em coordenadas absolutas
                 // (`inner.response.rect`), então o retângulo "legível" precisa
-                // estar no mesmo espaço. O `viewport` do `show_viewport` é
-                // relativo ao conteúdo (`Rect::from_min_size(ZERO + offset, …)`),
-                // e intersectá-lo com linhas absolutas nunca casa — era o que
-                // impedia qualquer linha de contar como vista logo depois de
-                // rolar, travando a fronteira de leitura. `full` é
-                // `ui.max_rect()`, absoluto, e acompanha as linhas.
+                // estar no mesmo espaço. O viewport do `show_viewport` é
+                // relativo ao conteúdo; `full` é absoluto e acompanha as linhas.
                 let readable = Rect::from_min_max(
                     egui::pos2(full.min.x, full.min.y + top_inset),
                     egui::pos2(full.max.x, full.max.y - bottom_inset),
                 );
                 message_list(ui, store, state, t, s, full, readable);
                 ui.add_space(bottom_inset);
-
-                request_older = viewport.min.y <= top_inset + 360.0
-                    && store.can_load_older(&channel_id)
-                    && state.history_scroll_anchor.is_none();
             });
 
-            if request_older && output.content_size.y > 0.0 {
+            // A primeira geometria útil do canal é somente uma medição. Para
+            // abrir no head, grava explicitamente o offset medido e refaz o
+            // quadro antes de apresentá-lo. Para um anchor, `scroll_to_rect`
+            // já atualizou o estado do ScrollArea sem animação; o discard faz
+            // o próximo passe começar nesse estado.
+            if opening_at_bottom {
+                let bottom =
+                    (output.content_size.y - output.inner_rect.height()).max(0.0);
+                state.forced_chat_scroll = Some((channel_id.clone(), bottom));
+                state.open_channel_pending = None;
+                ui.ctx()
+                    .request_discard("posição inicial da conversa resolvida no head");
+            } else if opening_at_message
+                && state
+                    .jump
+                    .as_ref()
+                    .is_some_and(|jump| jump.found.is_some())
+            {
+                state.open_channel_pending = None;
+                ui.ctx()
+                    .request_discard("posição inicial da conversa resolvida no anchor");
+            }
+
+            // Só pagina depois que a abertura estabilizou e com base no offset
+            // realmente aplicado pelo ScrollArea. O viewport passado à closure
+            // ainda reflete o offset de entrada e pode dizer "topo" no mesmo
+            // quadro em que `stick_to_bottom` encosta no fim.
+            let request_older = !opening_pass
+                && output.state.offset.y <= top_inset + 360.0
+                && output.content_size.y > output.inner_rect.height() + 1.0
+                && store.can_load_older(&channel_id)
+                && state.history_scroll_anchor.is_none()
+                && state.jump.is_none();
+
+            if request_older {
                 state.history_scroll_anchor = Some((
                     channel_id.clone(),
                     output.state.offset.y,
