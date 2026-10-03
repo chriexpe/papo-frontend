@@ -343,7 +343,6 @@ pub struct Settings {
     pub downloads: DownloadMode,
     /// Stable GIPHY IDs only; provider media stays transient.
     #[serde(default)]
-    #[serde(default)]
     pub gif_favourites: std::collections::BTreeSet<String>,
     /// Rich Presence deste dispositivo. Não é sincronizado com a conta:
     /// processo local, bridge arRPC e override são propriedades da máquina.
@@ -989,8 +988,8 @@ impl PapoApp {
         ui_state.trusted_link_hosts = settings.trusted_link_hosts.clone();
         ui_state.gif_favourites = settings.gif_favourites.clone();
         ui_state.gif_locale = match settings.lang {
-            Lang::PtBr => "pt_BR",
-            Lang::En => "en_US",
+            Lang::PtBr => "pt",
+            Lang::En => "en",
         }
         .to_owned();
         ui_state.glass = glass;
