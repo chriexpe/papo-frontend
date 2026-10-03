@@ -900,6 +900,12 @@ pub struct UserList {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UserBlockList {
+    #[serde(default, deserialize_with = "nullable_list")]
+    pub users: Vec<UserSummary>,
+}
+
 /// Erro no formato RFC 7807 devolvido pelo backend.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Problem {
