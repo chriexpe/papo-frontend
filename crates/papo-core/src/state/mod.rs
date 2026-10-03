@@ -1768,18 +1768,15 @@ impl Store {
         ));
     }
 
-    fn has_loaded_unread(&self, channel_id: &str) -> bool {
+    fn refresh_channel_read_badge(&mut self, channel_id: &str) {
         let frontier = self.frontier_key(channel_id);
-        self.messages_in(channel_id)
+        let has_newer = self
+            .messages_in(channel_id)
             .filter(|message| !message.pending && message.author_id != self.me)
             .any(|message| {
                 let key = (message.at.with_timezone(&Utc), message.id.clone());
                 frontier.as_ref().is_none_or(|mark| key > *mark)
-            })
-    }
-
-    fn refresh_channel_read_badge(&mut self, channel_id: &str) {
-        let has_newer = self.has_loaded_unread(channel_id);
+            });
         let mentions = self
             .read_states
             .get(channel_id)
@@ -1788,47 +1785,6 @@ impl Store {
             channel.unread = has_newer || mentions > 0;
             channel.mentions = mentions;
         }
-    }
-
-    fn checkpoint_reached(&self, channel_id: &str, target: &str) -> bool {
-        let Some(state) = self.read_states.get(channel_id) else {
-            return false;
-        };
-        if state.read_message_id.as_deref() == Some(target) {
-            return true;
-        }
-        let Some((target_at, target_id)) = self.message_key(target) else {
-            return false;
-        };
-        match (state.read_at, state.read_message_id.as_deref()) {
-            (Some(read_at), Some(read_id)) => {
-                (read_at, read_id) >= (target_at, target_id.as_str())
-            }
-            (Some(read_at), None) => read_at >= target_at,
-            (None, _) => false,
-        }
-    }
-
-    /// Um checkpoint deixa de existir assim que a fronteira de leitura o
-    /// alcança ou passa. Não limpe `seen_out_of_order`: mensagens realmente
-    /// vistas depois do checkpoint continuam válidas para a próxima lacuna.
-    fn retire_reached_checkpoint(&mut self, channel_id: &str) -> bool {
-        let target = self
-            .read_states
-            .get(channel_id)
-            .and_then(|state| state.jump_forward.clone());
-        let Some(target) = target else {
-            return false;
-        };
-        if !self.checkpoint_reached(channel_id, &target) {
-            return false;
-        }
-        let Some(state) = self.read_states.get_mut(channel_id) else {
-            return false;
-        };
-        state.jump_back = None;
-        state.jump_forward = None;
-        true
     }
 
     /// Registra apenas mensagens que realmente cruzaram a viewport. Saltos
@@ -1917,59 +1873,19 @@ impl Store {
             self.read_marks.insert(channel_id.to_owned(), read_at);
         }
 
-        // Enquanto há um salto para o head congelado, a ampulheta é também
-        // o ponto de retomada da leitura. Ela começa no primeiro item pulado,
-        // mas acompanha a fronteira conforme o usuário volta e lê o bloco.
-        // Ver o head fora de ordem não move isso: a fronteira continua antes
-        // do jump_back até a lacuna ser consumida de verdade.
-        if let (Some(forward), Some(read_id)) =
-            (state.jump_forward.clone(), state.read_message_id.clone())
+        if state
+            .jump_forward
+            .as_ref()
+            .is_some_and(|target| state.read_message_id.as_ref() == Some(target))
         {
-            let key_for = |id: &str| {
-                ordered
-                    .iter()
-                    .find(|(_, candidate)| candidate == id)
-                    .cloned()
-            };
-            if let (Some(read_key), Some(forward_key)) =
-                (key_for(&read_id), key_for(&forward))
-                && read_key < forward_key
-            {
-                let can_advance = state
-                    .jump_back
-                    .as_deref()
-                    .and_then(key_for)
-                    .is_none_or(|back_key| read_key >= back_key);
-                if can_advance {
-                    state.jump_back = Some(read_id);
-                }
-            }
-        }
-
-        let reached_forward = state.jump_forward.as_ref().is_some_and(|target| {
-            ordered
-                .iter()
-                .find(|(_, id)| id == target)
-                .is_some_and(|(target_at, target_id)| {
-                    match (state.read_at, state.read_message_id.as_deref()) {
-                        (Some(read_at), Some(read_id)) => {
-                            (read_at, read_id) >= (*target_at, target_id.as_str())
-                        }
-                        (Some(read_at), None) => read_at >= *target_at,
-                        (None, _) => false,
-                    }
-                })
-        });
-        if reached_forward {
             state.jump_back = None;
             state.jump_forward = None;
+            state.seen_out_of_order.clear();
         }
 
         let changed = self.read_states.get(channel_id) != previous.as_ref();
-        // O badge também precisa convergir quando o cursor já estava correto:
-        // o `channels` cacheado pode carregar um bit `unread` antigo.
-        self.refresh_channel_read_badge(channel_id);
         if changed {
+            self.refresh_channel_read_badge(channel_id);
             self.persist_read_state(channel_id);
         }
     }
@@ -1977,7 +1893,7 @@ impl Store {
     pub fn first_unread_loaded(&self, channel_id: &str) -> Option<String> {
         let frontier = self.frontier_key(channel_id);
         self.messages_in(channel_id)
-            .filter(|message| !message.pending && message.author_id != self.me)
+            .filter(|message| !message.pending)
             .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
             .find(|key| frontier.as_ref().is_none_or(|mark| key > mark))
             .map(|(_, id)| id)
@@ -1991,21 +1907,15 @@ impl Store {
     }
 
     pub fn jump_back_target(&self, channel_id: &str) -> Option<String> {
-        let state = self.read_states.get(channel_id)?;
-        let forward = state.jump_forward.as_deref()?;
-        if self.checkpoint_reached(channel_id, forward) {
-            return None;
-        }
-        state.jump_back.clone()
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_back.clone())
     }
 
     pub fn jump_forward_target(&self, channel_id: &str) -> Option<String> {
-        let state = self.read_states.get(channel_id)?;
-        let forward = state.jump_forward.as_deref()?;
-        if self.checkpoint_reached(channel_id, forward) {
-            return None;
-        }
-        Some(forward.to_owned())
+        self.read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_forward.clone())
     }
 
     pub fn read_anchor_id(&self, channel_id: &str) -> Option<String> {
@@ -2060,11 +1970,10 @@ impl Store {
         latest_visible: Option<&str>,
     ) -> Option<String> {
         let newest = self.newest_loaded(channel_id)?;
-        if self.retire_reached_checkpoint(channel_id) {
-            self.refresh_channel_read_badge(channel_id);
-            self.persist_read_state(channel_id);
-        }
-        let existing = self.jump_forward_target(channel_id);
+        let existing = self
+            .read_states
+            .get(channel_id)
+            .and_then(|state| state.jump_forward.clone());
 
         // O mesmo botão também é o "voltar ao fim" normal. Sem bloco não
         // lido e sem checkpoint ativo, não inventa uma ampulheta.
@@ -2158,16 +2067,15 @@ impl Store {
     /// Abertura opcional no head usa exatamente a mesma máquina de checkpoints
     /// do botão para baixo: a lacuna pulada continua acessível pela ampulheta.
     pub fn prepare_open_at_newest(&mut self, channel_id: &str) -> Option<String> {
-        // Só aposenta um checkpoint quando a fronteira realmente o alcançou.
-        // "Não chegou mensagem nova" não significa "terminei o bloco": se o
-        // usuário voltou pela ampulheta e saiu no meio da leitura, o par
-        // jump_back/jump_forward continua sendo estado de navegação válido.
-        if self.retire_reached_checkpoint(channel_id) {
-            self.refresh_channel_read_badge(channel_id);
-            self.persist_read_state(channel_id);
-        }
-        if let Some(target) = self.jump_forward_target(channel_id) {
-            return Some(target);
+        if self
+            .read_states
+            .get(channel_id)
+            .is_some_and(|state| state.jump_forward.is_some())
+        {
+            return self
+                .read_states
+                .get(channel_id)
+                .and_then(|state| state.jump_forward.clone());
         }
         self.prepare_newer_jump(channel_id, None)
     }
@@ -2385,54 +2293,22 @@ impl Store {
                 }
             }
             Update::Channels(channels) => {
-                // O bit `unread` do snapshot de canais não é fonte de
-                // verdade: ele pode ter sido persistido antes de a viewport
-                // avançar o cursor. Preserve apenas fatos locais verificáveis
-                // (mensagens carregadas/menções) e compare o head do servidor
-                // com a fronteira durável.
-                let loaded_unread: HashMap<String, bool> = self
+                let previous: HashMap<String, (bool, u32)> = self
                     .channels
                     .iter()
-                    .map(|channel| {
-                        (
-                            channel.id.clone(),
-                            self.has_loaded_unread(&channel.id),
-                        )
-                    })
+                    .map(|channel| (channel.id.clone(), (channel.unread, channel.mentions)))
                     .collect();
-                let previous_mentions: HashMap<String, u32> = self
-                    .channels
-                    .iter()
-                    .map(|channel| (channel.id.clone(), channel.mentions))
-                    .collect();
-                let durable_mentions: HashMap<String, u32> = self
-                    .read_states
-                    .iter()
-                    .map(|(channel_id, state)| {
-                        (channel_id.clone(), state.unread_mentions.len() as u32)
-                    })
-                    .collect();
-                let read_marks: HashMap<String, DateTime<Utc>> = self
-                    .channels
-                    .iter()
-                    .filter_map(|channel| {
-                        self.frontier_key(&channel.id)
-                            .map(|(at, _)| (channel.id.clone(), at))
-                    })
-                    .collect();
-
                 self.channels = channels
                     .into_iter()
                     .filter(|channel| channel.kind != "category")
                     .map(|channel| {
-                        let mentions = durable_mentions
+                        let (unread, mentions) = previous
                             .get(&channel.id)
                             .copied()
-                            .or_else(|| previous_mentions.get(&channel.id).copied())
-                            .unwrap_or(0);
+                            .unwrap_or((false, 0));
                         // Sem marca local, o canal conta como visto: o
                         // servidor não guarda o último lido.
-                        let mark = read_marks.get(&channel.id).copied();
+                        let mark = self.read_marks.get(&channel.id).copied();
                         let fresh = channel
                             .last_message
                             .as_ref()
@@ -2440,14 +2316,8 @@ impl Store {
                             .zip(mark)
                             .map(|(at, mark)| at > mark)
                             .unwrap_or(false);
-                        let unread = loaded_unread
-                            .get(&channel.id)
-                            .copied()
-                            .unwrap_or(false)
-                            || fresh
-                            || mentions > 0;
                         Channel {
-                            unread,
+                            unread: unread || fresh,
                             id: channel.id,
                             name: channel.name,
                             kind: ChannelKind::parse(&channel.kind),
@@ -5286,87 +5156,6 @@ mod tests {
             vec!["m5".to_owned()]
         );
         assert_eq!(store.next_mention_target("geral").as_deref(), Some("m5"));
-    }
-
-    #[test]
-    fn hourglass_resume_follows_viewport_progress_without_new_arrivals() {
-        let mut store = navigation_store(6);
-        assert_eq!(
-            store.prepare_newer_jump("geral", Some("m1")).as_deref(),
-            Some("m6")
-        );
-        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m2"));
-
-        // O usuário volta pela ampulheta e lê devagar até m4. Nenhuma mensagem
-        // nova chegou; apenas a viewport avançou dentro do bloco existente.
-        store.observe_visible_messages(
-            "geral",
-            &["m2".to_owned(), "m3".to_owned(), "m4".to_owned()],
-        );
-        assert_eq!(store.read_anchor_id("geral").as_deref(), Some("m4"));
-        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m4"));
-        assert_eq!(store.jump_forward_target("geral").as_deref(), Some("m6"));
-
-        // Reabrir com "abrir na mais nova" preserva o ponto de retomada.
-        assert_eq!(store.prepare_open_at_newest("geral").as_deref(), Some("m6"));
-        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m4"));
-    }
-
-    #[test]
-    fn visible_head_clears_stale_unread_badge_even_when_cursor_does_not_move() {
-        let mut store = navigation_store(3);
-        let newest = store.messages[2].clone();
-        {
-            let state = store.read_states.get_mut("geral").unwrap();
-            state.read_at = Some(newest.at.with_timezone(&Utc));
-            state.read_message_id = Some(newest.id.clone());
-        }
-        store.channels[0].unread = true;
-
-        store.observe_visible_messages("geral", &[newest.id]);
-
-        assert!(!store.channels[0].unread);
-    }
-
-    #[test]
-    fn reached_checkpoint_is_not_exposed_as_hourglass_target() {
-        let mut store = navigation_store(4);
-        {
-            let newest = store.messages[3].clone();
-            let state = store.read_states.get_mut("geral").unwrap();
-            state.read_at = Some(newest.at.with_timezone(&Utc));
-            state.read_message_id = Some(newest.id.clone());
-            state.jump_back = Some("m2".to_owned());
-            state.jump_forward = Some(newest.id);
-        }
-
-        assert_eq!(store.jump_back_target("geral"), None);
-        assert_eq!(store.jump_forward_target("geral"), None);
-        assert_eq!(store.prepare_open_at_newest("geral"), None);
-        let state = store.read_states.get("geral").unwrap();
-        assert!(state.jump_back.is_none());
-        assert!(state.jump_forward.is_none());
-    }
-
-    #[test]
-    fn reaching_forward_checkpoint_keeps_seen_messages_after_it() {
-        let mut store = navigation_store(6);
-        {
-            let state = store.read_states.get_mut("geral").unwrap();
-            state.jump_back = Some("m2".to_owned());
-            state.jump_forward = Some("m4".to_owned());
-            state.seen_out_of_order.insert("m5".to_owned());
-        }
-
-        store.observe_visible_messages(
-            "geral",
-            &["m2".to_owned(), "m3".to_owned(), "m4".to_owned()],
-        );
-
-        let state = store.read_states.get("geral").unwrap();
-        assert_eq!(state.read_message_id.as_deref(), Some("m5"));
-        assert!(state.jump_back.is_none());
-        assert!(state.jump_forward.is_none());
     }
 
 }
