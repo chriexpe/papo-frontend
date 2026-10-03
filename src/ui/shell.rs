@@ -5085,6 +5085,12 @@ fn go_to(
 // Lista de mensagens
 // ---------------------------------------------------------------------------
 
+/// Network loading window around the actual readable chat viewport. We bias
+/// strongly upward because history is consumed by scrolling toward older
+/// messages; below the viewport only a small runway is useful.
+const CHAT_LOAD_ABOVE: f32 = 1200.0;
+const CHAT_LOAD_BELOW: f32 = 320.0;
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5162,6 +5168,13 @@ fn message_list(
 
         let author = store.member(&message.author_id);
         let mut open_author: Option<Rect> = None;
+        // egui still lays out every loaded message row. Network work must not
+        // follow that layout blindly: only the viewport plus a bounded runway
+        // may start new preview/GIPHY/embed fetches.
+        let row_top = ui.cursor().top();
+        let network_eligible = !readable.is_negative()
+            && row_top >= readable.min.y - CHAT_LOAD_ABOVE
+            && row_top <= readable.max.y + CHAT_LOAD_BELOW;
         // O escopo da linha é o alvo de toque do layout compacto — duplo
         // toque abre as reações, toque longo abre o menu.
         //
@@ -5260,7 +5273,16 @@ fn message_list(
                     if let Some(reply_to) = &message.reply_to {
                         reply_quote(ui, store, state, t, s, reply_to, text_width);
                     }
-                    message_body(ui, store, state, t, s, message, text_width);
+                    message_body(
+                        ui,
+                        store,
+                        state,
+                        t,
+                        s,
+                        message,
+                        text_width,
+                        network_eligible,
+                    );
                 });
             });
         });
@@ -5494,6 +5516,7 @@ fn message_body(
     s: &Strings,
     message: &Message,
     width: f32,
+    allow_network: bool,
 ) {
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
     if let Some((id, buffer)) = &mut state.editing
@@ -5638,8 +5661,8 @@ fn message_body(
 
     if !message.content.is_empty() {
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
-            gif::message(ui, state, t, s, &slug, width);
-        } else if direct_media_message_url(state, &message.content).is_none() {
+            gif::message(ui, state, t, s, &slug, width, allow_network);
+        } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
             let shown_content = store.display_mentions(&message.content);
             let color = if message.pending {
                 t.label_secondary
@@ -5727,7 +5750,15 @@ fn message_body(
     }
 
     if !message.previews.is_empty() {
-        link_previews(ui, state, t, &message.id, &message.previews, width);
+        link_previews(
+            ui,
+            state,
+            t,
+            &message.id,
+            &message.previews,
+            width,
+            allow_network,
+        );
     }
     rich_links_from_message(
         ui,
@@ -5737,6 +5768,7 @@ fn message_body(
         &message.content,
         &message.previews,
         width,
+        allow_network,
     );
 
     if !message.reactions.is_empty() {
@@ -5822,13 +5854,22 @@ fn obvious_direct_media_url(url: &str) -> bool {
 /// Retorna o link quando a mensagem inteira é uma imagem/vídeo direto.
 /// Extensões óbvias escondem o texto já no primeiro quadro; URLs opacas de
 /// CDN entram assim que o coordenador confirma que o recurso é mídia visual.
-fn direct_media_message_url(state: &UiState, content: &str) -> Option<String> {
+fn direct_media_message_url(
+    state: &UiState,
+    content: &str,
+    allow_network: bool,
+) -> Option<String> {
     let url = single_message_url(content)?;
     if obvious_direct_media_url(&url) {
         return Some(url);
     }
 
-    let preview = state.previews.as_ref()?.get_or_request(&url)?;
+    let coordinator = state.previews.as_ref()?;
+    let preview = if allow_network {
+        coordinator.get_or_request(&url)
+    } else {
+        coordinator.peek(&url)
+    }?;
     let papo_core::preview::PreviewState::Ready(preview) = preview else {
         return None;
     };
@@ -5967,6 +6008,7 @@ fn link_previews(
     message_id: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     for preview in previews {
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
@@ -5983,6 +6025,7 @@ fn link_previews(
             Some(preview),
             width,
             true,
+            allow_network,
         );
     }
 }
@@ -5995,6 +6038,7 @@ fn rich_links_from_message(
     content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     use std::hash::{Hash, Hasher};
 
@@ -6014,7 +6058,18 @@ fn rich_links_from_message(
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            true,
+            allow_network,
+        );
     }
 }
 
@@ -6079,7 +6134,7 @@ fn panel_rich_links(
         // painted in the timeline behind it. Scope the widget occurrence so
         // egui/WebEmbed IDs never collide across those two surfaces.
         let embed_id = format!("embed:panel:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false);
+        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false, true);
     }
 }
 
@@ -6093,29 +6148,45 @@ fn preview_card(
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
     allow_webembed: bool,
+    allow_network: bool,
 ) {
     use papo_core::preview::{PreviewKind, PreviewState};
 
     const MAX_W: f32 = 420.0;
     const IMAGE_MAX_H: f32 = 300.0;
 
-    let resolved = state
-        .previews
-        .as_ref()
-        .and_then(|coordinator| coordinator.get_or_request(url));
+    let resolved = state.previews.as_ref().and_then(|coordinator| {
+        if allow_network {
+            coordinator.get_or_request(url)
+        } else {
+            coordinator.peek(url)
+        }
+    });
     let ready = match resolved.as_ref() {
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
     let backend_image = backend
-        .and_then(|preview| state.media.preview(preview))
+        .and_then(|preview| {
+            if allow_network {
+                state.media.preview(preview)
+            } else {
+                state.media.loaded_preview(&preview.id)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
 
     let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
     let remote_image = image_url
         .as_deref()
-        .and_then(|remote| state.media.remote_image(id, remote))
+        .and_then(|remote| {
+            if allow_network {
+                state.media.remote_image(id, remote)
+            } else {
+                state.media.loaded_remote_image(remote)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
     let image = remote_image.as_ref().or(backend_image.as_ref());
