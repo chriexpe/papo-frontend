@@ -119,6 +119,8 @@ pub struct Member {
     /// chegam do backend com `author_username`, ao membro carregado.
     pub username: String,
     pub name: String,
+    /// Estado administrativo autoritativo vindo de UserSummary.
+    pub banned: bool,
     pub presence: Presence,
     pub status_message: Option<String>,
     pub typing_label: Option<String>,
@@ -255,6 +257,9 @@ impl Message {
 pub struct Server {
     pub name: String,
     pub description: Option<String>,
+    /// Visibilidade real do backend; usada pela edição parcial para não
+    /// inventar que todo servidor existente é público.
+    pub public: bool,
     /// Dono do servidor; o backend concede a ele capacidades administrativas.
     pub owner_id: Option<String>,
     /// Ícone em base64, como o servidor entrega. Não vai para o cache em
@@ -902,6 +907,9 @@ impl Store {
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
+                // Cache antigo não persistia este campo; ele só é provisório
+                // até GET /server chegar, portanto não o tratamos como verdade.
+                public: true,
                 owner_id: metadata.owner_user_id.clone(),
                 icon: None,
             });
@@ -937,6 +945,7 @@ impl Store {
                 presence: Presence::Offline,
                 status_message: None,
                 typing_label: None,
+                banned: false,
                 role_color: member.role_color,
                 roles: member.roles,
             })
@@ -2278,6 +2287,7 @@ impl Store {
                         .owner_username
                         .clone()
                         .map(|owner| format!("de {owner}")),
+                    public: server.public,
                     owner_id: server.owner_id.clone(),
                     icon: server.icon_blob.clone().filter(|blob| !blob.is_empty()),
                 });
@@ -2426,6 +2436,7 @@ impl Store {
                             id,
                             username,
                             name,
+                            banned: false,
                             presence: Presence::Offline,
                             status_message,
                             typing_label,
@@ -2558,6 +2569,7 @@ impl Store {
                         let role_color = role_color(&user.roles);
                         let roles = user.roles.iter().map(|role| role.id.clone()).collect();
                         Member {
+                            banned: user.banned,
                             presence,
                             status_message: user.status_message,
                             typing_label: user.typing,
@@ -2995,6 +3007,13 @@ impl Store {
                         member.typing_label = None;
                     }
                 }
+                // presence_sync is now also the authoritative cold-start
+                // snapshot for voice-channel membership.
+                self.call.seed_presence(
+                    online
+                        .values()
+                        .map(|member| (member.user_id.clone(), member.user_voice.clone())),
+                );
                 self.sort_members();
             }
             Event::Activity {
@@ -3635,6 +3654,7 @@ mod tests {
             id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
             username: "christian".to_owned(),
             name: "Chris".to_owned(),
+            banned: false,
             presence: Presence::Online,
             status_message: None,
             typing_label: None,
@@ -3665,6 +3685,7 @@ mod tests {
                 id: id.to_owned(),
                 username: username.to_owned(),
                 name: "Chris".to_owned(),
+                banned: false,
                 presence: Presence::Online,
                 status_message: None,
                 typing_label: None,
@@ -3692,6 +3713,7 @@ mod tests {
             id: "id-chris".to_owned(),
             username: "chris_real".to_owned(),
             name: "Chris".to_owned(),
+            banned: false,
             presence: Presence::Online,
             status_message: None,
             typing_label: None,
@@ -3712,6 +3734,7 @@ mod tests {
             id: "id-ana".to_owned(),
             username: "ana_real".to_owned(),
             name: "Ana Maria".to_owned(),
+            banned: false,
             presence: Presence::Offline,
             status_message: None,
             typing_label: None,
