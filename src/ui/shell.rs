@@ -1651,6 +1651,7 @@ fn direct_messages_sidebar(
                             ui.add_space(space::MD);
                             ui.vertical(|ui| {
                                 let width = SIDEBAR_WIDTH - space::MD * 2.0;
+                                ui.set_width(width);
                                 ui.add_space(space::LG);
                                 ui.horizontal(|ui| {
                                     ui.label(
