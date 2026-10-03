@@ -64,7 +64,14 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         egui::StrokeKind::Inside,
     );
 
-    let inner = rect.shrink(space::SM);
+    // The picker is anchored against the right side of the composer. Keep
+    // the content's right edge on the same line as the sheet itself instead
+    // of leaving an extra gutter there; the left/top/bottom retain their
+    // normal inset.
+    let inner = Rect::from_min_max(
+        egui::pos2(rect.min.x + space::SM, rect.min.y + space::SM),
+        egui::pos2(rect.max.x, rect.max.y - space::SM),
+    );
     let search_rect = Rect::from_min_max(
         egui::pos2(inner.min.x, inner.max.y - SEARCH_H),
         inner.max,
@@ -527,7 +534,7 @@ fn draw_search(
     // separate row in the picker. Keep it tucked into the lower-right corner
     // so the home grid can use the full rounded sheet.
     ui.painter().text(
-        rect.max - Vec2::new(space::SM, space::XXS),
+        rect.max - Vec2::new(space::MD, space::XS),
         egui::Align2::RIGHT_BOTTOM,
         "Powered by GIPHY",
         text::caption(),
