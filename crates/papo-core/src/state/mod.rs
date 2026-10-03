@@ -3114,6 +3114,9 @@ impl Store {
                     self.call.speakers = user_ids;
                 }
             }
+            Event::VoiceAudioRoutes { channel_id, routes } => {
+                self.call.set_audio_routes(&channel_id, routes);
+            }
             Event::Failure { message, code } => {
                 let joining = self.call.phase == Phase::Joining;
                 let fatal = code
