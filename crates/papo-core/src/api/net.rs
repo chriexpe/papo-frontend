@@ -1204,6 +1204,7 @@ async fn drive_outgoing(
                 continue;
             }
             Err(SendMessageError::FailedPermanent(error)) => {
+                let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
                 let message = error.to_string();
                 if let Err(db_error) = cache.transition_outgoing(
                     scope,
@@ -1220,6 +1221,12 @@ async fn drive_outgoing(
                 outgoing[index].state = OutgoingState::FailedPermanent;
                 outgoing[index].last_error = Some(message);
                 publish_outgoing(scope, updates, wake, &outgoing[index]);
+                if dm_blocked {
+                    channel_gate.invalidate();
+                    if let Ok(dms) = api.direct_messages().await {
+                        publish(updates, wake, Update::DirectMessages(dms));
+                    }
+                }
                 continue;
             }
         }
@@ -3261,7 +3268,15 @@ async fn handle(
                 .await
             {
                 Ok(message) => publish(updates, wake, Update::Sent(Box::new(message))),
-                Err(error) => report(storage_key, updates, wake, error),
+                Err(error) => {
+                    let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
+                    report(storage_key, updates, wake, error);
+                    if dm_blocked
+                        && let Ok(dms) = api.direct_messages().await
+                    {
+                        publish(updates, wake, Update::DirectMessages(dms));
+                    }
+                }
             }
         }
         Command::EditMessage {
