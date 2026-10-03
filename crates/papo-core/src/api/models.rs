@@ -273,11 +273,13 @@ pub struct UpdateChannelRequest {
     pub topic: Option<String>,
 }
 
-/// Edição do servidor (`PUT /server`). Ícone e senha só vão quando mudam;
-/// `public: false` sem senha é recusado pelo backend.
+/// Edição parcial do servidor (`PATCH /server`). Campos ausentes preservam
+/// o valor atual; em particular, servidor privado não precisa repetir a senha
+/// para uma simples troca de nome.
 #[derive(Debug, Clone, Default, Serialize)]
-pub struct UpdateServerRequest {
-    pub name: String,
+pub struct PatchServerRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_blob: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -320,6 +322,12 @@ pub struct UpdateBannerRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChangePasswordRequest {
     pub password: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PasswordResetLink {
+    pub reset_url: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -441,6 +449,11 @@ pub struct ProfileBatchRequest {
 pub struct ProfileBatchResponse {
     #[serde(default, deserialize_with = "nullable_list")]
     pub profiles: Vec<UserProfile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UserSummaryBatchRequest {
+    pub ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -879,6 +892,8 @@ pub struct UserSummary {
     pub id: String,
     pub username: String,
     pub nickname: Option<String>,
+    #[serde(default)]
+    pub banned: bool,
     pub status: Option<String>,
     pub status_message: Option<String>,
     pub typing: Option<String>,
@@ -1102,6 +1117,27 @@ mod tests {
         })
         .unwrap();
         assert_eq!(body, r#"{"ids":["a"]}"#);
+
+        let body = serde_json::to_string(&UserSummaryBatchRequest {
+            ids: vec!["a".to_owned()],
+        })
+        .unwrap();
+        assert_eq!(body, r#"{"ids":["a"]}"#);
+    }
+
+    #[test]
+    fn patch_de_servidor_omite_o_que_nao_mudou() {
+        let body = serde_json::to_value(PatchServerRequest {
+            name: Some("Novo nome".to_owned()),
+            public: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(body["name"], "Novo nome");
+        assert_eq!(body["public"], false);
+        assert!(body.get("password").is_none());
+        assert!(body.get("icon_blob").is_none());
+        assert!(body.get("icon_format").is_none());
     }
 
     #[test]

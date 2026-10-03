@@ -3805,7 +3805,11 @@ fn server_pane(
                     .as_ref()
                     .map(|server| server.name.clone())
                     .unwrap_or_default();
-                state.draft.server_public = true;
+                state.draft.server_public = data
+                    .store
+                    .server
+                    .as_ref()
+                    .is_none_or(|server| server.public);
                 state.draft.server_password.clear();
             }
             let draft = &mut state.draft;
@@ -3895,13 +3899,20 @@ fn server_pane(
             }
 
             ui.add_space(space::SM);
-            let ready = !draft.server_name.trim().is_empty()
-                && (draft.server_public || draft.server_password.chars().count() >= 8);
+            let currently_public = data
+                .store
+                .server
+                .as_ref()
+                .is_none_or(|server| server.public);
+            let making_private = currently_public && !draft.server_public;
+            let password_ok = !making_private
+                || draft.server_password.chars().count() >= 8;
+            let ready = !draft.server_name.trim().is_empty() && password_ok;
             actions_row(ui, |ui| {
                 if ready && row_button(ui, t, s.save, Emphasis::Primary) {
                     actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
-                        crate::api::models::UpdateServerRequest {
-                            name: draft.server_name.trim().to_owned(),
+                        crate::api::models::PatchServerRequest {
+                            name: Some(draft.server_name.trim().to_owned()),
                             public: Some(draft.server_public),
                             password: (!draft.server_password.is_empty())
                                 .then(|| draft.server_password.clone()),

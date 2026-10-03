@@ -322,7 +322,7 @@ pub enum Command {
         user_id: String,
         role_id: String,
     },
-    UpdateServer(Box<crate::api::models::UpdateServerRequest>),
+    PatchServer(Box<crate::api::models::PatchServerRequest>),
     UpdateProfile(Box<crate::api::models::UpdateUserRequest>),
     UpdateUserSettings(Box<UserConfig>),
     SetStatus {
@@ -351,6 +351,7 @@ pub enum Command {
     ResetUser {
         user_id: String,
     },
+    PresenceActivity,
     MoveChannel {
         channel_id: String,
         old_position: i32,
@@ -511,7 +512,12 @@ pub enum Update {
     UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
     Done,
+    PasswordResetLink {
+        url: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
     Users(Vec<UserSummary>),
+    UserSummaries(Vec<UserSummary>),
     Messages {
         ticket: RefreshTicket,
         messages: Vec<Message>,
@@ -2094,10 +2100,9 @@ async fn worker(
                 }
 
                 let profile_user_id = match &event {
-                    Event::UserJoined { user_id }
-                    | Event::AvatarUpdated { user_id }
-                    | Event::RoleAdded { user_id, .. }
-                    | Event::RoleRemoved { user_id, .. } => Some(user_id.clone()),
+                    Event::UserJoined { user_id } | Event::AvatarUpdated { user_id } => {
+                        Some(user_id.clone())
+                    }
                     _ => None,
                 };
                 if let Some(user_id) = profile_user_id {
@@ -2119,6 +2124,27 @@ async fn worker(
                                     "runtime {scope}: perfil live {user_id} não convergiu: {error}"
                                 );
                             }
+                        }
+                    });
+                }
+
+                let summary_user_id = match &event {
+                    Event::RoleAdded { user_id, .. } | Event::RoleRemoved { user_id, .. } => {
+                        Some(user_id.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(user_id) = summary_user_id {
+                    let api = api.clone();
+                    let updates = updates.clone();
+                    let wake = wake.clone();
+                    let scope = storage_key.clone();
+                    tokio::spawn(async move {
+                        match api.user_summaries(vec![user_id.clone()]).await {
+                            Ok(users) => publish(&updates, &wake, Update::UserSummaries(users)),
+                            Err(error) => log::warn!(
+                                "runtime {scope}: resumo live {user_id} não convergiu: {error}"
+                            ),
                         }
                     });
                 }
@@ -3075,7 +3101,7 @@ async fn handle(
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
         // pessoas — por isso as duas listas são relidas juntas.
         Command::LoadRoles => relist_roles(api, storage_key, updates, wake).await,
-        Command::UpdateServer(request) => match api.update_server(&request).await {
+        Command::PatchServer(request) => match api.patch_server(&request).await {
             Ok(server) => publish(updates, wake, Update::Server(Some(Box::new(server)))),
             Err(error) => report(storage_key, updates, wake, error),
         },
@@ -3144,7 +3170,14 @@ async fn handle(
             Err(error) => report(storage_key, updates, wake, error),
         },
         Command::ResetUser { user_id } => match api.reset_user(&user_id).await {
-            Ok(_) => relist_users(api, storage_key, updates, wake).await,
+            Ok(link) => publish(
+                updates,
+                wake,
+                Update::PasswordResetLink {
+                    url: link.reset_url,
+                    expires_at: link.expires_at,
+                },
+            ),
             Err(error) => report(storage_key, updates, wake, error),
         },
         Command::MoveChannel {
@@ -3364,6 +3397,9 @@ async fn handle(
         },
         Command::VoiceSignal(json) => {
             let _ = outbound.send(json);
+        }
+        Command::PresenceActivity => {
+            let _ = outbound.send(ws::presence_activity());
         }
         Command::Typing { channel_id } => {
             let _ = outbound.send(format!(

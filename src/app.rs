@@ -557,6 +557,8 @@ pub struct Workspace {
     /// Última atividade local entregue ao runtime deste servidor. O Option
     /// externo distingue "ainda não publicamos" de "publicamos sem atividade".
     published_activity: Option<Option<Activity>>,
+    /// Último sinal de interação real enviado para o auto-away do backend.
+    last_presence_activity: Option<std::time::Instant>,
     /// Último config remoto aplicado à UI enquanto este servidor estava ativo.
     applied_user_config: Option<crate::api::models::UserConfig>,
     /// Config já enviado nesta conexão; evita PUT a cada frame.
@@ -617,6 +619,7 @@ impl Workspace {
             watching: Vec::new(),
             camera_revision: 0,
             published_activity: None,
+            last_presence_activity: None,
             applied_user_config: None,
             sent_user_config: None,
             cache_pages: Vec::new(),
@@ -2708,6 +2711,16 @@ impl PapoApp {
                                 self.settings.push_devices.remove(&key);
                             }
                         }
+                        RuntimeEffect::PasswordResetLink { url, expires_at } => {
+                            ctx.copy_text(url.clone());
+                            let when = expires_at.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M")
+                                .to_string();
+                            self.ui.error = Some((
+                                format!("Link de reset copiado · expira em {when}"),
+                                ctx.input(|input| input.time),
+                            ));
+                        }
                     }
                 }
             }
@@ -2961,19 +2974,10 @@ impl PapoApp {
                             .net
                             .send(Command::SetBanner { blob, format });
                     }
-                    // O contrato pede o nome junto; vai o que já está valendo.
                     ImagePick::ServerIcon => {
                         let ws = &self.workspaces[self.active];
-                        let name = ws
-                            .runtime
-                            .store
-                            .server
-                            .as_ref()
-                            .map(|server| server.name.clone())
-                            .unwrap_or_default();
-                        ws.runtime.net.send(Command::UpdateServer(Box::new(
-                            crate::api::models::UpdateServerRequest {
-                                name,
+                        ws.runtime.net.send(Command::PatchServer(Box::new(
+                            crate::api::models::PatchServerRequest {
                                 icon_blob: Some(blob),
                                 icon_format: Some(format),
                                 ..Default::default()
@@ -3184,7 +3188,7 @@ impl PapoApp {
             AdminAction::ChangePassword(password) => Command::ChangePassword { password },
             AdminAction::LoadDevices => Command::LoadDevices,
             AdminAction::DropConnection(connection_id) => Command::DropConnection { connection_id },
-            AdminAction::SaveServer(request) => Command::UpdateServer(request),
+            AdminAction::SaveServer(request) => Command::PatchServer(request),
             AdminAction::CreateSticker { name, blob, format } => {
                 Command::CreateEmoji { name, blob, format }
             }
@@ -3526,6 +3530,37 @@ impl PapoApp {
         }
         self.rich_presence
             .configure(self.settings.rich_presence.clone());
+    }
+
+    fn project_presence_activity(&mut self, ctx: &egui::Context) {
+        let interacted = ctx.input(|input| {
+            !input.events.is_empty()
+                || !input.keys_down.is_empty()
+                || input.pointer.delta() != egui::Vec2::ZERO
+                || input.pointer.any_pressed()
+        });
+        if !interacted {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        for workspace in &mut self.workspaces {
+            if workspace.runtime.store.screen != Screen::Chat
+                || !matches!(
+                    workspace.runtime.store.connection,
+                    crate::api::ws::Connection::Online
+                )
+            {
+                continue;
+            }
+            let due = workspace
+                .last_presence_activity
+                .is_none_or(|last| now.duration_since(last) >= std::time::Duration::from_secs(20));
+            if due {
+                workspace.last_presence_activity = Some(now);
+                workspace.runtime.net.send(Command::PresenceActivity);
+            }
+        }
     }
 
     fn project_local_activity(&mut self) {
@@ -3978,6 +4013,7 @@ impl eframe::App for PapoApp {
         }
 
         self.pump_network(&ctx);
+        self.project_presence_activity(&ctx);
         self.pump_cache(&ctx);
         self.sync_active_portable_settings(&ctx);
         self.ensure_active_drafts_loaded();

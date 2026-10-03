@@ -158,6 +158,10 @@ pub enum Event {
         channel_id: String,
         user_ids: Vec<String>,
     },
+    VoiceAudioRoutes {
+        channel_id: String,
+        routes: Vec<VoiceAudioRoute>,
+    },
     /// Erro do servidor. O `code` é o que distingue um erro de voz
     /// (`voice-room-full`, `voice-forbidden`…) de um aviso qualquer.
     Failure {
@@ -221,6 +225,21 @@ pub struct PresenceMember {
     pub status: String,
     #[serde(default)]
     pub status_message: Option<String>,
+    #[serde(default)]
+    pub user_voice: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct VoiceAudioRoute {
+    pub track_id: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VoiceAudioRoutesPayload {
+    channel_id: String,
+    #[serde(default)]
+    routes: Vec<VoiceAudioRoute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +434,10 @@ pub fn activity_update(activity: Option<&Activity>) -> String {
     .to_string()
 }
 
+pub fn presence_activity() -> String {
+    serde_json::json!({ "type": "presence_activity" }).to_string()
+}
+
 fn is_heartbeat_ack(text: &str) -> bool {
     serde_json::from_str::<Envelope>(text)
         .is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
@@ -570,6 +593,13 @@ fn parse(text: &str) -> Option<Event> {
                 user_ids: payload.user_ids.unwrap_or_default(),
             })
         }
+        "voice_audio_routes" => {
+            let payload: VoiceAudioRoutesPayload = serde_json::from_str(text).ok()?;
+            Some(Event::VoiceAudioRoutes {
+                channel_id: payload.channel_id,
+                routes: payload.routes,
+            })
+        }
         "error" => Some(Event::Failure {
             message: string("message").unwrap_or_default(),
             code: string("code"),
@@ -598,6 +628,28 @@ mod tests {
                 is_typing: true,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn le_presence_sync_com_canais_de_voz() {
+        let event = parse(r#"{"type":"presence_sync","members":[{"user_id":"u1","status":"online","status_message":null,"user_voice":["voz-1","voz-2"]}]}"#);
+        assert!(matches!(
+            event,
+            Some(Event::PresenceSync(ref members))
+                if members.len() == 1 && members[0].user_voice == ["voz-1", "voz-2"]
+        ));
+    }
+
+    #[test]
+    fn le_rotas_de_audio() {
+        let event = parse(r#"{"type":"voice_audio_routes","channel_id":"voz-1","routes":[{"track_id":"papo-audio-0","user_id":"u1"}]}"#);
+        assert!(matches!(
+            event,
+            Some(Event::VoiceAudioRoutes { ref channel_id, ref routes })
+                if channel_id == "voz-1" && routes.len() == 1
+                    && routes[0].track_id == "papo-audio-0"
+                    && routes[0].user_id == "u1"
         ));
     }
 

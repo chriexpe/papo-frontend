@@ -53,6 +53,7 @@ pub fn seed(store: &mut Store, server_key: &str) {
     store.server = Some(Server {
         name: "Papo".into(),
         description: Some("demonstração".into()),
+        public: true,
         owner_id: Some("u-eu".into()),
         icon: None,
     });
@@ -648,6 +649,7 @@ fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>)
         id: id.into(),
         username: name.to_lowercase().replace(' ', "."),
         name: name.into(),
+        banned: false,
         presence,
         status_message: None,
         typing_label: None,

@@ -59,6 +59,10 @@ pub enum RuntimeEffect {
         token: String,
         registered: bool,
     },
+    PasswordResetLink {
+        url: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -495,6 +499,12 @@ impl ServerRuntime {
                 effects.push(RuntimeEffect::PushDevice {
                     token: token.clone(),
                     registered: *registered,
+                });
+            }
+            Update::PasswordResetLink { url, expires_at } => {
+                effects.push(RuntimeEffect::PasswordResetLink {
+                    url: url.clone(),
+                    expires_at: *expires_at,
                 });
             }
             Update::Server(Some(server)) if !server.name.is_empty() => {

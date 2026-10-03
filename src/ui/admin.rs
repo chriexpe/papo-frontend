@@ -3,7 +3,7 @@
 //! As telas vivem em [`super::settings`]. Aqui fica só o que elas pedem, que
 //! o `app` traduz em comandos de rede.
 
-use crate::api::models::{UpdateServerRequest, UpdateUserRequest};
+use crate::api::models::{PatchServerRequest, UpdateUserRequest};
 
 #[derive(Clone, Debug)]
 pub enum AdminAction {
@@ -18,7 +18,7 @@ pub enum AdminAction {
     ChangePassword(String),
     LoadDevices,
     DropConnection(String),
-    SaveServer(Box<UpdateServerRequest>),
+    SaveServer(Box<PatchServerRequest>),
     /// Abre o seletor para uma figurinha nova. O nome vem depois.
     PickSticker,
     /// Sobe a figurinha já escolhida, agora com nome.

@@ -5,11 +5,9 @@
 //! alimentados pelos mesmos eventos do socket: aqui para desenhar, lá para
 //! decidir o que pedir ao servidor.
 //!
-//! O servidor não tem como listar quem já está numa sala de voz: o
-//! `voice_joined` só chega para quem entra. O que dá para saber de fora é o
-//! que passou pelo socket desde que a janela abriu — é o bastante para a
-//! coluna da esquerda mostrar a sala enchendo, e é o que Discord mostraria
-//! também depois de um recarregar.
+//! A lista fria de salas vem de `presence_sync.user_voice`; depois disso,
+//! `voice_state_update`/`voice_leave` mantêm o retrato vivo. Ao entrar,
+//! `voice_joined` substitui a nossa sala pelo snapshot rico (mute/câmera/tela).
 
 use std::collections::HashMap;
 
@@ -47,8 +45,10 @@ pub struct CallState {
     /// Canal da call em que estamos (ou entrando).
     pub channel_id: String,
     pub phase: Phase,
-    /// Quem está em cada canal de voz, pelo que vimos pelo socket.
+    /// Quem está em cada canal de voz.
     pub rooms: HashMap<String, Vec<VoiceMember>>,
+    /// track_id -> user_id dos slots de áudio desta PeerConnection.
+    pub audio_routes: HashMap<String, String>,
     /// Quem está falando agora, do mais alto para o mais baixo.
     pub speakers: Vec<String>,
     pub muted: bool,
@@ -112,6 +112,42 @@ impl CallState {
             .unwrap_or_default()
     }
 
+    pub fn seed_presence<I>(&mut self, users: I)
+    where
+        I: IntoIterator<Item = (String, Vec<String>)>,
+    {
+        let mut next: HashMap<String, Vec<VoiceMember>> = HashMap::new();
+        for (user_id, channels) in users {
+            for channel_id in channels {
+                let previous = self
+                    .rooms
+                    .get(&channel_id)
+                    .and_then(|room| room.iter().find(|member| member.user_id == user_id))
+                    .cloned()
+                    .unwrap_or_else(|| VoiceMember {
+                        user_id: user_id.clone(),
+                        ..Default::default()
+                    });
+                next.entry(channel_id).or_default().push(previous);
+            }
+        }
+        self.rooms = next;
+    }
+
+    pub fn set_audio_routes(
+        &mut self,
+        channel_id: &str,
+        routes: impl IntoIterator<Item = crate::api::ws::VoiceAudioRoute>,
+    ) {
+        if channel_id != self.channel_id {
+            return;
+        }
+        self.audio_routes = routes
+            .into_iter()
+            .map(|route| (route.track_id, route.user_id))
+            .collect();
+    }
+
     /// Tem vídeo de alguém (ou seu) na sala.
     pub fn has_video(&self) -> bool {
         self.camera
@@ -143,6 +179,7 @@ impl CallState {
         self.channel_id = channel_id;
         self.phase = Phase::Joining;
         self.speakers.clear();
+        self.audio_routes.clear();
         self.muted = true;
         self.camera = false;
         self.collapsed = false;
@@ -162,6 +199,7 @@ impl CallState {
         self.rooms.remove(&channel_id);
         self.phase = Phase::Off;
         self.speakers.clear();
+        self.audio_routes.clear();
         self.camera = false;
         self.collapsed = false;
         self.floating = false;
@@ -271,6 +309,18 @@ mod tests {
         assert!(!call.current("c1", first));
         assert!(call.current("c1", second));
         assert!(!call.current("c2", second));
+    }
+
+    #[test]
+    fn presence_sync_semeia_salas_e_preserva_estado_rico() {
+        let mut call = CallState::default();
+        call.update("c1", member("ana", true));
+        call.seed_presence([
+            ("ana".to_owned(), vec!["c1".to_owned()]),
+            ("beto".to_owned(), vec!["c2".to_owned()]),
+        ]);
+        assert!(call.room("c1")[0].camera_on);
+        assert_eq!(call.room("c2")[0].user_id, "beto");
     }
 
     /// O evento de entrada de alguém é um `voice_state_update` zerado: quem
