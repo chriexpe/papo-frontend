@@ -1,69 +1,59 @@
-//! Direct KLIPY GIF integration.
+//! Direct GIPHY GIF integration.
 //!
-//! KLIPY's standard integration requires API and media requests to originate
-//! from the end-user client. This module therefore keeps provider state in
-//! memory, never proxies through the Papo backend and stores only stable item
-//! slugs for messages/favourites. Media URLs are resolved fresh from KLIPY.
+//! GIPHY API and media requests are made directly by the client. Papo persists
+//! only stable GIPHY IDs in message content/favourites; provider media URLs are
+//! resolved on demand and remain transient.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Deserialize;
 
-const API_ROOT: &str = "https://api.klipy.com/api/v1";
+const API_ROOT: &str = "https://api.giphy.com/v1/gifs";
 const PAGE_SIZE: usize = 24;
 const SEARCH_DEBOUNCE: f64 = 0.28;
 const ITEM_BATCH: usize = 32;
+const RATING: &str = "pg-13";
 
-pub fn app_key() -> Option<&'static str> {
-    option_env!("PAPO_KLIPY_APP_KEY").filter(|key| {
+pub fn api_key() -> Option<&'static str> {
+    option_env!("PAPO_GIPHY_API_KEY").filter(|key| {
         let key = key.trim();
-        !key.is_empty() && key != "@PAPO_KLIPY_APP_KEY@"
+        !key.is_empty() && key != "@PAPO_GIPHY_API_KEY@"
     })
 }
 
 pub fn available() -> bool {
-    app_key().is_some()
+    api_key().is_some()
 }
 
-/// Opaque device-local identifier used only for KLIPY personalization.
-pub fn new_customer_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
-    format!("papo-{nanos:032x}-{:x}-{serial:x}", std::process::id())
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 200
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-pub fn valid_slug(slug: &str) -> bool {
-    !slug.is_empty()
-        && slug.len() <= 200
-        && !slug.chars().any(|c| c.is_whitespace() || matches!(c, ')' | '(' | ','))
+pub fn encode_message(id: &str) -> String {
+    format!("giphy:{id}")
 }
 
-pub fn encode_message(slug: &str) -> String {
-    format!("@gif(klipy:{slug})")
-}
-
-/// Papo wire marker for a provider-backed GIF. The message keeps the stable
-/// KLIPY slug rather than retaining or rewriting a media URL.
-pub fn message_slug(content: &str) -> Option<&str> {
-    let content = content.trim();
-    let slug = content.strip_prefix("@gif(klipy:")?.strip_suffix(')')?;
-    valid_slug(slug).then_some(slug)
+/// Official Papo wire marker for a GIPHY-backed GIF.
+pub fn message_id(content: &str) -> Option<&str> {
+    let id = content.trim().strip_prefix("giphy:")?;
+    valid_id(id).then_some(id)
 }
 
 #[derive(Clone, Debug)]
 pub struct GifItem {
-    pub slug: String,
+    pub id: String,
     pub title: String,
-    /// Full GIF used by the fullscreen viewer.
+    /// Original/highest-resolution GIF used by the fullscreen viewer.
     pub gif_url: String,
-    /// Small animated GIF used in the picker.
+    /// Higher-quality bounded rendition used by sent/chat GIFs.
+    pub display_url: String,
+    /// Grid rendition used by the picker/category tiles.
     pub preview_url: String,
     /// Provider-supplied still image when one exists.
     pub still_url: Option<String>,
@@ -100,8 +90,7 @@ pub struct Browser {
     page: usize,
     generation: u64,
     locale: String,
-    customer_id: String,
-    categories_locale: String,
+    categories_loaded: bool,
     cover_locale: String,
     search_due: Option<f64>,
     submitted_query: String,
@@ -121,8 +110,7 @@ impl Default for Browser {
             page: 0,
             generation: 0,
             locale: String::new(),
-            customer_id: String::new(),
-            categories_locale: String::new(),
+            categories_loaded: false,
             cover_locale: String::new(),
             search_due: None,
             submitted_query: String::new(),
@@ -143,9 +131,7 @@ enum PagePurpose {
 }
 
 enum Request {
-    Categories {
-        locale: String,
-    },
+    Categories,
     Page {
         generation: u64,
         purpose: PagePurpose,
@@ -153,21 +139,14 @@ enum Request {
         page: usize,
         per_page: usize,
         locale: String,
-        customer_id: String,
     },
     Items {
-        slugs: Vec<String>,
-    },
-    Share {
-        slug: String,
-        customer_id: String,
-        query: String,
+        ids: Vec<String>,
     },
 }
 
 enum Event {
     Categories {
-        locale: String,
         result: Result<Vec<Category>, String>,
     },
     Page {
@@ -196,9 +175,9 @@ impl Store {
     pub fn new(repaint: egui::Context) -> Self {
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        let key = app_key().map(str::to_owned);
+        let key = api_key().map(str::to_owned);
         let _ = std::thread::Builder::new()
-            .name("papo-klipy".into())
+            .name("papo-giphy".into())
             .spawn(move || worker(key, request_rx, event_tx, repaint));
 
         Self {
@@ -212,17 +191,13 @@ impl Store {
         }
     }
 
-    pub fn open_picker(&mut self, locale: &str, customer_id: &str) {
+    pub fn open_picker(&mut self, locale: &str) {
         self.browser.locale = locale.to_owned();
-        self.browser.customer_id = customer_id.to_owned();
         self.show_home();
 
-        if self.browser.categories_locale != locale {
+        if !self.browser.categories_loaded {
             self.browser.categories.clear();
-            self.browser.categories_locale.clear();
-            let _ = self.requests.send(Request::Categories {
-                locale: locale.to_owned(),
-            });
+            let _ = self.requests.send(Request::Categories);
         }
         if self.browser.cover_locale != locale {
             self.browser.trending_cover = None;
@@ -234,7 +209,6 @@ impl Store {
                 page: 1,
                 per_page: 1,
                 locale: locale.to_owned(),
-                customer_id: customer_id.to_owned(),
             });
         }
     }
@@ -290,11 +264,10 @@ impl Store {
             page,
             per_page: PAGE_SIZE,
             locale: self.browser.locale.clone(),
-            customer_id: self.browser.customer_id.clone(),
         });
         if sent.is_err() {
             self.browser.loading = false;
-            self.browser.error = Some("KLIPY worker unavailable".into());
+            self.browser.error = Some("GIPHY worker unavailable".into());
         }
     }
 
@@ -316,8 +289,6 @@ impl Store {
         if self.browser.query.is_empty() || self.browser.query == self.browser.submitted_query {
             return;
         }
-        // KLIPY asks partners to pass the query exactly as typed. Only the
-        // empty check above is semantic; punctuation/case/spacing stay intact.
         let query = self.browser.query.clone();
         self.browser.submitted_query = query.clone();
         self.begin_results(
@@ -341,47 +312,32 @@ impl Store {
         self.request_page(source, self.browser.page.saturating_add(1).max(1));
     }
 
-    pub fn item(&mut self, slug: &str, ctx: &egui::Context) -> Option<GifItem> {
-        if let Some(item) = self.items.get(slug) {
+    pub fn item(&mut self, id: &str, ctx: &egui::Context) -> Option<GifItem> {
+        if let Some(item) = self.items.get(id) {
             return Some(item.clone());
         }
-        if valid_slug(slug)
-            && !self.pending_items.contains(slug)
-            && !self.missing_items.contains(slug)
-            && self.wanted_items.insert(slug.to_owned())
+        if valid_id(id)
+            && !self.pending_items.contains(id)
+            && !self.missing_items.contains(id)
+            && self.wanted_items.insert(id.to_owned())
         {
             ctx.request_repaint_after(Duration::from_millis(20));
         }
         None
     }
 
-    pub fn register_share(&self, slug: &str, query: &str) {
-        if !valid_slug(slug) {
-            return;
-        }
-        let _ = self.requests.send(Request::Share {
-            slug: slug.to_owned(),
-            customer_id: self.browser.customer_id.clone(),
-            query: query.to_owned(),
-        });
-    }
-
-    /// Drain API completions and coalesce item lookups requested by message
+    /// Drain API completions and coalesce ID lookups requested by message
     /// cards/favourites during the previous frame.
     pub fn pump(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                Event::Categories { locale, result } => {
-                    if locale == self.browser.locale {
-                        match result {
-                            Ok(categories) => {
-                                self.browser.categories = categories;
-                                self.browser.categories_locale = locale;
-                            }
-                            Err(error) => self.browser.error = Some(error),
-                        }
+                Event::Categories { result } => match result {
+                    Ok(categories) => {
+                        self.browser.categories = categories;
+                        self.browser.categories_loaded = true;
                     }
-                }
+                    Err(error) => self.browser.error = Some(error),
+                },
                 Event::Page {
                     generation,
                     purpose,
@@ -392,7 +348,7 @@ impl Store {
                         if let Ok(items) = result
                             && let Some(item) = items.into_iter().next()
                         {
-                            self.items.insert(item.slug.clone(), item.clone());
+                            self.items.insert(item.id.clone(), item.clone());
                             self.browser.trending_cover = Some(item);
                             self.browser.cover_locale = self.browser.locale.clone();
                         }
@@ -403,7 +359,7 @@ impl Store {
                             Ok(items) => {
                                 let count = items.len();
                                 for item in &items {
-                                    self.items.insert(item.slug.clone(), item.clone());
+                                    self.items.insert(item.id.clone(), item.clone());
                                 }
                                 if page == 1 {
                                     self.browser.results = items;
@@ -422,25 +378,24 @@ impl Store {
                     PagePurpose::Results => {}
                 },
                 Event::Items { requested, result } => {
-                    for slug in &requested {
-                        self.pending_items.remove(slug);
+                    for id in &requested {
+                        self.pending_items.remove(id);
                     }
                     match result {
                         Ok(items) => {
                             let found: HashSet<_> =
-                                items.iter().map(|item| item.slug.clone()).collect();
+                                items.iter().map(|item| item.id.clone()).collect();
                             for item in items {
-                                self.items.insert(item.slug.clone(), item);
+                                self.items.insert(item.id.clone(), item);
                             }
-                            for slug in requested {
-                                if !found.contains(&slug) {
-                                    self.missing_items.insert(slug);
+                            for id in requested {
+                                if !found.contains(&id) {
+                                    self.missing_items.insert(id);
                                 }
                             }
                         }
                         Err(error) => {
-                            log::warn!("KLIPY items: {error}");
-                            // Don't hammer a failing endpoint every frame.
+                            log::warn!("GIPHY items: {error}");
                             self.missing_items.extend(requested);
                         }
                     }
@@ -450,15 +405,15 @@ impl Store {
         }
 
         if !self.wanted_items.is_empty() {
-            let slugs: Vec<String> = self.wanted_items.iter().take(ITEM_BATCH).cloned().collect();
-            for slug in &slugs {
-                self.wanted_items.remove(slug);
-                self.pending_items.insert(slug.clone());
+            let ids: Vec<String> = self.wanted_items.iter().take(ITEM_BATCH).cloned().collect();
+            for id in &ids {
+                self.wanted_items.remove(id);
+                self.pending_items.insert(id.clone());
             }
-            if self.requests.send(Request::Items { slugs: slugs.clone() }).is_err() {
-                for slug in slugs {
-                    self.pending_items.remove(&slug);
-                    self.missing_items.insert(slug);
+            if self.requests.send(Request::Items { ids: ids.clone() }).is_err() {
+                for id in ids {
+                    self.pending_items.remove(&id);
+                    self.missing_items.insert(id);
                 }
             }
         }
@@ -473,7 +428,7 @@ fn worker(
 ) {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
-        .user_agent(concat!("Papo/", env!("CARGO_PKG_VERSION"), " KLIPY"))
+        .user_agent(concat!("Papo/", env!("CARGO_PKG_VERSION"), " GIPHY"))
         .build();
 
     while let Ok(request) = requests.recv() {
@@ -481,23 +436,17 @@ fn worker(
             (Some(key), Ok(client)) => Some((key.as_str(), client)),
             (None, _) => None,
             (_, Err(error)) => {
-                log::warn!("KLIPY HTTP client unavailable: {error}");
+                log::warn!("GIPHY HTTP client unavailable: {error}");
                 None
             }
         };
 
         match request {
-            Request::Categories { locale } => {
+            Request::Categories => {
                 let response = result
                     .ok_or_else(|| unavailable().to_owned())
-                    .and_then(|(key, client)| fetch_categories(client, key, &locale));
-                if events
-                    .send(Event::Categories {
-                        locale,
-                        result: response,
-                    })
-                    .is_ok()
-                {
+                    .and_then(|(key, client)| fetch_categories(client, key));
+                if events.send(Event::Categories { result: response }).is_ok() {
                     repaint.request_repaint();
                 }
             }
@@ -508,20 +457,11 @@ fn worker(
                 page,
                 per_page,
                 locale,
-                customer_id,
             } => {
                 let response = result
                     .ok_or_else(|| unavailable().to_owned())
                     .and_then(|(key, client)| {
-                        fetch_page(
-                            client,
-                            key,
-                            &source,
-                            page,
-                            per_page,
-                            &locale,
-                            &customer_id,
-                        )
+                        fetch_page(client, key, &source, page, per_page, &locale)
                     });
                 if events
                     .send(Event::Page {
@@ -535,13 +475,13 @@ fn worker(
                     repaint.request_repaint();
                 }
             }
-            Request::Items { slugs } => {
+            Request::Items { ids } => {
                 let response = result
                     .ok_or_else(|| unavailable().to_owned())
-                    .and_then(|(key, client)| fetch_items(client, key, &slugs));
+                    .and_then(|(key, client)| fetch_items(client, key, &ids));
                 if events
                     .send(Event::Items {
-                        requested: slugs,
+                        requested: ids,
                         result: response,
                     })
                     .is_ok()
@@ -549,58 +489,41 @@ fn worker(
                     repaint.request_repaint();
                 }
             }
-            Request::Share {
-                slug,
-                customer_id,
-                query,
-            } => {
-                if let Some((key, client)) = result
-                    && let Err(error) = register_share(client, key, &slug, &customer_id, &query)
-                {
-                    log::debug!("KLIPY share trigger failed: {error}");
-                }
-            }
         }
     }
 }
 
 fn unavailable() -> &'static str {
-    "KLIPY API key is not configured for this build"
-}
-
-fn endpoint(key: &str, suffix: &str) -> String {
-    format!("{API_ROOT}/{key}/gifs/{suffix}")
+    "GIPHY API key is not configured for this build"
 }
 
 fn fetch_categories(
     client: &reqwest::blocking::Client,
     key: &str,
-    locale: &str,
 ) -> Result<Vec<Category>, String> {
-    let envelope: Envelope<CategoryPayload> = client
-        .get(endpoint(key, "categories"))
-        .query(&[("locale", locale)])
+    let payload: ListResponse<RawCategory> = client
+        .get(format!("{API_ROOT}/categories"))
+        .query(&[("api_key", key)])
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
-    if !envelope.result {
-        return Err("KLIPY categories request was rejected".into());
-    }
-    Ok(envelope
+
+    Ok(payload
         .data
-        .categories
         .into_iter()
-        .filter(|category| {
-            !category.category.is_empty()
-                && !category.query.is_empty()
-                && papo_core::preview::safe_remote_url(&category.preview_url)
-        })
-        .map(|category| Category {
-            name: category.category,
-            query: category.query,
-            preview_url: category.preview_url,
+        .filter_map(|category| {
+            let name = category.name.trim().to_owned();
+            if name.is_empty() {
+                return None;
+            }
+            let preview_url = convert_item(category.gif?)?.preview_url;
+            Some(Category {
+                query: name.clone(),
+                name,
+                preview_url,
+            })
         })
         .collect())
 }
@@ -612,205 +535,172 @@ fn fetch_page(
     page: usize,
     per_page: usize,
     locale: &str,
-    customer_id: &str,
 ) -> Result<Vec<GifItem>, String> {
-    let mut request = match source {
-        PageSource::Trending => client.get(endpoint(key, "trending")),
-        PageSource::Search(query) => client
-            .get(endpoint(key, "search"))
-            .query(&[("q", query.as_str())]),
+    let offset = page.saturating_sub(1).saturating_mul(per_page);
+    let mut params = vec![
+        ("api_key".to_owned(), key.to_owned()),
+        ("limit".to_owned(), per_page.to_string()),
+        ("offset".to_owned(), offset.to_string()),
+        ("rating".to_owned(), RATING.to_owned()),
+    ];
+    let endpoint = match source {
+        PageSource::Trending => format!("{API_ROOT}/trending"),
+        PageSource::Search(query) => {
+            params.push(("q".to_owned(), query.clone()));
+            if !locale.is_empty() {
+                params.push(("lang".to_owned(), locale.to_owned()));
+            }
+            format!("{API_ROOT}/search")
+        }
     };
-    request = request.query(&[
-        ("page", page.to_string()),
-        ("per_page", per_page.to_string()),
-        ("customer_id", customer_id.to_owned()),
-        ("locale", locale.to_owned()),
-        ("format_filter", "gif,jpg".to_owned()),
-    ]);
 
-    let envelope: Envelope<PagePayload> = request
+    let payload: ListResponse<RawGif> = client
+        .get(endpoint)
+        .query(&params)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
-    if !envelope.result {
-        return Err("KLIPY GIF request was rejected".into());
-    }
-    convert_items(envelope.data.data)
+
+    Ok(payload.data.into_iter().filter_map(convert_item).collect())
 }
 
 fn fetch_items(
     client: &reqwest::blocking::Client,
     key: &str,
-    slugs: &[String],
+    ids: &[String],
 ) -> Result<Vec<GifItem>, String> {
-    let envelope: Envelope<PagePayload> = client
-        .get(endpoint(key, "items"))
-        .query(&[("slugs", slugs.join(","))])
+    let payload: ListResponse<RawGif> = client
+        .get(API_ROOT)
+        .query(&[("api_key", key.to_owned()), ("ids", ids.join(","))])
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|error| error.to_string())?
         .json()
         .map_err(|error| error.to_string())?;
-    if !envelope.result {
-        return Err("KLIPY item request was rejected".into());
+
+    Ok(payload.data.into_iter().filter_map(convert_item).collect())
+}
+
+fn convert_item(raw: RawGif) -> Option<GifItem> {
+    if !valid_id(&raw.id) {
+        return None;
     }
-    convert_items(envelope.data.data)
-}
 
-fn register_share(
-    client: &reqwest::blocking::Client,
-    key: &str,
-    slug: &str,
-    customer_id: &str,
-    query: &str,
-) -> Result<(), String> {
-    client
-        .post(endpoint(key, &format!("share/{slug}")))
-        .json(&serde_json::json!({
-            "customer_id": customer_id,
-            "q": query,
-        }))
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
+    let full = raw
+        .images
+        .original
+        .as_ref()
+        .or(raw.images.downsized.as_ref())
+        .or(raw.images.fixed_width.as_ref())?;
+    // GIPHY documents fixed_width_small as a 100px "nano" rendition. Our
+    // two-column picker tiles are roughly 200px wide, so using it first caused
+    // visible upscaling/blurring. fixed_width is the intended grid rendition.
+    let preview = raw
+        .images
+        .fixed_width
+        .as_ref()
+        .or(raw.images.downsized.as_ref())
+        .unwrap_or(full);
 
-fn convert_items(items: Vec<RawItem>) -> Result<Vec<GifItem>, String> {
-    let mut out = Vec::with_capacity(items.len());
-    for raw in items {
-        if raw.kind.as_deref() == Some("ad") {
-            return Err(
-                "KLIPY ads are enabled for this key, but Papo has no KLIPY ad renderer yet".into(),
-            );
-        }
-        let (Some(slug), Some(file)) = (raw.slug, raw.file) else {
-            continue;
-        };
-        if !valid_slug(&slug) {
-            continue;
-        }
-        let Some(gif) = pick_gif(&file) else {
-            continue;
-        };
-        if !papo_core::preview::safe_remote_url(&gif.url) {
-            continue;
-        }
-        let preview = pick_preview_gif(&file).unwrap_or(gif);
-        let still = pick_still(&file)
-            .filter(|media| papo_core::preview::safe_remote_url(&media.url))
-            .map(|media| media.url.clone());
+    // Once selected, GIPHY recommends a higher-quality downsized rendition for
+    // chat/messaging. Prefer the <=5MB medium tier here: substantially sharper
+    // than the 100/200px grid renditions without forcing every visible message
+    // to fetch/decode the original asset.
+    let display = raw
+        .images
+        .downsized_medium
+        .as_ref()
+        .or(raw.images.downsized.as_ref())
+        .or(raw.images.downsized_large.as_ref())
+        .unwrap_or(full);
 
-        out.push(GifItem {
-            slug,
-            title: raw.title.unwrap_or_else(|| "GIF".into()),
-            gif_url: gif.url.clone(),
-            preview_url: preview.url.clone(),
-            still_url: still,
-            width: gif.width.max(1),
-            height: gif.height.max(1),
-        });
+    if !papo_core::preview::safe_remote_url(&full.url)
+        || !papo_core::preview::safe_remote_url(&display.url)
+        || !papo_core::preview::safe_remote_url(&preview.url)
+    {
+        return None;
     }
-    Ok(out)
+
+    let still_url = raw
+        .images
+        .fixed_width_still
+        .as_ref()
+        .or(raw.images.original_still.as_ref())
+        .filter(|image| papo_core::preview::safe_remote_url(&image.url))
+        .map(|image| image.url.clone());
+
+    Some(GifItem {
+        id: raw.id,
+        title: if raw.title.trim().is_empty() {
+            "GIF".into()
+        } else {
+            raw.title
+        },
+        gif_url: full.url.clone(),
+        display_url: display.url.clone(),
+        preview_url: preview.url.clone(),
+        still_url,
+        width: parse_dimension(&full.width).max(1),
+        height: parse_dimension(&full.height).max(1),
+    })
 }
 
-fn pick_gif(file: &RawFile) -> Option<&RawMedia> {
-    file.hd
-        .as_ref()
-        .and_then(|variant| variant.gif.as_ref())
-        .or_else(|| file.md.as_ref().and_then(|variant| variant.gif.as_ref()))
-        .or_else(|| file.sm.as_ref().and_then(|variant| variant.gif.as_ref()))
-        .or_else(|| file.xs.as_ref().and_then(|variant| variant.gif.as_ref()))
-}
-
-fn pick_preview_gif(file: &RawFile) -> Option<&RawMedia> {
-    file.sm
-        .as_ref()
-        .and_then(|variant| variant.gif.as_ref())
-        .or_else(|| file.xs.as_ref().and_then(|variant| variant.gif.as_ref()))
-        .or_else(|| file.md.as_ref().and_then(|variant| variant.gif.as_ref()))
-        .or_else(|| file.hd.as_ref().and_then(|variant| variant.gif.as_ref()))
-}
-
-fn pick_still(file: &RawFile) -> Option<&RawMedia> {
-    file.sm
-        .as_ref()
-        .and_then(|variant| variant.jpg.as_ref())
-        .or_else(|| file.xs.as_ref().and_then(|variant| variant.jpg.as_ref()))
-        .or_else(|| file.md.as_ref().and_then(|variant| variant.jpg.as_ref()))
-        .or_else(|| file.hd.as_ref().and_then(|variant| variant.jpg.as_ref()))
+fn parse_dimension(value: &str) -> u32 {
+    value.parse().unwrap_or(0)
 }
 
 #[derive(Deserialize)]
-struct Envelope<T> {
-    result: bool,
-    data: T,
-}
-
-#[derive(Deserialize)]
-struct CategoryPayload {
+struct ListResponse<T> {
     #[serde(default)]
-    categories: Vec<RawCategory>,
+    data: Vec<T>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RawCategory {
     #[serde(default)]
-    category: String,
+    name: String,
     #[serde(default)]
-    query: String,
-    #[serde(default)]
-    preview_url: String,
-}
-
-#[derive(Deserialize)]
-struct PagePayload {
-    #[serde(default)]
-    data: Vec<RawItem>,
-}
-
-#[derive(Deserialize)]
-struct RawItem {
-    #[serde(default)]
-    slug: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    file: Option<RawFile>,
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
+    gif: Option<RawGif>,
 }
 
 #[derive(Default, Deserialize)]
-struct RawFile {
+struct RawGif {
     #[serde(default)]
-    hd: Option<RawVariant>,
+    id: String,
     #[serde(default)]
-    md: Option<RawVariant>,
+    title: String,
     #[serde(default)]
-    sm: Option<RawVariant>,
-    #[serde(default)]
-    xs: Option<RawVariant>,
+    images: RawImages,
 }
 
 #[derive(Default, Deserialize)]
-struct RawVariant {
+struct RawImages {
     #[serde(default)]
-    gif: Option<RawMedia>,
+    original: Option<RawImage>,
     #[serde(default)]
-    jpg: Option<RawMedia>,
+    downsized: Option<RawImage>,
+    #[serde(default)]
+    downsized_large: Option<RawImage>,
+    #[serde(default)]
+    downsized_medium: Option<RawImage>,
+    #[serde(default)]
+    fixed_width: Option<RawImage>,
+    #[serde(default)]
+    fixed_width_still: Option<RawImage>,
+    #[serde(default)]
+    original_still: Option<RawImage>,
 }
 
 #[derive(Deserialize)]
-struct RawMedia {
+struct RawImage {
     #[serde(default)]
     url: String,
     #[serde(default)]
-    width: u32,
+    width: String,
     #[serde(default)]
-    height: u32,
+    height: String,
 }
 
 #[cfg(test)]
@@ -818,15 +708,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn marker_round_trip() {
-        let encoded = encode_message("hello-there");
-        assert_eq!(message_slug(&encoded), Some("hello-there"));
-        assert_eq!(message_slug(" @gif(klipy:hello-there)\n"), Some("hello-there"));
+    fn marker_round_trip_matches_official_papo_contract() {
+        let encoded = encode_message("xT4uQulxzV39haRFjG");
+        assert_eq!(message_id(&encoded), Some("xT4uQulxzV39haRFjG"));
+        assert_eq!(message_id(" giphy:xT4uQulxzV39haRFjG\n"), Some("xT4uQulxzV39haRFjG"));
     }
 
     #[test]
     fn unrelated_text_is_not_a_gif_marker() {
-        assert_eq!(message_slug("hello @gif(klipy:wave)"), None);
-        assert_eq!(message_slug("@gif(tenor:wave)"), None);
+        assert_eq!(message_id("hello giphy:xT4uQulxzV39haRFjG"), None);
+        assert_eq!(message_id("@gif(klipy:wave)"), None);
     }
 }

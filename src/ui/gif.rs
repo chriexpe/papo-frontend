@@ -1,9 +1,9 @@
-//! Native Papo UI for KLIPY GIFs.
+//! Native Papo UI for GIPHY GIFs.
 
 use egui::{Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
 use egui_phosphor::regular as icon;
 
-use crate::klipy::{BrowseMode, Category, GifItem};
+use crate::giphy::{BrowseMode, Category, GifItem};
 use crate::i18n::Strings;
 
 use super::emoji;
@@ -34,8 +34,8 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         state.gif_picker_opened = None;
         return;
     };
-    if state.klipy.is_none() {
-        state.klipy = Some(crate::klipy::Store::new(ui.ctx().clone()));
+    if state.giphy.is_none() {
+        state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
     }
 
     let safe = ui.ctx().content_rect();
@@ -52,7 +52,7 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     let rect = emoji::popup_area(ui, anchor, size);
     let backdrop = ui.interact(
         safe,
-        Id::new("klipy-picker-backdrop"),
+        Id::new("giphy-picker-backdrop"),
         Sense::click(),
     );
 
@@ -69,13 +69,18 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         egui::pos2(inner.min.x, inner.max.y - SEARCH_H),
         inner.max,
     );
+    let attribution_h = 16.0;
     let body_rect = Rect::from_min_max(
         inner.min,
-        egui::pos2(inner.max.x, search_rect.min.y - space::SM),
+        egui::pos2(inner.max.x, search_rect.min.y - space::SM - attribution_h),
+    );
+    let attribution_rect = Rect::from_min_max(
+        egui::pos2(inner.min.x, body_rect.max.y),
+        egui::pos2(inner.max.x, search_rect.min.y - space::XXS),
     );
 
-    let mut klipy = state.klipy.take().expect("KLIPY store initialized");
-    klipy.pump(ui.ctx());
+    let mut giphy = state.giphy.take().expect("GIPHY store initialized");
+    giphy.pump(ui.ctx());
 
     let mut body = ui.new_child(
         UiBuilder::new()
@@ -86,7 +91,7 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     // overflow while the pinned search field remains outside the scroll.
     body.set_clip_rect(body.clip_rect().intersect(body_rect));
 
-    if !crate::klipy::available() {
+    if !crate::giphy::available() {
         body.add_space(space::LG);
         body.label(
             RichText::new(s.gif_unavailable)
@@ -94,33 +99,41 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
                 .color(t.label_secondary),
         );
     } else {
-        match klipy.browser.mode.clone() {
+        match giphy.browser.mode.clone() {
             BrowseMode::Home => {
-                draw_home(&mut body, state, t, s, &mut klipy);
+                draw_home(&mut body, state, t, s, &mut giphy);
             }
             BrowseMode::Favourites => {
-                draw_results_header(&mut body, t, s.gif_favourites, &mut klipy);
-                draw_favourites(&mut body, state, t, s, &mut klipy);
+                draw_results_header(&mut body, t, s.gif_favourites, &mut giphy);
+                draw_favourites(&mut body, state, t, s, &mut giphy);
             }
             BrowseMode::Trending => {
-                draw_results_header(&mut body, t, s.gif_trending, &mut klipy);
-                draw_results(&mut body, state, t, s, &mut klipy);
+                draw_results_header(&mut body, t, s.gif_trending, &mut giphy);
+                draw_results(&mut body, state, t, s, &mut giphy);
             }
             BrowseMode::Category { name, .. } => {
-                draw_results_header(&mut body, t, &name, &mut klipy);
-                draw_results(&mut body, state, t, s, &mut klipy);
+                draw_results_header(&mut body, t, &name, &mut giphy);
+                draw_results(&mut body, state, t, s, &mut giphy);
             }
             BrowseMode::Search { query } => {
                 let title = if query.is_empty() { s.gif_results } else { &query };
-                draw_results_header(&mut body, t, title, &mut klipy);
-                draw_results(&mut body, state, t, s, &mut klipy);
+                draw_results_header(&mut body, t, title, &mut giphy);
+                draw_results(&mut body, state, t, s, &mut giphy);
             }
         }
     }
 
-    draw_search(ui, state, t, s, &mut klipy, search_rect);
+    ui.painter().text(
+        attribution_rect.right_center(),
+        egui::Align2::RIGHT_CENTER,
+        "Powered by GIPHY",
+        text::caption(),
+        t.label_tertiary,
+    );
 
-    if let Some(error) = klipy.browser.error.as_deref() {
+    draw_search(ui, state, t, s, &mut giphy, search_rect);
+
+    if let Some(error) = giphy.browser.error.as_deref() {
         let error_rect = Rect::from_min_max(
             egui::pos2(rect.min.x + space::LG, search_rect.min.y - 30.0),
             egui::pos2(rect.max.x - space::LG, search_rect.min.y - 4.0),
@@ -134,7 +147,7 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         );
     }
 
-    state.klipy = Some(klipy);
+    state.giphy = Some(giphy);
 
     let now = ui.input(|input| input.time);
     let outside = now > opened + 0.05
@@ -153,7 +166,7 @@ fn draw_results_header(
     ui: &mut egui::Ui,
     t: &Tokens,
     title: &str,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
 ) {
     ui.horizontal(|ui| {
         let (back_rect, back) = ui.allocate_exact_size(Vec2::splat(28.0), Sense::click());
@@ -169,7 +182,7 @@ fn draw_results_header(
             t.label_secondary,
         );
         if back.clicked() {
-            klipy.show_home();
+            giphy.show_home();
         }
         ui.label(RichText::new(title).font(text::headline()).color(t.label));
     });
@@ -181,7 +194,7 @@ fn draw_home(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
 ) {
     ui.label(
         RichText::new(s.gif_categories.to_uppercase())
@@ -193,7 +206,7 @@ fn draw_home(
     let grid_width = ui.available_width().max(1.0);
     let grid_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
-        .id_salt("klipy-home-grid")
+        .id_salt("giphy-home-grid")
         .max_height(grid_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -208,8 +221,8 @@ fn draw_home(
                 .iter()
                 .next()
                 .cloned()
-                .and_then(|slug| klipy.item(&slug, ui.ctx()));
-            let trending_preview = klipy.browser.trending_cover.clone();
+                .and_then(|id| giphy.item(&id, ui.ctx()));
+            let trending_preview = giphy.browser.trending_cover.clone();
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = TILE_GAP;
@@ -224,7 +237,7 @@ fn draw_home(
                     CATEGORY_H,
                     icon::STAR,
                 ) {
-                    klipy.show_favourites();
+                    giphy.show_favourites();
                 }
                 if category_tile(
                     ui,
@@ -237,17 +250,17 @@ fn draw_home(
                     CATEGORY_H,
                     icon::TREND_UP,
                 ) {
-                    klipy.show_trending();
+                    giphy.show_trending();
                 }
             });
 
-            let categories = klipy.browser.categories.clone();
+            let categories = giphy.browser.categories.clone();
             for row in categories.chunks(2) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = TILE_GAP;
                     for category in row {
-                        if klipy_category_tile(ui, state, t, category, tile_w) {
-                            klipy.show_category(category.name.clone(), category.query.clone());
+                        if giphy_category_tile(ui, state, t, category, tile_w) {
+                            giphy.show_category(category.name.clone(), category.query.clone());
                         }
                     }
                 });
@@ -277,7 +290,7 @@ fn category_tile(
         && let Some(texture) = state
             .media
             .remote_ephemeral_sized(
-                &format!("klipy-category-{id}"),
+                &format!("giphy-category-{id}"),
                 url,
                 ephemeral_decode_max(ui, rect),
             )
@@ -312,7 +325,7 @@ fn category_tile(
     response.clicked()
 }
 
-fn klipy_category_tile(
+fn giphy_category_tile(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
@@ -337,10 +350,10 @@ fn draw_favourites(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
 ) {
-    let slugs: Vec<String> = state.gif_favourites.iter().cloned().collect();
-    if slugs.is_empty() {
+    let ids: Vec<String> = state.gif_favourites.iter().cloned().collect();
+    if ids.is_empty() {
         ui.label(
             RichText::new(s.gif_no_favourites)
                 .font(text::body())
@@ -350,12 +363,12 @@ fn draw_favourites(
     }
 
     let mut items = Vec::new();
-    for slug in slugs {
-        if let Some(item) = klipy.item(&slug, ui.ctx()) {
+    for id in ids {
+        if let Some(item) = giphy.item(&id, ui.ctx()) {
             items.push(item);
         }
     }
-    draw_item_grid(ui, state, t, s, klipy, &items, false);
+    draw_item_grid(ui, state, t, s, giphy, &items, false);
 }
 
 fn draw_results(
@@ -363,10 +376,10 @@ fn draw_results(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
 ) {
-    let items = klipy.browser.results.clone();
-    draw_item_grid(ui, state, t, s, klipy, &items, true);
+    let items = giphy.browser.results.clone();
+    draw_item_grid(ui, state, t, s, giphy, &items, true);
 }
 
 fn draw_item_grid(
@@ -374,7 +387,7 @@ fn draw_item_grid(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
     items: &[GifItem],
     paged: bool,
 ) {
@@ -382,7 +395,7 @@ fn draw_item_grid(
     let grid_width = ui.available_width().max(1.0);
     let grid_height = ui.available_height().max(1.0);
     egui::ScrollArea::vertical()
-        .id_salt("klipy-result-grid")
+        .id_salt("giphy-result-grid")
         .max_height(grid_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -398,8 +411,8 @@ fn draw_item_grid(
                     }
                 });
             }
-            if paged && klipy.browser.has_more {
-                let loading = klipy.browser.loading;
+            if paged && giphy.browser.has_more {
+                let loading = giphy.browser.loading;
                 if ui
                     .add_enabled(
                         !loading,
@@ -407,13 +420,13 @@ fn draw_item_grid(
                     )
                     .clicked()
                 {
-                    klipy.load_more();
+                    giphy.load_more();
                 }
             }
         });
 
     if let Some(item) = chosen {
-        send_item(state, klipy, item);
+        send_item(state, giphy, item);
     }
 }
 
@@ -433,7 +446,7 @@ fn gif_tile(
         && let Some(texture) = state
             .media
             .remote_ephemeral_sized(
-                &format!("klipy-picker-{}", item.slug),
+                &format!("giphy-picker-{}", item.id),
                 &item.preview_url,
                 ephemeral_decode_max(ui, rect),
             )
@@ -485,7 +498,7 @@ fn draw_search(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    klipy: &mut crate::klipy::Store,
+    giphy: &mut crate::giphy::Store,
     rect: Rect,
 ) {
     ui.painter().rect(
@@ -495,17 +508,17 @@ fn draw_search(
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
-    let before = klipy.browser.query.clone();
+    let before = giphy.browser.query.clone();
 
     #[cfg(target_os = "android")]
     {
-        let key = "klipy-search";
+        let key = "giphy-search";
         let _ = crate::platform::native_field::show(
             ui.ctx(),
             key,
-            &mut klipy.browser.query,
+            &mut giphy.browser.query,
             rect.shrink2(Vec2::new(space::MD, space::SM)),
-            s.gif_search_klipy,
+            s.gif_search_giphy,
             crate::platform::native_field::Mode::Search,
             0,
             false,
@@ -523,34 +536,29 @@ fn draw_search(
                 .layout(Layout::left_to_right(Align::Center)),
         );
         child.add(
-            egui::TextEdit::singleline(&mut klipy.browser.query)
-                .hint_text(s.gif_search_klipy)
+            egui::TextEdit::singleline(&mut giphy.browser.query)
+                .hint_text(s.gif_search_giphy)
                 .desired_width(f32::INFINITY)
                 .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
         );
     }
 
-    if klipy.browser.query != before {
-        klipy.query_changed(ui.input(|input| input.time));
+    if giphy.browser.query != before {
+        giphy.query_changed(ui.input(|input| input.time));
     }
-    klipy.maybe_submit_search(ui.input(|input| input.time));
+    giphy.maybe_submit_search(ui.input(|input| input.time));
 
     // Search debounce needs another frame even when nothing else animates.
-    if !klipy.browser.query.is_empty() {
+    if !giphy.browser.query.is_empty() {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
     }
 
     let _ = state;
 }
 
-fn send_item(state: &mut UiState, klipy: &mut crate::klipy::Store, item: GifItem) {
-    let query = match &klipy.browser.mode {
-        BrowseMode::Search { query } | BrowseMode::Category { query, .. } => query.as_str(),
-        _ => "",
-    };
-    klipy.register_share(&item.slug, query);
+fn send_item(state: &mut UiState, _giphy: &mut crate::giphy::Store, item: GifItem) {
     state.actions.push(ChatAction::Send {
-        content: crate::klipy::encode_message(&item.slug),
+        content: crate::giphy::encode_message(&item.id),
         reply_to: state.replying.take(),
         notify_reply: state.reply_notify,
         attachments: Vec::new(),
@@ -564,15 +572,15 @@ pub fn message(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
-    slug: &str,
+    id: &str,
     width: f32,
 ) {
-    if state.klipy.is_none() {
-        state.klipy = Some(crate::klipy::Store::new(ui.ctx().clone()));
+    if state.giphy.is_none() {
+        state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
     }
-    let mut klipy = state.klipy.take().expect("KLIPY store initialized");
-    klipy.pump(ui.ctx());
-    let item = klipy.item(slug, ui.ctx());
+    let mut giphy = state.giphy.take().expect("GIPHY store initialized");
+    giphy.pump(ui.ctx());
+    let item = giphy.item(id, ui.ctx());
 
     let max_w = width.min(420.0);
     let size = item
@@ -595,8 +603,8 @@ pub fn message(
             && let Some(texture) = state
                 .media
                 .remote_ephemeral_sized(
-                    &format!("klipy-chat-{slug}"),
-                    &item.preview_url,
+                    &format!("giphy-chat-{id}"),
+                    &item.display_url,
                     ephemeral_decode_max(ui, rect),
                 )
                 .and_then(|texture| texture.frame(ui.ctx()))
@@ -609,7 +617,7 @@ pub fn message(
             egui::pos2(rect.max.x - 34.0, rect.min.y + 6.0),
             Vec2::splat(28.0),
         );
-        let star = ui.interact(star_rect, Id::new(("klipy-star", slug)), Sense::click());
+        let star = ui.interact(star_rect, Id::new(("giphy-star", id)), Sense::click());
         if response.hovered() || star.hovered() {
             ui.painter().rect_filled(
                 star_rect,
@@ -621,7 +629,7 @@ pub fn message(
                 egui::Align2::CENTER_CENTER,
                 icon::STAR,
                 text::icon(15.0),
-                if state.gif_favourites.contains(slug) {
+                if state.gif_favourites.contains(id) {
                     t.away
                 } else {
                     Color32::WHITE
@@ -629,15 +637,15 @@ pub fn message(
             );
         }
         if star.clicked() {
-            toggle_favourite(state, slug);
+            toggle_favourite(state, id);
         } else if response.clicked() {
             state.link_viewer = Some(LinkViewer {
-                id: format!("klipy-viewer-{slug}"),
+                id: format!("giphy-viewer-{id}"),
                 url: item.gif_url.clone(),
                 name: item.title.clone(),
                 video: false,
                 ephemeral: true,
-                favourite_slug: Some(slug.to_owned()),
+                favourite_id: Some(id.to_owned()),
                 zoom: 1.0,
                 offset: Vec2::ZERO,
                 fitted: true,
@@ -648,7 +656,7 @@ pub fn message(
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            if crate::klipy::available() { s.downloading } else { s.gif_unavailable },
+            if crate::giphy::available() { s.downloading } else { s.gif_unavailable },
             text::body(),
             t.label_secondary,
         );
@@ -663,12 +671,12 @@ pub fn message(
         egui::StrokeKind::Inside,
     );
 
-    state.klipy = Some(klipy);
+    state.giphy = Some(giphy);
 }
 
-pub fn toggle_favourite(state: &mut UiState, slug: &str) {
-    if state.gif_favourites.remove(slug) {
+pub fn toggle_favourite(state: &mut UiState, id: &str) {
+    if state.gif_favourites.remove(id) {
         return;
     }
-    state.gif_favourites.insert(slug.to_owned());
+    state.gif_favourites.insert(id.to_owned());
 }
