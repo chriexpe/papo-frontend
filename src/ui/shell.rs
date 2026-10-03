@@ -1646,7 +1646,29 @@ fn direct_messages_sidebar(
                             ui.add_space(space::MD);
                             ui.vertical(|ui| {
                                 let width = SIDEBAR_WIDTH - space::MD * 2.0;
-                                section_caption(ui, t, s.direct_messages);
+                                ui.add_space(space::LG);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(s.direct_messages.to_uppercase())
+                                            .font(text::caption())
+                                            .color(t.label_tertiary),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            Vec2::splat(24.0),
+                                            Sense::hover(),
+                                        );
+                                        ui.painter().text(
+                                            rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            icon::EYE_SLASH,
+                                            text::icon(14.0),
+                                            t.label_tertiary.gamma_multiply(0.55),
+                                        );
+                                        response.on_hover_text(s.hidden_direct_messages_pending);
+                                    });
+                                });
+                                ui.add_space(space::XS);
                                 let dms = store.direct_messages.clone();
                                 for dm in dms {
                                     let member = store.member(&dm.user.id);
