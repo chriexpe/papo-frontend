@@ -3885,7 +3885,7 @@ fn server_pane(
             actions_row(ui, |ui| {
                 if ready && row_button(ui, t, s.save, Emphasis::Primary) {
                     actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
-                        crate::api::models::UpdateServerRequest {
+                        crate::api::models::PatchServerRequest {
                             name: draft.server_name.trim().to_owned(),
                             public: Some(draft.server_public),
                             password: (!draft.server_password.is_empty())
