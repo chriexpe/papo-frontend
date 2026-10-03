@@ -3002,17 +3002,35 @@ fn conversation(
                 if web_scroll.abs() > f32::EPSILON {
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
-                ui.add_space(top_inset);
-                // `message_list` mede cada linha em coordenadas absolutas
-                // (`inner.response.rect`), então o retângulo "legível" precisa
-                // estar no mesmo espaço. O viewport do `show_viewport` é
-                // relativo ao conteúdo; `full` é absoluto e acompanha as linhas.
-                let readable = Rect::from_min_max(
-                    egui::pos2(full.min.x, full.min.y + top_inset),
-                    egui::pos2(full.max.x, full.max.y - bottom_inset),
-                );
-                message_list(ui, store, state, t, s, full, readable);
-                ui.add_space(bottom_inset);
+
+                // Opening is a measurement pass, not a visible chat frame.
+                // `request_discard` alone still lets some integrations present
+                // the intermediate shapes for a few milliseconds, which is the
+                // top→bottom flash seen in recordings. An invisible child keeps
+                // the exact same layout/row geometry while suppressing paint and
+                // interaction until the initial offset is committed.
+                let builder = if opening_pass {
+                    UiBuilder::new().invisible()
+                } else {
+                    UiBuilder::new()
+                };
+                ui.scope_builder(builder, |ui| {
+                    ui.add_space(top_inset);
+                    // `message_list` measures each row in absolute coordinates
+                    // (`inner.response.rect`). The readable rect therefore also
+                    // needs to be absolute. During the hidden opening pass no row
+                    // is allowed to count as seen.
+                    let readable = if opening_pass {
+                        Rect::from_min_size(full.min, Vec2::ZERO)
+                    } else {
+                        Rect::from_min_max(
+                            egui::pos2(full.min.x, full.min.y + top_inset),
+                            egui::pos2(full.max.x, full.max.y - bottom_inset),
+                        )
+                    };
+                    message_list(ui, store, state, t, s, full, readable);
+                    ui.add_space(bottom_inset);
+                });
             });
 
             // A primeira geometria útil do canal é somente uma medição. Para
@@ -3033,6 +3051,12 @@ fn conversation(
                     .as_ref()
                     .is_some_and(|jump| jump.found.is_some())
             {
+                // Freeze the offset resolved by the hidden, non-animated
+                // scroll-to-message pass so the first visible pass starts there
+                // rather than depending on any transient ScrollArea animation
+                // state surviving the discard.
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), output.state.offset.y.max(0.0)));
                 state.open_channel_pending = None;
                 ui.ctx()
                     .request_discard("posição inicial da conversa resolvida no anchor");
