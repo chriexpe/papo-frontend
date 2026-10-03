@@ -639,7 +639,7 @@ struct ListResponse<T> {
     data: Vec<T>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RawCategory {
     #[serde(default)]
     name: String,
@@ -647,7 +647,7 @@ struct RawCategory {
     gif: Option<RawGif>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct RawGif {
     #[serde(default)]
     id: String,
