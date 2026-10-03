@@ -433,6 +433,13 @@ pub fn activity_update(activity: Option<&Activity>) -> String {
     .to_string()
 }
 
+pub fn presence_activity() -> String {
+    serde_json::json!({
+        "type": "presence_activity",
+    })
+    .to_string()
+}
+
 fn is_heartbeat_ack(text: &str) -> bool {
     serde_json::from_str::<Envelope>(text)
         .is_ok_and(|envelope| envelope.kind == "heartbeat_ack")
