@@ -182,6 +182,11 @@ pub enum ChatAction {
     OpenDirectMessage(String),
     /// Oculta uma conversa direta da rail.
     HideDirectMessage(String),
+    /// Bloqueia/desbloqueia uma pessoa para mensagens diretas.
+    SetUserBlocked {
+        user_id: String,
+        blocked: bool,
+    },
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
