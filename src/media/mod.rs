@@ -1600,6 +1600,19 @@ impl MediaStore {
         )
     }
 
+    /// Inline provider GIF already decoded in memory, without scheduling work.
+    pub fn loaded_remote_ephemeral_sized(&self, url: &str, max: u32) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let max = max.clamp(96, EPHEMERAL_INLINE_MAX);
+        let identity = format!(
+            "{}:{max}:{}:{}",
+            remote_resource_id(&canonical),
+            EPHEMERAL_GIF_MAX_FRAMES,
+            EPHEMERAL_GIF_MAX_BYTES,
+        );
+        self.textures.get(&ephemeral_image_key(&identity))
+    }
+
     /// Fullscreen provider GIFs get a larger decode profile, still bounded.
     pub fn remote_ephemeral_full(&mut self, _id: &str, url: &str) -> Option<&Texture> {
         self.remote_ephemeral_limited(
