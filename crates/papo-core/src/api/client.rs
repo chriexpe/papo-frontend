@@ -264,6 +264,11 @@ impl Api {
         Self::parse(response).await
     }
 
+    async fn patch<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> ApiResult<T> {
+        let response = self.send(Method::PATCH, path, Some(body)).await?;
+        Self::parse(response).await
+    }
+
     /// `DELETE` com corpo opcional — as reações identificam o emoji no corpo.
     async fn delete<B: Serialize>(&self, path: &str, body: Option<&B>) -> ApiResult<()> {
         let response = self.send(Method::DELETE, path, body).await?;
@@ -718,9 +723,11 @@ impl Api {
 
     // -- Servidor, perfil e conta -----------------------------------------
 
-    /// Edita o servidor. Deixar `public: Some(false)` sem senha é recusado.
-    pub async fn update_server(&self, request: &UpdateServerRequest) -> ApiResult<Server> {
-        self.put("/server", request).await
+    /// Edita só os campos informados. `public: false` sem senha preserva a
+    /// senha atual de um servidor já privado; ao tornar um servidor privado
+    /// pela primeira vez, o backend continua exigindo uma senha válida.
+    pub async fn patch_server(&self, request: &PatchServerRequest) -> ApiResult<Server> {
+        self.patch("/server", request).await
     }
 
     pub async fn update_profile(
@@ -804,11 +811,14 @@ impl Api {
         Ok(all)
     }
 
+    /// A troca própria é deliberadamente em duas fases no backend: primeiro
+    /// arma `reset_password`, depois consome a flag com a senha nova.
     pub async fn change_password(
         &self,
         user_id: &str,
         password: &str,
     ) -> ApiResult<serde_json::Value> {
+        let _: serde_json::Value = self.post(&format!("/users/{user_id}/reset"), &()).await?;
         self.put(
             &format!("/users/{user_id}/password"),
             &ChangePasswordRequest {
@@ -826,8 +836,26 @@ impl Api {
         .await
     }
 
-    pub async fn reset_user(&self, user_id: &str) -> ApiResult<serde_json::Value> {
+    pub async fn reset_user(&self, user_id: &str) -> ApiResult<PasswordResetLink> {
         self.post(&format!("/users/{user_id}/reset"), &()).await
+    }
+
+    /// Resumos em lote para convergir mudanças leves de usuário sem baixar
+    /// avatar/banner de novo. O backend aceita até 1000 ids por chamada.
+    pub async fn user_summaries(&self, user_ids: Vec<String>) -> ApiResult<Vec<UserSummary>> {
+        let mut all = Vec::with_capacity(user_ids.len());
+        for slice in user_ids.chunks(1000) {
+            let users: Vec<UserSummary> = self
+                .post(
+                    "/users/user_summary_batch",
+                    &UserSummaryBatchRequest {
+                        ids: slice.to_vec(),
+                    },
+                )
+                .await?;
+            all.extend(users);
+        }
+        Ok(all)
     }
 
     /// Ajustes portáteis da conta. O backend exige o envelope
