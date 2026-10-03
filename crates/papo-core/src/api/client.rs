@@ -871,12 +871,16 @@ impl Api {
         }
 
         let error = problem_error(status, &body);
-        // CreateMessageHandler só chega à criação depois de autenticação,
-        // parsing, validação de canal/reply e permissão. Estes códigos são
-        // rejeições documentadas antes de storage.CreateMessage; para outros
-        // status não fabricamos essa garantia.
-        match status.as_u16() {
-            400 | 401 | 403 | 404 => Err(SendMessageError::FailedPermanent(error)),
+        // O rate limiter global roda antes das rotas, então um 429 prova que
+        // CreateMessageHandler nem começou: a fila pode repetir com segurança
+        // depois do cooldown compartilhado. As rejeições documentadas abaixo
+        // também acontecem antes de storage.CreateMessage, mas são permanentes.
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => Err(SendMessageError::SafeToRetry(error)),
+            StatusCode::BAD_REQUEST
+            | StatusCode::UNAUTHORIZED
+            | StatusCode::FORBIDDEN
+            | StatusCode::NOT_FOUND => Err(SendMessageError::FailedPermanent(error)),
             _ => Err(SendMessageError::UnknownOutcome(error)),
         }
     }
