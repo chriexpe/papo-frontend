@@ -105,14 +105,19 @@ pub fn sign_in(
         problem(ui, t, store, s);
 
         ui.add_space(space::XXL);
-        let ready = !form.username.trim().is_empty() && !form.password.is_empty();
-        if primary_button(ui, t, s.sign_in, ready && !store.busy) || (submitted && ready) {
+        let sign_in_ready = !form.username.trim().is_empty() && !form.password.is_empty();
+        let register_ready =
+            form.username.trim().chars().count() >= 3 && !form.password.is_empty();
+        if primary_button(ui, t, s.sign_in, sign_in_ready && !store.busy)
+            || (submitted && sign_in_ready)
+        {
             action = AuthAction::SignIn;
         }
         ui.add_space(space::MD);
-        // As regras acima já avisam de senha fraca; travar o botão por causa
-        // delas só fazia parecer que criar conta não estava implementado.
-        if link_button(ui, t, s.sign_up, ready && !store.busy) {
+        // O backend exige ao menos três caracteres no username. A política
+        // de senha continua visível como orientação e o servidor é a fonte
+        // autoritativa para os demais limites configuráveis.
+        if link_button(ui, t, s.sign_up, register_ready && !store.busy) {
             action = AuthAction::Register;
         }
     });
