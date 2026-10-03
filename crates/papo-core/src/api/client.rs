@@ -4,11 +4,13 @@
 //! nem armazenamento do navegador: guardamos o cookie num pote próprio e o
 //! gravamos em disco para sobreviver ao fechamento da janela.
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use reqwest::header::{HeaderValue, ACCEPT, COOKIE};
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, COOKIE, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -23,6 +25,119 @@ const COOKIE_NAME: &str = "Auth";
 /// picotar a rede, pequeno o bastante para o pico de memória não ter nada a
 /// ver com o tamanho do arquivo.
 const UPLOAD_CHUNK: usize = 64 * 1024;
+
+/// REST starts are paced per server, not per caller. The backend's global
+/// limiter is per client IP, so independently bursting bootstrap, media and
+/// foreground commands only makes them compete with each other.
+const REQUEST_START_GAP: Duration = Duration::from_millis(100);
+const RATE_LIMIT_BASE_COOLDOWN: Duration = Duration::from_secs(10);
+const RATE_LIMIT_MAX_COOLDOWN: Duration = Duration::from_secs(60);
+const RATE_LIMIT_STRIKE_RESET: Duration = Duration::from_secs(120);
+
+#[derive(Debug, Default)]
+struct RequestGovernorState {
+    blocked_until: Option<tokio::time::Instant>,
+    next_request_at: Option<tokio::time::Instant>,
+    rate_limit_strikes: u32,
+    last_limited: Option<tokio::time::Instant>,
+}
+
+#[derive(Debug, Default)]
+struct RequestGovernor {
+    state: tokio::sync::Mutex<RequestGovernorState>,
+}
+
+impl RequestGovernor {
+    async fn wait_turn(&self) {
+        loop {
+            let deadline = {
+                let mut state = self.state.lock().await;
+                let now = tokio::time::Instant::now();
+                let deadline = match (state.blocked_until, state.next_request_at) {
+                    (Some(blocked), Some(next)) => Some(blocked.max(next)),
+                    (Some(blocked), None) => Some(blocked),
+                    (None, Some(next)) => Some(next),
+                    (None, None) => None,
+                };
+
+                if deadline.is_none_or(|deadline| deadline <= now) {
+                    state.next_request_at = Some(now + REQUEST_START_GAP);
+                    return;
+                }
+                deadline.expect("deadline checked above")
+            };
+            tokio::time::sleep_until(deadline).await;
+        }
+    }
+
+    async fn observe_response(&self, response: &reqwest::Response) {
+        let now = tokio::time::Instant::now();
+        let mut state = self.state.lock().await;
+
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            if state
+                .last_limited
+                .is_some_and(|last| now.duration_since(last) >= RATE_LIMIT_STRIKE_RESET)
+            {
+                state.rate_limit_strikes = 0;
+            }
+            state.rate_limit_strikes = state.rate_limit_strikes.saturating_add(1);
+            state.last_limited = Some(now);
+
+            let delay = retry_after_delay(response.headers())
+                .unwrap_or_else(|| fallback_rate_limit_cooldown(state.rate_limit_strikes))
+                .max(REQUEST_START_GAP);
+            let until = now + delay;
+            state.blocked_until = Some(state.blocked_until.map_or(until, |old| old.max(until)));
+            state.next_request_at = Some(state.next_request_at.map_or(until, |old| old.max(until)));
+            return;
+        }
+
+        if state
+            .last_limited
+            .is_some_and(|last| now.duration_since(last) >= RATE_LIMIT_STRIKE_RESET)
+        {
+            state.rate_limit_strikes = 0;
+            state.last_limited = None;
+            state.blocked_until = None;
+        }
+    }
+}
+
+fn fallback_rate_limit_cooldown(strikes: u32) -> Duration {
+    let shift = strikes.saturating_sub(1).min(3);
+    let seconds = RATE_LIMIT_BASE_COOLDOWN
+        .as_secs()
+        .saturating_mul(1_u64 << shift)
+        .min(RATE_LIMIT_MAX_COOLDOWN.as_secs());
+    Duration::from_secs(seconds)
+}
+
+fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let deadline = chrono::DateTime::parse_from_rfc2822(raw)
+        .ok()?
+        .with_timezone(&Utc);
+    let millis = deadline.signed_duration_since(Utc::now()).num_milliseconds();
+    (millis > 0).then(|| Duration::from_millis(millis as u64))
+}
+
+fn request_governor(base: &Url) -> Arc<RequestGovernor> {
+    static GOVERNORS: OnceLock<Mutex<HashMap<String, Weak<RequestGovernor>>>> = OnceLock::new();
+    let key = base.origin().ascii_serialization();
+    let registry = GOVERNORS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut registry = registry.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = registry.get(&key).and_then(Weak::upgrade) {
+        return existing;
+    }
+    let governor = Arc::new(RequestGovernor::default());
+    registry.insert(key, Arc::downgrade(&governor));
+    governor
+}
 
 /// Identificador único por requisição. O backend registra o valor no log e o
 /// devolve no corpo do erro, então um problema relatado pelo usuário dá para
@@ -178,11 +293,13 @@ pub struct Api {
     http: reqwest::Client,
     base: Url,
     pub session: Arc<Session>,
+    governor: Arc<RequestGovernor>,
 }
 
 impl Api {
     pub fn new(base_url: &str, session: Arc<Session>) -> ApiResult<Self> {
         let base = Url::parse(base_url).map_err(|e| ApiError::Network(e.to_string()))?;
+        let governor = request_governor(&base);
         let http = reqwest::Client::builder()
             .user_agent(concat!("papo/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(30))
@@ -192,6 +309,7 @@ impl Api {
             http,
             base,
             session,
+            governor,
         })
     }
 
@@ -229,10 +347,12 @@ impl Api {
             request = request.json(body);
         }
 
+        self.governor.wait_turn().await;
         let response = request
             .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
+        self.governor.observe_response(&response).await;
         self.session.absorb(&response);
         Ok(response)
     }
@@ -657,10 +777,12 @@ impl Api {
         {
             request = request.header(COOKIE, value);
         }
+        self.governor.wait_turn().await;
         let response = request
             .send()
             .await
             .map_err(|e| ApiError::Network(e.to_string()))?;
+        self.governor.observe_response(&response).await;
         self.session.absorb(&response);
         Self::parse(response).await
     }
@@ -702,6 +824,7 @@ impl Api {
             request = request.header(COOKIE, value);
         }
 
+        self.governor.wait_turn().await;
         let response = match request.send().await {
             Ok(response) => response,
             Err(error) if error.is_builder() || error.is_connect() => {
@@ -715,6 +838,7 @@ impl Api {
                 )));
             }
         };
+        self.governor.observe_response(&response).await;
         self.session.absorb(&response);
         let status = response.status();
         let body = response.text().await.map_err(|error| {
@@ -1254,7 +1378,25 @@ mod tests {
         let body = r#"{"type":"about:blank","title":"muitas requisições","detail":"tente novamente mais tarde","status":429}"#;
         let error = problem_error(StatusCode::TOO_MANY_REQUESTS, body);
         assert!(matches!(error, ApiError::TooManyRequests(_)));
-        assert!(error.is_transient(), "429 precisa poder ser repetido");
+        assert!(error.is_transient(), "429 continua sendo uma falha transitória");
+    }
+
+    #[test]
+    fn api_instances_for_the_same_server_share_the_governor() {
+        let a = Api::new("https://example.com", Arc::new(Session::default())).unwrap();
+        let b = Api::new("https://example.com/", Arc::new(Session::default())).unwrap();
+        let other = Api::new("https://other.example.com", Arc::new(Session::default())).unwrap();
+        assert!(Arc::ptr_eq(&a.governor, &b.governor));
+        assert!(!Arc::ptr_eq(&a.governor, &other.governor));
+    }
+
+    #[test]
+    fn fallback_rate_limit_cooldown_grows_and_caps() {
+        assert_eq!(fallback_rate_limit_cooldown(1), Duration::from_secs(10));
+        assert_eq!(fallback_rate_limit_cooldown(2), Duration::from_secs(20));
+        assert_eq!(fallback_rate_limit_cooldown(3), Duration::from_secs(40));
+        assert_eq!(fallback_rate_limit_cooldown(4), Duration::from_secs(60));
+        assert_eq!(fallback_rate_limit_cooldown(20), Duration::from_secs(60));
     }
 
     #[test]
