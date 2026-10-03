@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "windows")]
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
@@ -79,7 +80,14 @@ impl Updater {
             .name("papo-update-check".into())
             .spawn(move || {
                 let event = match check_latest() {
-                    Ok(Some(release)) => Event::Available(release),
+                    Ok(Some(release)) => match verified_cached_installer(&release) {
+                        Ok(Some(installer)) => Event::Ready { release, installer },
+                        Ok(None) => Event::Available(release),
+                        Err(error) => {
+                            log::warn!("atualização em cache ignorada: {error}");
+                            Event::Available(release)
+                        }
+                    },
                     Ok(None) => Event::Current,
                     Err(error) => Event::Error(error),
                 };
@@ -179,6 +187,70 @@ fn check_latest() -> Result<Option<Available>, String> {
     }))
 }
 
+fn update_dir() -> PathBuf {
+    std::env::temp_dir().join("Papo").join("updates")
+}
+
+fn installer_path(release: &Available) -> PathBuf {
+    update_dir().join(format!("Papo-{}-Setup.exe", release.version))
+}
+
+fn expected_checksum(
+    client: &reqwest::blocking::Client,
+    release: &Available,
+) -> Result<String, String> {
+    let checksum = client
+        .get(&release.checksum_url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| format!("download do checksum: {error}"))?
+        .text()
+        .map_err(|error| format!("leitura do checksum: {error}"))?;
+    checksum
+        .split_whitespace()
+        .next()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| "checksum vazio".to_owned())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("abrir instalador em cache: {error}"))?;
+    let mut digest = Context::new(&SHA256);
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("ler instalador em cache: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn verified_cached_installer(release: &Available) -> Result<Option<PathBuf>, String> {
+    let path = installer_path(release);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let client = client()?;
+    let expected = expected_checksum(&client, release)?;
+    let actual = sha256_file(&path)?;
+    if actual == expected {
+        return Ok(Some(path));
+    }
+    let _ = std::fs::remove_file(&path);
+    Ok(None)
+}
+
 fn download_release(release: &Available) -> Result<PathBuf, String> {
     let client = client()?;
     let installer = client
@@ -188,20 +260,7 @@ fn download_release(release: &Available) -> Result<PathBuf, String> {
         .map_err(|error| format!("download do instalador: {error}"))?
         .bytes()
         .map_err(|error| format!("leitura do instalador: {error}"))?;
-    let checksum = client
-        .get(&release.checksum_url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|error| format!("download do checksum: {error}"))?
-        .text()
-        .map_err(|error| format!("leitura do checksum: {error}"))?;
-
-    let expected = checksum
-        .split_whitespace()
-        .next()
-        .ok_or_else(|| "checksum vazio".to_owned())?
-        .trim()
-        .to_ascii_lowercase();
+    let expected = expected_checksum(&client, release)?;
 
     let mut digest = Context::new(&SHA256);
     digest.update(&installer);
@@ -217,10 +276,10 @@ fn download_release(release: &Available) -> Result<PathBuf, String> {
         ));
     }
 
-    let dir = std::env::temp_dir().join("Papo").join("updates");
+    let dir = update_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("pasta de atualização: {error}"))?;
-    let path = dir.join(format!("Papo-{}-Setup.exe", release.version));
+    let path = installer_path(release);
     std::fs::write(&path, &installer)
         .map_err(|error| format!("salvar instalador: {error}"))?;
     Ok(path)

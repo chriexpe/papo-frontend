@@ -764,7 +764,7 @@ pub struct PapoApp {
     update_status: Option<String>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     update_progress: Option<f32>,
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "windows", target_os = "android"))]
     update_ready: Option<std::path::PathBuf>,
     #[cfg(target_os = "android")]
     update_waiting_permission: bool,
@@ -1031,7 +1031,7 @@ impl PapoApp {
             update_status: None,
             #[cfg(any(target_os = "windows", target_os = "android"))]
             update_progress: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "windows", target_os = "android"))]
             update_ready: None,
             #[cfg(target_os = "android")]
             update_waiting_permission: false,
@@ -1280,8 +1280,8 @@ impl PapoApp {
                     #[cfg(target_os = "android")]
                     {
                         self.update_progress = None;
-                        self.update_ready = None;
                     }
+                    self.update_ready = None;
                 }
                 Event::Available(release) => {
                     self.update_status = Some(format!(
@@ -1304,38 +1304,21 @@ impl PapoApp {
                     ctx.request_repaint();
                 }
                 Event::Ready { release, installer } => {
+                    self.update_available = Some(release);
                     #[cfg(target_os = "android")]
                     {
-                        self.update_available = Some(release);
                         self.update_progress = Some(1.0);
-                        self.update_ready = Some(installer);
-                        self.update_status = None;
                     }
-                    #[cfg(target_os = "windows")]
-                    {
-                        let _ = release;
-                        match crate::platform::update::launch(&installer) {
-                            Ok(()) => {
-                                self.update_status = None;
-                                self.quit(ctx);
-                            }
-                            Err(error) => {
-                                log::warn!("não foi possível iniciar a atualização: {error}");
-                                self.update_status = Some(format!(
-                                    "{} {error}",
-                                    self.settings.lang.strings().update_failed
-                                ));
-                            }
-                        }
-                    }
+                    self.update_ready = Some(installer);
+                    self.update_status = None;
                 }
                 Event::Error(error) => {
                     log::warn!("atualização: {error}");
                     #[cfg(target_os = "android")]
                     {
                         self.update_progress = None;
-                        self.update_ready = None;
                     }
+                    self.update_ready = None;
                     self.update_status = Some(format!(
                         "{} {error}",
                         self.settings.lang.strings().update_failed
@@ -1428,10 +1411,7 @@ impl PapoApp {
     #[cfg(any(target_os = "windows", target_os = "android"))]
     fn project_update_pill(&mut self) {
         let downloading = self.updater.downloading();
-        #[cfg(target_os = "android")]
         let ready = self.update_ready.is_some();
-        #[cfg(target_os = "windows")]
-        let ready = false;
         #[cfg(target_os = "android")]
         let waiting_permission = self.update_waiting_permission;
         #[cfg(target_os = "windows")]
@@ -1453,10 +1433,13 @@ impl PapoApp {
 
     #[cfg(any(target_os = "windows", target_os = "android"))]
     fn handle_update_pill_click(&mut self, ctx: &egui::Context) {
-        #[cfg(target_os = "android")]
         if let Some(installer) = self.update_ready.clone() {
             match crate::platform::update::launch(&installer) {
-                Ok(()) => self.update_status = None,
+                Ok(()) => {
+                    self.update_status = None;
+                    #[cfg(target_os = "windows")]
+                    self.quit(ctx);
+                }
                 Err(error) => {
                     self.update_status = Some(format!(
                         "{} {error}",
