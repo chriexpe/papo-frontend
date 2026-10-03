@@ -4928,7 +4928,7 @@ fn result_row(
                     }
                 });
                 if !shown_body.trim().is_empty()
-                    && direct_media_message_url(state, body).is_none()
+                    && direct_media_message_url(state, body, true).is_none()
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
@@ -5172,7 +5172,8 @@ fn message_list(
         // follow that layout blindly: only the viewport plus a bounded runway
         // may start new preview/GIPHY/embed fetches.
         let row_top = ui.cursor().top();
-        let network_eligible = !readable.is_negative()
+        let network_eligible = readable.width() > 0.0
+            && readable.height() > 0.0
             && row_top >= readable.min.y - CHAT_LOAD_ABOVE
             && row_top <= readable.max.y + CHAT_LOAD_BELOW;
         // O escopo da linha é o alvo de toque do layout compacto — duplo
@@ -7574,7 +7575,7 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content).or_else(|| {
+    let copy_link = direct_media_message_url(state, &message.content, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
