@@ -604,7 +604,7 @@ pub fn message(
                 .media
                 .remote_ephemeral_sized(
                     &format!("giphy-chat-{id}"),
-                    &item.preview_url,
+                    &item.display_url,
                     ephemeral_decode_max(ui, rect),
                 )
                 .and_then(|texture| texture.frame(ui.ctx()))
