@@ -67,6 +67,24 @@
   </content_rating>
 
   <releases>
+    <release version="0.7.0" date="2026-10-03">
+      <description>
+        <p>Mensagens diretas, GIFs do GIPHY e uma linha do tempo que abre sempre na mensagem mais nova.</p>
+        <p xml:lang="en">Direct messages, GIPHY GIFs and a timeline that always opens on the newest message.</p>
+        <ul>
+          <li>Mensagens diretas entre membros do servidor</li>
+          <li xml:lang="en">Direct messages between server members</li>
+          <li>Ao abrir ou trocar de canal, a conversa aparece ancorada na mensagem mais recente, sem saltos</li>
+          <li xml:lang="en">Opening or switching channels anchors the conversation on the most recent message, with no jumps</li>
+          <li>Busca de GIFs agora usa o GIPHY, com sugestões que acompanham o tamanho do texto</li>
+          <li xml:lang="en">GIF search now uses GIPHY, with suggestions that hug the text length</li>
+          <li>Ler e marcar como lido ficam fiéis ao que passou pela tela</li>
+          <li xml:lang="en">Reading and read receipts stay faithful to what actually scrolled past the screen</li>
+          <li>Linux/Wayland: colar com Ctrl+V volta a funcionar</li>
+          <li xml:lang="en">Linux/Wayland: Ctrl+V paste works again</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.5" date="2026-09-29">
       <description>
         <p>Notificações por push no Android e barra de título do sistema no desktop.</p>
