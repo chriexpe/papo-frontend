@@ -792,17 +792,15 @@ fn banner_buttons(
             ui.close();
         }
         ui.separator();
-        if ui.button(s.ban_user).clicked() {
+        let (label, banned) = if member.banned {
+            (s.unban_user, false)
+        } else {
+            (s.ban_user, true)
+        };
+        if ui.button(label).clicked() {
             state.actions.push(ChatAction::BanUser {
                 user_id: member.id.clone(),
-                banned: true,
-            });
-            ui.close();
-        }
-        if ui.button(s.unban_user).clicked() {
-            state.actions.push(ChatAction::BanUser {
-                user_id: member.id.clone(),
-                banned: false,
+                banned,
             });
             ui.close();
         }
