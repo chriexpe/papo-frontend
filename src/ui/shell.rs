@@ -2704,9 +2704,13 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
+                // `viewport` e as linhas de mensagem usam o mesmo espaço de
+                // coordenadas do conteúdo do ScrollArea. `full` está no espaço
+                // externo da conversa e, depois de qualquer scroll, não pode ser
+                // usado para decidir se uma linha realmente está na tela.
                 let readable = Rect::from_min_max(
-                    egui::pos2(full.min.x, full.min.y + top_inset),
-                    egui::pos2(full.max.x, full.max.y - bottom_inset),
+                    egui::pos2(viewport.min.x, viewport.min.y + top_inset),
+                    egui::pos2(viewport.max.x, viewport.max.y - bottom_inset),
                 );
                 message_list(ui, store, state, t, s, full, readable);
                 ui.add_space(bottom_inset);
