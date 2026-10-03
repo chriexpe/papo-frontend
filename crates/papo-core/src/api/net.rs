@@ -2505,11 +2505,10 @@ where
             // would stack a per-call backoff on top of the shared cooldown and
             // reintroduce request amplification. Transport failures still get
             // the short local retry used by reconciliation.
-            Err(error @ ApiError::Network(_)) if attempt < TRANSIENT_ATTEMPTS => {
+            Err(ApiError::Network(_)) if attempt < TRANSIENT_ATTEMPTS => {
                 tokio::time::sleep(wait).await;
                 wait = wait.saturating_mul(2);
                 attempt += 1;
-                let _ = error;
             }
             outcome => return outcome,
         }
