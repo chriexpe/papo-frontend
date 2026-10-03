@@ -8628,6 +8628,40 @@ fn composer(
 
             #[cfg(not(target_os = "android"))]
             {
+                // Desktop chat behaves like a keyboard sink: clicking a
+                // channel, scrolling the timeline, or using a non-text control
+                // may move egui focus, but the next text-producing keyboard
+                // event belongs to the composer. Do this before constructing
+                // TextEdit so that same event is consumed by it this frame.
+                //
+                // Never steal text from surfaces that intentionally own
+                // keyboard input (search/pinned, message edit, settings/modal
+                // sheets, pickers/viewers, etc.).
+                let sink_available = state.editing.is_none()
+                    && state.panel.is_none()
+                    && state.popup.is_none()
+                    && state.gif_picker_opened.is_none()
+                    && state.viewer.is_none()
+                    && state.link_viewer.is_none()
+                    && state.profile.is_none()
+                    && state.server_card.is_none()
+                    && state.external_link_prompt.is_none()
+                    && !state.webembed_blocked;
+                let typed_without_composer = sink_available
+                    && !ui.ctx().memory(|memory| memory.has_focus(edit_id))
+                    && ui.input(|input| {
+                        input.events.iter().any(|event| match event {
+                            egui::Event::Text(text) | egui::Event::Paste(text) => {
+                                !text.is_empty()
+                            }
+                            _ => false,
+                        })
+                    });
+                if typed_without_composer {
+                    ui.ctx()
+                        .memory_mut(|memory| memory.request_focus(edit_id));
+                }
+
                 let paste_shortcut = ui.ctx().memory(|memory| memory.has_focus(edit_id))
                     && ui.input(|input| {
                         input.modifiers.command && input.key_pressed(egui::Key::V)
@@ -8786,13 +8820,21 @@ fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret:
 
     let needle = query.to_lowercase();
     let matches: Vec<String> = match kind {
-        SuggestKind::Sticker => store
-            .emojis
-            .iter()
-            .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
-            .map(|emoji| emoji.id.clone())
-            .take(8)
-            .collect(),
+        SuggestKind::Sticker => {
+            // The emoji endpoint may contain duplicate rows for the same
+            // custom-emoji id. Mentions don't hit this because members are
+            // reconciled by identity. Never let duplicate provider rows turn
+            // into duplicate autocomplete entries/widgets.
+            let mut seen = std::collections::HashSet::new();
+            store
+                .emojis
+                .iter()
+                .filter(|emoji| emoji.name.to_lowercase().contains(&needle))
+                .filter(|emoji| seen.insert(emoji.id.clone()))
+                .map(|emoji| emoji.id.clone())
+                .take(8)
+                .collect()
+        }
         SuggestKind::Mention => {
             let mut people: Vec<_> = store
                 .members
@@ -9006,7 +9048,11 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
             ),
             Vec2::new(rect.width() - space::SM * 2.0, row),
         );
-        let response = overlay.interact(slot, Id::new(("sugestao", id)), Sense::click());
+        // The slot is part of the widget identity as a final guard against
+        // malformed/duplicated server data. A visible popup must never register
+        // the same egui widget id twice in one pass.
+        let response =
+            overlay.interact(slot, Id::new(("sugestao", index, id)), Sense::click());
         if index == suggest.index || response.hovered() {
             overlay.painter().rect_filled(
                 slot,
