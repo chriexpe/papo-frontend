@@ -338,6 +338,8 @@ pub enum Command {
     ResetUser {
         user_id: String,
     },
+    /// Atividade real de UI; diferente do heartbeat e do Rich Presence.
+    PresenceActivity,
     MoveChannel {
         channel_id: String,
         old_position: i32,
@@ -492,6 +494,10 @@ pub enum Update {
     UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
     Done,
+    PasswordResetLink {
+        url: String,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
     Users(Vec<UserSummary>),
     Messages {
         ticket: RefreshTicket,
@@ -2807,7 +2813,8 @@ async fn handle(
         | Command::LoadMessages { .. }
         | Command::ProbeConnection
         | Command::NetworkHint(_)
-        | Command::SetActivity(_) => {}
+        | Command::SetActivity(_)
+        | Command::PresenceActivity => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {
@@ -3036,7 +3043,14 @@ async fn handle(
             Err(error) => report(storage_key, updates, wake, error),
         },
         Command::ResetUser { user_id } => match api.reset_user(&user_id).await {
-            Ok(_) => relist_users(api, storage_key, updates, wake).await,
+            Ok(link) => publish(
+                updates,
+                wake,
+                Update::PasswordResetLink {
+                    url: link.reset_url,
+                    expires_at: link.expires_at,
+                },
+            ),
             Err(error) => report(storage_key, updates, wake, error),
         },
         Command::MoveChannel {
@@ -3248,6 +3262,9 @@ async fn handle(
         },
         Command::VoiceSignal(json) => {
             let _ = outbound.send(json);
+        }
+        Command::PresenceActivity => {
+            let _ = outbound.send(ws::presence_activity());
         }
         Command::Typing { channel_id } => {
             let _ = outbound.send(format!(
