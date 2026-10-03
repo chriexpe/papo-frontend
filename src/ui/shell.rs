@@ -6025,8 +6025,10 @@ fn link_previews(
             url,
             Some(preview),
             width,
-            true,
-            allow_network,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
         );
     }
 }
@@ -6068,8 +6070,10 @@ fn rich_links_from_message(
             &url,
             None,
             width,
-            true,
-            allow_network,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
         );
     }
 }
@@ -6135,8 +6139,27 @@ fn panel_rich_links(
         // painted in the timeline behind it. Scope the widget occurrence so
         // egui/WebEmbed IDs never collide across those two surfaces.
         let embed_id = format!("embed:panel:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false, true);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            PreviewPolicy {
+                webembed: false,
+                network: true,
+            },
+        );
     }
+}
+
+#[derive(Clone, Copy)]
+struct PreviewPolicy {
+    webembed: bool,
+    network: bool,
 }
 
 fn preview_card(
@@ -6148,8 +6171,7 @@ fn preview_card(
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
-    allow_webembed: bool,
-    allow_network: bool,
+    policy: PreviewPolicy,
 ) {
     use papo_core::preview::{PreviewKind, PreviewState};
 
@@ -6157,7 +6179,7 @@ fn preview_card(
     const IMAGE_MAX_H: f32 = 300.0;
 
     let resolved = state.previews.as_ref().and_then(|coordinator| {
-        if allow_network {
+        if policy.network {
             coordinator.get_or_request(url)
         } else {
             coordinator.peek(url)
@@ -6169,7 +6191,7 @@ fn preview_card(
     };
     let backend_image = backend
         .and_then(|preview| {
-            if allow_network {
+            if policy.network {
                 state.media.preview(preview)
             } else {
                 state.media.loaded_preview(&preview.id)
@@ -6182,7 +6204,7 @@ fn preview_card(
     let remote_image = image_url
         .as_deref()
         .and_then(|remote| {
-            if allow_network {
+            if policy.network {
                 state.media.remote_image(id, remote)
             } else {
                 state.media.loaded_remote_image(remote)
@@ -6282,7 +6304,7 @@ fn preview_card(
                 &post,
                 headline,
                 description,
-                allow_network,
+                policy.network,
             );
             ui.add_space(space::SM);
         }
@@ -6343,7 +6365,7 @@ fn preview_card(
             );
 
             if let Some(embed) = embed_url.as_deref() {
-                if allow_webembed && state.webembed.is_active(embed_id) {
+                if policy.webembed && state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
                     let clip = state
                         .webembed_chat_clip
@@ -6373,9 +6395,9 @@ fn preview_card(
                 }
 
                 if response.clicked()
-                    && (!allow_webembed || !state.webembed.is_active(embed_id))
+                    && (!policy.webembed || !state.webembed.is_active(embed_id))
                 {
-                    if allow_webembed
+                    if policy.webembed
                         && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                     {
                         state.media.pause_all();
@@ -6415,7 +6437,7 @@ fn preview_card(
                 Color32::from_black_alpha(225),
             );
 
-            if allow_webembed && state.webembed.is_active(embed_id) {
+            if policy.webembed && state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
                 let clip = state
                     .webembed_chat_clip
@@ -6441,9 +6463,9 @@ fn preview_card(
                 );
             }
             if response.clicked()
-                && (!allow_webembed || !state.webembed.is_active(embed_id))
+                && (!policy.webembed || !state.webembed.is_active(embed_id))
             {
-                if allow_webembed
+                if policy.webembed
                     && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                 {
                     state.media.pause_all();
@@ -6464,7 +6486,7 @@ fn preview_card(
                 id,
                 &post,
                 provider.as_deref(),
-                allow_network,
+                policy.network,
             );
             return;
         }
