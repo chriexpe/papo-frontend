@@ -253,7 +253,8 @@ pub struct UpdateChannelRequest {
 /// para uma simples troca de nome.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PatchServerRequest {
-    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon_blob: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1100,7 +1101,7 @@ mod tests {
     #[test]
     fn patch_de_servidor_omite_o_que_nao_mudou() {
         let body = serde_json::to_value(PatchServerRequest {
-            name: "Novo nome".to_owned(),
+            name: Some("Novo nome".to_owned()),
             public: Some(false),
             ..Default::default()
         })
