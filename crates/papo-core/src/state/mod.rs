@@ -2552,6 +2552,45 @@ impl Store {
                 }
                 self.busy = false;
             }
+            Update::UserSummaries(users) => {
+                let mut changed = false;
+                for user in users {
+                    let role_color = role_color(&user.roles);
+                    let roles = user.roles.iter().map(|role| role.id.clone()).collect();
+                    let name = user.display_name().to_owned();
+                    if let Some(member) = self.members.iter_mut().find(|member| member.id == user.id) {
+                        member.username = user.username;
+                        member.name = name;
+                        member.banned = user.banned;
+                        member.status_message = user.status_message;
+                        member.typing_label = user.typing;
+                        member.role_color = role_color;
+                        member.roles = roles;
+                        if let Some(status) = user.status.as_deref() {
+                            member.presence = Presence::parse(status);
+                        }
+                    } else {
+                        self.members.push(Member {
+                            id: user.id,
+                            username: user.username,
+                            name,
+                            banned: user.banned,
+                            presence: user.status.as_deref().map(Presence::parse).unwrap_or(Presence::Offline),
+                            status_message: user.status_message,
+                            typing_label: user.typing,
+                            role_color,
+                            roles,
+                        });
+                    }
+                    changed = true;
+                }
+                if changed {
+                    self.sort_members();
+                    let cached: Vec<CachedMember> =
+                        self.members.iter().map(CachedMember::from).collect();
+                    self.pending_cache.push(CacheOp::ReplaceMembers(cached));
+                }
+            }
             Update::Users(users) => {
                 let presence: HashMap<String, Presence> = self
                     .members
