@@ -5,8 +5,8 @@
 
 use chrono::{DateTime, Datelike, Local};
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder,
-    Vec2,
+    Align, Align2, Color32, CornerRadius, Frame, Id, Layout, Rect, RichText, Sense, Stroke,
+    UiBuilder, Vec2,
 };
 use egui_phosphor::regular as icon;
 
@@ -73,6 +73,16 @@ const PANEL_MAX_BODY: f32 = 360.0;
 const BLINK_SECONDS: f64 = 1.4;
 const BLINKS: f64 = 2.0;
 pub(crate) const ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 3.0 + space::XXS * 2.0 + space::XS * 2.0;
+const DM_ACTIONS_PILL_WIDTH: f32 = HIT_TARGET * 2.0 + space::XXS + space::XS * 2.0;
+
+fn actions_pill_closed_width(dm_surface: bool) -> f32 {
+    if dm_surface {
+        DM_ACTIONS_PILL_WIDTH
+    } else {
+        ACTIONS_PILL_WIDTH
+    }
+}
+
 const GROUP_GAP_MINUTES: i64 = 5;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
@@ -168,6 +178,15 @@ pub enum ChatAction {
     },
     /// Apaga o canal depois da confirmação por nome.
     DeleteChannel(String),
+    /// Abre/cria a conversa direta com uma pessoa.
+    OpenDirectMessage(String),
+    /// Oculta uma conversa direta da rail.
+    HideDirectMessage(String),
+    /// Bloqueia/desbloqueia uma pessoa para mensagens diretas.
+    SetUserBlocked {
+        user_id: String,
+        blocked: bool,
+    },
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
     /// Busca no servidor, a partir da pastilha.
@@ -263,6 +282,8 @@ pub enum MobileSurface {
 pub struct MobileServers<'a> {
     pub entries: &'a [super::rail::Entry],
     pub active: usize,
+    pub direct_unread: u32,
+    pub direct_active: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -673,6 +694,8 @@ pub struct Stash {
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
     pub popup: Option<Popup>,
+    pub dm_surface: bool,
+    pub last_server_channel: String,
     pub last_channel: String,
     pub topic_since: Option<f64>,
 }
@@ -694,6 +717,8 @@ impl Stash {
             viewer: None,
             link_viewer: None,
             popup: None,
+            dm_surface: false,
+            last_server_channel: String::new(),
             last_channel: String::new(),
             topic_since: None,
         }
@@ -718,6 +743,8 @@ impl Stash {
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
         std::mem::swap(&mut self.popup, &mut ui.popup);
+        std::mem::swap(&mut self.dm_surface, &mut ui.dm_surface);
+        std::mem::swap(&mut self.last_server_channel, &mut ui.last_server_channel);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
     }
@@ -812,6 +839,10 @@ pub struct UiState {
     pub trusted_link_hosts: std::collections::BTreeSet<String>,
     pub external_link_prompt: Option<ExternalLinkPrompt>,
     pub popup: Option<Popup>,
+    /// A superfície de mensagens diretas substitui a coluna de canais.
+    pub dm_surface: bool,
+    /// Último canal comum antes de entrar em mensagens diretas.
+    pub last_server_channel: String,
     /// Cartão de perfil aberto.
     pub profile: Option<super::profile::ProfileCard>,
     /// Cartão do servidor aberto (a pastilha do servidor descomprimida).
@@ -966,6 +997,8 @@ impl Default for UiState {
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
+            dm_surface: false,
+            last_server_channel: String::new(),
             profile: None,
             server_card: None,
             collapsed_categories: Default::default(),
@@ -1185,8 +1218,12 @@ pub fn draw(
         // aqui, e um arrasto pela metade não pode sobrar guardado.
         state.drawer = Drawer::default();
         state.reply_drag = None;
-        channels_sidebar(ui, store, state, t, s, live);
-        if state.show_members {
+        if state.dm_surface {
+            direct_messages_sidebar(ui, store, state, t, s);
+        } else {
+            channels_sidebar(ui, store, state, t, s, live);
+        }
+        if state.show_members && !state.dm_surface {
             members_sidebar(ui, store, state, t, s, false);
         }
         conversation(ui, store, state, call, t, s, stage);
@@ -1301,8 +1338,20 @@ fn mobile_drawers(
                 .show(root.ctx(), |ui| {
                     ui.set_min_size(rect.size());
                     ui.set_max_size(rect.size());
-                    let action = super::rail::draw(ui, servers.entries, servers.active, t, s);
-                    channels_sidebar(ui, store, state, t, s, live);
+                    let action = super::rail::draw(
+                        ui,
+                        servers.entries,
+                        servers.active,
+                        servers.direct_unread,
+                        servers.direct_active,
+                        t,
+                        s,
+                    );
+                    if state.dm_surface {
+                        direct_messages_sidebar(ui, store, state, t, s);
+                    } else {
+                        channels_sidebar(ui, store, state, t, s, live);
+                    }
                     action
                 });
             response.inner
@@ -1574,6 +1623,208 @@ fn channels_sidebar(
             }
             account_pill(ui, store, state, t, s, full);
         });
+}
+
+fn direct_messages_sidebar(
+    root: &mut egui::Ui,
+    store: &mut Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+) {
+    let ctx = root.ctx().clone();
+    egui::Panel::left("direct-messages")
+        .exact_size(SIDEBAR_WIDTH)
+        .resizable(false)
+        .frame(sidebar_frame(t))
+        .show(root, |ui| {
+            let full = ui.max_rect();
+            let list = Rect::from_min_max(
+                egui::pos2(full.min.x, full.min.y + space::MD),
+                full.max,
+            );
+            ui.scope_builder(UiBuilder::new().max_rect(list), |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.add_space(space::MD);
+                            ui.vertical(|ui| {
+                                let width = SIDEBAR_WIDTH - space::MD * 2.0;
+                                ui.set_width(width);
+                                ui.add_space(space::LG);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(s.direct_messages.to_uppercase())
+                                            .font(text::caption())
+                                            .color(t.label_tertiary),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let (rect, response) = ui.allocate_exact_size(
+                                            Vec2::splat(24.0),
+                                            Sense::hover(),
+                                        );
+                                        ui.painter().text(
+                                            rect.center(),
+                                            Align2::CENTER_CENTER,
+                                            icon::EYE_SLASH,
+                                            text::icon(14.0),
+                                            t.label_tertiary.gamma_multiply(0.55),
+                                        );
+                                        response.on_hover_text(s.hidden_direct_messages_pending);
+                                    });
+                                });
+                                ui.add_space(space::XS);
+                                let dms = store.direct_messages.clone();
+                                for dm in dms {
+                                    let member = store.member(&dm.user.id);
+                                    let presence = member
+                                        .map(|member| member.presence)
+                                        .unwrap_or(Presence::Offline);
+                                    let name = member
+                                        .map(|member| member.name.as_str())
+                                        .unwrap_or_else(|| dm.user.display_name());
+                                    let initials = member
+                                        .map(|member| member.initials())
+                                        .unwrap_or_else(|| initials_of(name));
+                                    let avatar = state
+                                        .media
+                                        .avatar(
+                                            &dm.user.id,
+                                            store.avatars.get(&dm.user.id).map(String::as_str),
+                                        )
+                                        .and_then(|texture| texture.frame(&ctx))
+                                        .map(|handle| handle.id());
+                                    let preview = dm
+                                        .last_message
+                                        .as_ref()
+                                        .and_then(|message| message.content.as_deref())
+                                        .map(str::trim)
+                                        .filter(|text| !text.is_empty())
+                                        .unwrap_or(" ");
+                                    let unread = store
+                                        .channel(&dm.id)
+                                        .filter(|channel| channel.unread)
+                                        .map(|_| dm.unread_count.max(1))
+                                        .unwrap_or(0);
+                                    let row = direct_message_row(
+                                        ui,
+                                        t,
+                                        &initials,
+                                        name,
+                                        preview,
+                                        presence_color(t, presence),
+                                        unread,
+                                        store.selected_channel == dm.id,
+                                        width,
+                                        avatar,
+                                    );
+                                    if row.clicked() {
+                                        store.selected_channel = dm.id.clone();
+                                        state.mobile_surface = MobileSurface::Chat;
+                                    }
+                                    row.context_menu(|ui| {
+                                        if ui.button(s.hide_direct_message).clicked() {
+                                            state.actions.push(ChatAction::HideDirectMessage(dm.id.clone()));
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                                ui.add_space(IDENTITY_PILL_HEIGHT + PILL_INSET * 2.0);
+                            });
+                        });
+                    });
+            });
+            account_pill(ui, store, state, t, s, full);
+        });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn direct_message_row(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    initials: &str,
+    name: &str,
+    preview: &str,
+    dot: Color32,
+    unread: u32,
+    selected: bool,
+    width: f32,
+    avatar: Option<egui::TextureId>,
+) -> egui::Response {
+    let height = 54.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if selected {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+    } else if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let avatar_rect = Rect::from_center_size(
+        egui::pos2(rect.min.x + space::SM + 18.0, rect.center().y),
+        Vec2::splat(36.0),
+    );
+    match avatar {
+        Some(texture) => round_photo(ui.painter(), avatar_rect, texture, Color32::WHITE),
+        None => {
+            ui.painter().circle_filled(avatar_rect.center(), 18.0, t.accent.gamma_multiply(0.24));
+            ui.painter().text(
+                avatar_rect.center(),
+                Align2::CENTER_CENTER,
+                initials,
+                text::footnote(),
+                t.accent,
+            );
+        }
+    }
+    let dot_pos = avatar_rect.right_bottom() - Vec2::splat(2.0);
+    ui.painter().circle_filled(dot_pos, 5.0, t.glass_opaque);
+    ui.painter().circle_filled(dot_pos, 3.5, dot);
+
+    let text_left = avatar_rect.max.x + space::MD;
+    let badge_reserve = if unread > 0 { 34.0 } else { space::SM };
+    let text_right = rect.max.x - badge_reserve;
+    let painter = ui.painter().with_clip_rect(Rect::from_x_y_ranges(
+        text_left..=text_right,
+        rect.y_range(),
+    ));
+    super::widgets::text_fit(
+        &painter,
+        egui::pos2(text_left, rect.center().y - 9.0),
+        Align2::LEFT_CENTER,
+        name,
+        if unread > 0 { text::headline() } else { text::body() },
+        if selected || unread > 0 { t.label } else { t.label_secondary },
+        (text_right - text_left).max(1.0),
+    );
+    super::widgets::text_fit(
+        &painter,
+        egui::pos2(text_left, rect.center().y + 10.0),
+        Align2::LEFT_CENTER,
+        preview,
+        text::footnote(),
+        t.label_tertiary,
+        (text_right - text_left).max(1.0),
+    );
+    if unread > 0 {
+        let value = if unread > 99 { "99+".to_owned() } else { unread.to_string() };
+        let badge = Rect::from_center_size(
+            egui::pos2(rect.max.x - space::SM - 11.0, rect.center().y),
+            Vec2::new(22.0, 18.0),
+        );
+        ui.painter().rect_filled(badge, CornerRadius::same(9), t.accent);
+        ui.painter().text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            value,
+            text::caption(),
+            t.accent_label,
+        );
+    }
+    response
 }
 
 fn rgb([r, g, b]: [u8; 3]) -> Color32 {
@@ -2319,17 +2570,15 @@ fn member_menu(
     s: &Strings,
 ) {
     response.context_menu(|ui| {
-        if ui.button(s.ban_user).clicked() {
+        let (label, banned) = if member.banned {
+            (s.unban_user, false)
+        } else {
+            (s.ban_user, true)
+        };
+        if ui.button(label).clicked() {
             state.actions.push(ChatAction::BanUser {
                 user_id: member.id.clone(),
-                banned: true,
-            });
-            ui.close();
-        }
-        if ui.button(s.unban_user).clicked() {
-            state.actions.push(ChatAction::BanUser {
-                user_id: member.id.clone(),
-                banned: false,
+                banned,
             });
             ui.close();
         }
@@ -2583,6 +2832,27 @@ fn conversation(
     egui::CentralPanel::default().frame(frame).show(root, |ui| {
         let full = ui.max_rect();
 
+        if state.dm_surface && store.selected_direct_message().is_none() {
+            state.webembed_chat_clip = None;
+            state.webembed_occlusions.clear();
+            let icon_pos = egui::pos2(full.center().x, full.center().y - 14.0);
+            ui.painter().text(
+                icon_pos,
+                Align2::CENTER_CENTER,
+                icon::CHAT_CIRCLE,
+                text::icon(30.0),
+                t.label_tertiary,
+            );
+            ui.painter().text(
+                egui::pos2(full.center().x, full.center().y + 20.0),
+                Align2::CENTER_CENTER,
+                s.direct_messages,
+                text::headline(),
+                t.label_secondary,
+            );
+            return;
+        }
+
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
@@ -2593,7 +2863,7 @@ fn conversation(
             } else {
                 crate::ui::call::lobby(ui, store, state, t, s);
             }
-            let channel_rect = channel_pill(ui, store, state, t, full);
+            let channel_rect = channel_pill(ui, store, state, t, s, full);
             call_layers(
                 ui,
                 store,
@@ -2705,9 +2975,13 @@ fn conversation(
                     ui.scroll_with_delta(Vec2::new(0.0, web_scroll));
                 }
                 ui.add_space(top_inset);
+                // `viewport` e as linhas de mensagem usam o mesmo espaço de
+                // coordenadas do conteúdo do ScrollArea. `full` está no espaço
+                // externo da conversa e, depois de qualquer scroll, não pode ser
+                // usado para decidir se uma linha realmente está na tela.
                 let readable = Rect::from_min_max(
-                    egui::pos2(full.min.x, full.min.y + top_inset),
-                    egui::pos2(full.max.x, full.max.y - bottom_inset),
+                    egui::pos2(viewport.min.x, viewport.min.y + top_inset),
+                    egui::pos2(viewport.max.x, viewport.max.y - bottom_inset),
                 );
                 message_list(ui, store, state, t, s, full, readable);
                 ui.add_space(bottom_inset);
@@ -2792,7 +3066,7 @@ fn conversation(
 
         // Camada funcional: tudo flutua.
         connection_pill(ui, store, state, t, s, full);
-        let channel_rect = channel_pill(ui, store, state, t, full);
+        let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
         let nav_rects = timeline_nav_controls(
             ui,
@@ -3184,9 +3458,13 @@ fn channel_pill(
     store: &Store,
     state: &mut UiState,
     t: &Tokens,
+    s: &Strings,
     area: Rect,
 ) -> Option<Rect> {
     let channel = store.channel(&store.selected_channel).cloned()?;
+    if channel.kind == ChannelKind::Direct {
+        return direct_message_pill(ui, store, state, t, s, area);
+    }
     let topic_text = channel
         .topic
         .as_deref()
@@ -3446,6 +3724,97 @@ fn channel_pill(
     Some(rect)
 }
 
+fn direct_message_pill(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    area: Rect,
+) -> Option<Rect> {
+    let dm = store.selected_direct_message()?;
+    let member = store.member(&dm.user.id);
+    let name = member
+        .map(|member| member.name.as_str())
+        .unwrap_or_else(|| dm.user.display_name());
+    let initials = member
+        .map(|member| member.initials())
+        .unwrap_or_else(|| initials_of(name));
+    let presence = member
+        .map(|member| member.presence)
+        .unwrap_or(Presence::Offline);
+    let subtitle = member
+        .and_then(|member| member.status_message.as_deref())
+        .filter(|status| !status.trim().is_empty())
+        .unwrap_or(match presence {
+            Presence::Online => s.online,
+            Presence::Away => s.away,
+            Presence::Busy => s.busy,
+            Presence::Offline => s.offline,
+        });
+    let avatar = state
+        .media
+        .avatar(
+            &dm.user.id,
+            store.avatars.get(&dm.user.id).map(String::as_str),
+        )
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .map(|handle| handle.id());
+
+    // A pastilha acompanha o conteúdo real, como as outras identidades da
+    // interface. O maior entre nome e recado define a parte textual; o teto
+    // respeita a pastilha de ações à direita.
+    let painter = ui.painter();
+    let name_width = painter
+        .layout_no_wrap(name.to_owned(), text::headline(), t.label)
+        .size()
+        .x;
+    let subtitle_width = painter
+        .layout_no_wrap(subtitle.to_owned(), text::footnote(), t.label_tertiary)
+        .size()
+        .x;
+    let desired_width = space::SM
+        + 28.0
+        + space::MD
+        + name_width.max(subtitle_width)
+        + space::SM;
+    let max_width = (
+        area.width()
+            - PILL_MARGIN * 2.0
+            - actions_pill_closed_width(true)
+            - space::SM
+    )
+    .max(PILL_HEIGHT);
+    let width = desired_width.clamp(PILL_HEIGHT, max_width);
+    let rect = Rect::from_min_size(
+        area.min + Vec2::splat(PILL_MARGIN),
+        Vec2::new(width, PILL_HEIGHT),
+    );
+    let hit = identity_pill(
+        ui,
+        state,
+        t,
+        rect,
+        &initials,
+        name,
+        subtitle,
+        Some((presence_color(t, presence), avatar)),
+        None,
+        t.accent,
+        false,
+        "direct-message-pill",
+    );
+    if matches!(hit, PillHit::Body) {
+        super::profile::open(
+            state,
+            &dm.user.id,
+            super::profile::Anchor::Beside(rect),
+            ui.input(|input| input.time),
+        );
+    }
+    Some(rect)
+}
+
 /// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
 /// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
 /// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
@@ -3498,10 +3867,11 @@ fn actions_pill(
     }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
+    let closed_width = actions_pill_closed_width(state.dm_surface);
     let width = if open.is_some() {
-        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(ACTIONS_PILL_WIDTH))
+        PANEL_WIDTH.min((area.width() - PILL_MARGIN * 2.0).max(closed_width))
     } else {
-        ACTIONS_PILL_WIDTH
+        closed_width
     };
     // A altura acompanha o conteúdo até um teto; a conversa continua visível
     // embaixo, que é a vantagem de esticar em vez de abrir janela.
@@ -3528,7 +3898,9 @@ fn actions_pill(
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
-                if icon_button(ui, t, icon::USERS, s.members).clicked() {
+                if !state.dm_surface
+                    && icon_button(ui, t, icon::USERS, s.members).clicked()
+                {
                     if state.compact {
                         state.mobile_surface = MobileSurface::People;
                     } else {
@@ -3777,7 +4149,8 @@ fn search_shortcuts(
                 .channels
                 .iter()
                 .filter(|channel| {
-                    needle.is_empty() || channel.name.to_lowercase().contains(&needle)
+                    channel.kind != ChannelKind::Direct
+                        && (needle.is_empty() || channel.name.to_lowercase().contains(&needle))
                 })
                 .collect();
             channels.sort_by_key(|channel| {
@@ -3888,7 +4261,10 @@ fn search_request_from_panel(
 ) -> Option<crate::api::models::SearchRequest> {
     let mut text = Vec::new();
     let mut author = None;
-    let mut channel_id = None;
+    let mut channel_id = store
+        .channel(&store.selected_channel)
+        .filter(|channel| channel.kind == ChannelKind::Direct)
+        .map(|channel| channel.id.clone());
     let mut mention = None;
     let mut contains_attachment = panel.search_attachments.then_some(true);
     let mut has = None;
@@ -8067,7 +8443,14 @@ fn composer(
             .max_rect(field)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            let hint = format!("{} #{}…", s.composer_hint, channel_name);
+            let hint = if store
+                .channel(&store.selected_channel)
+                .is_some_and(|channel| channel.kind == ChannelKind::Direct)
+            {
+                format!("{} {}…", s.composer_hint, channel_name)
+            } else {
+                format!("{} #{}…", s.composer_hint, channel_name)
+            };
             let edit_id = Id::new("caixa-de-mensagem");
             // As setas e o Enter pertencem à lista de sugestões enquanto ela
             // estiver aberta; sem tirá-los da caixa de texto, a seta moveria

@@ -244,6 +244,9 @@ impl ChannelDraft {
                 ChannelKind::Voice => "voice".to_owned(),
                 ChannelKind::Category => "category".to_owned(),
                 ChannelKind::Text => "text".to_owned(),
+                // DMs are not server-admin channels and never appear in this
+                // settings projection.
+                ChannelKind::Direct => "dm".to_owned(),
             },
         }
     }
@@ -1896,7 +1899,7 @@ fn channel_tree(
 ) -> Option<TreeAction> {
     use egui_phosphor::regular as icon;
     let layout = store.channel_layout();
-    let total = store.channels.len() as i32;
+    let total = layout.len() as i32;
     // Visíveis: os filhos de categoria recolhida somem.
     let visible: Vec<(&crate::state::Channel, Option<String>)> = layout
         .iter()
@@ -2671,7 +2674,19 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
     let store = data.store;
     let all: Vec<(ServerPane, Entry<'_>)> = [
         (ServerPane::General, icon::IDENTIFICATION_CARD, s.sum_identity.to_owned()),
-        (ServerPane::Channels, icon::LIST_BULLETS, format!("{} {}", store.channels.len(), s.sum_channels)),
+        (
+            ServerPane::Channels,
+            icon::LIST_BULLETS,
+            format!(
+                "{} {}",
+                store
+                    .channels
+                    .iter()
+                    .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                    .count(),
+                s.sum_channels
+            ),
+        ),
         (ServerPane::Roles, icon::SHIELD, format!("{} {}", store.roles.len(), s.sum_roles)),
         (ServerPane::Emojis, icon::SMILEY, format!("{} {}", store.emojis.len(), s.sum_stickers)),
         (ServerPane::Audit, icon::CLOCK_COUNTER_CLOCKWISE, s.sum_audit.to_owned()),
@@ -3910,7 +3925,13 @@ fn server_pane(
 
         ServerPane::Channels => {
             section(ui, t, s.text_channels);
-            let channels = data.store.channels.clone();
+            let channels: Vec<_> = data
+                .store
+                .channels
+                .iter()
+                .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                .cloned()
+                .collect();
             let draft = &mut state.draft;
             let mut close_editor = false;
             let mut cancel_delete = false;
@@ -4363,7 +4384,12 @@ fn audit_pane(
         data.store
             .channels
             .iter()
-            .filter(|channel| channel.kind != crate::state::ChannelKind::Category)
+            .filter(|channel| {
+                !matches!(
+                    channel.kind,
+                    crate::state::ChannelKind::Category | crate::state::ChannelKind::Direct
+                )
+            })
             .map(|channel| (Some(channel.id.as_str()), format!("#{}", channel.name))),
     );
     ui.horizontal_wrapped(|ui| {

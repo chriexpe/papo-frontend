@@ -14,7 +14,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::client::{Api, Session};
-use super::models::{LinkPreview, Message};
+use super::models::{DirectConversation, LinkPreview, Message};
 use crate::state::Activity;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
@@ -84,6 +84,8 @@ pub enum Event {
         activity: Option<Activity>,
     },
     ActivitySync(Vec<ActivityMember>),
+    /// Estado individual da rail de DMs para esta conta.
+    DirectMessageUpdated(Box<DirectConversation>),
     AvatarUpdated {
         user_id: String,
     },
@@ -156,7 +158,6 @@ pub enum Event {
         channel_id: String,
         user_ids: Vec<String>,
     },
-    /// Mapeamento autoritativo dos slots de áudio desta PeerConnection.
     VoiceAudioRoutes {
         channel_id: String,
         routes: Vec<VoiceAudioRoute>,
@@ -434,10 +435,7 @@ pub fn activity_update(activity: Option<&Activity>) -> String {
 }
 
 pub fn presence_activity() -> String {
-    serde_json::json!({
-        "type": "presence_activity",
-    })
-    .to_string()
+    serde_json::json!({ "type": "presence_activity" }).to_string()
 }
 
 fn is_heartbeat_ack(text: &str) -> bool {
@@ -516,6 +514,9 @@ fn parse(text: &str) -> Option<Event> {
         "channel_delete" => Some(Event::ChannelDeleted {
             id: string("channel_id")?,
         }),
+        "dm_update" => Some(Event::DirectMessageUpdated(Box::new(
+            serde_json::from_value(value.get("dm")?.clone()).ok()?,
+        ))),
         "user_join" => Some(Event::UserJoined {
             user_id: string("user_id")?,
         }),
