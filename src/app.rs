@@ -342,7 +342,9 @@ pub struct Settings {
     #[serde(default)]
     pub downloads: DownloadMode,
     /// Stable GIPHY IDs only; provider media stays transient.
-    #[serde(default)]
+    /// A provider-specific persisted key intentionally avoids importing old
+    /// KLIPY favourite identifiers as if they were GIPHY IDs.
+    #[serde(default, rename = "giphy_favourites")]
     pub gif_favourites: std::collections::BTreeSet<String>,
     /// Rich Presence deste dispositivo. Não é sincronizado com a conta:
     /// processo local, bridge arRPC e override são propriedades da máquina.
@@ -4152,8 +4154,8 @@ impl eframe::App for PapoApp {
                 self.ui.trusted_link_hosts = self.settings.trusted_link_hosts.clone();
                 self.ui.gif_favourites = self.settings.gif_favourites.clone();
                 self.ui.gif_locale = match self.settings.lang {
-                    Lang::PtBr => "pt_BR",
-                    Lang::En => "en_US",
+                    Lang::PtBr => "pt",
+                    Lang::En => "en",
                 }
                 .to_owned();
                 // O voltar do sistema tem um dono por quadro, decidido aqui:
