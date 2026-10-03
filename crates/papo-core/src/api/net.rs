@@ -244,6 +244,11 @@ pub enum Command {
     HideDirectMessage {
         dm_id: String,
     },
+    /// Bloqueia ou desbloqueia uma pessoa para DMs.
+    SetUserBlocked {
+        user_id: String,
+        blocked: bool,
+    },
     /// Testa imediatamente a saúde do WebSocket atual ou antecipa a próxima
     /// tentativa caso ele já esteja reconectando.
     ProbeConnection,
@@ -472,6 +477,8 @@ pub enum Update {
     DirectMessages(Vec<DirectConversation>),
     /// Conversa aberta pelo usuário; além de atualizar a rail, seleciona a DM.
     DirectMessageOpened(Box<DirectConversation>),
+    /// Pessoas bloqueadas pelo usuário autenticado.
+    BlockedUsers(Vec<UserSummary>),
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
     ChannelCreated(String),
     SearchResults {
@@ -1921,6 +1928,35 @@ async fn worker(
                             Err(error) => report(&storage_key, &updates, &wake, error),
                         }
                     }
+                    Command::SetUserBlocked { user_id, blocked } => {
+                        let result = if blocked {
+                            api.block_user(&user_id).await
+                        } else {
+                            api.unblock_user(&user_id).await
+                        };
+                        match result {
+                            Ok(()) => {
+                                outgoing_channels.invalidate();
+                                match api.blocked_users().await {
+                                    Ok(users) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::BlockedUsers(users),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                                match api.direct_messages().await {
+                                    Ok(dms) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::DirectMessages(dms),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -2530,6 +2566,14 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
             updates.push(update_for_error(error));
         }
     }
+    match with_retry(|| api.blocked_users()).await {
+        Ok(users) => updates.push(Update::BlockedUsers(users)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
+    }
     match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
@@ -2840,7 +2884,9 @@ async fn handle(
             ),
             }
         }
-        Command::OpenDirectMessage { .. } | Command::HideDirectMessage { .. } => {
+        Command::OpenDirectMessage { .. }
+        | Command::HideDirectMessage { .. }
+        | Command::SetUserBlocked { .. } => {
             // Consumidos no laço do worker, onde também invalidam a validação
             // da fila durável.
         }
@@ -3438,6 +3484,15 @@ async fn bootstrap(
     }
     match with_retry(|| api.direct_messages()).await {
         Ok(dms) => publish(updates, wake, Update::DirectMessages(dms)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
+    }
+    match with_retry(|| api.blocked_users()).await {
+        Ok(users) => publish(updates, wake, Update::BlockedUsers(users)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);
