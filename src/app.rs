@@ -2194,6 +2194,11 @@ impl PapoApp {
                         .unwrap_or_default();
                 }
             }
+            ChatAction::SetUserBlocked { user_id, blocked } => {
+                ws.runtime
+                    .net
+                    .send(Command::SetUserBlocked { user_id, blocked });
+            }
             ChatAction::SetPresence(status) => ws.runtime.net.send(Command::SetStatus { status }),
             ChatAction::EditProfile | ChatAction::MarkServerRead | ChatAction::LeaveServer => {}
             // Entrar já foi tratado antes do `match`, porque mexe em todos
@@ -2495,6 +2500,7 @@ impl PapoApp {
             ChatAction::LoadOlderMessages
             | ChatAction::OpenDirectMessage(_)
             | ChatAction::HideDirectMessage(_)
+            | ChatAction::SetUserBlocked { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
             | ChatAction::LoadProfile(_)
