@@ -1260,6 +1260,9 @@ impl PapoApp {
     fn pump_updater(&mut self, ctx: &egui::Context) {
         use crate::platform::update::Event;
 
+        #[cfg(target_os = "windows")]
+        let _ = ctx;
+
         #[cfg(target_os = "android")]
         if self.update_waiting_permission && crate::platform::update::can_install_packages() {
             self.update_waiting_permission = false;
