@@ -2494,7 +2494,7 @@ impl Store {
                 self.audit_has_more = has_more;
                 self.busy = false;
             }
-            Update::Done => self.busy = false,
+            Update::Done | Update::PasswordResetLink { .. } => self.busy = false,
             Update::SearchFailed => {
                 self.searching = false;
             }
