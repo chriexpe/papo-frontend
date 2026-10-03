@@ -2890,19 +2890,10 @@ impl PapoApp {
                             .net
                             .send(Command::SetBanner { blob, format });
                     }
-                    // O contrato pede o nome junto; vai o que já está valendo.
                     ImagePick::ServerIcon => {
                         let ws = &self.workspaces[self.active];
-                        let name = ws
-                            .runtime
-                            .store
-                            .server
-                            .as_ref()
-                            .map(|server| server.name.clone())
-                            .unwrap_or_default();
                         ws.runtime.net.send(Command::PatchServer(Box::new(
-                            crate::api::models::UpdateServerRequest {
-                                name,
+                            crate::api::models::PatchServerRequest {
                                 icon_blob: Some(blob),
                                 icon_format: Some(format),
                                 ..Default::default()
