@@ -1553,6 +1553,18 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
+    /// Link-preview image already present in memory, without starting backend I/O.
+    pub fn loaded_preview(&self, id: &str) -> Option<&Texture> {
+        self.textures.get(&preview_key(id))
+    }
+
+    /// Remote preview image already present in memory, without starting public I/O.
+    pub fn loaded_remote_image(&self, url: &str) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let id = remote_resource_id(&canonical);
+        self.textures.get(&remote_image_key(&id))
+    }
+
     pub fn remote_image(&mut self, _id: &str, url: &str) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
         let id = remote_resource_id(&canonical);
