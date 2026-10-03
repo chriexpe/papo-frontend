@@ -688,8 +688,6 @@ struct RawImages {
     #[serde(default)]
     fixed_width: Option<RawImage>,
     #[serde(default)]
-    fixed_width_small: Option<RawImage>,
-    #[serde(default)]
     fixed_width_still: Option<RawImage>,
     #[serde(default)]
     original_still: Option<RawImage>,
