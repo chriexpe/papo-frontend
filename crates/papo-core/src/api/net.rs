@@ -2501,10 +2501,15 @@ where
     let mut attempt = 1;
     loop {
         match work().await {
-            Err(error) if error.is_transient() && attempt < TRANSIENT_ATTEMPTS => {
+            // 429 has its own server-scoped governor in Api. Retrying it here
+            // would stack a per-call backoff on top of the shared cooldown and
+            // reintroduce request amplification. Transport failures still get
+            // the short local retry used by reconciliation.
+            Err(error @ ApiError::Network(_)) if attempt < TRANSIENT_ATTEMPTS => {
                 tokio::time::sleep(wait).await;
                 wait = wait.saturating_mul(2);
                 attempt += 1;
+                let _ = error;
             }
             outcome => return outcome,
         }
@@ -2530,12 +2535,12 @@ mod retry_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
-    async fn transient_errors_are_retried_until_success() {
+    async fn network_errors_are_retried_until_success() {
         let calls = AtomicUsize::new(0);
         let outcome: ApiResult<u8> = with_retry(|| {
             let n = calls.fetch_add(1, Ordering::SeqCst);
             std::future::ready(if n < 2 {
-                Err(ApiError::TooManyRequests("devagar".into()))
+                Err(ApiError::Network("temporário".into()))
             } else {
                 Ok(9)
             })
@@ -2543,6 +2548,18 @@ mod retry_tests {
         .await;
         assert_eq!(outcome.expect("devia acabar sucedendo"), 9);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_is_not_amplified_by_local_retry() {
+        let calls = AtomicUsize::new(0);
+        let outcome: ApiResult<u8> = with_retry(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<u8, _>(ApiError::TooManyRequests("devagar".into())))
+        })
+        .await;
+        assert!(matches!(outcome, Err(ApiError::TooManyRequests(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2558,14 +2575,14 @@ mod retry_tests {
     }
 
     #[tokio::test]
-    async fn transient_errors_give_up_after_the_cap() {
+    async fn network_errors_give_up_after_the_cap() {
         let calls = AtomicUsize::new(0);
         let outcome: ApiResult<u8> = with_retry(|| {
             calls.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(Err::<u8, _>(ApiError::TooManyRequests("x".into())))
+            std::future::ready(Err::<u8, _>(ApiError::Network("x".into())))
         })
         .await;
-        assert!(matches!(outcome, Err(ApiError::TooManyRequests(_))));
+        assert!(matches!(outcome, Err(ApiError::Network(_))));
         assert_eq!(calls.load(Ordering::SeqCst), TRANSIENT_ATTEMPTS);
     }
 }
