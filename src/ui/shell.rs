@@ -750,6 +750,14 @@ impl Stash {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum UpdatePill {
+    Available,
+    Downloading(Option<f32>),
+    Ready,
+    WaitingPermission,
+}
+
 pub struct UiState {
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
@@ -850,10 +858,10 @@ pub struct UiState {
     pub collapsed_categories: std::collections::HashSet<String>,
     /// Onde a pastilha do servidor está neste quadro: é a base do cartão.
     pub server_pill: Option<Rect>,
-    /// Corredor superior onde a pastilha compacta da call é centralizada.
-    /// Outros avisos transitórios que ocupam a mesma função visual usam esta
-    /// geometria em vez de se ancorar na janela inteira.
-    pub call_pill_area: Option<Rect>,
+    /// Chrome transitório do updater. O app só projeta estado; o shell decide
+    /// a geometria junto das outras pastilhas para não competir com a call.
+    pub update_pill: Option<UpdatePill>,
+    pub update_pill_clicked: bool,
     /// Endereço e quantidade de servidores, que o cartão mostra e usa.
     pub server_url: String,
     pub server_count: usize,
@@ -1005,7 +1013,8 @@ impl Default for UiState {
             server_card: None,
             collapsed_categories: Default::default(),
             server_pill: None,
-            call_pill_area: None,
+            update_pill: None,
+            update_pill_clicked: false,
             server_url: String::new(),
             server_count: 1,
             back: false,
@@ -1106,7 +1115,6 @@ pub fn draw(
     state.media_seek_zones.clear();
     state.visible_message_ids.clear();
     state.webembed_inline_rect = None;
-    state.call_pill_area = None;
 
     // Mídia que acabou de chegar muda a altura das mensagens. A compensação
     // fina dos previews é feita por cartão, onde sabemos se ele está acima da
@@ -2854,6 +2862,7 @@ fn conversation(
                 text::headline(),
                 t.label_secondary,
             );
+            let _ = update_pill(ui, state, t, s, full, None, None);
             return;
         }
 
@@ -2868,6 +2877,10 @@ fn conversation(
                 crate::ui::call::lobby(ui, store, state, t, s);
             }
             let channel_rect = channel_pill(ui, store, state, t, s, full);
+            let update = update_pill(ui, state, t, s, full, channel_rect, None);
+            let call_right = update
+                .filter(|placement| placement.reserves_call_space)
+                .map(|placement| placement.rect);
             call_layers(
                 ui,
                 store,
@@ -2878,7 +2891,7 @@ fn conversation(
                 full,
                 stage,
                 channel_rect,
-                None,
+                call_right,
             );
             if state.compact {
                 handle_mobile_gesture(
@@ -3156,6 +3169,7 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
+        let update = update_pill(ui, state, t, s, full, channel_rect, Some(actions_rect));
         let nav_rects = timeline_nav_controls(
             ui,
             store,
@@ -3169,6 +3183,13 @@ fn conversation(
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
         state.webembed_occlusions.extend(nav_rects);
+        if let Some(update) = update {
+            state.webembed_occlusions.push(update.rect);
+        }
+        let call_right = update
+            .filter(|placement| placement.reserves_call_space)
+            .map(|placement| placement.rect)
+            .or(Some(actions_rect));
         call_layers(
             ui,
             store,
@@ -3179,7 +3200,7 @@ fn conversation(
             full,
             stage,
             channel_rect,
-            Some(actions_rect),
+            call_right,
         );
 
         if state.compact {
@@ -3490,6 +3511,193 @@ fn advance(shown: &mut f32, target: f32, span: f32, ui: &egui::Ui) -> bool {
     true
 }
 
+fn top_pill_corridor(full: Rect, channel_rect: Option<Rect>, right_rect: Option<Rect>) -> Rect {
+    let left = channel_rect
+        .map(|rect| rect.max.x + space::SM)
+        .unwrap_or(full.min.x + PILL_MARGIN);
+    let right = right_rect
+        .map(|rect| rect.min.x - space::SM)
+        .unwrap_or(full.max.x - PILL_MARGIN);
+    if right > left {
+        Rect::from_min_max(
+            egui::pos2(left, full.min.y),
+            egui::pos2(right, full.max.y),
+        )
+    } else {
+        full
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct UpdatePillPlacement {
+    pub rect: Rect,
+    pub reserves_call_space: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_pill(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    full: Rect,
+    channel_rect: Option<Rect>,
+    actions_rect: Option<Rect>,
+) -> Option<UpdatePillPlacement> {
+    let mode = state.update_pill?;
+    let compact = is_compact(full);
+    let corridor = top_pill_corridor(full, channel_rect, actions_rect);
+
+    let (rect, reserves_call_space, radius) = match mode {
+        UpdatePill::Available => {
+            let side = PILL_HEIGHT;
+            let right = actions_rect
+                .map(|rect| rect.min.x - space::SM)
+                .unwrap_or(full.max.x - PILL_MARGIN);
+            let y = actions_rect
+                .map(|rect| rect.min.y)
+                .unwrap_or(full.min.y + PILL_MARGIN);
+            (
+                Rect::from_min_size(egui::pos2(right - side, y), Vec2::splat(side)),
+                true,
+                PILL_RADIUS,
+            )
+        }
+        _ if compact => {
+            let height = PILL_HEIGHT + 6.0;
+            let width = 300.0_f32.min((corridor.width() - space::SM * 2.0).max(PILL_HEIGHT));
+            let center = egui::pos2(
+                corridor.center().x,
+                corridor.min.y + space::LG + PILL_HEIGHT / 2.0,
+            );
+            (
+                Rect::from_center_size(center, Vec2::new(width, height)),
+                false,
+                height / 2.0,
+            )
+        }
+        _ => {
+            let right = actions_rect
+                .map(|rect| rect.min.x - space::SM)
+                .unwrap_or(full.max.x - PILL_MARGIN);
+            let left_limit = channel_rect
+                .map(|rect| rect.max.x + space::SM)
+                .unwrap_or(full.min.x + PILL_MARGIN);
+            let width = 270.0_f32.min((right - left_limit).max(PILL_HEIGHT));
+            let y = actions_rect
+                .map(|rect| rect.min.y)
+                .unwrap_or(full.min.y + PILL_MARGIN);
+            (
+                Rect::from_min_size(
+                    egui::pos2(right - width, y),
+                    Vec2::new(width, PILL_HEIGHT),
+                ),
+                true,
+                PILL_RADIUS,
+            )
+        }
+    };
+
+    let corner = CornerRadius::same(radius.round().clamp(0.0, u8::MAX as f32) as u8);
+    glass_backdrop(ui, state, rect, radius);
+    ui.painter().rect(
+        rect,
+        corner,
+        t.pill_fill(state.translucent),
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius * 0.6, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - radius * 0.6, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
+    );
+
+    let clickable = matches!(mode, UpdatePill::Available | UpdatePill::Ready);
+    let response = ui.interact(
+        rect,
+        egui::Id::new("papo-update-pill"),
+        if clickable { Sense::click() } else { Sense::hover() },
+    );
+    if clickable && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(rect, corner, t.fill_soft);
+    }
+
+    match mode {
+        UpdatePill::Available => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                text::icon(17.0),
+                t.label,
+            );
+        }
+        UpdatePill::Downloading(progress) => {
+            if let Some(progress) = progress.map(|value| value.clamp(0.0, 1.0)) {
+                let fill_width = rect.width() * progress;
+                if fill_width > 1.0 {
+                    let fill = Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(rect.min.x + fill_width, rect.max.y),
+                    );
+                    ui.painter().rect_filled(
+                        fill.intersect(rect),
+                        corner,
+                        t.accent.gamma_multiply(0.28),
+                    );
+                }
+            }
+            let label = progress
+                .map(|value| {
+                    format!(
+                        "{} · {:.0}%",
+                        s.update_downloading.trim_end_matches('…'),
+                        value * 100.0
+                    )
+                })
+                .unwrap_or_else(|| s.update_downloading.to_owned());
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                text::body(),
+                t.label,
+            );
+        }
+        UpdatePill::Ready => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                s.update_ready,
+                text::body(),
+                t.label,
+            );
+        }
+        UpdatePill::WaitingPermission => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                s.update_waiting_permission,
+                text::body(),
+                t.label_secondary,
+            );
+        }
+    }
+
+    if clickable && response.clicked() {
+        state.update_pill_clicked = true;
+    }
+
+    Some(UpdatePillPlacement {
+        rect,
+        reserves_call_space,
+    })
+}
+
 /// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
 /// dela encolhida. No canal da própria call, nenhum dos dois — ali a call já
 /// é a tela.
@@ -3508,24 +3716,7 @@ fn call_layers(
 ) {
     use crate::state::Stage;
 
-    let left = channel_rect
-        .map(|rect| rect.max.x + space::SM)
-        .unwrap_or(full.min.x + PILL_MARGIN);
-    let right = actions_rect
-        .map(|rect| rect.min.x - space::SM)
-        .unwrap_or(full.max.x - PILL_MARGIN);
-    let pill_area = if right > left {
-        Rect::from_min_max(
-            egui::pos2(left, full.min.y),
-            egui::pos2(right, full.max.y),
-        )
-    } else {
-        full
-    };
-    // Export the exact corridor used by the compact call pill. The updater
-    // renders after the shell, so keeping this geometry in UiState lets it
-    // occupy the same visual slot without guessing from the whole window.
-    state.call_pill_area = Some(pill_area);
+    let pill_area = top_pill_corridor(full, channel_rect, actions_rect);
 
     match stage {
         Some(Stage::Floating) => {
