@@ -1596,6 +1596,7 @@ fn account_pill(
         id: store.me.clone(),
         username: store.my_username.clone(),
         name: store.my_name.clone(),
+        banned: false,
         presence: crate::state::Presence::Online,
         status_message: None,
         typing_label: None,
