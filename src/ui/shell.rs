@@ -6274,7 +6274,16 @@ fn preview_card(
             // O título só aparece quando diz mais que a linha do autor
             // (`@x • Instagram reel`, `Nome (@x) on X` não dizem).
             let headline = title.filter(|title| !title.contains('@'));
-            post_header(ui, state, t, id, &post, headline, description);
+            post_header(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                headline,
+                description,
+                allow_network,
+            );
             ui.add_space(space::SM);
         }
 
@@ -6448,7 +6457,15 @@ fn preview_card(
         }
 
         if social {
-            post_footer(ui, state, t, id, &post, provider.as_deref());
+            post_footer(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                provider.as_deref(),
+                allow_network,
+            );
             return;
         }
 
@@ -6579,6 +6596,7 @@ fn post_header(
     post: &papo_core::preview::PostMeta,
     headline: Option<&str>,
     description: Option<&str>,
+    allow_network: bool,
 ) {
     const AVATAR: f32 = 24.0;
     let handle = post.author_handle.as_deref();
@@ -6590,7 +6608,13 @@ fn post_header(
     let avatar = post
         .author_avatar
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
 
@@ -6678,12 +6702,19 @@ fn post_footer(
     id: &str,
     post: &papo_core::preview::PostMeta,
     provider: Option<&str>,
+    allow_network: bool,
 ) {
     const ICON: f32 = 16.0;
     let icon_texture = post
         .site_icon
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
     let date = post.published_at.and_then(post_date);
