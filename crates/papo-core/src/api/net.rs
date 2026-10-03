@@ -2479,10 +2479,9 @@ async fn run_reconcile(
     }
 }
 
-/// Repete uma requisição transitória (429/rede) com espera crescente antes de
-/// desistir. O backend limita taxa; a partida dispara várias chamadas de uma
-/// vez, e sem isto o 429 virava um aviso que nunca se resolvia. Insistir um
-/// instante depois transforma a rajada em resposta.
+/// Repete somente falhas de transporte com espera curta e crescente.
+/// HTTP 429 é deliberadamente excluído: o governador compartilhado do
+/// `Api` controla esse cooldown para o servidor inteiro.
 const TRANSIENT_ATTEMPTS: usize = 4;
 
 fn update_for_error(error: ApiError) -> Update {
