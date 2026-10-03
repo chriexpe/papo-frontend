@@ -436,6 +436,10 @@ pub struct Store {
     /// Conversas 1:1 visíveis para esta conta. O id de cada uma também vive
     /// em `channels` como `ChannelKind::Direct`, para reaproveitar a timeline.
     pub direct_messages: Vec<models::DirectConversation>,
+    /// Pessoas bloqueadas por esta conta. O backend aplica o bloqueio
+    /// bidirecionalmente às DMs; esta coleção representa apenas os bloqueios
+    /// iniciados pelo usuário autenticado.
+    pub blocked_users: HashSet<String>,
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
@@ -529,6 +533,7 @@ impl Default for Store {
             server: None,
             channels: Vec::new(),
             direct_messages: Vec::new(),
+            blocked_users: HashSet::new(),
             members: Vec::new(),
             messages: Vec::new(),
             emojis: Vec::new(),
@@ -594,6 +599,10 @@ impl Store {
 
     pub fn selected_direct_message(&self) -> Option<&models::DirectConversation> {
         self.direct_message(&self.selected_channel)
+    }
+
+    pub fn is_user_blocked(&self, user_id: &str) -> bool {
+        self.blocked_users.contains(user_id)
     }
 
     pub fn direct_unread_total(&self) -> u32 {
@@ -2477,6 +2486,10 @@ impl Store {
                 let id = dm.id.clone();
                 self.upsert_direct_message(*dm);
                 self.selected_channel = id;
+                self.busy = false;
+            }
+            Update::BlockedUsers(users) => {
+                self.blocked_users = users.into_iter().map(|user| user.id).collect();
                 self.busy = false;
             }
             Update::Roles(roles) => {
