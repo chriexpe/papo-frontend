@@ -49,9 +49,11 @@ pub fn message_id(content: &str) -> Option<&str> {
 pub struct GifItem {
     pub id: String,
     pub title: String,
-    /// Higher-resolution GIF used by the fullscreen viewer.
+    /// Original/highest-resolution GIF used by the fullscreen viewer.
     pub gif_url: String,
-    /// Smaller animated rendition used by the picker and chat timeline.
+    /// Higher-quality bounded rendition used by sent/chat GIFs.
+    pub display_url: String,
+    /// Grid rendition used by the picker/category tiles.
     pub preview_url: String,
     /// Provider-supplied still image when one exists.
     pub still_url: Option<String>,
@@ -592,15 +594,30 @@ fn convert_item(raw: RawGif) -> Option<GifItem> {
         .as_ref()
         .or(raw.images.downsized.as_ref())
         .or(raw.images.fixed_width.as_ref())?;
+    // GIPHY documents fixed_width_small as a 100px "nano" rendition. Our
+    // two-column picker tiles are roughly 200px wide, so using it first caused
+    // visible upscaling/blurring. fixed_width is the intended grid rendition.
     let preview = raw
         .images
-        .fixed_width_small
+        .fixed_width
         .as_ref()
-        .or(raw.images.fixed_width.as_ref())
         .or(raw.images.downsized.as_ref())
         .unwrap_or(full);
 
+    // Once selected, GIPHY recommends a higher-quality downsized rendition for
+    // chat/messaging. Prefer the <=5MB medium tier here: substantially sharper
+    // than the 100/200px grid renditions without forcing every visible message
+    // to fetch/decode the original asset.
+    let display = raw
+        .images
+        .downsized_medium
+        .as_ref()
+        .or(raw.images.downsized.as_ref())
+        .or(raw.images.downsized_large.as_ref())
+        .unwrap_or(full);
+
     if !papo_core::preview::safe_remote_url(&full.url)
+        || !papo_core::preview::safe_remote_url(&display.url)
         || !papo_core::preview::safe_remote_url(&preview.url)
     {
         return None;
@@ -622,6 +639,7 @@ fn convert_item(raw: RawGif) -> Option<GifItem> {
             raw.title
         },
         gif_url: full.url.clone(),
+        display_url: display.url.clone(),
         preview_url: preview.url.clone(),
         still_url,
         width: parse_dimension(&full.width).max(1),
@@ -663,6 +681,10 @@ struct RawImages {
     original: Option<RawImage>,
     #[serde(default)]
     downsized: Option<RawImage>,
+    #[serde(default)]
+    downsized_large: Option<RawImage>,
+    #[serde(default)]
+    downsized_medium: Option<RawImage>,
     #[serde(default)]
     fixed_width: Option<RawImage>,
     #[serde(default)]
