@@ -3715,7 +3715,7 @@ fn direct_message_pill(
     let subtitle = member
         .and_then(|member| member.status_message.as_deref())
         .filter(|status| !status.trim().is_empty())
-        .unwrap_or_else(|| match presence {
+        .unwrap_or(match presence {
             Presence::Online => s.online,
             Presence::Away => s.away,
             Presence::Busy => s.busy,
