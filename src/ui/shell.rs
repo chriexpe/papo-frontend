@@ -452,9 +452,9 @@ pub struct LinkViewer {
     pub name: String,
     /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
     pub video: bool,
-    /// KLIPY/public provider media stays memory-only and can expose Favourite.
+    /// GIPHY/public provider media stays memory-only and can expose Favourite.
     pub ephemeral: bool,
-    pub favourite_slug: Option<String>,
+    pub favourite_id: Option<String>,
     pub zoom: f32,
     pub offset: Vec2,
     pub fitted: bool,
@@ -826,13 +826,12 @@ pub struct UiState {
     pub actions: Vec<ChatAction>,
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
-    /// Direct KLIPY picker/client state is global to the window. Provider
+    /// Direct GIPHY picker/client state is global to the window. Provider
     /// media stays in MediaStore GPU memory only; only favourite slugs persist.
-    pub klipy: Option<crate::klipy::Store>,
+    pub giphy: Option<crate::giphy::Store>,
     pub gif_picker_anchor: Option<Rect>,
     pub gif_picker_opened: Option<f64>,
     pub gif_favourites: std::collections::BTreeSet<String>,
-    pub klipy_customer_id: String,
     pub gif_locale: String,
     /// Hosts explicitly trusted by the user for opening links without asking.
     /// This is window/global state and is mirrored to persisted Settings.
@@ -988,11 +987,10 @@ impl Default for UiState {
             actions: Vec::new(),
             viewer: None,
             link_viewer: None,
-            klipy: None,
+            giphy: None,
             gif_picker_anchor: None,
             gif_picker_opened: None,
             gif_favourites: std::collections::BTreeSet::new(),
-            klipy_customer_id: String::new(),
             gif_locale: "en_US".to_owned(),
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
@@ -1110,8 +1108,8 @@ pub fn draw(
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
     }
-    if let Some(klipy) = state.klipy.as_mut() {
-        klipy.pump(ui.ctx());
+    if let Some(giphy) = state.giphy.as_mut() {
+        giphy.pump(ui.ctx());
     }
 
     // Resultado de um canal que nunca carregou: a busca não pode ficar
@@ -5559,7 +5557,7 @@ fn message_body(
     }
 
     if !message.content.is_empty() {
-        if let Some(slug) = crate::klipy::message_slug(&message.content).map(str::to_owned) {
+        if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
             gif::message(ui, state, t, s, &slug, width);
         } else if direct_media_message_url(state, &message.content).is_none() {
             let shown_content = store.display_mentions(&message.content);
@@ -6153,7 +6151,7 @@ fn preview_card(
                     name: title.unwrap_or("video").to_owned(),
                     video: true,
                     ephemeral: false,
-                    favourite_slug: None,
+                    favourite_id: None,
                     zoom: 1.0,
                     offset: Vec2::ZERO,
                     fitted: true,
@@ -6234,7 +6232,7 @@ fn preview_card(
                         name: title.unwrap_or("image").to_owned(),
                         video: false,
                         ephemeral: false,
-                    favourite_slug: None,
+                    favourite_id: None,
                     zoom: 1.0,
                         offset: Vec2::ZERO,
                         fitted: true,
@@ -7300,7 +7298,7 @@ fn link_image_viewer(
         &link.name,
         link.video,
         link.ephemeral,
-        link.favourite_slug
+        link.favourite_id
             .as_ref()
             .map(|slug| state.gif_favourites.contains(slug)),
         link.opened,
@@ -7314,7 +7312,7 @@ fn link_image_viewer(
             state.link_viewer = Some(link);
         }
         Some(viewer::RemoteViewerAction::ToggleFavourite) => {
-            if let Some(slug) = link.favourite_slug.clone() {
+            if let Some(slug) = link.favourite_id.clone() {
                 gif::toggle_favourite(state, &slug);
             }
             state.link_viewer = Some(link);
@@ -7426,8 +7424,8 @@ fn context_menu(
     };
     let mine = message.mine(&store.me);
     let copy_link = direct_media_message_url(state, &message.content).or_else(|| {
-        crate::klipy::message_slug(&message.content)
-            .and_then(|slug| state.klipy.as_mut()?.item(slug, ui.ctx()))
+        crate::giphy::message_id(&message.content)
+            .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
     });
 
@@ -8372,11 +8370,11 @@ fn composer(
     if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
         state.gif_picker_anchor = Some(gif_rect);
         state.gif_picker_opened = Some(opened);
-        if state.klipy.is_none() {
-            state.klipy = Some(crate::klipy::Store::new(ui.ctx().clone()));
+        if state.giphy.is_none() {
+            state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
         }
-        if let Some(klipy) = state.klipy.as_mut() {
-            klipy.open_picker(&state.gif_locale, &state.klipy_customer_id);
+        if let Some(giphy) = state.giphy.as_mut() {
+            giphy.open_picker(&state.gif_locale);
         }
     }
 
