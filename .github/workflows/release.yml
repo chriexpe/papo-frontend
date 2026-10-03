@@ -52,7 +52,7 @@ jobs:
 
       - run: cargo build --release --locked
         env:
-          PAPO_KLIPY_APP_KEY: ${{ secrets.PAPO_KLIPY_APP_KEY }}
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
 
       # rsRPC is built from the revision pinned in packaging/rsrpc/REVISION,
       # so every artifact carries the same, source-matching helper.
@@ -151,7 +151,7 @@ jobs:
 
       - name: Build
         env:
-          PAPO_KLIPY_APP_KEY: ${{ secrets.PAPO_KLIPY_APP_KEY }}
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
         run: cargo build --release --locked
 
       - uses: actions/cache@v4
@@ -275,16 +275,16 @@ jobs:
 
       - name: Construir o Flatpak
         env:
-          PAPO_KLIPY_APP_KEY: ${{ secrets.PAPO_KLIPY_APP_KEY }}
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os
           from pathlib import Path
           path = Path("packaging/io.github.chriexpe.Papo.yml")
-          key = os.environ.get("PAPO_KLIPY_APP_KEY", "")
+          key = os.environ.get("PAPO_GIPHY_API_KEY", "")
           text = path.read_text()
-          text = text.replace("@PAPO_KLIPY_APP_KEY@", key)
+          text = text.replace("@PAPO_GIPHY_API_KEY@", key)
           path.write_text(text)
           PY
           # O FUSE dos runners não coopera com o rofiles; sem ele a
@@ -373,7 +373,7 @@ jobs:
           PAPO_FIREBASE_API_KEY: ${{ secrets.PAPO_FIREBASE_API_KEY }}
           PAPO_FIREBASE_PROJECT_ID: ${{ secrets.PAPO_FIREBASE_PROJECT_ID }}
           PAPO_FIREBASE_SENDER_ID: ${{ secrets.PAPO_FIREBASE_SENDER_ID }}
-          PAPO_KLIPY_APP_KEY: ${{ secrets.PAPO_KLIPY_APP_KEY }}
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
         run: |
           set -euo pipefail
           ln -s "$HOME/.cache/papo-gstreamer-android" "$GSTREAMER_ROOT_ANDROID"
