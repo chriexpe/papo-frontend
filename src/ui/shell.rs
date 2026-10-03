@@ -827,7 +827,7 @@ pub struct UiState {
     pub viewer: Option<Viewer>,
     pub link_viewer: Option<LinkViewer>,
     /// Direct GIPHY picker/client state is global to the window. Provider
-    /// media stays in MediaStore GPU memory only; only favourite slugs persist.
+    /// media stays in MediaStore GPU memory only; only favourite IDs persist.
     pub giphy: Option<crate::giphy::Store>,
     pub gif_picker_anchor: Option<Rect>,
     pub gif_picker_opened: Option<f64>,
@@ -991,7 +991,7 @@ impl Default for UiState {
             gif_picker_anchor: None,
             gif_picker_opened: None,
             gif_favourites: std::collections::BTreeSet::new(),
-            gif_locale: "en_US".to_owned(),
+            gif_locale: "en".to_owned(),
             trusted_link_hosts: std::collections::BTreeSet::new(),
             external_link_prompt: None,
             popup: None,
