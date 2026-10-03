@@ -29,7 +29,7 @@ const UPLOAD_CHUNK: usize = 64 * 1024;
 /// REST starts are paced per server, not per caller. The backend's global
 /// limiter is per client IP, so independently bursting bootstrap, media and
 /// foreground commands only makes them compete with each other.
-const REQUEST_START_GAP: Duration = Duration::from_millis(100);
+const REQUEST_START_GAP: Duration = Duration::from_millis(250);
 const RATE_LIMIT_BASE_COOLDOWN: Duration = Duration::from_secs(10);
 const RATE_LIMIT_MAX_COOLDOWN: Duration = Duration::from_secs(60);
 const RATE_LIMIT_STRIKE_RESET: Duration = Duration::from_secs(120);
@@ -71,28 +71,13 @@ impl RequestGovernor {
     }
 
     async fn observe_response(&self, response: &reqwest::Response) {
-        let now = tokio::time::Instant::now();
-        let mut state = self.state.lock().await;
-
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            if state
-                .last_limited
-                .is_some_and(|last| now.duration_since(last) >= RATE_LIMIT_STRIKE_RESET)
-            {
-                state.rate_limit_strikes = 0;
-            }
-            state.rate_limit_strikes = state.rate_limit_strikes.saturating_add(1);
-            state.last_limited = Some(now);
-
-            let delay = retry_after_delay(response.headers())
-                .unwrap_or_else(|| fallback_rate_limit_cooldown(state.rate_limit_strikes))
-                .max(REQUEST_START_GAP);
-            let until = now + delay;
-            state.blocked_until = Some(state.blocked_until.map_or(until, |old| old.max(until)));
-            state.next_request_at = Some(state.next_request_at.map_or(until, |old| old.max(until)));
+            self.note_rate_limit(retry_after_delay(response.headers())).await;
             return;
         }
 
+        let now = tokio::time::Instant::now();
+        let mut state = self.state.lock().await;
         if state
             .last_limited
             .is_some_and(|last| now.duration_since(last) >= RATE_LIMIT_STRIKE_RESET)
@@ -101,6 +86,26 @@ impl RequestGovernor {
             state.last_limited = None;
             state.blocked_until = None;
         }
+    }
+
+    async fn note_rate_limit(&self, retry_after: Option<Duration>) {
+        let now = tokio::time::Instant::now();
+        let mut state = self.state.lock().await;
+        if state
+            .last_limited
+            .is_some_and(|last| now.duration_since(last) >= RATE_LIMIT_STRIKE_RESET)
+        {
+            state.rate_limit_strikes = 0;
+        }
+        state.rate_limit_strikes = state.rate_limit_strikes.saturating_add(1);
+        state.last_limited = Some(now);
+
+        let delay = retry_after
+            .unwrap_or_else(|| fallback_rate_limit_cooldown(state.rate_limit_strikes))
+            .max(REQUEST_START_GAP);
+        let until = now + delay;
+        state.blocked_until = Some(state.blocked_until.map_or(until, |old| old.max(until)));
+        state.next_request_at = Some(state.next_request_at.map_or(until, |old| old.max(until)));
     }
 }
 
@@ -114,7 +119,11 @@ fn fallback_rate_limit_cooldown(strikes: u32) -> Duration {
 }
 
 fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
-    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    retry_after_value(headers.get(RETRY_AFTER)?.to_str().ok()?)
+}
+
+fn retry_after_value(raw: &str) -> Option<Duration> {
+    let raw = raw.trim();
     if let Ok(seconds) = raw.parse::<u64>() {
         return Some(Duration::from_secs(seconds));
     }
@@ -311,6 +320,16 @@ impl Api {
             session,
             governor,
         })
+    }
+
+    pub(crate) async fn wait_request_turn(&self) {
+        self.governor.wait_turn().await;
+    }
+
+    pub(crate) async fn note_rate_limit_value(&self, retry_after: Option<&str>) {
+        self.governor
+            .note_rate_limit(retry_after.and_then(retry_after_value))
+            .await;
     }
 
     /// Endereço do WebSocket derivado da base (`https` → `wss`).
