@@ -16,8 +16,8 @@ use super::scheduler::{
     ReconcileScheduler, StartedReconcile, TaskOwner,
 };
 use super::models::{
-    Channel, Emoji, Message, Notification, PushDeviceRequest, ReactionRequest, Server,
-    UserConfig, UserSettings, UserSummary, Whoami,
+    Channel, DirectConversation, Emoji, Message, Notification, PushDeviceRequest, ReactionRequest,
+    Server, UserConfig, UserSettings, UserSummary, Whoami,
 };
 use super::ws::{self, Connection, Event};
 use crate::storage::{Secret, SecretStore};
@@ -236,6 +236,19 @@ pub enum Command {
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
+    /// Abre/cria uma conversa direta com esta pessoa.
+    OpenDirectMessage {
+        user_id: String,
+    },
+    /// Oculta uma conversa direta da rail local.
+    HideDirectMessage {
+        dm_id: String,
+    },
+    /// Bloqueia ou desbloqueia uma pessoa para DMs.
+    SetUserBlocked {
+        user_id: String,
+        blocked: bool,
+    },
     /// Testa imediatamente a saúde do WebSocket atual ou antecipa a próxima
     /// tentativa caso ele já esteja reconectando.
     ProbeConnection,
@@ -460,6 +473,12 @@ pub enum Update {
     ConnectionViolation,
     Server(Option<Box<Server>>),
     Channels(Vec<Channel>),
+    /// Rail completa de mensagens diretas desta conta.
+    DirectMessages(Vec<DirectConversation>),
+    /// Conversa aberta pelo usuário; além de atualizar a rail, seleciona a DM.
+    DirectMessageOpened(Box<DirectConversation>),
+    /// Pessoas bloqueadas pelo usuário autenticado.
+    BlockedUsers(Vec<UserSummary>),
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
     ChannelCreated(String),
     SearchResults {
@@ -892,7 +911,9 @@ impl OutgoingChannelGate {
             return Ok(());
         }
         let channels = api.channels().await?;
+        let dms = api.direct_messages().await?;
         self.ids = channels.into_iter().map(|channel| channel.id).collect();
+        self.ids.extend(dms.into_iter().map(|dm| dm.id));
         self.refreshed_at = Some(std::time::Instant::now());
         Ok(())
     }
@@ -1183,6 +1204,7 @@ async fn drive_outgoing(
                 continue;
             }
             Err(SendMessageError::FailedPermanent(error)) => {
+                let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
                 let message = error.to_string();
                 if let Err(db_error) = cache.transition_outgoing(
                     scope,
@@ -1199,6 +1221,12 @@ async fn drive_outgoing(
                 outgoing[index].state = OutgoingState::FailedPermanent;
                 outgoing[index].last_error = Some(message);
                 publish_outgoing(scope, updates, wake, &outgoing[index]);
+                if dm_blocked {
+                    channel_gate.invalidate();
+                    if let Ok(dms) = api.direct_messages().await {
+                        publish(updates, wake, Update::DirectMessages(dms));
+                    }
+                }
                 continue;
             }
         }
@@ -1878,6 +1906,64 @@ async fn worker(
                             }
                         }
                     }
+                    Command::OpenDirectMessage { user_id } => {
+                        match api.open_direct_message(&user_id).await {
+                            Ok(dm) => {
+                                outgoing_channels.invalidate();
+                                publish(
+                                    &updates,
+                                    &wake,
+                                    Update::DirectMessageOpened(Box::new(dm)),
+                                );
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
+                    Command::HideDirectMessage { dm_id } => {
+                        match api.hide_direct_message(&dm_id).await {
+                            Ok(()) => {
+                                outgoing_channels.invalidate();
+                                match api.direct_messages().await {
+                                    Ok(dms) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::DirectMessages(dms),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
+                    Command::SetUserBlocked { user_id, blocked } => {
+                        let result = if blocked {
+                            api.block_user(&user_id).await
+                        } else {
+                            api.unblock_user(&user_id).await
+                        };
+                        match result {
+                            Ok(()) => {
+                                outgoing_channels.invalidate();
+                                match api.blocked_users().await {
+                                    Ok(users) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::BlockedUsers(users),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                                match api.direct_messages().await {
+                                    Ok(dms) => publish(
+                                        &updates,
+                                        &wake,
+                                        Update::DirectMessages(dms),
+                                    ),
+                                    Err(error) => report(&storage_key, &updates, &wake, error),
+                                }
+                            }
+                            Err(error) => report(&storage_key, &updates, &wake, error),
+                        }
+                    }
                     Command::Refresh => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         let result = reconcile_scheduler.submit(
@@ -2479,6 +2565,22 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
             updates.push(update_for_error(error));
         }
     }
+    match with_retry(|| api.direct_messages()).await {
+        Ok(dms) => updates.push(Update::DirectMessages(dms)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
+    }
+    match with_retry(|| api.blocked_users()).await {
+        Ok(users) => updates.push(Update::BlockedUsers(users)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            complete = false;
+            updates.push(update_for_error(error));
+        }
+    }
     match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
@@ -2788,6 +2890,12 @@ async fn handle(
                 Update::AuthFailed(error.to_string()),
             ),
             }
+        }
+        Command::OpenDirectMessage { .. }
+        | Command::HideDirectMessage { .. }
+        | Command::SetUserBlocked { .. } => {
+            // Consumidos no laço do worker, onde também invalidam a validação
+            // da fila durável.
         }
         Command::CreateServer { name } => match api.create_server(&name).await {
             Ok(_) => {
@@ -3160,7 +3268,15 @@ async fn handle(
                 .await
             {
                 Ok(message) => publish(updates, wake, Update::Sent(Box::new(message))),
-                Err(error) => report(storage_key, updates, wake, error),
+                Err(error) => {
+                    let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
+                    report(storage_key, updates, wake, error);
+                    if dm_blocked
+                        && let Ok(dms) = api.direct_messages().await
+                    {
+                        publish(updates, wake, Update::DirectMessages(dms));
+                    }
+                }
             }
         }
         Command::EditMessage {
@@ -3374,6 +3490,24 @@ async fn bootstrap(
     }
     match with_retry(|| api.channels()).await {
         Ok(channels) => publish(updates, wake, Update::Channels(channels)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
+    }
+    match with_retry(|| api.direct_messages()).await {
+        Ok(dms) => publish(updates, wake, Update::DirectMessages(dms)),
+        Err(ApiError::NotFound) => {}
+        Err(error) => {
+            unauthorized |= matches!(error, ApiError::Unauthorized);
+            complete = false;
+            report(storage_key, updates, wake, error);
+        }
+    }
+    match with_retry(|| api.blocked_users()).await {
+        Ok(users) => publish(updates, wake, Update::BlockedUsers(users)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);

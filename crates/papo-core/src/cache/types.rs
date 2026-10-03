@@ -253,6 +253,7 @@ impl From<&Channel> for CachedChannel {
                 ChannelKind::Text => "text",
                 ChannelKind::Voice => "voice",
                 ChannelKind::Category => "category",
+                ChannelKind::Direct => "dm",
             }
             .to_owned(),
             topic: channel.topic.clone(),

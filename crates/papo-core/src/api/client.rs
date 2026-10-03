@@ -43,6 +43,9 @@ fn request_id() -> String {
 /// diferentes: sessão expirada ou servidor fechado esperando a senha.
 fn problem_error(status: StatusCode, body: &str) -> ApiError {
     let problem: Problem = serde_json::from_str(body).unwrap_or_default();
+    if problem.kind.ends_with("dm-blocked") {
+        return ApiError::DirectMessageBlocked(problem.message());
+    }
     match status {
         StatusCode::UNAUTHORIZED => {
             if problem.kind.ends_with("server-access-required") {
@@ -85,6 +88,8 @@ pub enum ApiError {
     ServerLocked,
     #[error("recurso não encontrado")]
     NotFound,
+    #[error("{0}")]
+    DirectMessageBlocked(String),
     #[error("falha de rede: {0}")]
     Network(String),
     #[error("resposta inesperada: {0}")]
@@ -438,6 +443,54 @@ impl Api {
     pub async fn channels(&self) -> ApiResult<Vec<Channel>> {
         let list: ChannelList = self.get("/channels").await?;
         Ok(list.channels)
+    }
+
+    /// Conversas diretas visíveis na rail desta conta.
+    pub async fn direct_messages(&self) -> ApiResult<Vec<DirectConversation>> {
+        let list: DirectConversationList = self.get("/dms").await?;
+        Ok(list.dms)
+    }
+
+    /// Abre uma conversa 1:1 existente ou cria a conversa canônica do par.
+    pub async fn open_direct_message(&self, user_id: &str) -> ApiResult<DirectConversation> {
+        self.post(
+            "/dms",
+            &OpenDirectMessageRequest {
+                user_id: user_id.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// Oculta a conversa da rail deste usuário sem apagar o histórico.
+    pub async fn hide_direct_message(&self, dm_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/dms/{dm_id}"), None).await
+    }
+
+    pub async fn blocked_users(&self) -> ApiResult<Vec<UserSummary>> {
+        let list: UserBlockList = self.get("/users/blocks").await?;
+        Ok(list.users)
+    }
+
+    pub async fn block_user(&self, user_id: &str) -> ApiResult<()> {
+        let response = self
+            .send::<()>(
+                Method::POST,
+                &format!("/users/{user_id}/block"),
+                None,
+            )
+            .await?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = response.text().await.unwrap_or_default();
+        Err(problem_error(status, &body))
+    }
+
+    pub async fn unblock_user(&self, user_id: &str) -> ApiResult<()> {
+        self.delete::<()>(&format!("/users/{user_id}/block"), None)
+            .await
     }
 
     /// Cria um canal. Exige a permissão `manage_channels`: sem ela o backend
@@ -1191,6 +1244,16 @@ mod tests {
             StatusCode::BAD_REQUEST,
             r#"{"status":400,"detail":"nome inválido"}"#,
         );
+        assert!(!error.is_transient());
+    }
+
+    #[test]
+    fn dm_blocked_is_typed() {
+        let error = problem_error(
+            StatusCode::FORBIDDEN,
+            r#"{"type":"https://papo/errors/dm-blocked","status":403,"detail":"mensagem direta indisponível"}"#,
+        );
+        assert!(matches!(error, ApiError::DirectMessageBlocked(_)));
         assert!(!error.is_transient());
     }
 }
