@@ -309,7 +309,7 @@ pub enum Command {
         user_id: String,
         role_id: String,
     },
-    UpdateServer(Box<crate::api::models::UpdateServerRequest>),
+    PatchServer(Box<crate::api::models::PatchServerRequest>),
     UpdateProfile(Box<crate::api::models::UpdateUserRequest>),
     UpdateUserSettings(Box<UserConfig>),
     SetStatus {
@@ -2967,7 +2967,7 @@ async fn handle(
         // Mexer em cargo muda quem pode o quê, e isso aparece na lista de
         // pessoas — por isso as duas listas são relidas juntas.
         Command::LoadRoles => relist_roles(api, storage_key, updates, wake).await,
-        Command::UpdateServer(request) => match api.update_server(&request).await {
+        Command::PatchServer(request) => match api.patch_server(&request).await {
             Ok(server) => publish(updates, wake, Update::Server(Some(Box::new(server)))),
             Err(error) => report(storage_key, updates, wake, error),
         },
