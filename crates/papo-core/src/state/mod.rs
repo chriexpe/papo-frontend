@@ -1962,13 +1962,23 @@ impl Store {
         loop {
             let next = match (state.read_at, state.read_message_id.as_deref()) {
                 (Some(read_at), Some(read_id)) => {
-                    let Some(position) = ordered
+                    match ordered
                         .iter()
                         .position(|(at, id)| *at == read_at && id == read_id)
-                    else {
-                        break;
-                    };
-                    ordered.get(position + 1).cloned()
+                    {
+                        Some(position) => ordered.get(position + 1).cloned(),
+                        // A fronteira durável pode apontar para uma mensagem
+                        // fora da janela carregada (página antiga ainda não
+                        // hidratada). Antes isso quebrava o laço e a fronteira
+                        // nunca andava — o canal ficava eternamente "com
+                        // mensagem nova" mesmo com o fim à vista, e a ampulheta
+                        // apontava para o head em vez da lacuna. Avança pela
+                        // chave, como já se faz quando não há id.
+                        None => ordered
+                            .iter()
+                            .find(|(at, id)| (*at, id.as_str()) > (read_at, read_id))
+                            .cloned(),
+                    }
                 }
                 (Some(read_at), None) => ordered.iter().find(|(at, _)| *at > read_at).cloned(),
                 (None, _) => ordered.first().cloned(),
@@ -5308,6 +5318,31 @@ mod tests {
         let state = store.read_states.get("geral").unwrap();
         assert_eq!(state.read_message_id.as_deref(), Some("m1"));
         assert!(state.seen_out_of_order.contains("m6"));
+    }
+
+    /// A fronteira durável pode apontar para uma mensagem fora da janela
+    /// carregada (página antiga ainda não hidratada). O avanço não pode
+    /// travar por isso: com o fim da conversa visível, a fronteira anda.
+    #[test]
+    fn frontier_advances_when_the_anchor_is_not_loaded() {
+        let mut store = navigation_store(3);
+        let ghost = navigation_message("ghost", 0);
+        store.read_states.insert(
+            "geral".to_owned(),
+            ChannelReadState {
+                read_at: Some(ghost.at.with_timezone(&Utc)),
+                read_message_id: Some("ghost".to_owned()),
+                ..ChannelReadState::default()
+            },
+        );
+
+        store.observe_visible_messages(
+            "geral",
+            &["m1".to_owned(), "m2".to_owned(), "m3".to_owned()],
+        );
+
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(state.read_message_id.as_deref(), Some("m3"));
     }
 
     #[test]
