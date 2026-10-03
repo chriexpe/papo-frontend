@@ -1917,6 +1917,35 @@ impl Store {
             self.read_marks.insert(channel_id.to_owned(), read_at);
         }
 
+        // Enquanto há um salto para o head congelado, a ampulheta é também
+        // o ponto de retomada da leitura. Ela começa no primeiro item pulado,
+        // mas acompanha a fronteira conforme o usuário volta e lê o bloco.
+        // Ver o head fora de ordem não move isso: a fronteira continua antes
+        // do jump_back até a lacuna ser consumida de verdade.
+        if let (Some(forward), Some(read_id)) =
+            (state.jump_forward.clone(), state.read_message_id.clone())
+        {
+            let key_for = |id: &str| {
+                ordered
+                    .iter()
+                    .find(|(_, candidate)| candidate == id)
+                    .cloned()
+            };
+            if let (Some(read_key), Some(forward_key)) =
+                (key_for(&read_id), key_for(&forward))
+                && read_key < forward_key
+            {
+                let can_advance = state
+                    .jump_back
+                    .as_deref()
+                    .and_then(key_for)
+                    .is_none_or(|back_key| read_key >= back_key);
+                if can_advance {
+                    state.jump_back = Some(read_id);
+                }
+            }
+        }
+
         let reached_forward = state.jump_forward.as_ref().is_some_and(|target| {
             ordered
                 .iter()
@@ -2129,30 +2158,11 @@ impl Store {
     /// Abertura opcional no head usa exatamente a mesma máquina de checkpoints
     /// do botão para baixo: a lacuna pulada continua acessível pela ampulheta.
     pub fn prepare_open_at_newest(&mut self, channel_id: &str) -> Option<String> {
-        let mut changed = self.retire_reached_checkpoint(channel_id);
-
-        // Estado persistido de versões anteriores pode ter ficado com uma
-        // ampulheta mesmo depois de a fronteira alcançar o head. Se a âncora
-        // está resolvida e não existe nenhuma mensagem realmente não lida,
-        // não há bloco para preservar nem destino para realçar.
-        if !self.read_anchor_needs_history(channel_id)
-            && self.first_unread_loaded(channel_id).is_none()
-        {
-            if let Some(state) = self.read_states.get_mut(channel_id)
-                && (state.jump_back.is_some() || state.jump_forward.is_some())
-            {
-                state.jump_back = None;
-                state.jump_forward = None;
-                changed = true;
-            }
-            if changed {
-                self.refresh_channel_read_badge(channel_id);
-                self.persist_read_state(channel_id);
-            }
-            return None;
-        }
-
-        if changed {
+        // Só aposenta um checkpoint quando a fronteira realmente o alcançou.
+        // "Não chegou mensagem nova" não significa "terminei o bloco": se o
+        // usuário voltou pela ampulheta e saiu no meio da leitura, o par
+        // jump_back/jump_forward continua sendo estado de navegação válido.
+        if self.retire_reached_checkpoint(channel_id) {
             self.refresh_channel_read_badge(channel_id);
             self.persist_read_state(channel_id);
         }
@@ -5276,6 +5286,30 @@ mod tests {
             vec!["m5".to_owned()]
         );
         assert_eq!(store.next_mention_target("geral").as_deref(), Some("m5"));
+    }
+
+    #[test]
+    fn hourglass_resume_follows_viewport_progress_without_new_arrivals() {
+        let mut store = navigation_store(6);
+        assert_eq!(
+            store.prepare_newer_jump("geral", Some("m1")).as_deref(),
+            Some("m6")
+        );
+        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m2"));
+
+        // O usuário volta pela ampulheta e lê devagar até m4. Nenhuma mensagem
+        // nova chegou; apenas a viewport avançou dentro do bloco existente.
+        store.observe_visible_messages(
+            "geral",
+            &["m2".to_owned(), "m3".to_owned(), "m4".to_owned()],
+        );
+        assert_eq!(store.read_anchor_id("geral").as_deref(), Some("m4"));
+        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m4"));
+        assert_eq!(store.jump_forward_target("geral").as_deref(), Some("m6"));
+
+        // Reabrir com "abrir na mais nova" preserva o ponto de retomada.
+        assert_eq!(store.prepare_open_at_newest("geral").as_deref(), Some("m6"));
+        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m4"));
     }
 
     #[test]
