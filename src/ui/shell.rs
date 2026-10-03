@@ -9017,7 +9017,46 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
     };
     let row = 30.0;
     let height = suggest.matches.len() as f32 * row + space::SM * 2.0;
-    let width = 260.0_f32.min(line.width());
+
+    // Size the popup from the actual visible labels. The old fixed 260px
+    // width left a large dead area even when every suggestion was short.
+    // Account for the popup/slot padding, 20px art/avatar and the gap before
+    // text, then add only the widest rendered label.
+    let text_width = suggest
+        .matches
+        .iter()
+        .filter_map(|id| match suggest.kind {
+            SuggestKind::Sticker => store.emojis.iter().find(|emoji| &emoji.id == id).map(|emoji| {
+                ui.painter()
+                    .layout_no_wrap(
+                        format!(":{}:", emoji.name),
+                        text::body(),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x
+            }),
+            SuggestKind::Mention => store.member(id).map(|member| {
+                let name = ui
+                    .painter()
+                    .layout_no_wrap(member.name.clone(), text::body(), Color32::WHITE)
+                    .size()
+                    .x;
+                let username = ui
+                    .painter()
+                    .layout_no_wrap(
+                        format!("@{}", member.username),
+                        text::footnote(),
+                        Color32::WHITE,
+                    )
+                    .size()
+                    .x;
+                name.max(username)
+            }),
+        })
+        .fold(0.0_f32, f32::max);
+    let chrome = space::SM * 4.0 + 20.0 + space::MD;
+    let width = (chrome + text_width).ceil().min(line.width());
     let rect = Rect::from_min_size(
         egui::pos2(line.min.x, line.min.y - space::SM - height),
         Vec2::new(width, height),
