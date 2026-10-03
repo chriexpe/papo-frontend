@@ -499,6 +499,8 @@ pub enum Update {
         expires_at: chrono::DateTime<chrono::Utc>,
     },
     Users(Vec<UserSummary>),
+    /// Atualização leve de membros já conhecidos, sem baixar mídia de perfil.
+    UserSummaries(Vec<UserSummary>),
     Messages {
         ticket: RefreshTicket,
         messages: Vec<Message>,
@@ -2014,10 +2016,9 @@ async fn worker(
                 }
 
                 let profile_user_id = match &event {
-                    Event::UserJoined { user_id }
-                    | Event::AvatarUpdated { user_id }
-                    | Event::RoleAdded { user_id, .. }
-                    | Event::RoleRemoved { user_id, .. } => Some(user_id.clone()),
+                    Event::UserJoined { user_id } | Event::AvatarUpdated { user_id } => {
+                        Some(user_id.clone())
+                    }
                     _ => None,
                 };
                 if let Some(user_id) = profile_user_id {
@@ -2027,18 +2028,33 @@ async fn worker(
                     let scope = storage_key.clone();
                     tokio::spawn(async move {
                         match api.profile(&user_id).await {
-                            Ok(profile) => {
-                                publish(
-                                    &updates,
-                                    &wake,
-                                    Update::Profiles(vec![profile]),
-                                );
-                            }
+                            Ok(profile) => publish(&updates, &wake, Update::Profiles(vec![profile])),
                             Err(error) => {
                                 log::warn!(
                                     "runtime {scope}: perfil live {user_id} não convergiu: {error}"
                                 );
                             }
+                        }
+                    });
+                }
+
+                let summary_user_id = match &event {
+                    Event::RoleAdded { user_id, .. } | Event::RoleRemoved { user_id, .. } => {
+                        Some(user_id.clone())
+                    }
+                    _ => None,
+                };
+                if let Some(user_id) = summary_user_id {
+                    let api = api.clone();
+                    let updates = updates.clone();
+                    let wake = wake.clone();
+                    let scope = storage_key.clone();
+                    tokio::spawn(async move {
+                        match api.user_summaries(vec![user_id.clone()]).await {
+                            Ok(users) => publish(&updates, &wake, Update::UserSummaries(users)),
+                            Err(error) => log::warn!(
+                                "runtime {scope}: resumo live {user_id} não convergiu: {error}"
+                            ),
                         }
                     });
                 }
