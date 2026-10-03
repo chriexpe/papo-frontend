@@ -313,8 +313,8 @@ impl Store {
     }
 
     pub fn item(&mut self, id: &str, ctx: &egui::Context) -> Option<GifItem> {
-        if let Some(item) = self.items.get(id) {
-            return Some(item.clone());
+        if let Some(item) = self.peek_item(id) {
+            return Some(item);
         }
         if valid_id(id)
             && !self.pending_items.contains(id)
@@ -324,6 +324,13 @@ impl Store {
             ctx.request_repaint_after(Duration::from_millis(20));
         }
         None
+    }
+
+    /// Return an already-resolved item without scheduling a GIPHY lookup.
+    /// Timeline rows outside the loading window use this so egui layout does
+    /// not turn the whole loaded history into provider traffic.
+    pub fn peek_item(&self, id: &str) -> Option<GifItem> {
+        self.items.get(id).cloned()
     }
 
     /// Drain API completions and coalesce ID lookups requested by message

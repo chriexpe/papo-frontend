@@ -4928,7 +4928,7 @@ fn result_row(
                     }
                 });
                 if !shown_body.trim().is_empty()
-                    && direct_media_message_url(state, body).is_none()
+                    && direct_media_message_url(state, body, true).is_none()
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
@@ -5085,6 +5085,12 @@ fn go_to(
 // Lista de mensagens
 // ---------------------------------------------------------------------------
 
+/// Network loading window around the actual readable chat viewport. We bias
+/// strongly upward because history is consumed by scrolling toward older
+/// messages; below the viewport only a small runway is useful.
+const CHAT_LOAD_ABOVE: f32 = 1200.0;
+const CHAT_LOAD_BELOW: f32 = 320.0;
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5162,6 +5168,14 @@ fn message_list(
 
         let author = store.member(&message.author_id);
         let mut open_author: Option<Rect> = None;
+        // egui still lays out every loaded message row. Network work must not
+        // follow that layout blindly: only the viewport plus a bounded runway
+        // may start new preview/GIPHY/embed fetches.
+        let row_top = ui.cursor().top();
+        let network_eligible = readable.width() > 0.0
+            && readable.height() > 0.0
+            && row_top >= readable.min.y - CHAT_LOAD_ABOVE
+            && row_top <= readable.max.y + CHAT_LOAD_BELOW;
         // O escopo da linha é o alvo de toque do layout compacto — duplo
         // toque abre as reações, toque longo abre o menu.
         //
@@ -5260,7 +5274,16 @@ fn message_list(
                     if let Some(reply_to) = &message.reply_to {
                         reply_quote(ui, store, state, t, s, reply_to, text_width);
                     }
-                    message_body(ui, store, state, t, s, message, text_width);
+                    message_body(
+                        ui,
+                        store,
+                        state,
+                        t,
+                        s,
+                        message,
+                        text_width,
+                        network_eligible,
+                    );
                 });
             });
         });
@@ -5494,6 +5517,7 @@ fn message_body(
     s: &Strings,
     message: &Message,
     width: f32,
+    allow_network: bool,
 ) {
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
     if let Some((id, buffer)) = &mut state.editing
@@ -5638,8 +5662,8 @@ fn message_body(
 
     if !message.content.is_empty() {
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
-            gif::message(ui, state, t, s, &slug, width);
-        } else if direct_media_message_url(state, &message.content).is_none() {
+            gif::message(ui, state, t, s, &slug, width, allow_network);
+        } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
             let shown_content = store.display_mentions(&message.content);
             let color = if message.pending {
                 t.label_secondary
@@ -5727,7 +5751,15 @@ fn message_body(
     }
 
     if !message.previews.is_empty() {
-        link_previews(ui, state, t, &message.id, &message.previews, width);
+        link_previews(
+            ui,
+            state,
+            t,
+            &message.id,
+            &message.previews,
+            width,
+            allow_network,
+        );
     }
     rich_links_from_message(
         ui,
@@ -5737,6 +5769,7 @@ fn message_body(
         &message.content,
         &message.previews,
         width,
+        allow_network,
     );
 
     if !message.reactions.is_empty() {
@@ -5822,13 +5855,22 @@ fn obvious_direct_media_url(url: &str) -> bool {
 /// Retorna o link quando a mensagem inteira é uma imagem/vídeo direto.
 /// Extensões óbvias escondem o texto já no primeiro quadro; URLs opacas de
 /// CDN entram assim que o coordenador confirma que o recurso é mídia visual.
-fn direct_media_message_url(state: &UiState, content: &str) -> Option<String> {
+fn direct_media_message_url(
+    state: &UiState,
+    content: &str,
+    allow_network: bool,
+) -> Option<String> {
     let url = single_message_url(content)?;
     if obvious_direct_media_url(&url) {
         return Some(url);
     }
 
-    let preview = state.previews.as_ref()?.get_or_request(&url)?;
+    let coordinator = state.previews.as_ref()?;
+    let preview = if allow_network {
+        coordinator.get_or_request(&url)
+    } else {
+        coordinator.peek(&url)
+    }?;
     let papo_core::preview::PreviewState::Ready(preview) = preview else {
         return None;
     };
@@ -5967,6 +6009,7 @@ fn link_previews(
     message_id: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     for preview in previews {
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
@@ -5982,7 +6025,10 @@ fn link_previews(
             url,
             Some(preview),
             width,
-            true,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
         );
     }
 }
@@ -5995,6 +6041,7 @@ fn rich_links_from_message(
     content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     use std::hash::{Hash, Hasher};
 
@@ -6014,7 +6061,20 @@ fn rich_links_from_message(
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
+        );
     }
 }
 
@@ -6079,8 +6139,27 @@ fn panel_rich_links(
         // painted in the timeline behind it. Scope the widget occurrence so
         // egui/WebEmbed IDs never collide across those two surfaces.
         let embed_id = format!("embed:panel:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            PreviewPolicy {
+                webembed: false,
+                network: true,
+            },
+        );
     }
+}
+
+#[derive(Clone, Copy)]
+struct PreviewPolicy {
+    webembed: bool,
+    network: bool,
 }
 
 fn preview_card(
@@ -6092,30 +6171,45 @@ fn preview_card(
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
-    allow_webembed: bool,
+    policy: PreviewPolicy,
 ) {
     use papo_core::preview::{PreviewKind, PreviewState};
 
     const MAX_W: f32 = 420.0;
     const IMAGE_MAX_H: f32 = 300.0;
 
-    let resolved = state
-        .previews
-        .as_ref()
-        .and_then(|coordinator| coordinator.get_or_request(url));
+    let resolved = state.previews.as_ref().and_then(|coordinator| {
+        if policy.network {
+            coordinator.get_or_request(url)
+        } else {
+            coordinator.peek(url)
+        }
+    });
     let ready = match resolved.as_ref() {
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
     let backend_image = backend
-        .and_then(|preview| state.media.preview(preview))
+        .and_then(|preview| {
+            if policy.network {
+                state.media.preview(preview)
+            } else {
+                state.media.loaded_preview(&preview.id)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
 
     let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
     let remote_image = image_url
         .as_deref()
-        .and_then(|remote| state.media.remote_image(id, remote))
+        .and_then(|remote| {
+            if policy.network {
+                state.media.remote_image(id, remote)
+            } else {
+                state.media.loaded_remote_image(remote)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
     let image = remote_image.as_ref().or(backend_image.as_ref());
@@ -6202,7 +6296,16 @@ fn preview_card(
             // O título só aparece quando diz mais que a linha do autor
             // (`@x • Instagram reel`, `Nome (@x) on X` não dizem).
             let headline = title.filter(|title| !title.contains('@'));
-            post_header(ui, state, t, id, &post, headline, description);
+            post_header(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                headline,
+                description,
+                policy.network,
+            );
             ui.add_space(space::SM);
         }
 
@@ -6262,7 +6365,7 @@ fn preview_card(
             );
 
             if let Some(embed) = embed_url.as_deref() {
-                if allow_webembed && state.webembed.is_active(embed_id) {
+                if policy.webembed && state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
                     let clip = state
                         .webembed_chat_clip
@@ -6292,9 +6395,9 @@ fn preview_card(
                 }
 
                 if response.clicked()
-                    && (!allow_webembed || !state.webembed.is_active(embed_id))
+                    && (!policy.webembed || !state.webembed.is_active(embed_id))
                 {
-                    if allow_webembed
+                    if policy.webembed
                         && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                     {
                         state.media.pause_all();
@@ -6334,7 +6437,7 @@ fn preview_card(
                 Color32::from_black_alpha(225),
             );
 
-            if allow_webembed && state.webembed.is_active(embed_id) {
+            if policy.webembed && state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
                 let clip = state
                     .webembed_chat_clip
@@ -6360,9 +6463,9 @@ fn preview_card(
                 );
             }
             if response.clicked()
-                && (!allow_webembed || !state.webembed.is_active(embed_id))
+                && (!policy.webembed || !state.webembed.is_active(embed_id))
             {
-                if allow_webembed
+                if policy.webembed
                     && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                 {
                     state.media.pause_all();
@@ -6376,7 +6479,15 @@ fn preview_card(
         }
 
         if social {
-            post_footer(ui, state, t, id, &post, provider.as_deref());
+            post_footer(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                provider.as_deref(),
+                policy.network,
+            );
             return;
         }
 
@@ -6507,6 +6618,7 @@ fn post_header(
     post: &papo_core::preview::PostMeta,
     headline: Option<&str>,
     description: Option<&str>,
+    allow_network: bool,
 ) {
     const AVATAR: f32 = 24.0;
     let handle = post.author_handle.as_deref();
@@ -6518,7 +6630,13 @@ fn post_header(
     let avatar = post
         .author_avatar
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
 
@@ -6606,12 +6724,19 @@ fn post_footer(
     id: &str,
     post: &papo_core::preview::PostMeta,
     provider: Option<&str>,
+    allow_network: bool,
 ) {
     const ICON: f32 = 16.0;
     let icon_texture = post
         .site_icon
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
     let date = post.published_at.and_then(post_date);
@@ -7503,7 +7628,7 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content).or_else(|| {
+    let copy_link = direct_media_message_url(state, &message.content, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)

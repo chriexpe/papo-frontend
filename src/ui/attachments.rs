@@ -23,15 +23,16 @@ const FILE_H: f32 = 56.0;
 /// Folga de pré-busca em volta da área visível. Fora dela o cartão não pede
 /// nada: nem disco, nem rede. A margem cobre perto de uma tela, então rolagem
 /// rápida ainda encontra o conteúdo a caminho em vez de esperar.
-const VIEWPORT_MARGIN: f32 = 600.0;
+const VIEWPORT_MARGIN_ABOVE: f32 = 1200.0;
+const VIEWPORT_MARGIN_BELOW: f32 = 320.0;
 
 /// O próximo cartão está perto o bastante da área visível para valer um
-/// pedido? É o que deixa a lista de mensagens preguiçosa por viewport sem
-/// virtualizar cada linha.
+/// pedido? A janela é maior acima porque histórico é consumido rolando para
+/// mensagens antigas; abaixo basta um pequeno runway para o próximo scroll.
 fn near_viewport(ui: &egui::Ui) -> bool {
     let clip = ui.clip_rect();
     let top = ui.cursor().top();
-    top <= clip.max.y + VIEWPORT_MARGIN && top >= clip.min.y - VIEWPORT_MARGIN
+    top <= clip.max.y + VIEWPORT_MARGIN_BELOW && top >= clip.min.y - VIEWPORT_MARGIN_ABOVE
 }
 
 #[derive(Debug, Clone)]
