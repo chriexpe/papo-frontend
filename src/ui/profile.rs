@@ -514,7 +514,7 @@ fn body_contents(
         ui.painter()
             .rect_filled(grab, CornerRadius::same(3), Color32::from_white_alpha(130));
     }
-    banner_buttons(ui, state, s, member, banner, is_me, narrow, outcome);
+    banner_buttons(ui, store, state, s, member, banner, is_me, narrow, outcome);
 
     // --- Foto e recado -----------------------------------------------------
     let avatar_size = if narrow { 64.0 } else { 80.0 };
@@ -731,6 +731,7 @@ fn body_contents(
 #[allow(clippy::too_many_arguments)]
 fn banner_buttons(
     ui: &mut egui::Ui,
+    store: &Store,
     state: &mut UiState,
     s: &Strings,
     member: &Member,
@@ -792,6 +793,17 @@ fn banner_buttons(
             ui.close();
         }
         ui.separator();
+        let blocked = store.is_user_blocked(&member.id);
+        let block_label = if blocked { s.unblock_user } else { s.block_user };
+        if ui.button(block_label).clicked() {
+            state.actions.push(ChatAction::SetUserBlocked {
+                user_id: member.id.clone(),
+                blocked: !blocked,
+            });
+            outcome.close = true;
+            ui.close();
+        }
+        ui.separator();
         if ui.button(s.ban_user).clicked() {
             state.actions.push(ChatAction::BanUser {
                 user_id: member.id.clone(),
@@ -811,7 +823,16 @@ fn banner_buttons(
             ui.close();
         }
     });
-    if slot(ui, icon::CHAT_CIRCLE, s.profile_dm_soon, true, "conversa").0 {
+    let blocked = store.is_user_blocked(&member.id);
+    if slot(
+        ui,
+        icon::CHAT_CIRCLE,
+        if blocked { s.blocked_user } else { s.profile_dm_soon },
+        !blocked,
+        "conversa",
+    )
+    .0
+    {
         state.actions.push(ChatAction::OpenDirectMessage(member.id.clone()));
         outcome.close = true;
     }
@@ -832,17 +853,22 @@ fn footer_contents(
 ) {
     let row_h: f32 = if compact { 44.0 } else { 34.0 };
     if member.id != store.me {
-        let label = format!("{} @{}", s.profile_message_to, member.username);
+        let blocked = store.is_user_blocked(&member.id);
+        let label = if blocked {
+            s.blocked_user.to_owned()
+        } else {
+            format!("{} @{}", s.profile_message_to, member.username)
+        };
         if action_row(
             ui,
             t,
             Some(icon::CHAT_CIRCLE),
             None,
             &label,
-            true,
+            !blocked,
             row_h.max(36.0),
         )
-        .on_hover_text(s.profile_dm_soon)
+        .on_hover_text(if blocked { s.blocked_user } else { s.profile_dm_soon })
         .clicked()
         {
             state.actions.push(ChatAction::OpenDirectMessage(member.id.clone()));
