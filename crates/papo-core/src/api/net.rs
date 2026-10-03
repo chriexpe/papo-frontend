@@ -2829,8 +2829,7 @@ async fn handle(
         | Command::LoadMessages { .. }
         | Command::ProbeConnection
         | Command::NetworkHint(_)
-        | Command::SetActivity(_)
-        | Command::PresenceActivity => {}
+        | Command::SetActivity(_) => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
         Command::CreateChannel { name, kind, topic } => {
