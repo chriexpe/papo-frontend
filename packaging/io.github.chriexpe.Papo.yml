@@ -72,7 +72,7 @@ build-options:
     CARGO_HOME: /run/build/papo/cargo
     # Release CI substitutes this placeholder from the repository secret.
     # Local Flatpak builds intentionally get a picker-disabled binary.
-    PAPO_GIPHY_APP_KEY: '@PAPO_GIPHY_APP_KEY@'
+    PAPO_GIPHY_API_KEY: '@PAPO_GIPHY_API_KEY@'
 
 modules:
   # Rich Presence fallback, built from the revision in
