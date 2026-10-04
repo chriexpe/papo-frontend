@@ -7964,6 +7964,7 @@ fn webembed_chrome_occlusions(
     rects.push(actions_rect);
 
     let side = PILL_HEIGHT;
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
     #[cfg(target_os = "android")]
     let with_record = state.show_record;
@@ -7994,6 +7995,17 @@ fn webembed_chrome_occlusions(
         ));
     }
 
+    #[cfg(target_os = "android")]
+    if state.android_gallery_menu_open {
+        let item_count = 1 + usize::from(!state.show_record);
+        let menu_h =
+            item_count as f32 * side + (item_count.saturating_sub(1)) as f32 * space::SM;
+        rects.push(Rect::from_min_max(
+            egui::pos2(attach.min.x, attach.min.y - space::SM - menu_h),
+            egui::pos2(attach.max.x, attach.min.y - space::SM),
+        ));
+    }
+
     let names = store.typing_names();
     if !names.is_empty() {
         let verb = match store.typing_phrase() {
@@ -8017,6 +8029,7 @@ fn webembed_chrome_occlusions(
 }
 
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
     #[cfg(target_os = "android")]
     let with_record = state.show_record;
