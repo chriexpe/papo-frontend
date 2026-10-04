@@ -282,6 +282,10 @@ impl Dialogs {
     /// O mesmo seletor, filtrado nos formatos que animam. Uma busca de GIF
     /// de verdade (Tenor, Giphy) precisa de chave e de um proxy no backend;
     /// até lá, o arquivo vem do disco.
+    pub fn capture_media(&mut self, repaint: egui::Context) {
+        self.pick_gallery(repaint);
+    }
+
     pub fn pick_animations(&mut self, repaint: egui::Context) {
         self.spawn(repaint, |dialog| async move {
             match dialog
@@ -556,6 +560,17 @@ impl Dialogs {
         self.pending.push(rx);
         if !super::jvm::call_activity("pickGallery", "()V", None) {
             log::warn!("o seletor da galeria não abriu");
+        }
+    }
+
+    pub fn capture_media(&mut self, _repaint: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut slot) = ANSWER.lock() {
+            *slot = Some(tx);
+        }
+        self.pending.push(rx);
+        if !super::jvm::call_activity("captureMedia", "()V", None) {
+            log::warn!("a câmera não abriu");
         }
     }
 
