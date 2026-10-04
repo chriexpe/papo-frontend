@@ -50,7 +50,7 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         PICKER_H.min((safe.height() - space::XL).max(300.0)),
     );
     let rect = if state.compact {
-        super::shell::composer_picker_rect(ui, state, size)
+        super::shell::composer_picker_rect(state, size)
             .unwrap_or_else(|| emoji::popup_area(ui, anchor, size))
     } else {
         emoji::popup_area(ui, anchor, size)
