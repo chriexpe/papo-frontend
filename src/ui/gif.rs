@@ -49,7 +49,12 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         PICKER_W.min((safe.width() - space::XL).max(260.0)),
         PICKER_H.min((safe.height() - space::XL).max(300.0)),
     );
-    let rect = emoji::popup_area(ui, anchor, size);
+    let rect = if state.compact {
+        super::shell::composer_picker_rect(state, size)
+            .unwrap_or_else(|| emoji::popup_area(ui, anchor, size))
+    } else {
+        emoji::popup_area(ui, anchor, size)
+    };
     let backdrop = ui.interact(
         safe,
         Id::new("giphy-picker-backdrop"),
@@ -64,10 +69,10 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         egui::StrokeKind::Inside,
     );
 
-    // The picker is anchored against the right side of the composer. Keep
-    // the content's right edge on the same line as the sheet itself instead
-    // of leaving an extra gutter there; the left/top/bottom retain their
-    // normal inset.
+    // Desktop remains anchored to the GIF button. Compact/mobile uses the
+    // shared composer-safe box from shell.rs, so GIF/emoji/sticker overlays
+    // line up with the same pill margins instead of carrying feature-specific
+    // screen offsets.
     let inner = Rect::from_min_max(
         egui::pos2(rect.min.x + space::SM, rect.min.y + space::SM),
         egui::pos2(rect.max.x, rect.max.y - space::SM),

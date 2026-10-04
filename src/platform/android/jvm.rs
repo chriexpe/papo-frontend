@@ -88,6 +88,45 @@ pub fn call_activity_string(method: &str) -> Option<String> {
 }
 
 
+/// Chama um método da Activity que recebe texto + inteiro e devolve `byte[]`.
+///
+/// Usado por renderizações pequenas que a própria plataforma sabe fazer
+/// melhor que Rust (por exemplo emoji colorido com o stack tipográfico do
+/// Android). O array é copiado antes de soltar o `JNIEnv`.
+pub fn call_activity_bytes_with_text_int(
+    method: &str,
+    text: &str,
+    value: i32,
+) -> Option<Vec<u8>> {
+    let app = APP.get()?;
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
+    let mut env = vm.attach_current_thread().ok()?;
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let text = env.new_string(text).ok()?;
+    let args = [
+        jni::objects::JValue::Object(&text),
+        jni::objects::JValue::Int(value),
+    ];
+    let returned = match env.call_method(
+        &activity,
+        method,
+        "(Ljava/lang/String;I)[B",
+        &args,
+    ) {
+        Ok(result) => result.l().ok()?,
+        Err(error) => {
+            let _ = env.exception_clear();
+            log::error!("{method} falhou: {error}");
+            return None;
+        }
+    };
+    if returned.is_null() {
+        return None;
+    }
+    let bytes = jni::objects::JByteArray::from(returned);
+    env.convert_byte_array(&bytes).ok()
+}
+
 /// `None` quer dizer que a chamada não aconteceu. `read` tira do retorno o
 /// tipo que o método promete; ele roda enquanto o `JNIEnv` ainda existe.
 fn call<T>(

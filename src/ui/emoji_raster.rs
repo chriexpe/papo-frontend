@@ -1,30 +1,31 @@
 //! Emoji em imagem, não em glifo.
 //!
 //! O egui desenha fontes em tons de cinza: não conhece as camadas de cor do
-//! COLR nem os bitmaps do CBDT, então um emoji sai como contorno. Aqui a
-//! fonte de emoji colorida do sistema é rasterizada pelo swash e o resultado
-//! vira textura — o mesmo caminho por onde passam os emojis custom do
-//! servidor, que também são imagens (e podem ser animados).
+//! COLR nem os bitmaps do CBDT, então um emoji sai como contorno.
+//!
+//! No Android a plataforma é a autoridade: Canvas/Minikin rasteriza a
+//! sequência usando o fallback emoji real do aparelho/OEM e devolve os pixels
+//! prontos. Nos desktops continuamos rasterizando a fonte emoji do sistema
+//! com swash. Em ambos os casos o resultado vira uma textura egui em cache.
 
 use std::collections::HashMap;
 
 use egui::{ColorImage, TextureHandle, TextureOptions};
+#[cfg(not(target_os = "android"))]
 use swash::scale::{Render, ScaleContext, Source, StrikeWith};
+#[cfg(not(target_os = "android"))]
 use swash::shape::ShapeContext;
+#[cfg(not(target_os = "android"))]
 use swash::FontRef;
 
 /// Tamanho de rasterização: os emojis aparecem entre 16 e 30 pixels, então
 /// uma matriz de 72 cobre todos com folga e só precisa ser feita uma vez.
 const RASTER_PX: f32 = 72.0;
 
-/// Caminhos comuns da fonte colorida; evita varrer o sistema inteiro.
-const CANDIDATES: [&str; 9] = [
-    // Android does not expose its system fonts through the desktop fontconfig
-    // paths below. Prefer the platform locations so the picker gets the same
-    // color Noto emoji that messages use instead of egui's monochrome fallback.
-    "/system/fonts/NotoColorEmoji.ttf",
-    "/product/fonts/NotoColorEmoji.ttf",
-    "/system/fonts/NotoColorEmojiLegacy.ttf",
+/// Caminhos comuns da fonte colorida nos desktops; evita varrer o sistema
+/// inteiro. Android não entra aqui: lá a própria plataforma desenha o emoji.
+#[cfg(not(target_os = "android"))]
+const CANDIDATES: [&str; 6] = [
     "/usr/share/fonts/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
@@ -34,10 +35,14 @@ const CANDIDATES: [&str; 9] = [
 ];
 
 pub struct EmojiRaster {
-    /// Bytes da fonte e o índice da face dentro dela.
+    /// Bytes da fonte e o índice da face dentro dela (desktop).
+    #[cfg(not(target_os = "android"))]
     font: Option<(Vec<u8>, u32)>,
+    #[cfg(not(target_os = "android"))]
     looked_up: bool,
+    #[cfg(not(target_os = "android"))]
     shape: ShapeContext,
+    #[cfg(not(target_os = "android"))]
     scale: ScaleContext,
     /// `None` guardado significa "essa fonte não tem esse emoji".
     cache: HashMap<String, Option<TextureHandle>>,
@@ -52,9 +57,13 @@ impl Default for EmojiRaster {
 impl EmojiRaster {
     pub fn new() -> Self {
         Self {
+            #[cfg(not(target_os = "android"))]
             font: None,
+            #[cfg(not(target_os = "android"))]
             looked_up: false,
+            #[cfg(not(target_os = "android"))]
             shape: ShapeContext::new(),
+            #[cfg(not(target_os = "android"))]
             scale: ScaleContext::new(),
             cache: HashMap::new(),
         }
@@ -71,6 +80,7 @@ impl EmojiRaster {
         self.cache.get(emoji).and_then(Option::as_ref)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn ensure_font(&mut self) {
         if self.looked_up {
             return;
@@ -107,6 +117,38 @@ impl EmojiRaster {
         }
     }
 
+    #[cfg(target_os = "android")]
+    fn raster(&mut self, emoji: &str) -> Option<ColorImage> {
+        // Não procure nem abra NotoColorEmoji.ttf aqui. O desenho pertence ao
+        // Android: Canvas/Minikin resolve a fonte/fallback emoji instalada no
+        // aparelho (Google, OEM ou outra substituição do sistema).
+        let png = crate::platform::jvm::call_activity_bytes_with_text_int(
+            "renderSystemEmoji",
+            emoji,
+            RASTER_PX as i32,
+        )?;
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .ok()?
+            .to_rgba8();
+        let size = [decoded.width() as usize, decoded.height() as usize];
+        if size[0] == 0 || size[1] == 0 {
+            return None;
+        }
+        let pixels = decoded
+            .pixels()
+            .map(|pixel| {
+                let [r, g, b, a] = pixel.0;
+                egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+            })
+            .collect();
+        Some(ColorImage {
+            size,
+            source_size: egui::Vec2::new(size[0] as f32, size[1] as f32),
+            pixels,
+        })
+    }
+
+    #[cfg(not(target_os = "android"))]
     fn raster(&mut self, emoji: &str) -> Option<ColorImage> {
         self.ensure_font();
         let (data, index) = self.font.as_ref()?;

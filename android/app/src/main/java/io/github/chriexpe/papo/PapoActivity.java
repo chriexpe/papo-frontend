@@ -18,8 +18,11 @@ import android.content.pm.InstallSourceInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
+import android.graphics.Paint;
 import android.graphics.drawable.Icon;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -69,6 +72,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -935,6 +939,50 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+
+    /**
+     * Rasteriza Unicode emoji pelo próprio stack tipográfico do Android.
+     *
+     * <p>O egui não entende os formatos de cor usados pelas fontes de emoji
+     * (CBDT/COLR), por isso desenhar o texto diretamente nele cai em glifo
+     * monocromático. Aqui deixamos Canvas/Minikin escolher o fallback emoji
+     * real do aparelho/OEM e devolvemos somente os pixels prontos ao Rust.
+     *
+     * <p>Não há View nem dependência da UI thread: Bitmap, Canvas e Paint são
+     * objetos locais e esta função é chamada apenas uma vez por emoji, pois o
+     * lado Rust mantém cache da textura resultante.
+     */
+    public byte[] renderSystemEmoji(String emoji, int requestedSizePx) {
+        if (emoji == null || emoji.isEmpty()) {
+            return null;
+        }
+
+        final int side = Math.max(32, Math.min(requestedSizePx, 256));
+        final Bitmap bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888);
+        final Canvas canvas = new Canvas(bitmap);
+        final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+        paint.setColor(Color.WHITE);
+        paint.setTextAlign(Paint.Align.CENTER);
+        paint.setTextSize(side * 0.82f);
+
+        // Algumas sequências (bandeiras, família, ZWJ) são mais largas que
+        // uma face simples. Reduzir só quando necessário evita recorte sem
+        // alterar o estilo que o sistema escolheu.
+        final float maxWidth = side * 0.92f;
+        final float measured = paint.measureText(emoji);
+        if (measured > maxWidth && measured > 0.0f) {
+            paint.setTextSize(paint.getTextSize() * maxWidth / measured);
+        }
+
+        final Paint.FontMetrics metrics = paint.getFontMetrics();
+        final float baseline = side * 0.5f - (metrics.ascent + metrics.descent) * 0.5f;
+        canvas.drawText(emoji, side * 0.5f, baseline, paint);
+
+        final ByteArrayOutputStream output = new ByteArrayOutputStream();
+        final boolean encoded = bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+        bitmap.recycle();
+        return encoded ? output.toByteArray() : null;
+    }
 
     private static final int NATIVE_FIELD_TEXT = 0;
     private static final int NATIVE_FIELD_PASSWORD = 1;
