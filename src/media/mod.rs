@@ -1553,6 +1553,18 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
+    /// Link-preview image already present in memory, without starting backend I/O.
+    pub fn loaded_preview(&self, id: &str) -> Option<&Texture> {
+        self.textures.get(&preview_key(id))
+    }
+
+    /// Remote preview image already present in memory, without starting public I/O.
+    pub fn loaded_remote_image(&self, url: &str) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let id = remote_resource_id(&canonical);
+        self.textures.get(&remote_image_key(&id))
+    }
+
     pub fn remote_image(&mut self, _id: &str, url: &str) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
         let id = remote_resource_id(&canonical);
@@ -1586,6 +1598,19 @@ impl MediaStore {
             EPHEMERAL_GIF_MAX_FRAMES,
             EPHEMERAL_GIF_MAX_BYTES,
         )
+    }
+
+    /// Inline provider GIF already decoded in memory, without scheduling work.
+    pub fn loaded_remote_ephemeral_sized(&self, url: &str, max: u32) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let max = max.clamp(96, EPHEMERAL_INLINE_MAX);
+        let identity = format!(
+            "{}:{max}:{}:{}",
+            remote_resource_id(&canonical),
+            EPHEMERAL_GIF_MAX_FRAMES,
+            EPHEMERAL_GIF_MAX_BYTES,
+        );
+        self.textures.get(&ephemeral_image_key(&identity))
     }
 
     /// Fullscreen provider GIFs get a larger decode profile, still bounded.

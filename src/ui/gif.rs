@@ -572,13 +572,18 @@ pub fn message(
     s: &Strings,
     id: &str,
     width: f32,
+    allow_network: bool,
 ) {
     if state.giphy.is_none() {
         state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
     }
     let mut giphy = state.giphy.take().expect("GIPHY store initialized");
     giphy.pump(ui.ctx());
-    let item = giphy.item(id, ui.ctx());
+    let item = if allow_network {
+        giphy.item(id, ui.ctx())
+    } else {
+        giphy.peek_item(id)
+    };
 
     let max_w = width.min(420.0);
     let size = item
@@ -597,18 +602,25 @@ pub fn message(
     if let Some(item) = item.as_ref() {
         // Chat GIFs autoplay exactly like the picker, but clipped messages do
         // not keep animations resident or schedule repaints.
-        if rect.intersects(ui.clip_rect().expand(96.0))
-            && let Some(texture) = state
-                .media
-                .remote_ephemeral_sized(
+        if rect.intersects(ui.clip_rect().expand(96.0)) {
+            let decode_max = ephemeral_decode_max(ui, rect);
+            let texture = if allow_network {
+                state.media.remote_ephemeral_sized(
                     &format!("giphy-chat-{id}"),
                     &item.display_url,
-                    ephemeral_decode_max(ui, rect),
+                    decode_max,
                 )
+            } else {
+                state
+                    .media
+                    .loaded_remote_ephemeral_sized(&item.display_url, decode_max)
+            };
+            if let Some(texture) = texture
                 .and_then(|texture| texture.frame(ui.ctx()))
                 .cloned()
-        {
-            paint_cover(ui, rect, &texture);
+            {
+                paint_cover(ui, rect, &texture);
+            }
         }
 
         let star_rect = Rect::from_min_size(

@@ -340,13 +340,29 @@ async fn connect(
             .map_err(|_| "cookie inválido".to_owned())?,
     );
 
-    let (stream, _) = tokio::time::timeout(
+    api.wait_request_turn().await;
+    let connected = tokio::time::timeout(
         CONNECT_TIMEOUT,
         tokio_tungstenite::connect_async(request),
     )
     .await
-    .map_err(|_| "timeout no handshake".to_owned())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|_| "timeout no handshake".to_owned())?;
+
+    let (stream, _) = match connected {
+        Ok(pair) => pair,
+        Err(error) => {
+            if let tokio_tungstenite::tungstenite::Error::Http(response) = &error
+                && response.status().as_u16() == 429
+            {
+                let retry_after = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok());
+                api.note_rate_limit_value(retry_after).await;
+            }
+            return Err(error.to_string());
+        }
+    };
     log::info!("runtime {scope}: websocket {}: conectado", api.websocket_url());
     let _ = status.send(Connection::Online);
     let (mut sink, mut source) = stream.split();
