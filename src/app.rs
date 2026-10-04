@@ -1784,6 +1784,9 @@ impl PapoApp {
         // pela viewport no frame anterior avançam a fronteira durável.
         if focused && !ws.runtime.store.selected_channel.is_empty() {
             let channel_id = ws.runtime.store.selected_channel.clone();
+            if std::mem::take(&mut self.ui.read_span_break) {
+                ws.runtime.store.reset_read_span(&channel_id);
+            }
             let visible = self.ui.visible_message_ids.clone();
             if !visible.is_empty() {
                 ws.runtime

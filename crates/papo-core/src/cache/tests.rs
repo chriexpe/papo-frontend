@@ -196,10 +196,9 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
                 channel_id: "geral".to_owned(),
                 read_at: Some(1_000),
                 read_message_id: Some("m1".to_owned()),
-                seen_out_of_order: vec!["m5".to_owned()],
+                seen_to_at: Some(5_000),
+                seen_to_message_id: Some("m5".to_owned()),
                 unread_mentions: vec!["m4".to_owned()],
-                jump_back: Some("m2".to_owned()),
-                jump_forward: Some("m5".to_owned()),
                 updated_at: 2_000,
             }),
         ],
@@ -226,10 +225,9 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
     let state = &metadata.read_states[0];
     assert_eq!(state.channel_id, "geral");
     assert_eq!(state.read_message_id.as_deref(), Some("m1"));
-    assert_eq!(state.seen_out_of_order, vec!["m5".to_owned()]);
+    assert_eq!(state.seen_to_at, Some(5_000));
+    assert_eq!(state.seen_to_message_id.as_deref(), Some("m5"));
     assert_eq!(state.unread_mentions, vec!["m4".to_owned()]);
-    assert_eq!(state.jump_back.as_deref(), Some("m2"));
-    assert_eq!(state.jump_forward.as_deref(), Some("m5"));
 }
 
 #[test]
