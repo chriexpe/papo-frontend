@@ -1402,7 +1402,7 @@ impl PapoApp {
                         dismiss = true;
                     }
                     if ui.button(s.update_open_release).clicked() {
-                        ctx.open_url(egui::OpenUrl::new_tab(release.release_url.clone()));
+                        crate::platform::links::open_url(&release.release_url);
                     }
                 });
             });

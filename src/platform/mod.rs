@@ -23,6 +23,7 @@ pub mod desktop;
 /// Onde ficam sessão e cache em cada plataforma.
 pub mod dirs;
 pub mod files;
+pub mod links;
 #[cfg(target_os = "linux")]
 #[path = "linux/global_menu.rs"]
 pub mod global_menu;

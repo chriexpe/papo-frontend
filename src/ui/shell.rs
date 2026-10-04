@@ -964,7 +964,7 @@ impl UiState {
         };
 
         if self.trusted_link_hosts.contains(&host) {
-            ctx.open_url(egui::OpenUrl::new_tab(url));
+            crate::platform::links::open_url(&url);
             return;
         }
 
@@ -7749,7 +7749,7 @@ fn external_link_prompt(
         if prompt.remember {
             state.trusted_link_hosts.insert(prompt.host.clone());
         }
-        ui.ctx().open_url(egui::OpenUrl::new_tab(prompt.url));
+        crate::platform::links::open_url(&prompt.url);
     } else if !(cancel.clicked() || outside || escape) {
         state.external_link_prompt = Some(prompt);
     }
