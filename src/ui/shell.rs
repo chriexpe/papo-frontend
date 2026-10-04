@@ -761,6 +761,10 @@ pub struct UiState {
     pub mobile_surface: MobileSurface,
     /// Quantos vídeos o overlay compacto tenta manter visíveis (1, 2 ou 4).
     pub call_video_tiles: usize,
+    /// Área útil dos pickers do compositor no layout compacto. Ela nasce da
+    /// geometria real das pastilhas: da borda esquerda do clipe à borda
+    /// direita da caixa de texto e termina logo acima do compositor inteiro.
+    composer_picker_bounds: Option<Rect>,
     mobile_gesture: Option<MobileGesture>,
     /// Quanto da gaveta está à mostra neste quadro.
     drawer: Drawer,
@@ -956,6 +960,7 @@ impl Default for UiState {
             compact: false,
             mobile_surface: MobileSurface::Chat,
             call_video_tiles: 2,
+            composer_picker_bounds: None,
             mobile_gesture: None,
             drawer: Drawer::default(),
             reply_drag: None,
@@ -1190,6 +1195,10 @@ pub fn draw(
     let live = call.as_ref().is_some_and(|call| call.is_live());
     let shell_rect = ui.max_rect();
     state.compact = is_compact(shell_rect);
+    // Recalculado pelo compositor a cada quadro. Limpar aqui impede que uma
+    // superfície sem compositor (DM vazio, voz, etc.) reutilize geometria
+    // velha de outro canal.
+    state.composer_picker_bounds = None;
 
     if state.compact {
         conversation(ui, store, state, call, t, s, stage);
@@ -7425,7 +7434,17 @@ fn emoji_popup(
         desired.x.min((safe.width() - space::XL).max(220.0)),
         desired.y.min((safe.height() - space::XL).max(220.0)),
     );
-    let rect = emoji::popup_area(ui, popup.anchor, size);
+    let rect = if state.compact
+        && matches!(
+            popup.kind,
+            PopupKind::ComposerEmoji | PopupKind::ComposerSticker
+        )
+    {
+        composer_picker_rect(ui, state, size)
+            .unwrap_or_else(|| emoji::popup_area(ui, popup.anchor, size))
+    } else {
+        emoji::popup_area(ui, popup.anchor, size)
+    };
     let mut chosen = None;
     let mut query = std::mem::take(&mut state.emoji_query);
     let mut group = state.emoji_group;
@@ -8139,6 +8158,28 @@ fn inline_button(
     response.on_hover_text(tooltip)
 }
 
+/// Retângulo de um picker aberto pelo compositor.
+pub(super) fn composer_picker_rect(
+    ui: &egui::Ui,
+    state: &UiState,
+    desired: Vec2,
+) -> Option<Rect> {
+    let bounds = state.composer_picker_bounds?;
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+        return None;
+    }
+
+    // No mobile o picker pertence ao mesmo "corredor" visual do chrome de
+    // baixo, portanto usa toda a largura disponível em vez de um número
+    // específico de cada feature. A altura continua sendo a desejada pelo
+    // conteúdo, limitada ao espaço entre as duas fileiras de pastilhas.
+    let height = desired.y.min(bounds.height());
+    Some(Rect::from_min_max(
+        egui::pos2(bounds.min.x, bounds.max.y - height),
+        bounds.max,
+    ))
+}
+
 fn composer(
     ui: &mut egui::Ui,
     store: &Store,
@@ -8173,6 +8214,23 @@ fn composer(
         egui::pos2(area.min.x + PILL_MARGIN + side / 2.0, line_mid),
         Vec2::splat(side),
     );
+
+    if state.compact {
+        // A caixa dos pickers deriva das próprias pastilhas, em vez de
+        // repetir larguras/offsets de GIF, emoji e figurinha. Horizontalmente
+        // ela vai do começo do clipe ao fim da caixa de texto. Verticalmente
+        // fica entre a fileira superior e o topo do compositor, com um
+        // pequeno respiro dos dois lados.
+        let top = area.min.y + PILL_MARGIN + PILL_HEIGHT + space::SM;
+        let bottom = rect.min.y - space::SM;
+        if bottom > top {
+            state.composer_picker_bounds = Some(Rect::from_min_max(
+                egui::pos2(attach_rect.min.x, top),
+                egui::pos2(rect.max.x, bottom),
+            ));
+        }
+    }
+
     if side_pill(ui, state, t, attach_rect, icon::PAPERCLIP, s.attach, "attach", false).clicked() {
         state.actions.push(ChatAction::PickFiles);
     }
