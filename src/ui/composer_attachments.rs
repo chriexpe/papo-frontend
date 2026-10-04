@@ -447,7 +447,7 @@ mod tests {
                 &t,
                 &crate::i18n::EN,
                 &mut media,
-                &[upload.clone()],
+                std::slice::from_ref(&upload),
                 band_rect,
             );
         });
