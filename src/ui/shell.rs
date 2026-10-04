@@ -2848,6 +2848,15 @@ fn conversation(
                 text::headline(),
                 t.label_secondary,
             );
+            // The empty Direct Messages landing page used to return before
+            // the shared mobile gesture handler ran. On compact layouts that
+            // made the Messages tab a navigation dead-end: there was no
+            // channel pill to tap and swiping right could not reopen the
+            // server/DM drawer. Keep this surface in the same gesture state
+            // machine as regular conversations.
+            if state.compact {
+                handle_mobile_gesture(ui, store, state, full, 0.0, 0.0);
+            }
             return;
         }
 
