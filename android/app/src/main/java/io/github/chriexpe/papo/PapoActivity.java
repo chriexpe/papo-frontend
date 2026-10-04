@@ -1747,6 +1747,13 @@ public class PapoActivity extends GameActivity {
             return;
         }
 
+        if (unusedPhoto != null && unusedPhoto.exists()) {
+            unusedPhoto.delete();
+        }
+        if (unusedVideo != null && unusedVideo.exists()) {
+            unusedVideo.delete();
+        }
+
         // Algumas câmeras ignoram EXTRA_OUTPUT e devolvem um content://.
         if (data != null && data.getData() != null) {
             final List<Uri> chosen = new ArrayList<>();
@@ -1755,7 +1762,6 @@ public class PapoActivity extends GameActivity {
             return;
         }
 
-        discardPendingCapture();
         nativeFilesPicked(new String[0], new String[0]);
     }
 
