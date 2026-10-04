@@ -5457,6 +5457,12 @@ fn message_list(
                     ui.add_space(space::LG);
                 }
                 ui.vertical(|ui| {
+                    // `horizontal_top` soma o espaçamento entre itens depois
+                    // da foto, então a coluna começa mais à direita do que
+                    // `text_indent` supõe. Medir pelo ponto onde ela de fato
+                    // começa mantém a borda direita na margem da conversa.
+                    let text_width = (area.max.x - space::XL - ui.cursor().min.x)
+                        .clamp(80.0, text_width);
                     ui.set_max_width(text_width);
                     if !grouped {
                         ui.horizontal(|ui| {
@@ -6503,7 +6509,9 @@ fn preview_card(
     }
 
     ui.add_space(space::SM);
-    let card_width = width.clamp(160.0, MAX_W);
+    // O cartão se expande `MD` para cada lado ao desenhar a moldura; a borda
+    // direita dele fica na mesma margem da caixa de mensagem (`PILL_MARGIN`).
+    let card_width = (width - (space::MD - (space::XL - PILL_MARGIN))).clamp(160.0, MAX_W);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let player_id = video_url
         .as_deref()
@@ -7031,6 +7039,8 @@ fn hex_color(raw: &str) -> Option<Color32> {
 
 fn webembed_inline_allowed(state: &UiState) -> bool {
     !state.webembed_blocked
+        && !blocking_modal_open(state)
+        && state.gif_picker_opened.is_none()
         && state.mobile_surface == MobileSurface::Chat
         && state.panel.is_none()
         && state.popup.is_none()
@@ -7550,6 +7560,14 @@ fn hover_pill(
 fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
     let screen = ui.ctx().content_rect();
+    // Diálogo, menu e seletores são modais: a camada precisa existir como
+    // `Area` e ficar por cima de qualquer outra da conversa, senão o egui
+    // entrega o clique ao que estiver atrás (era o aviso de link que não
+    // respondia). Roda antes do conteúdo, para o clique da Area ficar embaixo.
+    if modal_layer_wanted(state) {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+        ui.ctx().move_to_top(layer);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
     // O voltar vai para o de cima: o cartão do servidor, senão o de perfil.
@@ -7598,6 +7616,26 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             None => state.viewer = Some(viewer),
         }
     }
+}
+
+/// Algum diálogo ou popup desenhado em `overlays` está aberto e deve receber
+/// os toques no lugar da conversa.
+fn modal_layer_wanted(state: &UiState) -> bool {
+    state.external_link_prompt.is_some()
+        || state.popup.is_some()
+        || state.gif_picker_opened.is_some()
+        || state.link_viewer.is_some()
+}
+
+/// Cobre a conversa por inteiro (cartão de perfil, do servidor, visualizador,
+/// diálogo de link). Nesses casos as views nativas do Android, que ficam
+/// acima de tudo o que o egui desenha, não podem receber o toque.
+fn blocking_modal_open(state: &UiState) -> bool {
+    state.external_link_prompt.is_some()
+        || state.viewer.is_some()
+        || state.link_viewer.is_some()
+        || state.profile.is_some()
+        || state.server_card.is_some()
 }
 
 fn external_link_prompt(
@@ -8959,10 +8997,11 @@ fn composer(
     }
 
     #[cfg(target_os = "android")]
-    let android_chat_editor_visible = !state.compact
-        || (state.mobile_surface == MobileSurface::Chat
-            && state.drawer.shown <= 0.0
-            && !state.drawer.dragging);
+    let android_chat_editor_visible = !blocking_modal_open(state)
+        && (!state.compact
+            || (state.mobile_surface == MobileSurface::Chat
+                && state.drawer.shown <= 0.0
+                && !state.drawer.dragging));
 
     #[cfg(target_os = "android")]
     if !android_chat_editor_visible {
@@ -10197,5 +10236,64 @@ mod draft_tests {
         book.reset_owner("owner-b");
         assert!(book.get("B").is_none());
         assert_eq!(book.owner(), Some("owner-b"));
+    }
+}
+
+#[cfg(test)]
+mod modal_layer_tests {
+    use super::*;
+
+    /// Um quadro: a conversa tem uma `Area` em primeiro plano que ocupa a
+    /// tela; o modal é desenhado numa camada própria, como em `overlays`.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, claim: bool) -> (bool, bool) {
+        let (mut chat, mut modal) = (false, false);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(400.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let screen = ui.ctx().content_rect();
+            egui::Area::new(Id::new("chat-fg"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen.min)
+                .show(ui.ctx(), |ui| {
+                    chat |= ui.interact(screen, Id::new("chat"), Sense::click()).clicked();
+                });
+            let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
+            if claim {
+                claim_overlay_layer(ui.ctx(), layer, screen);
+                ui.ctx().move_to_top(layer);
+            }
+            let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+            modal |= top.interact(screen, Id::new("backdrop"), Sense::click()).clicked();
+        });
+        output.textures_delta.clear();
+        (chat, modal)
+    }
+
+    fn click(claim: bool) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let at = egui::pos2(100.0, 100.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for _ in 0..3 {
+            frame(&ctx, vec![], claim);
+        }
+        frame(&ctx, vec![egui::Event::PointerMoved(at)], claim);
+        frame(&ctx, vec![button(true)], claim);
+        frame(&ctx, vec![button(false)], claim)
+    }
+
+    #[test]
+    fn modal_layer_gets_the_click_not_the_chat() {
+        // Sem registrar a camada, a conversa leva o clique (o defeito).
+        assert_eq!(click(false), (true, false));
+        // Registrada e no topo, o modal leva e a conversa não vê nada.
+        assert_eq!(click(true), (false, true));
     }
 }

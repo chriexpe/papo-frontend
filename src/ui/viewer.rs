@@ -84,6 +84,8 @@ pub fn draw(
 ) -> Option<ViewerAction> {
     let screen = ui.ctx().viewport_rect();
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("papo-viewer"));
+    super::shell::claim_overlay_layer(ui.ctx(), layer, screen);
+    ui.ctx().move_to_top(layer);
     let mut ui = ui.new_child(
         egui::UiBuilder::new()
             .layer_id(layer)
@@ -610,6 +612,8 @@ pub fn draw_remote_media(
 ) -> Option<RemoteViewerAction> {
     let screen = ui.ctx().viewport_rect();
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("papo-viewer"));
+    super::shell::claim_overlay_layer(ui.ctx(), layer, screen);
+    ui.ctx().move_to_top(layer);
     let mut top = ui.new_child(
         egui::UiBuilder::new()
             .layer_id(layer)
