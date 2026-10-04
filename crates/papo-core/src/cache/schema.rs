@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -187,6 +187,16 @@ const MIGRATIONS: &[Migration] = &[Migration {
          )",
         "CREATE INDEX channel_read_state_owner_idx
              ON channel_read_state(server_key, owner_user_id, updated_at DESC)",
+    ],
+}, Migration {
+    // O modelo de leitura passou a ser fronteira + marca d'água: o que o
+    // usuário viu de mais adiante. Fica derivado daí se há lacuna não lida,
+    // então `seen_out_of_order`, `jump_back` e `jump_forward` deixam de ser
+    // lidos/escritos (as colunas ficam para não reescrever a tabela).
+    version: 10,
+    statements: &[
+        "ALTER TABLE channel_read_state ADD COLUMN seen_to_at INTEGER",
+        "ALTER TABLE channel_read_state ADD COLUMN seen_to_message_id TEXT",
     ],
 }];
 

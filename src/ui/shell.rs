@@ -84,6 +84,10 @@ fn actions_pill_closed_width(dm_surface: bool) -> f32 {
 }
 
 const GROUP_GAP_MINUTES: i64 = 5;
+/// Páginas antigas pedidas ao abrir um canal cuja âncora de leitura ainda não
+/// foi carregada, e o intervalo mínimo entre pedidos.
+const OPEN_HISTORY_REQUESTS: u8 = 20;
+const OPEN_HISTORY_RETRY_SECONDS: f64 = 0.75;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
 /// Quanto tempo a descrição do canal fica visível antes de recolher.
@@ -145,6 +149,10 @@ pub enum ChatAction {
     },
     /// Abre o seletor de arquivos do sistema.
     PickFiles,
+    /// Abre a galeria/Photo Picker para fotos e vídeos.
+    PickGallery,
+    /// Abre a câmera Android para capturar foto ou vídeo.
+    CaptureMedia,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
     /// Abre a criação inline em Ajustes do servidor → Canais.
@@ -750,6 +758,14 @@ impl Stash {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum UpdatePill {
+    Available,
+    Downloading(Option<f32>),
+    Ready,
+    WaitingPermission,
+}
+
 pub struct UiState {
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
@@ -854,6 +870,10 @@ pub struct UiState {
     pub collapsed_categories: std::collections::HashSet<String>,
     /// Onde a pastilha do servidor está neste quadro: é a base do cartão.
     pub server_pill: Option<Rect>,
+    /// Chrome transitório do updater. O app só projeta estado; o shell decide
+    /// a geometria junto das outras pastilhas para não competir com a call.
+    pub update_pill: Option<UpdatePill>,
+    pub update_pill_clicked: bool,
     /// Endereço e quantidade de servidores, que o cartão mostra e usa.
     pub server_url: String,
     pub server_count: usize,
@@ -888,12 +908,20 @@ pub struct UiState {
     pub open_at_newest: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
+    /// Quantas páginas antigas a abertura já pediu em busca da âncora.
+    open_history_requests: u8,
+    open_history_retry_at: f64,
+    /// O quadro atual não continua o anterior (salto ou abertura de canal);
+    /// o que ficou no meio do caminho não foi lido.
+    pub read_span_break: bool,
     /// Mensagens realmente expostas na área legível deste quadro.
     pub visible_message_ids: Vec<String>,
     /// Último movimento observado da timeline; os atalhos somem enquanto rola.
     last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
+    /// Menu Android aberto por pressão longa na pastilha da galeria.
+    pub android_gallery_menu_open: bool,
     /// Emoji no nome de canal usa a mesma cor do rótulo.
     pub channel_emoji_monochrome: bool,
     /// Gravação em curso.
@@ -1006,6 +1034,8 @@ impl Default for UiState {
             server_card: None,
             collapsed_categories: Default::default(),
             server_pill: None,
+            update_pill: None,
+            update_pill_clicked: false,
             server_url: String::new(),
             server_count: 1,
             back: false,
@@ -1023,9 +1053,13 @@ impl Default for UiState {
             reveal_topic: true,
             open_at_newest: true,
             open_channel_pending: None,
+            open_history_requests: 0,
+            open_history_retry_at: f64::NEG_INFINITY,
+            read_span_break: false,
             visible_message_ids: Vec::new(),
             last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
+            android_gallery_menu_open: false,
             channel_emoji_monochrome: true,
             recorder: None,
             error: None,
@@ -1139,6 +1173,7 @@ pub fn draw(
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
         let next_channel = store.selected_channel.clone();
+        let previous_channel = state.last_channel.clone();
         state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
@@ -1154,7 +1189,11 @@ pub fn draw(
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
-        state.open_channel_pending = Some(next_channel);
+        state.open_channel_pending = Some(next_channel.clone());
+        state.open_history_requests = 0;
+        state.open_history_retry_at = f64::NEG_INFINITY;
+        store.reset_read_span(&previous_channel);
+        store.reset_read_span(&next_channel);
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2655,12 +2694,10 @@ fn timeline_nav_controls(
 
     let latest_visible = state.visible_message_ids.last().cloned();
     let newest = store.newest_loaded(&channel_id);
-    let forward = store.jump_forward_target(&channel_id);
-    let show_newer = newest.as_ref().is_some_and(|newest| {
-        latest_visible.as_ref() != Some(newest)
-            || forward.as_ref().is_some_and(|target| latest_visible.as_ref() != Some(target))
-    });
-    let back = store.jump_back_target(&channel_id);
+    let show_newer = newest
+        .as_ref()
+        .is_some_and(|newest| latest_visible.as_ref() != Some(newest));
+    let back = store.hourglass_target(&channel_id);
     let mention = store.next_mention_target(&channel_id);
 
     let mut controls: Vec<(&'static str, &'static str, u8)> = Vec::new();
@@ -2705,7 +2742,7 @@ fn timeline_nav_controls(
 
         if response.clicked() {
             let target = match kind {
-                0 => store.prepare_newer_jump(&channel_id, latest_visible.as_deref()),
+                0 => newest.clone(),
                 1 => back.clone(),
                 2 => mention.clone(),
                 _ => None,
@@ -2866,6 +2903,7 @@ fn conversation(
             if state.compact {
                 handle_mobile_gesture(ui, store, state, full, 0.0, 0.0);
             }
+            let _ = update_pill(ui, state, t, s, full, None, None);
             return;
         }
 
@@ -2880,6 +2918,10 @@ fn conversation(
                 crate::ui::call::lobby(ui, store, state, t, s);
             }
             let channel_rect = channel_pill(ui, store, state, t, s, full);
+            let update = update_pill(ui, state, t, s, full, channel_rect, None);
+            let call_right = update
+                .filter(|placement| placement.reserves_call_space)
+                .map(|placement| placement.rect);
             call_layers(
                 ui,
                 store,
@@ -2890,7 +2932,7 @@ fn conversation(
                 full,
                 stage,
                 channel_rect,
-                None,
+                call_right,
             );
             if state.compact {
                 handle_mobile_gesture(
@@ -2938,37 +2980,35 @@ fn conversation(
             // páginas antigas até encontrá-la antes de estabilizar a abertura.
             let opening_pass =
                 state.open_channel_pending.as_deref() == Some(channel_id.as_str());
+            if opening_pass {
+                state.read_span_break = true;
+            }
             let mut opening_at_bottom = false;
             let mut opening_at_message = false;
             if opening_pass && store.newest_loaded(&channel_id).is_some() {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
                 let anchor_missing = store.read_anchor_needs_history(&channel_id);
-                if unread && anchor_missing && store.can_load_older(&channel_id) {
-                    state.actions.push(ChatAction::LoadOlderMessages);
-                } else if unread && state.open_at_newest {
-                    // Preserva a máquina de checkpoints/ampulheta. Quando o
-                    // destino é o head carregado, a posição correta é o fim da
-                    // timeline; um checkpoint congelado anterior continua
-                    // sendo um salto explícito para aquela mensagem.
-                    let newest = store.newest_loaded(&channel_id);
-                    match store.prepare_open_at_newest(&channel_id) {
-                        Some(message_id)
-                            if newest.as_deref() == Some(message_id.as_str()) =>
-                        {
-                            opening_at_bottom = true;
-                        }
-                        Some(message_id) => {
-                            state.jump = Some(Jump {
-                                message_id,
-                                found: None,
-                                since: ui.input(|input| input.time),
-                            });
-                            opening_at_message = true;
-                        }
-                        None => {
-                            opening_at_bottom = true;
-                        }
+                let now = ui.input(|input| input.time);
+                let wait_for_history = unread
+                    && anchor_missing
+                    && store.can_load_older(&channel_id)
+                    && state.open_history_requests < OPEN_HISTORY_REQUESTS;
+                if wait_for_history {
+                    // Com rede ruim a página pode falhar. Tentar de novo a cada
+                    // quadro martelaria o servidor e manteria a conversa
+                    // invisível; espaça as tentativas e desiste depois de
+                    // algumas, abrindo onde der.
+                    if !store.loading_older(&channel_id) && now >= state.open_history_retry_at {
+                        state.open_history_requests += 1;
+                        state.open_history_retry_at = now + OPEN_HISTORY_RETRY_SECONDS;
+                        state.actions.push(ChatAction::LoadOlderMessages);
                     }
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                } else if unread && state.open_at_newest {
+                    // O fim da timeline é o destino. O que ficou para trás não
+                    // precisa de bookkeeping: assim que o fim aparecer, a marca
+                    // d'água passa da fronteira e a ampulheta existe sozinha.
+                    opening_at_bottom = true;
                 } else if unread {
                     if let Some(message_id) = store
                         .read_anchor_target(&channel_id)
@@ -3168,6 +3208,7 @@ fn conversation(
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
+        let update = update_pill(ui, state, t, s, full, channel_rect, Some(actions_rect));
         let nav_rects = timeline_nav_controls(
             ui,
             store,
@@ -3181,6 +3222,13 @@ fn conversation(
         state.webembed_occlusions =
             webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
         state.webembed_occlusions.extend(nav_rects);
+        if let Some(update) = update {
+            state.webembed_occlusions.push(update.rect);
+        }
+        let call_right = update
+            .filter(|placement| placement.reserves_call_space)
+            .map(|placement| placement.rect)
+            .or(Some(actions_rect));
         call_layers(
             ui,
             store,
@@ -3191,7 +3239,7 @@ fn conversation(
             full,
             stage,
             channel_rect,
-            Some(actions_rect),
+            call_right,
         );
 
         if state.compact {
@@ -3502,6 +3550,193 @@ fn advance(shown: &mut f32, target: f32, span: f32, ui: &egui::Ui) -> bool {
     true
 }
 
+fn top_pill_corridor(full: Rect, channel_rect: Option<Rect>, right_rect: Option<Rect>) -> Rect {
+    let left = channel_rect
+        .map(|rect| rect.max.x + space::SM)
+        .unwrap_or(full.min.x + PILL_MARGIN);
+    let right = right_rect
+        .map(|rect| rect.min.x - space::SM)
+        .unwrap_or(full.max.x - PILL_MARGIN);
+    if right > left {
+        Rect::from_min_max(
+            egui::pos2(left, full.min.y),
+            egui::pos2(right, full.max.y),
+        )
+    } else {
+        full
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct UpdatePillPlacement {
+    pub rect: Rect,
+    pub reserves_call_space: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn update_pill(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    full: Rect,
+    channel_rect: Option<Rect>,
+    actions_rect: Option<Rect>,
+) -> Option<UpdatePillPlacement> {
+    let mode = state.update_pill?;
+    let compact = is_compact(full);
+    let corridor = top_pill_corridor(full, channel_rect, actions_rect);
+
+    let (rect, reserves_call_space, radius) = match mode {
+        UpdatePill::Available => {
+            let side = PILL_HEIGHT;
+            let right = actions_rect
+                .map(|rect| rect.min.x - space::SM)
+                .unwrap_or(full.max.x - PILL_MARGIN);
+            let y = actions_rect
+                .map(|rect| rect.min.y)
+                .unwrap_or(full.min.y + PILL_MARGIN);
+            (
+                Rect::from_min_size(egui::pos2(right - side, y), Vec2::splat(side)),
+                true,
+                PILL_RADIUS,
+            )
+        }
+        _ if compact => {
+            let height = PILL_HEIGHT + 6.0;
+            let width = 300.0_f32.min((corridor.width() - space::SM * 2.0).max(PILL_HEIGHT));
+            let center = egui::pos2(
+                corridor.center().x,
+                corridor.min.y + space::LG + PILL_HEIGHT / 2.0,
+            );
+            (
+                Rect::from_center_size(center, Vec2::new(width, height)),
+                false,
+                height / 2.0,
+            )
+        }
+        _ => {
+            let right = actions_rect
+                .map(|rect| rect.min.x - space::SM)
+                .unwrap_or(full.max.x - PILL_MARGIN);
+            let left_limit = channel_rect
+                .map(|rect| rect.max.x + space::SM)
+                .unwrap_or(full.min.x + PILL_MARGIN);
+            let width = 270.0_f32.min((right - left_limit).max(PILL_HEIGHT));
+            let y = actions_rect
+                .map(|rect| rect.min.y)
+                .unwrap_or(full.min.y + PILL_MARGIN);
+            (
+                Rect::from_min_size(
+                    egui::pos2(right - width, y),
+                    Vec2::new(width, PILL_HEIGHT),
+                ),
+                true,
+                PILL_RADIUS,
+            )
+        }
+    };
+
+    let corner = CornerRadius::same(radius.round().clamp(0.0, u8::MAX as f32) as u8);
+    glass_backdrop(ui, state, rect, radius);
+    ui.painter().rect(
+        rect,
+        corner,
+        t.pill_fill(state.translucent),
+        Stroke::new(1.0, t.separator),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius * 0.6, rect.min.y + 0.5),
+            egui::pos2(rect.max.x - radius * 0.6, rect.min.y + 0.5),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
+    );
+
+    let clickable = matches!(mode, UpdatePill::Available | UpdatePill::Ready);
+    let response = ui.interact(
+        rect,
+        egui::Id::new("papo-update-pill"),
+        if clickable { Sense::click() } else { Sense::hover() },
+    );
+    if clickable && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().rect_filled(rect, corner, t.fill_soft);
+    }
+
+    match mode {
+        UpdatePill::Available => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                text::icon(17.0),
+                t.label,
+            );
+        }
+        UpdatePill::Downloading(progress) => {
+            if let Some(progress) = progress.map(|value| value.clamp(0.0, 1.0)) {
+                let fill_width = rect.width() * progress;
+                if fill_width > 1.0 {
+                    let fill = Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(rect.min.x + fill_width, rect.max.y),
+                    );
+                    ui.painter().rect_filled(
+                        fill.intersect(rect),
+                        corner,
+                        t.accent.gamma_multiply(0.28),
+                    );
+                }
+            }
+            let label = progress
+                .map(|value| {
+                    format!(
+                        "{} · {:.0}%",
+                        s.update_downloading.trim_end_matches('…'),
+                        value * 100.0
+                    )
+                })
+                .unwrap_or_else(|| s.update_downloading.to_owned());
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                text::body(),
+                t.label,
+            );
+        }
+        UpdatePill::Ready => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                s.update_ready,
+                text::body(),
+                t.label,
+            );
+        }
+        UpdatePill::WaitingPermission => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                s.update_waiting_permission,
+                text::body(),
+                t.label_secondary,
+            );
+        }
+    }
+
+    if clickable && response.clicked() {
+        state.update_pill_clicked = true;
+    }
+
+    Some(UpdatePillPlacement {
+        rect,
+        reserves_call_space,
+    })
+}
+
 /// O que a call põe por cima da conversa: a folha de vidro, ou a pastilha
 /// dela encolhida. No canal da própria call, nenhum dos dois — ali a call já
 /// é a tela.
@@ -3520,20 +3755,7 @@ fn call_layers(
 ) {
     use crate::state::Stage;
 
-    let left = channel_rect
-        .map(|rect| rect.max.x + space::SM)
-        .unwrap_or(full.min.x + PILL_MARGIN);
-    let right = actions_rect
-        .map(|rect| rect.min.x - space::SM)
-        .unwrap_or(full.max.x - PILL_MARGIN);
-    let pill_area = if right > left {
-        Rect::from_min_max(
-            egui::pos2(left, full.min.y),
-            egui::pos2(right, full.max.y),
-        )
-    } else {
-        full
-    };
+    let pill_area = top_pill_corridor(full, channel_rect, actions_rect);
 
     match stage {
         Some(Stage::Floating) => {
@@ -4946,7 +5168,7 @@ fn result_row(
                     }
                 });
                 if !shown_body.trim().is_empty()
-                    && direct_media_message_url(state, body).is_none()
+                    && direct_media_message_url(state, body, true).is_none()
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
@@ -5103,6 +5325,12 @@ fn go_to(
 // Lista de mensagens
 // ---------------------------------------------------------------------------
 
+/// Network loading window around the actual readable chat viewport. We bias
+/// strongly upward because history is consumed by scrolling toward older
+/// messages; below the viewport only a small runway is useful.
+const CHAT_LOAD_ABOVE: f32 = 1200.0;
+const CHAT_LOAD_BELOW: f32 = 320.0;
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5180,6 +5408,14 @@ fn message_list(
 
         let author = store.member(&message.author_id);
         let mut open_author: Option<Rect> = None;
+        // egui still lays out every loaded message row. Network work must not
+        // follow that layout blindly: only the viewport plus a bounded runway
+        // may start new preview/GIPHY/embed fetches.
+        let row_top = ui.cursor().top();
+        let network_eligible = readable.width() > 0.0
+            && readable.height() > 0.0
+            && row_top >= readable.min.y - CHAT_LOAD_ABOVE
+            && row_top <= readable.max.y + CHAT_LOAD_BELOW;
         // O escopo da linha é o alvo de toque do layout compacto — duplo
         // toque abre as reações, toque longo abre o menu.
         //
@@ -5278,7 +5514,16 @@ fn message_list(
                     if let Some(reply_to) = &message.reply_to {
                         reply_quote(ui, store, state, t, s, reply_to, text_width);
                     }
-                    message_body(ui, store, state, t, s, message, text_width);
+                    message_body(
+                        ui,
+                        store,
+                        state,
+                        t,
+                        s,
+                        message,
+                        text_width,
+                        network_eligible,
+                    );
                 });
             });
         });
@@ -5304,7 +5549,13 @@ fn message_list(
         let visible_height = row.intersect(readable).height().max(0.0);
         let seen_threshold = (row.height() * 0.55).min(32.0);
         if !message.pending && visible_height >= seen_threshold {
-            state.visible_message_ids.push(message.id.clone());
+            // Durante um salto as linhas passam voando; só contam depois que
+            // ele pousa.
+            if state.jump.is_some() {
+                state.read_span_break = true;
+            } else {
+                state.visible_message_ids.push(message.id.clone());
+            }
         }
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));
@@ -5512,6 +5763,7 @@ fn message_body(
     s: &Strings,
     message: &Message,
     width: f32,
+    allow_network: bool,
 ) {
     // Em edição, o corpo vira uma caixa de texto no lugar exato do texto.
     if let Some((id, buffer)) = &mut state.editing
@@ -5656,8 +5908,8 @@ fn message_body(
 
     if !message.content.is_empty() {
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
-            gif::message(ui, state, t, s, &slug, width);
-        } else if direct_media_message_url(state, &message.content).is_none() {
+            gif::message(ui, state, t, s, &slug, width, allow_network);
+        } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
             let shown_content = store.display_mentions(&message.content);
             let color = if message.pending {
                 t.label_secondary
@@ -5745,7 +5997,15 @@ fn message_body(
     }
 
     if !message.previews.is_empty() {
-        link_previews(ui, state, t, &message.id, &message.previews, width);
+        link_previews(
+            ui,
+            state,
+            t,
+            &message.id,
+            &message.previews,
+            width,
+            allow_network,
+        );
     }
     rich_links_from_message(
         ui,
@@ -5755,6 +6015,7 @@ fn message_body(
         &message.content,
         &message.previews,
         width,
+        allow_network,
     );
 
     if !message.reactions.is_empty() {
@@ -5840,13 +6101,22 @@ fn obvious_direct_media_url(url: &str) -> bool {
 /// Retorna o link quando a mensagem inteira é uma imagem/vídeo direto.
 /// Extensões óbvias escondem o texto já no primeiro quadro; URLs opacas de
 /// CDN entram assim que o coordenador confirma que o recurso é mídia visual.
-fn direct_media_message_url(state: &UiState, content: &str) -> Option<String> {
+fn direct_media_message_url(
+    state: &UiState,
+    content: &str,
+    allow_network: bool,
+) -> Option<String> {
     let url = single_message_url(content)?;
     if obvious_direct_media_url(&url) {
         return Some(url);
     }
 
-    let preview = state.previews.as_ref()?.get_or_request(&url)?;
+    let coordinator = state.previews.as_ref()?;
+    let preview = if allow_network {
+        coordinator.get_or_request(&url)
+    } else {
+        coordinator.peek(&url)
+    }?;
     let papo_core::preview::PreviewState::Ready(preview) = preview else {
         return None;
     };
@@ -5985,6 +6255,7 @@ fn link_previews(
     message_id: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     for preview in previews {
         let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
@@ -6000,7 +6271,10 @@ fn link_previews(
             url,
             Some(preview),
             width,
-            true,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
         );
     }
 }
@@ -6013,6 +6287,7 @@ fn rich_links_from_message(
     content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
+    allow_network: bool,
 ) {
     use std::hash::{Hash, Hasher};
 
@@ -6032,7 +6307,20 @@ fn rich_links_from_message(
         url.hash(&mut hasher);
         let id = format!("rich-{:016x}", hasher.finish());
         let embed_id = format!("embed:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, true);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            PreviewPolicy {
+                webembed: true,
+                network: allow_network,
+            },
+        );
     }
 }
 
@@ -6097,8 +6385,27 @@ fn panel_rich_links(
         // painted in the timeline behind it. Scope the widget occurrence so
         // egui/WebEmbed IDs never collide across those two surfaces.
         let embed_id = format!("embed:panel:{message_id}:{id}");
-        preview_card(ui, state, t, &id, &embed_id, &url, None, width, false);
+        preview_card(
+            ui,
+            state,
+            t,
+            &id,
+            &embed_id,
+            &url,
+            None,
+            width,
+            PreviewPolicy {
+                webembed: false,
+                network: true,
+            },
+        );
     }
+}
+
+#[derive(Clone, Copy)]
+struct PreviewPolicy {
+    webembed: bool,
+    network: bool,
 }
 
 fn preview_card(
@@ -6110,30 +6417,45 @@ fn preview_card(
     url: &str,
     backend: Option<&crate::api::models::LinkPreview>,
     width: f32,
-    allow_webembed: bool,
+    policy: PreviewPolicy,
 ) {
     use papo_core::preview::{PreviewKind, PreviewState};
 
     const MAX_W: f32 = 420.0;
     const IMAGE_MAX_H: f32 = 300.0;
 
-    let resolved = state
-        .previews
-        .as_ref()
-        .and_then(|coordinator| coordinator.get_or_request(url));
+    let resolved = state.previews.as_ref().and_then(|coordinator| {
+        if policy.network {
+            coordinator.get_or_request(url)
+        } else {
+            coordinator.peek(url)
+        }
+    });
     let ready = match resolved.as_ref() {
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
     };
     let backend_image = backend
-        .and_then(|preview| state.media.preview(preview))
+        .and_then(|preview| {
+            if policy.network {
+                state.media.preview(preview)
+            } else {
+                state.media.loaded_preview(&preview.id)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
 
     let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
     let remote_image = image_url
         .as_deref()
-        .and_then(|remote| state.media.remote_image(id, remote))
+        .and_then(|remote| {
+            if policy.network {
+                state.media.remote_image(id, remote)
+            } else {
+                state.media.loaded_remote_image(remote)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
     let image = remote_image.as_ref().or(backend_image.as_ref());
@@ -6220,7 +6542,16 @@ fn preview_card(
             // O título só aparece quando diz mais que a linha do autor
             // (`@x • Instagram reel`, `Nome (@x) on X` não dizem).
             let headline = title.filter(|title| !title.contains('@'));
-            post_header(ui, state, t, id, &post, headline, description);
+            post_header(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                headline,
+                description,
+                policy.network,
+            );
             ui.add_space(space::SM);
         }
 
@@ -6280,7 +6611,7 @@ fn preview_card(
             );
 
             if let Some(embed) = embed_url.as_deref() {
-                if allow_webembed && state.webembed.is_active(embed_id) {
+                if policy.webembed && state.webembed.is_active(embed_id) {
                     let allowed = webembed_inline_allowed(state);
                     let clip = state
                         .webembed_chat_clip
@@ -6310,9 +6641,9 @@ fn preview_card(
                 }
 
                 if response.clicked()
-                    && (!allow_webembed || !state.webembed.is_active(embed_id))
+                    && (!policy.webembed || !state.webembed.is_active(embed_id))
                 {
-                    if allow_webembed
+                    if policy.webembed
                         && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                     {
                         state.media.pause_all();
@@ -6352,7 +6683,7 @@ fn preview_card(
                 Color32::from_black_alpha(225),
             );
 
-            if allow_webembed && state.webembed.is_active(embed_id) {
+            if policy.webembed && state.webembed.is_active(embed_id) {
                 let allowed = webembed_inline_allowed(state);
                 let clip = state
                     .webembed_chat_clip
@@ -6378,9 +6709,9 @@ fn preview_card(
                 );
             }
             if response.clicked()
-                && (!allow_webembed || !state.webembed.is_active(embed_id))
+                && (!policy.webembed || !state.webembed.is_active(embed_id))
             {
-                if allow_webembed
+                if policy.webembed
                     && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
                 {
                     state.media.pause_all();
@@ -6394,7 +6725,15 @@ fn preview_card(
         }
 
         if social {
-            post_footer(ui, state, t, id, &post, provider.as_deref());
+            post_footer(
+                ui,
+                state,
+                t,
+                id,
+                &post,
+                provider.as_deref(),
+                policy.network,
+            );
             return;
         }
 
@@ -6525,6 +6864,7 @@ fn post_header(
     post: &papo_core::preview::PostMeta,
     headline: Option<&str>,
     description: Option<&str>,
+    allow_network: bool,
 ) {
     const AVATAR: f32 = 24.0;
     let handle = post.author_handle.as_deref();
@@ -6536,7 +6876,13 @@ fn post_header(
     let avatar = post
         .author_avatar
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
 
@@ -6624,12 +6970,19 @@ fn post_footer(
     id: &str,
     post: &papo_core::preview::PostMeta,
     provider: Option<&str>,
+    allow_network: bool,
 ) {
     const ICON: f32 = 16.0;
     let icon_texture = post
         .site_icon
         .as_deref()
-        .and_then(|url| state.media.remote_image(id, url))
+        .and_then(|url| {
+            if allow_network {
+                state.media.remote_image(id, url)
+            } else {
+                state.media.loaded_remote_image(url)
+            }
+        })
         .and_then(|texture| texture.frame(ui.ctx()))
         .map(|texture| texture.id());
     let date = post.published_at.and_then(post_date);
@@ -7531,7 +7884,7 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content).or_else(|| {
+    let copy_link = direct_media_message_url(state, &message.content, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
@@ -7987,7 +8340,11 @@ fn webembed_chrome_occlusions(
     rects.push(actions_rect);
 
     let side = PILL_HEIGHT;
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width =
@@ -8014,6 +8371,17 @@ fn webembed_chrome_occlusions(
         ));
     }
 
+    #[cfg(target_os = "android")]
+    if state.android_gallery_menu_open {
+        let item_count = 2 + usize::from(!state.show_record);
+        let menu_h =
+            item_count as f32 * side + (item_count.saturating_sub(1)) as f32 * space::SM;
+        rects.push(Rect::from_min_max(
+            egui::pos2(attach.min.x, attach.min.y - space::SM - menu_h),
+            egui::pos2(attach.max.x, attach.min.y - space::SM),
+        ));
+    }
+
     let names = store.typing_names();
     if !names.is_empty() {
         let verb = match store.typing_phrase() {
@@ -8037,7 +8405,11 @@ fn webembed_chrome_occlusions(
 }
 
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width =
@@ -8089,7 +8461,7 @@ fn side_pill(
     tag: &str,
     active: bool,
 ) -> egui::Response {
-    let response = ui.interact(rect, Id::new(("side-pill", tag)), Sense::click());
+    let response = ui.interact(rect, Id::new(("side-pill", tag)), Sense::click_and_drag());
     glass_backdrop(ui, state, rect, PILL_RADIUS);
     let fill = if active {
         t.danger.gamma_multiply(0.85)
@@ -8189,9 +8561,13 @@ fn composer(
     height: f32,
 ) {
     // Anexar e gravar ficam de fora, cada um na sua pastilha; o resto mora
-    // dentro da caixa de texto.
+    // dentro da caixa de texto. No Android, a pastilha principal é a galeria:
+    // o seletor de arquivos (e, quando oculto, o microfone) fica no roll-up.
     let side = PILL_HEIGHT;
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width = left_count as f32 * side + (left_count as f32 - 1.0) * space::SM + space::MD;
@@ -8230,9 +8606,109 @@ fn composer(
         }
     }
 
+    #[cfg(target_os = "android")]
+    {
+        let gallery = side_pill(
+            ui,
+            state,
+            t,
+            attach_rect,
+            icon::IMAGE,
+            s.gallery,
+            "gallery",
+            false,
+        );
+        if gallery.clicked() {
+            state.actions.push(ChatAction::PickGallery);
+        }
+        if gallery.long_touched() {
+            state.android_gallery_menu_open = true;
+        }
+
+        let mut menu_rect = Rect::NOTHING;
+        if state.android_gallery_menu_open {
+            let item_count = 2 + usize::from(!state.show_record);
+            let menu_h = item_count as f32 * side
+                + (item_count.saturating_sub(1)) as f32 * space::SM;
+            menu_rect = Rect::from_min_max(
+                egui::pos2(attach_rect.min.x, attach_rect.min.y - space::SM - menu_h),
+                egui::pos2(attach_rect.max.x, attach_rect.min.y - space::SM),
+            );
+
+            let file_rect = Rect::from_min_size(menu_rect.min, Vec2::splat(side));
+            if side_pill(ui, state, t, file_rect, icon::PAPERCLIP, s.attach, "attach-rollup", false)
+                .clicked()
+            {
+                state.android_gallery_menu_open = false;
+                state.actions.push(ChatAction::PickFiles);
+            }
+
+            let camera_rect = Rect::from_min_size(
+                egui::pos2(file_rect.min.x, file_rect.max.y + space::SM),
+                Vec2::splat(side),
+            );
+            if side_pill(
+                ui,
+                state,
+                t,
+                camera_rect,
+                icon::CAMERA,
+                s.camera,
+                "camera-rollup",
+                false,
+            )
+            .clicked()
+            {
+                state.android_gallery_menu_open = false;
+                state.actions.push(ChatAction::CaptureMedia);
+            }
+
+            if !state.show_record {
+                let mic_rect = Rect::from_min_size(
+                    egui::pos2(camera_rect.min.x, camera_rect.max.y + space::SM),
+                    Vec2::splat(side),
+                );
+                let label = if recording { s.record_stop } else { s.record };
+                let glyph = if recording { icon::STOP_CIRCLE } else { icon::MICROPHONE };
+                if side_pill(ui, state, t, mic_rect, glyph, label, "record-rollup", recording)
+                    .clicked()
+                {
+                    state.android_gallery_menu_open = false;
+                    match state.recorder.take() {
+                        Some(recorder) => {
+                            if let Some(path) = recorder.finish() {
+                                state.attachments.push(crate::platform::files::describe(&path));
+                            }
+                        }
+                        None => {
+                            state.recorder = crate::media::player::Recorder::start(
+                                &crate::media::cache_root().join("recordings"),
+                            );
+                            if state.recorder.is_none() {
+                                let now = ui.input(|input| input.time);
+                                state.error = Some((s.record_failed.to_owned(), now));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if state.android_gallery_menu_open
+            && ui.input(|input| input.pointer.any_pressed())
+            && let Some(pos) = ui.input(|input| input.pointer.press_origin())
+            && !attach_rect.contains(pos)
+            && !menu_rect.contains(pos)
+        {
+            state.android_gallery_menu_open = false;
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     if side_pill(ui, state, t, attach_rect, icon::PAPERCLIP, s.attach, "attach", false).clicked() {
         state.actions.push(ChatAction::PickFiles);
     }
+
     if with_record {
         let record_rect = Rect::from_center_size(
             egui::pos2(attach_rect.center().x + side + space::SM, line_mid),

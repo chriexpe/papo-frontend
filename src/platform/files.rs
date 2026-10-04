@@ -255,9 +255,37 @@ impl Dialogs {
         });
     }
 
+    /// Mídia visual para o compositor. O desktop não usa este caminho hoje,
+    /// mas mantê-lo real deixa o ChatAction exaustivo sem um fallback surpresa.
+    pub fn pick_gallery(&mut self, repaint: egui::Context) {
+        self.spawn(repaint, |dialog| async move {
+            match dialog
+                .set_title("Galeria")
+                .add_filter(
+                    "Fotos e vídeos",
+                    &["png", "jpg", "jpeg", "gif", "webp", "avif", "mp4", "webm", "mov", "m4v"],
+                )
+                .pick_files()
+                .await
+            {
+                Some(handles) => Chosen::Files(
+                    handles
+                        .iter()
+                        .map(|handle| describe(&handle.path().to_path_buf()))
+                        .collect(),
+                ),
+                None => Chosen::Cancelled,
+            }
+        });
+    }
+
     /// O mesmo seletor, filtrado nos formatos que animam. Uma busca de GIF
     /// de verdade (Tenor, Giphy) precisa de chave e de um proxy no backend;
     /// até lá, o arquivo vem do disco.
+    pub fn capture_media(&mut self, repaint: egui::Context) {
+        self.pick_gallery(repaint);
+    }
+
     pub fn pick_animations(&mut self, repaint: egui::Context) {
         self.spawn(repaint, |dialog| async move {
             match dialog
@@ -521,6 +549,28 @@ impl Dialogs {
         self.pending.push(rx);
         if !super::jvm::call_activity("pickFiles", "()V", None) {
             log::warn!("o seletor de arquivos não abriu");
+        }
+    }
+
+    pub fn pick_gallery(&mut self, _repaint: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut slot) = ANSWER.lock() {
+            *slot = Some(tx);
+        }
+        self.pending.push(rx);
+        if !super::jvm::call_activity("pickGallery", "()V", None) {
+            log::warn!("o seletor da galeria não abriu");
+        }
+    }
+
+    pub fn capture_media(&mut self, _repaint: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut slot) = ANSWER.lock() {
+            *slot = Some(tx);
+        }
+        self.pending.push(rx);
+        if !super::jvm::call_activity("captureMedia", "()V", None) {
+            log::warn!("a câmera não abriu");
         }
     }
 
