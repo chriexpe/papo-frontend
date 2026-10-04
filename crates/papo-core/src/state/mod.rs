@@ -1997,11 +1997,25 @@ impl Store {
             self.read_marks.insert(channel_id.to_owned(), read_at);
         }
 
-        if state
-            .jump_forward
-            .as_ref()
-            .is_some_and(|target| state.read_message_id.as_ref() == Some(target))
-        {
+        // O laço acima pode atravessar o checkpoint num único passo (um lote de
+        // mensagens chegando de uma vez, como depois de reconectar). Igualdade
+        // exata deixava a ampulheta presa para sempre: vale "alcançou ou
+        // passou". Um checkpoint que sumiu da janela também é aposentado.
+        let forward_reached = state.jump_forward.as_ref().is_some_and(|target| {
+            let frontier = state.read_at.zip(state.read_message_id.as_deref());
+            let target_key = ordered
+                .iter()
+                .find(|(_, id)| id == target)
+                .map(|(at, id)| (*at, id.as_str()));
+            match (frontier, target_key) {
+                (Some((read_at, read_id)), Some(target_key)) => {
+                    (read_at, read_id) >= target_key
+                }
+                (_, None) => true,
+                _ => false,
+            }
+        });
+        if forward_reached {
             state.jump_back = None;
             state.jump_forward = None;
             state.seen_out_of_order.clear();
@@ -2106,7 +2120,14 @@ impl Store {
         {
             return Some(newest);
         }
-        let first_unread = self.first_unread_loaded(channel_id)?;
+        let first_unread = self.first_unread_loaded(channel_id);
+
+        // `unread` pode estar aceso sem nenhuma mensagem carregada acima da
+        // fronteira (menção de notificação, chegada ao vivo ainda não medida).
+        // Sem nada a pular, o botão é só "ir ao fim"; antes ele não fazia nada.
+        if existing.is_none() && first_unread.is_none() {
+            return Some(newest);
+        }
 
         if let Some(target) = existing.clone() {
             let reached = latest_visible.is_some_and(|visible| {
@@ -2175,13 +2196,13 @@ impl Store {
                         .is_none_or(|frontier| key > frontier)
                 })
                 .map(|(_, id)| id)
-                .unwrap_or(first_unread)
+                .or(first_unread)
         } else {
             first_unread
         };
 
         let state = self.read_states.entry(channel_id.to_owned()).or_default();
-        state.jump_back = Some(next_back);
+        state.jump_back = next_back;
         state.jump_forward = Some(newest.clone());
         self.refresh_channel_read_badge(channel_id);
         self.persist_read_state(channel_id);
@@ -5392,4 +5413,32 @@ mod tests {
         assert_eq!(store.next_mention_target("geral").as_deref(), Some("m5"));
     }
 
+    #[test]
+    fn hourglass_clears_when_the_frontier_passes_the_forward_checkpoint() {
+        let mut store = navigation_store(6);
+        store.prepare_newer_jump("geral", Some("m1"));
+        store.messages.push(navigation_message("m7", 7));
+        store.messages.push(navigation_message("m8", 8));
+
+        let all: Vec<String> = (2..=8).map(|index| format!("m{index}")).collect();
+        store.observe_visible_messages("geral", &all);
+
+        let state = store.read_states.get("geral").unwrap();
+        assert_eq!(state.read_message_id.as_deref(), Some("m8"));
+        assert!(state.jump_back.is_none());
+        assert!(state.jump_forward.is_none());
+    }
+
+    #[test]
+    fn newer_jump_still_reaches_the_end_when_nothing_is_unread() {
+        let mut store = navigation_store(6);
+        store.mark_read("geral");
+        store.channels[0].unread = true;
+
+        assert_eq!(
+            store.prepare_newer_jump("geral", Some("m2")).as_deref(),
+            Some("m6")
+        );
+        assert!(store.jump_back_target("geral").is_none());
+    }
 }
