@@ -1,6 +1,7 @@
 package io.github.chriexpe.papo;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.ClipData;
@@ -1678,22 +1679,20 @@ public class PapoActivity extends GameActivity {
         video.setClipData(ClipData.newRawUri("capture", videoUri));
         video.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
-        final boolean hasPhoto = photo.resolveActivity(getPackageManager()) != null;
-        final boolean hasVideo = video.resolveActivity(getPackageManager()) != null;
-        if (!hasPhoto && !hasVideo) {
+        // Não faça preflight com resolveActivity() aqui. Em apps que
+        // miram Android 11+, a visibilidade de pacotes pode esconder a câmera
+        // dessa consulta mesmo quando a Intent implícita pode ser iniciada.
+        // A recomendação da própria plataforma é tentar abrir e tratar
+        // ActivityNotFoundException.
+        final Intent launch = Intent.createChooser(photo, "Câmera");
+        launch.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[] {video});
+        try {
+            startActivityForResult(launch, CAPTURE_REQUEST);
+        } catch (ActivityNotFoundException | SecurityException error) {
+            Log.e("papo", "não deu para abrir a câmera", error);
             discardPendingCapture();
             nativeFilesPicked(new String[0], new String[0]);
-            return;
         }
-
-        final Intent launch;
-        if (hasPhoto && hasVideo) {
-            launch = Intent.createChooser(photo, "Câmera");
-            launch.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[] {video});
-        } else {
-            launch = hasPhoto ? photo : video;
-        }
-        startActivityForResult(launch, CAPTURE_REQUEST);
     }
 
     private void discardPendingCapture() {
