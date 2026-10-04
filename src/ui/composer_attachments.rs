@@ -5,9 +5,7 @@
 //! O spoiler é aplicado pelo backend; aqui só se marca e se mostra como o
 //! destinatário verá. Anonimizar roda no envio (ver `platform::anonymize`).
 
-use egui::{
-    Align, Color32, CornerRadius, Id, Layout, Rect, Sense, Stroke, UiBuilder, Vec2, pos2, vec2,
-};
+use egui::{Color32, CornerRadius, Id, Rect, Sense, Stroke, UiBuilder, Vec2, pos2, vec2};
 use egui_phosphor::regular as icon;
 
 use papo_core::api::client::Upload;
@@ -53,27 +51,38 @@ pub fn band(
     // quando é o que faz a prévia acompanhar.
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(1200));
-    ui.scope_builder(
-        UiBuilder::new()
-            .max_rect(band.shrink2(vec2(space::LG, space::SM)))
-            .layout(Layout::left_to_right(Align::Center)),
-        |ui| {
-            egui::ScrollArea::horizontal()
-                .id_salt("composer-attach-scroll")
-                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = space::MD;
-                        for (index, upload) in uploads.iter().enumerate() {
-                            if let Some(action) = tile(ui, t, s, media, upload, index) {
-                                requested = Some((index, action));
-                            }
-                        }
-                    });
-                });
-        },
-    );
+
+    // Posições absolutas: a faixa é pintada à mão, como o resto do composer,
+    // e a rolagem horizontal (roda, arrasto ou dedo) é só um deslocamento.
+    let area = band.shrink2(vec2(space::LG, space::SM));
+    let step = TILE + space::SM + STACK_W + space::MD;
+    let content = uploads.len() as f32 * step - space::MD;
+    let max_scroll = (content - area.width()).max(0.0);
+
+    let scroll_id = Id::new("composer-attach-scroll");
+    let mut offset: f32 = ui
+        .data(|data| data.get_temp::<f32>(scroll_id))
+        .unwrap_or(0.0);
+    let drag = ui.interact(area, scroll_id.with("drag"), Sense::drag());
+    offset -= drag.drag_delta().x;
+    if ui.rect_contains_pointer(area) {
+        let wheel = ui.input(|input| input.smooth_scroll_delta);
+        offset -= if wheel.x != 0.0 { wheel.x } else { wheel.y };
+    }
+    offset = offset.clamp(0.0, max_scroll);
+    ui.data_mut(|data| data.insert_temp(scroll_id, offset));
+
+    let mut child = ui.new_child(UiBuilder::new().max_rect(area));
+    child.set_clip_rect(area.intersect(ui.clip_rect()));
+    for (index, upload) in uploads.iter().enumerate() {
+        let origin = pos2(area.min.x + index as f32 * step - offset, area.min.y);
+        if origin.x > area.max.x || origin.x + TILE + STACK_W < area.min.x {
+            continue;
+        }
+        if let Some(action) = tile(&mut child, t, s, media, upload, index, origin) {
+            requested = Some((index, action));
+        }
+    }
     requested
 }
 
@@ -106,8 +115,9 @@ fn tile(
     media: &mut MediaStore,
     upload: &Upload,
     index: usize,
+    origin: egui::Pos2,
 ) -> Option<TileAction> {
-    let (rect, _) = ui.allocate_exact_size(vec2(TILE + space::SM + STACK_W, TILE), Sense::hover());
+    let rect = Rect::from_min_size(origin, vec2(TILE + space::SM + STACK_W, TILE));
     let thumb = Rect::from_min_size(rect.min, Vec2::splat(TILE));
     let stack = Rect::from_min_max(pos2(thumb.max.x + space::SM, rect.min.y), rect.max);
     let corner = CornerRadius::same(radius::SHEET);
@@ -408,5 +418,55 @@ mod tests {
             ("site.com", "/a/b?q=1")
         );
         assert_eq!(url_parts("http://site.com"), ("site.com", ""));
+    }
+
+    /// Reproduz o quadro do egui sem janela e confere onde a faixa pintou.
+    fn painted_bounds(band_rect: Rect) -> Rect {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let t = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut media = MediaStore::new(None);
+        let upload = Upload {
+            path: "/nonexistent/foto.jpg".into(),
+            name: "foto.jpg".into(),
+            mime: "image/jpeg".into(),
+            size: 1000,
+            spoiler: false,
+            anonymize: false,
+        };
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 800.0))),
+            ..Default::default()
+        };
+        // As fontes só valem a partir do quadro seguinte.
+        let mut warm = ctx.run_ui(input.clone(), |_| {});
+        warm.textures_delta.clear();
+        let mut output = ctx.run_ui(input, |ui| {
+            band(
+                ui,
+                &t,
+                &crate::i18n::EN,
+                &mut media,
+                &[upload.clone()],
+                band_rect,
+            );
+        });
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .map(|clipped| clipped.shape.visual_bounding_rect())
+            .filter(|rect| rect.is_positive())
+            .fold(Rect::NOTHING, |all, rect| all.union(rect))
+    }
+
+    #[test]
+    fn tile_stays_inside_its_band() {
+        let band_rect = Rect::from_min_max(pos2(10.0, 600.0), pos2(390.0, 600.0 + BAND_H));
+        let bounds = painted_bounds(band_rect);
+        assert!(
+            bounds.min.y >= band_rect.min.y - 0.5 && bounds.max.y <= band_rect.max.y + 0.5,
+            "pintou {bounds:?} fora da faixa {band_rect:?}"
+        );
     }
 }
