@@ -25,6 +25,8 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.provider.MediaStore;
+import android.os.ext.SdkExtensions;
 import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.FileProvider;
 import android.os.Build;
@@ -1582,6 +1584,42 @@ public class PapoActivity extends GameActivity {
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("*/*");
             intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            startActivityForResult(intent, PICK_REQUEST);
+        });
+    }
+
+    /**
+     * Abre o seletor visual do Android para fotos e vídeos.
+     *
+     * <p>Android 13+ e Android 11/12 com o Photo Picker retroportado usam o
+     * seletor de mídia dedicado. Em Android 12 sem esse módulo, restringimos
+     * ACTION_OPEN_DOCUMENT a imagem/vídeo em vez de cair no seletor genérico.
+     */
+    public void pickGallery() {
+        runOnUiThread(() -> {
+            final boolean photoPickerAvailable =
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                        && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.R) >= 2);
+
+            final Intent intent;
+            if (photoPickerAvailable) {
+                intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.putExtra(
+                            MediaStore.EXTRA_PICK_IMAGES_MAX,
+                            MediaStore.getPickImagesMaxLimit());
+                }
+            } else {
+                intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(
+                        Intent.EXTRA_MIME_TYPES,
+                        new String[] {"image/*", "video/*"});
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
             startActivityForResult(intent, PICK_REQUEST);
         });
     }
