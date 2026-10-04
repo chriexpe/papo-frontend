@@ -2213,6 +2213,8 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGallery => self.dialogs.pick_gallery(ctx.clone()),
+            ChatAction::CaptureMedia => self.dialogs.capture_media(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -2465,6 +2467,8 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGallery => self.dialogs.pick_gallery(ctx.clone()),
+            ChatAction::CaptureMedia => self.dialogs.capture_media(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -3380,6 +3384,7 @@ impl PapoApp {
             self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
+            self.ui.show_record = self.settings.record_button;
             if ask_download != before_secondary.7 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask

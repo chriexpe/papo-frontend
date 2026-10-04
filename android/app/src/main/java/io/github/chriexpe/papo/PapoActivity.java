@@ -1,6 +1,7 @@
 package io.github.chriexpe.papo;
 
 import android.Manifest;
+import android.content.ActivityNotFoundException;
 import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.ClipData;
@@ -25,6 +26,8 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.provider.OpenableColumns;
+import android.provider.MediaStore;
+import android.os.ext.SdkExtensions;
 import androidx.activity.OnBackPressedCallback;
 import androidx.core.content.FileProvider;
 import android.os.Build;
@@ -1564,6 +1567,11 @@ public class PapoActivity extends GameActivity {
 
     private static final int PERMISSION_REQUEST = 1;
     private static final int PICK_REQUEST = 2;
+    private static final int CAPTURE_REQUEST = 3;
+
+    private boolean cameraCapturePendingPermission;
+    private File pendingCapturePhoto;
+    private File pendingCaptureVideo;
 
     /** Entrega os anexos escolhidos ao Rust. Em `src/platform/files.rs`. */
     private static native void nativeFilesPicked(String[] paths, String[] names);
@@ -1586,9 +1594,183 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /**
+     * Abre o seletor visual do Android para fotos e vídeos.
+     *
+     * <p>Android 13+ e Android 11/12 com o Photo Picker retroportado usam o
+     * seletor de mídia dedicado. Em Android 12 sem esse módulo, restringimos
+     * ACTION_OPEN_DOCUMENT a imagem/vídeo em vez de cair no seletor genérico.
+     */
+    public void pickGallery() {
+        runOnUiThread(() -> {
+            final boolean photoPickerAvailable =
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                        && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.R) >= 2);
+
+            final Intent intent;
+            if (photoPickerAvailable) {
+                intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.putExtra(
+                            MediaStore.EXTRA_PICK_IMAGES_MAX,
+                            MediaStore.getPickImagesMaxLimit());
+                }
+            } else {
+                intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                intent.putExtra(
+                        Intent.EXTRA_MIME_TYPES,
+                        new String[] {"image/*", "video/*"});
+                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            }
+            startActivityForResult(intent, PICK_REQUEST);
+        });
+    }
+
+    /**
+     * Abre a câmera instalada para capturar foto ou vídeo.
+     *
+     * <p>Usamos a câmera do sistema/OEM em vez de manter uma segunda câmera
+     * dentro do Papo. O arquivo final nasce no cache do aplicativo e, ao
+     * confirmar a captura, segue pelo mesmo pipeline de qualquer anexo.
+     */
+    public void captureMedia() {
+        runOnUiThread(() -> {
+            if (checkSelfPermission(Manifest.permission.CAMERA)
+                    != PackageManager.PERMISSION_GRANTED) {
+                cameraCapturePendingPermission = true;
+                requestPermissions(
+                        new String[] {Manifest.permission.CAMERA},
+                        PERMISSION_REQUEST);
+                return;
+            }
+            cameraCapturePendingPermission = false;
+            launchMediaCapture();
+        });
+    }
+
+    private void launchMediaCapture() {
+        final File dir = new File(getCacheDir(), "camera");
+        if (!dir.exists() && !dir.mkdirs()) {
+            Log.e("papo", "não deu para criar o cache da câmera");
+            nativeFilesPicked(new String[0], new String[0]);
+            return;
+        }
+
+        final long stamp = System.currentTimeMillis();
+        pendingCapturePhoto = new File(dir, "papo-" + stamp + ".jpg");
+        pendingCaptureVideo = new File(dir, "papo-" + stamp + ".mp4");
+
+        final Uri photoUri = FileProvider.getUriForFile(
+                this, getPackageName() + ".files", pendingCapturePhoto);
+        final Uri videoUri = FileProvider.getUriForFile(
+                this, getPackageName() + ".files", pendingCaptureVideo);
+
+        final Intent photo = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        photo.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+        photo.setClipData(ClipData.newRawUri("capture", photoUri));
+        photo.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        final Intent video = new Intent(MediaStore.ACTION_VIDEO_CAPTURE);
+        video.putExtra(MediaStore.EXTRA_OUTPUT, videoUri);
+        video.setClipData(ClipData.newRawUri("capture", videoUri));
+        video.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        // Não faça preflight com resolveActivity() aqui. Em apps que
+        // miram Android 11+, a visibilidade de pacotes pode esconder a câmera
+        // dessa consulta mesmo quando a Intent implícita pode ser iniciada.
+        // A recomendação da própria plataforma é tentar abrir e tratar
+        // ActivityNotFoundException.
+        final Intent launch = Intent.createChooser(photo, "Câmera");
+        launch.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[] {video});
+        try {
+            startActivityForResult(launch, CAPTURE_REQUEST);
+        } catch (ActivityNotFoundException | SecurityException error) {
+            Log.e("papo", "não deu para abrir a câmera", error);
+            discardPendingCapture();
+            nativeFilesPicked(new String[0], new String[0]);
+        }
+    }
+
+    private void discardPendingCapture() {
+        if (pendingCapturePhoto != null && pendingCapturePhoto.exists()) {
+            pendingCapturePhoto.delete();
+        }
+        if (pendingCaptureVideo != null && pendingCaptureVideo.exists()) {
+            pendingCaptureVideo.delete();
+        }
+        pendingCapturePhoto = null;
+        pendingCaptureVideo = null;
+    }
+
+    private void finishMediaCapture(int resultCode, Intent data) {
+        if (resultCode != RESULT_OK) {
+            discardPendingCapture();
+            nativeFilesPicked(new String[0], new String[0]);
+            return;
+        }
+
+        final List<String> paths = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        if (pendingCapturePhoto != null
+                && pendingCapturePhoto.exists()
+                && pendingCapturePhoto.length() > 0) {
+            paths.add(pendingCapturePhoto.getAbsolutePath());
+            names.add(pendingCapturePhoto.getName());
+        }
+        if (pendingCaptureVideo != null
+                && pendingCaptureVideo.exists()
+                && pendingCaptureVideo.length() > 0) {
+            paths.add(pendingCaptureVideo.getAbsolutePath());
+            names.add(pendingCaptureVideo.getName());
+        }
+
+        final File unusedPhoto = pendingCapturePhoto;
+        final File unusedVideo = pendingCaptureVideo;
+        pendingCapturePhoto = null;
+        pendingCaptureVideo = null;
+
+        if (!paths.isEmpty()) {
+            if (unusedPhoto != null && unusedPhoto.exists()
+                    && !paths.contains(unusedPhoto.getAbsolutePath())) {
+                unusedPhoto.delete();
+            }
+            if (unusedVideo != null && unusedVideo.exists()
+                    && !paths.contains(unusedVideo.getAbsolutePath())) {
+                unusedVideo.delete();
+            }
+            nativeFilesPicked(paths.toArray(new String[0]), names.toArray(new String[0]));
+            return;
+        }
+
+        if (unusedPhoto != null && unusedPhoto.exists()) {
+            unusedPhoto.delete();
+        }
+        if (unusedVideo != null && unusedVideo.exists()) {
+            unusedVideo.delete();
+        }
+
+        // Algumas câmeras ignoram EXTRA_OUTPUT e devolvem um content://.
+        if (data != null && data.getData() != null) {
+            final List<Uri> chosen = new ArrayList<>();
+            chosen.add(data.getData());
+            new Thread(() -> copyAll(chosen), "papo-camera-copy").start();
+            return;
+        }
+
+        nativeFilesPicked(new String[0], new String[0]);
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == CAPTURE_REQUEST) {
+            finishMediaCapture(resultCode, data);
+            return;
+        }
         if (requestCode != PICK_REQUEST) {
             return;
         }
@@ -1729,6 +1911,15 @@ public class PapoActivity extends GameActivity {
             final boolean granted = i < results.length
                     && results[i] == PackageManager.PERMISSION_GRANTED;
             nativePermissionResult(permissions[i], granted);
+            if (Manifest.permission.CAMERA.equals(permissions[i])
+                    && cameraCapturePendingPermission) {
+                cameraCapturePendingPermission = false;
+                if (granted) {
+                    launchMediaCapture();
+                } else {
+                    nativeFilesPicked(new String[0], new String[0]);
+                }
+            }
         }
     }
 

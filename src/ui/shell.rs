@@ -145,6 +145,10 @@ pub enum ChatAction {
     },
     /// Abre o seletor de arquivos do sistema.
     PickFiles,
+    /// Abre a galeria/Photo Picker para fotos e vídeos.
+    PickGallery,
+    /// Abre a câmera Android para capturar foto ou vídeo.
+    CaptureMedia,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
     /// Abre a criação inline em Ajustes do servidor → Canais.
@@ -902,6 +906,8 @@ pub struct UiState {
     last_scroll_activity: f64,
     /// Botão de gravar recado na caixa de texto (ajuste do usuário).
     pub show_record: bool,
+    /// Menu Android aberto por pressão longa na pastilha da galeria.
+    pub android_gallery_menu_open: bool,
     /// Emoji no nome de canal usa a mesma cor do rótulo.
     pub channel_emoji_monochrome: bool,
     /// Gravação em curso.
@@ -1035,6 +1041,7 @@ impl Default for UiState {
             visible_message_ids: Vec::new(),
             last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
+            android_gallery_menu_open: false,
             channel_emoji_monochrome: true,
             recorder: None,
             error: None,
@@ -8285,7 +8292,11 @@ fn webembed_chrome_occlusions(
     rects.push(actions_rect);
 
     let side = PILL_HEIGHT;
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width =
@@ -8312,6 +8323,17 @@ fn webembed_chrome_occlusions(
         ));
     }
 
+    #[cfg(target_os = "android")]
+    if state.android_gallery_menu_open {
+        let item_count = 2 + usize::from(!state.show_record);
+        let menu_h =
+            item_count as f32 * side + (item_count.saturating_sub(1)) as f32 * space::SM;
+        rects.push(Rect::from_min_max(
+            egui::pos2(attach.min.x, attach.min.y - space::SM - menu_h),
+            egui::pos2(attach.max.x, attach.min.y - space::SM),
+        ));
+    }
+
     let names = store.typing_names();
     if !names.is_empty() {
         let verb = match store.typing_phrase() {
@@ -8335,7 +8357,11 @@ fn webembed_chrome_occlusions(
 }
 
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+    #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width =
@@ -8387,7 +8413,7 @@ fn side_pill(
     tag: &str,
     active: bool,
 ) -> egui::Response {
-    let response = ui.interact(rect, Id::new(("side-pill", tag)), Sense::click());
+    let response = ui.interact(rect, Id::new(("side-pill", tag)), Sense::click_and_drag());
     glass_backdrop(ui, state, rect, PILL_RADIUS);
     let fill = if active {
         t.danger.gamma_multiply(0.85)
@@ -8466,9 +8492,13 @@ fn composer(
     height: f32,
 ) {
     // Anexar e gravar ficam de fora, cada um na sua pastilha; o resto mora
-    // dentro da caixa de texto.
+    // dentro da caixa de texto. No Android, a pastilha principal é a galeria:
+    // o seletor de arquivos (e, quando oculto, o microfone) fica no roll-up.
     let side = PILL_HEIGHT;
     let recording = state.recorder.is_some();
+    #[cfg(target_os = "android")]
+    let with_record = state.show_record;
+    #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
     let left_count = 1 + usize::from(with_record);
     let left_width = left_count as f32 * side + (left_count as f32 - 1.0) * space::SM + space::MD;
@@ -8490,9 +8520,110 @@ fn composer(
         egui::pos2(area.min.x + PILL_MARGIN + side / 2.0, line_mid),
         Vec2::splat(side),
     );
+
+    #[cfg(target_os = "android")]
+    {
+        let gallery = side_pill(
+            ui,
+            state,
+            t,
+            attach_rect,
+            icon::IMAGE,
+            s.gallery,
+            "gallery",
+            false,
+        );
+        if gallery.clicked() {
+            state.actions.push(ChatAction::PickGallery);
+        }
+        if gallery.long_touched() {
+            state.android_gallery_menu_open = true;
+        }
+
+        let mut menu_rect = Rect::NOTHING;
+        if state.android_gallery_menu_open {
+            let item_count = 2 + usize::from(!state.show_record);
+            let menu_h = item_count as f32 * side
+                + (item_count.saturating_sub(1)) as f32 * space::SM;
+            menu_rect = Rect::from_min_max(
+                egui::pos2(attach_rect.min.x, attach_rect.min.y - space::SM - menu_h),
+                egui::pos2(attach_rect.max.x, attach_rect.min.y - space::SM),
+            );
+
+            let file_rect = Rect::from_min_size(menu_rect.min, Vec2::splat(side));
+            if side_pill(ui, state, t, file_rect, icon::PAPERCLIP, s.attach, "attach-rollup", false)
+                .clicked()
+            {
+                state.android_gallery_menu_open = false;
+                state.actions.push(ChatAction::PickFiles);
+            }
+
+            let camera_rect = Rect::from_min_size(
+                egui::pos2(file_rect.min.x, file_rect.max.y + space::SM),
+                Vec2::splat(side),
+            );
+            if side_pill(
+                ui,
+                state,
+                t,
+                camera_rect,
+                icon::CAMERA,
+                s.camera,
+                "camera-rollup",
+                false,
+            )
+            .clicked()
+            {
+                state.android_gallery_menu_open = false;
+                state.actions.push(ChatAction::CaptureMedia);
+            }
+
+            if !state.show_record {
+                let mic_rect = Rect::from_min_size(
+                    egui::pos2(camera_rect.min.x, camera_rect.max.y + space::SM),
+                    Vec2::splat(side),
+                );
+                let label = if recording { s.record_stop } else { s.record };
+                let glyph = if recording { icon::STOP_CIRCLE } else { icon::MICROPHONE };
+                if side_pill(ui, state, t, mic_rect, glyph, label, "record-rollup", recording)
+                    .clicked()
+                {
+                    state.android_gallery_menu_open = false;
+                    match state.recorder.take() {
+                        Some(recorder) => {
+                            if let Some(path) = recorder.finish() {
+                                state.attachments.push(crate::platform::files::describe(&path));
+                            }
+                        }
+                        None => {
+                            state.recorder = crate::media::player::Recorder::start(
+                                &crate::media::cache_root().join("recordings"),
+                            );
+                            if state.recorder.is_none() {
+                                let now = ui.input(|input| input.time);
+                                state.error = Some((s.record_failed.to_owned(), now));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if state.android_gallery_menu_open
+            && ui.input(|input| input.pointer.any_pressed())
+            && let Some(pos) = ui.input(|input| input.pointer.press_origin())
+            && !attach_rect.contains(pos)
+            && !menu_rect.contains(pos)
+        {
+            state.android_gallery_menu_open = false;
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
     if side_pill(ui, state, t, attach_rect, icon::PAPERCLIP, s.attach, "attach", false).clicked() {
         state.actions.push(ChatAction::PickFiles);
     }
+
     if with_record {
         let record_rect = Rect::from_center_size(
             egui::pos2(attach_rect.center().x + side + space::SM, line_mid),
