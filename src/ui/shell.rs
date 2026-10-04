@@ -17,6 +17,8 @@ use crate::platform::menu::MenuCommand;
 use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store};
 
 use super::attachments::{self, MediaAction};
+use super::composer_attachments;
+use super::format_assist;
 use super::emoji;
 use super::glass::SharedGlass;
 use super::gif;
@@ -94,7 +96,7 @@ const ROW_PADDING: f32 = 4.0;
 const TOPIC_HOLD: f64 = 4.0;
 const TOPIC_SLIDE: f64 = 0.45;
 /// Altura da faixa de anexos à espera de envio, dentro da caixa de texto.
-const COMPOSER_ATTACH_H: f32 = 62.0;
+const COMPOSER_ATTACH_H: f32 = composer_attachments::BAND_H;
 const COMPOSER_REPLY_H: f32 = 26.0;
 /// Altura da linha onde se digita, sem as faixas de cima.
 const COMPOSER_LINE_H: f32 = 52.0;
@@ -890,6 +892,8 @@ pub struct UiState {
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
     pub suggest_muted: bool,
+    /// Fechamento de formato (` ``` `, `**`...) oferecido no quadro anterior.
+    pub format_ghost: Option<String>,
     /// Onde começava o apelido quando o Esc foi apertado.
     pub suggest_start: Option<usize>,
     pub emoji_query: String,
@@ -1040,6 +1044,7 @@ impl Default for UiState {
             hover_actions: None,
             suggest: None,
             suggest_muted: false,
+            format_ghost: None,
             suggest_start: None,
             emoji_query: String::new(),
             emoji_group: 0,
@@ -8419,6 +8424,9 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     if !state.attachments.is_empty() {
         height += COMPOSER_ATTACH_H;
     }
+    if composer_attachments::first_url(&state.composer).is_some() {
+        height += composer_attachments::LINK_H;
+    }
     height
 }
 
@@ -8764,80 +8772,47 @@ fn composer(
         cursor = band.max.y;
     }
 
-    // Faixa dos anexos escolhidos.
+    // Faixa dos anexos escolhidos: prévia de cada um, com as ações
+    // empilhadas à direita.
     if !state.attachments.is_empty() {
         let band = Rect::from_min_size(
             egui::pos2(rect.min.x, cursor),
             Vec2::new(rect.width(), COMPOSER_ATTACH_H),
         );
-        let mut remove = None;
-        let mut x = band.min.x + space::LG;
-        for (index, upload) in state.attachments.iter().enumerate() {
-            let chip = Rect::from_min_size(
-                egui::pos2(x, band.min.y + space::XS),
-                Vec2::new(168.0, COMPOSER_ATTACH_H - space::MD),
-            );
-            if chip.max.x > band.max.x - space::LG {
-                break;
+        let requested = composer_attachments::band(
+            ui,
+            t,
+            s,
+            &mut state.media,
+            &state.attachments,
+            band,
+        );
+        if let Some((index, action)) = requested {
+            match action {
+                composer_attachments::TileAction::Remove => {
+                    state.attachments.remove(index);
+                }
+                composer_attachments::TileAction::Spoiler => {
+                    state.attachments[index].spoiler = !state.attachments[index].spoiler;
+                }
+                composer_attachments::TileAction::Anonymize => {
+                    state.attachments[index].anonymize = !state.attachments[index].anonymize;
+                }
+                composer_attachments::TileAction::EditExternally => {
+                    crate::platform::files::open_path(&state.attachments[index].path);
+                }
             }
-            ui.painter().rect(
-                chip,
-                CornerRadius::same(radius::CARD),
-                t.fill_soft,
-                Stroke::new(1.0, t.separator),
-                egui::StrokeKind::Inside,
-            );
-            let glyph = match crate::api::models::Kind::guess(&upload.mime, &upload.name) {
-                crate::api::models::Kind::Image => icon::IMAGE,
-                crate::api::models::Kind::Video => icon::FILM_STRIP,
-                crate::api::models::Kind::Audio => icon::MICROPHONE,
-                crate::api::models::Kind::Other => icon::FILE,
-            };
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::LG, chip.center().y),
-                egui::Align2::CENTER_CENTER,
-                glyph,
-                text::icon(16.0),
-                t.label_secondary,
-            );
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::XXXL, chip.center().y - 7.0),
-                egui::Align2::LEFT_CENTER,
-                attachments::elide(&upload.name, 16),
-                text::caption(),
-                t.label,
-            );
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::XXXL, chip.center().y + 8.0),
-                egui::Align2::LEFT_CENTER,
-                attachments::size_label(upload.size as i64),
-                text::footnote(),
-                t.label_tertiary,
-            );
-            let close = Rect::from_center_size(
-                egui::pos2(chip.max.x - space::MD, chip.min.y + space::MD),
-                Vec2::splat(18.0),
-            );
-            let response = ui.interact(close, Id::new(("chip", index)), Sense::click());
-            ui.painter().text(
-                close.center(),
-                egui::Align2::CENTER_CENTER,
-                icon::X_CIRCLE,
-                text::icon(13.0),
-                if response.hovered() {
-                    t.label
-                } else {
-                    t.label_tertiary
-                },
-            );
-            if response.clicked() {
-                remove = Some(index);
-            }
-            x = chip.max.x + space::SM;
         }
-        if let Some(index) = remove {
-            state.attachments.remove(index);
-        }
+        cursor = band.max.y;
+    }
+
+    // Cartão básico do primeiro link do texto.
+    if let Some(url) = composer_attachments::first_url(&state.composer) {
+        let band = Rect::from_min_size(
+            egui::pos2(rect.min.x, cursor),
+            Vec2::new(rect.width(), composer_attachments::LINK_H),
+        );
+        composer_attachments::link_card(ui, t, url, band);
         cursor = band.max.y;
     }
 
@@ -9046,6 +9021,32 @@ fn composer(
                 SuggestKeys::default()
             };
 
+            // Tab ou seta para a direita completam o formato aberto (` ``` `,
+            // `**`...). Lido antes da caixa de texto, como as teclas da lista.
+            #[cfg(not(target_os = "android"))]
+            let ghost_key = state.format_ghost.is_some()
+                && state.suggest.is_none()
+                && ui.input_mut(|input| {
+                    let pressed = input.key_pressed(egui::Key::Tab)
+                        || (input.key_pressed(egui::Key::ArrowRight)
+                            && input.modifiers.is_none());
+                    if pressed {
+                        input.events.retain(|event| {
+                            !matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: egui::Key::Tab | egui::Key::ArrowRight,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        });
+                    }
+                    pressed
+                });
+            #[cfg(target_os = "android")]
+            let ghost_key = false;
+
             #[cfg(target_os = "android")]
             let (field_focused, caret) =
                 if state.editing.is_none() && android_chat_editor_visible {
@@ -9234,6 +9235,94 @@ fn composer(
             let accepted = keys.accept && state.suggest.is_some();
             if accepted {
                 accept_suggestion(store, state, ui.ctx(), edit_id);
+            }
+
+            // Fechamento sugerido para o formato aberto, como texto fantasma
+            // no fim da linha: Tab, seta para a direita ou um toque o inserem.
+            let mut ghost_tap = false;
+            let ghost = if field_focused
+                && state.suggest.is_none()
+                && state.editing.is_none()
+                && !accepted
+            {
+                caret.and_then(|caret| {
+                    format_assist::pending_closer(&state.composer, caret)
+                })
+            } else {
+                None
+            };
+            if let Some(closer) = &ghost {
+                let shown = closer.replace('\n', "↵");
+                let font = text::caption();
+                let width = ui
+                    .painter()
+                    .layout_no_wrap(shown.clone(), font.clone(), t.label)
+                    .size()
+                    .x;
+                #[cfg(not(target_os = "android"))]
+                let chip = Rect::from_center_size(
+                    egui::pos2(
+                        field.max.x - space::SM - (width + 52.0) / 2.0,
+                        field.center().y,
+                    ),
+                    Vec2::new(width + 52.0, 22.0),
+                );
+                // A View nativa do Android cobre o campo e come o toque; o
+                // chip fica logo acima dele.
+                #[cfg(target_os = "android")]
+                let chip = Rect::from_center_size(
+                    egui::pos2(
+                        field.max.x - space::SM - (width + 24.0) / 2.0,
+                        field.min.y - 18.0,
+                    ),
+                    Vec2::new(width + 24.0, 24.0),
+                );
+                let response = ui.interact(chip, Id::new("format-ghost"), Sense::click());
+                ui.painter().rect(
+                    chip,
+                    CornerRadius::same(radius::CONTROL),
+                    if response.hovered() { t.fill_medium } else { t.fill_soft },
+                    Stroke::new(1.0, t.separator),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    egui::pos2(chip.min.x + space::MD, chip.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    &shown,
+                    font,
+                    t.label_secondary,
+                );
+                #[cfg(not(target_os = "android"))]
+                {
+                    let cap = Rect::from_center_size(
+                        egui::pos2(chip.max.x - space::MD - 12.0, chip.center().y),
+                        Vec2::new(26.0, 14.0),
+                    );
+                    ui.painter().rect_stroke(
+                        cap,
+                        CornerRadius::same(4),
+                        Stroke::new(1.0, t.label_tertiary),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().text(
+                        cap.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Tab",
+                        text::footnote(),
+                        t.label_tertiary,
+                    );
+                }
+                ghost_tap = response.on_hover_text(s.format_accept).clicked();
+            }
+            state.format_ghost = ghost;
+            if (ghost_key || ghost_tap)
+                && let Some(caret) = caret
+                && let Some(after) = format_assist::accept(&mut state.composer, caret)
+            {
+                state.composer_caret_pending = Some(after);
+                state.typed = true;
+                state.format_ghost = None;
+                ui.ctx().request_repaint();
             }
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o

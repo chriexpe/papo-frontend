@@ -195,6 +195,12 @@ pub struct Upload {
     pub name: String,
     pub mime: String,
     pub size: u64,
+    /// O anexo deve aparecer escondido até o destinatário tocar. É o backend
+    /// quem aplica; o cliente só avisa.
+    pub spoiler: bool,
+    /// Tirar metadados e trocar o nome antes de enviar (feito no cliente,
+    /// logo antes do upload).
+    pub anonymize: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -749,6 +755,17 @@ impl Api {
             form = form
                 .text("reply_to", reply_to.to_owned())
                 .text("notify_reply", notify_reply.to_string());
+        }
+        // Posições (na ordem de `attachments`) que o autor marcou como
+        // spoiler, separadas por vírgula.
+        let spoilers: Vec<String> = attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, upload)| upload.spoiler)
+            .map(|(index, _)| index.to_string())
+            .collect();
+        if !spoilers.is_empty() {
+            form = form.text("spoiler_attachments", spoilers.join(","));
         }
         for upload in attachments {
             // Ler o arquivo inteiro para a memória fazia o pico acompanhar o

@@ -3,9 +3,11 @@ pub mod audit;
 pub mod attachments;
 pub mod auth;
 pub mod call;
+pub mod composer_attachments;
 pub mod crop;
 pub mod emoji;
 pub mod emoji_raster;
+pub mod format_assist;
 #[cfg(target_os = "android")]
 pub mod glass;
 pub mod gif;

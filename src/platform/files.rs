@@ -662,6 +662,8 @@ pub fn describe(path: &PathBuf) -> Upload {
         path: path.clone(),
         name,
         size,
+        spoiler: false,
+        anonymize: false,
     }
 }
 

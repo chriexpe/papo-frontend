@@ -4,6 +4,7 @@ pub mod activate;
 #[cfg(target_os = "linux")]
 #[path = "linux/appmenu.rs"]
 pub mod appmenu;
+pub mod anonymize;
 pub mod autostart;
 #[cfg(not(target_os = "android"))]
 pub mod clipboard;
