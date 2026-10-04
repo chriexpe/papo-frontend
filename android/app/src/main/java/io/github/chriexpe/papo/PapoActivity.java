@@ -1365,6 +1365,17 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /** Puts plain text on the system clipboard (egui-winit has no Android clipboard). */
+    public void copyText(String text) {
+        runOnUiThread(() -> {
+            final ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("Papo", text));
+            }
+        });
+    }
+
     /** Opens an http(s) link in the user's browser. The Rust side vets the scheme. */
     public void openUrl(String url) {
         runOnUiThread(() -> {

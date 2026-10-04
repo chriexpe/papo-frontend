@@ -22,6 +22,7 @@ pub mod blur;
 pub mod desktop;
 /// Onde ficam sessão e cache em cada plataforma.
 pub mod dirs;
+pub mod copy;
 pub mod files;
 pub mod links;
 #[cfg(target_os = "linux")]

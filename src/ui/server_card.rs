@@ -258,7 +258,7 @@ fn contents(
         let address = state.server_url.trim_start_matches("https://").trim_start_matches("http://").to_owned();
         let response = row(ui, t, row_h, None, &address, Some(icon::COPY), text::mono(), t.label_secondary, false);
         if response.clicked() {
-            ui.ctx().copy_text(state.server_url.clone());
+            crate::platform::copy::text(ui.ctx(), state.server_url.clone());
             state.error = Some((s.address_copied.to_owned(), ui.input(|input| input.time)));
         }
     });

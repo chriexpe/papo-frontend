@@ -2691,7 +2691,7 @@ impl PapoApp {
                             }
                         }
                         RuntimeEffect::PasswordResetLink { url, expires_at } => {
-                            ctx.copy_text(url.clone());
+                            crate::platform::copy::text(ctx, url.clone());
                             let when = expires_at.with_timezone(&chrono::Local)
                                 .format("%Y-%m-%d %H:%M")
                                 .to_string();

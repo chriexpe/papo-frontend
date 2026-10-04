@@ -7899,10 +7899,18 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content, true).or_else(|| {
+    // Mensagem que é só uma mídia (link direto ou GIF): copiar é copiar o
+    // link. Qualquer outra com link ganha "Copiar link" além de "Copiar
+    // texto", e ele leva só o endereço.
+    let media_link = direct_media_message_url(state, &message.content, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
+    });
+    let copy_link = media_link.clone().or_else(|| {
+        papo_core::preview::extract_https_urls(&message.content)
+            .into_iter()
+            .next()
     });
 
     let mut items: Vec<(&str, &str, MessageCommand)> = vec![
@@ -7912,10 +7920,11 @@ fn context_menu(
     if mine {
         items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
     }
-    if copy_link.is_some() {
-        items.push((icon::COPY, s.copy_link, MessageCommand::CopyLink));
-    } else {
+    if media_link.is_none() && !message.content.trim().is_empty() {
         items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    }
+    if copy_link.is_some() {
+        items.push((icon::LINK_SIMPLE, s.copy_link, MessageCommand::CopyLink));
     }
     items.push((
         icon::PUSH_PIN,
@@ -8011,11 +8020,13 @@ fn context_menu(
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
-                ui.ctx().copy_text(store.display_mentions(&message.content));
+                crate::platform::copy::text(ui.ctx(), store.display_mentions(&message.content));
+                state.error = Some((s.copied.to_owned(), ui.input(|input| input.time)));
             }
             MessageCommand::CopyLink => {
                 if let Some(link) = copy_link {
-                    ui.ctx().copy_text(link);
+                    crate::platform::copy::text(ui.ctx(), link);
+                    state.error = Some((s.copied.to_owned(), ui.input(|input| input.time)));
                 }
             }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
