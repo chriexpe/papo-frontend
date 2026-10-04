@@ -2267,6 +2267,7 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGallery => self.dialogs.pick_gallery(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
@@ -2519,6 +2520,7 @@ impl PapoApp {
                 }
             }
             ChatAction::PickFiles => self.dialogs.pick_files(ctx.clone()),
+            ChatAction::PickGallery => self.dialogs.pick_gallery(ctx.clone()),
             ChatAction::OpenExternally(path) => files::open_path(&path),
         }
     }
