@@ -147,6 +147,8 @@ pub enum ChatAction {
     PickFiles,
     /// Abre a galeria/Photo Picker para fotos e vídeos.
     PickGallery,
+    /// Abre a câmera Android para capturar foto ou vídeo.
+    CaptureMedia,
     /// Abre o que já está no cache com o aplicativo padrão.
     OpenExternally(std::path::PathBuf),
     /// Abre a criação inline em Ajustes do servidor → Canais.
@@ -7997,7 +7999,7 @@ fn webembed_chrome_occlusions(
 
     #[cfg(target_os = "android")]
     if state.android_gallery_menu_open {
-        let item_count = 1 + usize::from(!state.show_record);
+        let item_count = 2 + usize::from(!state.show_record);
         let menu_h =
             item_count as f32 * side + (item_count.saturating_sub(1)) as f32 * space::SM;
         rects.push(Rect::from_min_max(
@@ -8214,7 +8216,7 @@ fn composer(
 
         let mut menu_rect = Rect::NOTHING;
         if state.android_gallery_menu_open {
-            let item_count = 1 + usize::from(!state.show_record);
+            let item_count = 2 + usize::from(!state.show_record);
             let menu_h = item_count as f32 * side
                 + (item_count.saturating_sub(1)) as f32 * space::SM;
             menu_rect = Rect::from_min_max(
@@ -8230,9 +8232,29 @@ fn composer(
                 state.actions.push(ChatAction::PickFiles);
             }
 
+            let camera_rect = Rect::from_min_size(
+                egui::pos2(file_rect.min.x, file_rect.max.y + space::SM),
+                Vec2::splat(side),
+            );
+            if side_pill(
+                ui,
+                state,
+                t,
+                camera_rect,
+                icon::CAMERA,
+                s.camera,
+                "camera-rollup",
+                false,
+            )
+            .clicked()
+            {
+                state.android_gallery_menu_open = false;
+                state.actions.push(ChatAction::CaptureMedia);
+            }
+
             if !state.show_record {
                 let mic_rect = Rect::from_min_size(
-                    egui::pos2(file_rect.min.x, file_rect.max.y + space::SM),
+                    egui::pos2(camera_rect.min.x, camera_rect.max.y + space::SM),
                     Vec2::splat(side),
                 );
                 let label = if recording { s.record_stop } else { s.record };
