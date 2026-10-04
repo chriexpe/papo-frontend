@@ -56,14 +56,22 @@ pub struct Channel {
     pub mentions: u32,
 }
 
+/// Estado de leitura de um canal, reduzido ao que não dá para derivar:
+///
+/// - `read_*`: a fronteira. Tudo até ela (inclusive) foi lido.
+/// - `seen_to_*`: a marca d'água, a mensagem mais adiante que já esteve na
+///   tela. Saltar para o fim a empurra sem mexer na fronteira.
+/// - `unread_mentions`: menções ainda não vistas.
+///
+/// "Há lacuna não lida" (a ampulheta) e "há algo novo" (o ponto do canal) são
+/// calculados a partir disso e das mensagens carregadas, nunca guardados.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelReadState {
     pub read_at: Option<DateTime<Utc>>,
     pub read_message_id: Option<String>,
-    pub seen_out_of_order: HashSet<String>,
+    pub seen_to_at: Option<DateTime<Utc>>,
+    pub seen_to_id: Option<String>,
     pub unread_mentions: VecDeque<String>,
-    pub jump_back: Option<String>,
-    pub jump_forward: Option<String>,
 }
 
 impl ChannelReadState {
@@ -71,30 +79,32 @@ impl ChannelReadState {
         Self {
             read_at: state.read_at.and_then(DateTime::from_timestamp_millis),
             read_message_id: state.read_message_id,
-            seen_out_of_order: state.seen_out_of_order.into_iter().collect(),
+            seen_to_at: state.seen_to_at.and_then(DateTime::from_timestamp_millis),
+            seen_to_id: state.seen_to_message_id,
             unread_mentions: state.unread_mentions.into_iter().collect(),
-            jump_back: state.jump_back,
-            jump_forward: state.jump_forward,
         }
     }
 
     fn to_cached(&self, owner_user_id: &str, channel_id: &str) -> CachedReadState {
-        let mut seen_out_of_order: Vec<String> =
-            self.seen_out_of_order.iter().cloned().collect();
-        seen_out_of_order.sort();
         CachedReadState {
             owner_user_id: owner_user_id.to_owned(),
             channel_id: channel_id.to_owned(),
             read_at: self.read_at.map(|at| at.timestamp_millis()),
             read_message_id: self.read_message_id.clone(),
-            seen_out_of_order,
+            seen_to_at: self.seen_to_at.map(|at| at.timestamp_millis()),
+            seen_to_message_id: self.seen_to_id.clone(),
             unread_mentions: self.unread_mentions.iter().cloned().collect(),
-            jump_back: self.jump_back.clone(),
-            jump_forward: self.jump_forward.clone(),
             updated_at: now_millis(),
         }
     }
+
+    fn seen_to_key(&self) -> Option<MessageKey> {
+        self.seen_to_at.zip(self.seen_to_id.clone())
+    }
 }
+
+/// Posição total de uma mensagem na timeline: horário, depois id.
+type MessageKey = (DateTime<Utc>, String);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presence {
@@ -470,6 +480,9 @@ pub struct Store {
     cache_restore_epoch: u64,
     /// Efeitos de cache pendentes, drenados pelo coordenador de persistência.
     pending_cache: Vec<CacheOp>,
+    /// Trecho da timeline que o quadro anterior mostrou, por canal. Só serve
+    /// para saber se o quadro atual é continuação dele; não é persistido.
+    read_spans: HashMap<String, (MessageKey, MessageKey)>,
     /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
     /// servidor nunca entra aqui.
     outgoing_states: HashMap<String, OutgoingState>,
@@ -552,6 +565,7 @@ impl Default for Store {
             cache_loading: HashSet::new(),
             cache_restore_epoch: 0,
             pending_cache: Vec::new(),
+            read_spans: HashMap::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
             history_has_more: HashMap::new(),
@@ -1142,8 +1156,27 @@ impl Store {
     }
 
     /// Retira os efeitos de cache acumulados desde a última drenagem.
+    ///
+    /// Rolar grava a fronteira a cada quadro; só o último estado de cada canal
+    /// importa para o disco.
     pub fn take_cache_ops(&mut self) -> Vec<CacheOp> {
-        std::mem::take(&mut self.pending_cache)
+        let ops = std::mem::take(&mut self.pending_cache);
+        let mut newest_read_state: HashMap<String, usize> = HashMap::new();
+        for (index, op) in ops.iter().enumerate() {
+            if let CacheOp::UpsertReadState(state) = op {
+                newest_read_state.insert(state.channel_id.clone(), index);
+            }
+        }
+        ops.into_iter()
+            .enumerate()
+            .filter(|(index, op)| match op {
+                CacheOp::UpsertReadState(state) => {
+                    newest_read_state.get(&state.channel_id) == Some(index)
+                }
+                _ => true,
+            })
+            .map(|(_, op)| op)
+            .collect()
     }
 
     /// Projeção pequena e somente-leitura do estado de sincronização.
@@ -1901,159 +1934,152 @@ impl Store {
         }
     }
 
-    /// Registra apenas mensagens que realmente cruzaram a viewport. Saltos
-    /// podem criar buracos; por isso cada linha visível entra primeiro no set
-    /// fora de ordem e a fronteira só anda enquanto o próximo item cronológico
-    /// também tiver sido visto.
+    /// Registra o que a viewport mostrou neste quadro.
+    ///
+    /// Duas coisas avançam, com regras diferentes:
+    ///
+    /// - A **marca d'água** vai até a mensagem visível mais adiante.
+    /// - A **fronteira** anda enquanto a próxima mensagem cronológica tiver
+    ///   sido coberta (ou for do próprio usuário, que nunca abre lacuna).
+    ///
+    /// "Coberta" é o que o quadro mostrou *mais* o trecho entre o quadro
+    /// anterior e este: rolar é um movimento contínuo, e um quadro lento ou um
+    /// arrasto rápido não pode deixar buracos que travam a fronteira para
+    /// sempre. Saltos (botão, abertura de canal) chamam [`Store::reset_read_span`]
+    /// antes, e então só o que está de fato na tela conta.
+    ///
+    /// Menções e notificações seguem o critério estrito: só o que apareceu.
+    /// Tudo é comparado por chave `(horário, id)`, então a fronteira pode
+    /// apontar para uma mensagem que nem está carregada.
     pub fn observe_visible_messages(&mut self, channel_id: &str, visible: &[String]) {
         if channel_id.is_empty() || visible.is_empty() {
             return;
         }
 
-        let mut ordered: Vec<(DateTime<Utc>, String)> = self
+        let mut ordered: Vec<(MessageKey, bool)> = self
             .messages_in(channel_id)
             .filter(|message| !message.pending)
-            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+            .map(|message| {
+                (
+                    (message.at.with_timezone(&Utc), message.id.clone()),
+                    message.author_id == self.me,
+                )
+            })
             .collect();
         ordered.sort();
 
-        let frontier_before = self.frontier_key(channel_id);
-        let own_after_frontier: Vec<String> = self
-            .messages_in(channel_id)
-            .filter(|message| !message.pending && message.author_id == self.me)
-            .filter_map(|message| {
-                let key = (message.at.with_timezone(&Utc), message.id.clone());
-                frontier_before
-                    .as_ref()
-                    .is_none_or(|frontier| key > *frontier)
-                    .then_some(message.id.clone())
-            })
+        let visible_ids: HashSet<&str> = visible.iter().map(String::as_str).collect();
+        let shown: Vec<&MessageKey> = ordered
+            .iter()
+            .map(|(key, _)| key)
+            .filter(|(_, id)| visible_ids.contains(id.as_str()))
             .collect();
-        let previous = self.read_states.get(channel_id).cloned();
+        let (Some(lo), Some(hi)) = (shown.first().copied(), shown.last().copied()) else {
+            return;
+        };
+        let (lo, hi) = (lo.clone(), hi.clone());
+
+        let (from, to) = match self.read_spans.get(channel_id) {
+            Some((previous_lo, previous_hi)) => (
+                lo.clone().min(previous_lo.clone()),
+                hi.clone().max(previous_hi.clone()),
+            ),
+            None => (lo.clone(), hi.clone()),
+        };
+        self.read_spans
+            .insert(channel_id.to_owned(), (lo, hi.clone()));
+
+        let before = self.read_states.get(channel_id).cloned();
         let legacy = self.read_marks.get(channel_id).copied();
-        let state = self.read_states.entry(channel_id.to_owned()).or_insert_with(|| {
-            ChannelReadState {
-                read_at: legacy,
-                ..ChannelReadState::default()
-            }
-        });
+        let state = self.read_states.entry(channel_id.to_owned()).or_default();
         if state.read_at.is_none() && state.read_message_id.is_none() {
             state.read_at = legacy;
         }
 
-        // Mensagens do próprio usuário nunca abrem uma lacuna de "não lido".
-        // Elas só são consumidas quando tudo que veio antes delas também foi.
-        state.seen_out_of_order.extend(own_after_frontier);
-
-        for id in visible {
-            if let Some((at, _)) = ordered.iter().find(|(_, candidate)| candidate == id) {
-                let after = match (state.read_at, state.read_message_id.as_deref()) {
-                    (Some(read_at), Some(read_id)) => (*at, id.as_str()) > (read_at, read_id),
-                    (Some(read_at), None) => *at > read_at,
-                    (None, _) => true,
-                };
-                if after {
-                    state.seen_out_of_order.insert(id.clone());
-                }
-            }
-            state.unread_mentions.retain(|mention| mention != id);
+        // Marca d'água.
+        if state.seen_to_key().is_none_or(|seen| hi > seen) {
+            state.seen_to_at = Some(hi.0);
+            state.seen_to_id = Some(hi.1.clone());
         }
 
-        loop {
-            let next = match (state.read_at, state.read_message_id.as_deref()) {
-                (Some(read_at), Some(read_id)) => {
-                    match ordered
-                        .iter()
-                        .position(|(at, id)| *at == read_at && id == read_id)
-                    {
-                        Some(position) => ordered.get(position + 1).cloned(),
-                        // A fronteira durável pode apontar para uma mensagem
-                        // fora da janela carregada (página antiga ainda não
-                        // hidratada). Antes isso quebrava o laço e a fronteira
-                        // nunca andava — o canal ficava eternamente "com
-                        // mensagem nova" mesmo com o fim à vista, e a ampulheta
-                        // apontava para o head em vez da lacuna. Avança pela
-                        // chave, como já se faz quando não há id.
-                        None => ordered
-                            .iter()
-                            .find(|(at, id)| (*at, id.as_str()) > (read_at, read_id))
-                            .cloned(),
-                    }
-                }
-                (Some(read_at), None) => ordered.iter().find(|(at, _)| *at > read_at).cloned(),
-                (None, _) => ordered.first().cloned(),
-            };
-            let Some((at, id)) = next else {
-                break;
-            };
-            if !state.seen_out_of_order.remove(&id) {
+        // Fronteira.
+        let mut frontier: Option<MessageKey> = state
+            .read_at
+            .map(|at| (at, state.read_message_id.clone().unwrap_or_default()));
+        for ((at, id), own) in &ordered {
+            let key = (*at, id.clone());
+            if frontier.as_ref().is_some_and(|mark| key <= *mark) {
+                continue;
+            }
+            if *own || (from <= key && key <= to) {
+                frontier = Some(key);
+            } else {
                 break;
             }
+        }
+        if let Some((at, id)) = frontier.filter(|(_, id)| !id.is_empty()) {
             state.read_at = Some(at);
             state.read_message_id = Some(id);
         }
+
+        // A marca d'água nunca fica atrás da fronteira.
+        let read_key: Option<MessageKey> = state.read_at.zip(state.read_message_id.clone());
+        if let Some(read) = read_key
+            && state.seen_to_key().is_none_or(|seen| seen < read)
+        {
+            state.seen_to_at = Some(read.0);
+            state.seen_to_id = Some(read.1);
+        }
+
+        state
+            .unread_mentions
+            .retain(|mention| !visible_ids.contains(mention.as_str()));
 
         if let Some(read_at) = state.read_at {
             self.read_marks.insert(channel_id.to_owned(), read_at);
         }
 
-        // O laço acima pode atravessar o checkpoint num único passo (um lote de
-        // mensagens chegando de uma vez, como depois de reconectar). Igualdade
-        // exata deixava a ampulheta presa para sempre: vale "alcançou ou
-        // passou". Um checkpoint que sumiu da janela também é aposentado.
-        let forward_reached = state.jump_forward.as_ref().is_some_and(|target| {
-            let frontier = state.read_at.zip(state.read_message_id.as_deref());
-            let target_key = ordered
-                .iter()
-                .find(|(_, id)| id == target)
-                .map(|(at, id)| (*at, id.as_str()));
-            match (frontier, target_key) {
-                (Some((read_at, read_id)), Some(target_key)) => {
-                    (read_at, read_id) >= target_key
-                }
-                (_, None) => true,
-                _ => false,
-            }
-        });
-        if forward_reached {
-            state.jump_back = None;
-            state.jump_forward = None;
-            state.seen_out_of_order.clear();
-        }
-
-        let changed = self.read_states.get(channel_id) != previous.as_ref();
-        if changed {
+        if self.read_states.get(channel_id) != before.as_ref() {
             self.refresh_channel_read_badge(channel_id);
             self.persist_read_state(channel_id);
         }
     }
 
+    /// O próximo quadro não é continuação do anterior (salto, abertura de
+    /// canal, troca de canal): o trecho entre os dois não foi percorrido.
+    pub fn reset_read_span(&mut self, channel_id: &str) {
+        self.read_spans.remove(channel_id);
+    }
+
+    /// Primeira mensagem carregada, de outra pessoa, depois da fronteira.
     pub fn first_unread_loaded(&self, channel_id: &str) -> Option<String> {
+        self.first_unread_key(channel_id).map(|(_, id)| id)
+    }
+
+    fn first_unread_key(&self, channel_id: &str) -> Option<MessageKey> {
         let frontier = self.frontier_key(channel_id);
         self.messages_in(channel_id)
-            .filter(|message| !message.pending)
+            .filter(|message| !message.pending && message.author_id != self.me)
             .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
-            .find(|key| frontier.as_ref().is_none_or(|mark| key > mark))
-            .map(|(_, id)| id)
+            .filter(|key| frontier.as_ref().is_none_or(|mark| key > mark))
+            .min()
     }
 
     pub fn newest_loaded(&self, channel_id: &str) -> Option<String> {
         self.messages_in(channel_id)
             .filter(|message| !message.pending)
-            .last()
+            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
             .map(|message| message.id.clone())
     }
 
-    pub fn jump_back_target(&self, channel_id: &str) -> Option<String> {
-        self.read_states
-            .get(channel_id)
-            .and_then(|state| state.jump_back.clone())
-    }
-
-    pub fn jump_forward_target(&self, channel_id: &str) -> Option<String> {
-        self.read_states
-            .get(channel_id)
-            .and_then(|state| state.jump_forward.clone())
+    /// Destino da ampulheta: o começo do bloco que foi pulado. Só existe
+    /// enquanto o usuário já viu algo *depois* de uma mensagem não lida — ou
+    /// seja, enquanto há de fato uma lacuna atrás dele. Ler a lacuna (ou
+    /// marcar como lido) a faz sumir sozinha.
+    pub fn hourglass_target(&self, channel_id: &str) -> Option<String> {
+        let first_unread = self.first_unread_key(channel_id)?;
+        let seen_to = self.read_states.get(channel_id)?.seen_to_key()?;
+        (seen_to > first_unread).then_some(first_unread.1)
     }
 
     pub fn read_anchor_id(&self, channel_id: &str) -> Option<String> {
@@ -2099,132 +2125,6 @@ impl Store {
             .or_else(|| state.unread_mentions.front().cloned())
     }
 
-    /// Decide o destino do botão para baixo sem mover checkpoints existentes.
-    /// Se o checkpoint anterior já está visível/foi alcançado, um segundo salto
-    /// aposenta aquele bloco e congela um novo destino no head atual.
-    pub fn prepare_newer_jump(
-        &mut self,
-        channel_id: &str,
-        latest_visible: Option<&str>,
-    ) -> Option<String> {
-        let newest = self.newest_loaded(channel_id)?;
-        let existing = self
-            .read_states
-            .get(channel_id)
-            .and_then(|state| state.jump_forward.clone());
-
-        // O mesmo botão também é o "voltar ao fim" normal. Sem bloco não
-        // lido e sem checkpoint ativo, não inventa uma ampulheta.
-        if existing.is_none()
-            && !self.channel(channel_id).is_some_and(|channel| channel.unread)
-        {
-            return Some(newest);
-        }
-        let first_unread = self.first_unread_loaded(channel_id);
-
-        // `unread` pode estar aceso sem nenhuma mensagem carregada acima da
-        // fronteira (menção de notificação, chegada ao vivo ainda não medida).
-        // Sem nada a pular, o botão é só "ir ao fim"; antes ele não fazia nada.
-        if existing.is_none() && first_unread.is_none() {
-            return Some(newest);
-        }
-
-        if let Some(target) = existing.clone() {
-            let reached = latest_visible.is_some_and(|visible| {
-                if visible == target {
-                    return true;
-                }
-                self.message_key(visible)
-                    .zip(self.message_key(&target))
-                    .is_some_and(|(visible, target)| visible >= target)
-            });
-            if !reached {
-                return Some(target);
-            }
-            if target == newest {
-                return None;
-            }
-
-            if let Some((at, id)) = self.message_key(&target) {
-                let retained_mentions: VecDeque<String> = self
-                    .read_states
-                    .get(channel_id)
-                    .map(|state| {
-                        state
-                            .unread_mentions
-                            .iter()
-                            .filter(|mention| {
-                                self.message_key(mention)
-                                    .is_none_or(|mention_key| {
-                                        mention_key > (at, target.clone())
-                                    })
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let retained_seen: HashSet<String> = self
-                    .read_states
-                    .get(channel_id)
-                    .map(|state| {
-                        state
-                            .seen_out_of_order
-                            .iter()
-                            .filter(|message_id| {
-                                self.message_key(message_id)
-                                    .is_some_and(|key| key > (at, target.clone()))
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let state = self.read_states.entry(channel_id.to_owned()).or_default();
-                state.read_at = Some(at);
-                state.read_message_id = Some(id);
-                state.seen_out_of_order = retained_seen;
-                state.unread_mentions = retained_mentions;
-            }
-        }
-
-        let next_back = if existing.is_some() {
-            self.messages_in(channel_id)
-                .filter(|message| !message.pending)
-                .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
-                .find(|key| {
-                    self.frontier_key(channel_id)
-                        .as_ref()
-                        .is_none_or(|frontier| key > frontier)
-                })
-                .map(|(_, id)| id)
-                .or(first_unread)
-        } else {
-            first_unread
-        };
-
-        let state = self.read_states.entry(channel_id.to_owned()).or_default();
-        state.jump_back = next_back;
-        state.jump_forward = Some(newest.clone());
-        self.refresh_channel_read_badge(channel_id);
-        self.persist_read_state(channel_id);
-        Some(newest)
-    }
-
-    /// Abertura opcional no head usa exatamente a mesma máquina de checkpoints
-    /// do botão para baixo: a lacuna pulada continua acessível pela ampulheta.
-    pub fn prepare_open_at_newest(&mut self, channel_id: &str) -> Option<String> {
-        if self
-            .read_states
-            .get(channel_id)
-            .is_some_and(|state| state.jump_forward.is_some())
-        {
-            return self
-                .read_states
-                .get(channel_id)
-                .and_then(|state| state.jump_forward.clone());
-        }
-        self.prepare_newer_jump(channel_id, None)
-    }
-
     /// Ação explícita de "marcar lido": ao contrário de viewport normal, aqui
     /// é intencional consumir tudo até o head atual.
     pub fn mark_read(&mut self, channel_id: &str) {
@@ -2242,12 +2142,12 @@ impl Store {
             state.read_at = Some(now);
             state.read_message_id = None;
         }
-        state.seen_out_of_order.clear();
+        state.seen_to_at = state.read_at;
+        state.seen_to_id = state.read_message_id.clone();
         state.unread_mentions.clear();
-        state.jump_back = None;
-        state.jump_forward = None;
-        self.read_marks
+                self.read_marks
             .insert(channel_id.to_owned(), state.read_at.unwrap_or(now));
+        self.read_spans.remove(channel_id);
         self.refresh_channel_read_badge(channel_id);
         self.persist_read_state(channel_id);
     }
@@ -3543,7 +3443,8 @@ impl Store {
     }
 
     fn sort_messages(&mut self) {
-        self.messages.sort_by_key(|message| message.at);
+        self.messages
+            .sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
     }
 
     fn sort_members(&mut self) {
@@ -5330,15 +5231,37 @@ mod tests {
         store
     }
 
+    fn ids(range: std::ops::RangeInclusive<usize>) -> Vec<String> {
+        range.map(|index| format!("m{index}")).collect()
+    }
+
+    fn frontier_id(store: &Store) -> Option<String> {
+        store
+            .read_states
+            .get("geral")
+            .and_then(|state| state.read_message_id.clone())
+    }
+
     #[test]
     fn jump_does_not_mark_the_interval_it_skips() {
         let mut store = navigation_store(6);
 
         store.observe_visible_messages("geral", &["m6".to_owned()]);
 
-        let state = store.read_states.get("geral").unwrap();
-        assert_eq!(state.read_message_id.as_deref(), Some("m1"));
-        assert!(state.seen_out_of_order.contains("m6"));
+        assert_eq!(frontier_id(&store).as_deref(), Some("m1"));
+        // Algo depois da lacuna foi visto: a ampulheta aponta para o começo dela.
+        assert_eq!(store.hourglass_target("geral").as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn no_hourglass_without_a_gap() {
+        let mut store = navigation_store(6);
+        assert_eq!(store.hourglass_target("geral"), None);
+
+        // Lendo em ordem, a fronteira acompanha e nunca há lacuna.
+        store.observe_visible_messages("geral", &ids(2..=4));
+        assert_eq!(frontier_id(&store).as_deref(), Some("m4"));
+        assert_eq!(store.hourglass_target("geral"), None);
     }
 
     /// A fronteira durável pode apontar para uma mensagem fora da janela
@@ -5357,44 +5280,92 @@ mod tests {
             },
         );
 
-        store.observe_visible_messages(
-            "geral",
-            &["m1".to_owned(), "m2".to_owned(), "m3".to_owned()],
-        );
+        store.observe_visible_messages("geral", &ids(1..=3));
 
-        let state = store.read_states.get("geral").unwrap();
-        assert_eq!(state.read_message_id.as_deref(), Some("m3"));
+        assert_eq!(frontier_id(&store).as_deref(), Some("m3"));
     }
 
     #[test]
-    fn forward_checkpoint_stays_frozen_until_it_is_reached() {
+    fn reading_through_the_gap_retires_the_hourglass() {
         let mut store = navigation_store(6);
-        assert_eq!(
-            store.prepare_newer_jump("geral", Some("m1")).as_deref(),
-            Some("m6")
-        );
-        assert_eq!(store.jump_back_target("geral").as_deref(), Some("m2"));
+        store.observe_visible_messages("geral", &["m6".to_owned()]);
+        assert!(store.hourglass_target("geral").is_some());
 
+        // A ampulheta leva ao começo da lacuna (salto) e o usuário lê até o fim.
+        store.reset_read_span("geral");
+        store.observe_visible_messages("geral", &ids(2..=3));
+        assert_eq!(store.hourglass_target("geral").as_deref(), Some("m4"));
+        store.observe_visible_messages("geral", &ids(4..=5));
+        store.observe_visible_messages("geral", &ids(5..=6));
+
+        assert_eq!(frontier_id(&store).as_deref(), Some("m6"));
+        assert_eq!(store.hourglass_target("geral"), None);
+        assert!(!store.channel("geral").unwrap().unread);
+    }
+
+    /// Um quadro lento (rede ruim, mídia carregando) ou um arrasto rápido não
+    /// pode deixar um buraco que trava a fronteira para sempre.
+    #[test]
+    fn continuous_scrolling_covers_rows_between_frames() {
+        let mut store = navigation_store(10);
+        store.observe_visible_messages("geral", &ids(2..=3));
+        store.observe_visible_messages("geral", &ids(7..=8));
+        store.observe_visible_messages("geral", &ids(9..=10));
+
+        assert_eq!(frontier_id(&store).as_deref(), Some("m10"));
+        assert_eq!(store.hourglass_target("geral"), None);
+    }
+
+    #[test]
+    fn a_jump_does_not_cover_what_it_flew_over() {
+        let mut store = navigation_store(10);
+        store.observe_visible_messages("geral", &ids(2..=3));
+        store.reset_read_span("geral");
+        store.observe_visible_messages("geral", &ids(9..=10));
+
+        assert_eq!(frontier_id(&store).as_deref(), Some("m3"));
+        assert_eq!(store.hourglass_target("geral").as_deref(), Some("m4"));
+    }
+
+    /// Um lote de mensagens (catch-up depois de reconectar) chegando com o
+    /// usuário no fim não pode deixar uma ampulheta fantasma.
+    #[test]
+    fn a_batch_of_arrivals_at_the_bottom_leaves_no_hourglass() {
+        let mut store = navigation_store(6);
+        store.observe_visible_messages("geral", &ids(2..=6));
         store.messages.push(navigation_message("m7", 7));
         store.messages.push(navigation_message("m8", 8));
 
-        // Voltar para o bloco antigo e apertar ↓ ainda retorna ao checkpoint
-        // congelado, não ao head que continuou andando.
-        assert_eq!(
-            store.prepare_newer_jump("geral", Some("m2")).as_deref(),
-            Some("m6")
-        );
+        store.observe_visible_messages("geral", &ids(6..=8));
 
-        // Só quando o checkpoint foi alcançado o próximo ↓ aposenta o bloco
-        // anterior e cria uma nova geração m7..m8.
-        assert_eq!(
-            store.prepare_newer_jump("geral", Some("m6")).as_deref(),
-            Some("m8")
-        );
-        let state = store.read_states.get("geral").unwrap();
-        assert_eq!(state.read_message_id.as_deref(), Some("m6"));
-        assert_eq!(state.jump_back.as_deref(), Some("m7"));
-        assert_eq!(state.jump_forward.as_deref(), Some("m8"));
+        assert_eq!(frontier_id(&store).as_deref(), Some("m8"));
+        assert_eq!(store.hourglass_target("geral"), None);
+    }
+
+    #[test]
+    fn own_messages_never_open_a_gap() {
+        let mut store = navigation_store(6);
+        store.observe_visible_messages("geral", &ids(2..=6));
+        let mut own = navigation_message("m7", 7);
+        own.author_id = "eu".to_owned();
+        store.messages.push(own);
+
+        store.observe_visible_messages("geral", &["m6".to_owned()]);
+
+        assert_eq!(frontier_id(&store).as_deref(), Some("m7"));
+        assert_eq!(store.hourglass_target("geral"), None);
+    }
+
+    #[test]
+    fn mark_read_clears_the_gap() {
+        let mut store = navigation_store(6);
+        store.observe_visible_messages("geral", &["m6".to_owned()]);
+        assert!(store.hourglass_target("geral").is_some());
+
+        store.mark_read("geral");
+
+        assert_eq!(store.hourglass_target("geral"), None);
+        assert_eq!(frontier_id(&store).as_deref(), Some("m6"));
     }
 
     #[test]
@@ -5414,31 +5385,19 @@ mod tests {
     }
 
     #[test]
-    fn hourglass_clears_when_the_frontier_passes_the_forward_checkpoint() {
-        let mut store = navigation_store(6);
-        store.prepare_newer_jump("geral", Some("m1"));
-        store.messages.push(navigation_message("m7", 7));
-        store.messages.push(navigation_message("m8", 8));
+    fn scrolling_persists_only_the_latest_read_state() {
+        let mut store = navigation_store(10);
+        let _ = store.take_cache_ops();
+        store.me = "eu".to_owned();
+        for from in 2..=9 {
+            store.observe_visible_messages("geral", &ids(from..=from + 1));
+        }
 
-        let all: Vec<String> = (2..=8).map(|index| format!("m{index}")).collect();
-        store.observe_visible_messages("geral", &all);
-
-        let state = store.read_states.get("geral").unwrap();
-        assert_eq!(state.read_message_id.as_deref(), Some("m8"));
-        assert!(state.jump_back.is_none());
-        assert!(state.jump_forward.is_none());
-    }
-
-    #[test]
-    fn newer_jump_still_reaches_the_end_when_nothing_is_unread() {
-        let mut store = navigation_store(6);
-        store.mark_read("geral");
-        store.channels[0].unread = true;
-
-        assert_eq!(
-            store.prepare_newer_jump("geral", Some("m2")).as_deref(),
-            Some("m6")
-        );
-        assert!(store.jump_back_target("geral").is_none());
+        let writes = store
+            .take_cache_ops()
+            .into_iter()
+            .filter(|op| matches!(op, CacheOp::UpsertReadState(_)))
+            .count();
+        assert_eq!(writes, 1);
     }
 }

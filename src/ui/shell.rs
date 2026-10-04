@@ -84,6 +84,10 @@ fn actions_pill_closed_width(dm_surface: bool) -> f32 {
 }
 
 const GROUP_GAP_MINUTES: i64 = 5;
+/// Páginas antigas pedidas ao abrir um canal cuja âncora de leitura ainda não
+/// foi carregada, e o intervalo mínimo entre pedidos.
+const OPEN_HISTORY_REQUESTS: u8 = 20;
+const OPEN_HISTORY_RETRY_SECONDS: f64 = 0.75;
 /// Folga do realce da linha, igual em cima e embaixo.
 const ROW_PADDING: f32 = 4.0;
 /// Quanto tempo a descrição do canal fica visível antes de recolher.
@@ -900,6 +904,12 @@ pub struct UiState {
     pub open_at_newest: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
+    /// Quantas páginas antigas a abertura já pediu em busca da âncora.
+    open_history_requests: u8,
+    open_history_retry_at: f64,
+    /// O quadro atual não continua o anterior (salto ou abertura de canal);
+    /// o que ficou no meio do caminho não foi lido.
+    pub read_span_break: bool,
     /// Mensagens realmente expostas na área legível deste quadro.
     pub visible_message_ids: Vec<String>,
     /// Último movimento observado da timeline; os atalhos somem enquanto rola.
@@ -1038,6 +1048,9 @@ impl Default for UiState {
             reveal_topic: true,
             open_at_newest: true,
             open_channel_pending: None,
+            open_history_requests: 0,
+            open_history_retry_at: f64::NEG_INFINITY,
+            read_span_break: false,
             visible_message_ids: Vec::new(),
             last_scroll_activity: f64::NEG_INFINITY,
             show_record: true,
@@ -1155,6 +1168,7 @@ pub fn draw(
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
         let next_channel = store.selected_channel.clone();
+        let previous_channel = state.last_channel.clone();
         state.switch_draft_channel(&next_channel);
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
@@ -1170,7 +1184,11 @@ pub fn draw(
         state.history_scroll_anchor = None;
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
-        state.open_channel_pending = Some(next_channel);
+        state.open_channel_pending = Some(next_channel.clone());
+        state.open_history_requests = 0;
+        state.open_history_retry_at = f64::NEG_INFINITY;
+        store.reset_read_span(&previous_channel);
+        store.reset_read_span(&next_channel);
 
         // Mudar de canal também muda a apresentação da call:
         // - vídeo continua visível por cima da conversa;
@@ -2667,12 +2685,10 @@ fn timeline_nav_controls(
 
     let latest_visible = state.visible_message_ids.last().cloned();
     let newest = store.newest_loaded(&channel_id);
-    let forward = store.jump_forward_target(&channel_id);
-    let show_newer = newest.as_ref().is_some_and(|newest| {
-        latest_visible.as_ref() != Some(newest)
-            || forward.as_ref().is_some_and(|target| latest_visible.as_ref() != Some(target))
-    });
-    let back = store.jump_back_target(&channel_id);
+    let show_newer = newest
+        .as_ref()
+        .is_some_and(|newest| latest_visible.as_ref() != Some(newest));
+    let back = store.hourglass_target(&channel_id);
     let mention = store.next_mention_target(&channel_id);
 
     let mut controls: Vec<(&'static str, &'static str, u8)> = Vec::new();
@@ -2717,7 +2733,7 @@ fn timeline_nav_controls(
 
         if response.clicked() {
             let target = match kind {
-                0 => store.prepare_newer_jump(&channel_id, latest_visible.as_deref()),
+                0 => newest.clone(),
                 1 => back.clone(),
                 2 => mention.clone(),
                 _ => None,
@@ -2946,37 +2962,35 @@ fn conversation(
             // páginas antigas até encontrá-la antes de estabilizar a abertura.
             let opening_pass =
                 state.open_channel_pending.as_deref() == Some(channel_id.as_str());
+            if opening_pass {
+                state.read_span_break = true;
+            }
             let mut opening_at_bottom = false;
             let mut opening_at_message = false;
             if opening_pass && store.newest_loaded(&channel_id).is_some() {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
                 let anchor_missing = store.read_anchor_needs_history(&channel_id);
-                if unread && anchor_missing && store.can_load_older(&channel_id) {
-                    state.actions.push(ChatAction::LoadOlderMessages);
-                } else if unread && state.open_at_newest {
-                    // Preserva a máquina de checkpoints/ampulheta. Quando o
-                    // destino é o head carregado, a posição correta é o fim da
-                    // timeline; um checkpoint congelado anterior continua
-                    // sendo um salto explícito para aquela mensagem.
-                    let newest = store.newest_loaded(&channel_id);
-                    match store.prepare_open_at_newest(&channel_id) {
-                        Some(message_id)
-                            if newest.as_deref() == Some(message_id.as_str()) =>
-                        {
-                            opening_at_bottom = true;
-                        }
-                        Some(message_id) => {
-                            state.jump = Some(Jump {
-                                message_id,
-                                found: None,
-                                since: ui.input(|input| input.time),
-                            });
-                            opening_at_message = true;
-                        }
-                        None => {
-                            opening_at_bottom = true;
-                        }
+                let now = ui.input(|input| input.time);
+                let wait_for_history = unread
+                    && anchor_missing
+                    && store.can_load_older(&channel_id)
+                    && state.open_history_requests < OPEN_HISTORY_REQUESTS;
+                if wait_for_history {
+                    // Com rede ruim a página pode falhar. Tentar de novo a cada
+                    // quadro martelaria o servidor e manteria a conversa
+                    // invisível; espaça as tentativas e desiste depois de
+                    // algumas, abrindo onde der.
+                    if !store.loading_older(&channel_id) && now >= state.open_history_retry_at {
+                        state.open_history_requests += 1;
+                        state.open_history_retry_at = now + OPEN_HISTORY_RETRY_SECONDS;
+                        state.actions.push(ChatAction::LoadOlderMessages);
                     }
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                } else if unread && state.open_at_newest {
+                    // O fim da timeline é o destino. O que ficou para trás não
+                    // precisa de bookkeeping: assim que o fim aparecer, a marca
+                    // d'água passa da fronteira e a ampulheta existe sozinha.
+                    opening_at_bottom = true;
                 } else if unread {
                     if let Some(message_id) = store
                         .read_anchor_target(&channel_id)
@@ -5517,7 +5531,13 @@ fn message_list(
         let visible_height = row.intersect(readable).height().max(0.0);
         let seen_threshold = (row.height() * 0.55).min(32.0);
         if !message.pending && visible_height >= seen_threshold {
-            state.visible_message_ids.push(message.id.clone());
+            // Durante um salto as linhas passam voando; só contam depois que
+            // ele pousa.
+            if state.jump.is_some() {
+                state.read_span_break = true;
+            } else {
+                state.visible_message_ids.push(message.id.clone());
+            }
         }
         if state.compact && state.panel.is_none() {
             let touch_rect = row.expand2(Vec2::new(0.0, ROW_PADDING));

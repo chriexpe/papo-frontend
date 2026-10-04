@@ -265,19 +265,19 @@ impl From<&Channel> for CachedChannel {
     }
 }
 
-/// Estado durável de leitura/navegação de um canal. A fronteira contígua usa
-/// read_at + read_message_id; mensagens vistas depois de um salto ficam em
-/// seen_out_of_order até a lacuna anterior ser consumida.
+/// Estado durável de leitura de um canal. `read_*` é a fronteira contígua
+/// (tudo até ela foi lido); `seen_to_*` é a marca d'água, a mensagem mais
+/// adiante que já apareceu na tela. Se há mensagem não lida entre as duas,
+/// existe uma lacuna que a ampulheta sabe reencontrar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CachedReadState {
     pub owner_user_id: String,
     pub channel_id: String,
     pub read_at: Option<i64>,
     pub read_message_id: Option<String>,
-    pub seen_out_of_order: Vec<String>,
+    pub seen_to_at: Option<i64>,
+    pub seen_to_message_id: Option<String>,
     pub unread_mentions: Vec<String>,
-    pub jump_back: Option<String>,
-    pub jump_forward: Option<String>,
     pub updated_at: i64,
 }
 
