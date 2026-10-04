@@ -7440,7 +7440,7 @@ fn emoji_popup(
             PopupKind::ComposerEmoji | PopupKind::ComposerSticker
         )
     {
-        composer_picker_rect(ui, state, size)
+        composer_picker_rect(state, size)
             .unwrap_or_else(|| emoji::popup_area(ui, popup.anchor, size))
     } else {
         emoji::popup_area(ui, popup.anchor, size)
@@ -8160,7 +8160,6 @@ fn inline_button(
 
 /// Retângulo de um picker aberto pelo compositor.
 pub(super) fn composer_picker_rect(
-    ui: &egui::Ui,
     state: &UiState,
     desired: Vec2,
 ) -> Option<Rect> {
