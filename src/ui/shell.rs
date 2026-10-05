@@ -892,8 +892,12 @@ pub struct UiState {
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
     pub suggest_muted: bool,
-    /// Fechamento de formato (` ``` `, `**`...) oferecido no quadro anterior.
-    pub format_ghost: Option<String>,
+    /// Fechamento de formato (` ``` `, `**`...) escrito sozinho e ainda à
+    /// espera de o cursor passar por ele.
+    pub format_pairing: Option<format_assist::Pairing>,
+    /// Texto do compositor no fim do quadro anterior, para saber o que o
+    /// usuário acabou de digitar.
+    pub composer_prev: String,
     /// Onde começava o apelido quando o Esc foi apertado.
     pub suggest_start: Option<usize>,
     pub emoji_query: String,
@@ -1044,7 +1048,8 @@ impl Default for UiState {
             hover_actions: None,
             suggest: None,
             suggest_muted: false,
-            format_ghost: None,
+            format_pairing: None,
+            composer_prev: String::new(),
             suggest_start: None,
             emoji_query: String::new(),
             emoji_group: 0,
@@ -9071,21 +9076,21 @@ fn composer(
                 SuggestKeys::default()
             };
 
-            // Tab ou seta para a direita completam o formato aberto (` ``` `,
-            // `**`...). Lido antes da caixa de texto, como as teclas da lista.
+            // Tab pula o fechamento escrito sozinho (` ``` `, `**`...). Lido
+            // antes da caixa de texto, como as teclas da lista; o egui só
+            // deixa de mover o foco no Tab porque o filtro de foco da caixa é
+            // ajustado no fim do quadro (mais abaixo).
             #[cfg(not(target_os = "android"))]
-            let ghost_key = state.format_ghost.is_some()
+            let pair_tab = state.format_pairing.is_some()
                 && state.suggest.is_none()
                 && ui.input_mut(|input| {
-                    let pressed = input.key_pressed(egui::Key::Tab)
-                        || (input.key_pressed(egui::Key::ArrowRight)
-                            && input.modifiers.is_none());
+                    let pressed = input.key_pressed(egui::Key::Tab) && input.modifiers.is_none();
                     if pressed {
                         input.events.retain(|event| {
                             !matches!(
                                 event,
                                 egui::Event::Key {
-                                    key: egui::Key::Tab | egui::Key::ArrowRight,
+                                    key: egui::Key::Tab,
                                     pressed: true,
                                     ..
                                 }
@@ -9095,7 +9100,7 @@ fn composer(
                     pressed
                 });
             #[cfg(target_os = "android")]
-            let ghost_key = false;
+            let pair_tab = false;
 
             #[cfg(target_os = "android")]
             let (field_focused, caret) =
@@ -9287,92 +9292,55 @@ fn composer(
                 accept_suggestion(store, state, ui.ctx(), edit_id);
             }
 
-            // Fechamento sugerido para o formato aberto, como texto fantasma
-            // no fim da linha: Tab, seta para a direita ou um toque o inserem.
-            let mut ghost_tap = false;
-            let ghost = if field_focused
-                && state.suggest.is_none()
-                && state.editing.is_none()
-                && !accepted
-            {
-                caret.and_then(|caret| {
-                    format_assist::pending_closer(&state.composer, caret)
-                })
-            } else {
-                None
-            };
-            if let Some(closer) = &ghost {
-                let shown = closer.replace('\n', "↵");
-                let font = text::caption();
-                let width = ui
-                    .painter()
-                    .layout_no_wrap(shown.clone(), font.clone(), t.label)
-                    .size()
-                    .x;
-                #[cfg(not(target_os = "android"))]
-                let chip = Rect::from_center_size(
-                    egui::pos2(
-                        field.max.x - space::SM - (width + 52.0) / 2.0,
-                        field.center().y,
-                    ),
-                    Vec2::new(width + 52.0, 22.0),
-                );
-                // A View nativa do Android cobre o campo e come o toque; o
-                // chip fica logo acima dele.
-                #[cfg(target_os = "android")]
-                let chip = Rect::from_center_size(
-                    egui::pos2(
-                        field.max.x - space::SM - (width + 24.0) / 2.0,
-                        field.min.y - 18.0,
-                    ),
-                    Vec2::new(width + 24.0, 24.0),
-                );
-                let response = ui.interact(chip, Id::new("format-ghost"), Sense::click());
-                ui.painter().rect(
-                    chip,
-                    CornerRadius::same(radius::CONTROL),
-                    if response.hovered() { t.fill_medium } else { t.fill_soft },
-                    Stroke::new(1.0, t.separator),
-                    egui::StrokeKind::Inside,
-                );
-                ui.painter().text(
-                    egui::pos2(chip.min.x + space::MD, chip.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    &shown,
-                    font,
-                    t.label_secondary,
-                );
-                #[cfg(not(target_os = "android"))]
+            // Fechamento automático dos marcadores de formato. O texto é de
+            // verdade, então andar para a direita (seta, toque, segurar o
+            // espaço no celular) atravessa o fechamento sem tratamento extra.
+            if state.editing.is_none() && state.typed {
+                if let Some(caret) = caret
+                    && let Some(edit) = format_assist::on_change(
+                        &state.composer_prev,
+                        &state.composer,
+                        caret,
+                        &mut state.format_pairing,
+                    )
                 {
-                    let cap = Rect::from_center_size(
-                        egui::pos2(chip.max.x - space::MD - 12.0, chip.center().y),
-                        Vec2::new(26.0, 14.0),
-                    );
-                    ui.painter().rect_stroke(
-                        cap,
-                        CornerRadius::same(4),
-                        Stroke::new(1.0, t.label_tertiary),
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.painter().text(
-                        cap.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Tab",
-                        text::footnote(),
-                        t.label_tertiary,
-                    );
+                    state.composer = edit.text;
+                    state.composer_caret_pending = Some(edit.caret);
+                    reanchor_mentions(&state.composer, &mut state.composer_mentions);
+                    ui.ctx().request_repaint();
                 }
-                ghost_tap = response.on_hover_text(s.format_accept).clicked();
+            } else if !state.typed {
+                // Mudança que não veio do teclado (enviar, rascunho, lista).
+                state.format_pairing = None;
             }
-            state.format_ghost = ghost;
-            if (ghost_key || ghost_tap)
+            if pair_tab
                 && let Some(caret) = caret
-                && let Some(after) = format_assist::accept(&mut state.composer, caret)
+                && let Some(after) =
+                    format_assist::skip_closer(&state.composer, caret, &mut state.format_pairing)
             {
                 state.composer_caret_pending = Some(after);
-                state.typed = true;
-                state.format_ghost = None;
                 ui.ctx().request_repaint();
+            }
+            state.composer_prev.clone_from(&state.composer);
+
+            // Com um fechamento à espera (ou a lista de sugestões aberta) o
+            // Tab é da caixa: sem este filtro o egui o usa para mover o foco,
+            // e ele caía no canto superior esquerdo.
+            #[cfg(not(target_os = "android"))]
+            if state.format_pairing.is_some() || state.suggest.is_some() {
+                ui.memory_mut(|memory| {
+                    if memory.has_focus(edit_id) {
+                        memory.set_focus_lock_filter(
+                            edit_id,
+                            egui::EventFilter {
+                                tab: true,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: false,
+                            },
+                        );
+                    }
+                });
             }
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
@@ -10306,5 +10274,69 @@ mod modal_layer_tests {
         assert_eq!(click(false), (true, false));
         // Registrada e no topo, o modal leva e a conversa não vê nada.
         assert_eq!(click(true), (false, true));
+    }
+}
+
+#[cfg(test)]
+mod tab_focus_tests {
+    use super::*;
+
+    fn tab_event() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: Some(egui::Key::Tab),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Foca a caixa, aperta Tab e diz se o foco continuou nela. Com `lock`,
+    /// aplica o filtro que o compositor usa enquanto há um fechamento à espera.
+    fn focus_after_tab(lock: bool) -> bool {
+        let ctx = egui::Context::default();
+        let edit_id = Id::new("caixa-de-mensagem");
+        let mut text = String::from("**oi");
+        let frame = |events: Vec<egui::Event>, text: &mut String| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                // Outro widget focável depois da caixa, para onde o Tab iria.
+                egui::TextEdit::multiline(text).id(edit_id).show(ui);
+                let _ = ui.button("outro");
+                if lock {
+                    ui.memory_mut(|memory| {
+                        if memory.has_focus(edit_id) {
+                            memory.set_focus_lock_filter(
+                                edit_id,
+                                egui::EventFilter {
+                                    tab: true,
+                                    horizontal_arrows: true,
+                                    vertical_arrows: true,
+                                    escape: false,
+                                },
+                            );
+                        }
+                    });
+                }
+            });
+            out.textures_delta.clear();
+        };
+        ctx.memory_mut(|memory| memory.request_focus(edit_id));
+        frame(vec![], &mut text);
+        frame(vec![], &mut text);
+        frame(vec![tab_event()], &mut text);
+        frame(vec![], &mut text);
+        ctx.memory(|memory| memory.has_focus(edit_id))
+    }
+
+    #[test]
+    fn tab_stays_in_the_composer_while_a_closer_is_pending() {
+        // Sem o filtro, o egui move o foco (o defeito relatado).
+        assert!(!focus_after_tab(false));
+        assert!(focus_after_tab(true));
     }
 }
