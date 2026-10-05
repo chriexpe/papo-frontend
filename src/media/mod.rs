@@ -79,6 +79,8 @@ const AUTH_FETCH_CONCURRENCY: usize = 3;
 static STARTUP_CACHE_SWEEP: Once = Once::new();
 
 const INLINE_MAX: u32 = 1600;
+/// A prévia do composer é pequena; não vale decodificar além disso.
+const LOCAL_PREVIEW_MAX: u32 = 640;
 const FULL_MAX: u32 = 4096;
 
 // KLIPY/provider GIFs are transient UI media, not full-size attachments.
@@ -117,6 +119,9 @@ pub enum Request {
     Waveform { id: String, path: PathBuf },
     /// Um quadro do vídeo para servir de capa antes do play.
     Poster { id: String, path: PathBuf },
+    /// Prévia de um arquivo local ainda não enviado (imagem ou capa de
+    /// vídeo). Nunca vai para o cache em disco.
+    LocalPreview { id: String, path: PathBuf, video: bool },
     /// Emoji custom do servidor, que chega em base64 junto da listagem.
     Emoji { id: String, blob: String },
     /// Banner de perfil: mídia endereçada pelo sha256, então o cache em
@@ -156,6 +161,7 @@ impl Request {
             Self::Save { .. } => "save",
             Self::Waveform { .. } => "waveform",
             Self::Poster { .. } => "poster",
+            Self::LocalPreview { .. } => "local-preview",
             Self::Emoji { .. } => "emoji",
             Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
@@ -421,6 +427,30 @@ async fn run(
                     key,
                     error: format!("capa: {error}"),
                 },
+            }
+        }
+        Request::LocalPreview { id, path, video } => {
+            let key = local_preview_key(&id);
+            if video {
+                let _turn = poster_queue().acquire().await;
+                match tokio::task::spawn_blocking(move || player::poster(&path)).await {
+                    Ok(Some(image)) => Loaded::Image {
+                        key,
+                        image: Box::new(image),
+                    },
+                    _ => Loaded::Failed {
+                        key,
+                        error: "sem capa".into(),
+                    },
+                }
+            } else {
+                match tokio::fs::read(&path).await {
+                    Ok(bytes) => decode(key, &bytes, LOCAL_PREVIEW_MAX),
+                    Err(error) => Loaded::Failed {
+                        key,
+                        error: error.to_string(),
+                    },
+                }
             }
         }
         Request::Waveform { id, path } => {
@@ -972,6 +1002,9 @@ fn texture_eviction_class(key: &str) -> u8 {
 pub fn thumb_key(id: &str) -> String {
     format!("thumb:{id}")
 }
+pub fn local_preview_key(id: &str) -> String {
+    format!("local:{id}")
+}
 pub fn full_key(id: &str) -> String {
     format!("full:{id}")
 }
@@ -1473,6 +1506,23 @@ impl MediaStore {
             self.ask(Request::Poster {
                 id: id.to_owned(),
                 path: path.to_owned(),
+            });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
+    /// Prévia de um arquivo local. `id` deve mudar quando o arquivo muda (por
+    /// exemplo, incluir a data de modificação), para que uma edição feita em
+    /// outra janela apareça aqui.
+    pub fn local_preview(&mut self, id: &str, path: &Path, video: bool) -> Option<&Texture> {
+        let key = local_preview_key(id);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::LocalPreview {
+                id: id.to_owned(),
+                path: path.to_owned(),
+                video,
             });
         }
         self.touch(&key);

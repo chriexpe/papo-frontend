@@ -788,7 +788,7 @@ fn banner_buttons(
     let (_, more) = slot(ui, icon::DOTS_THREE, s.profile_more, true, "mais");
     egui::Popup::menu(&more).show(|ui| {
         if ui.button(s.profile_copy_id).clicked() {
-            ui.ctx().copy_text(member.id.clone());
+            crate::platform::copy::text(ui.ctx(), member.id.clone());
             state.error = Some((s.profile_id_copied.to_owned(), ui.input(|input| input.time)));
             ui.close();
         }
@@ -948,7 +948,7 @@ fn footer_contents(
     )
     .clicked()
     {
-        ui.ctx().copy_text(member.id.clone());
+        crate::platform::copy::text(ui.ctx(), member.id.clone());
         state.error = Some((s.profile_id_copied.to_owned(), ui.input(|input| input.time)));
     }
 }

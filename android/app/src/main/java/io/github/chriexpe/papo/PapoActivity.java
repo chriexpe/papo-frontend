@@ -1413,6 +1413,31 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    /** Puts plain text on the system clipboard (egui-winit has no Android clipboard). */
+    public void copyText(String text) {
+        runOnUiThread(() -> {
+            final ClipboardManager clipboard =
+                    (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("Papo", text));
+            }
+        });
+    }
+
+    /** Opens an http(s) link in the user's browser. The Rust side vets the scheme. */
+    public void openUrl(String url) {
+        runOnUiThread(() -> {
+            try {
+                final Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        .addCategory(Intent.CATEGORY_BROWSABLE)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+            } catch (Exception error) {
+                Log.e("papo-link", "não deu para abrir o link", error);
+            }
+        });
+    }
+
     /** Synchronizes persistent periodic work with the current Rust settings. */
     public boolean syncBackgroundReconcile(String payload) {
         return PapoWorkScheduler.sync(this, payload);

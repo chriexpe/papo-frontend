@@ -17,6 +17,8 @@ use crate::platform::menu::MenuCommand;
 use crate::state::{ChannelKind, Emoji, MentionBinding, Message, Presence, Store};
 
 use super::attachments::{self, MediaAction};
+use super::composer_attachments;
+use super::format_assist;
 use super::emoji;
 use super::glass::SharedGlass;
 use super::gif;
@@ -94,7 +96,7 @@ const ROW_PADDING: f32 = 4.0;
 const TOPIC_HOLD: f64 = 4.0;
 const TOPIC_SLIDE: f64 = 0.45;
 /// Altura da faixa de anexos à espera de envio, dentro da caixa de texto.
-const COMPOSER_ATTACH_H: f32 = 62.0;
+const COMPOSER_ATTACH_H: f32 = composer_attachments::BAND_H;
 const COMPOSER_REPLY_H: f32 = 26.0;
 /// Altura da linha onde se digita, sem as faixas de cima.
 const COMPOSER_LINE_H: f32 = 52.0;
@@ -894,6 +896,12 @@ pub struct UiState {
     pub suggest: Option<Suggest>,
     /// Esc dispensou a lista: ela não volta até o apelido mudar.
     pub suggest_muted: bool,
+    /// Fechamento de formato (` ``` `, `**`...) escrito sozinho e ainda à
+    /// espera de o cursor passar por ele.
+    pub format_pairing: Option<format_assist::Pairing>,
+    /// Texto do compositor no fim do quadro anterior, para saber o que o
+    /// usuário acabou de digitar.
+    pub composer_prev: String,
     /// Onde começava o apelido quando o Esc foi apertado.
     pub suggest_start: Option<usize>,
     pub emoji_query: String,
@@ -964,7 +972,7 @@ impl UiState {
         };
 
         if self.trusted_link_hosts.contains(&host) {
-            ctx.open_url(egui::OpenUrl::new_tab(url));
+            crate::platform::links::open_url(&url);
             return;
         }
 
@@ -1045,6 +1053,8 @@ impl Default for UiState {
             hover_actions: None,
             suggest: None,
             suggest_muted: false,
+            format_pairing: None,
+            composer_prev: String::new(),
             suggest_start: None,
             emoji_query: String::new(),
             emoji_group: 0,
@@ -5470,6 +5480,12 @@ fn message_list(
                     ui.add_space(space::LG);
                 }
                 ui.vertical(|ui| {
+                    // `horizontal_top` soma o espaçamento entre itens depois
+                    // da foto, então a coluna começa mais à direita do que
+                    // `text_indent` supõe. Medir pelo ponto onde ela de fato
+                    // começa mantém a borda direita na margem da conversa.
+                    let text_width = (area.max.x - space::XL - ui.cursor().min.x)
+                        .clamp(80.0, text_width);
                     ui.set_max_width(text_width);
                     if !grouped {
                         ui.horizontal(|ui| {
@@ -6516,7 +6532,9 @@ fn preview_card(
     }
 
     ui.add_space(space::SM);
-    let card_width = width.clamp(160.0, MAX_W);
+    // O cartão se expande `MD` para cada lado ao desenhar a moldura; a borda
+    // direita dele fica na mesma margem da caixa de mensagem (`PILL_MARGIN`).
+    let card_width = (width - (space::MD - (space::XL - PILL_MARGIN))).clamp(160.0, MAX_W);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let player_id = video_url
         .as_deref()
@@ -7044,6 +7062,8 @@ fn hex_color(raw: &str) -> Option<Color32> {
 
 fn webembed_inline_allowed(state: &UiState) -> bool {
     !state.webembed_blocked
+        && !blocking_modal_open(state)
+        && state.gif_picker_opened.is_none()
         && state.mobile_surface == MobileSurface::Chat
         && state.panel.is_none()
         && state.popup.is_none()
@@ -7563,6 +7583,14 @@ fn hover_pill(
 fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
     let screen = ui.ctx().content_rect();
+    // Diálogo, menu e seletores são modais: a camada precisa existir como
+    // `Area` e ficar por cima de qualquer outra da conversa, senão o egui
+    // entrega o clique ao que estiver atrás (era o aviso de link que não
+    // respondia). Roda antes do conteúdo, para o clique da Area ficar embaixo.
+    if modal_layer_wanted(state) {
+        claim_overlay_layer(ui.ctx(), layer, screen);
+        ui.ctx().move_to_top(layer);
+    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
 
     // O voltar vai para o de cima: o cartão do servidor, senão o de perfil.
@@ -7611,6 +7639,26 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             None => state.viewer = Some(viewer),
         }
     }
+}
+
+/// Algum diálogo ou popup desenhado em `overlays` está aberto e deve receber
+/// os toques no lugar da conversa.
+fn modal_layer_wanted(state: &UiState) -> bool {
+    state.external_link_prompt.is_some()
+        || state.popup.is_some()
+        || state.gif_picker_opened.is_some()
+        || state.link_viewer.is_some()
+}
+
+/// Cobre a conversa por inteiro (cartão de perfil, do servidor, visualizador,
+/// diálogo de link). Nesses casos as views nativas do Android, que ficam
+/// acima de tudo o que o egui desenha, não podem receber o toque.
+fn blocking_modal_open(state: &UiState) -> bool {
+    state.external_link_prompt.is_some()
+        || state.viewer.is_some()
+        || state.link_viewer.is_some()
+        || state.profile.is_some()
+        || state.server_card.is_some()
 }
 
 fn external_link_prompt(
@@ -7724,7 +7772,7 @@ fn external_link_prompt(
         if prompt.remember {
             state.trusted_link_hosts.insert(prompt.host.clone());
         }
-        ui.ctx().open_url(egui::OpenUrl::new_tab(prompt.url));
+        crate::platform::links::open_url(&prompt.url);
     } else if !(cancel.clicked() || outside || escape) {
         state.external_link_prompt = Some(prompt);
     }
@@ -7884,10 +7932,18 @@ fn context_menu(
         return;
     };
     let mine = message.mine(&store.me);
-    let copy_link = direct_media_message_url(state, &message.content, true).or_else(|| {
+    // Mensagem que é só uma mídia (link direto ou GIF): copiar é copiar o
+    // link. Qualquer outra com link ganha "Copiar link" além de "Copiar
+    // texto", e ele leva só o endereço.
+    let media_link = direct_media_message_url(state, &message.content, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
+    });
+    let copy_link = media_link.clone().or_else(|| {
+        papo_core::preview::extract_https_urls(&message.content)
+            .into_iter()
+            .next()
     });
 
     let mut items: Vec<(&str, &str, MessageCommand)> = vec![
@@ -7897,10 +7953,11 @@ fn context_menu(
     if mine {
         items.push((icon::PENCIL_SIMPLE, s.edit, MessageCommand::Edit));
     }
-    if copy_link.is_some() {
-        items.push((icon::COPY, s.copy_link, MessageCommand::CopyLink));
-    } else {
+    if media_link.is_none() && !message.content.trim().is_empty() {
         items.push((icon::COPY, s.copy_text, MessageCommand::Copy));
+    }
+    if copy_link.is_some() {
+        items.push((icon::LINK_SIMPLE, s.copy_link, MessageCommand::CopyLink));
     }
     items.push((
         icon::PUSH_PIN,
@@ -7996,11 +8053,13 @@ fn context_menu(
                 state.edit_focus_pending = true;
             }
             MessageCommand::Copy => {
-                ui.ctx().copy_text(store.display_mentions(&message.content));
+                crate::platform::copy::text(ui.ctx(), store.display_mentions(&message.content));
+                state.error = Some((s.copied.to_owned(), ui.input(|input| input.time)));
             }
             MessageCommand::CopyLink => {
                 if let Some(link) = copy_link {
-                    ui.ctx().copy_text(link);
+                    crate::platform::copy::text(ui.ctx(), link);
+                    state.error = Some((s.copied.to_owned(), ui.input(|input| input.time)));
                 }
             }
             MessageCommand::Pin => state.actions.push(ChatAction::Pin {
@@ -8447,6 +8506,9 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     if !state.attachments.is_empty() {
         height += COMPOSER_ATTACH_H;
     }
+    if composer_attachments::first_url(&state.composer).is_some() {
+        height += composer_attachments::LINK_H;
+    }
     height
 }
 
@@ -8829,80 +8891,47 @@ fn composer(
         cursor = band.max.y;
     }
 
-    // Faixa dos anexos escolhidos.
+    // Faixa dos anexos escolhidos: prévia de cada um, com as ações
+    // empilhadas à direita.
     if !state.attachments.is_empty() {
         let band = Rect::from_min_size(
             egui::pos2(rect.min.x, cursor),
             Vec2::new(rect.width(), COMPOSER_ATTACH_H),
         );
-        let mut remove = None;
-        let mut x = band.min.x + space::LG;
-        for (index, upload) in state.attachments.iter().enumerate() {
-            let chip = Rect::from_min_size(
-                egui::pos2(x, band.min.y + space::XS),
-                Vec2::new(168.0, COMPOSER_ATTACH_H - space::MD),
-            );
-            if chip.max.x > band.max.x - space::LG {
-                break;
+        let requested = composer_attachments::band(
+            ui,
+            t,
+            s,
+            &mut state.media,
+            &state.attachments,
+            band,
+        );
+        if let Some((index, action)) = requested {
+            match action {
+                composer_attachments::TileAction::Remove => {
+                    state.attachments.remove(index);
+                }
+                composer_attachments::TileAction::Spoiler => {
+                    state.attachments[index].spoiler = !state.attachments[index].spoiler;
+                }
+                composer_attachments::TileAction::Anonymize => {
+                    state.attachments[index].anonymize = !state.attachments[index].anonymize;
+                }
+                composer_attachments::TileAction::EditExternally => {
+                    crate::platform::files::open_path(&state.attachments[index].path);
+                }
             }
-            ui.painter().rect(
-                chip,
-                CornerRadius::same(radius::CARD),
-                t.fill_soft,
-                Stroke::new(1.0, t.separator),
-                egui::StrokeKind::Inside,
-            );
-            let glyph = match crate::api::models::Kind::guess(&upload.mime, &upload.name) {
-                crate::api::models::Kind::Image => icon::IMAGE,
-                crate::api::models::Kind::Video => icon::FILM_STRIP,
-                crate::api::models::Kind::Audio => icon::MICROPHONE,
-                crate::api::models::Kind::Other => icon::FILE,
-            };
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::LG, chip.center().y),
-                egui::Align2::CENTER_CENTER,
-                glyph,
-                text::icon(16.0),
-                t.label_secondary,
-            );
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::XXXL, chip.center().y - 7.0),
-                egui::Align2::LEFT_CENTER,
-                attachments::elide(&upload.name, 16),
-                text::caption(),
-                t.label,
-            );
-            ui.painter().text(
-                egui::pos2(chip.min.x + space::XXXL, chip.center().y + 8.0),
-                egui::Align2::LEFT_CENTER,
-                attachments::size_label(upload.size as i64),
-                text::footnote(),
-                t.label_tertiary,
-            );
-            let close = Rect::from_center_size(
-                egui::pos2(chip.max.x - space::MD, chip.min.y + space::MD),
-                Vec2::splat(18.0),
-            );
-            let response = ui.interact(close, Id::new(("chip", index)), Sense::click());
-            ui.painter().text(
-                close.center(),
-                egui::Align2::CENTER_CENTER,
-                icon::X_CIRCLE,
-                text::icon(13.0),
-                if response.hovered() {
-                    t.label
-                } else {
-                    t.label_tertiary
-                },
-            );
-            if response.clicked() {
-                remove = Some(index);
-            }
-            x = chip.max.x + space::SM;
         }
-        if let Some(index) = remove {
-            state.attachments.remove(index);
-        }
+        cursor = band.max.y;
+    }
+
+    // Cartão básico do primeiro link do texto.
+    if let Some(url) = composer_attachments::first_url(&state.composer) {
+        let band = Rect::from_min_size(
+            egui::pos2(rect.min.x, cursor),
+            Vec2::new(rect.width(), composer_attachments::LINK_H),
+        );
+        composer_attachments::link_card(ui, t, url, band);
         cursor = band.max.y;
     }
 
@@ -9049,10 +9078,11 @@ fn composer(
     }
 
     #[cfg(target_os = "android")]
-    let android_chat_editor_visible = !state.compact
-        || (state.mobile_surface == MobileSurface::Chat
-            && state.drawer.shown <= 0.0
-            && !state.drawer.dragging);
+    let android_chat_editor_visible = !blocking_modal_open(state)
+        && (!state.compact
+            || (state.mobile_surface == MobileSurface::Chat
+                && state.drawer.shown <= 0.0
+                && !state.drawer.dragging));
 
     #[cfg(target_os = "android")]
     if !android_chat_editor_visible {
@@ -9110,6 +9140,32 @@ fn composer(
             } else {
                 SuggestKeys::default()
             };
+
+            // Tab pula o fechamento escrito sozinho (` ``` `, `**`...). Lido
+            // antes da caixa de texto, como as teclas da lista; o egui só
+            // deixa de mover o foco no Tab porque o filtro de foco da caixa é
+            // ajustado no fim do quadro (mais abaixo).
+            #[cfg(not(target_os = "android"))]
+            let pair_tab = state.format_pairing.is_some()
+                && state.suggest.is_none()
+                && ui.input_mut(|input| {
+                    let pressed = input.key_pressed(egui::Key::Tab) && input.modifiers.is_none();
+                    if pressed {
+                        input.events.retain(|event| {
+                            !matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: egui::Key::Tab,
+                                    pressed: true,
+                                    ..
+                                }
+                            )
+                        });
+                    }
+                    pressed
+                });
+            #[cfg(target_os = "android")]
+            let pair_tab = false;
 
             #[cfg(target_os = "android")]
             let (field_focused, caret) =
@@ -9299,6 +9355,57 @@ fn composer(
             let accepted = keys.accept && state.suggest.is_some();
             if accepted {
                 accept_suggestion(store, state, ui.ctx(), edit_id);
+            }
+
+            // Fechamento automático dos marcadores de formato. O texto é de
+            // verdade, então andar para a direita (seta, toque, segurar o
+            // espaço no celular) atravessa o fechamento sem tratamento extra.
+            if state.editing.is_none() && state.typed {
+                if let Some(caret) = caret
+                    && let Some(edit) = format_assist::on_change(
+                        &state.composer_prev,
+                        &state.composer,
+                        caret,
+                        &mut state.format_pairing,
+                    )
+                {
+                    state.composer = edit.text;
+                    state.composer_caret_pending = Some(edit.caret);
+                    reanchor_mentions(&state.composer, &mut state.composer_mentions);
+                    ui.ctx().request_repaint();
+                }
+            } else if !state.typed {
+                // Mudança que não veio do teclado (enviar, rascunho, lista).
+                state.format_pairing = None;
+            }
+            if pair_tab
+                && let Some(caret) = caret
+                && let Some(after) =
+                    format_assist::skip_closer(&state.composer, caret, &mut state.format_pairing)
+            {
+                state.composer_caret_pending = Some(after);
+                ui.ctx().request_repaint();
+            }
+            state.composer_prev.clone_from(&state.composer);
+
+            // Com um fechamento à espera (ou a lista de sugestões aberta) o
+            // Tab é da caixa: sem este filtro o egui o usa para mover o foco,
+            // e ele caía no canto superior esquerdo.
+            #[cfg(not(target_os = "android"))]
+            if state.format_pairing.is_some() || state.suggest.is_some() {
+                ui.memory_mut(|memory| {
+                    if memory.has_focus(edit_id) {
+                        memory.set_focus_lock_filter(
+                            edit_id,
+                            egui::EventFilter {
+                                tab: true,
+                                horizontal_arrows: true,
+                                vertical_arrows: true,
+                                escape: false,
+                            },
+                        );
+                    }
+                });
             }
 
             // Enter envia; Shift+Enter quebra linha. Com a lista aberta o
@@ -10173,5 +10280,128 @@ mod draft_tests {
         book.reset_owner("owner-b");
         assert!(book.get("B").is_none());
         assert_eq!(book.owner(), Some("owner-b"));
+    }
+}
+
+#[cfg(test)]
+mod modal_layer_tests {
+    use super::*;
+
+    /// Um quadro: a conversa tem uma `Area` em primeiro plano que ocupa a
+    /// tela; o modal é desenhado numa camada própria, como em `overlays`.
+    fn frame(ctx: &egui::Context, events: Vec<egui::Event>, claim: bool) -> (bool, bool) {
+        let (mut chat, mut modal) = (false, false);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(400.0, 800.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            let screen = ui.ctx().content_rect();
+            egui::Area::new(Id::new("chat-fg"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(screen.min)
+                .show(ui.ctx(), |ui| {
+                    chat |= ui.interact(screen, Id::new("chat"), Sense::click()).clicked();
+                });
+            let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
+            if claim {
+                claim_overlay_layer(ui.ctx(), layer, screen);
+                ui.ctx().move_to_top(layer);
+            }
+            let top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
+            modal |= top.interact(screen, Id::new("backdrop"), Sense::click()).clicked();
+        });
+        output.textures_delta.clear();
+        (chat, modal)
+    }
+
+    fn click(claim: bool) -> (bool, bool) {
+        let ctx = egui::Context::default();
+        let at = egui::pos2(100.0, 100.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        for _ in 0..3 {
+            frame(&ctx, vec![], claim);
+        }
+        frame(&ctx, vec![egui::Event::PointerMoved(at)], claim);
+        frame(&ctx, vec![button(true)], claim);
+        frame(&ctx, vec![button(false)], claim)
+    }
+
+    #[test]
+    fn modal_layer_gets_the_click_not_the_chat() {
+        // Sem registrar a camada, a conversa leva o clique (o defeito).
+        assert_eq!(click(false), (true, false));
+        // Registrada e no topo, o modal leva e a conversa não vê nada.
+        assert_eq!(click(true), (false, true));
+    }
+}
+
+#[cfg(test)]
+mod tab_focus_tests {
+    use super::*;
+
+    fn tab_event() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: Some(egui::Key::Tab),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Foca a caixa, aperta Tab e diz se o foco continuou nela. Com `lock`,
+    /// aplica o filtro que o compositor usa enquanto há um fechamento à espera.
+    fn focus_after_tab(lock: bool) -> bool {
+        let ctx = egui::Context::default();
+        let edit_id = Id::new("caixa-de-mensagem");
+        let mut text = String::from("**oi");
+        let frame = |events: Vec<egui::Event>, text: &mut String| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(400.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                // Outro widget focável depois da caixa, para onde o Tab iria.
+                egui::TextEdit::multiline(text).id(edit_id).show(ui);
+                let _ = ui.button("outro");
+                if lock {
+                    ui.memory_mut(|memory| {
+                        if memory.has_focus(edit_id) {
+                            memory.set_focus_lock_filter(
+                                edit_id,
+                                egui::EventFilter {
+                                    tab: true,
+                                    horizontal_arrows: true,
+                                    vertical_arrows: true,
+                                    escape: false,
+                                },
+                            );
+                        }
+                    });
+                }
+            });
+            out.textures_delta.clear();
+        };
+        ctx.memory_mut(|memory| memory.request_focus(edit_id));
+        frame(vec![], &mut text);
+        frame(vec![], &mut text);
+        frame(vec![tab_event()], &mut text);
+        frame(vec![], &mut text);
+        ctx.memory(|memory| memory.has_focus(edit_id))
+    }
+
+    #[test]
+    fn tab_stays_in_the_composer_while_a_closer_is_pending() {
+        // Sem o filtro, o egui move o foco (o defeito relatado).
+        assert!(!focus_after_tab(false));
+        assert!(focus_after_tab(true));
     }
 }

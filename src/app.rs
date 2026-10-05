@@ -1402,7 +1402,7 @@ impl PapoApp {
                         dismiss = true;
                     }
                     if ui.button(s.update_open_release).clicked() {
-                        ctx.open_url(egui::OpenUrl::new_tab(release.release_url.clone()));
+                        crate::platform::links::open_url(&release.release_url);
                     }
                 });
             });
@@ -1948,13 +1948,45 @@ impl PapoApp {
                             self.cache.submit(&ws.runtime.server_key, draft_ops);
                         }
                     }
-                    ws.runtime.net.send(Command::SendMessage {
-                        channel_id,
-                        content: wire_content,
-                        reply_to,
-                        notify_reply,
-                        attachments,
-                    });
+                    if attachments.iter().any(|upload| upload.anonymize) {
+                        // Reescrever imagem custa; fora da thread da interface.
+                        let sender = ws.runtime.net.sender();
+                        std::thread::spawn(move || {
+                            let dir = crate::media::cache_root().join("anonymized");
+                            let attachments = attachments
+                                .into_iter()
+                                .filter_map(|upload| {
+                                    if !upload.anonymize {
+                                        return Some(upload);
+                                    }
+                                    match crate::platform::anonymize::anonymize(&upload, &dir) {
+                                        Ok(done) => Some(done.upload),
+                                        // Nunca cair para o original: o usuário
+                                        // pediu anonimato.
+                                        Err(error) => {
+                                            log::warn!("anonimizar {}: {error}", upload.name);
+                                            None
+                                        }
+                                    }
+                                })
+                                .collect();
+                            sender.send(Command::SendMessage {
+                                channel_id,
+                                content: wire_content,
+                                reply_to,
+                                notify_reply,
+                                attachments,
+                            });
+                        });
+                    } else {
+                        ws.runtime.net.send(Command::SendMessage {
+                            channel_id,
+                            content: wire_content,
+                            reply_to,
+                            notify_reply,
+                            attachments,
+                        });
+                    }
                 }
             }
             ChatAction::Edit {
@@ -2659,7 +2691,7 @@ impl PapoApp {
                             }
                         }
                         RuntimeEffect::PasswordResetLink { url, expires_at } => {
-                            ctx.copy_text(url.clone());
+                            crate::platform::copy::text(ctx, url.clone());
                             let when = expires_at.with_timezone(&chrono::Local)
                                 .format("%Y-%m-%d %H:%M")
                                 .to_string();

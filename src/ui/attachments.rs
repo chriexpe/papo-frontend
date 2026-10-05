@@ -55,8 +55,34 @@ pub fn draw(
     seek_zones: &mut Vec<Rect>,
 ) -> Option<MediaAction> {
     let mut action = None;
-    for (index, attachment) in attachments.iter().enumerate() {
+    let mut index = 0;
+    while index < attachments.len() {
         ui.add_space(space::XS);
+        // Imagens e vídeos em sequência viram uma grade, em vez de uma pilha
+        // de cartões que deixa a linha quase toda vazia.
+        if is_visual(&attachments[index]) {
+            let run = attachments[index..]
+                .iter()
+                .take(GRID_MAX_ITEMS)
+                .take_while(|attachment| is_visual(attachment))
+                .count();
+            if run >= 2 {
+                let outcome = grid(
+                    ui,
+                    t,
+                    s,
+                    media,
+                    message_id,
+                    index,
+                    &attachments[index..index + run],
+                    width,
+                );
+                action = action.or(outcome);
+                index += run;
+                continue;
+            }
+        }
+        let attachment = &attachments[index];
         let outcome = match attachment.kind() {
             Kind::Image => image(ui, t, s, media, message_id, index, attachment, width),
             Kind::Video => video(
@@ -74,6 +100,227 @@ pub fn draw(
             Kind::Other => file_card(ui, t, s, attachment, width),
         };
         action = action.or(outcome);
+        index += 1;
+    }
+    action
+}
+
+fn is_visual(attachment: &Attachment) -> bool {
+    matches!(attachment.kind(), Kind::Image | Kind::Video)
+}
+
+const GRID_MAX_W: f32 = 520.0;
+const GRID_MAX_H: f32 = 340.0;
+const GRID_GAP: f32 = 4.0;
+/// Quantos anexos entram numa grade; o resto segue em cartões.
+const GRID_MAX_ITEMS: usize = 10;
+
+/// Posição de cada célula (relativa ao canto da grade) e o tamanho total.
+fn grid_cells(count: usize, width: f32) -> (Vec<Rect>, Vec2) {
+    let gap = GRID_GAP;
+    let cell = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(egui::pos2(x, y), Vec2::new(w, h));
+    let half = (width - gap) / 2.0;
+    let mut cells = Vec::with_capacity(count);
+    let height = match count {
+        2 => {
+            let h = half.min(GRID_MAX_H);
+            cells.push(cell(0.0, 0.0, half, h));
+            cells.push(cell(half + gap, 0.0, half, h));
+            h
+        }
+        3 => {
+            // Uma grande à esquerda, duas empilhadas à direita.
+            let h = (width * 0.75).min(GRID_MAX_H);
+            let small = (h - gap) / 2.0;
+            cells.push(cell(0.0, 0.0, half, h));
+            cells.push(cell(half + gap, 0.0, half, small));
+            cells.push(cell(half + gap, small + gap, half, small));
+            h
+        }
+        4 => {
+            let h = (half * 0.75).min(GRID_MAX_H / 2.0);
+            for row in 0..2 {
+                for col in 0..2 {
+                    cells.push(cell(
+                        col as f32 * (half + gap),
+                        row as f32 * (h + gap),
+                        half,
+                        h,
+                    ));
+                }
+            }
+            h * 2.0 + gap
+        }
+        _ => {
+            // Fileiras de três; a última reparte a largura entre os que sobram.
+            let per_row = 3;
+            let rows = count.div_ceil(per_row);
+            let h = ((width - gap * 2.0) / 3.0).min(GRID_MAX_H / 2.0);
+            for row in 0..rows {
+                let in_row = (count - row * per_row).min(per_row);
+                let w = (width - gap * (in_row as f32 - 1.0)) / in_row as f32;
+                for col in 0..in_row {
+                    cells.push(cell(col as f32 * (w + gap), row as f32 * (h + gap), w, h));
+                }
+            }
+            rows as f32 * h + (rows as f32 - 1.0) * gap
+        }
+    };
+    (cells, Vec2::new(width, height))
+}
+
+/// Recorte central que preenche `rect` sem distorcer a imagem.
+fn cover_uv(natural: Vec2, rect: Rect) -> Rect {
+    if natural.x <= 0.0 || natural.y <= 0.0 || rect.height() <= 0.0 {
+        return Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    }
+    let wanted = rect.width() / rect.height();
+    let have = natural.x / natural.y;
+    let span = if have > wanted {
+        Vec2::new(wanted / have, 1.0)
+    } else {
+        Vec2::new(1.0, have / wanted)
+    };
+    Rect::from_center_size(egui::pos2(0.5, 0.5), span)
+}
+
+/// Grade de imagens e vídeos de uma mensagem. Um toque abre o visualizador
+/// no item; vídeos só tocam lá, por isso aqui mostram a capa.
+#[allow(clippy::too_many_arguments)]
+fn grid(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    media: &mut MediaStore,
+    message_id: &str,
+    first_index: usize,
+    items: &[Attachment],
+    width: f32,
+) -> Option<MediaAction> {
+    let (cells, size) = grid_cells(items.len(), width.min(GRID_MAX_W));
+    let (area, _) = ui.allocate_exact_size(size, Sense::hover());
+    let visible = near_viewport(ui);
+    let corner = CornerRadius::same(radius::CONTROL);
+    let mut action = None;
+
+    for (offset, (attachment, cell)) in items.iter().zip(cells).enumerate() {
+        let rect = cell.translate(area.min.to_vec2());
+        let index = first_index + offset;
+        let response = ui.interact(
+            rect,
+            egui::Id::new(("media-grid", message_id, index)),
+            Sense::click(),
+        );
+        let hidden = attachment.sensitive() && media.sensitive_hidden(&attachment.id);
+        let video = attachment.kind() == Kind::Video;
+
+        // Só o que já existe em disco ou a miniatura do servidor: a grade
+        // nunca baixa um vídeo inteiro para desenhar a capa.
+        let texture = if video {
+            if visible {
+                media.probe_file(&attachment.id, attachment.name());
+            }
+            match media.file_ready(&attachment.id) {
+                Some(path) => media
+                    .poster(&attachment.id, &path)
+                    .and_then(|texture| texture.frame(ui.ctx()))
+                    .cloned(),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let texture = texture.or_else(|| {
+            let loaded = media
+                .loaded_thumb(&attachment.id)
+                .and_then(|texture| texture.frame(ui.ctx()))
+                .cloned();
+            if loaded.is_some() || !visible {
+                loaded
+            } else {
+                media
+                    .thumb(attachment)
+                    .and_then(|texture| texture.frame(ui.ctx()))
+                    .cloned()
+            }
+        });
+
+        ui.painter().rect_filled(rect, corner, t.fill_soft);
+        match &texture {
+            Some(texture) => super::widgets::photo(
+                ui.painter(),
+                rect,
+                texture.id(),
+                cover_uv(texture.size_vec2(), rect),
+                corner,
+                if hidden { Color32::from_gray(120) } else { Color32::WHITE },
+            ),
+            None => {
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    if video { icon::FILM_STRIP } else { icon::IMAGE },
+                    text::icon(22.0),
+                    t.label_tertiary,
+                );
+            }
+        }
+        ui.painter().rect_stroke(
+            rect,
+            corner,
+            Stroke::new(1.0, t.separator),
+            egui::StrokeKind::Inside,
+        );
+
+        if hidden {
+            ui.painter()
+                .rect_filled(rect, corner, Color32::from_black_alpha(190));
+            ui.painter().text(
+                rect.center() - Vec2::new(0.0, 10.0),
+                egui::Align2::CENTER_CENTER,
+                icon::EYE_SLASH,
+                text::icon(20.0),
+                t.label_secondary,
+            );
+            ui.painter().text(
+                rect.center() + Vec2::new(0.0, 12.0),
+                egui::Align2::CENTER_CENTER,
+                s.sensitive_reveal,
+                text::footnote(),
+                t.label_secondary,
+            );
+            if response.clicked() {
+                action = action.or(Some(MediaAction::Reveal(attachment.id.clone())));
+            }
+            continue;
+        }
+
+        if video {
+            ui.painter()
+                .circle_filled(rect.center(), 20.0, Color32::from_black_alpha(140));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon::PLAY,
+                text::icon(18.0),
+                Color32::WHITE,
+            );
+        }
+        if response.hovered() {
+            hover_badge(ui, t, rect, icon::ARROWS_OUT, s.open);
+        }
+        if response.clicked() {
+            action = action.or(Some(MediaAction::Open {
+                message_id: message_id.to_owned(),
+                index,
+            }));
+        }
+        if response.secondary_clicked() {
+            action = action.or(Some(MediaAction::Download {
+                id: attachment.id.clone(),
+                name: attachment.name().to_owned(),
+            }));
+        }
     }
     action
 }
@@ -1180,4 +1427,35 @@ pub fn elide(text: &str, max: usize) -> String {
     }
     let kept: String = text.chars().take(max.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+
+    fn bounds(cells: &[Rect]) -> Rect {
+        cells.iter().fold(Rect::NOTHING, |all, cell| all.union(*cell))
+    }
+
+    #[test]
+    fn every_layout_fills_its_box_without_overlap() {
+        for count in 2..=GRID_MAX_ITEMS {
+            let (cells, size) = grid_cells(count, 400.0);
+            assert_eq!(cells.len(), count, "{count} células");
+            let all = bounds(&cells);
+            assert!((all.width() - 400.0).abs() < 0.01, "{count}: largura {all:?}");
+            assert!((all.height() - size.y).abs() < 0.01, "{count}: altura {all:?} {size:?}");
+            for (i, a) in cells.iter().enumerate() {
+                for b in &cells[i + 1..] {
+                    assert!(!a.shrink(0.1).intersects(b.shrink(0.1)), "{count}: {a:?} cruza {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cover_crop_keeps_the_aspect() {
+        let uv = cover_uv(Vec2::new(200.0, 100.0), Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(50.0, 50.0)));
+        assert!((uv.width() - 0.5).abs() < 1e-5 && (uv.height() - 1.0).abs() < 1e-5);
+    }
 }

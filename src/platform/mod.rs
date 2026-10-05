@@ -4,6 +4,7 @@ pub mod activate;
 #[cfg(target_os = "linux")]
 #[path = "linux/appmenu.rs"]
 pub mod appmenu;
+pub mod anonymize;
 pub mod autostart;
 #[cfg(not(target_os = "android"))]
 pub mod clipboard;
@@ -21,7 +22,9 @@ pub mod blur;
 pub mod desktop;
 /// Onde ficam sessão e cache em cada plataforma.
 pub mod dirs;
+pub mod copy;
 pub mod files;
+pub mod links;
 #[cfg(target_os = "linux")]
 #[path = "linux/global_menu.rs"]
 pub mod global_menu;
