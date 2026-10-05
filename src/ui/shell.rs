@@ -20,6 +20,8 @@ use super::attachments::{self, MediaAction};
 use super::composer_attachments;
 use super::format_assist;
 use super::emoji;
+use super::markdown;
+use super::markdown_view;
 use super::glass::SharedGlass;
 use super::gif;
 use super::theme::{radius, space, text, Tokens, HIT_TARGET};
@@ -769,6 +771,9 @@ pub enum UpdatePill {
 }
 
 pub struct UiState {
+    /// Mensagens já interpretadas como markdown, por texto final; recomeça
+    /// quando passa de `markdown::CACHE_LIMIT`.
+    pub markdown_cache: std::collections::HashMap<String, std::sync::Arc<Vec<markdown::Block>>>,
     pub composer: String,
     pub composer_mentions: Vec<MentionBinding>,
     pub composer_caret_pending: Option<usize>,
@@ -988,6 +993,7 @@ impl UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
+            markdown_cache: Default::default(),
             composer: String::new(),
             composer_mentions: Vec::new(),
             composer_caret_pending: None,
@@ -5926,17 +5932,67 @@ fn message_body(
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
             gif::message(ui, state, t, s, &slug, width, allow_network);
         } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
-            let shown_content = store.display_mentions(&message.content);
+            let (shown_content, bindings) =
+                store.display_mentions_with_bindings(&message.content);
             let color = if message.pending {
                 t.label_secondary
             } else {
                 t.label
             };
             let tokens = emoji::tokenize(&shown_content, &store.emojis);
-            // URL hit-testing needs individual widgets even for otherwise plain
-            // text. Keeping a separate LayoutJob fast path made normal messages
-            // skip the hyperlink path entirely.
-            rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+            // Texto sem sintaxe de markdown, sem menção e a mensagem só de
+            // emoji seguem o caminho simples: nada para interpretar, e o
+            // quadro não paga o parser. Menção precisa da pastilha, então
+            // sempre passa pelo markdown.
+            // Etiquetas que chamam quem lê ganham pastilha: `@everyone` e
+            // `@todos` de quem tem permissão, e `@Cargo` dos cargos que a
+            // própria pessoa tem. Da maior para a menor, para o nome mais
+            // longo ganhar.
+            let mut tags: Vec<String> = Vec::new();
+            if shown_content.contains('@') {
+                if store.can_mention_everyone(&message.author_id) {
+                    tags.push("everyone".to_owned());
+                    tags.push("todos".to_owned());
+                }
+                tags.extend(store.my_role_names());
+                tags.sort_by_key(|tag| std::cmp::Reverse(tag.chars().count()));
+            }
+            let tagged =
+                !papo_core::notification::tag_spans(&shown_content, &tags).is_empty();
+            let plain = bindings.is_empty()
+                && !tagged
+                && !shown_content.contains("@mention(")
+                && (emoji::jumbo(&tokens) || markdown::is_plain(&shown_content));
+            if plain {
+                // URL hit-testing needs individual widgets even for otherwise
+                // plain text. Keeping a separate LayoutJob fast path made
+                // normal messages skip the hyperlink path entirely.
+                rich_body(ui, t, s, store, state, &tokens, color, message.edited, width);
+            } else {
+                let prepared = markdown::substitute_mentions(&shown_content, &bindings);
+                let key = prepared.key();
+                let blocks = match state.markdown_cache.get(&key) {
+                    Some(blocks) => blocks.clone(),
+                    None => {
+                        if state.markdown_cache.len() >= markdown::CACHE_LIMIT {
+                            state.markdown_cache.clear();
+                        }
+                        let blocks = markdown::parse_shared(&prepared);
+                        state.markdown_cache.insert(key, blocks.clone());
+                        blocks
+                    }
+                };
+                let view = markdown_view::View {
+                    t,
+                    s,
+                    store,
+                    color,
+                    edited: message.edited,
+                    network: allow_network,
+                    tags: &tags,
+                };
+                markdown_view::draw(ui, state, &view, &blocks, width);
+            }
         }
     }
 
@@ -6150,7 +6206,7 @@ fn direct_media_message_url(
 /// Texto entremeado de emoji: cada emoji vira imagem, o resto é palavra
 /// solta para o egui quebrar a linha onde precisar.
 #[allow(clippy::too_many_arguments)]
-fn muted_link_color(ui: &egui::Ui, t: &Tokens) -> Color32 {
+pub(super) fn muted_link_color(ui: &egui::Ui, t: &Tokens) -> Color32 {
     let blue = ui.visuals().hyperlink_color;
     let neutral = t.label_secondary;
     // Keep the conventional blue cue, but pull it strongly toward the
@@ -9380,10 +9436,13 @@ fn composer(
             }
             if pair_tab
                 && let Some(caret) = caret
-                && let Some(after) =
+                && let Some(edit) =
                     format_assist::skip_closer(&state.composer, caret, &mut state.format_pairing)
             {
-                state.composer_caret_pending = Some(after);
+                state.composer = edit.text;
+                state.composer_caret_pending = Some(edit.caret);
+                state.typed = true;
+                reanchor_mentions(&state.composer, &mut state.composer_mentions);
                 ui.ctx().request_repaint();
             }
             state.composer_prev.clone_from(&state.composer);

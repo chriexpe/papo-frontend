@@ -406,6 +406,57 @@ pub fn mentions_user(text: &str, owner_user_id: &str, owner_name: &str, author_i
         || lower.contains("@todos")
 }
 
+/// Onde `@Etiqueta` aparece no texto, para cada etiqueta de `tags` (sem o
+/// `@`, de preferência da mais longa para a mais curta). Sem diferenciar
+/// maiúsculas; a etiqueta precisa começar uma palavra e terminar uma palavra,
+/// então `@modelo` não conta para a etiqueta `mod`. Devolve intervalos em
+/// bytes, incluindo o `@`, sem sobreposição.
+pub fn tag_spans(text: &str, tags: &[String]) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    if tags.iter().all(|tag| tag.is_empty()) {
+        return spans;
+    }
+    let mut skip_until = 0;
+    for (start, ch) in text.char_indices() {
+        if ch != '@' || start < skip_until {
+            continue;
+        }
+        let before_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+        if !before_ok {
+            continue;
+        }
+        let rest = &text[start + 1..];
+        for tag in tags.iter().filter(|tag| !tag.is_empty()) {
+            let mut taken = 0;
+            let mut chars = rest.chars();
+            let matched = tag.chars().all(|expected| match chars.next() {
+                Some(actual) => {
+                    taken += actual.len_utf8();
+                    actual.to_lowercase().eq(expected.to_lowercase())
+                }
+                None => false,
+            });
+            if !matched {
+                continue;
+            }
+            let after_ok = rest[taken..]
+                .chars()
+                .next()
+                .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+            if after_ok {
+                let end = start + 1 + taken;
+                spans.push(start..end);
+                skip_until = end;
+                break;
+            }
+        }
+    }
+    spans
+}
+
 fn display_mentions(members: &HashMap<String, String>, text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let prefix: Vec<char> = "@mention(<@".chars().collect();
@@ -1136,4 +1187,39 @@ mod tests {
         assert_eq!(stats.rows, TEST_LIMIT);
     }
 
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::tag_spans;
+
+    fn tags(list: &[&str]) -> Vec<String> {
+        list.iter().map(|tag| (*tag).to_owned()).collect()
+    }
+
+    #[test]
+    fn finds_tags_as_whole_words_ignoring_case() {
+        let text = "oi @Moderadores e @todos, @mod? @modelo";
+        let spans = tag_spans(text, &tags(&["moderadores", "todos", "mod"]));
+        let found: Vec<&str> = spans.iter().map(|span| &text[span.clone()]).collect();
+        assert_eq!(found, ["@Moderadores", "@todos", "@mod"]);
+    }
+
+    #[test]
+    fn multi_word_tags_and_unicode() {
+        let text = "chamando @Equipe de Design!";
+        let spans = tag_spans(text, &tags(&["equipe de design"]));
+        assert_eq!(&text[spans[0].clone()], "@Equipe de Design");
+        let text = "@ÁRBITROS agora";
+        let spans = tag_spans(text, &tags(&["árbitros"]));
+        assert_eq!(&text[spans[0].clone()], "@ÁRBITROS");
+    }
+
+    #[test]
+    fn emails_and_prefixes_do_not_count() {
+        assert!(tag_spans("ana@mod.com", &tags(&["mod"])).is_empty());
+        assert!(tag_spans("@modx", &tags(&["mod"])).is_empty());
+        assert!(tag_spans("sem nada", &tags(&["mod"])).is_empty());
+        assert!(tag_spans("@mod", &tags(&[""])).is_empty());
+    }
 }

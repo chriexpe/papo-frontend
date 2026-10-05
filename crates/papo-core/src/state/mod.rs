@@ -2211,7 +2211,29 @@ impl Store {
             &self.me,
             &self.my_name,
             &message.author_id,
-        )
+        ) || (message.author_id != self.me && self.mentions_my_role(&message.content))
+    }
+
+    /// Nomes dos cargos (as "etiquetas") que a pessoa tem, do maior para o
+    /// menor, prontos para `notification::tag_spans`.
+    pub fn my_role_names(&self) -> Vec<String> {
+        let Some(me) = self.member(&self.me) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = self
+            .roles
+            .iter()
+            .filter(|role| me.roles.iter().any(|role_id| role_id == &role.id))
+            .map(|role| role.name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect();
+        names.sort_by_key(|name| std::cmp::Reverse(name.chars().count()));
+        names
+    }
+
+    /// O texto cita `@Cargo` de um cargo que a pessoa tem.
+    pub fn mentions_my_role(&self, content: &str) -> bool {
+        !crate::notification::tag_spans(content, &self.my_role_names()).is_empty()
     }
 
     /// Permissões globais acumuladas dos cargos do usuário atual.
@@ -2235,6 +2257,26 @@ impl Store {
             combined.send_attachment |= p.send_attachment;
         }
         combined
+    }
+
+    /// `@everyone` só tem efeito quando quem escreveu pode usá-lo: o dono do
+    /// servidor ou alguém com um cargo que permita (`everyone_message`).
+    pub fn can_mention_everyone(&self, user_id: &str) -> bool {
+        if self
+            .server
+            .as_ref()
+            .and_then(|server| server.owner_id.as_deref())
+            == Some(user_id)
+        {
+            return true;
+        }
+        let Some(member) = self.member(user_id) else {
+            return false;
+        };
+        self.roles
+            .iter()
+            .filter(|role| member.roles.iter().any(|role_id| role_id == &role.id))
+            .any(|role| role.permissions.everyone_message)
     }
 
     pub fn is_server_owner(&self) -> bool {
@@ -3753,6 +3795,60 @@ mod tests {
         store.apply(Update::Connection(Connection::Offline));
         store.apply(Update::Connection(Connection::Connecting));
         store.apply(Update::Connection(Connection::Online));
+    }
+
+    #[test]
+    fn everyone_exige_dono_ou_cargo_com_permissao() {
+        let member = |id: &str, roles: &[&str]| Member {
+            id: id.to_owned(),
+            username: id.to_owned(),
+            name: id.to_owned(),
+            banned: false,
+            presence: Presence::Online,
+            status_message: None,
+            typing_label: None,
+            role_color: None,
+            roles: roles.iter().map(|role| (*role).to_owned()).collect(),
+        };
+        let role = |id: &str, everyone_message: bool| models::Role {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            color: None,
+            permissions: models::RolePermissions {
+                everyone_message,
+                ..Default::default()
+            },
+        };
+        let mut store = Store {
+            members: vec![
+                member("dono", &[]),
+                member("mod", &["pode"]),
+                member("comum", &["nao"]),
+                member("sem-cargo", &[]),
+            ],
+            roles: vec![role("pode", true), role("nao", false)],
+            server: Some(Server {
+                name: "s".to_owned(),
+                description: None,
+                public: false,
+                owner_id: Some("dono".to_owned()),
+                icon: None,
+            }),
+            ..Store::default()
+        };
+        // Cargo que a pessoa tem vira etiqueta que a chama.
+        store.me = "mod".to_owned();
+        store.roles[0].name = "Moderadores".to_owned();
+        assert_eq!(store.my_role_names(), ["Moderadores"]);
+        assert!(store.mentions_my_role("chamando @moderadores!"));
+        assert!(!store.mentions_my_role("chamando @outro"));
+        store.me = "comum".to_owned();
+        assert!(!store.mentions_my_role("chamando @moderadores!"));
+        assert!(store.can_mention_everyone("dono"));
+        assert!(store.can_mention_everyone("mod"));
+        assert!(!store.can_mention_everyone("comum"));
+        assert!(!store.can_mention_everyone("sem-cargo"));
+        assert!(!store.can_mention_everyone("desconhecido"));
     }
 
     #[test]

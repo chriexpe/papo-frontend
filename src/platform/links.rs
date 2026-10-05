@@ -5,12 +5,17 @@
 //! aviso de link não fazia nada. Aqui cada plataforma usa o seu próprio
 //! caminho.
 
-/// Só web: o texto vem de mensagens de terceiros, e esquemas como `file:`,
+/// Só web e `mailto:`: o texto vem de mensagens de terceiros, e esquemas como `file:`,
 /// `intent:` ou `javascript:` nunca devem sair daqui.
 pub fn is_openable(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    if let Some(address) = lower.strip_prefix("mailto:") {
+        return !address.is_empty();
+    }
     (lower.starts_with("https://") || lower.starts_with("http://"))
-        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
         && url.split("://").nth(1).is_some_and(|rest| !rest.is_empty())
 }
 
@@ -63,6 +68,8 @@ mod tests {
     fn only_plain_web_addresses_open() {
         assert!(is_openable("https://exemplo.com/a?b=1"));
         assert!(is_openable("HTTP://exemplo.com"));
+        assert!(is_openable("mailto:ana@exemplo.com"));
+        assert!(!is_openable("mailto:"));
         assert!(!is_openable("file:///etc/passwd"));
         assert!(!is_openable("javascript:alert(1)"));
         assert!(!is_openable("intent://x#Intent;end"));
