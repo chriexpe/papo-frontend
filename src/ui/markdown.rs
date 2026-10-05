@@ -39,11 +39,26 @@ pub enum Inline {
         link: Option<String>,
     },
     Code(String),
+    /// Imagem `![alt](https://…)`: só endereços http(s) chegam aqui; o resto
+    /// vira o texto alternativo.
+    Image {
+        src: String,
+        alt: String,
+    },
     Mention {
         user_id: String,
         label: String,
     },
     Break,
+}
+
+/// Alinhamento de uma coluna de tabela (`:--`, `:-:`, `--:`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColumnAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,6 +83,7 @@ pub enum Block {
     },
     Rule,
     Table {
+        aligns: Vec<ColumnAlign>,
         head: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
     },
@@ -378,7 +394,7 @@ struct Builder<'a> {
     /// Destino de cada link aberto; `None` quando o esquema não é seguro.
     links: Vec<Option<String>>,
     /// Para cada imagem aberta: destino e se já saiu algum texto dela.
-    image_text: Vec<(String, bool)>,
+    image_text: Vec<(String, String)>,
     task: Option<bool>,
 }
 
@@ -463,9 +479,17 @@ impl Builder<'_> {
                     }
                     blocks.push(Block::List { start, items });
                 }
-                Event::Start(Tag::Table(_)) => {
+                Event::Start(Tag::Table(aligns)) => {
                     flush(&mut pending, &mut blocks, self.mentions);
-                    blocks.push(self.table(events));
+                    let aligns = aligns
+                        .iter()
+                        .map(|align| match align {
+                            pulldown_cmark::Alignment::Center => ColumnAlign::Center,
+                            pulldown_cmark::Alignment::Right => ColumnAlign::Right,
+                            _ => ColumnAlign::Left,
+                        })
+                        .collect();
+                    blocks.push(self.table(aligns, events));
                 }
                 Event::Start(Tag::HtmlBlock) => {
                     // Descarta tudo até o fim do bloco.
@@ -491,7 +515,11 @@ impl Builder<'_> {
         blocks
     }
 
-    fn table<'e>(&mut self, events: &mut impl Iterator<Item = Event<'e>>) -> Block {
+    fn table<'e>(
+        &mut self,
+        aligns: Vec<ColumnAlign>,
+        events: &mut impl Iterator<Item = Event<'e>>,
+    ) -> Block {
         let mut head = Vec::new();
         let mut rows: Vec<Vec<Vec<Inline>>> = Vec::new();
         let mut row: Vec<Vec<Inline>> = Vec::new();
@@ -508,7 +536,7 @@ impl Builder<'_> {
                 _ => {}
             }
         }
-        Block::Table { head, rows }
+        Block::Table { aligns, head, rows }
     }
 
     /// Lê eventos de linha até o `End` do parágrafo/título/célula.
@@ -533,22 +561,31 @@ impl Builder<'_> {
         let mut out = Vec::new();
         match event {
             Event::Text(text) => {
-                if let Some((_, any)) = self.image_text.last_mut() {
-                    *any = true;
+                // Dentro de `![alt](url)` o texto é o alternativo, não conteúdo.
+                if let Some((_, alt)) = self.image_text.last_mut() {
+                    alt.push_str(&text);
+                } else {
+                    out.push(Inline::Text {
+                        text: text.into_string(),
+                        style: self.style(),
+                        link: self.link(),
+                    });
                 }
-                out.push(Inline::Text {
-                    text: text.into_string(),
-                    style: self.style(),
-                    link: self.link(),
-                });
             }
             Event::Code(code) => {
-                if let Some((_, any)) = self.image_text.last_mut() {
-                    *any = true;
+                if let Some((_, alt)) = self.image_text.last_mut() {
+                    alt.push_str(&code);
+                } else {
+                    out.push(Inline::Code(code.into_string()));
                 }
-                out.push(Inline::Code(code.into_string()));
             }
-            Event::SoftBreak | Event::HardBreak => out.push(Inline::Break),
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some((_, alt)) = self.image_text.last_mut() {
+                    alt.push(' ');
+                } else {
+                    out.push(Inline::Break);
+                }
+            }
             // HTML cru some: tags em linha e blocos inteiros.
             Event::Html(_) | Event::InlineHtml(_) => {}
             Event::TaskListMarker(checked) => self.task = Some(checked),
@@ -565,23 +602,24 @@ impl Builder<'_> {
             Event::End(TagEnd::Link) => {
                 self.links.pop();
             }
-            // Imagem remota é rastreamento: vira o texto alternativo, ou o
-            // próprio endereço, como link.
+            // Imagem: só http(s) vira imagem (o cliente web também a carrega);
+            // qualquer outro destino fica como o texto alternativo.
             Event::Start(Tag::Image { dest_url, .. }) => {
-                let href = dest_url.into_string();
-                self.links.push(is_safe_href(&href).then(|| href.clone()));
-                self.image_text.push((href, false));
+                self.image_text.push((dest_url.into_string(), String::new()));
             }
             Event::End(TagEnd::Image) => {
-                if let Some((href, any)) = self.image_text.pop() {
-                    if !any {
+                if let Some((src, alt)) = self.image_text.pop() {
+                    let lower = src.to_ascii_lowercase();
+                    if lower.starts_with("https://") || lower.starts_with("http://") {
+                        out.push(Inline::Image { src, alt });
+                    } else {
+                        let shown = if alt.is_empty() { src.clone() } else { alt };
                         out.push(Inline::Text {
-                            text: href,
+                            text: shown,
                             style: self.style(),
-                            link: self.link(),
+                            link: is_safe_href(&src).then_some(src),
                         });
                     }
-                    self.links.pop();
                 }
             }
             // Outros contêineres (notas, definições) não existem aqui.
@@ -746,6 +784,9 @@ mod tests {
                         out.push('@');
                         out.push_str(label);
                     }
+                    Inline::Image { alt, src } => {
+                        out.push_str(if alt.is_empty() { src } else { alt });
+                    }
                     Inline::Break => out.push('\n'),
                 }
             }
@@ -761,7 +802,7 @@ mod tests {
                         }
                     }
                     Block::Code { text, .. } => out.push_str(text),
-                    Block::Table { head, rows } => {
+                    Block::Table { head, rows, .. } => {
                         for cell in head.iter().chain(rows.iter().flatten()) {
                             inlines(cell, out);
                         }
@@ -1001,7 +1042,7 @@ mod tests {
         let table = parsed
             .iter()
             .find_map(|b| match b {
-                Block::Table { head, rows } => Some((head, rows)),
+                Block::Table { head, rows, .. } => Some((head, rows)),
                 _ => None,
             })
             .expect("tabela");
@@ -1093,21 +1134,31 @@ mod tests {
     }
 
     #[test]
-    fn images_are_never_loaded() {
+    fn only_http_images_are_images() {
         let parsed = blocks("![gato](https://e.com/gato.png)");
-        let runs = texts(only_paragraph(&parsed));
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].0, "gato");
-        assert_eq!(runs[0].2, Some("https://e.com/gato.png"));
+        assert_eq!(
+            only_paragraph(&parsed),
+            &[Inline::Image {
+                src: "https://e.com/gato.png".into(),
+                alt: "gato".into()
+            }]
+        );
 
+        // Alt vazio continua sendo imagem; o desenho cuida do quadro vazio.
         let parsed = blocks("![](https://e.com/gato.png)");
-        let runs = texts(only_paragraph(&parsed));
-        assert_eq!(runs[0].0, "https://e.com/gato.png");
-        assert_eq!(runs[0].2, Some("https://e.com/gato.png"));
+        assert_eq!(
+            only_paragraph(&parsed),
+            &[Inline::Image {
+                src: "https://e.com/gato.png".into(),
+                alt: String::new()
+            }]
+        );
 
-        // Esquema inseguro: só o texto, sem link.
+        // Esquema inseguro: só o texto alternativo, sem link nem imagem.
         let parsed = blocks("![x](javascript:alert(1))");
-        assert_eq!(texts(only_paragraph(&parsed))[0].2, None);
+        let runs = texts(only_paragraph(&parsed));
+        assert_eq!(runs[0].0, "x");
+        assert_eq!(runs[0].2, None);
     }
 
     #[test]
@@ -1308,5 +1359,22 @@ mod tests {
         ] {
             assert!(!is_plain(text), "{text:?} devia ir pelo markdown");
         }
+    }
+
+    #[test]
+    fn table_alignment_is_parsed() {
+        let parsed = blocks("| a | b | c | d |\n|:--|:-:|--:|---|\n| 1 | 2 | 3 | 4 |");
+        let Some(Block::Table { aligns, .. }) = parsed.last() else {
+            panic!("tabela");
+        };
+        assert_eq!(
+            aligns,
+            &[
+                ColumnAlign::Left,
+                ColumnAlign::Center,
+                ColumnAlign::Right,
+                ColumnAlign::Left
+            ]
+        );
     }
 }

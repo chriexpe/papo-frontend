@@ -5944,7 +5944,23 @@ fn message_body(
             // emoji seguem o caminho simples: nada para interpretar, e o
             // quadro não paga o parser. Menção precisa da pastilha, então
             // sempre passa pelo markdown.
+            // Etiquetas que chamam quem lê ganham pastilha: `@everyone` e
+            // `@todos` de quem tem permissão, e `@Cargo` dos cargos que a
+            // própria pessoa tem. Da maior para a menor, para o nome mais
+            // longo ganhar.
+            let mut tags: Vec<String> = Vec::new();
+            if shown_content.contains('@') {
+                if store.can_mention_everyone(&message.author_id) {
+                    tags.push("everyone".to_owned());
+                    tags.push("todos".to_owned());
+                }
+                tags.extend(store.my_role_names());
+                tags.sort_by_key(|tag| std::cmp::Reverse(tag.chars().count()));
+            }
+            let tagged =
+                !papo_core::notification::tag_spans(&shown_content, &tags).is_empty();
             let plain = bindings.is_empty()
+                && !tagged
                 && !shown_content.contains("@mention(")
                 && (emoji::jumbo(&tokens) || markdown::is_plain(&shown_content));
             if plain {
@@ -5972,6 +5988,8 @@ fn message_body(
                     store,
                     color,
                     edited: message.edited,
+                    network: allow_network,
+                    tags: &tags,
                 };
                 markdown_view::draw(ui, state, &view, &blocks, width);
             }
@@ -9418,10 +9436,13 @@ fn composer(
             }
             if pair_tab
                 && let Some(caret) = caret
-                && let Some(after) =
+                && let Some(edit) =
                     format_assist::skip_closer(&state.composer, caret, &mut state.format_pairing)
             {
-                state.composer_caret_pending = Some(after);
+                state.composer = edit.text;
+                state.composer_caret_pending = Some(edit.caret);
+                state.typed = true;
+                reanchor_mentions(&state.composer, &mut state.composer_mentions);
                 ui.ctx().request_repaint();
             }
             state.composer_prev.clone_from(&state.composer);

@@ -141,14 +141,35 @@ fn auto_closes(marker: Marker) -> bool {
 pub struct Pairing {
     opener: Vec<char>,
     closer: Vec<char>,
+    /// Índice (em caracteres) onde o marcador de abertura começa.
+    start: usize,
     /// Índice (em caracteres) onde o fechamento começa.
     at: usize,
 }
 
 impl Pairing {
     fn opener_start(&self) -> usize {
-        self.at.saturating_sub(self.opener.len())
+        self.start
     }
+
+    /// Nada digitado entre o marcador e o fechamento ainda.
+    fn is_empty(&self) -> bool {
+        self.at == self.start + self.opener.len()
+    }
+
+    /// A cerca de código fecha em linha própria e não ganha o espaço depois.
+    fn is_fence(&self) -> bool {
+        self.closer.first() == Some(&'\n')
+    }
+}
+
+/// Fim de um par: o cursor fica depois do fechamento e, se o que vem em
+/// seguida não for um espaço, um é escrito para o texto seguir solto.
+fn leave_pair(chars: &mut Vec<char>, caret: usize) -> usize {
+    if chars.get(caret).is_none_or(|c| !c.is_whitespace()) {
+        chars.insert(caret.min(chars.len()), ' ');
+    }
+    caret + 1
 }
 
 /// O texto e o cursor a aplicar no lugar do que o usuário acabou de digitar.
@@ -214,27 +235,57 @@ pub fn on_change(
     if let Some(active) = pairing.clone() {
         match change {
             // Digitou o próprio fechamento: atravessa em vez de duplicar.
-            Change::Insert { index, ch } if index == active.at && Some(&ch) == active.closer.first() => {
+            Change::Insert { index, ch }
+                if index == active.at
+                    && Some(&ch) == active.closer.first()
+                    && !(active.is_fence() && ch == '\n') =>
+            {
                 let mut rest = active;
+                let inline = !rest.is_fence() && !rest.is_empty();
                 rest.closer.remove(0);
                 rest.at += 1;
                 let moved = rest.at;
-                *pairing = (!rest.closer.is_empty()).then_some(rest);
+                let done = rest.closer.is_empty();
+                *pairing = (!done).then_some(rest);
+                let mut written = prev_chars.clone();
+                let caret = if done && inline {
+                    leave_pair(&mut written, moved)
+                } else {
+                    moved
+                };
                 return Some(Edit {
-                    text: prev.to_owned(),
-                    caret: moved,
+                    text: written.into_iter().collect(),
+                    caret,
+                });
+            }
+            // Enter (ou Shift+Enter) com o cursor dentro do par: o fechamento
+            // é confirmado antes e a quebra de linha vem depois dele. Dentro
+            // de uma cerca de código a linha nova é do código.
+            Change::Insert { index, ch: '\n' }
+                if !active.is_fence()
+                    && index >= active.opener_start()
+                    && index <= active.at =>
+            {
+                let end = active.at + active.closer.len();
+                let mut written = prev_chars.clone();
+                written.insert(end.min(written.len()), '\n');
+                *pairing = None;
+                return Some(Edit {
+                    text: written.into_iter().collect(),
+                    caret: end + 1,
                 });
             }
             // Apagou o último caractere do marcador sem nada dentro: o
             // fechamento não tem mais motivo para ficar.
             Change::Delete { index }
-                if index + 1 == active.at
-                    && active.at >= active.opener.len()
-                    && prev_chars[active.at - active.opener.len()..active.at] == active.opener[..] =>
+                if active.is_empty()
+                    && index >= active.start
+                    && index < active.start + active.opener.len() =>
             {
                 let mut cleaned = chars.clone();
-                let end = (active.at - 1 + active.closer.len()).min(cleaned.len());
-                cleaned.drain(active.at - 1..end);
+                let at = active.at - 1;
+                let end = (at + active.closer.len()).min(cleaned.len());
+                cleaned.drain(at..end);
                 *pairing = None;
                 return Some(Edit {
                     text: cleaned.into_iter().collect(),
@@ -243,11 +294,17 @@ pub fn on_change(
             }
             Change::Insert { index, .. } if index <= active.at => {
                 let mut shifted = active;
+                if index < shifted.start {
+                    shifted.start += 1;
+                }
                 shifted.at += 1;
                 *pairing = pairing_intact(&chars, &shifted).then_some(shifted);
             }
             Change::Delete { index } if index < active.at => {
                 let mut shifted = active;
+                if index < shifted.start {
+                    shifted.start = shifted.start.saturating_sub(1);
+                }
                 shifted.at -= 1;
                 *pairing = pairing_intact(&chars, &shifted).then_some(shifted);
             }
@@ -296,6 +353,7 @@ pub fn on_change(
         written.insert(caret + offset, *c);
     }
     *pairing = Some(Pairing {
+        start: caret - token.len(),
         opener: token,
         closer,
         at: caret,
@@ -307,10 +365,10 @@ pub fn on_change(
 }
 
 /// Tab: se o cursor está dentro de um par automático, pula para depois do
-/// fechamento. Devolve o novo cursor.
-pub fn skip_closer(text: &str, caret: usize, pairing: &mut Option<Pairing>) -> Option<usize> {
+/// fechamento (e deixa um espaço depois dele). Devolve a edição a aplicar.
+pub fn skip_closer(text: &str, caret: usize, pairing: &mut Option<Pairing>) -> Option<Edit> {
     let active = pairing.clone()?;
-    let chars: Vec<char> = text.chars().collect();
+    let mut chars: Vec<char> = text.chars().collect();
     if !pairing_intact(&chars, &active) {
         *pairing = None;
         return None;
@@ -319,7 +377,16 @@ pub fn skip_closer(text: &str, caret: usize, pairing: &mut Option<Pairing>) -> O
         return None;
     }
     *pairing = None;
-    Some(active.at + active.closer.len())
+    let end = active.at + active.closer.len();
+    let caret = if active.is_fence() || active.is_empty() {
+        end
+    } else {
+        leave_pair(&mut chars, end)
+    };
+    Some(Edit {
+        text: chars.into_iter().collect(),
+        caret,
+    })
 }
 
 #[cfg(test)]
@@ -370,7 +437,8 @@ mod tests {
     fn typing_the_closer_walks_over_it() {
         let (mut t, mut c, mut p) = session();
         typing(&mut t, &mut c, &mut p, "**oi**");
-        assert_eq!((t.as_str(), c), ("**oi**", 6));
+        // Terminou o par: um espaço para continuar fora do negrito.
+        assert_eq!((t.as_str(), c), ("**oi** ", 7));
         assert!(p.is_none());
     }
 
@@ -433,8 +501,9 @@ mod tests {
         let (mut t, mut c, mut p) = session();
         typing(&mut t, &mut c, &mut p, "||segredo");
         assert_eq!(t, "||segredo||");
-        assert_eq!(skip_closer(&t, c, &mut p), Some(11));
-        assert_eq!(skip_closer(&t, 11, &mut p), None);
+        let edit = skip_closer(&t, c, &mut p).unwrap();
+        assert_eq!((edit.text.as_str(), edit.caret), ("||segredo|| ", 12));
+        assert_eq!(skip_closer(&edit.text, 12, &mut p), None);
     }
 
     #[test]
@@ -459,7 +528,8 @@ mod tests {
         c = 3;
         typing(&mut t, &mut c, &mut p, "x");
         assert_eq!(t, "**axb**");
-        assert_eq!(skip_closer(&t, c, &mut p), Some(7));
+        let edit = skip_closer(&t, c, &mut p).unwrap();
+        assert_eq!((edit.text.as_str(), edit.caret), ("**axb** ", 8));
     }
 
     #[test]
@@ -467,5 +537,51 @@ mod tests {
         let (mut t, mut c, mut p) = session();
         typing(&mut t, &mut c, &mut p, "á**é");
         assert_eq!((t.as_str(), c), ("á**é**", 4));
+    }
+
+    #[test]
+    fn enter_inside_a_pair_commits_the_closer_first() {
+        let (mut t, mut c, mut p) = session();
+        typing(&mut t, &mut c, &mut p, "**test");
+        assert_eq!(t, "**test**");
+        typing(&mut t, &mut c, &mut p, "\n");
+        assert_eq!((t.as_str(), c), ("**test**\n", 9));
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn enter_inside_a_fence_stays_inside_the_code() {
+        let (mut t, mut c, mut p) = session();
+        typing(&mut t, &mut c, &mut p, "```");
+        typing(&mut t, &mut c, &mut p, "\n");
+        // Abre uma linha para o código; a cerca continua em linha própria.
+        assert_eq!((t.as_str(), c), ("```\n\n```", 4));
+        typing(&mut t, &mut c, &mut p, "x");
+        assert_eq!(t, "```\nx\n```");
+    }
+
+    #[test]
+    fn a_fence_gets_no_trailing_space() {
+        let (mut t, mut c, mut p) = session();
+        typing(&mut t, &mut c, &mut p, "```x");
+        let edit = skip_closer(&t, c, &mut p).unwrap();
+        assert_eq!(edit.text, "```x\n```");
+    }
+
+    #[test]
+    fn no_extra_space_when_one_already_follows() {
+        let (mut t, mut c, mut p) = session();
+        typing(&mut t, &mut c, &mut p, "x ");
+        c = 0;
+        t = "**a** b".into();
+        p = Some(Pairing {
+            opener: vec!['*', '*'],
+            closer: vec!['*', '*'],
+            start: 0,
+            at: 3,
+        });
+        c += 3;
+        let edit = skip_closer(&t, c, &mut p).unwrap();
+        assert_eq!((edit.text.as_str(), edit.caret), ("**a** b", 6));
     }
 }

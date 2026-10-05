@@ -16,7 +16,7 @@ use crate::i18n::Strings;
 use crate::state::{Emoji, Store};
 
 use super::emoji;
-use super::markdown::{Block, Inline, ListItem, Style};
+use super::markdown::{Block, ColumnAlign, Inline, ListItem, Style};
 use super::shell::{UiState, muted_link_color};
 use super::theme::{Appearance, Tokens, space, text};
 
@@ -28,6 +28,12 @@ pub struct View<'a> {
     pub store: &'a Store,
     pub color: Color32,
     pub edited: bool,
+    /// Pode buscar imagens remotas agora (a linha está perto da tela).
+    pub network: bool,
+    /// Etiquetas (sem o `@`) que ganham pastilha no texto: `everyone` e
+    /// `todos` quando quem escreveu pode usá-los, e os cargos de quem lê.
+    /// Da maior para a menor.
+    pub tags: &'a [String],
 }
 
 /// Altura do espaçador de linha em branco, em `em`.
@@ -128,7 +134,7 @@ fn draw_blocks(
                 );
                 ui.add_space(0.3 * em());
             }
-            Block::Table { head, rows } => table(ui, state, v, head, rows),
+            Block::Table { aligns, head, rows } => table(ui, state, v, aligns, head, rows),
             Block::Spacer => {
                 ui.add_space(SPACER_EM * em());
             }
@@ -174,6 +180,12 @@ fn draw_inlines(
                     text_run(ui, state, v, text, *style, link.as_deref(), scale, bold)
                 }
                 Inline::Code(code) => code_chip(ui, v, code, scale, column),
+                Inline::Image { src, alt } => {
+                    remote_image(ui, state, v, src, alt, column);
+                    ui.end_row();
+                    row_empty = true;
+                    continue;
+                }
                 Inline::Mention { user_id, label } => {
                     mention_pill(ui, state, v, user_id, label, scale)
                 }
@@ -216,42 +228,54 @@ fn text_run(
     for token in emoji::tokenize(text, &v.store.emojis) {
         match token {
             emoji::Token::Text(chunk) => {
-                for word in chunk.split_inclusive(' ') {
-                    if word.trim().is_empty() && word != " " {
+                for (segment, is_tag) in split_tags(&chunk, v.tags, link.is_some()) {
+                    if is_tag {
+                        tag_pill(ui, v, segment, scale);
                         continue;
                     }
-                    let visible = word.trim_end();
-                    let trailing = &word[visible.len()..];
-                    // Dentro de um link o destino é o do link; fora, o
-                    // endereço solto na própria palavra.
-                    let target = match link {
-                        Some(href) => Some(href.to_owned()),
-                        None => papo_core::preview::extract_https_urls(visible)
-                            .into_iter()
-                            .next(),
-                    };
-                    let Some(target) = target else {
-                        ui.label(styled(word, font.clone(), v.color, style));
-                        continue;
-                    };
-                    let label =
-                        styled(visible, font.clone(), muted_link_color(ui, v.t), style).underline();
-                    // `mailto:`, `#` e `/` aparecem como link mas não abrem:
-                    // o aviso de link externo só conhece http(s).
-                    let opens = target.starts_with("http://") || target.starts_with("https://");
-                    if opens {
-                        let response = ui.add(egui::Label::new(label).sense(Sense::click()));
-                        if response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    for word in segment.split_inclusive(' ') {
+                        if word.trim().is_empty() && word != " " {
+                            continue;
                         }
-                        if response.clicked() {
-                            state.request_external_url(ui.ctx(), target);
+                        let visible = word.trim_end();
+                        let trailing = &word[visible.len()..];
+                        // Dentro de um link o destino é o do link; fora, o
+                        // endereço solto na própria palavra.
+                        let target = match link {
+                            Some(href) => Some(href.to_owned()),
+                            None => papo_core::preview::extract_https_urls(visible)
+                                .into_iter()
+                                .next(),
+                        };
+                        let Some(target) = target else {
+                            ui.label(styled(word, font.clone(), v.color, style));
+                            continue;
+                        };
+                        let label = styled(visible, font.clone(), muted_link_color(ui, v.t), style)
+                            .underline();
+                        // http(s) passa pelo aviso de link externo; `mailto:` abre
+                        // o app de e-mail direto. `#` e `/` aparecem como link mas
+                        // não levam a lugar nenhum aqui.
+                        let web = target.starts_with("http://") || target.starts_with("https://");
+                        let mail = target.to_ascii_lowercase().starts_with("mailto:");
+                        if web || mail {
+                            let response = ui.add(egui::Label::new(label).sense(Sense::click()));
+                            if response.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            if response.clicked() {
+                                if web {
+                                    state.request_external_url(ui.ctx(), target);
+                                } else {
+                                    crate::platform::links::open_url(&target);
+                                }
+                            }
+                        } else {
+                            ui.label(label);
                         }
-                    } else {
-                        ui.label(label);
-                    }
-                    if !trailing.is_empty() {
-                        ui.label(styled(trailing, font.clone(), v.color, style));
+                        if !trailing.is_empty() {
+                            ui.label(styled(trailing, font.clone(), v.color, style));
+                        }
                     }
                 }
             }
@@ -276,6 +300,125 @@ fn text_run(
                 }
             }
         }
+    }
+}
+
+/// Divide o texto em trechos comuns e etiquetas (`@everyone`, `@Cargo`), na
+/// ordem em que aparecem. Dentro de um link nada vira etiqueta.
+fn split_tags<'a>(chunk: &'a str, tags: &[String], in_link: bool) -> Vec<(&'a str, bool)> {
+    if in_link || tags.is_empty() {
+        return vec![(chunk, false)];
+    }
+    let mut out = Vec::new();
+    let mut last = 0;
+    for span in papo_core::notification::tag_spans(chunk, tags) {
+        if span.start > last {
+            out.push((&chunk[last..span.start], false));
+        }
+        out.push((&chunk[span.clone()], true));
+        last = span.end;
+    }
+    if last < chunk.len() {
+        out.push((&chunk[last..], false));
+    }
+    if out.is_empty() {
+        out.push((chunk, false));
+    }
+    out
+}
+
+/// Etiqueta que chama quem lê (ou todos): a mesma pastilha da menção, sem
+/// clique.
+fn tag_pill(ui: &mut egui::Ui, v: &View, word: &str, scale: f32) {
+    let size = em() * scale;
+    let pad = Vec2::new(0.3 * size, 0.06 * size);
+    let color = ui.visuals().hyperlink_color;
+    let galley = ui
+        .painter()
+        .layout_no_wrap(word.to_owned(), font(scale, true), color);
+    let (rect, _) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(5), v.t.accent.gamma_multiply(0.16));
+    ui.painter().galley(rect.min + pad, galley, color);
+}
+
+/// Imagem remota de `![alt](url)`. Só busca quando a linha está perto da tela
+/// e o endereço passa na checagem de segurança da mídia; enquanto não chega, um
+/// quadro com o texto alternativo. O toque abre o endereço (com o aviso).
+fn remote_image(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    v: &View,
+    src: &str,
+    alt: &str,
+    column: f32,
+) {
+    const MAX_W: f32 = 420.0;
+    const MAX_H: f32 = 300.0;
+    let texture = if papo_core::preview::safe_remote_url(src) {
+        if v.network {
+            state.media.remote_image(src, src)
+        } else {
+            state.media.loaded_remote_image(src)
+        }
+        .and_then(|texture| texture.frame(ui.ctx()))
+        .cloned()
+    } else {
+        None
+    };
+    let limit = Vec2::new(column.min(MAX_W), MAX_H);
+    let size = match &texture {
+        Some(texture) => {
+            let natural = texture.size_vec2();
+            let scale = (limit.x / natural.x.max(1.0))
+                .min(limit.y / natural.y.max(1.0))
+                .min(1.0);
+            (natural * scale).max(Vec2::splat(1.0))
+        }
+        None => Vec2::new(limit.x.min(220.0), 90.0),
+    };
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let corner = CornerRadius::same(crate::ui::theme::radius::CARD);
+    match &texture {
+        Some(texture) => super::widgets::photo(
+            ui.painter(),
+            rect,
+            texture.id(),
+            super::widgets::FULL_UV,
+            corner,
+            Color32::WHITE,
+        ),
+        None => {
+            ui.painter().rect_filled(rect, corner, v.t.fill_soft);
+            ui.painter().text(
+                rect.center() - Vec2::new(0.0, 8.0),
+                Align2::CENTER_CENTER,
+                icon::IMAGE,
+                text::icon(22.0),
+                v.t.label_tertiary,
+            );
+            if !alt.is_empty() {
+                ui.painter().text(
+                    rect.center() + Vec2::new(0.0, 14.0),
+                    Align2::CENTER_CENTER,
+                    super::attachments::elide(alt, 28),
+                    text::footnote(),
+                    v.t.label_tertiary,
+                );
+            }
+        }
+    }
+    ui.painter().rect_stroke(
+        rect,
+        corner,
+        Stroke::new(1.0, v.t.separator),
+        StrokeKind::Inside,
+    );
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked() {
+        state.request_external_url(ui.ctx(), src.to_owned());
     }
 }
 
@@ -458,6 +601,7 @@ fn cell_width(ui: &egui::Ui, cell: &[Inline], bold: bool) -> f32 {
                 plain.push_str(label);
                 extra += 0.6 * em();
             }
+            Inline::Image { alt, .. } => plain.push_str(alt),
             Inline::Break => plain.push(' '),
         }
     }
@@ -472,6 +616,7 @@ fn table(
     ui: &mut egui::Ui,
     state: &mut UiState,
     v: &View,
+    aligns: &[ColumnAlign],
     head: &[Vec<Inline>],
     rows: &[Vec<Vec<Inline>>],
 ) {
@@ -514,7 +659,27 @@ fn table(
                         ui.set_width(*width);
                         ui.add_space(pad_y);
                         if let Some(cell) = cells.get(column) {
-                            draw_inlines(ui, state, v, cell, 1.0, bold, None);
+                            // Uma linha só cabe no alinhamento da coluna; o
+                            // que quebra em várias fica à esquerda.
+                            let align = aligns.get(column).copied().unwrap_or_default();
+                            let natural = cell_width(ui, cell, bold);
+                            let offset = match align {
+                                ColumnAlign::Left => 0.0,
+                                ColumnAlign::Center => ((width - natural) / 2.0).max(0.0),
+                                ColumnAlign::Right => (width - natural).max(0.0),
+                            };
+                            if offset > 1.0 {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.0;
+                                    ui.add_space(offset);
+                                    ui.vertical(|ui| {
+                                        ui.set_width(width - offset);
+                                        draw_inlines(ui, state, v, cell, 1.0, bold, None);
+                                    });
+                                });
+                            } else {
+                                draw_inlines(ui, state, v, cell, 1.0, bold, None);
+                            }
                         }
                         ui.add_space(pad_y);
                     });
@@ -580,6 +745,7 @@ mod tests {
         t: Tokens,
         blocks: Vec<Block>,
         width: f32,
+        tags: Vec<String>,
     }
 
     impl Harness {
@@ -601,6 +767,7 @@ mod tests {
                 t,
                 blocks,
                 width,
+                tags: Vec::new(),
             };
             // Um quadro de aquecimento: as fontes só valem a partir do seguinte.
             harness.frame(vec![]);
@@ -627,6 +794,7 @@ mod tests {
                 t,
                 blocks,
                 width,
+                tags,
             } = self;
             let s = crate::i18n::Lang::En.strings();
             let view = View {
@@ -635,6 +803,8 @@ mod tests {
                 store,
                 color: t.label,
                 edited: false,
+                network: false,
+                tags,
             };
             let mut output = ctx.run_ui(input, |ui| {
                 ui.scope_builder(
@@ -945,5 +1115,62 @@ mod tests {
             let mut harness = Harness::text(Appearance::Light, source, 200.0);
             harness.settle();
         }
+    }
+
+    /// Há um retângulo preenchido com a cor da pastilha de menção.
+    fn has_pill_fill(shapes: &[ClippedShape], t: &Tokens) -> bool {
+        let pill = t.accent.gamma_multiply(0.16);
+        shapes
+            .iter()
+            .any(|clipped| matches!(&clipped.shape, Shape::Rect(rect) if rect.fill == pill))
+    }
+
+    fn with_tags(source: &str, tags: &[&str]) -> (Vec<ClippedShape>, Tokens) {
+        let mut harness = Harness::text(Appearance::Dark, source, 320.0);
+        harness.tags = tags.iter().map(|tag| (*tag).to_owned()).collect();
+        let shapes = harness.settle();
+        (shapes, harness.t)
+    }
+
+    #[test]
+    fn tags_get_a_pill_only_for_the_reader_or_everyone() {
+        let (shapes, t) = with_tags("oi **@everyone**, venham", &[]);
+        assert!(!has_pill_fill(&shapes, &t));
+
+        let (shapes, t) = with_tags("oi **@everyone**, venham", &["everyone", "todos"]);
+        assert!(has_pill_fill(&shapes, &t));
+        let (shapes, t) = with_tags("oi @todos", &["everyone", "todos"]);
+        assert!(has_pill_fill(&shapes, &t));
+
+        // Cargo do leitor, inclusive com espaço no nome.
+        let (shapes, t) = with_tags("chamando @Equipe de Design agora", &["equipe de design"]);
+        assert!(has_pill_fill(&shapes, &t));
+        let (shapes, t) = with_tags("chamando @Outro cargo", &["equipe de design"]);
+        assert!(!has_pill_fill(&shapes, &t));
+    }
+
+    #[test]
+    fn images_show_a_frame_with_the_alt_text_until_they_load() {
+        let mut harness = Harness::text(
+            Appearance::Dark,
+            "![gato dormindo](https://exemplo.com/gato.png)",
+            320.0,
+        );
+        let shapes = harness.settle();
+        assert!(text_rect(&shapes, "gato dormindo").is_some());
+    }
+
+    #[test]
+    fn column_alignment_moves_single_line_cells() {
+        let place = |align: &str| {
+            let source = format!("| cabeçalho bem largo |\n|{align}|\n| zz |");
+            let mut harness = Harness::text(Appearance::Dark, &source, 320.0);
+            let shapes = harness.settle();
+            text_rect(&shapes, "zz").expect("célula").min.x
+        };
+        let left = place("---");
+        let center = place(":-:");
+        let right = place("--:");
+        assert!(left < center && center < right, "{left} {center} {right}");
     }
 }
