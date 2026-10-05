@@ -67,6 +67,32 @@
   </content_rating>
 
   <releases>
+    <release version="0.7.5" date="2026-10-05">
+      <description>
+        <p>Mensagens com formatação, anexos com prévia e mais cuidado com links e janelas.</p>
+        <p xml:lang="en">Formatted messages, attachments with previews, and more care with links and dialogs.</p>
+        <ul>
+          <li>Mensagens mostram negrito, itálico, riscado, código, listas, citações, títulos, tabelas e imagens, como no cliente web</li>
+          <li xml:lang="en">Messages render bold, italic, strikethrough, code, lists, quotes, headings, tables and images, like the web client</li>
+          <li>Menções viram pastilhas que abrem o perfil; @everyone e cargos seus também ganham destaque</li>
+          <li xml:lang="en">Mentions become pills that open the profile; @everyone and your own roles are highlighted too</li>
+          <li>Anexos com prévia no compositor, com spoiler, anonimizar (tira metadados e troca o nome) e editar em outra janela</li>
+          <li xml:lang="en">Attachments preview in the composer, with spoiler, anonymize (strips metadata and renames) and edit in another window</li>
+          <li>Várias imagens e vídeos seguidos aparecem em grade</li>
+          <li xml:lang="en">Several images and videos in a row appear as a grid</li>
+          <li>Marcadores de formatação (**, `, ```, ~~) fecham sozinhos; Tab, seta ou toque passam por cima</li>
+          <li xml:lang="en">Formatting markers (**, `, ```, ~~) close themselves; Tab, arrow or a tap moves past them</li>
+          <li>O botão Abrir do aviso de link agora abre o navegador; Copiar link em qualquer mensagem com link</li>
+          <li xml:lang="en">The link prompt's Open button now opens the browser; Copy link on any message with a link</li>
+          <li>Janelas e menus bloqueiam a conversa por trás; cartões de link respeitam a margem do chat</li>
+          <li xml:lang="en">Dialogs and menus now block the chat behind them; link cards respect the chat margin</li>
+          <li>Android: galeria e câmera no menu de anexos, emoji do sistema e Copiar que chega a outros apps</li>
+          <li xml:lang="en">Android: gallery and camera in the attach menu, system emoji, and Copy that reaches other apps</li>
+          <li>Limites de requisição (429) respeitados, com reenvio seguro</li>
+          <li xml:lang="en">Rate limits (429) are honored, with safe retries</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-10-03">
       <description>
         <p>Mensagens diretas, GIFs do GIPHY e uma linha do tempo que abre sempre na mensagem mais nova.</p>
