@@ -48,6 +48,12 @@ pub enum Event {
         message_id: String,
         pinned: bool,
     },
+    /// Snapshot autoritativo da lista de embeds da mensagem, inclusive vazio.
+    MessageEmbedsUpdated {
+        channel_id: String,
+        message_id: String,
+        embeds: Vec<LinkPreview>,
+    },
     NewPreview {
         message_id: String,
         preview_id: String,
@@ -552,6 +558,11 @@ fn parse(text: &str) -> Option<Event> {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
         }),
+        "message_embeds_update" => Some(Event::MessageEmbedsUpdated {
+            channel_id: string("channel_id")?,
+            message_id: string("message_id")?,
+            embeds: serde_json::from_value(value.get("embeds")?.clone()).ok()?,
+        }),
         "new_preview" => Some(Event::NewPreview {
             message_id: string("message_id")?,
             preview_id: string("preview_id")?,
@@ -634,6 +645,21 @@ fn parse(text: &str) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_de_embeds_pode_substituir_e_limpar() {
+        let event = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
+            "message_id":"m1","embeds":[{"id":"e1","source_type":"custom",
+            "title":"Status","fields":[{"position":0,"name":"X","value":"Y"}]}]}"#);
+        assert!(matches!(event, Some(Event::MessageEmbedsUpdated {
+            ref channel_id, ref message_id, ref embeds,
+        }) if channel_id == "c1" && message_id == "m1" &&
+            embeds.len() == 1 && embeds[0].fields[0].value == "Y"));
+
+        let empty = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
+            "message_id":"m1","embeds":[]}"#);
+        assert!(matches!(empty, Some(Event::MessageEmbedsUpdated { ref embeds, .. }) if embeds.is_empty()));
+    }
 
     #[test]
     fn le_evento_de_digitacao() {

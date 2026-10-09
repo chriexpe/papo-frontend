@@ -6330,9 +6330,8 @@ fn link_previews(
     allow_network: bool,
 ) {
     for preview in previews {
-        let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
-            continue;
-        };
+        // Custom embeds podem não ter URL: devem aparecer mesmo assim.
+        let url = preview.url.as_deref().unwrap_or("");
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
         preview_card(
             ui,
@@ -6496,13 +6495,18 @@ fn preview_card(
     const MAX_W: f32 = 420.0;
     const IMAGE_MAX_H: f32 = 300.0;
 
-    let resolved = state.previews.as_ref().and_then(|coordinator| {
-        if policy.network {
-            coordinator.get_or_request(url)
-        } else {
-            coordinator.peek(url)
-        }
-    });
+    // Sem URL, o embed customizado já é a fonte completa de metadados.
+    let resolved = if url.is_empty() {
+        None
+    } else {
+        state.previews.as_ref().and_then(|coordinator| {
+            if policy.network {
+                coordinator.get_or_request(url)
+            } else {
+                coordinator.peek(url)
+            }
+        })
+    };
     let ready = match resolved.as_ref() {
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
@@ -6562,6 +6566,8 @@ fn preview_card(
     let provider = ready
         .as_ref()
         .and_then(|preview| preview.provider_name.as_deref())
+        .or_else(|| backend.and_then(|preview| preview.site_name.as_deref()))
+        .or_else(|| backend.and_then(|preview| preview.provider.as_deref()))
         .or_else(|| backend.and_then(|preview| preview.provider_name.as_deref()))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
@@ -6575,7 +6581,7 @@ fn preview_card(
     // (título/embed/media URL), depois a imagem realmente materializa.
     let phase = if image.is_some() {
         2
-    } else if ready.is_some() || video_url.is_some() || embed_url.is_some() {
+    } else if ready.is_some() || backend.is_some() || video_url.is_some() || embed_url.is_some() {
         1
     } else {
         0
@@ -6820,6 +6826,15 @@ fn preview_card(
             ui.add_space(space::XXS);
         }
 
+        if let Some(author) = backend.and_then(|embed| embed.author.as_ref())
+            && let Some(name) = author.name.as_deref()
+        {
+            ui.label(
+                RichText::new(name)
+                    .font(text::caption())
+                    .color(t.label_secondary),
+            );
+        }
         if let Some(title) = title {
             ui.label(RichText::new(title).font(text::headline()).color(t.label));
         }
@@ -6832,7 +6847,29 @@ fn preview_card(
             );
         }
 
-        if title.is_none() && description.is_none() {
+        if let Some(backend) = backend {
+            for field in &backend.fields {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new(&field.name)
+                        .font(text::caption())
+                        .color(t.label_secondary),
+                );
+                ui.label(RichText::new(&field.value).font(text::body()).color(t.label));
+            }
+            if let Some(footer) = backend.footer.as_ref().and_then(|footer| footer.text.as_deref()) {
+                ui.add_space(space::SM);
+                ui.label(
+                    RichText::new(footer)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
+            }
+        }
+
+        if title.is_none() && description.is_none()
+            && backend.is_none_or(|embed| embed.fields.is_empty() && embed.footer.is_none()
+                && embed.author.is_none()) {
             let label = match resolved {
                 Some(PreviewState::Loading) => "Carregando preview…",
                 Some(PreviewState::RetryLater { .. }) => url,
@@ -6871,7 +6908,12 @@ fn preview_card(
             egui::StrokeKind::Inside,
         ),
     );
-    if let Some(accent) = post.accent.as_deref().and_then(hex_color) {
+    if let Some(accent) = post
+        .accent
+        .as_deref()
+        .or_else(|| backend.and_then(|embed| embed.color.as_deref()))
+        .and_then(hex_color)
+    {
         let r = radius::CARD;
         ui.painter().rect_filled(
             Rect::from_min_size(rect.min, Vec2::new(4.0, rect.height())),
@@ -6922,7 +6964,7 @@ fn preview_card(
         );
         open_card |= response.clicked();
     }
-    if open_card && !media_clicked {
+    if open_card && !media_clicked && !url.is_empty() {
         state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);

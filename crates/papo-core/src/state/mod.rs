@@ -362,6 +362,10 @@ enum TimelineMutation {
         message_id: String,
         preview: models::LinkPreview,
     },
+    EmbedsReplaced {
+        message_id: String,
+        embeds: Vec<models::LinkPreview>,
+    },
     AttachmentModeration {
         message_id: String,
         attachment_id: String,
@@ -396,7 +400,8 @@ impl TimelineMutation {
             TimelineMutation::AttachmentModeration { message_id, .. } => Some(message_id),
             TimelineMutation::MessagePending { id, .. } => Some(id),
             TimelineMutation::PreviewRemoved { message_id, .. }
-            | TimelineMutation::PreviewUpsert { message_id, .. } => Some(message_id),
+            | TimelineMutation::PreviewUpsert { message_id, .. }
+            | TimelineMutation::EmbedsReplaced { message_id, .. } => Some(message_id),
         }
     }
 }
@@ -1764,6 +1769,15 @@ impl Store {
                     }
                 }
             }
+            TimelineMutation::EmbedsReplaced { message_id, embeds } => {
+                if let Some(message) = self
+                    .messages
+                    .iter_mut()
+                    .find(|message| message.id == message_id)
+                {
+                    message.previews = embeds;
+                }
+            }
             TimelineMutation::AttachmentModeration {
                 message_id,
                 attachment_id,
@@ -3038,6 +3052,19 @@ impl Store {
                     StoreMutation::Timeline {
                         channel_id,
                         mutation: TimelineMutation::MessagePinned { message_id, pinned },
+                    },
+                );
+            }
+            Event::MessageEmbedsUpdated {
+                channel_id,
+                message_id,
+                embeds,
+            } => {
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id),
+                        mutation: TimelineMutation::EmbedsReplaced { message_id, embeds },
                     },
                 );
             }

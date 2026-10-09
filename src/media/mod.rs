@@ -1590,6 +1590,8 @@ impl MediaStore {
             if preview.image_data.is_none()
                 && preview.image_mime_type.is_none()
                 && preview.image_size_bytes.is_none()
+                && preview.thumbnail.is_none()
+                && preview.image.is_none()
             {
                 return None;
             }

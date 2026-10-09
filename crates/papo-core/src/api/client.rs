@@ -1165,8 +1165,13 @@ impl Api {
         self.fetch_bytes(&format!("/media/{sha_hash}")).await
     }
 
+    /// A partir do contrato unificado, imagens de embeds são carregadas por
+    /// GET /embeds/:id. Compatibilidade de leitura com servidores antigos.
     pub async fn link_preview(&self, preview_id: &str) -> ApiResult<LinkPreview> {
-        self.get(&format!("/link-previews/{preview_id}")).await
+        match self.get(&format!("/embeds/{preview_id}")).await {
+            Err(ApiError::NotFound) => self.get(&format!("/link-previews/{preview_id}")).await,
+            result => result,
+        }
     }
 
     // -- Auditoria ---------------------------------------------------------
