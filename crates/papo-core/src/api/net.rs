@@ -2712,6 +2712,24 @@ async fn verify_saved_session_once(
 ) -> SavedSessionOutcome {
     let mut result = api.whoami().await;
 
+    // O access JWT expira em 24h, mas a conexão continua renovável por até
+    // 30 dias. Não descarte uma sessão persistida no primeiro 401: o endpoint
+    // de refresh valida o token expirado contra a conexão ainda ativa.
+    // Só uma rejeição definitiva do refresh encerra a sessão.
+    if matches!(result, Err(ApiError::Unauthorized)) {
+        match api.refresh().await {
+            Ok(()) => {
+                store_optional_secret(storage, storage_key, Secret::SessionToken, session.token());
+                result = api.whoami().await;
+            }
+            Err(ApiError::Unauthorized) => {}
+            Err(error) => {
+                log::warn!("runtime {storage_key}: refresh da sessão guardada falhou: {error}");
+                return SavedSessionOutcome::Transient;
+            }
+        }
+    }
+
     // Servidor fechado é um portão separado da conta. Se já conhecemos a
     // senha do servidor, abre e repete o whoami sem tocar no token do usuário.
     if matches!(result, Err(ApiError::ServerLocked)) {
