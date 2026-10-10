@@ -8930,12 +8930,14 @@ mod composer_picker_tests {
 
     #[test]
     fn desktop_picker_stays_inside_chat_even_with_a_right_sidebar() {
-        let mut state = UiState::default();
-        state.compact = false;
-        state.composer_picker_bounds = Some(Rect::from_min_max(
-            egui::pos2(20.0, 80.0),
-            egui::pos2(400.0, 600.0),
-        ));
+        let state = UiState {
+            compact: false,
+            composer_picker_bounds: Some(Rect::from_min_max(
+                egui::pos2(20.0, 80.0),
+                egui::pos2(400.0, 600.0),
+            )),
+            ..Default::default()
+        };
         let emoji = composer_picker_rect(&state, Vec2::new(316.0, 380.0)).unwrap();
         assert_eq!(emoji.min, egui::pos2(84.0, 220.0));
         assert_eq!(emoji.max, egui::pos2(400.0, 600.0));
@@ -8948,12 +8950,14 @@ mod composer_picker_tests {
 
     #[test]
     fn compact_picker_uses_pill_margins_and_tracks_composer_height() {
-        let mut state = UiState::default();
-        state.compact = true;
-        state.composer_picker_bounds = Some(Rect::from_min_max(
-            egui::pos2(12.0, 72.0),
-            egui::pos2(348.0, 500.0),
-        ));
+        let mut state = UiState {
+            compact: true,
+            composer_picker_bounds: Some(Rect::from_min_max(
+                egui::pos2(12.0, 72.0),
+                egui::pos2(348.0, 500.0),
+            )),
+            ..Default::default()
+        };
         let first = composer_picker_rect(&state, Vec2::new(316.0, 380.0)).unwrap();
         assert_eq!(first.min, egui::pos2(12.0, 120.0));
         assert_eq!(first.max, egui::pos2(348.0, 500.0));
