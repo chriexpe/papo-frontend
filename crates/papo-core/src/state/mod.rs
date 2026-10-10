@@ -451,6 +451,7 @@ pub struct Store {
     pub messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
     emojis_fresh: bool,
+    emojis_cached: bool,
     pub me: String,
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
@@ -549,6 +550,7 @@ impl Default for Store {
             messages: Vec::new(),
             emojis: Vec::new(),
             emojis_fresh: false,
+            emojis_cached: false,
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
@@ -1100,6 +1102,7 @@ impl Store {
 
     pub fn restore_cached_emojis(&mut self, emojis: Vec<crate::cache::CachedEmoji>) {
         if self.emojis_fresh { return; }
+        self.emojis_cached = true;
         self.emojis = emojis.into_iter().map(|emoji| CustomEmoji {
             id: emoji.id, name: emoji.name, blob: emoji.blob,
         }).collect();
@@ -1149,6 +1152,7 @@ impl Store {
         self.messages.clear();
         self.emojis.clear();
         self.emojis_fresh = false;
+        self.emojis_cached = false;
         self.cached_channels.clear();
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
@@ -2876,13 +2880,14 @@ impl Store {
                     id: emoji.id, name: emoji.name, blob: emoji.image_blob,
                 }).collect();
                 self.emojis_fresh = true;
-                if self.emojis != fresh {
+                if !self.emojis_cached || self.emojis != fresh {
                     self.pending_cache.push(CacheOp::ReplaceEmojis(
                         fresh.iter().map(|emoji| crate::cache::CachedEmoji {
                             id: emoji.id.clone(), name: emoji.name.clone(), blob: emoji.blob.clone(),
                         }).collect(),
                     ));
                     self.emojis = fresh;
+                    self.emojis_cached = true;
                 }
             }
             Update::Pinned { channel_id, ids } => {
