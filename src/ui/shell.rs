@@ -9445,7 +9445,7 @@ fn composer(
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
     let field = Rect::from_min_max(
         egui::pos2(line.min.x + space::MD, line.min.y),
-        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
+        egui::pos2(embed_rect.min.x - space::XXS, line.max.y),
     );
 
     #[cfg(target_os = "android")]
