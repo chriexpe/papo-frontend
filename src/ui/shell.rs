@@ -5925,7 +5925,10 @@ fn message_body(
                 let content = content.trim().to_owned();
                 let embeds = state.editing_custom_embeds.take();
                 state.custom_embed_editor = false;
-                if content.is_empty() && embeds.as_ref().is_none_or(|entries| entries.is_empty()) {
+                if content.is_empty()
+                    && embeds.as_ref().is_none_or(|entries| entries.is_empty())
+                    && !message.previews.iter().any(|preview| preview.source_type.as_deref() == Some("custom"))
+                {
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Delete(id));
                 } else {
