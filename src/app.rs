@@ -1928,6 +1928,7 @@ impl PapoApp {
                 }
             }
             ChatAction::Send {
+                embeds,
                 content,
                 reply_to,
                 notify_reply,
@@ -1973,6 +1974,7 @@ impl PapoApp {
                         self.cache.submit(&ws.runtime.server_key, draft_ops);
                     }
                     ws.runtime.net.send(Command::QueueMessage {
+                        embeds,
                         local_id: papo_core::cache::new_local_id(),
                         owner_user_id,
                         channel_id,
@@ -2014,6 +2016,7 @@ impl PapoApp {
                                 })
                                 .collect();
                             sender.send(Command::SendMessage {
+                                embeds,
                                 channel_id,
                                 content: wire_content,
                                 reply_to,
@@ -2023,6 +2026,7 @@ impl PapoApp {
                         });
                     } else {
                         ws.runtime.net.send(Command::SendMessage {
+                            embeds,
                             channel_id,
                             content: wire_content,
                             reply_to,
@@ -2033,9 +2037,11 @@ impl PapoApp {
                 }
             }
             ChatAction::Edit {
+                embeds,
                 message_id,
                 content,
             } => ws.runtime.net.send(Command::EditMessage {
+                embeds,
                 message_id,
                 content,
             }),
@@ -2309,6 +2315,7 @@ impl PapoApp {
             ChatAction::Edit {
                 message_id,
                 content,
+                ..
             } => {
                 ws.runtime.store.edit_message_local(&message_id, content);
             }
