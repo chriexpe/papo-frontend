@@ -235,7 +235,7 @@ pub struct Reaction {
 }
 
 /// Emoji custom do servidor, com a imagem em base64 como ela chega da API.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomEmoji {
     pub id: String,
     pub name: String,
@@ -450,6 +450,7 @@ pub struct Store {
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
+    emojis_fresh: bool,
     pub me: String,
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
@@ -547,6 +548,7 @@ impl Default for Store {
             members: Vec::new(),
             messages: Vec::new(),
             emojis: Vec::new(),
+            emojis_fresh: false,
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
@@ -1096,6 +1098,13 @@ impl Store {
         self.pending_cache.clear();
     }
 
+    pub fn restore_cached_emojis(&mut self, emojis: Vec<crate::cache::CachedEmoji>) {
+        if self.emojis_fresh { return; }
+        self.emojis = emojis.into_iter().map(|emoji| CustomEmoji {
+            id: emoji.id, name: emoji.name, blob: emoji.blob,
+        }).collect();
+    }
+
     /// Compatibilidade interna/testes: restaura o snapshot integral antigo.
     /// O runtime interativo usa metadados + páginas por canal.
     pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
@@ -1138,6 +1147,8 @@ impl Store {
         self.direct_messages.clear();
         self.members.clear();
         self.messages.clear();
+        self.emojis.clear();
+        self.emojis_fresh = false;
         self.cached_channels.clear();
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
@@ -2861,14 +2872,18 @@ impl Store {
                 );
             }
             Update::Emojis(emojis) => {
-                self.emojis = emojis
-                    .into_iter()
-                    .map(|emoji| CustomEmoji {
-                        id: emoji.id,
-                        name: emoji.name,
-                        blob: emoji.image_blob,
-                    })
-                    .collect();
+                let fresh: Vec<CustomEmoji> = emojis.into_iter().map(|emoji| CustomEmoji {
+                    id: emoji.id, name: emoji.name, blob: emoji.image_blob,
+                }).collect();
+                self.emojis_fresh = true;
+                if self.emojis != fresh {
+                    self.pending_cache.push(CacheOp::ReplaceEmojis(
+                        fresh.iter().map(|emoji| crate::cache::CachedEmoji {
+                            id: emoji.id.clone(), name: emoji.name.clone(), blob: emoji.blob.clone(),
+                        }).collect(),
+                    ));
+                    self.emojis = fresh;
+                }
             }
             Update::Pinned { channel_id, ids } => {
                 let pinned: HashSet<String> = ids.iter().cloned().collect();
