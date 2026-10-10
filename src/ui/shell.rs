@@ -6310,12 +6310,7 @@ fn link_previews(
 ) {
     for preview in previews {
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
-        if preview.source_type.as_deref() == Some("custom")
-            && preview.image.is_none()
-            && preview.thumbnail.is_none()
-            && preview.video.is_none()
-            && preview.embed_url.is_none()
-        {
+        if preview.source_type.as_deref() == Some("custom") {
             custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
             continue;
         }
@@ -6477,6 +6472,28 @@ fn custom_embed_card(
                 ui.add_space(space::MD);
             }
             ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
+        }
+        // Rich custom embeds retain their structured author/title/fields instead
+        // of falling into the generic link-preview layout merely because they
+        // include an image. Media uses the existing authenticated embed cache.
+        if embed.image.is_some() || embed.thumbnail.is_some() {
+            let texture = if allow_network {
+                state.media.preview(embed)
+            } else {
+                state.media.loaded_preview(&embed.id)
+            }.and_then(|texture| texture.frame(ui.ctx())).cloned();
+            if let Some(texture) = texture {
+                let original = texture.size_vec2();
+                if original.x > 0.0 && original.y > 0.0 {
+                    let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
+                    let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
+                    ui.painter().image(
+                        texture.id(), rect,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+            }
         }
         for field in &embed.fields {
             ui.add_space(space::SM);

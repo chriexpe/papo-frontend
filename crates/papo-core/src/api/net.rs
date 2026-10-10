@@ -231,6 +231,7 @@ impl NetworkGate {
 pub enum Command {
     Login { username: String, password: String },
     Register { username: String, password: String },
+    RecoverPassword { token: String, password: String },
     /// Senha do servidor, para servidores fechados.
     LoginServer { password: String },
     CreateServer { name: String },
@@ -512,6 +513,7 @@ pub enum Update {
     UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
     Done,
+    PasswordRecovered,
     PasswordResetLink {
         url: String,
         expires_at: chrono::DateTime<chrono::Utc>,
@@ -2929,6 +2931,12 @@ async fn handle(
                 wake,
                 Update::AuthFailed(error.to_string()),
             ),
+            }
+        }
+        Command::RecoverPassword { token, password } => {
+            match api.recover_password(&token, &password).await {
+                Ok(()) => publish(updates, wake, Update::PasswordRecovered),
+                Err(error) => report(storage_key, updates, wake, error),
             }
         }
         Command::OpenDirectMessage { .. }

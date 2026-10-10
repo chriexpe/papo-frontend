@@ -12,6 +12,10 @@ pub struct AuthForm {
     pub server_url: String,
     pub username: String,
     pub password: String,
+    pub reset_mode: bool,
+    pub reset_link: String,
+    pub reset_password: String,
+    pub reset_confirmation: String,
     /// Senha do servidor, pedida só quando o servidor é fechado.
     pub server_password: String,
     /// Nome do servidor, no primeiro uso da instância.
@@ -22,6 +26,7 @@ pub struct AuthForm {
 pub enum AuthAction {
     None,
     SignIn,
+    RecoverPassword,
     Register,
     CreateServer,
     /// Mandar a senha do servidor de um servidor fechado.
@@ -67,6 +72,41 @@ pub fn sign_in(
 
         field(ui, t, s.server_address, &mut form.server_url, false);
         ui.add_space(space::LG);
+
+        if form.reset_mode {
+            ui.label(RichText::new("Recuperação de senha")
+                .font(text::title2()).color(t.label));
+            ui.add_space(space::SM);
+            ui.label(RichText::new("Cole o link recebido do administrador. A recuperação será enviada apenas ao servidor indicado nele.")
+                .font(text::footnote()).color(t.label_secondary));
+            ui.add_space(space::MD);
+            field(ui, t, "Link de recuperação", &mut form.reset_link, false);
+            ui.add_space(space::LG);
+            field(ui, t, "Nova senha", &mut form.reset_password, true);
+            ui.add_space(space::MD);
+            field(ui, t, "Confirmar nova senha", &mut form.reset_confirmation, true);
+            for rule in password_rules(&form.reset_password, s) {
+                ui.add_space(space::XXS);
+                ui.label(RichText::new(format!("· {rule}"))
+                    .font(text::footnote()).color(t.label_tertiary));
+            }
+            problem(ui, t, store, s);
+            ui.add_space(space::LG);
+            let ready = !form.reset_link.trim().is_empty()
+                && !form.reset_password.is_empty()
+                && form.reset_password == form.reset_confirmation
+                && password_rules(&form.reset_password, s).is_empty();
+            if primary_button(ui, t, "Alterar senha", ready && !store.busy) {
+                action = AuthAction::RecoverPassword;
+            }
+            ui.add_space(space::SM);
+            if link_button(ui, t, "Voltar ao login", true) {
+                form.reset_mode = false;
+                form.reset_password.clear();
+                form.reset_confirmation.clear();
+            }
+            return;
+        }
 
         if locked {
             let submitted = field(ui, t, s.server_password, &mut form.server_password, true);
@@ -119,6 +159,10 @@ pub fn sign_in(
         // autoritativa para os demais limites configuráveis.
         if link_button(ui, t, s.sign_up, register_ready && !store.busy) {
             action = AuthAction::Register;
+        }
+        ui.add_space(space::SM);
+        if link_button(ui, t, "Usar link de recuperação", !store.busy) {
+            form.reset_mode = true;
         }
     });
 

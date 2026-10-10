@@ -514,6 +514,15 @@ impl Api {
         .await
     }
 
+    /// Use-once reset; never sends the token to another server.
+    pub async fn recover_password(&self, token: &str, password: &str) -> ApiResult<()> {
+        let _: serde_json::Value = self.post(
+            "/auth/password_reset",
+            &serde_json::json!({ "token": token, "password": password }),
+        ).await?;
+        Ok(())
+    }
+
     pub async fn whoami(&self) -> ApiResult<Whoami> {
         self.get("/auth/whoami").await
     }
