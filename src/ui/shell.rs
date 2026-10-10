@@ -6374,26 +6374,22 @@ fn custom_embed_title(
     (!author.is_some_and(|name| name.eq_ignore_ascii_case(title))).then_some(title)
 }
 
-/// A camada visual do embed é uma superfície de conteúdo, não uma pill flutuante.
-/// Em uma lista escura, branco com baixa opacidade produz apenas um retângulo
-/// cinza. Misturar um pouco do accent no material cria profundidade sem fixar
-/// azul e respeita tema claro/escuro e cores escolhidas pelo usuário.
-fn custom_embed_material(t: &Tokens, accent: Color32) -> (Color32, Stroke) {
-    let dark = t.appearance.is_dark();
-    let base = t.glass_opaque;
-    let tint = if dark { 0.19 } else { 0.065 };
-    let blend = |a: u8, b: u8| (a as f32 * (1.0 - tint) + b as f32 * tint).round() as u8;
-    let fill = Color32::from_rgba_unmultiplied(
-        blend(base.r(), accent.r()),
-        blend(base.g(), accent.g()),
-        blend(base.b(), accent.b()),
-        if dark { 240 } else { 244 },
+/// Card de conteúdo neutro: usa somente superfícies do tema do Papo.
+/// A cor de destaque pertence a controles e indicadores, não ao fundo das
+/// mensagens de terceiros.
+fn custom_embed_material(t: &Tokens) -> (Color32, Stroke) {
+    // O card pertence à camada de conteúdo, não à camada das pills.
+    // Mistura somente os neutros do próprio tema: nenhum accent, azul,
+    // cor do embed ou tinta dependente da cor escolhida pelo usuário.
+    let low = t.glass_opaque;
+    let high = t.elevated_bg;
+    let blend = |a: u8, b: u8| ((a as u16 * 35 + b as u16 * 65) / 100) as u8;
+    let fill = Color32::from_rgb(
+        blend(low.r(), high.r()),
+        blend(low.g(), high.g()),
+        blend(low.b(), high.b()),
     );
-    let border = Color32::from_rgba_unmultiplied(
-        accent.r(), accent.g(), accent.b(),
-        if dark { 52 } else { 36 },
-    );
-    (fill, Stroke::new(1.0, border))
+    (fill, Stroke::new(1.0, t.separator))
 }
 
 /// O card ocupa a largura disponível até um limite confortável de leitura,
@@ -6459,8 +6455,7 @@ fn custom_embed_card(
 
     ui.add_space(space::SM);
     let inner_width = custom_embed_inner_width(width);
-    let accent = embed.color.as_deref().and_then(hex_color).unwrap_or(t.accent);
-    let (fill, stroke) = custom_embed_material(t, accent);
+    let (fill, stroke) = custom_embed_material(t);
     let corner = CornerRadius::same(16);
     let frame = Frame::new()
         .fill(fill)
@@ -10746,15 +10741,15 @@ mod custom_embed_tests {
     }
 
     #[test]
-    fn material_is_tinted_and_theme_adaptive() {
+    fn custom_embeds_use_neutral_material_in_both_themes() {
         use crate::ui::theme::Appearance;
-        let dark = Tokens::new(Appearance::Dark, None);
-        let light = Tokens::new(Appearance::Light, None);
-        let (dark_fill, _) = custom_embed_material(&dark, dark.accent);
-        let (light_fill, _) = custom_embed_material(&light, light.accent);
-        assert!(dark_fill.b() > dark_fill.r(), "dark card has subtle accent tint");
-        assert!(light_fill.r() > 200, "light card remains a light material");
-        assert!(light_fill.b() > light_fill.r(), "light material uses accent tint");
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let tokens = Tokens::new(appearance, Some(Color32::from_rgb(255, 20, 20)));
+            let (fill, stroke) = custom_embed_material(&tokens);
+            assert_eq!(fill.r(), fill.g());
+            assert_eq!(fill.g(), fill.b());
+            assert_eq!(stroke.color, tokens.separator);
+        }
     }
 
     #[test]
