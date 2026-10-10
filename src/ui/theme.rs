@@ -179,6 +179,10 @@ pub struct Tokens {
     pub danger: Color32,
     /// Amarelo das menções, opaco: quem usa é que decide a transparência.
     pub mention: Color32,
+    /// Cartão de lista dentro de uma folha (Ajustes).
+    pub card: Color32,
+    /// Coluna lateral da folha de Ajustes.
+    pub side: Color32,
 }
 
 impl Tokens {
@@ -204,6 +208,8 @@ impl Tokens {
                 busy: rgb(0xFF, 0x45, 0x3A),
                 danger: rgb(0xFF, 0x45, 0x3A),
                 mention: rgb(0xFF, 0xD6, 0x0A),
+                card: rgb(0x32, 0x32, 0x36),
+                side: rgb(0x1E, 0x1E, 0x22),
             },
             Appearance::Light => Self {
                 appearance,
@@ -225,6 +231,8 @@ impl Tokens {
                 busy: rgb(0xFF, 0x3B, 0x30),
                 danger: rgb(0xFF, 0x3B, 0x30),
                 mention: rgb(0xFF, 0xB8, 0x00),
+                card: rgb(0xFF, 0xFF, 0xFF),
+                side: rgb(0xEC, 0xEC, 0xF0),
             },
         };
         if let Some(accent) = accent {

@@ -86,11 +86,11 @@ impl ChannelNotifyMode {
 impl AppPane {
     const ALL: [Self; 8] = [
         Self::Account,
-        Self::Activity,
         Self::Appearance,
+        Self::Activity,
         Self::Alerts,
-        Self::Files,
         Self::Language,
+        Self::Files,
         Self::Sessions,
         Self::Diagnostics,
     ];
@@ -415,10 +415,11 @@ impl SettingsState {
 // do sistema, e ele carrega hierarquia sem precisar de mais cor.
 // ---------------------------------------------------------------------------
 
-const ROW_HEIGHT: f32 = 38.0;
+const ROW_HEIGHT: f32 = 42.0;
 const ROW_INSET: f32 = space::LG;
 /// Largura reservada ao controle, encostado à direita da linha.
-const CONTROL_COLUMN: f32 = 190.0;
+const CONTROL_COLUMN: f32 = 290.0;
+/// Linhas que mostram figurinha: a arte e a altura que ela pede.
 /// Linhas que mostram figurinha: a arte e a altura que ela pede.
 const STICKER_SIDE: f32 = 28.0;
 const STICKER_ROW_H: f32 = 44.0;
@@ -457,19 +458,30 @@ fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
         ui.add_space(space::XS);
         return;
     }
-    ui.add_space(space::LG);
+    // 22 entre grupos, menos no primeiro, que já nasce no topo do corpo.
+    if ui.min_rect().height() > 8.0 {
+        ui.add_space(22.0);
+    }
     ui.horizontal(|ui| {
         // Mesmo recuo das linhas: o título tem de nascer na mesma coluna
         // que os rótulos que ele cobre.
         ui.add_space(ROW_INSET);
-        ui.label(
-            RichText::new(label.to_uppercase())
-                .font(text::caption())
-                .color(t.label_tertiary),
-        );
+        ui.label(RichText::new(label).font(px(11.5, "semibold")).color(t.label_secondary));
     });
-    ui.add_space(space::SM);
+    ui.add_space(6.0);
 }
+
+/// A largura que cabe de verdade na janela de rolagem: um texto sem quebra
+/// pode esticar o `available_width` além da folha, e as linhas o seguiam.
+fn fit_width(ui: &egui::Ui) -> f32 {
+    let right = ui.ctx().data(|data| data.get_temp::<f32>(egui::Id::new(PANE_RIGHT_KEY)));
+    match right {
+        Some(right) => ui.available_width().min((right - ui.cursor().min.x).max(0.0)),
+        None => ui.available_width(),
+    }
+}
+
+const PANE_RIGHT_KEY: &str = "ajustes-borda-direita";
 
 /// Agrupa linhas. Sem fundo próprio: um bloco mais claro dentro da folha
 /// vira uma segunda janela, e duas superfícies empilhadas foi exatamente o
@@ -482,6 +494,11 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
     if tiled {
         ui.spacing_mut().item_spacing.y = 0.0;
     }
+    // O cartão: o fundo é reservado antes e pintado depois, quando se sabe
+    // a altura. No celular (peças) cada linha tem o seu.
+    let card_top = ui.cursor().min.y;
+    let card_w = fit_width(ui);
+    let card = (!tiled).then(|| ui.painter().add(egui::Shape::Noop));
     let mut rows = Rows {
         ui,
         t: *t,
@@ -520,13 +537,26 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
     }
 
     let rect = ui.min_rect();
+    if let Some(slot) = card {
+        let body = Rect::from_min_max(egui::pos2(rect.min.x, card_top), egui::pos2(rect.min.x + card_w, rect.max.y));
+        ui.painter().set(
+            slot,
+            egui::epaint::RectShape::new(
+                body,
+                CornerRadius::same(10),
+                t.card,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
     for y in separators {
         ui.painter().line_segment(
             [
                 egui::pos2(rect.min.x + ROW_INSET, y),
-                egui::pos2(rect.max.x, y),
+                egui::pos2(rect.min.x + card_w, y),
             ],
-            Stroke::new(1.0, t.separator),
+            Stroke::new(0.5, t.separator),
         );
     }
 }
@@ -555,7 +585,7 @@ pub struct Rows<'u> {
 impl Rows<'_> {
     /// Reserva a faixa de uma linha e devolve a área útil dela.
     fn band(&mut self, height: f32) -> (Rect, Rect) {
-        let width = self.ui.available_width();
+        let width = fit_width(self.ui);
         if self.tiled {
             if !self.first {
                 self.ui.add_space(TILE_GAP);
@@ -582,7 +612,7 @@ impl Rows<'_> {
         self.first = false;
         let inner = Rect::from_min_max(
             egui::pos2(rect.min.x + ROW_INSET, rect.min.y),
-            egui::pos2(rect.max.x - space::MD, rect.max.y),
+            egui::pos2(rect.max.x - ROW_INSET, rect.max.y),
         );
         (rect, inner)
     }
@@ -593,12 +623,12 @@ impl Rows<'_> {
         &mut self,
         label: &str,
         hint: Option<&str>,
-        control: impl FnOnce(&mut egui::Ui, &Tokens),
+        mut control: impl FnMut(&mut egui::Ui, &Tokens),
     ) {
         let t = self.t;
         let min_height = std::mem::replace(&mut self.min_height_next, ROW_HEIGHT);
-        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
-        let full = (self.ui.available_width() - inset).max(120.0);
+        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET * 2.0 };
+        let full = (fit_width(self.ui) - inset).max(120.0);
         // Em peças o controle fica à direita (chave, menu) e só os campos
         // descem para baixo do rótulo.
         let stacked = if self.tiled {
@@ -613,23 +643,40 @@ impl Rows<'_> {
         } else {
             CONTROL_COLUMN.min(full * 0.48)
         };
+        // O texto ocupa o que o controle deixa: mede o controle de verdade
+        // (num passe invisível e sem toque) em vez de reservar uma coluna fixa.
+        let natural = if stacked || self.tiled {
+            control_width
+        } else {
+            let probe = Rect::from_min_size(egui::pos2(-10_000.0, -10_000.0), Vec2::new(control_width, 30.0));
+            let mut ui = self.ui.new_child(
+                UiBuilder::new()
+                    .id_salt(("medida-do-controle", label))
+                    .max_rect(probe)
+                    .layout(Layout::right_to_left(Align::Center))
+                    .sizing_pass()
+                    .invisible(),
+            );
+            control(&mut ui, &t);
+            ui.min_rect().width().clamp(0.0, control_width)
+        };
         let text_width = if stacked {
             full
         } else {
-            (full - control_width - space::LG).max(120.0)
+            (full - natural - space::LG).max(120.0)
         };
 
         let label_galley = self.ui.painter().layout(
             label.to_owned(),
-            text::body(),
+            px(13.0, "medium"),
             t.label,
             text_width,
         );
         let hint_galley = hint.map(|hint| {
             self.ui.painter().layout(
                 hint.to_owned(),
-                text::footnote(),
-                t.label_tertiary,
+                px(11.5, "regular"),
+                t.label_secondary,
                 text_width,
             )
         });
@@ -643,7 +690,7 @@ impl Rows<'_> {
             (space::MD + text_height + space::SM + control_h + space::MD).max(min_height)
         } else {
             // Campo de várias linhas ao lado do rótulo: a linha cresce com ele.
-            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0)
+            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + 20.0)
                 .max(min_height)
         };
         let (band_rect, inner) = self.band(height);
@@ -663,7 +710,7 @@ impl Rows<'_> {
             self.ui.painter().galley(
                 egui::pos2(inner.min.x, text_top + text_height - galley.size().y),
                 galley,
-                t.label_tertiary,
+                t.label_secondary,
             );
         }
 
@@ -690,14 +737,10 @@ impl Rows<'_> {
         self.ui.advance_cursor_after_rect(band_rect);
     }
 
-    fn min_height_next(&mut self, height: f32) {
-        self.min_height_next = height.max(ROW_HEIGHT);
-    }
-
     /// Linha inteira clicável, para navegar ou disparar uma ação.
     fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
         let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
-        let width = (self.ui.available_width() - inset).max(120.0);
+        let width = (fit_width(self.ui) - inset).max(120.0);
         let label_galley = self
             .ui
             .painter()
@@ -777,48 +820,6 @@ impl Rows<'_> {
         response.clicked()
     }
 
-    /// Linha com a figurinha desenhada à esquerda do rótulo. Uma lista de
-    /// figurinhas sem as figurinhas é uma lista de nomes.
-    fn preview_row(
-        &mut self,
-        label: &str,
-        media: &mut crate::media::MediaStore,
-        id: &str,
-        blob: Option<&str>,
-        control: impl FnOnce(&mut egui::Ui, &Tokens),
-    ) {
-        let (rect, inner) = self.band(STICKER_ROW_H);
-        let t = self.t;
-        let ctx = self.ui.ctx().clone();
-        let texture = media
-            .emoji(id, blob)
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|handle| handle.id());
-        let art = Rect::from_center_size(
-            egui::pos2(inner.min.x + STICKER_SIDE / 2.0, rect.center().y),
-            Vec2::splat(STICKER_SIDE),
-        );
-        draw_sticker(self.ui, &t, art, texture);
-        self.ui.painter().text(
-            egui::pos2(art.max.x + space::MD, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            text::body(),
-            t.label,
-        );
-        let control_rect =
-            Rect::from_min_max(egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y), inner.max);
-        self.ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(control_rect)
-                .layout(Layout::right_to_left(Align::Center)),
-            |ui| control(ui, &t),
-        );
-        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
-        // no pé do controle, acima do fim da faixa, e a linha seguinte
-        // começaria por cima desta (no celular, as peças se sobrepunham).
-        self.ui.advance_cursor_after_rect(rect);
-    }
 
     /// Campo de nome de canal com o mesmo seletor de emoji da conversa
     /// embutido à esquerda. O emoji continua sendo texto do próprio nome:
@@ -1143,6 +1144,54 @@ fn draw_sticker(ui: &egui::Ui, t: &Tokens, rect: Rect, texture: Option<egui::Tex
     }
 }
 
+impl Rows<'_> {
+    fn min_height_next(&mut self, height: f32) {
+        self.min_height_next = height.max(ROW_HEIGHT);
+    }
+
+
+    fn preview_row(
+        &mut self,
+        label: &str,
+        media: &mut crate::media::MediaStore,
+        id: &str,
+        blob: Option<&str>,
+        control: impl FnOnce(&mut egui::Ui, &Tokens),
+    ) {
+        let (rect, inner) = self.band(STICKER_ROW_H);
+        let t = self.t;
+        let ctx = self.ui.ctx().clone();
+        let texture = media
+            .emoji(id, blob)
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let art = Rect::from_center_size(
+            egui::pos2(inner.min.x + STICKER_SIDE / 2.0, rect.center().y),
+            Vec2::splat(STICKER_SIDE),
+        );
+        draw_sticker(self.ui, &t, art, texture);
+        self.ui.painter().text(
+            egui::pos2(art.max.x + space::MD, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            text::body(),
+            t.label,
+        );
+        let control_rect =
+            Rect::from_min_max(egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y), inner.max);
+        self.ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(control_rect)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| control(ui, &t),
+        );
+        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
+        // no pé do controle, acima do fim da faixa, e a linha seguinte
+        // começaria por cima desta (no celular, as peças se sobrepunham).
+        self.ui.advance_cursor_after_rect(rect);
+    }
+}
+
 /// Interruptor. Num painel de ajustes que aplica na hora, o interruptor diz
 /// a verdade e a caixa de seleção mente: caixa pede um "OK" que não existe.
 fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
@@ -1152,7 +1201,7 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
         *on = !*on;
     }
     let track = if *on {
-        t.accent
+        t.online
     } else {
         t.fill_medium
     };
@@ -1164,7 +1213,7 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
         rect.center().y,
     );
     ui.painter()
-        .circle_filled(knob, SWITCH_H / 2.0 - 3.0, egui::Color32::WHITE);
+        .circle_filled(knob, SWITCH_H / 2.0 - 2.0, egui::Color32::WHITE);
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -1200,10 +1249,10 @@ fn segmented_inner<T: PartialEq + Copy>(
         .iter()
         .map(|(_, label)| {
             ui.painter()
-                .layout_no_wrap((*label).to_owned(), text::callout(), t.label)
+                .layout_no_wrap((*label).to_owned(), px(13.0, "medium"), t.label)
                 .size()
                 .x
-                + space::LG
+                + 24.0
         })
         .collect();
     let total: f32 = widths.iter().sum();
@@ -1213,37 +1262,41 @@ fn segmented_inner<T: PartialEq + Copy>(
     // com a linha, e o menu abre por cima do valor tocado.
     // Segmentado só para poucas opções curtas (Tema, presença); o resto é
     // menu suspenso, também no desktop — é o que não transborda.
-    let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 10);
+    let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 18);
     if !always && (tiles(ui) || !short || total > ui.available_width() + 0.5) {
         return dropdown_choice(ui, t, current, options);
     }
     // O id vem do próprio controle, não do rótulo: numa lista de canais
     // cada linha tem os mesmos rótulos, e `ui.id().with(label)` repetia o
     // mesmo id em todas — o aviso vermelho de colisão do egui.
+    let gap = 2.0;
+    let total = total + gap * (options.len().saturating_sub(1)) as f32 + 4.0;
     let (rect, base) = ui.allocate_exact_size(Vec2::new(total, height), Sense::hover());
     let base = base.id;
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+        .rect_filled(rect, CornerRadius::same(8), t.fill_soft);
 
-    let mut x = rect.min.x;
+    let mut x = rect.min.x + 2.0;
     for ((value, label), width) in options.iter().zip(widths) {
         let slot = Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::new(width, height));
-        x += width;
+        x += width + gap;
         let selected = *current == *value;
         let response = ui.interact(slot, base.with(*label), Sense::click());
         if selected {
-            ui.painter().rect_filled(
+            ui.painter().rect(
                 slot.shrink(2.0),
-                CornerRadius::same(radius::CONTROL),
+                CornerRadius::same(6),
                 t.glass_opaque,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
             );
         }
         ui.painter().text(
             slot.center(),
             egui::Align2::CENTER_CENTER,
             *label,
-            text::callout(),
-            if selected { t.label } else { t.label_secondary },
+            if selected { px(13.0, "medium") } else { px(13.0, "regular") },
+            t.label,
         );
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1368,15 +1421,15 @@ fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) ->
 // A folha
 // ---------------------------------------------------------------------------
 
-const SHEET_W: f32 = 720.0;
+const SHEET_W: f32 = 880.0;
 /// A altura acompanha a janela (80%) entre estes limites: Conta ficou
 /// grande demais para 440, e uma folha enorme numa tela alta vira janela.
 const SHEET_H_MIN: f32 = 440.0;
-const SHEET_H_MAX: f32 = 640.0;
-const RAIL_W: f32 = 232.0;
+const SHEET_H_MAX: f32 = 620.0;
+const RAIL_W: f32 = 276.0;
 /// Altura de um item da coluna de painéis.
 const RAIL_ENTRY_H: f32 = 46.0;
-const HEADER_H: f32 = 52.0;
+const HEADER_H: f32 = 50.0;
 
 /// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
 /// são só locais ela mesma já escreveu em `Settings`.
@@ -1433,6 +1486,117 @@ pub struct Context<'a> {
     pub update_enabled: bool,
 }
 
+/// A paleta do mock de Ajustes: a folha, o cartão e as cores de texto são
+/// as dele, e valem só dentro da folha do desktop.
+fn sheet_tokens(base: &Tokens) -> Tokens {
+    use egui::Color32;
+    let dark = base.appearance == super::theme::Appearance::Dark;
+    let mut t = *base;
+    if dark {
+        t.elevated_bg = Color32::from_rgb(0x26, 0x26, 0x29);
+        t.glass_opaque = Color32::from_rgb(0x26, 0x26, 0x29);
+        t.label = Color32::from_rgb(0xF2, 0xF2, 0xF5);
+        t.label_secondary = Color32::from_rgb(0xA0, 0xA0, 0xAA);
+        t.label_tertiary = Color32::from_rgb(0x6F, 0x6F, 0x78);
+        t.separator = Color32::from_white_alpha(23);
+        t.fill_soft = Color32::from_white_alpha(23);
+        t.fill_medium = Color32::from_white_alpha(56);
+    } else {
+        t.elevated_bg = Color32::from_rgb(0xF6, 0xF6, 0xF8);
+        t.glass_opaque = Color32::from_rgb(0xF6, 0xF6, 0xF8);
+        t.label = Color32::from_rgb(0x1C, 0x1C, 0x1E);
+        t.label_secondary = Color32::from_rgb(0x6B, 0x6B, 0x73);
+        t.label_tertiary = Color32::from_rgb(0x9A, 0x9A, 0xA2);
+        t.separator = Color32::from_rgba_unmultiplied(60, 60, 67, 36);
+        t.fill_soft = Color32::from_rgba_unmultiplied(120, 120, 128, 31);
+        t.fill_medium = Color32::from_rgba_unmultiplied(120, 120, 128, 82);
+    }
+    t.online = Color32::from_rgb(0x30, 0xB3, 0x50);
+    t
+}
+
+/// Tamanho fixo com o peso pedido (o mock fala em px: 11.5, 14, 17).
+fn px(size: f32, weight: &str) -> egui::FontId {
+    let family = match weight {
+        "medium" | "semibold" | "display" => egui::FontFamily::Name(weight.into()),
+        _ => egui::FontFamily::Proportional,
+    };
+    egui::FontId::new(size, family)
+}
+
+/// A legenda de uma prévia, logo embaixo dela.
+fn caption_below(ui: &mut egui::Ui, t: &Tokens, caption: &str) {
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INSET);
+        ui.label(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary));
+    });
+}
+
+/// A prévia ao vivo de Aparência: um pedaço de conversa que muda com o tema,
+/// a translucidez e o emoji de uma cor, e a legenda embaixo.
+fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: &str) {
+    let width = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 133.0), Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    let left = rect.min.x + 14.0;
+    let mono = *data.channel_emoji_monochrome;
+    super::emoji::draw_channel_name(
+        ui,
+        t,
+        data.media,
+        data.store,
+        "🎨 design-ui",
+        egui::pos2(left, rect.min.y + 14.0 + 8.0),
+        px(12.0, "semibold"),
+        t.label_secondary,
+        rect.width() - 28.0,
+        mono,
+        false,
+    );
+    let mut y = rect.min.y + 14.0 + 16.0 + 8.0;
+    let messages: [(&str, egui::Color32, &str, &str, &str); 2] = [
+        ("AN", egui::Color32::from_rgb(0xFF, 0x6A, 0x3D), "Ana", "14:02", "olha o render novo"),
+        ("CH", egui::Color32::from_rgb(0x0A, 0x84, 0xFF), "chriexpe", "14:03", "@Ana ficou limpo, gostei."),
+    ];
+    for (initials, color, name, time, body) in messages {
+        let avatar = Rect::from_min_size(egui::pos2(left, y), Vec2::splat(28.0));
+        ui.painter().circle_filled(avatar.center(), 14.0, color);
+        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, initials, px(11.0, "semibold"), egui::Color32::WHITE);
+        let x = avatar.max.x + 9.0;
+        let galley = ui.painter().layout_no_wrap(name.to_owned(), px(13.0, "semibold"), t.label);
+        ui.painter().galley(egui::pos2(x, y), galley.clone(), t.label);
+        ui.painter().text(egui::pos2(x + galley.size().x + 6.0, y + 2.0), egui::Align2::LEFT_TOP, time, px(11.0, "regular"), t.label_tertiary);
+        let line = y + 17.0;
+        if let Some(rest) = body.strip_prefix("@Ana") {
+            let tag = ui.painter().layout_no_wrap("@Ana".to_owned(), px(13.0, "regular"), t.accent);
+            let pill = Rect::from_min_size(egui::pos2(x, line), Vec2::new(tag.size().x + 6.0, tag.size().y + 1.0));
+            ui.painter().rect_filled(pill, CornerRadius::same(4), t.accent.gamma_multiply(0.16));
+            ui.painter().galley(egui::pos2(x + 3.0, line), tag, t.accent);
+            ui.painter().text(egui::pos2(pill.max.x, line), egui::Align2::LEFT_TOP, rest, px(13.0, "regular"), t.label);
+        } else {
+            ui.painter().text(egui::pos2(x, line), egui::Align2::LEFT_TOP, body, px(13.0, "regular"), t.label);
+        }
+        y += 28.0 + 8.0 + 2.0;
+    }
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INSET);
+        ui.label(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary));
+    });
+}
+
+fn hint_beside(ui: &egui::Ui, t: &Tokens, area: Rect, used: Rect, hint: &str) {
+    let left = used.max.x + space::XL;
+    let width = area.max.x - left;
+    if width < 140.0 {
+        return;
+    }
+    let galley = ui.painter().layout(hint.to_owned(), text::footnote(), t.label_tertiary, width);
+    let pos = egui::pos2(left, area.max.y - galley.size().y);
+    ui.painter().galley(pos, galley, t.label_tertiary);
+}
+
 /// Desenha a folha, ancorada na pastilha que a abriu.
 pub fn sheet(
     ctx: &egui::Context,
@@ -1466,9 +1630,12 @@ pub fn sheet(
     // de áreas, e o painel por cima dela.
     state.compact = screen.width() < crate::ui::shell::COMPACT_BREAKPOINT;
     if state.compact {
+        ctx.data_mut(|data| data.remove::<f32>(egui::Id::new(PANE_RIGHT_KEY)));
         mobile(ctx, state, data, t, s, surface, screen, &mut actions);
         return actions;
     }
+    let sheet_t = sheet_tokens(t);
+    let t = &sheet_t;
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
     // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
@@ -1504,49 +1671,41 @@ pub fn sheet(
             let shadow = ctx.global_style().visuals.window_shadow;
             ui.painter()
                 .add(shadow.as_shape(rect, radius::SHEET as f32 + 4.0));
+            const SHEET_RADIUS: u8 = 14;
             ui.painter().rect(
                 rect,
-                CornerRadius::same(radius::SHEET + 4),
+                CornerRadius::same(SHEET_RADIUS),
                 t.elevated_bg,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             );
 
+            // Coluna lateral de cima a baixo, mais escura que a folha.
+            let rail_rect = Rect::from_min_size(rect.min, Vec2::new(RAIL_W, rect.height()));
+            ui.painter().rect_filled(
+                rail_rect,
+                CornerRadius { nw: SHEET_RADIUS, sw: SHEET_RADIUS, ne: 0, se: 0 },
+                t.side,
+            );
+            ui.painter().line_segment(
+                [egui::pos2(rail_rect.max.x, rect.min.y + 1.0), egui::pos2(rail_rect.max.x, rect.max.y - 1.0)],
+                Stroke::new(1.0, t.separator),
+            );
+            rail(ui, state, data, t, s, rail_rect, surface);
+
+            // À direita: o título do painel e o X, e o corpo logo abaixo.
+            let main = Rect::from_min_max(egui::pos2(rail_rect.max.x, rect.min.y), rect.max);
             let title = match surface {
+                Surface::App if state.app_pane == AppPane::Account => s.profile,
                 Surface::App => state.app_pane.title(s),
                 Surface::Server => state.server_pane.title(s),
             };
-            header(ui, state, t, s, rect, surface, title);
-            let body = Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.min.y + HEADER_H),
-                rect.max,
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(body.min.x + space::MD, body.min.y),
-                    egui::pos2(body.max.x - space::MD, body.min.y),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let rail_rect =
-                Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
-            rail(ui, state, data, t, s, rail_rect, surface);
-            ui.painter().line_segment(
-                [
-                    egui::pos2(rail_rect.max.x, body.min.y + space::SM),
-                    egui::pos2(rail_rect.max.x, body.max.y - space::SM),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let pane_rect = Rect::from_min_max(
-                egui::pos2(rail_rect.max.x, body.min.y),
-                body.max,
-            );
+            header(ui, state, t, s, main, surface, title);
+            let pane_rect = Rect::from_min_max(egui::pos2(main.min.x, main.min.y + HEADER_H), main.max);
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(PANE_RIGHT_KEY), main.max.x - 24.0));
             ui.scope_builder(
                 UiBuilder::new()
-                    .max_rect(pane_rect.shrink2(Vec2::new(space::XL, space::SM)))
+                    .max_rect(pane_rect.shrink2(Vec2::new(24.0, 4.0)))
                     .layout(Layout::top_down(Align::Min)),
                 |ui| {
                     // Um rolamento por painel: trocar de painel começa do
@@ -1554,13 +1713,13 @@ pub fn sheet(
                     egui::ScrollArea::vertical()
                         .id_salt(("corpo-do-painel", title))
                         .auto_shrink([false, false])
-                        .show(ui, |ui| match surface {
-                            Surface::App => {
-                                app_pane(ui, state, data, t, s, &mut actions);
+                        .show(ui, |ui| {
+                            ui.add_space(4.0);
+                            match surface {
+                                Surface::App => app_pane(ui, state, data, t, s, &mut actions),
+                                Surface::Server => server_pane(ui, state, data, t, s, &mut actions),
                             }
-                            Surface::Server => {
-                                server_pane(ui, state, data, t, s, &mut actions);
-                            }
+                            ui.add_space(28.0);
                         });
                 },
             );
@@ -2156,7 +2315,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Alerts, s.menu_notifications),
         (AppPane::Alerts, s.reply_notifications_default),
         (AppPane::Alerts, s.badge),
-        (AppPane::Alerts, s.menu_close_to_tray),
+        (AppPane::Alerts, s.close_to_tray_title),
         (AppPane::Alerts, s.start_at_login),
         (AppPane::Files, s.downloads),
         (AppPane::Files, s.download_folder),
@@ -2236,14 +2395,22 @@ fn spotlight(ui: &egui::Ui, rect: Rect, label: &str) {
 /// Faixa de prévia no topo de um painel: fundo suave, cantos de cartão. O
 /// conteúdo é desenhado por `draw` dentro da área útil.
 fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui::Ui, Rect)) {
-    ui.add_space(space::MD);
+    let tiled = tiles(ui);
+    if tiled {
+        ui.add_space(space::MD);
+    }
+    // Desktop: o cartão da prévia do mock, na cor da folha e com 14 de miolo.
+    let pad = if tiled { space::LG } else { 14.0 };
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), height + space::LG * 2.0),
+        Vec2::new(fit_width(ui), height + pad * 2.0),
         Sense::hover(),
     );
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
-    draw(ui, rect.shrink(space::LG));
+    if tiled {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
+    } else {
+        ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    }
+    draw(ui, rect.shrink(pad));
     // Some previews draw through a bounded child Ui. Keep the parent cursor
     // explicitly below the reserved card so the following settings section
     // can never start on top of the preview.
@@ -2251,59 +2418,18 @@ fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui:
 }
 
 /// Texto de apoio à direita da prévia, quando sobra espaço.
-fn hint_beside(ui: &egui::Ui, t: &Tokens, area: Rect, used: Rect, hint: &str) {
-    let left = used.max.x + space::XL;
-    let width = area.max.x - left;
-    if width < 140.0 {
-        return;
-    }
-    let galley = ui.painter().layout(hint.to_owned(), text::footnote(), t.label_tertiary, width);
-    let pos = egui::pos2(left, area.max.y - galley.size().y);
-    ui.painter().galley(pos, galley, t.label_tertiary);
-}
-
-/// Um Papo em miniatura com as cores do momento: trilho, conversa e a
-/// caixa de texto flutuando. Muda junto com o tema e a translucidez.
-fn appearance_preview(ui: &egui::Ui, t: &Tokens, rect: Rect, translucent: bool) {
-    let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(radius::CARD), t.content_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    let rail = Rect::from_min_size(rect.min, Vec2::new(40.0, rect.height()));
-    painter.rect_filled(
-        rail.shrink(1.0),
-        CornerRadius { nw: radius::CARD - 1, sw: radius::CARD - 1, ne: 0, se: 0 },
-        t.glass_opaque,
-    );
-    for index in 0..3 {
-        let tile = Rect::from_min_size(rail.min + Vec2::new(6.0, 6.0 + index as f32 * 33.0), Vec2::splat(28.0));
-        painter.rect_filled(tile, CornerRadius::same(radius::FIELD), if index == 0 { t.accent } else { t.fill_medium });
-    }
-    let content = Rect::from_min_max(egui::pos2(rail.max.x + 10.0, rect.min.y + 12.0), egui::pos2(rect.max.x - 10.0, rect.max.y - 10.0));
-    for (row, fraction) in [0.6_f32, 0.85, 0.4].into_iter().enumerate() {
-        let line = Rect::from_min_size(
-            content.min + Vec2::new(0.0, row as f32 * 16.0),
-            Vec2::new(content.width() * fraction, 8.0),
-        );
-        painter.rect_filled(line, CornerRadius::same(4), t.fill_medium);
-    }
-    let pill = Rect::from_min_max(egui::pos2(content.min.x, content.max.y - 22.0), content.max);
-    painter.rect(pill, CornerRadius::same(radius::FIELD), t.pill_fill(translucent), Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-}
-
-/// Um aviso de exemplo, como o sistema mostraria. Apagado quando os avisos
-/// estão desligados.
-fn notification_preview(ui: &egui::Ui, t: &Tokens, s: &Strings, rect: Rect, initials: &str, on: bool) {
+fn notification_preview(ui: &egui::Ui, t: &Tokens, s: &Strings, rect: Rect, _initials: &str, on: bool) {
     let painter = ui.painter();
     let alpha = if on { 1.0 } else { 0.4 };
-    painter.add(ui.visuals().popup_shadow.as_shape(rect, CornerRadius::same(radius::SHEET)));
-    painter.rect(rect, CornerRadius::same(radius::SHEET), t.elevated_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    let icon = Rect::from_min_size(rect.min + Vec2::new(space::LG, space::LG), Vec2::splat(32.0));
-    painter.rect_filled(icon, CornerRadius::same(radius::FIELD), t.accent.gamma_multiply(alpha));
-    painter.text(icon.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent_label);
-    let x = icon.max.x + space::MD;
+    painter.add(ui.visuals().popup_shadow.as_shape(rect, CornerRadius::same(12)));
+    painter.rect(rect, CornerRadius::same(12), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    let icon = Rect::from_min_size(egui::pos2(rect.min.x + 12.0, rect.center().y - 15.0), Vec2::splat(30.0));
+    painter.rect_filled(icon, CornerRadius::same(8), t.accent.gamma_multiply(alpha));
+    let x = icon.max.x + 10.0;
     let clip = painter.with_clip_rect(rect.shrink(2.0));
-    clip.text(egui::pos2(x, icon.min.y), egui::Align2::LEFT_TOP, s.preview_notify_title, text::headline(), t.label.gamma_multiply(alpha));
-    clip.text(egui::pos2(x, icon.min.y + 17.0), egui::Align2::LEFT_TOP, s.preview_notify_body, text::callout(), t.label_secondary.gamma_multiply(alpha));
-    clip.text(egui::pos2(rect.max.x - space::LG, icon.min.y), egui::Align2::RIGHT_TOP, s.preview_notify_meta, text::footnote(), t.label_tertiary);
+    clip.text(egui::pos2(x, rect.center().y - 15.0), egui::Align2::LEFT_TOP, s.preview_notify_title, px(13.0, "semibold"), t.label.gamma_multiply(alpha));
+    clip.text(egui::pos2(x, rect.center().y + 2.0), egui::Align2::LEFT_TOP, s.preview_notify_body, px(13.0, "regular"), t.label_secondary.gamma_multiply(alpha));
+    clip.text(egui::pos2(rect.max.x - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, s.preview_notify_meta, px(11.0, "regular"), t.label_tertiary);
 }
 
 /// Ícone do servidor num quadrado arredondado, ou as iniciais.
@@ -2801,70 +2927,38 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
     }
 }
 
-/// Cabeçalho: quem ou o quê está sendo ajustado, o nome do painel e o X.
+/// Cabeçalho do painel: o nome dele em negrito e o X redondo à direita.
 fn header(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
     t: &Tokens,
-    s: &Strings,
+    _s: &Strings,
     rect: Rect,
-    surface: Surface,
+    _surface: Surface,
     title: &str,
 ) {
     let head = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_H));
-    let painter = ui.painter();
-    painter.text(
-        egui::pos2(head.min.x + space::XL, head.center().y),
-        egui::Align2::LEFT_CENTER,
-        match surface {
-            Surface::App => s.settings,
-            Surface::Server => s.server_settings,
-        },
-        text::title3(),
-        t.label,
-    );
-    // O guia pede que o título acompanhe o painel aberto; o nome do painel
-    // vem depois do da folha, em tom secundário.
-    let width = painter
-        .layout_no_wrap(
-            match surface {
-                Surface::App => s.settings.to_owned(),
-                Surface::Server => s.server_settings.to_owned(),
-            },
-            text::title3(),
-            t.label,
-        )
-        .size()
-        .x;
-    painter.text(
-        egui::pos2(head.min.x + space::XL + width + space::MD, head.center().y),
+    let mid = head.min.y + 16.0 + 11.0;
+    ui.painter().text(
+        egui::pos2(head.min.x + 24.0, mid),
         egui::Align2::LEFT_CENTER,
         title,
-        text::body(),
-        t.label_tertiary,
+        px(17.0, "display"),
+        t.label,
     );
-
-    // Margens iguais dos dois lados do canto: com o centro a 16 do bordo,
-    // o botão de 28 encostava a 2 px da direita e ficava a 12 do topo — o
-    // desencontro é que fazia parecer que ele estava abaixo do canto.
-    const CLOSE: f32 = 28.0;
-    let inset = (HEADER_H - CLOSE) / 2.0;
-    let close = Rect::from_center_size(
-        egui::pos2(head.max.x - inset - CLOSE / 2.0, head.min.y + inset + CLOSE / 2.0),
-        Vec2::splat(CLOSE),
-    );
+    const CLOSE: f32 = 26.0;
+    let close = Rect::from_center_size(egui::pos2(head.max.x - 24.0 - CLOSE / 2.0, mid), Vec2::splat(CLOSE));
     let response = ui.interact(close, ui.id().with("fechar-ajustes"), Sense::click());
+    ui.painter().circle_filled(close.center(), CLOSE / 2.0, if response.hovered() { t.fill_medium } else { t.fill_soft });
     if response.hovered() {
-        ui.painter()
-            .rect_filled(close, CornerRadius::same(radius::FIELD), t.fill_soft);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.painter().text(
         close.center(),
         egui::Align2::CENTER_CENTER,
         egui_phosphor::regular::X,
-        text::icon(14.0),
-        t.label_secondary,
+        text::icon(12.0),
+        if response.hovered() { t.label } else { t.label_secondary },
     );
     let escape = !state.modal_above && ui.input(|input| input.key_pressed(egui::Key::Escape));
     if response.clicked() || escape {
@@ -2887,73 +2981,83 @@ fn rail(
     let server_sums = server_summaries(store, s);
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
+            .max_rect(rect.shrink2(Vec2::new(12.0, 14.0)))
             .layout(Layout::top_down(Align::Min)),
         |ui| {
-            // O `top_down` põe um respiro entre widgets por conta própria;
-            // com ele, seis painéis passavam da borda de baixo da folha.
             ui.spacing_mut().item_spacing.y = 0.0;
-            // Busca no topo da coluna: filtra os painéis pelo nome.
+            // Busca no topo da coluna: pílula de 36, lupa na cor de destaque
+            // e um X redondo para limpar quando há texto.
             {
-                let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
-                ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
+                let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::hover());
+                ui.painter().rect(field, CornerRadius::same(18), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
                 ui.painter().text(
-                    egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
+                    egui::pos2(field.min.x + 13.0 + 7.5, field.center().y),
                     egui::Align2::CENTER_CENTER,
                     egui_phosphor::regular::MAGNIFYING_GLASS,
-                    text::icon(12.0),
-                    t.label_tertiary,
+                    text::icon(15.0),
+                    t.accent,
                 );
-                let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 16.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
+                let inner = Rect::from_min_max(egui::pos2(field.min.x + 34.0, field.min.y), egui::pos2(field.max.x - 32.0, field.max.y));
                 let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
                 child.add_sized(
                     inner.size(),
                     egui::TextEdit::singleline(&mut state.mobile_query)
                         .hint_text(s.rail_search)
                         .frame(egui::Frame::NONE)
-                        .font(text::callout())
+                        .font(px(13.0, "regular"))
                         .vertical_align(Align::Center),
                 );
-                ui.add_space(space::MD);
+                if !state.mobile_query.is_empty() {
+                    let x = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
+                    let response = ui.interact(x, ui.id().with("limpar-busca"), Sense::click());
+                    ui.painter().circle_filled(x.center(), 9.0, t.fill_medium);
+                    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(8.0), t.card);
+                    if response.clicked() {
+                        state.mobile_query.clear();
+                    }
+                }
+                ui.add_space(10.0);
             }
             let query = state.mobile_query.trim().to_lowercase();
             let shown = |title: &str| query.is_empty() || title.to_lowercase().contains(&query);
-            // Cada item: bolinha com o ícone (acesa no painel aberto), o nome
-            // e, embaixo, o resumo do que está valendo.
+            // Cada item: bolinha de 34 com o ícone (acesa no painel aberto), o
+            // nome e, embaixo, o resumo do que está valendo.
             let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, summary: Option<&str>, active: bool| -> bool {
                 let height = if summary.is_some() { RAIL_ENTRY_H } else { 36.0 };
                 let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
                 if active {
-                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.accent.gamma_multiply(0.16));
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.accent.gamma_multiply(0.16));
                 } else if response.hovered() {
-                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.fill_soft);
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.fill_soft);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let badge = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 14.0, slot.center().y), Vec2::splat(28.0));
-                ui.painter().circle_filled(badge.center(), 14.0, if active { t.accent } else { t.fill_medium });
+                let badge_d = if summary.is_some() { 34.0 } else { 26.0 };
+                let badge = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + badge_d / 2.0, slot.center().y), Vec2::splat(badge_d));
+                ui.painter().circle_filled(badge.center(), badge_d / 2.0, if active { t.accent } else { t.fill_soft });
                 ui.painter().text(
                     badge.center(),
                     egui::Align2::CENTER_CENTER,
                     glyph,
-                    text::icon(14.0),
+                    text::icon(if summary.is_some() { 17.0 } else { 13.0 }),
                     if active { t.accent_label } else { t.label },
                 );
-                let left = badge.max.x + space::MD;
-                let room = slot.max.x - space::SM - left;
+                let left = badge.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
                 let ink = if active { t.accent } else { t.label };
                 match summary {
                     Some(summary) => {
-                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, label, text::body(), ink, room);
-                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 8.0), egui::Align2::LEFT_CENTER, summary, text::footnote(), t.label_tertiary, room);
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, label, px(14.0, "medium"), ink, room);
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, summary, px(11.5, "regular"), t.label_secondary, room);
                     }
                     None => {
-                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y), egui::Align2::LEFT_CENTER, label, text::body(), ink, room);
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y), egui::Align2::LEFT_CENTER, label, px(13.0, "medium"), ink, room);
                     }
                 }
+                ui.add_space(4.0);
                 response.clicked()
             };
 
-            // Você no topo (Conta): a foto, o apelido e o que cabe em "Conta".
+            // Você no topo (Conta): foto de 42, apelido e o que cabe em "Conta".
             if surface == Surface::App && query.is_empty() {
                 let me = store.member(&store.me);
                 let tint = me
@@ -2968,30 +3072,30 @@ fn rail(
                     .and_then(|texture| texture.frame(&ctx))
                     .map(|handle| handle.id());
                 let active = state.app_pane == AppPane::Account;
-                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::click());
+                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::click());
                 if active {
-                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.accent.gamma_multiply(0.16));
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.accent.gamma_multiply(0.16));
                 } else if response.hovered() {
-                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.fill_soft);
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.fill_soft);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let avatar = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 20.0, slot.center().y), Vec2::splat(40.0));
+                let avatar = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + 21.0, slot.center().y), Vec2::splat(42.0));
                 match face {
                     Some(texture) => crate::ui::widgets::round_photo(ui.painter(), avatar, texture, egui::Color32::WHITE),
                     None => {
-                        ui.painter().circle_filled(avatar.center(), 20.0, tint.gamma_multiply(0.30));
-                        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), tint);
+                        ui.painter().circle_filled(avatar.center(), 21.0, tint.gamma_multiply(0.30));
+                        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, &initials, px(15.0, "semibold"), tint);
                     }
                 }
-                let left = avatar.max.x + space::MD;
-                let room = slot.max.x - space::SM - left;
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &store.my_name, text::headline(), if active { t.accent } else { t.label }, room);
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, s.sum_account, text::footnote(), t.label_tertiary, room);
+                let left = avatar.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &store.my_name, px(14.0, "medium"), if active { t.accent } else { t.label }, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, s.sum_account, px(11.5, "regular"), t.label_secondary, room);
                 if response.clicked() {
                     state.app_pane = AppPane::Account;
                     state.draft.loaded_account = false;
                 }
-                ui.add_space(space::SM);
+                ui.add_space(10.0);
             }
 
             // O servidor no topo: ícone, nome, endereço e quantos são. Só
@@ -3144,11 +3248,9 @@ fn app_pane(
                 .get(&data.store.me)
                 .is_some_and(|profile| profile.banner.is_some());
 
-            section(ui, t, s.profile);
             // O cartão como ele fica para os outros, e cada parte é o campo:
             // recado no balão, apelido no nome, bio em "Sobre".
-            ui.horizontal(|ui| {
-                ui.add_space(ROW_INSET);
+            {
                 match crate::ui::profile::edit_card(
                     ui,
                     t,
@@ -3165,12 +3267,11 @@ fn app_pane(
                     crate::ui::profile::PreviewHit::Banner => pick_banner = true,
                     crate::ui::profile::PreviewHit::None => {}
                 }
-            });
+            }
             // Os botões moram com a prévia: são dela, não linhas à parte.
-            ui.add_space(space::SM);
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.add_space(ROW_INSET);
-                ui.spacing_mut().item_spacing.x = space::SM;
+                ui.spacing_mut().item_spacing.x = space::MD;
                 if row_button(ui, t, s.change_avatar, Emphasis::Quiet) {
                     pick_avatar = true;
                 }
@@ -3181,7 +3282,6 @@ fn app_pane(
                     remove_banner = true;
                 }
             });
-            ui.add_space(space::MD);
             if pick_avatar {
                 actions.push(SettingsAction::Admin(AdminAction::PickAvatar));
             }
@@ -3273,16 +3373,16 @@ fn app_pane(
                     .store
                     .member(&data.store.me)
                     .map(|member| member.presence);
-                rows.row(s.presence, None, |ui, t| {
+                rows.row(s.presence, Some(s.presence_hint), |ui, t| {
                     let mut chosen = mine.unwrap_or(crate::state::Presence::Online);
                     if segmented(
                         ui,
                         t,
                         &mut chosen,
                         &[
-                            (crate::state::Presence::Busy, s.presence_busy),
-                            (crate::state::Presence::Away, s.presence_away),
                             (crate::state::Presence::Online, s.presence_online),
+                            (crate::state::Presence::Away, s.presence_away),
+                            (crate::state::Presence::Busy, s.presence_busy),
                         ],
                     ) {
                         actions.push(SettingsAction::Admin(AdminAction::SetPresence(
@@ -3330,13 +3430,10 @@ fn app_pane(
         }
 
         AppPane::Appearance => {
-            hero(ui, t, 150.0, |ui, area| {
-                let window = Rect::from_min_size(area.min, Vec2::new(area.width().min(300.0), 150.0));
-                appearance_preview(ui, t, window, *data.translucency);
-                hint_beside(ui, t, area, window, s.preview_theme_hint);
-            });
-            section(ui, t, s.appearance);
+            preview_chat(ui, t, data, s.preview_theme_hint);
+            section(ui, t, s.theme);
             group(ui, t, |rows| {
+                use crate::ui::profile::SelfCardStyle;
                 rows.row(s.theme, None, |ui, t| {
                     segmented(
                         ui,
@@ -3352,15 +3449,6 @@ fn app_pane(
                 rows.row(s.translucency, Some(s.translucency_hint), |ui, t| {
                     switch(ui, t, data.translucency);
                 });
-                rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
-                    switch(ui, t, data.topic_reveal);
-                });
-                rows.row(s.open_at_newest, Some(s.open_at_newest_hint), |ui, t| {
-                    switch(ui, t, data.open_at_newest);
-                });
-                rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
-                    switch(ui, t, data.record_button);
-                });
                 rows.row(
                     s.channel_emoji_monochrome,
                     Some(s.channel_emoji_monochrome_hint),
@@ -3368,41 +3456,6 @@ fn app_pane(
                         switch(ui, t, data.channel_emoji_monochrome);
                     },
                 );
-                rows.row(
-                    s.webembed_offscreen,
-                    Some(s.webembed_offscreen_hint),
-                    |ui, t| {
-                        segmented(
-                            ui,
-                            t,
-                            data.webembed_offscreen,
-                            &[
-                                (crate::webembed::OffscreenBehavior::Stop, s.webembed_stop),
-                                (crate::webembed::OffscreenBehavior::Float, s.webembed_float),
-                            ],
-                        );
-                    },
-                );
-                rows.row(
-                    s.webembed_scope,
-                    Some(s.webembed_scope_hint),
-                    |ui, t| {
-                        segmented(
-                            ui,
-                            t,
-                            data.webembed_scope,
-                            &[
-                                (crate::webembed::FloatScope::CurrentChannel, s.webembed_scope_channel),
-                                (crate::webembed::FloatScope::Global, s.webembed_scope_global),
-                            ],
-                        );
-                    },
-                );
-            });
-
-            section(ui, t, s.profile);
-            group(ui, t, |rows| {
-                use crate::ui::profile::SelfCardStyle;
                 let hint = match *data.self_card {
                     SelfCardStyle::Pill => s.self_card_pill_hint,
                     SelfCardStyle::Floating => s.self_card_floating_hint,
@@ -3418,6 +3471,55 @@ fn app_pane(
                         ],
                     );
                 });
+            });
+
+            section(ui, t, s.section_chat);
+            group(ui, t, |rows| {
+                rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
+                    switch(ui, t, data.topic_reveal);
+                });
+                rows.row(s.open_at_newest, Some(s.open_at_newest_hint), |ui, t| {
+                    switch(ui, t, data.open_at_newest);
+                });
+                rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
+                    switch(ui, t, data.record_button);
+                });
+            });
+
+            section(ui, t, s.section_video);
+            group(ui, t, |rows| {
+                rows.row(
+                    s.webembed_offscreen,
+                    Some(s.webembed_offscreen_hint),
+                    |ui, t| {
+                        segmented(
+                            ui,
+                            t,
+                            data.webembed_offscreen,
+                            &[
+                                (crate::webembed::OffscreenBehavior::Stop, s.webembed_stop),
+                                (crate::webembed::OffscreenBehavior::Float, s.webembed_float),
+                            ],
+                        );
+                    },
+                );
+                if matches!(*data.webembed_offscreen, crate::webembed::OffscreenBehavior::Float) {
+                    rows.row(
+                        s.webembed_scope,
+                        Some(s.webembed_scope_hint),
+                        |ui, t| {
+                            segmented(
+                                ui,
+                                t,
+                                data.webembed_scope,
+                                &[
+                                    (crate::webembed::FloatScope::CurrentChannel, s.webembed_scope_channel),
+                                    (crate::webembed::FloatScope::Global, s.webembed_scope_global),
+                                ],
+                            );
+                        },
+                    );
+                }
             });
         }
 
@@ -3455,10 +3557,13 @@ fn app_pane(
                                     .color(t.label),
                             );
                             if !snapshot.detail.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("· {}", snapshot.detail))
-                                        .font(text::footnote())
-                                        .color(t.label_tertiary),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("· {}", snapshot.detail))
+                                            .font(text::footnote())
+                                            .color(t.label_tertiary),
+                                    )
+                                    .truncate(),
                                 );
                             }
                         });
@@ -3688,8 +3793,8 @@ fn app_pane(
         }
 
         AppPane::Alerts => {
-            hero(ui, t, 76.0, |ui, area| {
-                let card = Rect::from_min_size(area.min + Vec2::new(0.0, 6.0), Vec2::new(area.width().min(300.0), 64.0));
+            hero(ui, t, 50.0, |ui, area| {
+                let card = Rect::from_min_size(area.min, Vec2::new(area.width(), 50.0));
                 let initials: String = data
                     .store
                     .server
@@ -3697,8 +3802,8 @@ fn app_pane(
                     .map(|server| server.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase())
                     .unwrap_or_else(|| "P".to_owned());
                 notification_preview(ui, t, s, card, &initials, *data.notifications);
-                hint_beside(ui, t, area, card, s.preview_notify_hint);
             });
+            caption_below(ui, t, s.preview_notify_hint);
             section(ui, t, s.menu_notifications);
             group(ui, t, |rows| {
                 rows.row(s.menu_notifications, Some(s.notifications_hint), |ui, t| {
@@ -3714,7 +3819,7 @@ fn app_pane(
                 rows.row(s.badge, Some(s.badge_hint), |ui, t| {
                     switch(ui, t, data.badge);
                 });
-                rows.row(s.menu_close_to_tray, Some(s.close_to_tray_hint), |ui, t| {
+                rows.row(s.close_to_tray_title, Some(s.close_to_tray_hint), |ui, t| {
                     switch(ui, t, data.close_to_tray);
                 });
                 rows.row(s.start_at_login, Some(s.start_at_login_hint), |ui, t| {

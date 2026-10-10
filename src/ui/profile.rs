@@ -26,6 +26,8 @@ use super::widgets::{photo, round_photo};
 
 /// Largura do cartão dos outros (e do seu, no estilo flutuante).
 pub const CARD_WIDTH: f32 = 300.0;
+/// O cartão que se edita em Ajustes é um pouco mais largo que o dos outros.
+const EDIT_CARD_WIDTH: f32 = 340.0;
 /// Respiro entre o cartão e o que ele acompanha, e entre ele e a janela.
 const GAP: f32 = space::MD;
 const MARGIN: f32 = space::LG;
@@ -478,7 +480,7 @@ fn hidden_field(
 
 /// Mede, reserva e desenha um campo escondido na largura que sobrou.
 #[allow(clippy::too_many_arguments)]
-fn inline_field(
+pub fn inline_field(
     ui: &mut egui::Ui,
     t: &Tokens,
     key: &str,
@@ -509,8 +511,8 @@ pub fn edit_card(
     draft: CardDraft<'_>,
 ) -> PreviewHit {
     let ctx = ui.ctx().clone();
-    let width = CARD_WIDTH.min(ui.available_width());
-    let scale = width / CARD_WIDTH;
+    let width = EDIT_CARD_WIDTH.min(ui.available_width());
+    let scale = width / EDIT_CARD_WIDTH;
     let banner_h = (width / BANNER_RATIO).round();
     let avatar_size = 80.0 * scale;
     let overlap = (avatar_size * AVATAR_OVERLAP).round();
@@ -582,7 +584,24 @@ pub fn edit_card(
                 Color32::WHITE,
             ),
             None => {
-                painter.rect_filled(banner, top_corners, blend(t.elevated_bg, tint, 0.38));
+                // Sem banner: a faixa da cor de destaque que vai ao rosa,
+                // em tiras (o painter não tem gradiente com cantos).
+                const STRIPS: usize = 34;
+                let from = t.accent;
+                let to = blend(t.accent, Color32::from_rgb(0xFF, 0x4F, 0x8B), 0.65);
+                let strip_w = banner.width() / STRIPS as f32;
+                for i in 0..STRIPS {
+                    let amount = i as f32 / (STRIPS - 1) as f32;
+                    let x0 = banner.min.x + strip_w * i as f32;
+                    let rect = Rect::from_min_max(egui::pos2(x0, banner.min.y), egui::pos2(x0 + strip_w + 0.5, banner.max.y));
+                    let corners = CornerRadius {
+                        nw: if i == 0 { top_corners.nw } else { 0 },
+                        ne: if i == STRIPS - 1 { top_corners.ne } else { 0 },
+                        sw: 0,
+                        se: 0,
+                    };
+                    painter.rect_filled(rect, corners, blend(from, to, amount));
+                }
             }
         }
         if banner_hovered {
@@ -596,7 +615,7 @@ pub fn edit_card(
             );
         }
 
-        painter.circle_filled(avatar.center(), avatar_size / 2.0 + 4.0, t.elevated_bg);
+        painter.circle_filled(avatar.center(), avatar_size / 2.0 + 4.0, t.card);
         let face = media
             .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
             .and_then(|texture| texture.frame(&ctx))
@@ -608,7 +627,7 @@ pub fn edit_card(
                 painter.circle_filled(
                     avatar.center(),
                     avatar_size / 2.0,
-                    blend(t.elevated_bg, tint, 0.30),
+                    blend(t.card, tint, 0.30),
                 );
                 painter.text(
                     avatar.center(),
@@ -768,7 +787,7 @@ pub fn edit_card(
             egui::epaint::RectShape::new(
                 Rect::from_min_max(start, egui::pos2(start.x + width, end)),
                 corners,
-                t.elevated_bg,
+                t.card,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             ),
@@ -833,7 +852,7 @@ fn body_contents(
         // de gradiente — o cartão não é uma vitrine.
         None => {
             ui.painter()
-                .rect_filled(banner, banner_corners, blend(t.elevated_bg, tint, 0.38));
+                .rect_filled(banner, banner_corners, blend(t.card, tint, 0.38));
         }
     }
     if compact {
@@ -888,7 +907,7 @@ fn body_contents(
     painter.circle_filled(
         avatar_rect.center(),
         avatar_size / 2.0 + ring,
-        t.elevated_bg,
+        t.card,
     );
     let face = state
         .media
@@ -904,7 +923,7 @@ fn body_contents(
             painter.circle_filled(
                 avatar_rect.center(),
                 avatar_size / 2.0,
-                blend(t.elevated_bg, tint, 0.30),
+                blend(t.card, tint, 0.30),
             );
             painter.text(
                 avatar_rect.center(),
@@ -920,7 +939,7 @@ fn body_contents(
     }
     let dot_r = if narrow { 6.0 } else { 7.0 };
     let dot = avatar_rect.center() + Vec2::splat(avatar_size / 2.0 * 0.72);
-    painter.circle_filled(dot, dot_r + ring, t.elevated_bg);
+    painter.circle_filled(dot, dot_r + ring, t.card);
     painter.circle_filled(dot, dot_r, presence_color(t, member.presence));
 
     if let Some((galley, bubble)) = bubble {
@@ -1359,7 +1378,7 @@ fn presence_segments(
             ui.painter().rect(
                 slot.shrink(2.0),
                 CornerRadius::same(radius::CONTROL - 1),
-                t.elevated_bg,
+                t.card,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             );
@@ -1875,8 +1894,8 @@ mod tests {
         ] {
             assert!(text_rect(&shapes, hint).is_some(), "falta a dica {hint:?}");
         }
-        // Nada fora dos 300 pt do cartão.
-        let card = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::new(CARD_WIDTH, 2000.0));
+        // Nada fora da largura do cartão.
+        let card = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::new(EDIT_CARD_WIDTH, 2000.0));
         for clipped in &shapes {
             let bounds = clipped.shape.visual_bounding_rect();
             if bounds.is_finite() {
