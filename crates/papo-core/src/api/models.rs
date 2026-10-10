@@ -795,6 +795,74 @@ pub struct EmbedField {
     pub inline: bool,
 }
 
+/// Payload autoral do backend (POST/PUT /messages), independente do
+/// LinkPreview recebido na leitura: mídia recebida pode conter referências
+/// privadas, portanto nunca é reconstruída implicitamente para reenviar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmbedInput {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub site_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<CustomEmbedAuthorInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer: Option<CustomEmbedFooterInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<CustomEmbedMediaInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<CustomEmbedMediaInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<CustomEmbedMediaInput>,
+    #[serde(default)]
+    pub fields: Vec<CustomEmbedFieldInput>,
+}
+
+impl CustomEmbedInput {
+    pub fn has_content(&self) -> bool {
+        !self.title.trim().is_empty() || !self.description.trim().is_empty()
+            || !self.url.trim().is_empty() || !self.site_name.trim().is_empty()
+            || self.author.as_ref().is_some_and(|a| !a.name.trim().is_empty())
+            || self.thumbnail.is_some() || self.image.is_some() || self.video.is_some()
+            || !self.fields.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmbedAuthorInput {
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub icon_url: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmbedFooterInput {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmbedMediaInput {
+    pub url: String,
+    #[serde(default)]
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomEmbedFieldInput {
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub inline: bool,
+}
+
 /// Um emoji de reação: unicode ou emoji custom do servidor.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ReactionRequest {
@@ -864,6 +932,9 @@ pub struct UserReaction {
 #[derive(Debug, Clone, Serialize)]
 pub struct UpdateMessageRequest {
     pub content: String,
+    /// None = keep existing custom embeds, Some([]) = remove them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeds: Option<Vec<CustomEmbedInput>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
