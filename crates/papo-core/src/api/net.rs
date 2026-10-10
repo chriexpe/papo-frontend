@@ -2632,7 +2632,6 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
     }
     match with_retry(|| api.emojis()).await {
         Ok(emojis) => updates.push(Update::Emojis(emojis)),
-        Ok(_) => {}
         Err(error) => {
             complete = false;
             log::warn!("runtime {scope}: emojis: {error}");
@@ -3592,7 +3591,6 @@ async fn bootstrap(
     }
     match with_retry(|| api.emojis()).await {
         Ok(emojis) => publish(updates, wake, Update::Emojis(emojis)),
-        Ok(_) => {}
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);
             complete = false;
