@@ -269,6 +269,8 @@ pub struct Draft {
     /// Frase de digitação ("está digitando…" do seu jeito).
     pub typing: String,
     pub password: String,
+    /// A caixa de senha nova está aberta.
+    pub password_open: bool,
     pub loaded_server: bool,
     pub server_name: String,
     pub server_public: bool,
@@ -505,6 +507,7 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
         tiled,
         pieces: Vec::new(),
         stack_next: false,
+        no_separator_next: false,
         editing: false,
         min_height_next: ROW_HEIGHT,
     };
@@ -572,6 +575,8 @@ pub struct Rows<'u> {
     pieces: Vec<(egui::layers::ShapeIdx, Rect)>,
     /// A próxima linha empilha o controle embaixo do rótulo (campos).
     stack_next: bool,
+    /// A próxima linha nasce colada na anterior, sem o fio entre elas.
+    no_separator_next: bool,
     /// O último campo desenhado está com o foco (a pessoa ainda digita).
     editing: bool,
     /// Altura mínima de uma linha especial (por exemplo, um preview de 36px).
@@ -603,7 +608,8 @@ impl Rows<'_> {
         let (rect, _) = self
             .ui
             .allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        if !self.first {
+        let joined = std::mem::take(&mut self.no_separator_next);
+        if !self.first && !joined {
             self.separators.push(rect.min.y);
         }
         self.first = false;
@@ -612,6 +618,65 @@ impl Rows<'_> {
             egui::pos2(rect.max.x - ROW_INSET, rect.max.y),
         );
         (rect, inner)
+    }
+
+    /// A próxima linha empilha o controle embaixo do rótulo, mesmo com espaço.
+    fn stack_next(&mut self) {
+        self.stack_next = true;
+    }
+
+    /// A próxima linha continua a anterior, sem fio no meio.
+    fn join_next(&mut self) {
+        self.no_separator_next = true;
+    }
+
+    /// Um painel de aviso dentro do cartão: pontinhos e uma frase, como a
+    /// prévia de "digitando…".
+    fn typing_panel(&mut self, text: &str) {
+        let t = self.t;
+        let (_, inner) = self.band(52.0);
+        let panel = Rect::from_min_max(egui::pos2(inner.min.x, inner.min.y), egui::pos2(inner.max.x, inner.max.y - 12.0));
+        self.ui.painter().rect(panel, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+        for i in 0..3 {
+            self.ui.painter().circle_filled(egui::pos2(panel.min.x + 16.0 + i as f32 * 8.0, panel.center().y), 2.5, t.label_tertiary);
+        }
+        crate::ui::widgets::text_fit(
+            self.ui.painter(),
+            egui::pos2(panel.min.x + 14.0 + 3.0 * 8.0 + 8.0, panel.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            px(12.5, "regular"),
+            t.label_secondary,
+            panel.width() - 60.0,
+        );
+    }
+
+    /// As regras da senha nova, uma por linha, e o botão de trocar à direita.
+    fn password_rules(&mut self, rules: &[(&str, bool)], button: &str, ready: bool) -> bool {
+        let t = self.t;
+        let (rect, inner) = self.band(20.0 + rules.len() as f32 * 17.0);
+        let mut y = rect.min.y + 10.0;
+        for (label, ok) in rules {
+            let ink = if *ok { t.online } else { t.label_tertiary };
+            self.ui.painter().text(
+                egui::pos2(inner.min.x, y),
+                egui::Align2::LEFT_TOP,
+                format!("{} {label}", if *ok { "●" } else { "○" }),
+                px(11.5, "regular"),
+                ink,
+            );
+            y += 17.0;
+        }
+        let width = self.ui.painter().layout_no_wrap(button.to_owned(), px(12.0, "regular"), t.label).size().x + 24.0;
+        let slot = Rect::from_min_size(egui::pos2(inner.max.x - width, rect.max.y - 10.0 - 26.0), Vec2::new(width, 26.0));
+        let response = self.ui.interact(slot, self.ui.id().with("trocar-senha-ok"), if ready { Sense::click() } else { Sense::hover() });
+        let fill = if ready { if response.hovered() { t.accent.gamma_multiply(0.85) } else { t.accent } } else { t.fill_soft };
+        self.ui.painter().rect_filled(slot, CornerRadius::same(6), fill);
+        self.ui.painter().text(slot.center(), egui::Align2::CENTER_CENTER, button, px(12.0, "regular"), if ready { t.accent_label } else { t.label_tertiary });
+        if ready && response.hovered() {
+            self.ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        ready && response.clicked()
     }
 
     /// Rótulo + apoio + controle. Em espaço largo mantém duas colunas;
@@ -628,11 +693,8 @@ impl Rows<'_> {
         let full = (fit_width(self.ui) - inset).max(120.0);
         // Em peças o controle fica à direita (chave, menu) e só os campos
         // descem para baixo do rótulo.
-        let stacked = if self.tiled {
-            std::mem::take(&mut self.stack_next) || full < 220.0
-        } else {
-            full < 430.0
-        };
+        let force = std::mem::take(&mut self.stack_next);
+        let stacked = if self.tiled { force || full < 220.0 } else { force || full < 430.0 };
         let control_width = if stacked {
             full
         } else if self.tiled {
@@ -1580,7 +1642,7 @@ pub fn sheet(
     // passa por baixo não atrapalhar a leitura.
     let frosted = *data.translucency && data.glass.is_some();
     if *data.translucency {
-        let (sheet_alpha, side_alpha) = if frosted { (205, 190) } else { (244, 236) };
+        let (sheet_alpha, side_alpha) = if frosted { (219, 179) } else { (244, 236) };
         let [r, g, b, _] = sheet_t.elevated_bg.to_array();
         sheet_t.elevated_bg = egui::Color32::from_rgba_unmultiplied(r, g, b, sheet_alpha);
         let [r, g, b, _] = sheet_t.side.to_array();
@@ -3449,7 +3511,13 @@ fn app_pane(
             });
 
             section(ui, t, s.typing_section);
+            let typing_preview = {
+                let name = if draft.nickname.trim().is_empty() { data.store.my_name.as_str() } else { draft.nickname.trim() };
+                let phrase = if draft.typing.trim().is_empty() { s.typing_one } else { draft.typing.trim() };
+                format!("{name} {phrase}")
+            };
             group(ui, t, |rows| {
+                rows.stack_next();
                 rows.field_hinted(
                     s.typing_phrase,
                     Some(s.typing_phrase_hint),
@@ -3457,27 +3525,51 @@ fn app_pane(
                     64,
                     false,
                 );
+                rows.join_next();
+                rows.typing_panel(&typing_preview);
             });
 
             // Segurança: senha e sair, juntos — as duas coisas que não são
             // perfil e não mudam na hora como a presença.
             section(ui, t, s.security);
             group(ui, t, |rows| {
-                let sent = rows.field(s.new_password, &mut draft.password, 64, true);
-                let ready = draft.password.chars().count() >= 8;
-                rows.row(s.change_password, Some(s.password_rule_length), |ui, t| {
-                    if (row_button(ui, t, s.change_password, Emphasis::Primary) || sent) && ready {
+                let open = draft.password_open;
+                let mut toggle = false;
+                rows.row(s.change_password, Some(s.password_hint), |ui, t| {
+                    if row_button(ui, t, if open { s.cancel } else { s.change_password_open }, Emphasis::Quiet) {
+                        toggle = true;
+                    }
+                });
+                if toggle {
+                    draft.password_open = !open;
+                    draft.password.clear();
+                }
+                if draft.password_open {
+                    rows.stack_next();
+                    let sent = rows.field(s.new_password, &mut draft.password, 64, true);
+                    let value = draft.password.clone();
+                    let checks = [
+                        (s.password_rule_length, value.chars().count() >= 8),
+                        (s.password_rule_uppercase, value.chars().any(char::is_uppercase)),
+                        (s.password_rule_special, value.chars().any(|c| !c.is_alphanumeric())),
+                    ];
+                    let ready = checks.iter().all(|(_, ok)| *ok);
+                    rows.join_next();
+                    if rows.password_rules(&checks, s.change_password, ready) || (sent && ready) {
                         actions.push(SettingsAction::Admin(AdminAction::ChangePassword(
                             draft.password.clone(),
                         )));
                         draft.password.clear();
+                        draft.password_open = false;
+                    }
+                }
+                rows.row(s.sign_out, Some(s.sign_out_hint), |ui, t| {
+                    if row_button(ui, t, s.sign_out_short, Emphasis::Danger) {
+                        actions.push(SettingsAction::Menu(
+                            crate::platform::menu::MenuCommand::SignOut,
+                        ));
                     }
                 });
-                if rows.action(s.sign_out, Some(s.sign_out_hint), true) {
-                    actions.push(SettingsAction::Menu(
-                        crate::platform::menu::MenuCommand::SignOut,
-                    ));
-                }
             });
         }
 
