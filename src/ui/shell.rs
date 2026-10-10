@@ -8194,11 +8194,9 @@ fn emoji_popup(
             add: !mine,
         });
         state.close_popup();
-        return;
     }
-
 }
- 
+
 fn context_menu(
     ui: &mut egui::Ui,
     store: &Store,
@@ -8364,9 +8362,7 @@ fn context_menu(
             MessageCommand::Delete => state.actions.push(ChatAction::Delete(message.id.clone())),
         }
         state.close_popup();
-        return;
     }
-
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
