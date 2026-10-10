@@ -5895,16 +5895,30 @@ fn message_body(
             *buffer = buffer_copy;
             reanchor_mentions(buffer, &mut state.editing_mentions);
 
-            if message.previews.iter().any(|preview| preview.source_type.as_deref() == Some("custom"))
-                && message.previews.iter().filter(|preview| preview.source_type.as_deref() == Some("custom"))
-                    .all(|preview| crate::api::models::CustomEmbedInput::from_media_free_preview(preview).is_some())
+            if message
+                .previews
+                .iter()
+                .any(|preview| preview.source_type.as_deref() == Some("custom"))
+                && message
+                    .previews
+                    .iter()
+                    .filter(|preview| preview.source_type.as_deref() == Some("custom"))
+                    .all(|preview| {
+                        crate::api::models::CustomEmbedInput::from_media_free_preview(preview)
+                            .is_some()
+                    })
+                && ui.button("Editar embeds personalizados").clicked()
             {
-                if ui.button("Editar embeds personalizados").clicked() {
-                    state.editing_custom_embeds = Some(message.previews.iter()
-                        .filter_map(crate::api::models::CustomEmbedInput::from_media_free_preview)
-                        .collect());
-                    state.custom_embed_editor = true;
-                }
+                state.editing_custom_embeds = Some(
+                    message
+                        .previews
+                        .iter()
+                        .filter_map(
+                            crate::api::models::CustomEmbedInput::from_media_free_preview,
+                        )
+                        .collect(),
+                );
+                state.custom_embed_editor = true;
             }
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
