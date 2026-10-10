@@ -73,25 +73,6 @@ pub fn sign_in(
         field(ui, t, s.server_address, &mut form.server_url, false);
         ui.add_space(space::LG);
 
-        if locked {
-            let submitted = field(ui, t, s.server_password, &mut form.server_password, true);
-            ui.add_space(space::SM);
-            ui.label(
-                RichText::new(s.server_password_hint)
-                    .font(text::footnote())
-                    .color(t.label_tertiary),
-            );
-            problem(ui, t, store, s);
-
-            ui.add_space(space::XXL);
-            let ready = !form.server_password.is_empty();
-            if primary_button(ui, t, s.unlock_server, ready && !store.busy) || (submitted && ready)
-            {
-                action = AuthAction::UnlockServer;
-            }
-            return;
-        }
-
         if form.reset_mode {
             ui.label(RichText::new("Recuperação de senha")
                 .font(text::title2()).color(t.label));
@@ -123,6 +104,25 @@ pub fn sign_in(
                 form.reset_mode = false;
                 form.reset_password.clear();
                 form.reset_confirmation.clear();
+            }
+            return;
+        }
+
+        if locked {
+            let submitted = field(ui, t, s.server_password, &mut form.server_password, true);
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new(s.server_password_hint)
+                    .font(text::footnote())
+                    .color(t.label_tertiary),
+            );
+            problem(ui, t, store, s);
+
+            ui.add_space(space::XXL);
+            let ready = !form.server_password.is_empty();
+            if primary_button(ui, t, s.unlock_server, ready && !store.busy) || (submitted && ready)
+            {
+                action = AuthAction::UnlockServer;
             }
             return;
         }
