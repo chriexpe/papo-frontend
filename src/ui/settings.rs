@@ -1411,6 +1411,8 @@ pub struct Context<'a> {
     pub lang: &'a mut crate::i18n::Lang,
     pub theme: &'a mut crate::ui::theme::ThemePref,
     pub translucency: &'a mut bool,
+    /// O desfoque do vidro, quando o renderizador sabe fazê-lo.
+    pub glass: Option<crate::ui::glass::SharedGlass>,
     pub notifications: &'a mut bool,
     pub reply_notifications: &'a mut bool,
     pub close_to_tray: &'a mut bool,
@@ -1573,12 +1575,16 @@ pub fn sheet(
         return actions;
     }
     let mut sheet_t = sheet_tokens(t);
+    // Vidro fosco como nas pastilhas: com o desfoque disponível a tinta pode
+    // ser bem translúcida; sem ele, só um toque, para o texto do chat que
+    // passa por baixo não atrapalhar a leitura.
+    let frosted = *data.translucency && data.glass.is_some();
     if *data.translucency {
-        // Um toque de vidro: a folha e a coluna deixam o fundo aparecer de leve.
+        let (sheet_alpha, side_alpha) = if frosted { (205, 190) } else { (244, 236) };
         let [r, g, b, _] = sheet_t.elevated_bg.to_array();
-        sheet_t.elevated_bg = egui::Color32::from_rgba_unmultiplied(r, g, b, 244);
+        sheet_t.elevated_bg = egui::Color32::from_rgba_unmultiplied(r, g, b, sheet_alpha);
         let [r, g, b, _] = sheet_t.side.to_array();
-        sheet_t.side = egui::Color32::from_rgba_unmultiplied(r, g, b, 236);
+        sheet_t.side = egui::Color32::from_rgba_unmultiplied(r, g, b, side_alpha);
     }
     let t = &sheet_t;
 
@@ -1617,6 +1623,7 @@ pub fn sheet(
             ui.painter()
                 .add(shadow.as_shape(rect, radius::SHEET as f32 + 4.0));
             const SHEET_RADIUS: u8 = 14;
+            super::shell::glass_blur(ui, &data.glass, *data.translucency, rect, SHEET_RADIUS as f32);
             ui.painter().rect(
                 rect,
                 CornerRadius::same(SHEET_RADIUS),

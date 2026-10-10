@@ -1458,13 +1458,24 @@ fn mobile_drawers(
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
 /// dela entra borrado, e a tinta translúcida vem por cima.
 pub(super) fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
-    if !state.translucent || state.glass.is_none() {
+    glass_blur(ui, &state.glass, state.translucent, rect, corner);
+}
+
+/// O mesmo desfoque, para quem não tem o `UiState` à mão (a folha de Ajustes).
+pub(super) fn glass_blur(
+    ui: &egui::Ui,
+    glass: &Option<SharedGlass>,
+    translucent: bool,
+    rect: Rect,
+    corner: f32,
+) {
+    if !translucent || glass.is_none() {
         return;
     }
 
     #[cfg(target_os = "android")]
     {
-        let Some(glass) = state.glass.clone() else {
+        let Some(glass) = glass.clone() else {
             return;
         };
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {

@@ -3446,6 +3446,7 @@ impl PapoApp {
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,
                 translucency: &mut self.settings.translucency,
+                glass: self.ui.glass.clone(),
                 notifications: &mut self.settings.notifications,
                 reply_notifications: &mut self.settings.reply_notifications,
                 close_to_tray: &mut self.settings.close_to_tray,
