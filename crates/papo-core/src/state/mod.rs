@@ -4784,6 +4784,7 @@ mod tests {
                 pinned: false,
                 attachments: Vec::new(),
                 reactions: Vec::new(),
+                embeds: Vec::new(),
             }],
             cached_channels: ["geral".to_owned()].into_iter().collect(),
         }

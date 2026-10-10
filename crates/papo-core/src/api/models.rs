@@ -721,7 +721,7 @@ impl Attachment {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
     pub id: String,
     /// `link` ou `custom`.
@@ -764,14 +764,14 @@ pub struct LinkPreview {
     pub author_image_data: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbedAuthor {
     pub name: Option<String>,
     pub url: Option<String>,
     pub media: Option<EmbedMedia>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbedMedia {
     pub url: Option<String>,
     pub mime_type: Option<String>,
@@ -780,13 +780,13 @@ pub struct EmbedMedia {
     pub size_bytes: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbedFooter {
     pub text: Option<String>,
     pub icon: Option<EmbedMedia>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbedField {
     pub position: i32,
     pub name: String,

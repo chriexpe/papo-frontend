@@ -614,7 +614,12 @@ fn embedded_message_restores_from_cache_without_network() {
     }]);
     db.flush();
 
-    let page = db.load_channel_page("srv", "geral", None).unwrap();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("page request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("page reply")
+        .expect("page");
     assert_eq!(page.messages.len(), 1);
     let restored = page.messages[0].to_store();
     assert_eq!(restored.previews.len(), 1);
