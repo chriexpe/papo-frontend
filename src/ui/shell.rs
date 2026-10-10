@@ -699,6 +699,8 @@ pub struct Stash {
     pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
+    pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
+    pub custom_embed_editor: bool,
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
@@ -751,6 +753,8 @@ impl Stash {
         );
         std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
+        std::mem::swap(&mut self.custom_embeds, &mut ui.custom_embeds);
+        std::mem::swap(&mut self.custom_embed_editor, &mut ui.custom_embed_editor);
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
@@ -1032,6 +1036,8 @@ impl Default for UiState {
             webembed_occlusions: Vec::new(),
             webembed_blocked: false,
             attachments: Vec::new(),
+            custom_embeds: Vec::new(),
+            custom_embed_editor: false,
             replying: None,
             reply_notify: true,
             reply_notify_default: true,
