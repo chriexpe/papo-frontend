@@ -1219,6 +1219,35 @@ fn local_ids_are_unique() {
 }
 
 #[test]
+fn custom_embeds_survive_outbox_reopen_with_exact_payload() {
+    let temp = TempDb::new("outgoing-embeds");
+    let mut item = outgoing("local-embed", "user-a", "", OutgoingState::Queued);
+    item.embeds.push(crate::api::models::CustomEmbedInput {
+        title: "Test".into(),
+        description: "Texto rico".into(),
+        url: "https://example.org".into(),
+        image: Some(crate::api::models::CustomEmbedMediaInput {
+            url: "https://example.org/img.png".into(),
+            mime_type: "image/png".into(),
+        }),
+        fields: vec![crate::api::models::CustomEmbedFieldInput {
+            name: "Key".into(),
+            value: "Value".into(),
+            inline: true,
+        }],
+        ..Default::default()
+    });
+    {
+        let db = open(&temp);
+        db.enqueue_outgoing("srv", item.clone()).expect("enqueue");
+    }
+    let db = open(&temp);
+    let restored = db.load_outgoing("srv", "user-a").expect("reopen");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].embeds, item.embeds);
+}
+
+#[test]
 fn queued_outgoing_survives_reopen() {
     let temp = TempDb::new("outgoing-reopen");
     {
