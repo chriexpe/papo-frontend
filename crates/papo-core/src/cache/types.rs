@@ -168,6 +168,7 @@ pub struct CachedOutgoing {
     pub owner_user_id: String,
     pub channel_id: String,
     pub content: String,
+    pub embeds: Vec<crate::api::models::CustomEmbedInput>,
     pub reply_to: Option<String>,
     pub notify_reply: bool,
     pub created_at: i64,
