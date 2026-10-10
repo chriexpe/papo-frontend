@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -201,6 +201,21 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }, Migration {
     version: 11,
     statements: &["ALTER TABLE messages ADD COLUMN embeds TEXT NOT NULL DEFAULT '[]'"],
+}, Migration {
+    version: 12,
+    statements: &[
+        "CREATE TABLE server_emojis (
+             server_key TEXT NOT NULL,
+             emoji_id TEXT NOT NULL,
+             name TEXT NOT NULL,
+             image_data BLOB,
+             PRIMARY KEY(server_key, emoji_id)
+         )",
+        "CREATE TABLE server_emojis_state (
+             server_key TEXT PRIMARY KEY,
+             updated_at INTEGER NOT NULL
+         )",
+    ],
 }];
 
 /// Lê a versão atual do esquema (0 quando ainda não há nada).
