@@ -8979,6 +8979,49 @@ fn composer(
         egui::pos2(area.max.x - PILL_MARGIN, area.max.y - PILL_MARGIN),
     );
 
+    // Opt-in custom embeds belong to the same send transaction as the text.
+    // This editor stays independent of the remote preview coordinator.
+    let mut editor_open = state.custom_embed_editor;
+    if editor_open {
+        egui::Window::new("Embed personalizado")
+            .id(Id::new("custom-embed-authoring"))
+            .resizable(false)
+            .collapsible(false)
+            .default_width(350.0)
+            .open(&mut editor_open)
+            .show(ui.ctx(), |ui| {
+                let embed = state.custom_embeds.first_mut().expect("embed editor draft");
+                ui.label("Título");
+                ui.text_edit_singleline(&mut embed.title);
+                ui.label("Descrição");
+                ui.add(egui::TextEdit::multiline(&mut embed.description).desired_rows(3));
+                ui.label("Endereço do link (opcional)");
+                ui.text_edit_singleline(&mut embed.url);
+                ui.label("Site (opcional)");
+                ui.text_edit_singleline(&mut embed.site_name);
+                ui.label("Cor #RRGGBB (opcional)");
+                ui.text_edit_singleline(&mut embed.color);
+                ui.label("Autor (opcional)");
+                let author = embed.author.get_or_insert_with(Default::default);
+                ui.text_edit_singleline(&mut author.name);
+                ui.label("Imagem (HTTPS, opcional)");
+                let image = embed.image.get_or_insert_with(Default::default);
+                ui.text_edit_singleline(&mut image.url);
+                if image.url.trim().is_empty() { embed.image = None; }
+                ui.label("Rodapé (opcional)");
+                let footer = embed.footer.get_or_insert_with(Default::default);
+                ui.text_edit_singleline(&mut footer.text);
+                if footer.text.trim().is_empty() { embed.footer = None; }
+                if author.name.trim().is_empty() && author.url.is_empty() && author.icon_url.is_empty() {
+                    embed.author = None;
+                }
+                if ui.button("Remover embed").clicked() {
+                    state.custom_embeds.clear();
+                    state.custom_embed_editor = false;
+                }
+            });
+    }
+    state.custom_embed_editor = editor_open && !state.custom_embeds.is_empty();
     typing_pill(ui, store, state, t, s, rect);
     pill_surface(ui, state, t, rect);
 
@@ -9333,6 +9376,16 @@ fn composer(
     );
 
     let opened = ui.input(|input| input.time);
+    let embed_rect = Rect::from_center_size(
+        egui::pos2(emoji_rect.center().x - HIT_TARGET - space::XXS, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+    if inline_button(ui, t, embed_rect, "▣", "Embed", "custom-embed").clicked() {
+        if state.custom_embeds.is_empty() {
+            state.custom_embeds.push(Default::default());
+        }
+        state.custom_embed_editor = !state.custom_embed_editor;
+    }
     if inline_button(ui, t, emoji_rect, icon::SMILEY, s.emoji, "emoji").clicked() {
         state.gif_picker_opened = None;
         state.gif_picker_anchor = None;
