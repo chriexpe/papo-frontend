@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -215,6 +215,19 @@ const MIGRATIONS: &[Migration] = &[Migration {
              server_key TEXT PRIMARY KEY,
              updated_at INTEGER NOT NULL
          )",
+    ],
+}, Migration {
+    version: 13,
+    statements: &[
+        "CREATE TABLE profile_images (
+             server_key TEXT NOT NULL,
+             kind TEXT NOT NULL,
+             resource_id TEXT NOT NULL,
+             image_data BLOB NOT NULL,
+             updated_at INTEGER NOT NULL,
+             PRIMARY KEY(server_key, kind, resource_id)
+         )",
+        "CREATE INDEX profile_images_lru ON profile_images(server_key, kind, updated_at DESC)",
     ],
 }];
 

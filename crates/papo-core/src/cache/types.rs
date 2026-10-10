@@ -479,6 +479,14 @@ pub struct CachedEmoji {
     pub blob: Option<String>,
 }
 
+/// Imagens de perfil/servidor guardadas como originais, nunca como texturas.
+/// Só carregadas pelo worker do cache, e sempre subordinadas à rede.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CachedProfileImages {
+    pub server_icon: Option<String>,
+    pub avatars: Vec<(String, String)>,
+}
+
 /// Metadados suficientes para abrir um servidor sem varrer suas timelines.
 #[derive(Clone, Debug, Default)]
 pub struct CachedServerMetadata {
@@ -548,6 +556,10 @@ pub enum CacheOp {
     ReplaceMembers(Vec<CachedMember>),
     /// Listagem completa, inclusive quando o backend responde vazia.
     ReplaceEmojis(Vec<CachedEmoji>),
+    /// Atualização de ícone autoritativa; None remove uma imagem antiga.
+    SetServerIcon(Option<String>),
+    /// Uma resposta de perfil, inclusive ausência explícita do avatar.
+    SetAvatar { user_id: String, blob: Option<String> },
     UpsertReadState(CachedReadState),
     ReplaceChannelSnapshot {
         channel_id: String,
