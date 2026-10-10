@@ -133,6 +133,11 @@ pub enum Request {
         id: String,
         blob: Option<String>,
     },
+    /// Ícone do autor no embed customizado. É diferente da imagem do card.
+    PreviewAuthor {
+        id: String,
+        blob: Option<String>,
+    },
     /// Imagem pública de preview. A chave é derivada da URL canônica e
     /// portanto é compartilhada entre mensagens e reinícios.
     RemoteImage {
@@ -165,6 +170,7 @@ impl Request {
             Self::Emoji { .. } => "emoji",
             Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
+            Self::PreviewAuthor { .. } => "preview-author",
             Self::RemoteImage { .. } => "remote-image",
             Self::RemoteEphemeral { .. } => "remote-ephemeral",
         }
@@ -508,6 +514,30 @@ async fn run(
                     .map_err(|error| error.to_string())
             }) {
                 Ok(bytes) => decode(key, &bytes, INLINE_MAX),
+                Err(error) => Loaded::Failed { key, error },
+            }
+        }
+        Request::PreviewAuthor { id, blob } => {
+            use base64::Engine as _;
+            let _slot = fetch_gate.acquire().await;
+            let key = preview_author_key(&id);
+            let blob = match blob {
+                Some(blob) => Ok(blob),
+                None => api
+                    .link_preview(&id)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|embed| {
+                        embed.author_image_data
+                            .ok_or_else(|| "embed sem ícone de autor".to_owned())
+                    }),
+            };
+            match blob.and_then(|blob| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob.as_bytes())
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(bytes) => decode(key, &bytes, 128),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
@@ -1076,6 +1106,9 @@ pub fn emoji_key(id: &str) -> String {
 pub fn preview_key(id: &str) -> String {
     format!("preview:{id}")
 }
+pub fn preview_author_key(id: &str) -> String {
+    format!("preview-author:{id}")
+}
 fn remote_image_key(id: &str) -> String {
     format!("remote-image:{id}")
 }
@@ -1600,6 +1633,29 @@ impl MediaStore {
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// Ícone do autor de um embed, separado da imagem principal.
+    pub fn preview_author(&mut self, embed: &LinkPreview) -> Option<&Texture> {
+        if embed.author_image_data.is_none()
+            && !embed.author.as_ref().is_some_and(|author| author.media.is_some())
+        {
+            return None;
+        }
+        let key = preview_author_key(&embed.id);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::PreviewAuthor {
+                id: embed.id.clone(),
+                blob: embed.author_image_data.clone(),
+            });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
+    pub fn loaded_preview_author(&self, id: &str) -> Option<&Texture> {
+        self.textures.get(&preview_author_key(id))
     }
 
     /// Link-preview image already present in memory, without starting backend I/O.

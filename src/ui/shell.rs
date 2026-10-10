@@ -6330,9 +6330,17 @@ fn link_previews(
     allow_network: bool,
 ) {
     for preview in previews {
-        // Custom embeds podem não ter URL: devem aparecer mesmo assim.
-        let url = preview.url.as_deref().unwrap_or("");
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
+        if preview.source_type.as_deref() == Some("custom")
+            && preview.image.is_none()
+            && preview.thumbnail.is_none()
+            && preview.video.is_none()
+            && preview.embed_url.is_none()
+        {
+            custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
+            continue;
+        }
+        let url = preview.url.as_deref().unwrap_or("");
         preview_card(
             ui,
             state,
@@ -6348,6 +6356,184 @@ fn link_previews(
             },
         );
     }
+}
+
+/// O backend pode colocar o mesmo nome tanto em author.name quanto em title.
+/// Para embeds de bridge, a identidade do autor é o cabeçalho e não deve ser
+/// repetida abaixo como se fosse um título independente.
+fn custom_embed_title<'a>(
+    embed: &'a crate::api::models::LinkPreview,
+) -> Option<&'a str> {
+    let title = embed.title.as_deref().map(str::trim).filter(|value| !value.is_empty())?;
+    let author = embed
+        .author
+        .as_ref()
+        .and_then(|author| author.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    (!author.is_some_and(|name| name.eq_ignore_ascii_case(title))).then_some(title)
+}
+
+/// Mensagens transportadas por bridges (Discord, IRC etc.) são conteúdo do
+/// chat, não URLs. O visual é o mesmo material translúcido dos outros cards
+/// do Papo; sem barrão lateral ou caixas empilhadas para cada campo.
+fn custom_embed_card(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    embed: &crate::api::models::LinkPreview,
+    card_id: &str,
+    width: f32,
+    allow_network: bool,
+) {
+    let author = embed
+        .author
+        .as_ref()
+        .and_then(|author| author.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let heading = custom_embed_title(embed);
+    let description = embed.description.as_deref().map(str::trim).filter(|text| !text.is_empty());
+    let footer = embed.footer.as_ref()
+        .and_then(|footer| footer.text.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let source = embed.site_name.as_deref().or(embed.provider.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .filter(|name| !footer.is_some_and(|text| text.to_lowercase().contains(&name.to_lowercase())))
+        .filter(|name| !author.is_some_and(|a| a.eq_ignore_ascii_case(name))
+            && !heading.is_some_and(|a| a.eq_ignore_ascii_case(name)));
+
+    // Ícones autorais armazenados no backend são servidos pelo endpoint
+    // autenticado; a URL remota só é usada quando o embed anuncia uma.
+    let avatar_url = embed.author.as_ref()
+        .and_then(|author| author.media.as_ref())
+        .and_then(|media| media.url.as_deref());
+    let avatar = avatar_url.and_then(|url| {
+        if allow_network {
+            state.media.remote_image(card_id, url)
+        } else {
+            state.media.loaded_remote_image(url)
+        }
+    })
+    .and_then(|texture| texture.frame(ui.ctx()))
+    .cloned()
+    .or_else(|| {
+        let texture = if allow_network {
+            state.media.preview_author(embed)
+        } else {
+            state.media.loaded_preview_author(&embed.id)
+        };
+        texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
+    });
+
+    ui.add_space(space::SM);
+    // A moldura usa o material glass já definido no tema (inclusive light
+    // mode) e padding uniforme. O texto não assume dimensões fixas em mobile.
+    let inner_width = (width - space::LG * 2.0).clamp(148.0, 404.0);
+    let frame = Frame::new()
+        .fill(t.glass_over_content)
+        .stroke(Stroke::new(1.0, t.separator))
+        .corner_radius(CornerRadius::same(radius::SHEET))
+        .inner_margin(egui::Margin::symmetric(space::LG as i8, space::MD as i8));
+
+    let content = frame.show(ui, |ui| {
+        ui.set_width(inner_width);
+        if let Some(name) = author {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if avatar.is_some() || embed.author.as_ref().is_some_and(|a| a.media.is_some()) {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(27.0), Sense::hover());
+                    if let Some(texture) = avatar.as_ref() {
+                        round_photo(ui.painter(), rect, texture.id(), Color32::WHITE);
+                    } else {
+                        let accent = embed.color.as_deref().and_then(hex_color).unwrap_or(t.accent);
+                        ui.painter().circle_filled(
+                            rect.center(), rect.width() / 2.0, accent.gamma_multiply(0.20),
+                        );
+                        ui.painter().text(
+                            rect.center(), Align2::CENTER_CENTER,
+                            name.chars().next().unwrap_or('?').to_string(),
+                            text::subheadline(), accent,
+                        );
+                    }
+                }
+                ui.label(RichText::new(name).font(text::headline()).color(t.label));
+            });
+        }
+        if let Some(title) = heading {
+            if author.is_some() {
+                ui.add_space(space::XXS);
+            }
+            ui.label(RichText::new(title).font(text::headline()).color(t.label));
+        }
+        if let Some(body) = description {
+            if author.is_some() || heading.is_some() {
+                ui.add_space(space::SM);
+            }
+            ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
+        }
+        for field in &embed.fields {
+            ui.add_space(space::SM);
+            if !field.name.trim().is_empty() {
+                ui.label(
+                    RichText::new(field.name.trim())
+                        .font(text::caption()).color(t.label_tertiary),
+                );
+            }
+            ui.label(
+                RichText::new(field.value.trim()).font(text::body()).color(t.label_secondary),
+            );
+        }
+        if footer.is_some() || source.is_some() {
+            ui.add_space(space::SM);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                if let Some(footer) = footer {
+                    ui.label(RichText::new(footer).font(text::footnote()).color(t.label_tertiary));
+                }
+                if let Some(source) = source {
+                    if footer.is_some() {
+                        ui.label(RichText::new("·").font(text::footnote()).color(t.label_tertiary));
+                    }
+                    ui.label(RichText::new(source).font(text::footnote()).color(t.label_tertiary));
+                }
+            });
+        }
+    });
+
+    let rect = content.response.rect;
+    // Um filete de luz, não uma borda chamativa: o material já é translúcido.
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + radius::SHEET as f32, rect.min.y + 1.0),
+            egui::pos2(rect.max.x - radius::SHEET as f32, rect.min.y + 1.0),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
+    );
+    if let Some(color) = embed.color.as_deref().and_then(hex_color) {
+        let accent_rect = Rect::from_min_size(
+            egui::pos2(rect.min.x + 2.0, rect.min.y + space::MD),
+            Vec2::new(2.0, (rect.height() - space::MD * 2.0).max(1.0)),
+        );
+        ui.painter().rect_filled(
+            accent_rect, CornerRadius::same(2), color.gamma_multiply(0.45),
+        );
+    }
+    // Custom embeds sem URL são apenas conteúdo: não há alvo de clique falso.
+    if let Some(url) = embed.url.as_deref()
+        && papo_core::preview::safe_remote_url(url)
+    {
+        let clicked = ui.interact(rect, Id::new(("custom-embed-open", card_id)), Sense::click());
+        if clicked.clicked() {
+            state.request_external_url(ui.ctx(), url.to_owned());
+        }
+        if clicked.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    ui.add_space(space::XS);
 }
 
 fn rich_links_from_message(
@@ -10503,5 +10689,37 @@ mod tab_focus_tests {
         // Sem o filtro, o egui move o foco (o defeito relatado).
         assert!(!focus_after_tab(false));
         assert!(focus_after_tab(true));
+    }
+}
+
+#[cfg(test)]
+mod custom_embed_tests {
+    use super::*;
+
+    fn embedded(author: Option<&str>, title: Option<&str>) -> crate::api::models::LinkPreview {
+        let mut json = serde_json::json!({
+            "id": "e1", "source_type": "custom", "description": "Olá",
+        });
+        if let Some(name) = author {
+            json["author"] = serde_json::json!({ "name": name });
+        }
+        if let Some(title) = title {
+            json["title"] = serde_json::json!(title);
+        }
+        serde_json::from_value(json).expect("valid embed")
+    }
+
+    #[test]
+    fn duplicate_bridge_author_title_is_suppressed() {
+        let item = embedded(Some("Jenga"), Some("  jenga "));
+        assert!(custom_embed_title(&item).is_none());
+    }
+
+    #[test]
+    fn genuine_distinct_embed_title_remains() {
+        let item = embedded(Some("Maco"), Some("Important announcement"));
+        assert_eq!(custom_embed_title(&item), Some("Important announcement"));
+        let item = embedded(None, Some("Maco"));
+        assert_eq!(custom_embed_title(&item), Some("Maco"));
     }
 }
