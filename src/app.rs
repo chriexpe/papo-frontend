@@ -1533,23 +1533,32 @@ impl PapoApp {
         let form = &self.workspaces[index].form;
         let raw = form.reset_link.trim();
         let Some(link) = url::Url::parse(raw).ok().filter(|url| {
-            url.scheme() == "papo-reset" && url.host_str() == Some("passwordchange")
+            (url.scheme() == "https" && url.host_str() == Some("papo.cyberasilo.online")
+                && url.path().starts_with("/passwordchange/"))
+                || (url.scheme() == "papo-reset" && url.host_str() == Some("passwordchange"))
         }) else {
             self.workspaces[index].runtime.store.error = Some("Link de recuperação inválido".into());
             return;
         };
-        let token = link.path().trim_matches('/').to_owned();
+        let token = if link.scheme() == "papo-reset" {
+            link.path().trim_matches('/').to_owned()
+        } else {
+            link.path().trim_start_matches("/passwordchange/").trim_matches('/').to_owned()
+        };
+        // The backend's original HTTPS link is still valid in its web client.
+        // A server hint added by this desktop/mobile frontend is optional;
+        // without it the user explicitly chooses the current workspace.
         let server = link.query_pairs()
             .find(|(key, _)| key == "server")
             .map(|(_, value)| normalise_server_url(&value));
-        let Some(server) = server.filter(|value| {
-            url::Url::parse(value).ok().is_some_and(|url| {
-                matches!(url.scheme(), "https" | "http") && url.host_str().is_some()
-            })
-        }) else {
-            self.workspaces[index].runtime.store.error = Some("Link sem endereço do servidor".into());
+        let current = normalise_server_url(&self.workspaces[index].runtime.url);
+        let server = server.unwrap_or_else(|| current.clone());
+        if !url::Url::parse(&server).ok().is_some_and(|url| {
+            matches!(url.scheme(), "https" | "http") && url.host_str().is_some()
+        }) {
+            self.workspaces[index].runtime.store.error = Some("Endereço do servidor inválido".into());
             return;
-        };
+        }
         if token.is_empty() || token.len() > 256 {
             self.workspaces[index].runtime.store.error = Some("Token de recuperação inválido".into());
             return;
