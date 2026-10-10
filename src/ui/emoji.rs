@@ -539,17 +539,32 @@ pub fn picker(
     chosen
 }
 
-/// Grade de 8 colunas; o egui não tem um layout de grade fluida.
-fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usize)) {
-    // Narrow panes must not let a fixed eight-column grid escape the frame.
-    let columns = ((ui.available_width() + space::XXS) / (30.0 + space::XXS))
+/// Layout de células de 30 pt que ocupa toda a largura útil do popup.
+/// O número de colunas continua responsivo; a folga vai *entre* as células,
+/// não sobra como uma faixa vazia à direita das figurinhas/emojis.
+fn grid_geometry(width: f32) -> (usize, f32) {
+    const CELL: f32 = 30.0;
+    const MAX_COLUMNS: usize = 8;
+    let width = width.max(CELL);
+    let columns = ((width + space::XXS) / (CELL + space::XXS))
         .floor()
         .max(1.0)
-        .min(8.0) as usize;
+        .min(MAX_COLUMNS as f32) as usize;
+    let gap = if columns > 1 {
+        ((width - CELL * columns as f32) / (columns - 1) as f32).max(space::XXS)
+    } else {
+        0.0
+    };
+    (columns, gap)
+}
+
+/// Grade compartilhada pelos emojis Unicode e stickers do servidor.
+fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usize)) {
+    let (columns, gap) = grid_geometry(ui.available_width());
     let mut index = 0;
     while index < count {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = space::XXS;
+            ui.spacing_mut().item_spacing.x = gap;
             for _ in 0..columns {
                 if index >= count {
                     break;
@@ -558,6 +573,30 @@ fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usi
                 index += 1;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod picker_grid_tests {
+    use super::*;
+
+    #[test]
+    fn grid_spreads_eight_icons_across_the_available_width() {
+        let (columns, gap) = grid_geometry(300.0);
+        assert_eq!(columns, 8);
+        assert!(gap > space::XXS);
+        let occupied = columns as f32 * 30.0 + (columns - 1) as f32 * gap;
+        assert!((occupied - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn grid_adapts_to_narrower_scroll_viewport() {
+        for width in [120.0, 180.0, 230.0, 280.0, 300.0] {
+            let (columns, gap) = grid_geometry(width);
+            assert!((1..=8).contains(&columns));
+            let occupied = columns as f32 * 30.0 + (columns - 1) as f32 * gap;
+            assert!((occupied - width).abs() < 0.01, "width {width}");
+        }
     }
 }
 
