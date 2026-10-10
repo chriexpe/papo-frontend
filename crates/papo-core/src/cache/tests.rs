@@ -70,6 +70,7 @@ fn outgoing(local_id: &str, owner: &str, content: &str, state: OutgoingState) ->
         owner_user_id: owner.to_owned(),
         channel_id: "geral".to_owned(),
         content: content.to_owned(),
+        embeds: Vec::new(),
         reply_to: None,
         notify_reply: false,
         created_at: now_millis(),
@@ -1215,6 +1216,35 @@ fn local_ids_are_unique() {
     for _ in 0..1_000 {
         assert!(ids.insert(new_local_id()), "local id duplicado");
     }
+}
+
+#[test]
+fn custom_embeds_survive_outbox_reopen_with_exact_payload() {
+    let temp = TempDb::new("outgoing-embeds");
+    let mut item = outgoing("local-embed", "user-a", "", OutgoingState::Queued);
+    item.embeds.push(crate::api::models::CustomEmbedInput {
+        title: "Test".into(),
+        description: "Texto rico".into(),
+        url: "https://example.org".into(),
+        image: Some(crate::api::models::CustomEmbedMediaInput {
+            url: "https://example.org/img.png".into(),
+            mime_type: "image/png".into(),
+        }),
+        fields: vec![crate::api::models::CustomEmbedFieldInput {
+            name: "Key".into(),
+            value: "Value".into(),
+            inline: true,
+        }],
+        ..Default::default()
+    });
+    {
+        let db = open(&temp);
+        db.enqueue_outgoing("srv", item.clone()).expect("enqueue");
+    }
+    let db = open(&temp);
+    let restored = db.load_outgoing("srv", "user-a").expect("reopen");
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].embeds, item.embeds);
 }
 
 #[test]

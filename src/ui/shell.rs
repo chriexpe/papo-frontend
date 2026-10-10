@@ -121,12 +121,14 @@ fn toast_max_width(ctx: &egui::Context) -> f32 {
 #[derive(Debug, Clone)]
 pub enum ChatAction {
     Send {
+        embeds: Vec<crate::api::models::CustomEmbedInput>,
         content: String,
         reply_to: Option<String>,
         notify_reply: bool,
         attachments: Vec<Upload>,
     },
     Edit {
+        embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
         message_id: String,
         content: String,
     },
@@ -697,10 +699,13 @@ pub struct Stash {
     pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
+    pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
+    pub custom_embed_editor: bool,
     pub replying: Option<String>,
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
     pub editing_mentions: Vec<MentionBinding>,
+    pub editing_custom_embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
     /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
@@ -721,10 +726,13 @@ impl Stash {
             composer_caret_pending: None,
             drafts: DraftBook::default(),
             attachments: Vec::new(),
+            custom_embeds: Vec::new(),
+            custom_embed_editor: false,
             replying: None,
             reply_notify: true,
             editing: None,
             editing_mentions: Vec::new(),
+            editing_custom_embeds: None,
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
@@ -747,10 +755,13 @@ impl Stash {
         );
         std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
+        std::mem::swap(&mut self.custom_embeds, &mut ui.custom_embeds);
+        std::mem::swap(&mut self.custom_embed_editor, &mut ui.custom_embed_editor);
         std::mem::swap(&mut self.replying, &mut ui.replying);
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
         std::mem::swap(&mut self.editing_mentions, &mut ui.editing_mentions);
+        std::mem::swap(&mut self.editing_custom_embeds, &mut ui.editing_custom_embeds);
         std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
@@ -839,6 +850,9 @@ pub struct UiState {
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
     pub attachments: Vec<Upload>,
+    /// Embeds autorais, enviados com o mesmo envelope da mensagem.
+    pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
+    pub custom_embed_editor: bool,
     /// Mensagem sendo respondida.
     pub replying: Option<String>,
     /// Estado atual do @ desta resposta.
@@ -848,6 +862,7 @@ pub struct UiState {
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
     pub editing_mentions: Vec<MentionBinding>,
+    pub editing_custom_embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
     /// Só o primeiro quadro da edição pede foco ao TextEdit.
     pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
@@ -1025,11 +1040,14 @@ impl Default for UiState {
             webembed_occlusions: Vec::new(),
             webembed_blocked: false,
             attachments: Vec::new(),
+            custom_embeds: Vec::new(),
+            custom_embed_editor: false,
             replying: None,
             reply_notify: true,
             reply_notify_default: true,
             editing: None,
             editing_mentions: Vec::new(),
+            editing_custom_embeds: None,
             edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
@@ -1198,6 +1216,8 @@ pub fn draw(
         }
         state.media.saved = None;
         state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         state.close_popup();
@@ -5875,6 +5895,31 @@ fn message_body(
             *buffer = buffer_copy;
             reanchor_mentions(buffer, &mut state.editing_mentions);
 
+            if message
+                .previews
+                .iter()
+                .any(|preview| preview.source_type.as_deref() == Some("custom"))
+                && message
+                    .previews
+                    .iter()
+                    .filter(|preview| preview.source_type.as_deref() == Some("custom"))
+                    .all(|preview| {
+                        crate::api::models::CustomEmbedInput::from_media_free_preview(preview)
+                            .is_some()
+                    })
+                && ui.button("Editar embeds personalizados").clicked()
+            {
+                state.editing_custom_embeds = Some(
+                    message
+                        .previews
+                        .iter()
+                        .filter_map(
+                            crate::api::models::CustomEmbedInput::from_media_free_preview,
+                        )
+                        .collect(),
+                );
+                state.custom_embed_editor = true;
+            }
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
                 ui.label(
@@ -5885,20 +5930,30 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.editing_mentions.clear();
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
             {
                 state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
-                if content.is_empty() {
+                let embeds = state.editing_custom_embeds.take();
+                state.custom_embed_editor = false;
+                if content.is_empty()
+                    && embeds.as_ref().is_none_or(|entries| entries.is_empty())
+                    && !message.previews.iter().any(|preview| preview.source_type.as_deref() == Some("custom"))
+                {
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Delete(id));
                 } else {
                     let content = store.encode_mentions(&content, &state.editing_mentions);
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Edit {
+                        embeds,
                         message_id: id,
                         content,
                     });
@@ -6310,12 +6365,7 @@ fn link_previews(
 ) {
     for preview in previews {
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
-        if preview.source_type.as_deref() == Some("custom")
-            && preview.image.is_none()
-            && preview.thumbnail.is_none()
-            && preview.video.is_none()
-            && preview.embed_url.is_none()
-        {
+        if preview.source_type.as_deref() == Some("custom") {
             custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
             continue;
         }
@@ -6477,6 +6527,28 @@ fn custom_embed_card(
                 ui.add_space(space::MD);
             }
             ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
+        }
+        // Rich custom embeds retain their structured author/title/fields instead
+        // of falling into the generic link-preview layout merely because they
+        // include an image. Media uses the existing authenticated embed cache.
+        if embed.image.is_some() || embed.thumbnail.is_some() {
+            let texture = if allow_network {
+                state.media.preview(embed)
+            } else {
+                state.media.loaded_preview(&embed.id)
+            }.and_then(|texture| texture.frame(ui.ctx())).cloned();
+            if let Some(texture) = texture {
+                let original = texture.size_vec2();
+                if original.x > 0.0 && original.y > 0.0 {
+                    let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
+                    let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
+                    ui.painter().image(
+                        texture.id(), rect,
+                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+            }
         }
         for field in &embed.fields {
             ui.add_space(space::SM);
@@ -7838,6 +7910,8 @@ fn hover_pill(
                     let (content, bindings) =
                         store.display_mentions_with_bindings(&message.content);
                     state.editing = Some((message.id.clone(), content));
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                     state.editing_mentions = bindings;
                     state.edit_focus_pending = true;
                 }
@@ -8338,6 +8412,8 @@ fn context_menu(
                 let (content, bindings) =
                     store.display_mentions_with_bindings(&message.content);
                 state.editing = Some((message.id.clone(), content));
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.editing_mentions = bindings;
                 state.edit_focus_pending = true;
             }
@@ -8628,13 +8704,18 @@ fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(store: &Store, state: &mut UiState) {
     let visible = state.composer.trim().to_owned();
-    if visible.is_empty() && state.attachments.is_empty() {
+    // An unfinished editor draft is not an embed; never turn a text-only
+    // message into an empty custom embed or enable an empty send button.
+    state.custom_embeds.retain(|embed| embed.has_content());
+    if visible.is_empty() && state.attachments.is_empty() && state.custom_embeds.is_empty() {
         return;
     }
+    state.custom_embed_editor = false;
     let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
     state.composer_mentions.clear();
     state.actions.push(ChatAction::Send {
+        embeds: std::mem::take(&mut state.custom_embeds),
         content,
         reply_to: state.replying.take(),
         notify_reply: state.reply_notify,
@@ -8924,6 +9005,132 @@ mod composer_picker_tests {
     }
 }
 
+fn custom_embed_form_field(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    label: &str,
+    value: &mut String,
+    multiline: bool,
+) {
+    ui.label(RichText::new(label).font(text::footnote()).color(t.label_secondary));
+    #[cfg(target_os = "android")]
+    {
+        let height = if multiline { 82.0 } else { 34.0 };
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), height), Sense::click(),
+        );
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
+        crate::platform::native_field::show(
+            ui.ctx(), key, value, rect.shrink2(Vec2::splat(space::XS)),
+            "", if multiline {
+                crate::platform::native_field::Mode::Multiline
+            } else {
+                crate::platform::native_field::Mode::Text
+            },
+            0, false, t.label, t.label_tertiary, text::body().size,
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = t;
+        let _ = key;
+        if multiline {
+            ui.add(egui::TextEdit::multiline(value).desired_rows(3));
+        } else {
+            ui.text_edit_singleline(value);
+        }
+    }
+}
+
+/// Editor tipado, reutilizado para os dois sistemas de texto (egui/Android).
+/// Nunca tenta reconstruir mídia privada dos embeds recebidos pelo backend.
+fn custom_embed_authoring(ui: &egui::Ui, state: &mut UiState, t: &Tokens) {
+    if !state.custom_embed_editor {
+        return;
+    }
+    let mut open = true;
+    let editing = state.editing.is_some() && state.editing_custom_embeds.is_some();
+    let embeddings = if editing {
+        state.editing_custom_embeds.as_mut().expect("edit draft")
+    } else {
+        &mut state.custom_embeds
+    };
+    egui::Window::new("Embeds personalizados")
+        .id(Id::new("custom-embed-authoring"))
+        .resizable(true)
+        .collapsible(false)
+        .default_width(400.0)
+        .frame(
+            Frame::new()
+                .fill(t.glass_opaque)
+                .stroke(Stroke::new(1.0, t.separator))
+                .corner_radius(CornerRadius::same(radius::SHEET)),
+        )
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            let mut removed = None;
+            let mut add_new = false;
+            egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                for (i, embed) in embeddings.iter_mut().enumerate() {
+                    ui.heading(format!("Embed {}", i + 1));
+                    let prefix = format!("embed-{i}");
+                    custom_embed_form_field(ui, t, &format!("{prefix}-title"), "Título", &mut embed.title, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-description"), "Descrição", &mut embed.description, true);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-url"), "URL do cartão", &mut embed.url, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-site"), "Site", &mut embed.site_name, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-color"), "Cor (#RRGGBB)", &mut embed.color, false);
+                    let author = embed.author.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author"), "Autor", &mut author.name, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author-url"), "Link do autor", &mut author.url, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author-icon"), "Ícone do autor (HTTPS)", &mut author.icon_url, false);
+                    if author.name.is_empty() && author.url.is_empty() && author.icon_url.is_empty() {
+                        embed.author = None;
+                    }
+                    let image = embed.image.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-image"), "Imagem (HTTPS)", &mut image.url, false);
+                    if image.url.is_empty() { embed.image = None; }
+                    let thumb = embed.thumbnail.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-thumbnail"), "Miniatura (HTTPS)", &mut thumb.url, false);
+                    if thumb.url.is_empty() { embed.thumbnail = None; }
+                    let video = embed.video.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-video"), "Vídeo direto (HTTPS)", &mut video.url, false);
+                    if !video.url.is_empty() {
+                        custom_embed_form_field(ui, t, &format!("{prefix}-video-mime"), "MIME do vídeo (ex.: video/mp4)", &mut video.mime_type, false);
+                    } else {
+                        embed.video = None;
+                    }
+                    let footer = embed.footer.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-footer"), "Rodapé", &mut footer.text, false);
+                    if footer.text.is_empty() { embed.footer = None; }
+                    let mut removed_field = None;
+                    for (j, field) in embed.fields.iter_mut().enumerate() {
+                        ui.separator();
+                        custom_embed_form_field(ui, t, &format!("{prefix}-field-{j}-name"), "Campo: nome", &mut field.name, false);
+                        custom_embed_form_field(ui, t, &format!("{prefix}-field-{j}-value"), "Campo: valor", &mut field.value, true);
+                        ui.checkbox(&mut field.inline, "Inline");
+                        if ui.button(format!("Remover campo {}", j + 1)).clicked() {
+                            removed_field = Some(j);
+                        }
+                    }
+                    if let Some(j) = removed_field { embed.fields.remove(j); }
+                    if embed.fields.len() < 25 && ui.button("+ Campo").clicked() {
+                        embed.fields.push(Default::default());
+                    }
+                    if ui.button("Remover este embed").clicked() {
+                        removed = Some(i);
+                    }
+                    ui.separator();
+                }
+            });
+            if let Some(i) = removed { embeddings.remove(i); }
+            if embeddings.len() < 10 && ui.button("+ Embed").clicked() { add_new = true; }
+            if add_new { embeddings.push(Default::default()); }
+            ui.label("Embeds serão enviados junto com a mensagem, pela fila normal.");
+        });
+    state.custom_embed_editor = open && (editing || !embeddings.is_empty());
+}
+
 fn composer(
     ui: &mut egui::Ui,
     store: &Store,
@@ -8953,6 +9160,7 @@ fn composer(
         egui::pos2(area.max.x - PILL_MARGIN, area.max.y - PILL_MARGIN),
     );
 
+    custom_embed_authoring(ui, state, t);
     typing_pill(ui, store, state, t, s, rect);
     pill_surface(ui, state, t, rect);
 
@@ -9287,7 +9495,7 @@ fn composer(
 
     // Botões do lado direito, de fora para dentro: enviar, gif, figurinha,
     // emoji.
-    let ready = !state.composer.trim().is_empty() || !state.attachments.is_empty();
+    let ready = !state.composer.trim().is_empty() || !state.attachments.is_empty() || !state.custom_embeds.is_empty();
     let mid = line.center().y;
     let send_rect = Rect::from_center_size(
         egui::pos2(line.max.x - space::MD - HIT_TARGET / 2.0, mid),
@@ -9307,6 +9515,16 @@ fn composer(
     );
 
     let opened = ui.input(|input| input.time);
+    let embed_rect = Rect::from_center_size(
+        egui::pos2(emoji_rect.center().x - HIT_TARGET - space::XXS, mid),
+        Vec2::splat(HIT_TARGET),
+    );
+    if inline_button(ui, t, embed_rect, "▣", "Embed", "custom-embed").clicked() {
+        if state.custom_embeds.is_empty() {
+            state.custom_embeds.push(Default::default());
+        }
+        state.custom_embed_editor = !state.custom_embed_editor;
+    }
     if inline_button(ui, t, emoji_rect, icon::SMILEY, s.emoji, "emoji").clicked() {
         state.gif_picker_opened = None;
         state.gif_picker_anchor = None;
@@ -9366,7 +9584,7 @@ fn composer(
     // O campo de texto ocupa o que sobrou entre a borda e os botões.
     let field = Rect::from_min_max(
         egui::pos2(line.min.x + space::MD, line.min.y),
-        egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
+        egui::pos2(embed_rect.min.x - space::XXS, line.max.y),
     );
 
     #[cfg(target_os = "android")]
@@ -9389,6 +9607,8 @@ fn composer(
         // Portanto ele encerra a edição. Se caiu no compositor, o foco é
         // transferido para ele logo abaixo.
         state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         crate::platform::native_text::dismiss();
