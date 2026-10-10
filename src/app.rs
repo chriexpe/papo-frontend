@@ -1528,7 +1528,7 @@ impl PapoApp {
 
     /// A recuperação é pública: o token vem do link, nunca da sessão.
     /// O link carrega o backend correto para não misturar instâncias.
-    fn recover_password(&mut self, ctx: &egui::Context) {
+    fn recover_password(&mut self) {
         let index = self.active;
         let form = &self.workspaces[index].form;
         let raw = form.reset_link.trim();
@@ -1559,8 +1559,13 @@ impl PapoApp {
             return;
         }
         let password = self.workspaces[index].form.reset_password.clone();
+        // Never redirect a password reset to an origin selected by an
+        // untrusted URL. The user must explicitly select/add that server first.
         if server != normalise_server_url(&self.workspaces[index].runtime.url) {
-            self.reopen(index, server, ctx);
+            self.workspaces[index].runtime.store.error = Some(format!(
+                "Este link pertence ao servidor {server}. Selecione esse servidor antes de continuar."
+            ));
+            return;
         }
         let ws = &mut self.workspaces[index];
         ws.form.reset_mode = true;
@@ -4175,7 +4180,7 @@ impl eframe::App for PapoApp {
                 match response.action {
                     AuthAction::SignIn => self.authenticate(false, &ctx),
                     AuthAction::Register => self.authenticate(true, &ctx),
-                    AuthAction::RecoverPassword => self.recover_password(&ctx),
+                    AuthAction::RecoverPassword => self.recover_password(),
                     AuthAction::UnlockServer => self.unlock_server(),
                     _ => {}
                 }
