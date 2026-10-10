@@ -452,6 +452,8 @@ pub struct Store {
     pub emojis: Vec<CustomEmoji>,
     emojis_fresh: bool,
     emojis_cached: bool,
+    server_icon_fresh: bool,
+    avatars_fresh: HashSet<String>,
     pub me: String,
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
@@ -551,6 +553,8 @@ impl Default for Store {
             emojis: Vec::new(),
             emojis_fresh: false,
             emojis_cached: false,
+            server_icon_fresh: false,
+            avatars_fresh: HashSet::new(),
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
@@ -1100,6 +1104,24 @@ impl Store {
         self.pending_cache.clear();
     }
 
+    /// Only restore images whose authoritative response has not arrived.
+    pub fn restore_cached_profile_images(
+        &mut self, images: crate::cache::CachedProfileImages,
+    ) {
+        if !self.server_icon_fresh {
+            if let Some(icon) = images.server_icon {
+                if let Some(server) = self.server.as_mut() {
+                    server.icon = Some(icon);
+                }
+            }
+        }
+        for (user_id, blob) in images.avatars {
+            if !self.avatars_fresh.contains(&user_id) {
+                self.avatars.insert(user_id, blob);
+            }
+        }
+    }
+
     pub fn restore_cached_emojis(&mut self, emojis: Vec<crate::cache::CachedEmoji>) {
         if self.emojis_fresh { return; }
         self.emojis_cached = true;
@@ -1153,6 +1175,10 @@ impl Store {
         self.emojis.clear();
         self.emojis_fresh = false;
         self.emojis_cached = false;
+        self.server_icon_fresh = false;
+        self.avatars_fresh.clear();
+        self.avatars.clear();
+        self.profiles.clear();
         self.cached_channels.clear();
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
@@ -2343,6 +2369,14 @@ impl Store {
             }
             Update::ConnectionViolation => self.notice = Some(Notice::ConnectionViolation),
             Update::Server(server) => {
+                let new_icon = server.as_ref().and_then(|server|
+                    server.icon_blob.clone().filter(|blob| !blob.is_empty())
+                );
+                self.server_icon_fresh = true;
+                let changed = self.server.as_ref().and_then(|s| s.icon.as_ref()) != new_icon.as_ref();
+                if changed {
+                    self.pending_cache.push(CacheOp::SetServerIcon(new_icon));
+                }
                 self.screen = match &server {
                     Some(_) => Screen::Chat,
                     None => Screen::NeedsServer,
@@ -2481,7 +2515,14 @@ impl Store {
                 let mut members_changed = false;
                 for profile in profiles {
                     let id = profile.id.clone();
-                    match profile.avatar_blob.clone().filter(|blob| !blob.is_empty()) {
+                    let avatar = profile.avatar_blob.clone().filter(|blob| !blob.is_empty());
+                    self.avatars_fresh.insert(id.clone());
+                    if self.avatars.get(&id) != avatar.as_ref() {
+                        self.pending_cache.push(CacheOp::SetAvatar {
+                            user_id: id.clone(), blob: avatar.clone(),
+                        });
+                    }
+                    match avatar {
                         Some(blob) => {
                             self.avatars.insert(id.clone(), blob);
                         }
