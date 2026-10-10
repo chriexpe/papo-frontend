@@ -1108,12 +1108,11 @@ impl Store {
     pub fn restore_cached_profile_images(
         &mut self, images: crate::cache::CachedProfileImages,
     ) {
-        if !self.server_icon_fresh {
-            if let Some(icon) = images.server_icon {
-                if let Some(server) = self.server.as_mut() {
-                    server.icon = Some(icon);
-                }
-            }
+        if !self.server_icon_fresh
+            && let Some(icon) = images.server_icon
+            && let Some(server) = self.server.as_mut()
+        {
+            server.icon = Some(icon);
         }
         for (user_id, blob) in images.avatars {
             if !self.avatars_fresh.contains(&user_id) {
