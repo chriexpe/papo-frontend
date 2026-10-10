@@ -182,6 +182,9 @@ pub struct SettingsState {
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
     /// tecla digitada.
     pub draft: Draft,
+    /// Quem tem acesso a cada canal, por pessoa. Só vive no app por ora: o
+    /// servidor ainda não guarda isso.
+    pub channel_people: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Default for SettingsState {
@@ -197,6 +200,7 @@ impl Default for SettingsState {
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
             draft: Draft::default(),
+            channel_people: std::collections::HashMap::new(),
         }
     }
 }
@@ -214,6 +218,11 @@ pub struct ChannelDraft {
     /// origem, para saber se mudou.
     pub parent: Option<String>,
     pub original_parent: Option<String>,
+    /// Cargos que têm acesso (ids) e como estavam ao abrir.
+    pub access_roles: Vec<String>,
+    pub original_access_roles: Vec<String>,
+    /// Pessoas com acesso: por enquanto só no app, até o servidor guardar.
+    pub people: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +244,9 @@ impl ChannelDraft {
             kind: "text".to_owned(),
             parent: None,
             original_parent: None,
+            access_roles: Vec::new(),
+            original_access_roles: Vec::new(),
+            people: Vec::new(),
         }
     }
 
@@ -256,6 +268,9 @@ impl ChannelDraft {
             },
             parent: channel.parent_id.clone(),
             original_parent: channel.parent_id.clone(),
+            access_roles: channel.permissions.iter().filter(|entry| entry.permissions.read_channel).map(|entry| entry.role_id.clone()).collect(),
+            original_access_roles: channel.permissions.iter().filter(|entry| entry.permissions.read_channel).map(|entry| entry.role_id.clone()).collect(),
+            people: Vec::new(),
         }
     }
 }
@@ -323,7 +338,9 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.mobile_page = true;
-        self.draft.channel = Some(ChannelDraft::edit(channel));
+        let mut editor = ChannelDraft::edit(channel);
+        editor.people = self.channel_people.get(&channel.id).cloned().unwrap_or_default();
+        self.draft.channel = Some(editor);
         self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
@@ -880,161 +897,6 @@ impl Rows<'_> {
     }
 
 
-    /// Campo de nome de canal com o mesmo seletor de emoji da conversa
-    /// embutido à esquerda. O emoji continua sendo texto do próprio nome:
-    /// Unicode entra literal e emoji do servidor entra como `:apelido:`.
-    fn channel_name_field(
-        &mut self,
-        label: &str,
-        editor: &mut ChannelDraft,
-        store: &Store,
-        media: &mut crate::media::MediaStore,
-        s: &Strings,
-    ) {
-        if self.tiled {
-            self.stack_next = true;
-        }
-        self.row(label, None, |ui, t| {
-            let width = ui.available_width();
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
-            ui.painter().rect(
-                rect,
-                CornerRadius::same(radius::FIELD),
-                t.fill_soft,
-                Stroke::new(1.0, t.separator),
-                egui::StrokeKind::Inside,
-            );
-
-            let picker_rect =
-                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
-            let picker = ui.interact(
-                picker_rect,
-                ui.id().with((
-                    "settings-channel-name-emoji",
-                    editor.id.as_deref().unwrap_or("new"),
-                )),
-                Sense::click(),
-            );
-            if picker.hovered() {
-                ui.painter().rect_filled(
-                    picker_rect.shrink(2.0),
-                    CornerRadius::same(radius::CONTROL),
-                    t.fill_medium,
-                );
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            ui.painter().text(
-                picker_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::SMILEY,
-                text::icon(14.0),
-                if picker.hovered() {
-                    t.label
-                } else {
-                    t.label_tertiary
-                },
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
-                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let field_rect = Rect::from_min_max(
-                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
-                rect.max,
-            );
-            let edit_id = ui.id().with((
-                "settings-channel-name",
-                editor.id.as_deref().unwrap_or("new"),
-            ));
-
-            #[cfg(target_os = "android")]
-            {
-                let key = format!("settings:{edit_id:?}");
-                let _ = crate::platform::native_field::show(
-                    ui.ctx(),
-                    &key,
-                    &mut editor.name,
-                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
-                    "",
-                    crate::platform::native_field::Mode::Text,
-                    32,
-                    false,
-                    t.label,
-                    t.label_tertiary,
-                    text::body().size,
-                );
-            }
-
-            #[cfg(not(target_os = "android"))]
-            {
-                let _ =
-                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut editor.name);
-                let response = ui.put(
-                    field_rect,
-                    egui::TextEdit::singleline(&mut editor.name)
-                        .id(edit_id)
-                        .char_limit(32)
-                        .font(text::body())
-                        .margin(egui::Margin::symmetric(
-                            space::MD as i8,
-                            space::XS as i8,
-                        )),
-                );
-                let _ = crate::platform::ime::sync_text_edit(
-                    ui.ctx(),
-                    edit_id,
-                    &mut editor.name,
-                    response.has_focus(),
-                    crate::platform::ime::Kind::Text,
-                );
-            }
-
-            let mut chosen = None;
-            egui::Popup::menu(&picker).show(|ui| {
-                ui.set_max_height(380.0);
-                chosen = super::emoji::picker(
-                    ui,
-                    t,
-                    s,
-                    store,
-                    media,
-                    &mut editor.emoji_query,
-                    &mut editor.emoji_group,
-                    false,
-                );
-                if chosen.is_some() {
-                    ui.close();
-                }
-            });
-
-            if let Some(chosen) = chosen {
-                let prefix = match chosen {
-                    crate::state::Emoji::Unicode(glyph) => glyph,
-                    crate::state::Emoji::Custom(id) => store
-                        .emojis
-                        .iter()
-                        .find(|custom| custom.id == id)
-                        .map(|custom| format!(":{}:", custom.name))
-                        .unwrap_or_default(),
-                };
-                if !prefix.is_empty() {
-                    let next = if editor.name.trim().is_empty() {
-                        format!("{prefix} ")
-                    } else {
-                        format!("{prefix} {}", editor.name.trim_start())
-                    };
-                    if next.chars().count() <= 32 {
-                        editor.name = next;
-                    }
-                }
-            }
-        });
-    }
 
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
@@ -1232,12 +1094,6 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
 }
 
 /// Controle segmentado: as opções lado a lado, uma acesa.
-/// Abas (Permissões / Membros / Aparência): sempre lado a lado, mesmo
-/// com rótulos longos — navegar não é escolher um valor.
-fn tabs<T: PartialEq + Copy>(ui: &mut egui::Ui, t: &Tokens, current: &mut T, options: &[(T, &str)]) -> bool {
-    segmented_inner(ui, t, current, options, true)
-}
-
 fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -1835,11 +1691,20 @@ fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings)
             rect.max.x - 12.0 - count_w - 8.0 - left,
         );
         if response.clicked() {
+            let people: Vec<String> = data
+                .store
+                .members
+                .iter()
+                .filter(|member| member.roles.iter().any(|id| id == &role.id))
+                .map(|member| member.id.clone())
+                .collect();
             data.roles.draft = Some(Draft {
                 id: Some(role.id.clone()),
                 name: role.name.clone(),
                 color: role.color.clone().unwrap_or_default(),
                 permissions: role.permissions,
+                original_people: people.clone(),
+                people,
             });
             data.roles.member_query.clear();
         }
@@ -1866,163 +1731,531 @@ fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings)
     ui.add_space(22.0);
 }
 
-fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
-    use super::roles::{RoleAction, Tab};
-    let Some(draft) = data.roles.draft.as_mut() else {
-        ui.add_space(space::LG);
-        ui.label(RichText::new(s.role_pick_hint).font(text::body()).color(t.label_tertiary));
-        return;
-    };
-    let members = data
-        .store
-        .members
-        .iter()
-        .filter(|m| draft.id.as_deref().is_some_and(|id| m.roles.iter().any(|r| r == id)))
-        .count();
-    let members_label = format!("{} · {members}", s.role_tab_members);
-    ui.add_space(space::SM);
-    let mut tab = data.roles.tab;
-    if tabs(
-        ui,
-        t,
-        &mut tab,
-        &[(Tab::Permissions, s.role_tab_permissions), (Tab::Members, &members_label), (Tab::Look, s.role_tab_look)],
-    ) {
-        data.roles.tab = tab;
-    }
+/// O campo do nome do canal, com o seletor de emoji embutido à esquerda.
+fn channel_name_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    editor: &mut ChannelDraft,
+    store: &Store,
+    media: &mut crate::media::MediaStore,
+    s: &Strings,
+) {
+            let width = ui.available_width();
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
 
-    match data.roles.tab {
-        Tab::Permissions => {
-            group(ui, t, |rows| {
-                for (label, value) in [
-                    (s.perm_send_attachment, &mut draft.permissions.send_attachment),
-                    (s.perm_manage_channels, &mut draft.permissions.manage_channels),
-                    (s.perm_pin_message, &mut draft.permissions.pin_message),
-                    (s.perm_everyone_message, &mut draft.permissions.everyone_message),
-                    (s.perm_ban_members, &mut draft.permissions.ban_members),
-                    (s.perm_manage_roles, &mut draft.permissions.manage_roles),
-                    (s.perm_manage_server, &mut draft.permissions.manage_server),
-                ] {
-                    rows.row(label, None, |ui, t| {
-                        switch(ui, t, value);
-                    });
+            let picker_rect =
+                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
+            let picker = ui.interact(
+                picker_rect,
+                ui.id().with((
+                    "settings-channel-name-emoji",
+                    editor.id.as_deref().unwrap_or("new"),
+                )),
+                Sense::click(),
+            );
+            if picker.hovered() {
+                ui.painter().rect_filled(
+                    picker_rect.shrink(2.0),
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_medium,
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter().text(
+                picker_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::SMILEY,
+                text::icon(14.0),
+                if picker.hovered() {
+                    t.label
+                } else {
+                    t.label_tertiary
+                },
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
+                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let field_rect = Rect::from_min_max(
+                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
+                rect.max,
+            );
+            let edit_id = ui.id().with((
+                "settings-channel-name",
+                editor.id.as_deref().unwrap_or("new"),
+            ));
+
+            #[cfg(target_os = "android")]
+            {
+                let key = format!("settings:{edit_id:?}");
+                let _ = crate::platform::native_field::show(
+                    ui.ctx(),
+                    &key,
+                    &mut editor.name,
+                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
+                    "",
+                    crate::platform::native_field::Mode::Text,
+                    32,
+                    false,
+                    t.label,
+                    t.label_tertiary,
+                    text::body().size,
+                );
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut editor.name);
+                let response = ui.put(
+                    field_rect,
+                    egui::TextEdit::singleline(&mut editor.name)
+                        .id(edit_id)
+                        .char_limit(32)
+                        .font(text::body())
+                        .margin(egui::Margin::symmetric(
+                            space::MD as i8,
+                            space::XS as i8,
+                        )),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &mut editor.name,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Text,
+                );
+            }
+
+            let mut chosen = None;
+            egui::Popup::menu(&picker).show(|ui| {
+                ui.set_max_height(380.0);
+                chosen = super::emoji::picker(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    media,
+                    &mut editor.emoji_query,
+                    &mut editor.emoji_group,
+                    false,
+                );
+                if chosen.is_some() {
+                    ui.close();
                 }
             });
+
+            if let Some(chosen) = chosen {
+                let prefix = match chosen {
+                    crate::state::Emoji::Unicode(glyph) => glyph,
+                    crate::state::Emoji::Custom(id) => store
+                        .emojis
+                        .iter()
+                        .find(|custom| custom.id == id)
+                        .map(|custom| format!(":{}:", custom.name))
+                        .unwrap_or_default(),
+                };
+                if !prefix.is_empty() {
+                    let next = if editor.name.trim().is_empty() {
+                        format!("{prefix} ")
+                    } else {
+                        format!("{prefix} {}", editor.name.trim_start())
+                    };
+                    if next.chars().count() <= 32 {
+                        editor.name = next;
+                    }
+                }
+            }
+}
+
+// ---------------------------------------------------------------------------
+// Peças dos editores (cartão com seções, fichas, seletor com busca)
+// ---------------------------------------------------------------------------
+
+/// O cartão do editor: seções separadas por fio, cada uma com a legenda em
+/// versalete em cima.
+struct CardUi<'a> {
+    ui: &'a mut egui::Ui,
+    t: Tokens,
+    first: bool,
+    width: f32,
+}
+
+impl CardUi<'_> {
+    fn section(&mut self, caption: &str, contents: impl FnOnce(&mut egui::Ui)) {
+        let t = self.t;
+        if !self.first {
+            let y = self.ui.cursor().min.y;
+            let left = self.ui.max_rect().min.x;
+            self.ui.painter().line_segment(
+                [egui::pos2(left, y), egui::pos2(left + self.width, y)],
+                Stroke::new(0.5, t.separator),
+            );
         }
-        Tab::Look => {
-            group(ui, t, |rows| {
-                rows.field(s.role_name, &mut draft.name, 32, false);
-                rows.row(s.role_color, None, |ui, _| {
-                    let mut picked = crate::api::models::parse_hex_color(&draft.color).unwrap_or([128, 128, 128]);
-                    if ui.color_edit_button_srgb(&mut picked).changed() {
-                        draft.color = format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);
+        self.first = false;
+        self.ui.add_space(12.0);
+        let inner = self.width - 36.0;
+        self.ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                ui.set_width(inner);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if !caption.is_empty() {
+                    ui.label(RichText::new(caption.to_uppercase()).font(px(10.0, "semibold")).color(t.label_tertiary));
+                    ui.add_space(6.0);
+                }
+                contents(ui);
+            });
+        });
+        self.ui.add_space(14.0);
+    }
+}
+
+fn sheet_card(ui: &mut egui::Ui, t: &Tokens, build: impl FnOnce(&mut CardUi)) {
+    let width = fit_width(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().min.y;
+    let left = ui.max_rect().min.x;
+    {
+        let mut card = CardUi { ui, t: *t, first: true, width };
+        build(&mut card);
+    }
+    let bottom = ui.cursor().min.y;
+    ui.painter().set(
+        slot,
+        egui::epaint::RectShape::new(
+            Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + width, bottom)),
+            CornerRadius::same(10),
+            t.card,
+            Stroke::new(0.5, t.separator),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// Um item de seletor: nome, bolinha de cor ou foto com iniciais.
+struct PickItem {
+    label: String,
+    dot: Option<egui::Color32>,
+    avatar: Option<(String, egui::Color32)>,
+}
+
+fn mix(base: egui::Color32, over: egui::Color32, amount: f32) -> egui::Color32 {
+    let a = |x: u8, y: u8| (x as f32 * (1.0 - amount) + y as f32 * amount).round() as u8;
+    egui::Color32::from_rgb(a(base.r(), over.r()), a(base.g(), over.g()), a(base.b(), over.b()))
+}
+
+fn mini_avatar(painter: &egui::Painter, center: egui::Pos2, radius: f32, initials: &str, color: egui::Color32) {
+    painter.circle_filled(center, radius, color);
+    painter.text(center, egui::Align2::CENTER_CENTER, initials, px(radius * 1.0, "semibold"), egui::Color32::WHITE);
+}
+
+/// Uma ficha: cargo (com a cor), pessoa (com a foto) ou "Todos". Devolve
+/// `true` quando o X é clicado.
+fn chip(ui: &mut egui::Ui, t: &Tokens, id: &str, label: &str, dot: Option<egui::Color32>, avatar: Option<(&str, egui::Color32)>, removable: bool) -> bool {
+    let font = px(12.0, "regular");
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), t.label).size().x;
+    let lead = if dot.is_some() { 14.0 } else if avatar.is_some() { 22.0 } else { 0.0 };
+    let width = 10.0 + lead + text_w + if removable { 6.0 + 16.0 + 4.0 } else { 10.0 };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
+    let fill = match dot {
+        Some(color) => mix(t.card, color, 0.20),
+        None => t.fill_soft,
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
+    let mut x = rect.min.x + 10.0;
+    if let Some(color) = dot {
+        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.0, color);
+        x += 14.0;
+    }
+    if let Some((initials, color)) = avatar {
+        mini_avatar(ui.painter(), egui::pos2(x + 6.0, rect.center().y), 8.0, initials, color);
+        x += 22.0;
+    }
+    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, label, font, t.label);
+    if !removable {
+        return false;
+    }
+    let cross = Rect::from_center_size(egui::pos2(rect.max.x - 4.0 - 8.0, rect.center().y), Vec2::splat(16.0));
+    let response = ui.interact(cross, egui::Id::new(("ficha-x", id)), Sense::click());
+    if response.hovered() {
+        ui.painter().circle_filled(cross.center(), 8.0, t.fill_medium);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(9.0), t.label_secondary);
+    response.clicked()
+}
+
+/// O botão "+ Cargo" / "+ Pessoa" que abre o seletor.
+fn add_chip(ui: &mut egui::Ui, t: &Tokens, label: &str) -> egui::Response {
+    let font = px(12.0, "regular");
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), t.label).size().x;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0 + 14.0 + text_w + 12.0, 24.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(12), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(egui::pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::PLUS, text::icon(11.0), t.accent);
+    ui.painter().text(egui::pos2(rect.min.x + 10.0 + 14.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font, t.accent);
+    response
+}
+
+/// O seletor com busca que abre do botão: devolve o índice escolhido.
+fn picker_menu(response: &egui::Response, t: &Tokens, placeholder: &str, empty: &str, items: &[PickItem]) -> Option<usize> {
+    let mut chosen = None;
+    let query_id = response.id.with("busca");
+    egui::Popup::menu(response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(240.0);
+            ui.set_max_width(240.0);
+            let mut query: String = ui.data_mut(|data| data.get_temp(query_id)).unwrap_or_default();
+            let search = ui.add(
+                egui::TextEdit::singleline(&mut query)
+                    .hint_text(placeholder)
+                    .desired_width(f32::INFINITY),
+            );
+            if !search.has_focus() && !search.lost_focus() {
+                search.request_focus();
+            }
+            ui.add_space(6.0);
+            let needle = query.trim().to_lowercase();
+            egui::ScrollArea::vertical().max_height(210.0).show(ui, |ui| {
+                let mut shown = 0;
+                for (index, item) in items.iter().enumerate() {
+                    if !needle.is_empty() && !item.label.to_lowercase().contains(&needle) {
+                        continue;
+                    }
+                    shown += 1;
+                    let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+                    if row.hovered() {
+                        ui.painter().rect_filled(rect, CornerRadius::same(8), t.fill_soft);
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let mut x = rect.min.x + 8.0;
+                    if let Some(color) = item.dot {
+                        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.0, color);
+                        x += 16.0;
+                    }
+                    if let Some((initials, color)) = &item.avatar {
+                        mini_avatar(ui.painter(), egui::pos2(x + 10.0, rect.center().y), 10.0, initials, *color);
+                        x += 28.0;
+                    }
+                    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, &item.label, px(13.0, "regular"), t.label);
+                    if row.clicked() {
+                        chosen = Some(index);
+                        ui.close();
+                    }
+                }
+                if shown == 0 {
+                    ui.label(RichText::new(empty).font(px(12.0, "regular")).color(t.label_tertiary));
+                }
+            });
+            ui.data_mut(|data| {
+                if chosen.is_some() {
+                    data.remove::<String>(query_id);
+                } else {
+                    data.insert_temp(query_id, query);
+                }
+            });
+        });
+    chosen
+}
+
+fn person_tint(store: &Store, member: &crate::state::Member, accent: egui::Color32) -> egui::Color32 {
+    let _ = store;
+    member.role_color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(accent)
+}
+
+/// A pastilha de salvar dos editores: o motivo quando ainda não dá.
+fn save_pill(ctx: &egui::Context, id: &str, t: &Tokens, translucent: bool, s: &Strings, label: &str, blocked: Option<&str>) -> Option<bool> {
+    let mut result = None;
+    let pill_id = egui::Id::new(id);
+    crate::ui::widgets::floating_pill(ctx, pill_id, t, translucent, space::LG, 420.0, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            ui.label(RichText::new(blocked.unwrap_or(s.unsaved_changes)).font(text::body()).color(t.label_secondary));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if blocked.is_none() && row_button(ui, t, label, Emphasis::Primary) {
+                    result = Some(true);
+                }
+                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                    result = Some(false);
+                }
+            });
+        });
+    });
+    ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+    result
+}
+
+/// O cargo aberto, como no mock: nome, cor, permissões, pessoas e excluir,
+/// num cartão só; a pastilha confirma.
+fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
+    use super::roles::RoleAction;
+    let ctx = ui.ctx().clone();
+    let translucent = *data.translucency;
+    let Some(draft) = data.roles.draft.as_mut() else {
+        return;
+    };
+    let stored = draft.id.as_ref().and_then(|id| data.store.roles.iter().find(|role| &role.id == id));
+    let dirty = match stored {
+        Some(role) => {
+            draft.name.trim() != role.name.trim()
+                || draft.color.to_lowercase() != role.color.clone().unwrap_or_default().to_lowercase()
+                || draft.permissions != role.permissions
+                || draft.people != draft.original_people
+        }
+        None => true,
+    };
+    section(ui, t, s.edit_role_title);
+    const COLORS: [&str; 8] = ["#ff6a3d", "#f5b50a", "#30b350", "#38bdf8", "#0a84ff", "#7c5cff", "#ff4f8b", "#9a9aa2"];
+    let mut delete = false;
+    let store = data.store;
+    sheet_card(ui, t, |card| {
+        card.section(s.role_name, |ui| {
+            ui.horizontal(|ui| {
+                let color = crate::api::models::parse_hex_color(&draft.color)
+                    .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                    .unwrap_or(t.label_tertiary);
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 7.0, color);
+                ui.add_space(4.0);
+                crate::ui::profile::inline_field(ui, t, "cargo-nome", &mut draft.name, s.role_name, px(13.0, "regular"), t.label, 32, (1, 1));
+            });
+        });
+        card.section(s.role_color, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(10.0);
+                for hex in COLORS {
+                    let color = crate::api::models::parse_hex_color(hex)
+                        .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                        .unwrap_or(t.label_tertiary);
+                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                    ui.painter().circle_filled(rect.center(), 12.0, color);
+                    let chosen = draft.color.eq_ignore_ascii_case(hex);
+                    if chosen {
+                        ui.painter().circle_stroke(rect.center(), 15.0, Stroke::new(2.0, t.accent));
+                    }
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        draft.color = hex.to_owned();
+                    }
+                }
+            });
+        });
+        card.section(s.role_tab_permissions, |ui| {
+            let list = [
+                (s.perm_manage_server, &mut draft.permissions.manage_server),
+                (s.perm_manage_channels, &mut draft.permissions.manage_channels),
+                (s.perm_manage_roles, &mut draft.permissions.manage_roles),
+                (s.perm_ban_members, &mut draft.permissions.ban_members),
+                (s.perm_pin_message, &mut draft.permissions.pin_message),
+                (s.perm_everyone_message, &mut draft.permissions.everyone_message),
+                (s.perm_send_attachment, &mut draft.permissions.send_attachment),
+            ];
+            let width = ui.available_width();
+            let count = list.len();
+            for (index, (label, value)) in list.into_iter().enumerate() {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 38.0), Sense::hover());
+                ui.painter().text(egui::pos2(rect.min.x, rect.center().y), egui::Align2::LEFT_CENTER, label, px(13.0, "medium"), t.label);
+                let slot = Rect::from_min_size(egui::pos2(rect.max.x - SWITCH_W, rect.center().y - SWITCH_H / 2.0), Vec2::new(SWITCH_W, SWITCH_H));
+                let mut child = ui.new_child(UiBuilder::new().max_rect(slot));
+                switch(&mut child, t, value);
+                if index + 1 < count {
+                    ui.painter().line_segment([egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.max.y)], Stroke::new(0.5, t.separator));
+                }
+            }
+        });
+        if draft.id.is_some() {
+            card.section(s.people_caption, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                    if draft.people.is_empty() {
+                        ui.label(RichText::new(s.nobody_yet).font(px(12.0, "regular")).color(t.label_secondary));
+                    }
+                    let mut remove = None;
+                    for id in &draft.people {
+                        if let Some(member) = store.member(id) {
+                            let tint = person_tint(store, member, t.accent);
+                            if chip(ui, t, &format!("cargo-pessoa-{id}"), &member.name, None, Some((&member.initials(), tint)), true) {
+                                remove = Some(id.clone());
+                            }
+                        }
+                    }
+                    if let Some(id) = remove {
+                        draft.people.retain(|x| *x != id);
+                    }
+                    let button = add_chip(ui, t, s.add_person);
+                    let candidates: Vec<&crate::state::Member> = store.members.iter().filter(|m| !draft.people.contains(&m.id)).collect();
+                    let items: Vec<PickItem> = candidates
+                        .iter()
+                        .map(|m| PickItem { label: m.name.clone(), dot: None, avatar: Some((m.initials(), person_tint(store, m, t.accent))) })
+                        .collect();
+                    if let Some(index) = picker_menu(&button, t, s.search_person, s.nothing_to_add, &items) {
+                        draft.people.push(candidates[index].id.clone());
                     }
                 });
             });
-        }
-        Tab::Members => {
-            let Some(role_id) = draft.id.clone() else {
-                ui.add_space(space::MD);
-                ui.label(RichText::new(s.role_members_hint).font(text::footnote()).color(t.label_tertiary));
-                return;
-            };
-            ui.add_space(space::MD);
-            // Busca por apelido, @usuário ou ID.
-            let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
-            ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
-            ui.painter().text(
-                egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::MAGNIFYING_GLASS,
-                text::icon(12.0),
-                t.label_tertiary,
-            );
-            let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 18.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
-            let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
-            child.add_sized(
-                inner.size(),
-                egui::TextEdit::singleline(&mut data.roles.member_query)
-                    .hint_text(s.role_member_search)
-                    .frame(egui::Frame::NONE)
-                    .font(text::callout())
-                    .vertical_align(Align::Center),
-            );
-            ui.add_space(space::SM);
-
-            let query = data.roles.member_query.trim().trim_start_matches('@').to_lowercase();
-            let role_colors: std::collections::HashMap<String, egui::Color32> = data
-                .store
-                .roles
-                .iter()
-                .filter_map(|role| {
-                    let color = role.color.as_deref().and_then(crate::api::models::parse_hex_color)?;
-                    Some((role.id.clone(), egui::Color32::from_rgb(color[0], color[1], color[2])))
-                })
-                .collect();
-            let mut shown = 0;
-            for member in &data.store.members {
-                let matches = query.is_empty()
-                    || member.name.to_lowercase().contains(&query)
-                    || member.username.to_lowercase().contains(&query)
-                    || member.id.to_lowercase().starts_with(&query);
-                if !matches {
-                    continue;
+            card.section("", |ui| {
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.delete_role.to_owned(), px(12.0, "regular"), t.danger).size().x + 24.0, 26.0), Sense::click());
+                ui.painter().rect_filled(rect, CornerRadius::same(6), t.danger.gamma_multiply(if response.hovered() { 0.24 } else { 0.14 }));
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, s.delete_role, px(12.0, "regular"), t.danger);
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                shown += 1;
-                let has = member.roles.iter().any(|id| id == &role_id);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
-                let face = Rect::from_center_size(egui::pos2(rect.min.x + space::MD + 13.0, rect.center().y), Vec2::splat(26.0));
-                let tint = member.role_color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.accent);
-                ui.painter().circle_filled(face.center(), 13.0, tint.gamma_multiply(0.30));
-                ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, member.initials(), egui::FontId::new(10.0, egui::FontFamily::Name("semibold".into())), tint);
-                // Chave à direita; pontinhos dos outros cargos antes dela.
-                let toggle = Rect::from_min_size(egui::pos2(rect.max.x - space::SM - SWITCH_W, rect.center().y - SWITCH_H / 2.0), Vec2::new(SWITCH_W, SWITCH_H));
-                let mut dots_x = toggle.min.x - space::MD;
-                for other in member.roles.iter().filter(|id| *id != &role_id).take(4) {
-                    if let Some(color) = role_colors.get(other) {
-                        ui.painter().circle_filled(egui::pos2(dots_x - 4.0, rect.center().y), 4.0, *color);
-                        dots_x -= 11.0;
-                    }
+                if response.clicked() {
+                    delete = true;
                 }
-                let text_left = face.max.x + space::MD;
-                let text_right = dots_x - space::SM;
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y - 7.0), egui::Align2::LEFT_CENTER, &member.name, text::body(), t.label, text_right - text_left);
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y + 8.0), egui::Align2::LEFT_CENTER, &format!("@{}", member.username), text::footnote(), t.label_tertiary, text_right - text_left);
-                let mut on = has;
-                let mut slot = ui.new_child(UiBuilder::new().max_rect(toggle));
-                if switch(&mut slot, t, &mut on) {
-                    actions.push(SettingsAction::Role(if has {
-                        RoleAction::Unassign { user_id: member.id.clone(), role_id: role_id.clone() }
-                    } else {
-                        RoleAction::Assign { user_id: member.id.clone(), role_id: role_id.clone() }
-                    }));
-                }
-            }
-            if shown == 0 {
-                ui.label(RichText::new(s.no_results).font(text::body()).color(t.label_secondary));
-            }
-            ui.add_space(space::SM);
-            ui.add(egui::Label::new(RichText::new(s.role_members_toggle_hint).font(text::footnote()).color(t.label_tertiary)).wrap());
-            return;
-        }
-    }
-
-    // Salvar e apagar valem para as abas que editam o cargo.
-    ui.add_space(space::SM);
-    let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
-    actions_row(ui, |ui| {
-        if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
-            actions.push(SettingsAction::Role(match draft.id.clone() {
-                Some(role_id) => RoleAction::Update { role_id, name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
-                None => RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
-            }));
-        }
-        if let Some(role_id) = draft.id.clone()
-            && row_button(ui, t, s.delete_role, Emphasis::Danger)
-        {
-            actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+            });
         }
     });
+
+    let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
+    if delete {
+        if let Some(role_id) = draft.id.clone() {
+            actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+        }
+        return;
+    }
+    if dirty {
+        let blocked = draft.name.trim().is_empty().then_some(s.role_name_required);
+        match save_pill(&ctx, "cargo-salvar", t, translucent, s, s.save_role, blocked) {
+            Some(true) => {
+                match draft.id.clone() {
+                    Some(role_id) => {
+                        actions.push(SettingsAction::Role(RoleAction::Update { role_id: role_id.clone(), name: draft.name.trim().to_owned(), color, permissions: draft.permissions }));
+                        for user_id in draft.people.iter().filter(|id| !draft.original_people.contains(id)) {
+                            actions.push(SettingsAction::Role(RoleAction::Assign { user_id: user_id.clone(), role_id: role_id.clone() }));
+                        }
+                        for user_id in draft.original_people.iter().filter(|id| !draft.people.contains(id)) {
+                            actions.push(SettingsAction::Role(RoleAction::Unassign { user_id: user_id.clone(), role_id: role_id.clone() }));
+                        }
+                        draft.original_people = draft.people.clone();
+                    }
+                    None => actions.push(SettingsAction::Role(RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions })),
+                }
+            }
+            Some(false) => data.roles.draft = None,
+            None => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4429,98 +4662,131 @@ fn server_pane(
             let mut confirmed_delete: Option<String> = None;
 
             if let Some(editor) = draft.channel.as_mut() {
-                section(
-                    ui,
-                    t,
-                    if editor.id.is_some() {
-                        s.edit_channel_title
-                    } else {
-                        s.create_channel
-                    },
-                );
-                group(ui, t, |rows| {
-                    rows.channel_name_field(
-                        s.channel_name,
-                        editor,
-                        data.store,
-                        data.media,
-                        s,
-                    );
-
-                    rows.row(s.channel_kind, None, |ui, t| {
-                        if editor.id.is_some() {
-                            let kind = match editor.kind.as_str() {
-                                "voice" => s.channel_kind_voice,
-                                "category" => s.channel_kind_category,
-                                _ => s.channel_kind_text,
+                let ctx = ui.ctx().clone();
+                let translucent = *data.translucency;
+                let store = data.store;
+                let existing = editor.id.clone();
+                section(ui, t, if existing.is_some() { s.edit_channel_title } else { s.create_channel });
+                let mut finish: Option<bool> = None;
+                sheet_card(ui, t, |card| {
+                    card.section(s.role_name, |ui| {
+                        channel_name_input(ui, t, editor, store, data.media, s);
+                    });
+                    card.section(s.channel_kind, |ui| {
+                        let locked = existing.is_some();
+                        ui.add_enabled_ui(!locked, |ui| {
+                            let mut kind: &'static str = match editor.kind.as_str() {
+                                "voice" => "voice",
+                                "category" => "category",
+                                _ => "text",
                             };
-                            ui.label(
-                                RichText::new(kind)
-                                    .font(text::body())
-                                    .color(t.label_secondary),
-                            );
-                        } else {
-                            for (value, label) in [
-                                ("text", s.channel_kind_text),
-                                ("voice", s.channel_kind_voice),
-                                ("category", s.channel_kind_category),
-                            ] {
-                                let selected = editor.kind == value;
-                                if ui.add(egui::Button::selectable(selected, label)).clicked() {
-                                    editor.kind = value.to_owned();
-                                }
+                            if segmented(ui, t, &mut kind, &[("text", s.channel_kind_text), ("voice", s.channel_kind_voice), ("category", s.channel_kind_category)]) {
+                                editor.kind = kind.to_owned();
                             }
+                        });
+                        if locked {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(s.channel_kind_locked).font(px(12.0, "regular")).color(t.label_secondary));
                         }
                     });
-
                     if editor.kind != "category" {
-                        rows.field(s.channel_topic, &mut editor.topic, 512, false);
+                        card.section(s.channel_topic, |ui| {
+                            crate::ui::profile::inline_field(ui, t, "canal-topico", &mut editor.topic, s.channel_topic_hint, px(13.0, "regular"), t.label, 512, (1, 3));
+                        });
                     }
-
-                    // Trocar de categoria: só de canal que já existe, porque a
-                    // criação não aceita categoria. Aplica ao salvar.
-                    if editor.id.is_some() && editor.kind != "category" {
-                        rows.row(s.channel_category, None, |ui, _| {
+                    if existing.is_some() && editor.kind != "category" {
+                        card.section(s.channel_category, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                if ui
-                                    .add(egui::Button::selectable(editor.parent.is_none(), s.no_category))
-                                    .clicked()
-                                {
-                                    editor.parent = None;
-                                }
-                                for category in channels.iter().filter(|c| c.kind == crate::state::ChannelKind::Category) {
-                                    let selected = editor.parent.as_deref() == Some(category.id.as_str());
-                                    if ui.add(egui::Button::selectable(selected, &category.name)).clicked() {
-                                        editor.parent = Some(category.id.clone());
+                                ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                                let mut options: Vec<(Option<String>, String)> = vec![(None, s.no_category.to_owned())];
+                                options.extend(channels.iter().filter(|c| c.kind == crate::state::ChannelKind::Category).map(|c| (Some(c.id.clone()), c.name.clone())));
+                                for (value, label) in options {
+                                    let selected = editor.parent == value;
+                                    let font = px(12.0, "regular");
+                                    let text_w = ui.painter().layout_no_wrap(label.clone(), font.clone(), t.label).size().x;
+                                    let (rect, response) = ui.allocate_exact_size(Vec2::new(text_w + 22.0, 24.0), Sense::click());
+                                    let fill = if selected { t.accent.gamma_multiply(0.16) } else if response.hovered() { t.fill_medium } else { t.fill_soft };
+                                    ui.painter().rect(rect, CornerRadius::same(12), fill, if selected { Stroke::new(1.0, t.accent) } else { Stroke::NONE }, egui::StrokeKind::Inside);
+                                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, &label, font, if selected { t.accent } else { t.label });
+                                    if response.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
+                                    if response.clicked() {
+                                        editor.parent = value;
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    if existing.is_some() && editor.kind != "category" {
+                        card.section(s.who_access, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                                // "Todos" é o que o canal tem até alguém ser adicionado.
+                                if editor.access_roles.is_empty() && editor.people.is_empty() {
+                                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.everyone_chip.to_owned(), px(12.0, "regular"), t.accent).size().x + 34.0, 24.0), Sense::hover());
+                                    ui.painter().rect_filled(rect, CornerRadius::same(12), t.accent.gamma_multiply(0.16));
+                                    ui.painter().text(egui::pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::GLOBE, text::icon(12.0), t.accent);
+                                    ui.painter().text(egui::pos2(rect.min.x + 26.0, rect.center().y), egui::Align2::LEFT_CENTER, s.everyone_chip, px(12.0, "regular"), t.accent);
+                                }
+                                let mut drop_role = None;
+                                for id in &editor.access_roles {
+                                    if let Some(role) = store.roles.iter().find(|role| &role.id == id) {
+                                        let color = role.color.as_deref().and_then(crate::api::models::parse_hex_color).map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.label_tertiary);
+                                        if chip(ui, t, &format!("canal-cargo-{id}"), &role.name, Some(color), None, true) {
+                                            drop_role = Some(id.clone());
+                                        }
+                                    }
+                                }
+                                if let Some(id) = drop_role {
+                                    editor.access_roles.retain(|x| *x != id);
+                                }
+                                let mut drop_person = None;
+                                for id in &editor.people {
+                                    if let Some(member) = store.member(id) {
+                                        let tint = person_tint(store, member, t.accent);
+                                        if chip(ui, t, &format!("canal-pessoa-{id}"), &member.name, None, Some((&member.initials(), tint)), true) {
+                                            drop_person = Some(id.clone());
+                                        }
+                                    }
+                                }
+                                if let Some(id) = drop_person {
+                                    editor.people.retain(|x| *x != id);
+                                }
+                                let role_button = add_chip(ui, t, s.add_role);
+                                let free_roles: Vec<&crate::api::models::Role> = store.roles.iter().filter(|role| !editor.access_roles.contains(&role.id)).collect();
+                                let items: Vec<PickItem> = free_roles
+                                    .iter()
+                                    .map(|role| PickItem {
+                                        label: role.name.clone(),
+                                        dot: Some(role.color.as_deref().and_then(crate::api::models::parse_hex_color).map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.label_tertiary)),
+                                        avatar: None,
+                                    })
+                                    .collect();
+                                if let Some(index) = picker_menu(&role_button, t, s.search_role, s.nothing_to_add, &items) {
+                                    editor.access_roles.push(free_roles[index].id.clone());
+                                }
+                                let person_button = add_chip(ui, t, s.add_person);
+                                let free_people: Vec<&crate::state::Member> = store.members.iter().filter(|m| !editor.people.contains(&m.id)).collect();
+                                let items: Vec<PickItem> = free_people
+                                    .iter()
+                                    .map(|m| PickItem { label: m.name.clone(), dot: None, avatar: Some((m.initials(), person_tint(store, m, t.accent))) })
+                                    .collect();
+                                if let Some(index) = picker_menu(&person_button, t, s.search_person, s.nothing_to_add, &items) {
+                                    editor.people.push(free_people[index].id.clone());
                                 }
                             });
                         });
                     }
                 });
 
-                ui.add_space(space::SM);
-                actions_row(ui, |ui| {
-                    if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                        close_editor = true;
-                    }
-                    let ready = !editor.name.trim().is_empty();
-                    if ready
-                        && row_button(
-                            ui,
-                            t,
-                            if editor.id.is_some() {
-                                s.save
-                            } else {
-                                s.create_channel
-                            },
-                            Emphasis::Primary,
-                        )
-                    {
+                let blocked = editor.name.trim().is_empty().then_some(s.channel_name_required);
+                let label = if existing.is_some() { s.save_channel } else { s.create_channel };
+                match save_pill(&ctx, "canal-salvar", t, translucent, s, label, blocked) {
+                    Some(true) => {
                         let name = editor.name.trim().to_owned();
-                        let topic = (editor.kind != "category")
-                            .then(|| editor.topic.trim().to_owned());
-                        match editor.id.clone() {
+                        let topic = (editor.kind != "category").then(|| editor.topic.trim().to_owned());
+                        match existing.clone() {
                             Some(channel_id) => {
                                 if editor.parent != editor.original_parent
                                     && let Some(channel) = channels.iter().find(|c| c.id == channel_id)
@@ -4532,11 +4798,26 @@ fn server_pane(
                                         parent_id: Some(editor.parent.clone().unwrap_or_default()),
                                     }));
                                 }
-                                actions.push(SettingsAction::Chat(ChatAction::UpdateChannel {
-                                    channel_id,
-                                    name,
-                                    topic,
-                                }));
+                                for role_id in editor.access_roles.iter().filter(|id| !editor.original_access_roles.contains(id)) {
+                                    actions.push(SettingsAction::Chat(ChatAction::SetChannelPermissions {
+                                        channel_id: channel_id.clone(),
+                                        role_id: role_id.clone(),
+                                        permissions: crate::api::models::ChannelPermissions {
+                                            read_channel: true,
+                                            send_messages: true,
+                                            delete_messages: false,
+                                            connect_voice: true,
+                                        },
+                                    }));
+                                }
+                                for role_id in editor.original_access_roles.iter().filter(|id| !editor.access_roles.contains(id)) {
+                                    actions.push(SettingsAction::Chat(ChatAction::RemoveChannelRolePermission {
+                                        channel_id: channel_id.clone(),
+                                        role_id: role_id.clone(),
+                                    }));
+                                }
+                                state.channel_people.insert(channel_id.clone(), editor.people.clone());
+                                actions.push(SettingsAction::Chat(ChatAction::UpdateChannel { channel_id, name, topic }));
                             }
                             None => {
                                 actions.push(SettingsAction::Chat(ChatAction::CreateChannel {
@@ -4546,152 +4827,15 @@ fn server_pane(
                                 }));
                             }
                         }
-                        close_editor = true;
+                        finish = Some(true);
                     }
-                });
+                    Some(false) => finish = Some(false),
+                    None => {}
+                }
+                if finish.is_some() {
+                    close_editor = true;
+                }
                 ui.add_space(space::LG);
-            }
-
-            // Overrides por cargo pertencem ao canal existente. Canal recém-criado
-            // só ganha regras depois que o backend lhe deu um id.
-            if let Some((channel_id, channel_kind)) = draft
-                .channel
-                .as_ref()
-                .and_then(|editor| editor.id.clone().map(|id| (id, editor.kind.clone())))
-                && let Some(channel) = channels.iter().find(|channel| channel.id == channel_id)
-            {
-                    section(ui, t, s.channel_permissions);
-
-                    if channel.permissions.is_empty() {
-                        group(ui, t, |rows| {
-                            rows.row(
-                                s.channel_permissions_open,
-                                Some(s.channel_permissions_open_hint),
-                                |_, _| {},
-                            );
-                        });
-                        ui.add_space(space::SM);
-                    }
-
-                    if let Some(permission) = draft
-                        .channel_permission
-                        .as_mut()
-                        .filter(|permission| permission.channel_id == channel_id)
-                    {
-                        group(ui, t, |rows| {
-                            rows.row(&permission.role_name, None, |_, _| {});
-                            rows.row(s.perm_read_channel, None, |ui, t| {
-                                switch(ui, t, &mut permission.permissions.read_channel);
-                            });
-                            if channel_kind == "text" {
-                                rows.row(s.perm_send_messages, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.send_messages);
-                                });
-                                rows.row(s.perm_delete_messages, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.delete_messages);
-                                });
-                            }
-                            if channel_kind == "voice" {
-                                rows.row(s.perm_connect_voice, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.connect_voice);
-                                });
-                            }
-                        });
-                        ui.add_space(space::SM);
-                        let existing_override = channel
-                            .permissions
-                            .iter()
-                            .any(|entry| entry.role_id == permission.role_id);
-                        let mut cancel_permission = false;
-                        let mut save_permission = None;
-                        let mut remove_permission = None;
-                        actions_row(ui, |ui| {
-                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                cancel_permission = true;
-                            }
-                            if existing_override
-                                && row_button(
-                                    ui,
-                                    t,
-                                    s.channel_permission_remove,
-                                    Emphasis::Danger,
-                                )
-                            {
-                                remove_permission = Some((
-                                    permission.channel_id.clone(),
-                                    permission.role_id.clone(),
-                                ));
-                            }
-                            if row_button(ui, t, s.save, Emphasis::Primary) {
-                                save_permission = Some((
-                                    permission.channel_id.clone(),
-                                    permission.role_id.clone(),
-                                    permission.permissions,
-                                ));
-                            }
-                        });
-                        if cancel_permission {
-                            draft.channel_permission = None;
-                        }
-                        if let Some((channel_id, role_id)) = remove_permission {
-                            actions.push(SettingsAction::Chat(
-                                ChatAction::RemoveChannelRolePermission {
-                                    channel_id,
-                                    role_id,
-                                },
-                            ));
-                            draft.channel_permission = None;
-                        }
-                        if let Some((channel_id, role_id, permissions)) = save_permission {
-                            actions.push(SettingsAction::Chat(
-                                ChatAction::SetChannelPermissions {
-                                    channel_id,
-                                    role_id,
-                                    permissions,
-                                },
-                            ));
-                            draft.channel_permission = None;
-                        }
-                    } else {
-                        group(ui, t, |rows| {
-                            for entry in &channel.permissions {
-                                rows.row(&entry.role_name, None, |ui, t| {
-                                    if row_button(ui, t, s.edit, Emphasis::Quiet) {
-                                        draft.channel_permission = Some(ChannelPermissionDraft {
-                                            channel_id: channel_id.clone(),
-                                            role_id: entry.role_id.clone(),
-                                            role_name: entry.role_name.clone(),
-                                            permissions: entry.permissions,
-                                        });
-                                    }
-                                });
-                            }
-
-                            for role in data.store.roles.iter().filter(|role| {
-                                !channel
-                                    .permissions
-                                    .iter()
-                                    .any(|entry| entry.role_id == role.id)
-                            }) {
-                                rows.row(&role.name, None, |ui, t| {
-                                    if row_button(
-                                        ui,
-                                        t,
-                                        s.channel_permission_add_role,
-                                        Emphasis::Quiet,
-                                    ) {
-                                        draft.channel_permission = Some(ChannelPermissionDraft {
-                                            channel_id: channel_id.clone(),
-                                            role_id: role.id.clone(),
-                                            role_name: role.name.clone(),
-                                            permissions: Default::default(),
-                                        });
-                                    }
-                                });
-                            }
-                        });
-                    }
-                    ui.add_space(space::LG);
             }
 
             // Apagar pede o nome digitado: é o que separa "quis" de

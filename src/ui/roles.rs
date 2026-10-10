@@ -40,6 +40,9 @@ pub struct Draft {
     pub name: String,
     pub color: String,
     pub permissions: RolePermissions,
+    /// Quem tem o cargo (ids), no rascunho e como estava ao abrir.
+    pub people: Vec<String>,
+    pub original_people: Vec<String>,
 }
 
 /// Aba do cargo aberto.
