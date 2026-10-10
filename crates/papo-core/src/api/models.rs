@@ -864,7 +864,9 @@ impl CustomEmbedInput {
     pub fn has_content(&self) -> bool {
         !self.title.trim().is_empty() || !self.description.trim().is_empty()
             || !self.url.trim().is_empty() || !self.site_name.trim().is_empty()
-            || self.author.as_ref().is_some_and(|a| !a.name.trim().is_empty())
+            || self.author.as_ref().is_some_and(|a| !a.name.trim().is_empty()
+                || !a.url.trim().is_empty() || !a.icon_url.trim().is_empty())
+            || self.footer.as_ref().is_some_and(|f| !f.text.trim().is_empty())
             || self.thumbnail.is_some() || self.image.is_some() || self.video.is_some()
             || !self.fields.is_empty()
     }
