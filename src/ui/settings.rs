@@ -1373,9 +1373,9 @@ const SHEET_W: f32 = 720.0;
 /// grande demais para 440, e uma folha enorme numa tela alta vira janela.
 const SHEET_H_MIN: f32 = 440.0;
 const SHEET_H_MAX: f32 = 640.0;
-const RAIL_W: f32 = 176.0;
+const RAIL_W: f32 = 232.0;
 /// Altura de um item da coluna de painéis.
-const RAIL_ENTRY_H: f32 = 32.0;
+const RAIL_ENTRY_H: f32 = 46.0;
 const HEADER_H: f32 = 52.0;
 
 /// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
@@ -1531,7 +1531,7 @@ pub fn sheet(
 
             let rail_rect =
                 Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
-            rail(ui, state, data.store, t, s, rail_rect, surface);
+            rail(ui, state, data, t, s, rail_rect, surface);
             ui.painter().line_segment(
                 [
                     egui::pos2(rail_rect.max.x, body.min.y + space::SM),
@@ -2590,11 +2590,9 @@ fn footnote(ui: &mut egui::Ui, t: &Tokens, note: &str) {
     });
 }
 
-/// Lista dos ajustes do usuário.
-fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
-    use egui_phosphor::regular as icon;
-    search_field(ui, t, s, &mut state.mobile_query);
-
+/// A linha de resumo de cada painel do usuário: a mesma na lista do celular
+/// e na coluna do desktop.
+fn app_summaries(data: &Context<'_>, s: &Strings) -> Vec<(AppPane, String)> {
     let theme = match *data.theme {
         crate::ui::theme::ThemePref::System => s.theme_system,
         crate::ui::theme::ThemePref::Light => s.theme_light,
@@ -2620,14 +2618,32 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
     let count = data.store.devices.len().max(1);
     let devices = format!("{count} {}", if count == 1 { s.sum_device } else { s.sum_devices });
     let presence_summary = rich_presence_source_label(data.rich_presence_snapshot.source.clone(), s).to_owned();
+    vec![
+        (AppPane::Appearance, appearance),
+        (AppPane::Activity, presence_summary),
+        (AppPane::Alerts, alerts),
+        (AppPane::Language, data.lang.endonym().to_owned()),
+        (AppPane::Files, files),
+        (AppPane::Sessions, devices),
+        (AppPane::Diagnostics, s.sum_diagnostics.to_owned()),
+    ]
+}
+
+/// Lista dos ajustes do usuário.
+fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    use egui_phosphor::regular as icon;
+    search_field(ui, t, s, &mut state.mobile_query);
+
+    let summaries = app_summaries(data, s);
+    let summary = |pane: AppPane| summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.clone()).unwrap_or_default();
     let rows: Vec<(AppPane, Entry<'_>)> = vec![
-        (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: appearance }),
-        (AppPane::Activity, Entry { glyph: icon::GAME_CONTROLLER, title: AppPane::Activity.title(s), summary: presence_summary }),
-        (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: alerts }),
-        (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: data.lang.endonym().to_owned() }),
-        (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: files }),
-        (AppPane::Sessions, Entry { glyph: icon::DEVICES, title: AppPane::Sessions.title(s), summary: devices }),
-        (AppPane::Diagnostics, Entry { glyph: icon::PULSE, title: AppPane::Diagnostics.title(s), summary: s.sum_diagnostics.to_owned() }),
+        (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: summary(AppPane::Appearance) }),
+        (AppPane::Activity, Entry { glyph: icon::GAME_CONTROLLER, title: AppPane::Activity.title(s), summary: summary(AppPane::Activity) }),
+        (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: summary(AppPane::Alerts) }),
+        (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: summary(AppPane::Language) }),
+        (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: summary(AppPane::Files) }),
+        (AppPane::Sessions, Entry { glyph: icon::DEVICES, title: AppPane::Sessions.title(s), summary: summary(AppPane::Sessions) }),
+        (AppPane::Diagnostics, Entry { glyph: icon::PULSE, title: AppPane::Diagnostics.title(s), summary: summary(AppPane::Diagnostics) }),
     ];
 
     let mut open = None;
@@ -2856,12 +2872,14 @@ fn header(
 fn rail(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
-    store: &Store,
+    data: &mut Context<'_>,
     t: &Tokens,
     s: &Strings,
     rect: Rect,
     surface: Surface,
 ) {
+    let store = data.store;
+    let summaries = app_summaries(data, s);
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
@@ -2895,44 +2913,81 @@ fn rail(
             }
             let query = state.mobile_query.trim().to_lowercase();
             let shown = |title: &str| query.is_empty() || title.to_lowercase().contains(&query);
-            let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, active: bool| -> bool {
-                let (slot, response) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), RAIL_ENTRY_H),
-                    Sense::click(),
-                );
+            // Cada item: bolinha com o ícone (acesa no painel aberto), o nome
+            // e, embaixo, o resumo do que está valendo.
+            let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, summary: Option<&str>, active: bool| -> bool {
+                let height = if summary.is_some() { RAIL_ENTRY_H } else { 36.0 };
+                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
                 if active {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        t.accent.gamma_multiply(0.16),
-                    );
+                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.accent.gamma_multiply(0.16));
                 } else if response.hovered() {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        t.fill_soft,
-                    );
+                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.fill_soft);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let ink = if active { t.accent } else { t.label_secondary };
+                let badge = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 14.0, slot.center().y), Vec2::splat(28.0));
+                ui.painter().circle_filled(badge.center(), 14.0, if active { t.accent } else { t.fill_medium });
                 ui.painter().text(
-                    egui::pos2(slot.min.x + space::MD + 7.0, slot.center().y),
+                    badge.center(),
                     egui::Align2::CENTER_CENTER,
                     glyph,
                     text::icon(14.0),
-                    if active { t.accent } else { t.label_tertiary },
+                    if active { t.accent_label } else { t.label },
                 );
-                crate::ui::widgets::text_fit(
-                    ui.painter(),
-                    egui::pos2(slot.min.x + space::MD + 22.0, slot.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    if active { text::headline() } else { text::body() },
-                    ink,
-                    slot.max.x - space::SM - (slot.min.x + space::MD + 22.0),
-                );
+                let left = badge.max.x + space::MD;
+                let room = slot.max.x - space::SM - left;
+                let ink = if active { t.accent } else { t.label };
+                match summary {
+                    Some(summary) => {
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, label, text::body(), ink, room);
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 8.0), egui::Align2::LEFT_CENTER, summary, text::footnote(), t.label_tertiary, room);
+                    }
+                    None => {
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y), egui::Align2::LEFT_CENTER, label, text::body(), ink, room);
+                    }
+                }
                 response.clicked()
             };
+
+            // Você no topo (Conta): a foto, o apelido e o que cabe em "Conta".
+            if surface == Surface::App && query.is_empty() {
+                let me = store.member(&store.me);
+                let tint = me
+                    .and_then(|member| member.role_color)
+                    .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                    .unwrap_or(t.accent);
+                let initials = me.map(|member| member.initials()).unwrap_or_default();
+                let ctx = ui.ctx().clone();
+                let face = data
+                    .media
+                    .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                let active = state.app_pane == AppPane::Account;
+                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::click());
+                if active {
+                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.accent.gamma_multiply(0.16));
+                } else if response.hovered() {
+                    ui.painter().rect_filled(slot, CornerRadius::same(radius::CONTROL), t.fill_soft);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let avatar = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 20.0, slot.center().y), Vec2::splat(40.0));
+                match face {
+                    Some(texture) => crate::ui::widgets::round_photo(ui.painter(), avatar, texture, egui::Color32::WHITE),
+                    None => {
+                        ui.painter().circle_filled(avatar.center(), 20.0, tint.gamma_multiply(0.30));
+                        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), tint);
+                    }
+                }
+                let left = avatar.max.x + space::MD;
+                let room = slot.max.x - space::SM - left;
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &store.my_name, text::headline(), if active { t.accent } else { t.label }, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, s.sum_account, text::footnote(), t.label_tertiary, room);
+                if response.clicked() {
+                    state.app_pane = AppPane::Account;
+                    state.draft.loaded_account = false;
+                }
+                ui.add_space(space::SM);
+            }
 
             // A coluna rola: com a busca, a lista de ajustes pode passar da
             // altura da folha.
@@ -2944,10 +2999,13 @@ fn rail(
                 match surface {
                     Surface::App => {
                         for pane in AppPane::ALL {
-                            if !shown(pane.title(s)) {
+                            // Conta mora no cartão do topo; com busca ela
+                            // volta à lista como qualquer painel.
+                            if (pane == AppPane::Account && query.is_empty()) || !shown(pane.title(s)) {
                                 continue;
                             }
-                            if entry(ui, pane.glyph(), pane.title(s), state.app_pane == pane) {
+                            let summary = summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.as_str()).or((pane == AppPane::Account).then_some(s.sum_account));
+                            if entry(ui, pane.glyph(), pane.title(s), summary, state.app_pane == pane) {
                                 state.app_pane = pane;
                             }
                         }
@@ -2957,7 +3015,7 @@ fn rail(
                             if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
                                 continue;
                             }
-                            if entry(ui, pane.glyph(), pane.title(s), state.server_pane == pane) {
+                            if entry(ui, pane.glyph(), pane.title(s), None, state.server_pane == pane) {
                                 state.server_pane = pane;
                             }
                         }
@@ -2985,7 +3043,7 @@ fn rail(
                         ui.add_space(space::XS);
                     }
                     for (app, server, glyph, label) in hits {
-                        if entry(ui, glyph, label, false) {
+                        if entry(ui, glyph, label, None, false) {
                             if let Some(pane) = app {
                                 state.app_pane = pane;
                             }
