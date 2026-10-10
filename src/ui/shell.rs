@@ -3822,9 +3822,6 @@ fn channel_pill(
     } else {
         ui.layer_id()
     };
-    if topic_open {
-        claim_overlay_layer(ui.ctx(), layer, screen);
-    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
 
@@ -3925,6 +3922,15 @@ fn channel_pill(
         area.min + Vec2::splat(PILL_MARGIN),
         Vec2::new(width, PILL_HEIGHT + body),
     );
+    if topic_open {
+        if floating_surface_dismissed(ui.ctx(), rect, None, None) {
+            state.panel = None;
+            ui.ctx().request_discard("channel topic closed before painting");
+            return Some(rect);
+        }
+        claim_overlay_layer(ui.ctx(), layer, rect);
+        ui.ctx().move_to_top(layer);
+    }
     pill_surface(ui, state, t, rect);
 
     let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
@@ -4029,34 +4035,7 @@ fn channel_pill(
             );
         }
 
-        // Mesma semântica modal leve de busca/fixadas: o clique fora fecha e
-        // não atravessa para a conversa.
-        let outside = [
-            Rect::from_min_max(screen.min, egui::pos2(rect.min.x, screen.max.y)),
-            Rect::from_min_max(
-                egui::pos2(rect.min.x, screen.min.y),
-                egui::pos2(screen.max.x, rect.min.y),
-            ),
-            Rect::from_min_max(
-                egui::pos2(rect.max.x, rect.min.y),
-                egui::pos2(screen.max.x, rect.max.y),
-            ),
-            Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y), screen.max),
-        ];
-        let dismiss = outside.into_iter().enumerate().any(|(index, zone)| {
-            zone.width() > 0.0
-                && zone.height() > 0.0
-                && ui
-                    .interact(
-                        zone,
-                        Id::new(("channel-topic-panel-dismiss", index)),
-                        Sense::click(),
-                    )
-                    .clicked()
-        });
-        if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-            state.panel = None;
-        }
+
     }
 
     Some(rect)
@@ -4153,12 +4132,13 @@ fn direct_message_pill(
     Some(rect)
 }
 
-/// Registra a camada de um painel aberto como `Area` do egui, cobrindo a
-/// tela (o painel é modal). Uma camada criada só com `new_child(layer_id)`
-/// não entra em `layer_id_at`: o egui então acha que o ponteiro está sobre a
-/// conversa, e a roda do mouse nunca chega aos ScrollAreas do painel
-/// (arrastar funcionava, porque esse teste é por widget). Precisa rodar
-/// antes do conteúdo, para o clique próprio da Area ficar embaixo dele.
+/// An elevated surface must be registered with egui as an Area: a
+/// `new_child(layer_id)` alone draws on that layer but does not participate
+/// in `layer_id_at` (mouse wheel and hover then reach the chat beneath).
+///
+/// Register the *actual interactive bounds*, never a fullscreen rectangle for
+/// a popover. Fullscreen ownership is reserved for genuinely blocking modals.
+/// Draw the surface's widgets afterwards on the same layer.
 pub(super) fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rect: Rect) {
     egui::Area::new(layer.id)
         .order(layer.order)
@@ -4168,6 +4148,26 @@ pub(super) fn claim_overlay_layer(ctx: &egui::Context, layer: egui::LayerId, rec
         .show(ctx, |ui| {
             ui.allocate_space(rect.size());
         });
+}
+
+/// Outside clicks are a dismissal policy, not an invisible fullscreen widget.
+/// Keeping them out of hit-testing lets nearby pills/sidebar controls hover
+/// normally; the floating surface itself still owns all input inside `rect`.
+fn floating_surface_dismissed(
+    ctx: &egui::Context,
+    rect: Rect,
+    anchor: Option<Rect>,
+    opened: Option<f64>,
+) -> bool {
+    ctx.input(|input| {
+        input.key_pressed(egui::Key::Escape)
+            || (input.pointer.any_click()
+                && opened.is_none_or(|since| input.time - since >= 0.001)
+                && input.pointer.interact_pos().is_some_and(|pos| {
+                    !rect.contains(pos)
+                        && !anchor.is_some_and(|anchor| anchor.contains(pos))
+                }))
+    })
 }
 
 /// Pastilha de ações do canal, no alto à direita.
@@ -4200,9 +4200,6 @@ fn actions_pill(
         ui.layer_id()
     };
     let screen = ui.ctx().content_rect();
-    if open.is_some() {
-        claim_overlay_layer(ui.ctx(), layer, screen);
-    }
     let mut top = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(screen));
     let ui = &mut top;
     let closed_width = actions_pill_closed_width(state.dm_surface);
@@ -4221,6 +4218,15 @@ fn actions_pill(
         egui::pos2(area.max.x - PILL_MARGIN - width, area.min.y + PILL_MARGIN),
         Vec2::new(width, PILL_HEIGHT + body),
     );
+    if open.is_some() {
+        if floating_surface_dismissed(ui.ctx(), rect, None, None) {
+            state.panel = None;
+            ui.ctx().request_discard("actions panel closed before painting");
+            return rect;
+        }
+        claim_overlay_layer(ui.ctx(), layer, rect);
+        ui.ctx().move_to_top(layer);
+    }
     pill_surface(ui, state, t, rect);
 
     let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
@@ -4291,33 +4297,6 @@ fn actions_pill(
         },
     );
 
-    // Quatro zonas cobrem tudo que não é a pastilha. Como vivem na camada
-    // Foreground, o clique não atravessa para mensagens/canais atrás.
-    let outside = [
-        Rect::from_min_max(screen.min, egui::pos2(rect.min.x, screen.max.y)),
-        Rect::from_min_max(
-            egui::pos2(rect.min.x, screen.min.y),
-            egui::pos2(screen.max.x, rect.min.y),
-        ),
-        Rect::from_min_max(
-            egui::pos2(rect.max.x, rect.min.y),
-            egui::pos2(screen.max.x, rect.max.y),
-        ),
-        Rect::from_min_max(
-            egui::pos2(rect.min.x, rect.max.y),
-            screen.max,
-        ),
-    ];
-    let dismiss = outside.into_iter().enumerate().any(|(index, zone)| {
-        zone.width() > 0.0
-            && zone.height() > 0.0
-            && ui
-                .interact(zone, Id::new(("actions-panel-dismiss", index)), Sense::click())
-                .clicked()
-    });
-    if dismiss || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-        state.panel = None;
-    }
 
     rect
 }
@@ -7883,10 +7862,8 @@ fn hover_pill(
 fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("papo-overlays"));
     let screen = ui.ctx().content_rect();
-    // Diálogo, menu e seletores são modais: a camada precisa existir como
-    // `Area` e ficar por cima de qualquer outra da conversa, senão o egui
-    // entrega o clique ao que estiver atrás (era o aviso de link que não
-    // respondia). Roda antes do conteúdo, para o clique da Area ficar embaixo.
+    // Only blocking dialogs claim the entire screen. Pickers and context
+    // menus claim their own bounds when their geometry is known below.
     if modal_layer_wanted(state) {
         claim_overlay_layer(ui.ctx(), layer, screen);
         ui.ctx().move_to_top(layer);
@@ -7944,10 +7921,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
 /// Algum diálogo ou popup desenhado em `overlays` está aberto e deve receber
 /// os toques no lugar da conversa.
 fn modal_layer_wanted(state: &UiState) -> bool {
-    state.external_link_prompt.is_some()
-        || state.popup.is_some()
-        || state.gif_picker_opened.is_some()
-        || state.link_viewer.is_some()
+    state.external_link_prompt.is_some() || state.link_viewer.is_some()
 }
 
 /// Cobre a conversa por inteiro (cartão de perfil, do servidor, visualizador,
@@ -8150,13 +8124,14 @@ fn emoji_popup(
     } else {
         emoji::popup_area(ui, popup.anchor, size)
     };
-    // An actual hit-test surface behind the picker keeps mouse presses away
-    // from messages, even in the frame's empty margins.
-    let _backdrop = ui.interact(
-        safe,
-        Id::new("emoji-picker-backdrop"),
-        Sense::click(),
-    );
+    if floating_surface_dismissed(ui.ctx(), rect, Some(popup.anchor), Some(popup.opened)) {
+        state.close_popup();
+        ui.ctx().request_discard("emoji picker closed before painting");
+        return;
+    }
+    claim_overlay_layer(ui.ctx(), ui.layer_id(), rect);
+    ui.ctx().move_to_top(ui.layer_id());
+
     let mut chosen = None;
     let mut query = std::mem::take(&mut state.emoji_query);
     let mut group = state.emoji_group;
@@ -8202,7 +8177,6 @@ fn emoji_popup(
             state.close_popup();
             return;
         }
-        dismiss_on_outside_click(ui, state, rect);
         return;
     }
 
@@ -8224,10 +8198,7 @@ fn emoji_popup(
             add: !mine,
         });
         state.close_popup();
-        return;
     }
-
-    dismiss_on_outside_click(ui, state, rect);
 }
 
 fn context_menu(
@@ -8294,6 +8265,13 @@ fn context_menu(
         popup.anchor
     };
     let rect = emoji::popup_area(ui, anchor, size);
+    if floating_surface_dismissed(ui.ctx(), rect, Some(popup.anchor), Some(popup.opened)) {
+        state.close_popup();
+        ui.ctx().request_discard("context menu closed before painting");
+        return;
+    }
+    claim_overlay_layer(ui.ctx(), ui.layer_id(), rect);
+    ui.ctx().move_to_top(ui.layer_id());
 
     ui.painter().rect(
         rect,
@@ -8388,10 +8366,7 @@ fn context_menu(
             MessageCommand::Delete => state.actions.push(ChatAction::Delete(message.id.clone())),
         }
         state.close_popup();
-        return;
     }
-
-    dismiss_on_outside_click(ui, state, rect);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8404,32 +8379,6 @@ enum MessageCommand {
     Pin,
     Download,
     Delete,
-}
-
-/// Clique fora ou Esc fecha o popup — menos o clique que acabou de abri-lo.
-fn dismiss_on_outside_click(ui: &egui::Ui, state: &mut UiState, rect: Rect) {
-    let (now, clicked, escape, pointer) = ui.ctx().input(|input| {
-        (
-            input.time,
-            input.pointer.any_click(),
-            input.key_pressed(egui::Key::Escape),
-            input.pointer.interact_pos(),
-        )
-    });
-    let just_opened = state
-        .popup
-        .as_ref()
-        .map(|popup| now - popup.opened < 0.001)
-        .unwrap_or(false);
-    let anchor = state.popup.as_ref().map(|popup| popup.anchor);
-    let outside = pointer
-        .map(|pos| {
-            !rect.contains(pos) && !anchor.map(|anchor| anchor.contains(pos)).unwrap_or(false)
-        })
-        .unwrap_or(false);
-    if escape || (clicked && outside && !just_opened) {
-        state.close_popup();
-    }
 }
 
 /// Avisos transitórios. A superfície mede o conteúdo e só cresce até o
@@ -9359,6 +9308,8 @@ fn composer(
 
     let opened = ui.input(|input| input.time);
     if inline_button(ui, t, emoji_rect, icon::SMILEY, s.emoji, "emoji").clicked() {
+        state.gif_picker_opened = None;
+        state.gif_picker_anchor = None;
         state.popup = Some(Popup {
             kind: PopupKind::ComposerEmoji,
             message_id: String::new(),
@@ -9368,6 +9319,8 @@ fn composer(
         });
     }
     if inline_button(ui, t, sticker_rect, icon::STICKER, s.sticker, "sticker").clicked() {
+        state.gif_picker_opened = None;
+        state.gif_picker_anchor = None;
         state.popup = Some(Popup {
             kind: PopupKind::ComposerSticker,
             message_id: String::new(),
@@ -9377,13 +9330,19 @@ fn composer(
         });
     }
     if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
-        state.gif_picker_anchor = Some(gif_rect);
-        state.gif_picker_opened = Some(opened);
-        if state.giphy.is_none() {
-            state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
-        }
-        if let Some(giphy) = state.giphy.as_mut() {
-            giphy.open_picker(&state.gif_locale);
+        state.popup = None;
+        if state.gif_picker_opened.is_some() {
+            state.gif_picker_opened = None;
+            state.gif_picker_anchor = None;
+        } else {
+            state.gif_picker_anchor = Some(gif_rect);
+            state.gif_picker_opened = Some(opened);
+            if state.giphy.is_none() {
+                state.giphy = Some(crate::giphy::Store::new(ui.ctx().clone()));
+            }
+            if let Some(giphy) = state.giphy.as_mut() {
+                giphy.open_picker(&state.gif_locale);
+            }
         }
     }
 
@@ -10701,6 +10660,52 @@ mod modal_layer_tests {
         // Registrada e no topo, o modal leva e a conversa não vê nada.
         assert_eq!(click(true), (false, true));
     }
+    // The same elevated surface must claim its exact footprint for hit-testing,
+    // not the entire viewport. This leaves adjacent composer pills interactive.
+    #[test]
+    fn bounded_popup_allows_chrome_hover_and_blocks_covered_chat() {
+        fn frame(ctx: &egui::Context, events: Vec<egui::Event>) -> (bool, bool) {
+            let mut controls_clicked = false;
+            let mut popup_clicked = false;
+            let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(400.0, 600.0));
+            let pop = Rect::from_min_size(egui::pos2(80.0, 80.0), Vec2::new(200.0, 220.0));
+            let chrome = Rect::from_min_size(egui::pos2(15.0, 540.0), Vec2::splat(40.0));
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::Area::new(Id::new("base-controls"))
+                    .order(egui::Order::Foreground)
+                    .fixed_pos(screen.min)
+                    .show(ui.ctx(), |base| {
+                        base.set_min_size(screen.size());
+                        controls_clicked = base.interact(chrome, Id::new("composer-icon"), Sense::click()).clicked()
+                            || base.interact(pop, Id::new("chat-under-popup"), Sense::click()).clicked();
+                    });
+                let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("popup"));
+                claim_overlay_layer(ui.ctx(), layer, pop);
+                ui.ctx().move_to_top(layer);
+                let elevated = ui.new_child(UiBuilder::new().layer_id(layer).max_rect(pop));
+                popup_clicked = elevated.interact(pop, Id::new("popup-content"), Sense::click()).clicked();
+            });
+            output.textures_delta.clear();
+            (controls_clicked, popup_clicked)
+        }
+        fn click(at: egui::Pos2) -> (bool, bool) {
+            let ctx = egui::Context::default();
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            for _ in 0..3 { frame(&ctx, vec![]); }
+            frame(&ctx, vec![egui::Event::PointerMoved(at)]);
+            frame(&ctx, vec![button(true)]);
+            frame(&ctx, vec![button(false)])
+        }
+        assert_eq!(click(egui::pos2(100.0, 100.0)), (false, true));
+        assert_eq!(click(egui::pos2(30.0, 555.0)), (true, false));
+    }
+
 }
 
 #[cfg(test)]

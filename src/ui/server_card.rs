@@ -98,6 +98,8 @@ pub fn draw(
     };
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("cartao-do-servidor"));
+    // Keep the blocking card above the sidebars even when they repaint.
+    ctx.move_to_top(layer);
     let mut close = back || ctx.input(|input| input.key_pressed(egui::Key::Escape));
     egui::Area::new(layer.id)
         .order(egui::Order::Foreground)
