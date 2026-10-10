@@ -121,12 +121,14 @@ fn toast_max_width(ctx: &egui::Context) -> f32 {
 #[derive(Debug, Clone)]
 pub enum ChatAction {
     Send {
+        embeds: Vec<crate::api::models::CustomEmbedInput>,
         content: String,
         reply_to: Option<String>,
         notify_reply: bool,
         attachments: Vec<Upload>,
     },
     Edit {
+        embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
         message_id: String,
         content: String,
     },
@@ -721,6 +723,8 @@ impl Stash {
             composer_caret_pending: None,
             drafts: DraftBook::default(),
             attachments: Vec::new(),
+            custom_embeds: Vec::new(),
+            custom_embed_editor: false,
             replying: None,
             reply_notify: true,
             editing: None,
@@ -839,6 +843,9 @@ pub struct UiState {
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
     pub attachments: Vec<Upload>,
+    /// Embeds autorais, enviados com o mesmo envelope da mensagem.
+    pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
+    pub custom_embed_editor: bool,
     /// Mensagem sendo respondida.
     pub replying: Option<String>,
     /// Estado atual do @ desta resposta.
@@ -5899,6 +5906,7 @@ fn message_body(
                     let content = store.encode_mentions(&content, &state.editing_mentions);
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Edit {
+                        embeds: None,
                         message_id: id,
                         content,
                     });
@@ -8645,13 +8653,14 @@ fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(store: &Store, state: &mut UiState) {
     let visible = state.composer.trim().to_owned();
-    if visible.is_empty() && state.attachments.is_empty() {
+    if visible.is_empty() && state.attachments.is_empty() && state.custom_embeds.is_empty() {
         return;
     }
     let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
     state.composer_mentions.clear();
     state.actions.push(ChatAction::Send {
+        embeds: std::mem::take(&mut state.custom_embeds),
         content,
         reply_to: state.replying.take(),
         notify_reply: state.reply_notify,
@@ -9304,7 +9313,7 @@ fn composer(
 
     // Botões do lado direito, de fora para dentro: enviar, gif, figurinha,
     // emoji.
-    let ready = !state.composer.trim().is_empty() || !state.attachments.is_empty();
+    let ready = !state.composer.trim().is_empty() || !state.attachments.is_empty() || !state.custom_embeds.is_empty();
     let mid = line.center().y;
     let send_rect = Rect::from_center_size(
         egui::pos2(line.max.x - space::MD - HIT_TARGET / 2.0, mid),
