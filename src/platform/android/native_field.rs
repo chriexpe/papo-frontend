@@ -22,6 +22,7 @@ pub enum Mode {
     Text,
     Password,
     Search,
+    Multiline,
 }
 
 impl Mode {
@@ -30,6 +31,7 @@ impl Mode {
             Self::Text => 0,
             Self::Password => 1,
             Self::Search => 2,
+            Self::Multiline => 3,
         }
     }
 }

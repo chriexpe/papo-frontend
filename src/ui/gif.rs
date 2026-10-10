@@ -559,6 +559,7 @@ fn draw_search(
 
 fn send_item(state: &mut UiState, _giphy: &mut crate::giphy::Store, item: GifItem) {
     state.actions.push(ChatAction::Send {
+        embeds: Vec::new(),
         content: crate::giphy::encode_message(&item.id),
         reply_to: state.replying.take(),
         notify_reply: state.reply_notify,
