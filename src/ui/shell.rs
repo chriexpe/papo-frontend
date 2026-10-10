@@ -8653,9 +8653,13 @@ fn reanchor_mentions(text: &str, bindings: &mut Vec<MentionBinding>) {
 /// Tira o texto da caixa e o coloca na fila de envio.
 fn submit(store: &Store, state: &mut UiState) {
     let visible = state.composer.trim().to_owned();
+    // An unfinished editor draft is not an embed; never turn a text-only
+    // message into an empty custom embed or enable an empty send button.
+    state.custom_embeds.retain(|embed| embed.has_content());
     if visible.is_empty() && state.attachments.is_empty() && state.custom_embeds.is_empty() {
         return;
     }
+    state.custom_embed_editor = false;
     let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
     state.composer_mentions.clear();
