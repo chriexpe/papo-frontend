@@ -6,7 +6,6 @@ use egui_phosphor::regular as icon;
 use crate::giphy::{BrowseMode, Category, GifItem};
 use crate::i18n::Strings;
 
-use super::emoji;
 use super::shell::{ChatAction, LinkViewer, UiState};
 use super::theme::{radius, space, text, Tokens};
 
@@ -44,11 +43,12 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
         PICKER_W.min((safe.width() - space::XL).max(260.0)),
         PICKER_H.min((safe.height() - space::XL).max(300.0)),
     );
-    let rect = if state.compact {
-        super::shell::composer_picker_rect(state, size)
-            .unwrap_or_else(|| emoji::popup_area(ui, anchor, size))
-    } else {
-        emoji::popup_area(ui, anchor, size)
+    let Some(rect) = super::shell::composer_picker_rect(state, size) else {
+        // No active chat/composer: do not resurrect an overlay from stale
+        // screen coordinates after changing tabs or channels.
+        state.gif_picker_opened = None;
+        state.gif_picker_anchor = None;
+        return;
     };
     // The picker, not the viewport, owns mouse input. Dismissal is based
     // on the raw outside click, so other composer controls remain responsive.

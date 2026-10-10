@@ -349,7 +349,7 @@ pub fn picker(
 ) -> Option<Emoji> {
     let mut chosen = None;
 
-    ui.set_width(300.0);
+    ui.set_width(ui.available_width().min(300.0));
     ui.add_space(space::XS);
 
     // Fila rápida: o que se usa quase sempre, a um clique.
@@ -446,8 +446,11 @@ pub fn picker(
         ui.add_space(space::XS);
     }
 
+    // The scroll viewport owns all remaining panel height. On shorter
+    // windows its items must scroll, not paint beyond the popup or into chat.
+    let scroll_height = ui.available_height().clamp(1.0, 260.0);
     egui::ScrollArea::vertical()
-        .max_height(260.0)
+        .max_height(scroll_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // Emojis do servidor primeiro: são a identidade da casa.
@@ -536,14 +539,33 @@ pub fn picker(
     chosen
 }
 
-/// Grade de 8 colunas; o egui não tem um layout de grade fluida.
+/// Layout de células de 30 pt que ocupa toda a largura útil do popup.
+/// O número de colunas continua responsivo; a folga vai *entre* as células,
+/// não sobra como uma faixa vazia à direita das figurinhas/emojis.
+fn grid_geometry(width: f32) -> (usize, f32) {
+    const CELL: f32 = 30.0;
+    const MAX_COLUMNS: usize = 8;
+    let width = width.max(CELL);
+    let columns = ((width + space::XXS) / (CELL + space::XXS))
+        .floor()
+        .max(1.0)
+        .min(MAX_COLUMNS as f32) as usize;
+    let gap = if columns > 1 {
+        ((width - CELL * columns as f32) / (columns - 1) as f32).max(space::XXS)
+    } else {
+        0.0
+    };
+    (columns, gap)
+}
+
+/// Grade compartilhada pelos emojis Unicode e stickers do servidor.
 fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usize)) {
-    const COLUMNS: usize = 8;
+    let (columns, gap) = grid_geometry(ui.available_width());
     let mut index = 0;
     while index < count {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = space::XXS;
-            for _ in 0..COLUMNS {
+            ui.spacing_mut().item_spacing.x = gap;
+            for _ in 0..columns {
                 if index >= count {
                     break;
                 }
@@ -551,6 +573,30 @@ fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usi
                 index += 1;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod picker_grid_tests {
+    use super::*;
+
+    #[test]
+    fn grid_spreads_eight_icons_across_the_available_width() {
+        let (columns, gap) = grid_geometry(300.0);
+        assert_eq!(columns, 8);
+        assert!(gap > space::XXS);
+        let occupied = columns as f32 * 30.0 + (columns - 1) as f32 * gap;
+        assert!((occupied - 300.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn grid_adapts_to_narrower_scroll_viewport() {
+        for width in [120.0, 180.0, 230.0, 280.0, 300.0] {
+            let (columns, gap) = grid_geometry(width);
+            assert!((1..=8).contains(&columns));
+            let occupied = columns as f32 * 30.0 + (columns - 1) as f32 * gap;
+            assert!((occupied - width).abs() < 0.01, "width {width}");
+        }
     }
 }
 
@@ -855,11 +901,15 @@ pub fn popup_frame(ui: &mut egui::Ui, t: &Tokens, rect: egui::Rect, build: impl 
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
+    let inner = rect.shrink(space::SM);
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink(space::SM))
+            .max_rect(inner)
             .layout(Layout::top_down(Align::Min)),
-        build,
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(inner));
+            build(ui);
+        },
     );
 }
 
