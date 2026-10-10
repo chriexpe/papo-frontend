@@ -1378,7 +1378,7 @@ const SHEET_H_MAX: f32 = 620.0;
 const RAIL_W: f32 = 276.0;
 /// Altura de um item da coluna de painéis.
 const RAIL_ENTRY_H: f32 = 46.0;
-const HEADER_H: f32 = 50.0;
+const HEADER_H: f32 = 54.0;
 
 /// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
 /// são só locais ela mesma já escreveu em `Settings`.
@@ -1572,7 +1572,14 @@ pub fn sheet(
         mobile(ctx, state, data, t, s, surface, screen, &mut actions);
         return actions;
     }
-    let sheet_t = sheet_tokens(t);
+    let mut sheet_t = sheet_tokens(t);
+    if *data.translucency {
+        // Um toque de vidro: a folha e a coluna deixam o fundo aparecer de leve.
+        let [r, g, b, _] = sheet_t.elevated_bg.to_array();
+        sheet_t.elevated_bg = egui::Color32::from_rgba_unmultiplied(r, g, b, 244);
+        let [r, g, b, _] = sheet_t.side.to_array();
+        sheet_t.side = egui::Color32::from_rgba_unmultiplied(r, g, b, 236);
+    }
     let t = &sheet_t;
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
@@ -1643,21 +1650,22 @@ pub fn sheet(
             ctx.data_mut(|data| data.insert_temp(egui::Id::new(PANE_RIGHT_KEY), main.max.x - 24.0));
             ui.scope_builder(
                 UiBuilder::new()
-                    .max_rect(pane_rect.shrink2(Vec2::new(24.0, 4.0)))
+                    .max_rect(pane_rect.shrink2(Vec2::new(0.0, 1.0)))
                     .layout(Layout::top_down(Align::Min)),
                 |ui| {
                     // Um rolamento por painel: trocar de painel começa do
-                    // topo (com a prévia), não onde o anterior parou.
+                    // topo (com a prévia), não onde o anterior parou. A barra
+                    // fica na borda da folha; o miolo é que tem a margem.
                     egui::ScrollArea::vertical()
                         .id_salt(("corpo-do-painel", title))
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.add_space(4.0);
-                            match surface {
-                                Surface::App => app_pane(ui, state, data, t, s, &mut actions),
-                                Surface::Server => server_pane(ui, state, data, t, s, &mut actions),
-                            }
-                            ui.add_space(28.0);
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin { left: 24, right: 24, top: 4, bottom: 28 })
+                                .show(ui, |ui| match surface {
+                                    Surface::App => app_pane(ui, state, data, t, s, &mut actions),
+                                    Surface::Server => server_pane(ui, state, data, t, s, &mut actions),
+                                });
                         });
                 },
             );
@@ -2975,7 +2983,7 @@ fn header(
     title: &str,
 ) {
     let head = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_H));
-    let mid = head.min.y + 16.0 + 11.0;
+    let mid = head.min.y + 16.0 + 13.0;
     ui.painter().text(
         egui::pos2(head.min.x + 24.0, mid),
         egui::Align2::LEFT_CENTER,
@@ -2984,7 +2992,7 @@ fn header(
         t.label,
     );
     const CLOSE: f32 = 26.0;
-    let close = Rect::from_center_size(egui::pos2(head.max.x - 24.0 - CLOSE / 2.0, mid), Vec2::splat(CLOSE));
+    let close = Rect::from_center_size(egui::pos2(head.max.x - 16.0 - CLOSE / 2.0, mid), Vec2::splat(CLOSE));
     let response = ui.interact(close, ui.id().with("fechar-ajustes"), Sense::click());
     ui.painter().circle_filled(close.center(), CLOSE / 2.0, if response.hovered() { t.fill_medium } else { t.fill_soft });
     if response.hovered() {
