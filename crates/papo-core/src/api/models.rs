@@ -825,6 +825,42 @@ pub struct CustomEmbedInput {
 }
 
 impl CustomEmbedInput {
+    /// A representação de leitura só pode ser convertida quando não contém
+    /// mídia privada: URL pública e media SHA não são equivalentes.
+    pub fn from_media_free_preview(preview: &LinkPreview) -> Option<Self> {
+        if preview.source_type.as_deref() != Some("custom")
+            || preview.thumbnail.is_some() || preview.image.is_some()
+            || preview.video.is_some()
+            || preview.author.as_ref().is_some_and(|a| a.media.is_some())
+            || preview.footer.as_ref().is_some_and(|f| f.icon.is_some())
+        {
+            return None;
+        }
+        Some(Self {
+            title: preview.title.clone().unwrap_or_default(),
+            description: preview.description.clone().unwrap_or_default(),
+            url: preview.url.clone().unwrap_or_default(),
+            color: preview.color.clone().unwrap_or_default(),
+            site_name: preview.site_name.clone().unwrap_or_default(),
+            author: preview.author.as_ref().map(|a| CustomEmbedAuthorInput {
+                name: a.name.clone().unwrap_or_default(),
+                url: a.url.clone().unwrap_or_default(),
+                icon_url: String::new(),
+            }),
+            footer: preview.footer.as_ref().map(|f| CustomEmbedFooterInput {
+                text: f.text.clone().unwrap_or_default(),
+            }),
+            fields: preview.fields.iter().map(|f| CustomEmbedFieldInput {
+                name: f.name.clone(),
+                value: f.value.clone(),
+                inline: f.inline,
+            }).collect(),
+            ..Default::default()
+        })
+    }
+}
+
+impl CustomEmbedInput {
     pub fn has_content(&self) -> bool {
         !self.title.trim().is_empty() || !self.description.trim().is_empty()
             || !self.url.trim().is_empty() || !self.site_name.trim().is_empty()
