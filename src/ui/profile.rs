@@ -182,6 +182,9 @@ pub fn draw(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     };
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("perfil-cartao"));
+    // The card is a real blocking surface: keep it above foreground
+    // sidebars/drawers throughout its lifetime, including dismissal frames.
+    ctx.move_to_top(layer);
     let mut close = back || ctx.input(|input| input.key_pressed(egui::Key::Escape));
     let mut outcome = Outcome::default();
     // Uma Area de verdade, do tamanho da tela: é assim que o egui sabe que
