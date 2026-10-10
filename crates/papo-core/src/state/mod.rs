@@ -235,7 +235,7 @@ pub struct Reaction {
 }
 
 /// Emoji custom do servidor, com a imagem em base64 como ela chega da API.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomEmoji {
     pub id: String,
     pub name: String,
@@ -450,6 +450,10 @@ pub struct Store {
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
+    emojis_fresh: bool,
+    emojis_cached: bool,
+    server_icon_fresh: bool,
+    avatars_fresh: HashSet<String>,
     pub me: String,
     pub my_name: String,
     /// Nome de usuário (sem apelido): é o que aparece numa menção.
@@ -547,6 +551,10 @@ impl Default for Store {
             members: Vec::new(),
             messages: Vec::new(),
             emojis: Vec::new(),
+            emojis_fresh: false,
+            emojis_cached: false,
+            server_icon_fresh: false,
+            avatars_fresh: HashSet::new(),
             me: String::new(),
             my_name: String::new(),
             my_username: String::new(),
@@ -1096,6 +1104,31 @@ impl Store {
         self.pending_cache.clear();
     }
 
+    /// Only restore images whose authoritative response has not arrived.
+    pub fn restore_cached_profile_images(
+        &mut self, images: crate::cache::CachedProfileImages,
+    ) {
+        if !self.server_icon_fresh
+            && let Some(icon) = images.server_icon
+            && let Some(server) = self.server.as_mut()
+        {
+            server.icon = Some(icon);
+        }
+        for (user_id, blob) in images.avatars {
+            if !self.avatars_fresh.contains(&user_id) {
+                self.avatars.insert(user_id, blob);
+            }
+        }
+    }
+
+    pub fn restore_cached_emojis(&mut self, emojis: Vec<crate::cache::CachedEmoji>) {
+        if self.emojis_fresh { return; }
+        self.emojis_cached = true;
+        self.emojis = emojis.into_iter().map(|emoji| CustomEmoji {
+            id: emoji.id, name: emoji.name, blob: emoji.blob,
+        }).collect();
+    }
+
     /// Compatibilidade interna/testes: restaura o snapshot integral antigo.
     /// O runtime interativo usa metadados + páginas por canal.
     pub fn restore_cached(&mut self, snapshot: CachedServerSnapshot) {
@@ -1138,6 +1171,13 @@ impl Store {
         self.direct_messages.clear();
         self.members.clear();
         self.messages.clear();
+        self.emojis.clear();
+        self.emojis_fresh = false;
+        self.emojis_cached = false;
+        self.server_icon_fresh = false;
+        self.avatars_fresh.clear();
+        self.avatars.clear();
+        self.profiles.clear();
         self.cached_channels.clear();
         self.hydrated_channels.clear();
         self.cache_history_has_more.clear();
@@ -2328,6 +2368,14 @@ impl Store {
             }
             Update::ConnectionViolation => self.notice = Some(Notice::ConnectionViolation),
             Update::Server(server) => {
+                let new_icon = server.as_ref().and_then(|server|
+                    server.icon_blob.clone().filter(|blob| !blob.is_empty())
+                );
+                self.server_icon_fresh = true;
+                let changed = self.server.as_ref().and_then(|s| s.icon.as_ref()) != new_icon.as_ref();
+                if changed {
+                    self.pending_cache.push(CacheOp::SetServerIcon(new_icon));
+                }
                 self.screen = match &server {
                     Some(_) => Screen::Chat,
                     None => Screen::NeedsServer,
@@ -2466,7 +2514,14 @@ impl Store {
                 let mut members_changed = false;
                 for profile in profiles {
                     let id = profile.id.clone();
-                    match profile.avatar_blob.clone().filter(|blob| !blob.is_empty()) {
+                    let avatar = profile.avatar_blob.clone().filter(|blob| !blob.is_empty());
+                    self.avatars_fresh.insert(id.clone());
+                    if self.avatars.get(&id) != avatar.as_ref() {
+                        self.pending_cache.push(CacheOp::SetAvatar {
+                            user_id: id.clone(), blob: avatar.clone(),
+                        });
+                    }
+                    match avatar {
                         Some(blob) => {
                             self.avatars.insert(id.clone(), blob);
                         }
@@ -2861,14 +2916,19 @@ impl Store {
                 );
             }
             Update::Emojis(emojis) => {
-                self.emojis = emojis
-                    .into_iter()
-                    .map(|emoji| CustomEmoji {
-                        id: emoji.id,
-                        name: emoji.name,
-                        blob: emoji.image_blob,
-                    })
-                    .collect();
+                let fresh: Vec<CustomEmoji> = emojis.into_iter().map(|emoji| CustomEmoji {
+                    id: emoji.id, name: emoji.name, blob: emoji.image_blob,
+                }).collect();
+                self.emojis_fresh = true;
+                if !self.emojis_cached || self.emojis != fresh {
+                    self.pending_cache.push(CacheOp::ReplaceEmojis(
+                        fresh.iter().map(|emoji| crate::cache::CachedEmoji {
+                            id: emoji.id.clone(), name: emoji.name.clone(), blob: emoji.blob.clone(),
+                        }).collect(),
+                    ));
+                    self.emojis = fresh;
+                    self.emojis_cached = true;
+                }
             }
             Update::Pinned { channel_id, ids } => {
                 let pinned: HashSet<String> = ids.iter().cloned().collect();

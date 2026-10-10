@@ -4,6 +4,7 @@
 //! grava e lê a projeção delimitada que a Store produz.
 
 use std::collections::HashSet;
+use base64::Engine as _;
 
 use turso::{Builder, Connection, Value};
 
@@ -11,7 +12,7 @@ use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
     CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedReadState, CachedServer,
-    CachedServerMetadata, CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedServerMetadata, CachedServerSnapshot, CachedEmoji, CachedProfileImages, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
     CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
@@ -62,6 +63,20 @@ fn decode_draft_mentions(raw: &str) -> Vec<CachedMentionBinding> {
         .into_iter()
         .filter_map(|value| serde_json::from_value::<CachedMentionBinding>(value).ok())
         .collect()
+}
+
+/// Profile blobs remain bounded even when a backend sends oversized images.
+/// At most 128 avatars of 512 KiB per server, plus one 512 KiB icon.
+const MAX_PROFILE_IMAGE_BYTES: usize = 512 * 1024;
+const MAX_CACHED_AVATARS: i64 = 128;
+
+/// Invalid/oversized media is not persisted. An authoritative absence always
+/// removes a previously cached image instead of resurrecting stale bytes.
+fn original_image(blob: &Option<String>) -> Option<Vec<u8>> {
+    let encoded = blob.as_ref()?;
+    if encoded.len() > (MAX_PROFILE_IMAGE_BYTES * 4 / 3 + 8) { return None; }
+    let image = base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()).ok()?;
+    (image.len() <= MAX_PROFILE_IMAGE_BYTES).then_some(image)
 }
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages (
@@ -267,6 +282,68 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             });
             statements
         }
+        CacheOp::ReplaceEmojis(emojis) => {
+            let mut statements = vec![Stmt {
+                sql: "DELETE FROM server_emojis WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            }];
+            for emoji in emojis {
+                let bytes = emoji.blob.as_ref().and_then(|blob|
+                    base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()).ok()
+                );
+                statements.push(Stmt {
+                    sql: "INSERT INTO server_emojis (server_key, emoji_id, name, image_data) VALUES (?1,?2,?3,?4)",
+                    params: vec![text(server_key), text(&emoji.id), text(&emoji.name),
+                        bytes.map(Value::Blob).unwrap_or(Value::Null)],
+                });
+            }
+            statements.push(Stmt {
+                sql: "INSERT INTO server_emojis_state (server_key, updated_at) VALUES (?1,?2)
+                      ON CONFLICT(server_key) DO UPDATE SET updated_at = excluded.updated_at",
+                params: vec![text(server_key), integer(super::types::now_millis())],
+            });
+            statements
+        }
+        CacheOp::SetServerIcon(blob) => {
+            let mut statements = vec![Stmt {
+                sql: "DELETE FROM profile_images WHERE server_key = ?1 AND kind = 'server-icon'",
+                params: vec![text(server_key)],
+            }];
+            if let Some(image) = original_image(blob) {
+                statements.push(Stmt {
+                    sql: "INSERT INTO profile_images (server_key, kind, resource_id, image_data, updated_at)
+                          VALUES (?1, 'server-icon', '', ?2, ?3)",
+                    params: vec![text(server_key), Value::Blob(image), integer(super::types::now_millis())],
+                });
+            }
+            statements
+        }
+        CacheOp::SetAvatar { user_id, blob } => {
+            let mut statements = vec![Stmt {
+                sql: "DELETE FROM profile_images
+                      WHERE server_key = ?1 AND kind = 'avatar' AND resource_id = ?2",
+                params: vec![text(server_key), text(user_id)],
+            }];
+            if let Some(image) = original_image(blob) {
+                statements.push(Stmt {
+                    sql: "INSERT INTO profile_images (server_key, kind, resource_id, image_data, updated_at)
+                          VALUES (?1, 'avatar', ?2, ?3, ?4)",
+                    params: vec![text(server_key), text(user_id),
+                        Value::Blob(image), integer(super::types::now_millis())],
+                });
+                statements.push(Stmt {
+                    sql: "DELETE FROM profile_images
+                          WHERE server_key = ?1 AND kind = 'avatar'
+                            AND resource_id NOT IN (
+                                SELECT resource_id FROM profile_images
+                                WHERE server_key = ?1 AND kind = 'avatar'
+                                ORDER BY updated_at DESC, resource_id DESC LIMIT ?2
+                            )",
+                    params: vec![text(server_key), integer(MAX_CACHED_AVATARS)],
+                });
+            }
+            statements
+        }
         CacheOp::ReplaceMembers(members) => {
             let mut statements = vec![Stmt {
                 sql: "DELETE FROM members WHERE server_key = ?1",
@@ -426,6 +503,9 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             params: vec![text(server_key), text(owner_user_id), text(channel_id)],
         }],
         CacheOp::ClearCachedData => vec![
+            Stmt { sql: "DELETE FROM profile_images WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -448,6 +528,9 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
         ],
         CacheOp::ClearServer => vec![
+            Stmt { sql: "DELETE FROM profile_images WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
                 sql: "DELETE FROM drafts WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -991,6 +1074,48 @@ impl TursoCache {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Loads only the small bounded profile asset table, never on the UI thread.
+    pub async fn load_profile_images(&self, server_key: &str) -> Result<CachedProfileImages, turso::Error> {
+        let mut rows = self.conn.query(
+            "SELECT kind, resource_id, image_data FROM profile_images WHERE server_key = ?1",
+            [server_key],
+        ).await?;
+        let mut images = CachedProfileImages::default();
+        while let Some(row) = rows.next().await? {
+            let kind: String = row.get(0)?;
+            let id: String = row.get(1)?;
+            let data: Vec<u8> = row.get(2)?;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+            if kind == "server-icon" {
+                images.server_icon = Some(encoded);
+            } else if kind == "avatar" {
+                images.avatars.push((id, encoded));
+            }
+        }
+        Ok(images)
+    }
+
+    pub async fn load_emojis(&self, server_key: &str) -> Result<Option<Vec<CachedEmoji>>, turso::Error> {
+        let mut state = self.conn.query(
+            "SELECT 1 FROM server_emojis_state WHERE server_key = ?1", [server_key]).await?;
+        let cached = state.next().await?.is_some();
+        drop(state);
+        if !cached { return Ok(None); }
+        let mut rows = self.conn.query(
+            "SELECT emoji_id, name, image_data FROM server_emojis WHERE server_key = ?1 ORDER BY emoji_id",
+            [server_key]).await?;
+        let mut emojis = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let bytes: Option<Vec<u8>> = row.get(2)?;
+            emojis.push(CachedEmoji {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                blob: bytes.map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            });
+        }
+        Ok(Some(emojis))
     }
 
     /// Lê apenas metadados de startup. Timelines ficam fora deste caminho para

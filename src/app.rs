@@ -525,6 +525,18 @@ impl SystemTheme {
     }
 }
 
+struct PendingProfileImages {
+    owner: String,
+    restore_epoch: u64,
+    receiver: std::sync::mpsc::Receiver<Result<papo_core::cache::CachedProfileImages, String>>,
+}
+
+struct PendingEmojiCache {
+    owner: String,
+    restore_epoch: u64,
+    receiver: std::sync::mpsc::Receiver<Result<Option<Vec<papo_core::cache::CachedEmoji>>, String>>,
+}
+
 struct PendingCachePage {
     channel_id: String,
     older: bool,
@@ -566,6 +578,8 @@ pub struct Workspace {
     sent_user_config: Option<crate::api::models::UserConfig>,
     /// Leituras Turso em voo. O worker de cache faz SQL; egui só sonda o receiver.
     cache_pages: Vec<PendingCachePage>,
+    emoji_cache: Option<PendingEmojiCache>,
+    profile_images_cache: Option<PendingProfileImages>,
     /// Último pedido de push feito nesta conexão: (token, registrar?). O
     /// pedido só sai de novo quando um dos dois muda.
     #[cfg(target_os = "android")]
@@ -596,6 +610,22 @@ impl Workspace {
             std::sync::Arc::clone(notification),
         );
 
+        let emoji_cache = runtime.cached_owner().and_then(|owner| {
+            cache.load_emojis_async(&server_key).map(|receiver| PendingEmojiCache {
+                owner: owner.to_owned(),
+                restore_epoch: runtime.store.cache_restore_epoch(),
+                receiver,
+            })
+        });
+
+        let profile_images_cache = runtime.cached_owner().and_then(|owner| {
+            cache.load_profile_images_async(&server_key).map(|receiver| PendingProfileImages {
+                owner: owner.to_owned(),
+                restore_epoch: runtime.store.cache_restore_epoch(),
+                receiver,
+            })
+        });
+
         #[cfg(target_os = "android")]
         let network_registration =
             crate::platform::android_network::register(runtime.sender());
@@ -624,6 +654,8 @@ impl Workspace {
             applied_user_config: None,
             sent_user_config: None,
             cache_pages: Vec::new(),
+            emoji_cache,
+            profile_images_cache,
             #[cfg(target_os = "android")]
             push_sent: None,
             #[cfg(target_os = "android")]
@@ -2545,6 +2577,55 @@ impl PapoApp {
         use std::sync::mpsc::TryRecvError;
 
         for workspace in &mut self.workspaces {
+            if let Some(request) = workspace.profile_images_cache.as_ref() {
+                match request.receiver.try_recv() {
+                    Ok(result) => {
+                        let request = workspace.profile_images_cache.take().expect("checked");
+                        if request.restore_epoch == workspace.runtime.store.cache_restore_epoch()
+                            && workspace.runtime.store.me == request.owner
+                        {
+                            match result {
+                                Ok(images) => workspace.runtime.store.restore_cached_profile_images(images),
+                                Err(error) => log::warn!(
+                                    "cache: profile image restore failed server={}: {error}",
+                                    workspace.runtime.server_key
+                                ),
+                            }
+                        }
+                    }
+                    Err(TryRecvError::Empty) => {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        workspace.profile_images_cache = None;
+                    }
+                }
+            }
+            if let Some(request) = workspace.emoji_cache.as_ref() {
+                match request.receiver.try_recv() {
+                    Ok(result) => {
+                        let request = workspace.emoji_cache.take().expect("checked");
+                        if request.restore_epoch == workspace.runtime.store.cache_restore_epoch()
+                            && workspace.runtime.store.me == request.owner
+                        {
+                            match result {
+                                Ok(Some(emojis)) => workspace.runtime.store.restore_cached_emojis(emojis),
+                                Ok(None) => {}
+                                Err(error) => log::warn!(
+                                    "cache: emoji restore failed server={}: {error}",
+                                    workspace.runtime.server_key
+                                ),
+                            }
+                        }
+                    }
+                    Err(TryRecvError::Empty) => {
+                        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        workspace.emoji_cache = None;
+                    }
+                }
+            }
             let mut finished = Vec::new();
             for (index, request) in workspace.cache_pages.iter().enumerate() {
                 match request.receiver.try_recv() {
