@@ -2706,34 +2706,38 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
     }
 }
 
-/// Lista dos ajustes do servidor: só o que o cargo permite.
-fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
-    use egui_phosphor::regular as icon;
-    search_field(ui, t, s, &mut state.mobile_query);
-    let store = data.store;
-    let all: Vec<(ServerPane, Entry<'_>)> = [
-        (ServerPane::General, icon::IDENTIFICATION_CARD, s.sum_identity.to_owned()),
+/// A linha de resumo de cada painel do servidor: a mesma na lista do celular
+/// e na coluna do desktop.
+fn server_summaries(store: &Store, s: &Strings) -> Vec<(ServerPane, String)> {
+    vec![
+        (ServerPane::General, s.sum_identity.to_owned()),
         (
             ServerPane::Channels,
-            icon::LIST_BULLETS,
             format!(
                 "{} {}",
-                store
-                    .channels
-                    .iter()
-                    .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
-                    .count(),
+                store.channels.iter().filter(|channel| channel.kind != crate::state::ChannelKind::Direct).count(),
                 s.sum_channels
             ),
         ),
-        (ServerPane::Roles, icon::SHIELD, format!("{} {}", store.roles.len(), s.sum_roles)),
-        (ServerPane::Emojis, icon::SMILEY, format!("{} {}", store.emojis.len(), s.sum_stickers)),
-        (ServerPane::Audit, icon::CLOCK_COUNTER_CLOCKWISE, s.sum_audit.to_owned()),
+        (ServerPane::Roles, format!("{} {}", store.roles.len(), s.sum_roles)),
+        (ServerPane::Emojis, format!("{} {}", store.emojis.len(), s.sum_stickers)),
+        (ServerPane::Audit, s.sum_audit.to_owned()),
     ]
-    .into_iter()
-    .filter(|(pane, _, _)| server_pane_allowed(store, *pane))
-    .map(|(pane, glyph, summary)| (pane, Entry { glyph, title: pane.title(s), summary }))
-    .collect();
+}
+
+/// Lista dos ajustes do servidor: só o que o cargo permite.
+fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    search_field(ui, t, s, &mut state.mobile_query);
+    let store = data.store;
+    let summaries = server_summaries(store, s);
+    let all: Vec<(ServerPane, Entry<'_>)> = ServerPane::ALL
+        .into_iter()
+        .filter(|pane| server_pane_allowed(store, *pane))
+        .map(|pane| {
+            let summary = summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.clone()).unwrap_or_default();
+            (pane, Entry { glyph: pane.glyph(), title: pane.title(s), summary })
+        })
+        .collect();
 
     let mut open = None;
     if !state.mobile_query.trim().is_empty() {
@@ -2880,6 +2884,7 @@ fn rail(
 ) {
     let store = data.store;
     let summaries = app_summaries(data, s);
+    let server_sums = server_summaries(store, s);
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
@@ -2989,6 +2994,36 @@ fn rail(
                 ui.add_space(space::SM);
             }
 
+            // O servidor no topo: ícone, nome, endereço e quantos são. Só
+            // identifica; "Geral" é que abre a identidade.
+            if surface == Surface::Server && query.is_empty() {
+                let name = store.server.as_ref().map(|server| server.name.clone()).unwrap_or_default();
+                let ctx = ui.ctx().clone();
+                let texture = store
+                    .server
+                    .as_ref()
+                    .and_then(|server| server.icon.as_deref())
+                    .and_then(|blob| data.media.server_icon(blob))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
+                let tile = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 20.0, slot.center().y), Vec2::splat(40.0));
+                match texture {
+                    Some(texture) => crate::ui::widgets::photo(ui.painter(), tile, texture, crate::ui::widgets::FULL_UV, CornerRadius::same(radius::CARD), egui::Color32::WHITE),
+                    None => {
+                        ui.painter().rect_filled(tile, CornerRadius::same(radius::CARD), t.accent.gamma_multiply(0.30));
+                        ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), t.accent);
+                    }
+                }
+                let left = tile.max.x + space::MD;
+                let room = slot.max.x - space::SM - left;
+                let address = data.server_url.trim_start_matches("https://").trim_start_matches("http://");
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &name, text::headline(), t.label, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, &format!("{address} · {} {}", store.members.len(), s.count_members), text::footnote(), t.label_tertiary, room);
+                ui.add_space(space::SM);
+            }
+
             // A coluna rola: com a busca, a lista de ajustes pode passar da
             // altura da folha.
             egui::ScrollArea::vertical()
@@ -3015,7 +3050,8 @@ fn rail(
                             if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
                                 continue;
                             }
-                            if entry(ui, pane.glyph(), pane.title(s), None, state.server_pane == pane) {
+                            let summary = server_sums.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.as_str());
+                            if entry(ui, pane.glyph(), pane.title(s), summary, state.server_pane == pane) {
                                 state.server_pane = pane;
                             }
                         }
