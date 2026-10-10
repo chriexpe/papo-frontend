@@ -1725,3 +1725,67 @@ fn v4_database_migrates_to_current_without_reset() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "migrado");
 }
+
+
+#[test]
+fn server_emojis_round_trip_empty_isolation_and_clear() {
+    let temp = TempDb::new("server-emojis");
+    let emoji = CachedEmoji {
+        id: "emoji-1".into(),
+        name: "ok".into(),
+        blob: Some("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==".into()),
+    };
+    {
+        let db = open(&temp);
+        db.submit("srv-a", vec![CacheOp::ReplaceEmojis(vec![emoji.clone()])]);
+        db.submit("srv-b", vec![CacheOp::ReplaceEmojis(Vec::new())]);
+        db.flush();
+    }
+    {
+        let db = open(&temp);
+        let read = |server: &str| {
+            db.load_emojis_async(server).unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap()
+        };
+        assert_eq!(read("srv-a"), Some(vec![emoji.clone()]));
+        assert_eq!(read("srv-b"), Some(Vec::new()));
+        assert_eq!(read("srv-c"), None);
+        db.submit("srv-a", vec![CacheOp::ReplaceEmojis(Vec::new())]);
+        db.flush();
+        assert_eq!(read("srv-a"), Some(Vec::new()));
+        db.submit("srv-a", vec![CacheOp::ReplaceEmojis(vec![emoji])]);
+        db.submit("srv-b", vec![CacheOp::ClearCachedData]);
+        db.flush();
+        assert_eq!(read("srv-b"), None);
+    }
+}
+
+#[test]
+fn profile_images_are_bounded_partitioned_and_cleared() {
+    let temp = TempDb::new("profile-images");
+    let image = "aGVsbG8=".to_owned();
+    {
+        let db = open(&temp);
+        db.submit("a", vec![
+            CacheOp::SetServerIcon(Some(image.clone())),
+            CacheOp::SetAvatar { user_id: "alice".into(), blob: Some(image.clone()) },
+        ]);
+        db.submit("b", vec![CacheOp::SetAvatar {
+            user_id: "bob".into(), blob: Some(image.clone()),
+        }]);
+        db.flush();
+    }
+    let db = open(&temp);
+    let load = |key: &str| db.load_profile_images_async(key).unwrap()
+        .recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+    let a = load("a");
+    assert_eq!(a.server_icon.as_deref(), Some(image.as_str()));
+    assert_eq!(a.avatars, vec![("alice".into(), image.clone())]);
+    assert_eq!(load("b").avatars, vec![("bob".into(), image.clone())]);
+    db.submit("a", vec![CacheOp::SetAvatar { user_id: "alice".into(), blob: None }]);
+    db.flush();
+    assert!(load("a").avatars.is_empty());
+    db.submit("b", vec![CacheOp::ClearCachedData]);
+    db.flush();
+    assert!(load("b").avatars.is_empty());
+}
