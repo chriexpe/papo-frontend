@@ -70,6 +70,7 @@ fn outgoing(local_id: &str, owner: &str, content: &str, state: OutgoingState) ->
         owner_user_id: owner.to_owned(),
         channel_id: "geral".to_owned(),
         content: content.to_owned(),
+        embeds: Vec::new(),
         reply_to: None,
         notify_reply: false,
         created_at: now_millis(),
