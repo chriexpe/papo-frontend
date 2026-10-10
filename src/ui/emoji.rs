@@ -349,7 +349,7 @@ pub fn picker(
 ) -> Option<Emoji> {
     let mut chosen = None;
 
-    ui.set_width(300.0);
+    ui.set_width(ui.available_width().min(300.0));
     ui.add_space(space::XS);
 
     // Fila rápida: o que se usa quase sempre, a um clique.
@@ -446,8 +446,11 @@ pub fn picker(
         ui.add_space(space::XS);
     }
 
+    // The scroll viewport owns all remaining panel height. On shorter
+    // windows its items must scroll, not paint beyond the popup or into chat.
+    let scroll_height = ui.available_height().min(260.0).max(1.0);
     egui::ScrollArea::vertical()
-        .max_height(260.0)
+        .max_height(scroll_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // Emojis do servidor primeiro: são a identidade da casa.
@@ -538,12 +541,16 @@ pub fn picker(
 
 /// Grade de 8 colunas; o egui não tem um layout de grade fluida.
 fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usize)) {
-    const COLUMNS: usize = 8;
+    // Narrow panes must not let a fixed eight-column grid escape the frame.
+    let columns = ((ui.available_width() + space::XXS) / (30.0 + space::XXS))
+        .floor()
+        .max(1.0)
+        .min(8.0) as usize;
     let mut index = 0;
     while index < count {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = space::XXS;
-            for _ in 0..COLUMNS {
+            for _ in 0..columns {
                 if index >= count {
                     break;
                 }
@@ -855,11 +862,15 @@ pub fn popup_frame(ui: &mut egui::Ui, t: &Tokens, rect: egui::Rect, build: impl 
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
+    let inner = rect.shrink(space::SM);
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink(space::SM))
+            .max_rect(inner)
             .layout(Layout::top_down(Align::Min)),
-        build,
+        |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(inner));
+            build(ui);
+        },
     );
 }
 
