@@ -334,6 +334,7 @@ pub struct CachedMessage {
     pub pinned: bool,
     pub attachments: Vec<CachedAttachment>,
     pub reactions: Vec<CachedReaction>,
+    pub embeds: Vec<crate::api::models::LinkPreview>,
 }
 
 impl CachedMessage {
@@ -349,6 +350,7 @@ impl CachedMessage {
             edited: message.edited,
             reply_to: message.reply_to.clone(),
             pinned: message.pinned,
+            embeds: message.previews.clone(),
             attachments: message
                 .attachments
                 .iter()
@@ -395,6 +397,7 @@ impl CachedMessage {
             edited: message.edited_at.is_some(),
             reply_to: message.reply_to.clone(),
             pinned: false,
+            embeds: message.previews.clone(),
             attachments: message
                 .attachments
                 .iter()
@@ -421,8 +424,7 @@ impl CachedMessage {
         }
     }
 
-    /// Reconstrói a projeção da Store. Previews ficam vazias de propósito:
-    /// elas pertencem a uma fase posterior e se repovoam na reconciliação.
+    /// Restaura os embeds persistidos imediatamente, antes da reconciliação.
     pub fn to_store(&self) -> Message {
         Message {
             id: self.id.clone(),
@@ -447,7 +449,7 @@ impl CachedMessage {
                     moderation_status: attachment.moderation_status.clone(),
                 })
                 .collect(),
-            previews: Vec::new(),
+            previews: self.embeds.clone(),
             reactions: self
                 .reactions
                 .iter()

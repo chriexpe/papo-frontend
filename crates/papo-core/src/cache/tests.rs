@@ -47,6 +47,7 @@ fn message(id: &str, channel: &str, content: &str, created_at: i64) -> CachedMes
         pinned: false,
         attachments: Vec::new(),
         reactions: Vec::new(),
+        embeds: Vec::new(),
     }
 }
 
