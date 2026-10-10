@@ -484,7 +484,7 @@ async fn run(
         }
         Request::Emoji { id, blob } => {
             use base64::Engine as _;
-            let key = emoji_key(&id);
+            let key = versioned_emoji_key(&id, &blob);
             match base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()) {
                 Ok(bytes) => decode(key, &bytes, 128),
                 Err(error) => Loaded::Failed {
@@ -1103,6 +1103,18 @@ pub fn banner_key(sha: &str) -> String {
 pub fn emoji_key(id: &str) -> String {
     format!("emoji:{id}")
 }
+
+/// A base64 blob is the actual content identity. Versioning the texture key
+/// prevents an updated sticker/avatar from displaying an older GPU texture.
+fn versioned_emoji_key(id: &str, blob: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, blob.as_bytes());
+    let mut fingerprint = String::with_capacity(32);
+    for byte in &digest.as_ref()[..16] {
+        use std::fmt::Write as _;
+        let _ = write!(fingerprint, "{byte:02x}");
+    }
+    format!("{}:{fingerprint}", emoji_key(id))
+}
 pub fn preview_key(id: &str) -> String {
     format!("preview:{id}")
 }
@@ -1573,9 +1585,11 @@ impl MediaStore {
     }
 
     pub fn emoji(&mut self, id: &str, blob: Option<&str>) -> Option<&Texture> {
-        let key = emoji_key(id);
+        // An absent blob is not the same media as the previous version.
+        // Do not return stale avatars or stickers removed by the backend.
+        let blob = blob?;
+        let key = versioned_emoji_key(id, blob);
         if !self.textures.contains_key(&key) {
-            let blob = blob?;
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Emoji {
                 id: id.to_owned(),
@@ -1593,13 +1607,10 @@ impl MediaStore {
         self.emoji(&format!("avatar:{user_id}"), blob)
     }
 
-    /// Ícone do servidor. Chega em base64 como a foto de perfil; a chave é
-    /// um resumo do conteúdo, então um ícone novo vira outra textura.
+    /// Ícone do servidor: o mesmo chaveamento por conteúdo de avatares e
+    /// figurinhas. MediaStore já é isolado por workspace/servidor.
     pub fn server_icon(&mut self, blob: &str) -> Option<&Texture> {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        blob.hash(&mut hasher);
-        self.emoji(&format!("server-icon:{:x}", hasher.finish()), Some(blob))
+        self.emoji("server-icon", Some(blob))
     }
 
     /// Banner de perfil, pelo sha que veio na ficha.
@@ -2641,5 +2652,26 @@ mod limpeza {
         sweep_cache_with(&raiz, 1 << 30, HORA * 24, HORA * 24);
 
         assert!(!esquecida.exists());
+    }
+}
+
+#[cfg(test)]
+mod custom_asset_identity_tests {
+    use super::*;
+
+    #[test]
+    fn custom_image_identity_tracks_content_and_owner() {
+        let old = versioned_emoji_key("sticker-a", "YQ==");
+        let newer = versioned_emoji_key("sticker-a", "Yg==");
+        assert_ne!(old, newer, "updated images must not reuse stale GPU textures");
+        assert_ne!(old, versioned_emoji_key("sticker-b", "YQ=="));
+        assert_eq!(old, versioned_emoji_key("sticker-a", "YQ=="));
+    }
+
+    #[test]
+    fn missing_custom_asset_does_not_resurrect_stale_texture() {
+        let mut media = MediaStore::new(None);
+        assert!(media.emoji("sticker", None).is_none());
+        assert!(media.avatar("user", None).is_none());
     }
 }
