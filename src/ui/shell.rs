@@ -6374,9 +6374,38 @@ fn custom_embed_title(
     (!author.is_some_and(|name| name.eq_ignore_ascii_case(title))).then_some(title)
 }
 
-/// Mensagens transportadas por bridges (Discord, IRC etc.) são conteúdo do
-/// chat, não URLs. O visual é o mesmo material translúcido dos outros cards
-/// do Papo; sem barrão lateral ou caixas empilhadas para cada campo.
+/// A camada visual do embed é uma superfície de conteúdo, não uma pill flutuante.
+/// Em uma lista escura, branco com baixa opacidade produz apenas um retângulo
+/// cinza. Misturar um pouco do accent no material cria profundidade sem fixar
+/// azul e respeita tema claro/escuro e cores escolhidas pelo usuário.
+fn custom_embed_material(t: &Tokens, accent: Color32) -> (Color32, Stroke) {
+    let dark = t.appearance.is_dark();
+    let base = t.glass_opaque;
+    let tint = if dark { 0.19 } else { 0.065 };
+    let blend = |a: u8, b: u8| (a as f32 * (1.0 - tint) + b as f32 * tint).round() as u8;
+    let fill = Color32::from_rgba_unmultiplied(
+        blend(base.r(), accent.r()),
+        blend(base.g(), accent.g()),
+        blend(base.b(), accent.b()),
+        if dark { 240 } else { 244 },
+    );
+    let border = Color32::from_rgba_unmultiplied(
+        accent.r(), accent.g(), accent.b(),
+        if dark { 52 } else { 36 },
+    );
+    (fill, Stroke::new(1.0, border))
+}
+
+/// O card ocupa a largura disponível até um limite confortável de leitura,
+/// diferente do preview de link que tem uma largura mais curta por causa de
+/// capas/vídeo 16:9.
+fn custom_embed_inner_width(available: f32) -> f32 {
+    (available - space::XL * 2.0).max(1.0).min(560.0)
+}
+
+/// Embeds personalizados de bridges (Discord, IRC etc.) devem parecer parte
+/// da conversa: identidade clara, conteúdo primeiro, metadados em segundo
+/// plano e uma única superfície levemente tonalizada.
 fn custom_embed_card(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -6429,14 +6458,15 @@ fn custom_embed_card(
     });
 
     ui.add_space(space::SM);
-    // A moldura usa o material glass já definido no tema (inclusive light
-    // mode) e padding uniforme. O texto não assume dimensões fixas em mobile.
-    let inner_width = (width - space::LG * 2.0).clamp(148.0, 404.0);
+    let inner_width = custom_embed_inner_width(width);
+    let accent = embed.color.as_deref().and_then(hex_color).unwrap_or(t.accent);
+    let (fill, stroke) = custom_embed_material(t, accent);
+    let corner = CornerRadius::same(16);
     let frame = Frame::new()
-        .fill(t.glass_over_content)
-        .stroke(Stroke::new(1.0, t.separator))
-        .corner_radius(CornerRadius::same(radius::SHEET))
-        .inner_margin(egui::Margin::symmetric(space::LG as i8, space::MD as i8));
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(corner)
+        .inner_margin(egui::Margin::symmetric(space::XL as i8, space::LG as i8));
 
     let content = frame.show(ui, |ui| {
         ui.set_width(inner_width);
@@ -6444,7 +6474,7 @@ fn custom_embed_card(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = space::SM;
                 if avatar.is_some() || embed.author.as_ref().is_some_and(|a| a.media.is_some()) {
-                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(27.0), Sense::hover());
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
                     if let Some(texture) = avatar.as_ref() {
                         round_photo(ui.painter(), rect, texture.id(), Color32::WHITE);
                     } else {
@@ -6470,7 +6500,7 @@ fn custom_embed_card(
         }
         if let Some(body) = description {
             if author.is_some() || heading.is_some() {
-                ui.add_space(space::SM);
+                ui.add_space(space::MD);
             }
             ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
         }
@@ -6504,23 +6534,15 @@ fn custom_embed_card(
     });
 
     let rect = content.response.rect;
-    // Um filete de luz, não uma borda chamativa: o material já é translúcido.
+    // Um único reflexo no topo sugere material elevado. Não há barra de
+    // destaque lateral competindo com o conteúdo (caso do print anterior).
     ui.painter().line_segment(
         [
-            egui::pos2(rect.min.x + radius::SHEET as f32, rect.min.y + 1.0),
-            egui::pos2(rect.max.x - radius::SHEET as f32, rect.min.y + 1.0),
+            egui::pos2(rect.min.x + 16.0, rect.min.y + 1.5),
+            egui::pos2(rect.max.x - 16.0, rect.min.y + 1.5),
         ],
         Stroke::new(1.0, t.glass_highlight),
     );
-    if let Some(color) = embed.color.as_deref().and_then(hex_color) {
-        let accent_rect = Rect::from_min_size(
-            egui::pos2(rect.min.x + 2.0, rect.min.y + space::MD),
-            Vec2::new(2.0, (rect.height() - space::MD * 2.0).max(1.0)),
-        );
-        ui.painter().rect_filled(
-            accent_rect, CornerRadius::same(2), color.gamma_multiply(0.45),
-        );
-    }
     // Custom embeds sem URL são apenas conteúdo: não há alvo de clique falso.
     if let Some(url) = embed.url.as_deref()
         && papo_core::preview::safe_remote_url(url)
@@ -10721,5 +10743,24 @@ mod custom_embed_tests {
         assert_eq!(custom_embed_title(&item), Some("Important announcement"));
         let item = embedded(None, Some("Maco"));
         assert_eq!(custom_embed_title(&item), Some("Maco"));
+    }
+
+    #[test]
+    fn material_is_tinted_and_theme_adaptive() {
+        use crate::ui::theme::Appearance;
+        let dark = Tokens::new(Appearance::Dark, None);
+        let light = Tokens::new(Appearance::Light, None);
+        let (dark_fill, _) = custom_embed_material(&dark, dark.accent);
+        let (light_fill, _) = custom_embed_material(&light, light.accent);
+        assert!(dark_fill.b() > dark_fill.r(), "dark card has subtle accent tint");
+        assert!(light_fill.r() > 200, "light card remains a light material");
+        assert!(light_fill.b() > light_fill.r(), "light material uses accent tint");
+    }
+
+    #[test]
+    fn card_width_respects_available_space_and_reading_limit() {
+        assert_eq!(custom_embed_inner_width(640.0), 560.0);
+        assert_eq!(custom_embed_inner_width(320.0), 288.0);
+        assert_eq!(custom_embed_inner_width(160.0), 128.0);
     }
 }
