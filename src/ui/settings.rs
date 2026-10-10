@@ -420,9 +420,6 @@ const ROW_INSET: f32 = space::LG;
 /// Largura reservada ao controle, encostado à direita da linha.
 const CONTROL_COLUMN: f32 = 290.0;
 /// Linhas que mostram figurinha: a arte e a altura que ela pede.
-/// Linhas que mostram figurinha: a arte e a altura que ela pede.
-const STICKER_SIDE: f32 = 28.0;
-const STICKER_ROW_H: f32 = 44.0;
 /// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
 const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
@@ -1144,54 +1141,6 @@ fn draw_sticker(ui: &egui::Ui, t: &Tokens, rect: Rect, texture: Option<egui::Tex
     }
 }
 
-impl Rows<'_> {
-    fn min_height_next(&mut self, height: f32) {
-        self.min_height_next = height.max(ROW_HEIGHT);
-    }
-
-
-    fn preview_row(
-        &mut self,
-        label: &str,
-        media: &mut crate::media::MediaStore,
-        id: &str,
-        blob: Option<&str>,
-        control: impl FnOnce(&mut egui::Ui, &Tokens),
-    ) {
-        let (rect, inner) = self.band(STICKER_ROW_H);
-        let t = self.t;
-        let ctx = self.ui.ctx().clone();
-        let texture = media
-            .emoji(id, blob)
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|handle| handle.id());
-        let art = Rect::from_center_size(
-            egui::pos2(inner.min.x + STICKER_SIDE / 2.0, rect.center().y),
-            Vec2::splat(STICKER_SIDE),
-        );
-        draw_sticker(self.ui, &t, art, texture);
-        self.ui.painter().text(
-            egui::pos2(art.max.x + space::MD, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            text::body(),
-            t.label,
-        );
-        let control_rect =
-            Rect::from_min_max(egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y), inner.max);
-        self.ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(control_rect)
-                .layout(Layout::right_to_left(Align::Center)),
-            |ui| control(ui, &t),
-        );
-        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
-        // no pé do controle, acima do fim da faixa, e a linha seguinte
-        // começaria por cima desta (no celular, as peças se sobrepunham).
-        self.ui.advance_cursor_after_rect(rect);
-    }
-}
-
 /// Interruptor. Num painel de ajustes que aplica na hora, o interruptor diz
 /// a verdade e a caixa de seleção mente: caixa pede um "OK" que não existe.
 fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
@@ -1586,17 +1535,6 @@ fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: 
     });
 }
 
-fn hint_beside(ui: &egui::Ui, t: &Tokens, area: Rect, used: Rect, hint: &str) {
-    let left = used.max.x + space::XL;
-    let width = area.max.x - left;
-    if width < 140.0 {
-        return;
-    }
-    let galley = ui.painter().layout(hint.to_owned(), text::footnote(), t.label_tertiary, width);
-    let pos = egui::pos2(left, area.max.y - galley.size().y);
-    ui.painter().galley(pos, galley, t.label_tertiary);
-}
-
 /// Desenha a folha, ancorada na pastilha que a abriu.
 pub fn sheet(
     ctx: &egui::Context,
@@ -1749,37 +1687,52 @@ pub fn sheet(
 /// Cargos: a lista à esquerda (com quantos têm cada um) e o cargo aberto à
 /// direita, em abas — Permissões, Membros, Aparência. No celular, empilhado.
 fn roles_pane(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
-    let wide = !tiles(ui) && ui.available_width() >= 460.0;
-    if wide {
-        ui.add_space(space::MD);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(170.0);
-                role_list(ui, data, t, s);
-            });
-            ui.add_space(space::LG);
-            ui.vertical(|ui| role_detail(ui, data, t, s, actions));
-        });
-    } else {
-        role_list(ui, data, t, s);
-        role_detail(ui, data, t, s, actions);
-    }
+    role_list(ui, data, t, s);
+    role_detail(ui, data, t, s, actions);
 }
 
 fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
     use super::roles::{Draft, Tab};
     let roles = data.store.roles.clone();
-    section(ui, t, s.roles);
+    let mut new_role = false;
+    // A barra do topo: o nome da lista e o botão de criar, como no mock.
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INSET);
+        ui.label(RichText::new(s.roles).font(px(11.5, "semibold")).color(t.label_secondary));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+                new_role = true;
+            }
+        });
+    });
+    ui.add_space(10.0);
     if roles.is_empty() {
         ui.add(egui::Label::new(RichText::new(s.no_roles).font(text::footnote()).color(t.label_tertiary)).wrap());
     }
     let selected_id = data.roles.draft.as_ref().and_then(|draft| draft.id.clone());
-    for role in &roles {
+    let width = fit_width(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let card_slot = ui.painter().add(egui::Shape::Noop);
+    let card_top = ui.cursor().min.y;
+    let last = roles.len().saturating_sub(1);
+    for (position, role) in roles.iter().enumerate() {
         let count = data.store.members.iter().filter(|m| m.roles.iter().any(|id| id == &role.id)).count();
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 42.0), Sense::click());
         let selected = selected_id.as_deref() == Some(role.id.as_str());
         if selected || response.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), if selected { t.fill_medium } else { t.fill_soft });
+            let top = if position == 0 { 10 } else { 0 };
+            let bottom = if position == last { 10 } else { 0 };
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius { nw: top, ne: top, sw: bottom, se: bottom },
+                if selected { t.accent.gamma_multiply(0.16) } else { t.fill_soft },
+            );
+        }
+        if position > 0 {
+            ui.painter().line_segment(
+                [egui::pos2(rect.min.x + ROW_INSET, rect.min.y), egui::pos2(rect.max.x, rect.min.y)],
+                Stroke::new(0.5, t.separator),
+            );
         }
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1790,19 +1743,19 @@ fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings)
             .and_then(crate::api::models::parse_hex_color)
             .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
             .unwrap_or(t.label_tertiary);
-        ui.painter().circle_filled(egui::pos2(rect.min.x + space::MD + 5.0, rect.center().y), 5.0, color);
-        let count_text = count.to_string();
-        let count_w = ui.painter().layout_no_wrap(count_text.clone(), text::footnote(), t.label_tertiary).size().x;
-        ui.painter().text(egui::pos2(rect.max.x - space::MD, rect.center().y), egui::Align2::RIGHT_CENTER, count_text, text::footnote(), t.label_tertiary);
-        let left = rect.min.x + space::MD + 18.0;
+        ui.painter().circle_filled(egui::pos2(rect.min.x + 12.0 + 5.0, rect.center().y), 4.0, color);
+        let count_text = format!("{count} {}", if count == 1 { s.person_one } else { s.count_members });
+        let count_w = ui.painter().layout_no_wrap(count_text.clone(), px(13.0, "regular"), t.label_secondary).size().x;
+        ui.painter().text(egui::pos2(rect.max.x - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, count_text, px(13.0, "regular"), t.label_secondary);
+        let left = rect.min.x + 12.0 + 10.0 + 16.0;
         crate::ui::widgets::text_fit(
             ui.painter(),
             egui::pos2(left, rect.center().y),
             egui::Align2::LEFT_CENTER,
             &role.name,
-            text::body(),
+            px(13.0, "regular"),
             t.label,
-            rect.max.x - space::MD - count_w - space::SM - left,
+            rect.max.x - 12.0 - count_w - 8.0 - left,
         );
         if response.clicked() {
             data.roles.draft = Some(Draft {
@@ -1814,12 +1767,26 @@ fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings)
             data.roles.member_query.clear();
         }
     }
-    ui.add_space(space::SM);
-    if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+    let bottom = ui.cursor().min.y;
+    if bottom > card_top {
+        ui.painter().set(
+            card_slot,
+            egui::epaint::RectShape::new(
+                Rect::from_min_max(egui::pos2(ui.max_rect().min.x, card_top), egui::pos2(ui.max_rect().min.x + width, bottom)),
+                CornerRadius::same(10),
+                t.card,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+    if new_role {
         // Cargo novo começa pelo nome e pela cor.
         data.roles.draft = Some(Draft::default());
         data.roles.tab = Tab::Look;
     }
+    ui.add_space(22.0);
 }
 
 fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
@@ -1996,7 +1963,6 @@ enum TreeAction {
     },
 }
 
-const TREE_ROW: f32 = 34.0;
 const TREE_INDENT: f32 = 20.0;
 
 /// Para onde um arrasto leva: antes de qual item visível (ou para o fim) e
@@ -2062,7 +2028,59 @@ fn move_action(
     })
 }
 
-/// Categorias e canais com alça de arrastar e ações fixas à direita.
+/// Os quatro botões de uma linha: subir, descer, editar e apagar. Aparecem
+/// com o ponteiro em cima e, no toque, ficam sempre à mostra.
+fn row_tools(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    id: &str,
+    rect: Rect,
+    can_up: bool,
+    can_down: bool,
+    show: bool,
+) -> Option<usize> {
+    use egui_phosphor::regular as icon;
+    let side = 28.0;
+    let gap = 4.0;
+    let mut right = rect.max.x - 12.0;
+    let mut hit = None;
+    for (glyph, danger, which) in [
+        (icon::TRASH, true, 3),
+        (icon::PENCIL_SIMPLE, false, 2),
+        (icon::ARROW_DOWN, false, 1),
+        (icon::ARROW_UP, false, 0),
+    ] {
+        let enabled = match which {
+            0 => can_up,
+            1 => can_down,
+            _ => true,
+        };
+        let tool = Rect::from_min_size(egui::pos2(right - side, rect.center().y - side / 2.0), Vec2::splat(side));
+        right -= side + gap;
+        // O espaço é reservado mesmo escondido: o texto não muda de largura.
+        let response = ui.interact(tool, egui::Id::new(("ferramenta", id, which)), if show && enabled { Sense::click() } else { Sense::hover() });
+        if !show {
+            continue;
+        }
+        if response.hovered() && enabled {
+            ui.painter().rect_filled(tool, CornerRadius::same(8), t.fill_soft);
+        }
+        ui.painter().text(
+            tool.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(15.0),
+            if danger && response.hovered() { t.danger } else { t.label_secondary }.gamma_multiply(if enabled { 1.0 } else { 0.3 }),
+        );
+        if response.clicked() {
+            hit = Some(which);
+        }
+    }
+    hit
+}
+
+/// Categorias e canais como no mock: cada categoria é um cartão com o nome
+/// em cima, a alça para arrastar à esquerda e as ações à direita.
 /// Soltar reordena (e troca de categoria) num pedido só.
 fn channel_tree(
     ui: &mut egui::Ui,
@@ -2071,176 +2089,189 @@ fn channel_tree(
     store: &Store,
     media: &mut crate::media::MediaStore,
     channel_emoji_monochrome: bool,
-    collapsed: &mut std::collections::HashSet<String>,
+    _collapsed: &mut std::collections::HashSet<String>,
     dragging: &mut Option<String>,
 ) -> Option<TreeAction> {
     use egui_phosphor::regular as icon;
     let layout = store.channel_layout();
     let total = layout.len() as i32;
-    // Visíveis: os filhos de categoria recolhida somem.
     let visible: Vec<(&crate::state::Channel, Option<String>)> = layout
         .iter()
         .map(|(index, parent)| (&store.channels[*index], parent.clone()))
-        .filter(|(_, parent)| parent.as_ref().is_none_or(|p| !collapsed.contains(p)))
         .collect();
     let items: Vec<(String, i32, bool, Option<String>, bool)> = visible
         .iter()
-        .map(|(c, parent)| {
-            let is_category = c.kind == crate::state::ChannelKind::Category;
-            (c.id.clone(), c.position, is_category, parent.clone(), is_category && collapsed.contains(&c.id))
-        })
+        .map(|(c, parent)| (c.id.clone(), c.position, c.kind == crate::state::ChannelKind::Category, parent.clone(), false))
         .collect();
 
     let mut action = None;
-    let mut rects = Vec::with_capacity(visible.len());
-    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
-    let touch_layout = tiles(ui);
-    let row_h = if touch_layout { 46.0 } else { TREE_ROW };
-    let tool_side = if touch_layout { 32.0 } else { 24.0 };
-    let tool_gap = 4.0;
-    for (index, (channel, parent)) in visible.iter().enumerate() {
+    let mut rects: Vec<Rect> = Vec::with_capacity(visible.len());
+    let touch = tiles(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let width = fit_width(ui);
+    let last = items.len().saturating_sub(1);
+    let mut index = 0;
+    let mut first_group = true;
+    while index < visible.len() {
+        let (head_channel, _) = &visible[index];
         let is_category = items[index].2;
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
-        rects.push(rect);
-        let being_dragged = dragging.as_deref() == Some(channel.id.as_str());
-        let hovered = response.hovered() || being_dragged;
-        if hovered {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
+        if !first_group {
+            ui.add_space(22.0);
         }
-        let alpha = if being_dragged { 0.45 } else { 1.0 };
-        let indent = if parent.is_some() { TREE_INDENT } else { 0.0 };
+        first_group = false;
 
-        // Alça: é por ela que se arrasta, para o clique no resto da linha
-        // continuar sendo clique. No layout de toque ela cresce junto da linha.
-        let grip_w = if touch_layout { 28.0 } else { 22.0 };
-        let grip = Rect::from_min_size(
-            egui::pos2(rect.min.x + indent, rect.min.y),
-            Vec2::new(grip_w, row_h),
-        );
-        let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
-        if grip_response.hovered() || grip_response.dragged() {
-            ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
-        }
-        if grip_response.drag_started() {
-            *dragging = Some(channel.id.clone());
-        }
-        ui.painter().text(
-            grip.center(),
-            egui::Align2::CENTER_CENTER,
-            icon::DOTS_SIX_VERTICAL,
-            text::icon(13.0),
-            if hovered { t.label_secondary } else { t.label_tertiary }.gamma_multiply(alpha),
-        );
-
-        let mut x = grip.max.x + space::XS;
+        // Cabeçalho do grupo: a categoria (com alça e ações) ou "Sem categoria".
         if is_category {
-            let folded = collapsed.contains(&channel.id);
-            ui.painter().text(
-                egui::pos2(x + 5.0, rect.center().y),
-                egui::Align2::CENTER_CENTER,
-                if folded { icon::CARET_RIGHT } else { icon::CARET_DOWN },
-                text::icon(10.0),
-                t.label_secondary,
+            let channel = *head_channel;
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::hover());
+            rects.push(rect);
+            let being = dragging.as_deref() == Some(channel.id.as_str());
+            let alpha = if being { 0.45 } else { 1.0 };
+            let grip = Rect::from_min_size(egui::pos2(rect.min.x + 6.0, rect.min.y), Vec2::new(18.0, 28.0));
+            let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
+            if grip_response.hovered() || grip_response.dragged() {
+                ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+            }
+            if grip_response.drag_started() {
+                *dragging = Some(channel.id.clone());
+            }
+            ui.painter().text(grip.center(), egui::Align2::CENTER_CENTER, icon::DOTS_SIX_VERTICAL, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+            let tools_w = 4.0 * 32.0 + 12.0;
+            super::emoji::draw_channel_name(
+                ui,
+                t,
+                media,
+                store,
+                &channel.name,
+                egui::pos2(rect.min.x + 28.0, rect.center().y),
+                px(11.5, "semibold"),
+                t.label_secondary.gamma_multiply(alpha),
+                rect.width() - 28.0 - tools_w,
+                channel_emoji_monochrome,
+                false,
             );
-            if response.clicked() {
-                if folded {
-                    collapsed.remove(&channel.id);
-                } else {
-                    collapsed.insert(channel.id.clone());
-                }
+            let show = (response.hovered() || ui.rect_contains_pointer(rect) || touch) && dragging.is_none();
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, index > 0, index < last, show) {
+                action = match which {
+                    0 => move_action(&items, index, index - 1, total),
+                    1 => move_action(&items, index, index + 2, total),
+                    2 => Some(TreeAction::Edit(channel.id.clone())),
+                    _ => Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
+                };
             }
-            x += 16.0;
+            ui.add_space(6.0);
+            index += 1;
         } else {
-            let glyph = if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH };
-            ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
-            x += 18.0;
-        }
-        let tools_w = 4.0 * (tool_side + tool_gap);
-        let name_rect = super::emoji::draw_channel_name(
-            ui,
-            t,
-            media,
-            store,
-            &channel.name,
-            egui::pos2(x, rect.center().y),
-            if is_category {
-                text::subheadline()
-            } else {
-                text::body()
-            },
-            if is_category {
-                t.label_secondary
-            } else {
-                t.label
-            }
-            .gamma_multiply(alpha),
-            rect.max.x - tools_w - space::MD - x,
-            channel_emoji_monochrome,
-            is_category,
-        );
-        if let Some(topic) = channel.topic.as_deref().filter(|topic| !topic.is_empty() && !is_category) {
-            let left = name_rect.max.x + space::SM;
-            let room = rect.max.x - tools_w - space::MD - left;
-            if room > 40.0 {
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y), egui::Align2::LEFT_CENTER, topic, text::footnote(), t.label_tertiary, room);
-            }
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.label(RichText::new(s.no_category).font(px(11.5, "semibold")).color(t.label_secondary));
+            });
+            ui.add_space(6.0);
         }
 
-        // Editar e apagar são ações fixas. Em toque elas ganham alvos maiores;
-        // no desktop continuam compactas e recebem apenas o realce de hover.
-        // A coluna fica reservada até durante drag, então o texto nunca muda
-        // de largura quando o estado da linha muda.
-        if dragging.is_none() {
-            let mut right = rect.max.x - space::SM;
-            let last = items.len() - 1;
-            for (glyph, danger, which) in [
-                (icon::TRASH, true, 1),
-                (icon::PENCIL_SIMPLE, false, 0),
-                (icon::ARROW_DOWN, false, 3),
-                (icon::ARROW_UP, false, 2),
-            ] {
-                // Setas: no toque não há hover nem arrasto fácil, então subir
-                // e descer um passo é um toque. Nas pontas ficam apagadas.
-                let enabled = match which {
-                    2 => index > 0,
-                    3 => index < last,
-                    _ => true,
-                };
-                let tool = Rect::from_min_size(
-                    egui::pos2(right - tool_side, rect.center().y - tool_side / 2.0),
-                    Vec2::splat(tool_side),
-                );
-                right -= tool_side + tool_gap;
-                let tool_response = ui.interact(
-                    tool,
-                    egui::Id::new(("ferramenta-canal", &channel.id, which)),
-                    if enabled { Sense::click() } else { Sense::hover() },
-                );
-                if tool_response.hovered() && enabled {
-                    ui.painter().rect_filled(
-                        tool,
-                        CornerRadius::same(radius::CONTROL),
-                        t.fill_medium,
-                    );
-                }
-                ui.painter().text(
-                    tool.center(),
-                    egui::Align2::CENTER_CENTER,
-                    glyph,
-                    text::icon(if touch_layout { 15.0 } else { 13.0 }),
-                    if danger { t.danger } else { t.label_secondary }
-                        .gamma_multiply(if enabled { 1.0 } else { 0.3 }),
-                );
-                if tool_response.clicked() {
-                    match which {
-                        1 => action = Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
-                        0 => action = Some(TreeAction::Edit(channel.id.clone())),
-                        2 => action = move_action(&items, index, index - 1, total),
-                        _ => action = move_action(&items, index, index + 2, total),
-                    }
-                }
+        // Os canais do grupo: os filhos da categoria, ou a fileira de canais
+        // soltos até a próxima categoria.
+        let owner = is_category.then(|| head_channel.id.clone());
+        let start = index;
+        while index < visible.len() {
+            let belongs = if let Some(owner) = &owner {
+                visible[index].1.as_deref() == Some(owner.as_str())
+            } else {
+                !items[index].2 && visible[index].1.is_none()
+            };
+            if !belongs {
+                break;
             }
+            index += 1;
+        }
+        let card_slot = ui.painter().add(egui::Shape::Noop);
+        let card_top = ui.cursor().min.y;
+        if start == index {
+            // Categoria vazia: um aviso no lugar das linhas.
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, s.category_empty, px(12.0, "regular"), t.label_secondary);
+        }
+        for (row, (channel, _)) in visible.iter().enumerate().take(index).skip(start) {
+            let h = if channel.topic.as_deref().is_some_and(|topic| !topic.is_empty()) { 54.0 } else { 48.0 };
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+            rects.push(rect);
+            let being = dragging.as_deref() == Some(channel.id.as_str());
+            let alpha = if being { 0.45 } else { 1.0 };
+            let hovered = ui.rect_contains_pointer(rect) || being;
+            if hovered {
+                let top = if row == start { 10 } else { 0 };
+                let bottom = if row + 1 == index { 10 } else { 0 };
+                ui.painter().rect_filled(rect, CornerRadius { nw: top, ne: top, sw: bottom, se: bottom }, t.fill_soft);
+            }
+            if row > start {
+                ui.painter().line_segment(
+                    [egui::pos2(rect.min.x + ROW_INSET, rect.min.y), egui::pos2(rect.max.x, rect.min.y)],
+                    Stroke::new(0.5, t.separator),
+                );
+            }
+            let _ = response;
+            let grip = Rect::from_min_size(egui::pos2(rect.min.x + 6.0, rect.min.y), Vec2::new(18.0, h));
+            let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
+            if grip_response.hovered() || grip_response.dragged() {
+                ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+            }
+            if grip_response.drag_started() {
+                *dragging = Some(channel.id.clone());
+            }
+            ui.painter().text(grip.center(), egui::Align2::CENTER_CENTER, icon::DOTS_SIX_VERTICAL, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+
+            let tile = Rect::from_center_size(egui::pos2(rect.min.x + 34.0 + 14.0, rect.center().y), Vec2::splat(28.0));
+            ui.painter().rect_filled(tile, CornerRadius::same(8), t.fill_soft.gamma_multiply(alpha));
+            ui.painter().text(
+                tile.center(),
+                egui::Align2::CENTER_CENTER,
+                if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH },
+                text::icon(14.0),
+                t.label_secondary.gamma_multiply(alpha),
+            );
+            let left = rect.min.x + 78.0;
+            let room = rect.width() - 78.0 - (4.0 * 32.0 + 12.0);
+            let topic = channel.topic.as_deref().filter(|topic| !topic.is_empty());
+            let name_y = if topic.is_some() { rect.center().y - 9.0 } else { rect.center().y };
+            super::emoji::draw_channel_name(
+                ui,
+                t,
+                media,
+                store,
+                &channel.name,
+                egui::pos2(left, name_y),
+                px(13.0, "medium"),
+                t.label.gamma_multiply(alpha),
+                room,
+                channel_emoji_monochrome,
+                false,
+            );
+            if let Some(topic) = topic {
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y + 9.0), egui::Align2::LEFT_CENTER, topic, px(11.5, "regular"), t.label_secondary.gamma_multiply(alpha), room);
+            }
+            let show = (hovered || touch) && dragging.is_none();
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, row > 0, row < last, show) {
+                action = match which {
+                    0 => move_action(&items, row, row - 1, total),
+                    1 => move_action(&items, row, row + 2, total),
+                    2 => Some(TreeAction::Edit(channel.id.clone())),
+                    _ => Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
+                };
+            }
+        }
+        // O cartão do grupo, pintado atrás das linhas agora que se sabe a altura.
+        let bottom = ui.cursor().min.y;
+        if bottom > card_top {
+            ui.painter().set(
+                card_slot,
+                egui::epaint::RectShape::new(
+                    Rect::from_min_max(egui::pos2(ui.max_rect().min.x, card_top), egui::pos2(ui.max_rect().min.x + width, bottom)),
+                    CornerRadius::same(10),
+                    t.card,
+                    Stroke::new(0.5, t.separator),
+                    egui::StrokeKind::Inside,
+                ),
+            );
         }
     }
     ui.spacing_mut().item_spacing.y = spacing;
@@ -2275,7 +2306,6 @@ fn channel_tree(
             *dragging = None;
         }
     }
-    let _ = s;
     action
 }
 
@@ -2444,8 +2474,15 @@ fn paint_server_icon(ui: &egui::Ui, t: &Tokens, rect: Rect, icon: Option<egui::T
             egui::Color32::WHITE,
         ),
         None => {
-            ui.painter().rect_filled(rect, CornerRadius::same(corner), t.accent.gamma_multiply(0.30));
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent);
+            let _ = t;
+            ui.painter().rect_filled(rect, CornerRadius::same(corner), egui::Color32::from_rgb(0xFF, 0x5C, 0x63));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initials,
+                px((rect.height() * 0.36).max(11.0), "semibold"),
+                egui::Color32::WHITE,
+            );
         }
     }
 }
@@ -2902,8 +2939,8 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), t.accent);
             }
         };
-        let address = data.server_url.trim_start_matches("https://").trim_start_matches("http://");
-        let head = Entry { glyph: "", title: &name, summary: format!("{address} · {} {}", store.members.len(), s.count_members) };
+        let access = if store.server.as_ref().is_none_or(|server| server.public) { s.access_public } else { s.access_private };
+        let head = Entry { glyph: "", title: &name, summary: format!("{access} · {} {}", store.members.len(), s.count_members) };
         list_tile(ui, t, &head, true, true, Some(&lead));
         ui.add_space(space::LG);
         let split = all.iter().position(|(pane, _)| matches!(pane, ServerPane::Emojis | ServerPane::Audit)).unwrap_or(all.len());
@@ -3111,21 +3148,21 @@ fn rail(
                     .and_then(|texture| texture.frame(&ctx))
                     .map(|handle| handle.id());
                 let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-                let (slot, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
-                let tile = Rect::from_center_size(egui::pos2(slot.min.x + space::MD + 20.0, slot.center().y), Vec2::splat(40.0));
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::hover());
+                let tile = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + 21.0, slot.center().y), Vec2::splat(42.0));
                 match texture {
-                    Some(texture) => crate::ui::widgets::photo(ui.painter(), tile, texture, crate::ui::widgets::FULL_UV, CornerRadius::same(radius::CARD), egui::Color32::WHITE),
+                    Some(texture) => crate::ui::widgets::photo(ui.painter(), tile, texture, crate::ui::widgets::FULL_UV, CornerRadius::same(10), egui::Color32::WHITE),
                     None => {
-                        ui.painter().rect_filled(tile, CornerRadius::same(radius::CARD), t.accent.gamma_multiply(0.30));
-                        ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), t.accent);
+                        ui.painter().rect_filled(tile, CornerRadius::same(10), t.accent.gamma_multiply(0.30));
+                        ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, &initials, px(15.0, "semibold"), t.accent);
                     }
                 }
-                let left = tile.max.x + space::MD;
-                let room = slot.max.x - space::SM - left;
-                let address = data.server_url.trim_start_matches("https://").trim_start_matches("http://");
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &name, text::headline(), t.label, room);
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, &format!("{address} · {} {}", store.members.len(), s.count_members), text::footnote(), t.label_tertiary, room);
-                ui.add_space(space::SM);
+                let left = tile.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
+                let access = if store.server.as_ref().is_none_or(|server| server.public) { s.access_public } else { s.access_private };
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &name, px(14.0, "medium"), t.label, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, &format!("{access} · {} {}", store.members.len(), s.count_members), px(11.5, "regular"), t.label_secondary, room);
+                ui.add_space(10.0);
             }
 
             // A coluna rola: com a busca, a lista de ajustes pode passar da
@@ -4125,62 +4162,56 @@ fn server_pane(
                 .take(2)
                 .collect::<String>()
                 .to_uppercase();
-            hero(ui, t, 52.0, |ui, area| {
-                let tile = Rect::from_min_size(area.min + Vec2::new(0.0, 4.0), Vec2::splat(44.0));
-                paint_server_icon(ui, t, tile, icon, &initials, radius::SHEET);
-                let pill = Rect::from_min_size(egui::pos2(tile.max.x + space::LG, area.min.y + 3.0), Vec2::new(216.0_f32.min(area.width() - 60.0), 46.0));
-                ui.painter().rect(pill, CornerRadius::same(12), t.glass_opaque, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-                let small = Rect::from_center_size(egui::pos2(pill.min.x + space::SM + 14.0, pill.center().y), Vec2::splat(28.0));
-                paint_server_icon(ui, t, small, icon, &initials, radius::FIELD);
-                let clip = ui.painter().with_clip_rect(pill.shrink(2.0));
-                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y - 7.0), egui::Align2::LEFT_CENTER, &draft.server_name, text::headline(), t.label);
-                let owner = data.store.server.as_ref().and_then(|server| server.description.clone()).unwrap_or_default();
-                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y + 8.0), egui::Align2::LEFT_CENTER, owner, text::footnote(), t.label_tertiary);
-                let wide = Rect::from_min_max(tile.min, pill.max);
-                hint_beside(ui, t, area, wide, s.preview_identity_hint);
-            });
-            section(ui, t, s.pane_identity);
-            group(ui, t, |rows| {
-                rows.field(s.server_name, &mut draft.server_name, 64, false);
-                // 36px icon + 26px picker button need actual breathing room
-                // between the separators; a normal 44px row made them appear
-                // pinned to the lower divider.
-                rows.min_height_next(52.0);
-                rows.row(s.server_icon, None, |ui, t| {
-                    if row_button(ui, t, s.change_server_icon, Emphasis::Quiet) {
-                        pick_icon = true;
-                    }
-                    // O ícone como o trilho mostra; clicar nele também troca.
-                    let (slot, response) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
-                    let corners = CornerRadius::same(radius::FIELD);
-                    match icon {
-                        Some(icon) => crate::ui::widgets::photo(
-                            ui.painter(),
-                            slot,
-                            icon,
-                            crate::ui::widgets::FULL_UV,
-                            corners,
-                            egui::Color32::WHITE,
-                        ),
-                        None => {
-                            ui.painter().rect_filled(slot, corners, t.fill_medium);
-                            ui.painter().text(
-                                slot.center(),
-                                egui::Align2::CENTER_CENTER,
-                                &initials,
-                                text::headline(),
-                                t.label,
-                            );
-                        }
-                    }
-                    if response.hovered() {
-                        ui.painter().rect_filled(slot, corners, egui::Color32::from_black_alpha(90));
+            // O cabeçalho da identidade: o ícone grande (clicar troca), o nome
+            // editável ali mesmo e, embaixo, quantos são e o atalho do ícone.
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.spacing_mut().item_spacing.x = 18.0;
+                let (slot, response) = ui.allocate_exact_size(Vec2::splat(84.0), Sense::click());
+                paint_server_icon(ui, t, slot, icon, &initials, 22);
+                if response.hovered() {
+                    ui.painter().rect_filled(slot, CornerRadius::same(22), egui::Color32::from_black_alpha(115));
+                    ui.painter().text(slot.center(), egui::Align2::CENTER_CENTER, s.server_icon_swap, px(11.5, "regular"), egui::Color32::WHITE);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    pick_icon = true;
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add_space(8.0);
+                    crate::ui::profile::inline_field(
+                        ui,
+                        t,
+                        "servidor-nome",
+                        &mut draft.server_name,
+                        s.server_name,
+                        px(22.0, "display"),
+                        t.label,
+                        64,
+                        (1, 1),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("{} {}", data.store.members.len(), s.count_members))
+                            .font(px(12.0, "regular"))
+                            .color(t.label_secondary),
+                    );
+                    ui.add_space(6.0);
+                    let link = ui.add(
+                        egui::Label::new(RichText::new(s.change_server_icon).font(px(12.0, "regular")).color(t.accent))
+                            .sense(Sense::click()),
+                    );
+                    if link.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    if response.clicked() {
+                    if link.clicked() {
                         pick_icon = true;
                     }
                 });
+            });
+            section(ui, t, s.server_access);
+            group(ui, t, |rows| {
                 rows.row(s.server_public, Some(s.server_public_hint), |ui, t| {
                     switch(ui, t, &mut draft.server_public);
                 });
@@ -4262,7 +4293,22 @@ fn server_pane(
         }
 
         ServerPane::Channels => {
-            section(ui, t, s.text_channels);
+            let mut create_kind: Option<&str> = None;
+            // A barra do topo: o nome da lista e os dois botões de criar.
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.label(RichText::new(s.channels_list_title).font(px(11.5, "semibold")).color(t.label_secondary));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if row_button(ui, t, s.create_channel, Emphasis::Quiet) {
+                        create_kind = Some("text");
+                    }
+                    if row_button(ui, t, s.create_category, Emphasis::Quiet) {
+                        create_kind = Some("category");
+                    }
+                });
+            });
+            ui.add_space(10.0);
             let channels: Vec<_> = data
                 .store
                 .channels
@@ -4609,14 +4655,13 @@ fn server_pane(
                 draft.deleting = None;
             }
 
-            ui.add_space(space::SM);
-            actions_row(ui, |ui| {
-                if row_button(ui, t, s.create_channel, Emphasis::Primary) {
-                    draft.deleting = None;
-                    draft.channel_permission = None;
-                    draft.channel = Some(ChannelDraft::create());
-                }
-            });
+            if let Some(kind) = create_kind {
+                draft.deleting = None;
+                draft.channel_permission = None;
+                let mut editor = ChannelDraft::create();
+                editor.kind = kind.to_owned();
+                draft.channel = Some(editor);
+            }
         }
 
         ServerPane::Roles => roles_pane(ui, data, t, s, actions),
@@ -4624,12 +4669,20 @@ fn server_pane(
         ServerPane::Emojis => {
             // Escolher o arquivo abre o editor: recorte, prévia na conversa
             // e o nome, tudo num lugar só; Salvar já sobe.
-            section(ui, t, s.sticker_new);
-            group(ui, t, |rows| {
-                if rows.action(s.add_emoji, Some(s.sticker_hint), false) {
-                    actions.push(SettingsAction::Admin(AdminAction::PickSticker));
-                }
-            });
+            let width = fit_width(ui);
+            let (drop, response) = ui.allocate_exact_size(Vec2::new(width, 62.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(drop, CornerRadius::same(12), t.fill_soft);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let dash = Stroke::new(1.5, t.fill_medium);
+            let outline = [drop.left_top(), drop.right_top(), drop.right_bottom(), drop.left_bottom(), drop.left_top()];
+            ui.painter().extend(egui::Shape::dashed_line(&outline, dash, 5.0, 4.0));
+            ui.painter().text(egui::pos2(drop.center().x, drop.center().y - 8.0), egui::Align2::CENTER_CENTER, format!("+ {}", s.add_emoji), px(13.0, "regular"), t.label_secondary);
+            ui.painter().text(egui::pos2(drop.center().x, drop.center().y + 10.0), egui::Align2::CENTER_CENTER, s.sticker_hint, px(11.5, "regular"), t.label_tertiary);
+            if response.clicked() {
+                actions.push(SettingsAction::Admin(AdminAction::PickSticker));
+            }
 
             section(ui, t, s.server_emojis);
             let stickers: Vec<(String, String, Option<String>)> = data
@@ -4638,36 +4691,63 @@ fn server_pane(
                 .iter()
                 .map(|emoji| (emoji.id.clone(), emoji.name.clone(), emoji.blob.clone()))
                 .collect();
-            group(ui, t, |rows| {
-                if stickers.is_empty() {
-                    rows.row(s.no_stickers, None, |_, _| {});
-                }
-                for (id, name, blob) in &stickers {
-                    rows.preview_row(
+            if stickers.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(ROW_INSET);
+                    ui.label(RichText::new(s.no_stickers).font(px(12.0, "regular")).color(t.label_secondary));
+                });
+            }
+            // Grade de cartões: 104 de largura mínima, 10 entre eles.
+            let gap = 10.0;
+            let columns = (((width + gap) / (104.0 + gap)).floor() as usize).max(1);
+            let card_w = (width - gap * (columns as f32 - 1.0)) / columns as f32;
+            let ctx = ui.ctx().clone();
+            for chunk in stickers.chunks(columns) {
+                let (row, _) = ui.allocate_exact_size(Vec2::new(width, 104.0), Sense::hover());
+                for (column, (id, name, blob)) in chunk.iter().enumerate() {
+                    let rect = Rect::from_min_size(egui::pos2(row.min.x + column as f32 * (card_w + gap), row.min.y), Vec2::new(card_w, 104.0));
+                    let hovered = ui.rect_contains_pointer(rect);
+                    ui.painter().rect(rect, CornerRadius::same(12), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+                    let texture = data
+                        .media
+                        .emoji(id, blob.as_deref())
+                        .and_then(|texture| texture.frame(&ctx))
+                        .map(|handle| handle.id());
+                    let art = Rect::from_center_size(egui::pos2(rect.center().x, rect.min.y + 10.0 + 28.0), Vec2::splat(56.0));
+                    ui.painter().rect_filled(art, CornerRadius::same(14), t.fill_soft);
+                    draw_sticker(ui, t, art.shrink(8.0), texture);
+                    crate::ui::widgets::text_fit(
+                        ui.painter(),
+                        egui::pos2(rect.center().x, rect.max.y - 18.0),
+                        egui::Align2::CENTER_CENTER,
                         &format!(":{name}:"),
-                        data.media,
-                        id,
-                        blob.as_deref(),
-                        |ui, t| {
-                            if row_button(ui, t, s.delete, Emphasis::Danger) {
-                                actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(
-                                    id.clone(),
-                                )));
-                            }
-                        },
+                        px(11.5, "regular"),
+                        t.label_secondary,
+                        rect.width() - 12.0,
                     );
+                    let trash = Rect::from_min_size(egui::pos2(rect.max.x - 4.0 - 28.0, rect.min.y + 4.0), Vec2::splat(28.0));
+                    let tool = ui.interact(trash, egui::Id::new(("apagar-figurinha", id)), if hovered || tiles(ui) { Sense::click() } else { Sense::hover() });
+                    if hovered || tiles(ui) {
+                        if tool.hovered() {
+                            ui.painter().rect_filled(trash, CornerRadius::same(8), t.fill_soft);
+                        }
+                        ui.painter().text(trash.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::TRASH, text::icon(15.0), if tool.hovered() { t.danger } else { t.label_secondary });
+                    }
+                    if tool.clicked() {
+                        actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(id.clone())));
+                    }
                 }
-            });
+                ui.add_space(gap);
+            }
             // O backend não tem como renomear: `/emojis` só aceita criar e
             // apagar. Dizer isso é melhor do que oferecer um campo que não
             // salvaria, ou apagar e recriar por baixo — o id mudaria e as
             // reações já feitas com ela iriam junto.
-            ui.add_space(space::SM);
             ui.horizontal(|ui| {
                 ui.add_space(ROW_INSET);
                 ui.label(
                     RichText::new(s.sticker_rename_note)
-                        .font(text::footnote())
+                        .font(px(11.5, "regular"))
                         .color(t.label_tertiary),
                 );
             });
