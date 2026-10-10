@@ -1517,6 +1517,7 @@ impl PapoApp {
         }
 
         let ws = &mut self.workspaces[index];
+        ws.form.reset_success = false;
         ws.runtime.store.busy = true;
         ws.runtime.store.error = None;
         ws.runtime.net.send(if register {
@@ -2756,6 +2757,7 @@ impl PapoApp {
                         }
                         RuntimeEffect::PasswordRecovered => {
                             ws.form.reset_mode = false;
+                            ws.form.reset_success = true;
                             ws.form.reset_link.clear();
                             ws.form.reset_password.clear();
                             ws.form.reset_confirmation.clear();
