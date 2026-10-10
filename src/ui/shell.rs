@@ -1216,6 +1216,8 @@ pub fn draw(
         }
         state.media.saved = None;
         state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         state.close_popup();
@@ -5914,6 +5916,8 @@ fn message_body(
             });
             if cancel {
                 state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.editing_mentions.clear();
                 state.editing_custom_embeds = None;
                 state.custom_embed_editor = false;
@@ -7892,6 +7896,8 @@ fn hover_pill(
                     let (content, bindings) =
                         store.display_mentions_with_bindings(&message.content);
                     state.editing = Some((message.id.clone(), content));
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                     state.editing_mentions = bindings;
                     state.edit_focus_pending = true;
                 }
@@ -8392,6 +8398,8 @@ fn context_menu(
                 let (content, bindings) =
                     store.display_mentions_with_bindings(&message.content);
                 state.editing = Some((message.id.clone(), content));
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.editing_mentions = bindings;
                 state.edit_focus_pending = true;
             }
@@ -9585,6 +9593,8 @@ fn composer(
         // Portanto ele encerra a edição. Se caiu no compositor, o foco é
         // transferido para ele logo abaixo.
         state.editing = None;
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
         state.editing_mentions.clear();
         state.edit_focus_pending = false;
         crate::platform::native_text::dismiss();
