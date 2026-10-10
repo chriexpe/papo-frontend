@@ -705,6 +705,7 @@ pub struct Stash {
     pub reply_notify: bool,
     pub editing: Option<(String, String)>,
     pub editing_mentions: Vec<MentionBinding>,
+    pub editing_custom_embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
     /// A edição acabou de abrir e deve pedir foco exatamente uma vez.
     pub edit_focus_pending: bool,
     pub viewer: Option<Viewer>,
@@ -731,6 +732,7 @@ impl Stash {
             reply_notify: true,
             editing: None,
             editing_mentions: Vec::new(),
+            editing_custom_embeds: None,
             edit_focus_pending: false,
             viewer: None,
             link_viewer: None,
@@ -759,6 +761,7 @@ impl Stash {
         std::mem::swap(&mut self.reply_notify, &mut ui.reply_notify);
         std::mem::swap(&mut self.editing, &mut ui.editing);
         std::mem::swap(&mut self.editing_mentions, &mut ui.editing_mentions);
+        std::mem::swap(&mut self.editing_custom_embeds, &mut ui.editing_custom_embeds);
         std::mem::swap(&mut self.edit_focus_pending, &mut ui.edit_focus_pending);
         std::mem::swap(&mut self.viewer, &mut ui.viewer);
         std::mem::swap(&mut self.link_viewer, &mut ui.link_viewer);
@@ -859,6 +862,7 @@ pub struct UiState {
     /// Mensagem sendo editada, com o texto em edição.
     pub editing: Option<(String, String)>,
     pub editing_mentions: Vec<MentionBinding>,
+    pub editing_custom_embeds: Option<Vec<crate::api::models::CustomEmbedInput>>,
     /// Só o primeiro quadro da edição pede foco ao TextEdit.
     pub edit_focus_pending: bool,
     pub actions: Vec<ChatAction>,
@@ -1043,6 +1047,7 @@ impl Default for UiState {
             reply_notify_default: true,
             editing: None,
             editing_mentions: Vec::new(),
+            editing_custom_embeds: None,
             edit_focus_pending: false,
             actions: Vec::new(),
             viewer: None,
@@ -5888,6 +5893,17 @@ fn message_body(
             *buffer = buffer_copy;
             reanchor_mentions(buffer, &mut state.editing_mentions);
 
+            if message.previews.iter().any(|preview| preview.source_type.as_deref() == Some("custom"))
+                && message.previews.iter().filter(|preview| preview.source_type.as_deref() == Some("custom"))
+                    .all(|preview| crate::api::models::CustomEmbedInput::from_media_free_preview(preview).is_some())
+            {
+                if ui.button("Editar embeds personalizados").clicked() {
+                    state.editing_custom_embeds = Some(message.previews.iter()
+                        .filter_map(crate::api::models::CustomEmbedInput::from_media_free_preview)
+                        .collect());
+                    state.custom_embed_editor = true;
+                }
+            }
             let cancel = ui.input(|input| input.key_pressed(egui::Key::Escape));
             ui.horizontal(|ui| {
                 ui.label(
@@ -5899,20 +5915,24 @@ fn message_body(
             if cancel {
                 state.editing = None;
                 state.editing_mentions.clear();
+                state.editing_custom_embeds = None;
+                state.custom_embed_editor = false;
                 state.edit_focus_pending = false;
             } else if save
                 && let Some((id, content)) = state.editing.take()
             {
                 state.edit_focus_pending = false;
                 let content = content.trim().to_owned();
-                if content.is_empty() {
+                let embeds = state.editing_custom_embeds.take();
+                state.custom_embed_editor = false;
+                if content.is_empty() && embeds.as_ref().is_none_or(|entries| entries.is_empty()) {
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Delete(id));
                 } else {
                     let content = store.encode_mentions(&content, &state.editing_mentions);
                     state.editing_mentions.clear();
                     state.actions.push(ChatAction::Edit {
-                        embeds: None,
+                        embeds,
                         message_id: id,
                         content,
                     });
@@ -9005,6 +9025,12 @@ fn custom_embed_authoring(ui: &egui::Ui, state: &mut UiState, t: &Tokens) {
         return;
     }
     let mut open = true;
+    let editing = state.editing.is_some() && state.editing_custom_embeds.is_some();
+    let embeddings = if editing {
+        state.editing_custom_embeds.as_mut().expect("edit draft")
+    } else {
+        &mut state.custom_embeds
+    };
     egui::Window::new("Embeds personalizados")
         .id(Id::new("custom-embed-authoring"))
         .resizable(true)
@@ -9021,7 +9047,7 @@ fn custom_embed_authoring(ui: &egui::Ui, state: &mut UiState, t: &Tokens) {
             let mut removed = None;
             let mut add_new = false;
             egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
-                for (i, embed) in state.custom_embeds.iter_mut().enumerate() {
+                for (i, embed) in embeddings.iter_mut().enumerate() {
                     ui.heading(format!("Embed {}", i + 1));
                     let prefix = format!("embed-{i}");
                     custom_embed_form_field(ui, t, &format!("{prefix}-title"), "Título", &mut embed.title, false);
@@ -9072,12 +9098,12 @@ fn custom_embed_authoring(ui: &egui::Ui, state: &mut UiState, t: &Tokens) {
                     ui.separator();
                 }
             });
-            if let Some(i) = removed { state.custom_embeds.remove(i); }
-            if state.custom_embeds.len() < 10 && ui.button("+ Embed").clicked() { add_new = true; }
-            if add_new { state.custom_embeds.push(Default::default()); }
+            if let Some(i) = removed { embeddings.remove(i); }
+            if embeddings.len() < 10 && ui.button("+ Embed").clicked() { add_new = true; }
+            if add_new { embeddings.push(Default::default()); }
             ui.label("Embeds serão enviados junto com a mensagem, pela fila normal.");
         });
-    state.custom_embed_editor = open && !state.custom_embeds.is_empty();
+    state.custom_embed_editor = open && (editing || !embeddings.is_empty());
 }
 
 fn composer(
