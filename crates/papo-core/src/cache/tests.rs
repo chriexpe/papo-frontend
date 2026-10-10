@@ -594,6 +594,35 @@ fn retention_is_hard_bounded() {
 }
 
 #[test]
+fn embedded_message_restores_from_cache_without_network() {
+    let temp = TempDb::new("embedded-message");
+    let db = open(&temp);
+    let mut msg = message("bridge", "geral", "", 1_000);
+    msg.embeds = serde_json::from_value(serde_json::json!([{
+        "id": "embed-1",
+        "source_type": "custom",
+        "title": "Jenga",
+        "description": "Mensagem de outro servidor",
+        "author": {"name": "Jenga"},
+        "footer": {"text": "Discord"}
+    }])).unwrap();
+
+    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "geral".to_owned(),
+        messages: vec![msg],
+        cached_at: now_millis(),
+    }]);
+    db.flush();
+
+    let page = db.load_channel_page("srv", "geral", None).unwrap();
+    assert_eq!(page.messages.len(), 1);
+    let restored = page.messages[0].to_store();
+    assert_eq!(restored.previews.len(), 1);
+    assert_eq!(restored.previews[0].title.as_deref(), Some("Jenga"));
+    assert_eq!(restored.previews[0].description.as_deref(), Some("Mensagem de outro servidor"));
+}
+
+#[test]
 fn attachment_metadata_survives() {
     let temp = TempDb::new("attachment");
     let db = open(&temp);
