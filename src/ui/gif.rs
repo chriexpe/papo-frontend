@@ -29,7 +29,7 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     let Some(opened) = state.gif_picker_opened else {
         return;
     };
-    let Some(anchor) = state.gif_picker_anchor else {
+    if state.gif_picker_anchor.is_none() {
         state.gif_picker_opened = None;
         return;
     };
