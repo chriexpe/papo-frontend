@@ -354,13 +354,9 @@ enum TimelineMutation {
         message_id: String,
         pinned: bool,
     },
-    PreviewRemoved {
+    EmbedsReplaced {
         message_id: String,
-        preview_id: String,
-    },
-    PreviewUpsert {
-        message_id: String,
-        preview: models::LinkPreview,
+        embeds: Vec<models::LinkPreview>,
     },
     AttachmentModeration {
         message_id: String,
@@ -395,8 +391,7 @@ impl TimelineMutation {
             TimelineMutation::LocalReaction { message_id, .. } => Some(message_id),
             TimelineMutation::AttachmentModeration { message_id, .. } => Some(message_id),
             TimelineMutation::MessagePending { id, .. } => Some(id),
-            TimelineMutation::PreviewRemoved { message_id, .. }
-            | TimelineMutation::PreviewUpsert { message_id, .. } => Some(message_id),
+            TimelineMutation::EmbedsReplaced { message_id, .. } => Some(message_id),
         }
     }
 }
@@ -1733,35 +1728,13 @@ impl Store {
                     message.pinned = pinned;
                 }
             }
-            TimelineMutation::PreviewRemoved {
-                message_id,
-                preview_id,
-            } => {
+            TimelineMutation::EmbedsReplaced { message_id, embeds } => {
                 if let Some(message) = self
                     .messages
                     .iter_mut()
                     .find(|message| message.id == message_id)
                 {
-                    message.previews.retain(|preview| preview.id != preview_id);
-                }
-            }
-            TimelineMutation::PreviewUpsert {
-                message_id,
-                preview,
-            } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    match message
-                        .previews
-                        .iter_mut()
-                        .find(|existing| existing.id == preview.id)
-                    {
-                        Some(existing) => *existing = preview,
-                        None => message.previews.push(preview),
-                    }
+                    message.previews = embeds;
                 }
             }
             TimelineMutation::AttachmentModeration {
@@ -3041,39 +3014,16 @@ impl Store {
                     },
                 );
             }
-            Event::NewPreview { .. } => {
-                // O worker de rede resolve new_preview para LinkPreviewUpdated
-                // antes de publicar o evento para a Store.
-            }
-            Event::RemovePreview {
+            Event::MessageEmbedsUpdated {
+                channel_id,
                 message_id,
-                preview_id,
+                embeds,
             } => {
-                let channel_id = self.channel_for_message(&message_id);
                 self.apply_mutation(
                     MutationSource::Live,
                     StoreMutation::Timeline {
-                        channel_id,
-                        mutation: TimelineMutation::PreviewRemoved {
-                            message_id,
-                            preview_id,
-                        },
-                    },
-                );
-            }
-            Event::LinkPreviewUpdated {
-                message_id,
-                preview,
-            } => {
-                let channel_id = self.channel_for_message(&message_id);
-                self.apply_mutation(
-                    MutationSource::Live,
-                    StoreMutation::Timeline {
-                        channel_id,
-                        mutation: TimelineMutation::PreviewUpsert {
-                            message_id,
-                            preview,
-                        },
+                        channel_id: Some(channel_id),
+                        mutation: TimelineMutation::EmbedsReplaced { message_id, embeds },
                     },
                 );
             }
@@ -4834,6 +4784,7 @@ mod tests {
                 pinned: false,
                 attachments: Vec::new(),
                 reactions: Vec::new(),
+                embeds: Vec::new(),
             }],
             cached_channels: ["geral".to_owned()].into_iter().collect(),
         }

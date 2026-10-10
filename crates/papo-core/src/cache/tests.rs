@@ -47,6 +47,7 @@ fn message(id: &str, channel: &str, content: &str, created_at: i64) -> CachedMes
         pinned: false,
         attachments: Vec::new(),
         reactions: Vec::new(),
+        embeds: Vec::new(),
     }
 }
 
@@ -590,6 +591,40 @@ fn retention_is_hard_bounded() {
     );
     // A janela mantém as mais recentes.
     assert!(snapshot.messages.iter().any(|m| m.id == format!("m{}", MESSAGE_RETENTION + 249)));
+}
+
+#[test]
+fn embedded_message_restores_from_cache_without_network() {
+    let temp = TempDb::new("embedded-message");
+    let db = open(&temp);
+    let mut msg = message("bridge", "geral", "", 1_000);
+    msg.embeds = serde_json::from_value(serde_json::json!([{
+        "id": "embed-1",
+        "source_type": "custom",
+        "title": "Jenga",
+        "description": "Mensagem de outro servidor",
+        "author": {"name": "Jenga"},
+        "footer": {"text": "Discord"}
+    }])).unwrap();
+
+    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "geral".to_owned(),
+        messages: vec![msg],
+        cached_at: now_millis(),
+    }]);
+    db.flush();
+
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .expect("page request")
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("page reply")
+        .expect("page");
+    assert_eq!(page.messages.len(), 1);
+    let restored = page.messages[0].to_store();
+    assert_eq!(restored.previews.len(), 1);
+    assert_eq!(restored.previews[0].title.as_deref(), Some("Jenga"));
+    assert_eq!(restored.previews[0].description.as_deref(), Some("Mensagem de outro servidor"));
 }
 
 #[test]

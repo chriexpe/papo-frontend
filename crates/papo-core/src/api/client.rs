@@ -1165,8 +1165,9 @@ impl Api {
         self.fetch_bytes(&format!("/media/{sha_hash}")).await
     }
 
+    /// Carrega o embed completo, incluindo imagem sob demanda.
     pub async fn link_preview(&self, preview_id: &str) -> ApiResult<LinkPreview> {
-        self.get(&format!("/link-previews/{preview_id}")).await
+        self.get(&format!("/embeds/{preview_id}")).await
     }
 
     // -- Auditoria ---------------------------------------------------------

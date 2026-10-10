@@ -674,7 +674,9 @@ pub struct Message {
     pub reply_to: Option<String>,
     #[serde(default, deserialize_with = "nullable_list")]
     pub attachments: Vec<Attachment>,
-    #[serde(default, deserialize_with = "nullable_list")]
+    // O backend unificou previews automáticos e embeds customizados em `embeds`.
+    // A representação local de previews continua independente do contrato REST.
+    #[serde(default, rename = "embeds", deserialize_with = "nullable_list")]
     pub previews: Vec<LinkPreview>,
     /// Contagem por tipo de emoji, sem a lista de quem reagiu.
     #[serde(default, deserialize_with = "nullable_list")]
@@ -719,29 +721,78 @@ impl Attachment {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
     pub id: String,
-    /// URL normalizada pelo backend.
+    /// `link` ou `custom`.
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub fetch_method: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub site_name: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub kind: String,
     pub title: Option<String>,
     pub description: Option<String>,
-    /// O contrato atual chama este campo de `provider_name`; o alias mantém
-    /// compatibilidade com servidores antigos que usavam `site_name`.
-    #[serde(default, alias = "site_name")]
-    pub provider_name: Option<String>,
-    /// Hoje o backend só preenche para embeds allowlistados (YouTube no MVP).
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub author: Option<EmbedAuthor>,
+    #[serde(default)]
+    pub thumbnail: Option<EmbedMedia>,
+    #[serde(default)]
+    pub image: Option<EmbedMedia>,
+    #[serde(default)]
+    pub video: Option<EmbedMedia>,
+    #[serde(default)]
+    pub footer: Option<EmbedFooter>,
+    #[serde(default)]
+    pub fields: Vec<EmbedField>,
+    #[serde(default)]
     pub embed_url: Option<String>,
-    pub image_mime_type: Option<String>,
-    pub image_size_bytes: Option<i64>,
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default)]
     pub fetched_at: Option<DateTime<Utc>>,
-    /// Só vem em GET /link-previews/:id e em link_preview_update; a listagem
-    /// de mensagens carrega os metadados sem duplicar a imagem em base64.
+    /// Bytes carregados sob demanda por GET /embeds/:id; não vêm na listagem.
     #[serde(default)]
     pub image_data: Option<String>,
+    #[serde(default)]
+    pub author_image_data: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbedAuthor {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub media: Option<EmbedMedia>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbedMedia {
+    pub url: Option<String>,
+    pub mime_type: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub size_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbedFooter {
+    pub text: Option<String>,
+    pub icon: Option<EmbedMedia>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbedField {
+    pub position: i32,
+    pub name: String,
+    pub value: String,
+    #[serde(default)]
+    pub inline: bool,
 }
 
 /// Um emoji de reação: unicode ou emoji custom do servidor.
@@ -1230,4 +1281,31 @@ mod tests {
         assert!(filters.get("mentions").is_none());
         assert!(filters.get("contains_link").is_none());
     }
+}
+
+#[cfg(test)]
+mod embed_contract_tests {
+    use super::*;
+
+    #[test]
+    fn backend_embeds_deserialize_with_custom_fields_and_null_lists() {
+        let message: Message = serde_json::from_str(r##"{
+            "id":"m1","channel_id":"c1","author_id":"u1",
+            "content":null,"created_at":"2026-10-09T00:00:00Z",
+            "edited_at":null,"reply_to":null,"attachments":null,
+            "embeds":[{"id":"e1","source_type":"custom","fetch_method":"manual",
+                "color":"#123456","title":"Notice",
+                "author":{"name":"System","media":{"mime_type":"image/png"}},
+                "fields":[{"position":0,"name":"Status","value":"Ready","inline":true}],
+                "footer":{"text":"End"}}],
+            "reactions":null,"user_reactions":null
+        }"##).unwrap();
+        assert_eq!(message.previews.len(), 1);
+        let embed = &message.previews[0];
+        assert_eq!(embed.source_type.as_deref(), Some("custom"));
+        assert_eq!(embed.fields[0].value, "Ready");
+        assert_eq!(embed.author.as_ref().and_then(|a| a.name.as_deref()), Some("System"));
+    }
+
+
 }

@@ -48,17 +48,11 @@ pub enum Event {
         message_id: String,
         pinned: bool,
     },
-    NewPreview {
+    /// Snapshot autoritativo da lista de embeds da mensagem, inclusive vazio.
+    MessageEmbedsUpdated {
+        channel_id: String,
         message_id: String,
-        preview_id: String,
-    },
-    RemovePreview {
-        message_id: String,
-        preview_id: String,
-    },
-    LinkPreviewUpdated {
-        message_id: String,
-        preview: LinkPreview,
+        embeds: Vec<LinkPreview>,
     },
     /// A moderação assíncrona decidiu sobre uma imagem.
     AttachmentModeration {
@@ -552,17 +546,10 @@ fn parse(text: &str) -> Option<Event> {
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(true),
         }),
-        "new_preview" => Some(Event::NewPreview {
+        "message_embeds_update" => Some(Event::MessageEmbedsUpdated {
+            channel_id: string("channel_id")?,
             message_id: string("message_id")?,
-            preview_id: string("preview_id")?,
-        }),
-        "remove_preview" => Some(Event::RemovePreview {
-            message_id: string("message_id")?,
-            preview_id: string("preview_id")?,
-        }),
-        "link_preview_update" => Some(Event::LinkPreviewUpdated {
-            message_id: string("message_id")?,
-            preview: serde_json::from_value(value.get("preview")?.clone()).ok()?,
+            embeds: serde_json::from_value(value.get("embeds")?.clone()).ok()?,
         }),
         "attachment_moderation_update" => Some(Event::AttachmentModeration {
             message_id: string("message_id")?,
@@ -634,6 +621,21 @@ fn parse(text: &str) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_de_embeds_pode_substituir_e_limpar() {
+        let event = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
+            "message_id":"m1","embeds":[{"id":"e1","source_type":"custom",
+            "title":"Status","fields":[{"position":0,"name":"X","value":"Y"}]}]}"#);
+        assert!(matches!(event, Some(Event::MessageEmbedsUpdated {
+            ref channel_id, ref message_id, ref embeds,
+        }) if channel_id == "c1" && message_id == "m1" &&
+            embeds.len() == 1 && embeds[0].fields[0].value == "Y"));
+
+        let empty = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
+            "message_id":"m1","embeds":[]}"#);
+        assert!(matches!(empty, Some(Event::MessageEmbedsUpdated { ref embeds, .. }) if embeds.is_empty()));
+    }
 
     #[test]
     fn le_evento_de_digitacao() {

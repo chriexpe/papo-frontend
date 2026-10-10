@@ -6330,10 +6330,17 @@ fn link_previews(
     allow_network: bool,
 ) {
     for preview in previews {
-        let Some(url) = preview.url.as_deref().filter(|url| !url.is_empty()) else {
-            continue;
-        };
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
+        if preview.source_type.as_deref() == Some("custom")
+            && preview.image.is_none()
+            && preview.thumbnail.is_none()
+            && preview.video.is_none()
+            && preview.embed_url.is_none()
+        {
+            custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
+            continue;
+        }
+        let url = preview.url.as_deref().unwrap_or("");
         preview_card(
             ui,
             state,
@@ -6349,6 +6356,201 @@ fn link_previews(
             },
         );
     }
+}
+
+/// O backend pode colocar o mesmo nome tanto em author.name quanto em title.
+/// Para embeds de bridge, a identidade do autor é o cabeçalho e não deve ser
+/// repetida abaixo como se fosse um título independente.
+fn custom_embed_title(
+    embed: &crate::api::models::LinkPreview,
+) -> Option<&str> {
+    let title = embed.title.as_deref().map(str::trim).filter(|value| !value.is_empty())?;
+    let author = embed
+        .author
+        .as_ref()
+        .and_then(|author| author.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    (!author.is_some_and(|name| name.eq_ignore_ascii_case(title))).then_some(title)
+}
+
+/// Card de conteúdo neutro: usa somente superfícies do tema do Papo.
+/// A cor de destaque pertence a controles e indicadores, não ao fundo das
+/// mensagens de terceiros.
+fn custom_embed_material(t: &Tokens) -> (Color32, Stroke) {
+    // O card pertence à camada de conteúdo, não à camada das pills.
+    // Mistura somente os neutros do próprio tema: nenhum accent, azul,
+    // cor do embed ou tinta dependente da cor escolhida pelo usuário.
+    let low = t.glass_opaque;
+    let high = t.elevated_bg;
+    let blend = |a: u8, b: u8| ((a as u16 * 35 + b as u16 * 65) / 100) as u8;
+    let fill = Color32::from_rgb(
+        blend(low.r(), high.r()),
+        blend(low.g(), high.g()),
+        blend(low.b(), high.b()),
+    );
+    (fill, Stroke::new(1.0, t.separator))
+}
+
+/// O card ocupa a largura disponível até um limite confortável de leitura,
+/// diferente do preview de link que tem uma largura mais curta por causa de
+/// capas/vídeo 16:9.
+fn custom_embed_inner_width(available: f32) -> f32 {
+    (available - space::XL * 2.0).clamp(1.0, 560.0)
+}
+
+/// Embeds personalizados de bridges (Discord, IRC etc.) devem parecer parte
+/// da conversa: identidade clara, conteúdo primeiro, metadados em segundo
+/// plano e uma única superfície levemente tonalizada.
+fn custom_embed_card(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    embed: &crate::api::models::LinkPreview,
+    card_id: &str,
+    width: f32,
+    allow_network: bool,
+) {
+    let author = embed
+        .author
+        .as_ref()
+        .and_then(|author| author.name.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let heading = custom_embed_title(embed);
+    let description = embed.description.as_deref().map(str::trim).filter(|text| !text.is_empty());
+    let footer = embed.footer.as_ref()
+        .and_then(|footer| footer.text.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty());
+    let source = embed.site_name.as_deref().or(embed.provider.as_deref())
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .filter(|name| !footer.is_some_and(|text| text.to_lowercase().contains(&name.to_lowercase())))
+        .filter(|name| !author.is_some_and(|a| a.eq_ignore_ascii_case(name))
+            && !heading.is_some_and(|a| a.eq_ignore_ascii_case(name)));
+
+    // Ícones autorais armazenados no backend são servidos pelo endpoint
+    // autenticado; a URL remota só é usada quando o embed anuncia uma.
+    let avatar_url = embed.author.as_ref()
+        .and_then(|author| author.media.as_ref())
+        .and_then(|media| media.url.as_deref());
+    let avatar = avatar_url.and_then(|url| {
+        if allow_network {
+            state.media.remote_image(card_id, url)
+        } else {
+            state.media.loaded_remote_image(url)
+        }
+    })
+    .and_then(|texture| texture.frame(ui.ctx()))
+    .cloned()
+    .or_else(|| {
+        let texture = if allow_network {
+            state.media.preview_author(embed)
+        } else {
+            state.media.loaded_preview_author(&embed.id)
+        };
+        texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
+    });
+
+    ui.add_space(space::SM);
+    let inner_width = custom_embed_inner_width(width);
+    let (fill, stroke) = custom_embed_material(t);
+    let corner = CornerRadius::same(16);
+    let frame = Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(corner)
+        .inner_margin(egui::Margin::symmetric(space::XL as i8, space::LG as i8));
+
+    let content = frame.show(ui, |ui| {
+        ui.set_width(inner_width);
+        if let Some(name) = author {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if avatar.is_some() || embed.author.as_ref().is_some_and(|a| a.media.is_some()) {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                    if let Some(texture) = avatar.as_ref() {
+                        round_photo(ui.painter(), rect, texture.id(), Color32::WHITE);
+                    } else {
+                        let accent = embed.color.as_deref().and_then(hex_color).unwrap_or(t.accent);
+                        ui.painter().circle_filled(
+                            rect.center(), rect.width() / 2.0, accent.gamma_multiply(0.20),
+                        );
+                        ui.painter().text(
+                            rect.center(), Align2::CENTER_CENTER,
+                            name.chars().next().unwrap_or('?').to_string(),
+                            text::subheadline(), accent,
+                        );
+                    }
+                }
+                ui.label(RichText::new(name).font(text::headline()).color(t.label));
+            });
+        }
+        if let Some(title) = heading {
+            if author.is_some() {
+                ui.add_space(space::XXS);
+            }
+            ui.label(RichText::new(title).font(text::headline()).color(t.label));
+        }
+        if let Some(body) = description {
+            if author.is_some() || heading.is_some() {
+                ui.add_space(space::MD);
+            }
+            ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
+        }
+        for field in &embed.fields {
+            ui.add_space(space::SM);
+            if !field.name.trim().is_empty() {
+                ui.label(
+                    RichText::new(field.name.trim())
+                        .font(text::caption()).color(t.label_tertiary),
+                );
+            }
+            ui.label(
+                RichText::new(field.value.trim()).font(text::body()).color(t.label_secondary),
+            );
+        }
+        if footer.is_some() || source.is_some() {
+            ui.add_space(space::SM);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = space::XS;
+                if let Some(footer) = footer {
+                    ui.label(RichText::new(footer).font(text::footnote()).color(t.label_tertiary));
+                }
+                if let Some(source) = source {
+                    if footer.is_some() {
+                        ui.label(RichText::new("·").font(text::footnote()).color(t.label_tertiary));
+                    }
+                    ui.label(RichText::new(source).font(text::footnote()).color(t.label_tertiary));
+                }
+            });
+        }
+    });
+
+    let rect = content.response.rect;
+    // Um único reflexo no topo sugere material elevado. Não há barra de
+    // destaque lateral competindo com o conteúdo (caso do print anterior).
+    ui.painter().line_segment(
+        [
+            egui::pos2(rect.min.x + 16.0, rect.min.y + 1.5),
+            egui::pos2(rect.max.x - 16.0, rect.min.y + 1.5),
+        ],
+        Stroke::new(1.0, t.glass_highlight),
+    );
+    // Custom embeds sem URL são apenas conteúdo: não há alvo de clique falso.
+    if let Some(url) = embed.url.as_deref()
+        && papo_core::preview::safe_remote_url(url)
+    {
+        let clicked = ui.interact(rect, Id::new(("custom-embed-open", card_id)), Sense::click());
+        if clicked.clicked() {
+            state.request_external_url(ui.ctx(), url.to_owned());
+        }
+        if clicked.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+    ui.add_space(space::XS);
 }
 
 fn rich_links_from_message(
@@ -6496,13 +6698,18 @@ fn preview_card(
     const MAX_W: f32 = 420.0;
     const IMAGE_MAX_H: f32 = 300.0;
 
-    let resolved = state.previews.as_ref().and_then(|coordinator| {
-        if policy.network {
-            coordinator.get_or_request(url)
-        } else {
-            coordinator.peek(url)
-        }
-    });
+    // Sem URL, o embed customizado já é a fonte completa de metadados.
+    let resolved = if url.is_empty() {
+        None
+    } else {
+        state.previews.as_ref().and_then(|coordinator| {
+            if policy.network {
+                coordinator.get_or_request(url)
+            } else {
+                coordinator.peek(url)
+            }
+        })
+    };
     let ready = match resolved.as_ref() {
         Some(PreviewState::Ready(preview)) => Some(preview.clone()),
         _ => None,
@@ -6562,7 +6769,8 @@ fn preview_card(
     let provider = ready
         .as_ref()
         .and_then(|preview| preview.provider_name.as_deref())
-        .or_else(|| backend.and_then(|preview| preview.provider_name.as_deref()))
+        .or_else(|| backend.and_then(|preview| preview.site_name.as_deref()))
+        .or_else(|| backend.and_then(|preview| preview.provider.as_deref()))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .or_else(|| {
@@ -6575,7 +6783,7 @@ fn preview_card(
     // (título/embed/media URL), depois a imagem realmente materializa.
     let phase = if image.is_some() {
         2
-    } else if ready.is_some() || video_url.is_some() || embed_url.is_some() {
+    } else if ready.is_some() || backend.is_some() || video_url.is_some() || embed_url.is_some() {
         1
     } else {
         0
@@ -6820,6 +7028,15 @@ fn preview_card(
             ui.add_space(space::XXS);
         }
 
+        if let Some(author) = backend.and_then(|embed| embed.author.as_ref())
+            && let Some(name) = author.name.as_deref()
+        {
+            ui.label(
+                RichText::new(name)
+                    .font(text::caption())
+                    .color(t.label_secondary),
+            );
+        }
         if let Some(title) = title {
             ui.label(RichText::new(title).font(text::headline()).color(t.label));
         }
@@ -6832,7 +7049,29 @@ fn preview_card(
             );
         }
 
-        if title.is_none() && description.is_none() {
+        if let Some(backend) = backend {
+            for field in &backend.fields {
+                ui.add_space(space::XXS);
+                ui.label(
+                    RichText::new(&field.name)
+                        .font(text::caption())
+                        .color(t.label_secondary),
+                );
+                ui.label(RichText::new(&field.value).font(text::body()).color(t.label));
+            }
+            if let Some(footer) = backend.footer.as_ref().and_then(|footer| footer.text.as_deref()) {
+                ui.add_space(space::SM);
+                ui.label(
+                    RichText::new(footer)
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
+            }
+        }
+
+        if title.is_none() && description.is_none()
+            && backend.is_none_or(|embed| embed.fields.is_empty() && embed.footer.is_none()
+                && embed.author.is_none()) {
             let label = match resolved {
                 Some(PreviewState::Loading) => "Carregando preview…",
                 Some(PreviewState::RetryLater { .. }) => url,
@@ -6871,7 +7110,12 @@ fn preview_card(
             egui::StrokeKind::Inside,
         ),
     );
-    if let Some(accent) = post.accent.as_deref().and_then(hex_color) {
+    if let Some(accent) = post
+        .accent
+        .as_deref()
+        .or_else(|| backend.and_then(|embed| embed.color.as_deref()))
+        .and_then(hex_color)
+    {
         let r = radius::CARD;
         ui.painter().rect_filled(
             Rect::from_min_size(rect.min, Vec2::new(4.0, rect.height())),
@@ -6922,7 +7166,7 @@ fn preview_card(
         );
         open_card |= response.clicked();
     }
-    if open_card && !media_clicked {
+    if open_card && !media_clicked && !url.is_empty() {
         state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
@@ -10462,5 +10706,59 @@ mod tab_focus_tests {
         // Sem o filtro, o egui move o foco (o defeito relatado).
         assert!(!focus_after_tab(false));
         assert!(focus_after_tab(true));
+    }
+}
+
+#[cfg(test)]
+mod custom_embed_tests {
+    use super::*;
+
+    fn embedded(author: Option<&str>, title: Option<&str>) -> crate::api::models::LinkPreview {
+        let mut json = serde_json::json!({
+            "id": "e1", "source_type": "custom", "description": "Olá",
+        });
+        if let Some(name) = author {
+            json["author"] = serde_json::json!({ "name": name });
+        }
+        if let Some(title) = title {
+            json["title"] = serde_json::json!(title);
+        }
+        serde_json::from_value(json).expect("valid embed")
+    }
+
+    #[test]
+    fn duplicate_bridge_author_title_is_suppressed() {
+        let item = embedded(Some("Jenga"), Some("  jenga "));
+        assert!(custom_embed_title(&item).is_none());
+    }
+
+    #[test]
+    fn genuine_distinct_embed_title_remains() {
+        let item = embedded(Some("Maco"), Some("Important announcement"));
+        assert_eq!(custom_embed_title(&item), Some("Important announcement"));
+        let item = embedded(None, Some("Maco"));
+        assert_eq!(custom_embed_title(&item), Some("Maco"));
+    }
+
+    #[test]
+    fn custom_embeds_use_neutral_material_in_both_themes() {
+        use crate::ui::theme::Appearance;
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let red = Tokens::new(appearance, Some(Color32::from_rgb(255, 20, 20)));
+            let blue = Tokens::new(appearance, Some(Color32::from_rgb(20, 20, 255)));
+            let (red_fill, red_stroke) = custom_embed_material(&red);
+            let (blue_fill, blue_stroke) = custom_embed_material(&blue);
+            // Embeds dependem somente das superfícies neutras, não da accent color.
+            assert_eq!(red_fill, blue_fill);
+            assert_eq!(red_stroke, blue_stroke);
+            assert_eq!(red_stroke.color, red.separator);
+        }
+    }
+
+    #[test]
+    fn card_width_respects_available_space_and_reading_limit() {
+        assert_eq!(custom_embed_inner_width(640.0), 560.0);
+        assert_eq!(custom_embed_inner_width(320.0), 288.0);
+        assert_eq!(custom_embed_inner_width(160.0), 128.0);
     }
 }

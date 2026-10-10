@@ -2149,27 +2149,8 @@ async fn worker(
                     });
                 }
 
-                // new_preview traz só o id porque o crawl termina depois da
-                // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
-                // para a Store receber o mesmo formato das mensagens listadas.
-                if let Event::NewPreview { message_id, preview_id } = event {
-                    match api.link_preview(&preview_id).await {
-                        Ok(preview) => publish(
-                            &updates,
-                            &wake,
-                            Update::Event(Box::new(Event::LinkPreviewUpdated {
-                                message_id,
-                                preview,
-                            })),
-                        ),
-                        Err(error) => log::warn!(
-                            "runtime {}: preview {preview_id} não carregou: {error}",
-                            storage_key
-                        ),
-                    }
-                } else {
-                    publish(&updates, &wake, Update::Event(Box::new(event)));
-                }
+                // O evento de embeds já traz o snapshot autoritativo da mensagem.
+                publish(&updates, &wake, Update::Event(Box::new(event)));
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };
@@ -2711,6 +2692,24 @@ async fn verify_saved_session_once(
     wake: &Wake,
 ) -> SavedSessionOutcome {
     let mut result = api.whoami().await;
+
+    // O access JWT expira em 24h, mas a conexão continua renovável por até
+    // 30 dias. Não descarte uma sessão persistida no primeiro 401: o endpoint
+    // de refresh valida o token expirado contra a conexão ainda ativa.
+    // Só uma rejeição definitiva do refresh encerra a sessão.
+    if matches!(result, Err(ApiError::Unauthorized)) {
+        match api.refresh().await {
+            Ok(()) => {
+                store_optional_secret(storage, storage_key, Secret::SessionToken, session.token());
+                result = api.whoami().await;
+            }
+            Err(ApiError::Unauthorized) => {}
+            Err(error) => {
+                log::warn!("runtime {storage_key}: refresh da sessão guardada falhou: {error}");
+                return SavedSessionOutcome::Transient;
+            }
+        }
+    }
 
     // Servidor fechado é um portão separado da conta. Se já conhecemos a
     // senha do servidor, abre e repete o whoami sem tocar no token do usuário.
