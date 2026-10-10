@@ -1526,6 +1526,49 @@ impl PapoApp {
         });
     }
 
+    /// A recuperação é pública: o token vem do link, nunca da sessão.
+    /// O link carrega o backend correto para não misturar instâncias.
+    fn recover_password(&mut self, ctx: &egui::Context) {
+        let index = self.active;
+        let form = &self.workspaces[index].form;
+        let raw = form.reset_link.trim();
+        let Some(link) = url::Url::parse(raw).ok().filter(|url| {
+            url.scheme() == "papo-reset" && url.host_str() == Some("passwordchange")
+        }) else {
+            self.workspaces[index].runtime.store.error = Some("Link de recuperação inválido".into());
+            return;
+        };
+        let token = link.path().trim_matches('/').to_owned();
+        let server = link.query_pairs()
+            .find(|(key, _)| key == "server")
+            .map(|(_, value)| normalise_server_url(&value));
+        let Some(server) = server.filter(|value| {
+            url::Url::parse(value).ok().is_some_and(|url| {
+                matches!(url.scheme(), "https" | "http") && url.host_str().is_some()
+            })
+        }) else {
+            self.workspaces[index].runtime.store.error = Some("Link sem endereço do servidor".into());
+            return;
+        };
+        if token.is_empty() || token.len() > 256 {
+            self.workspaces[index].runtime.store.error = Some("Token de recuperação inválido".into());
+            return;
+        }
+        if self.workspaces[index].form.reset_password != self.workspaces[index].form.reset_confirmation {
+            self.workspaces[index].runtime.store.error = Some("As senhas não conferem".into());
+            return;
+        }
+        let password = self.workspaces[index].form.reset_password.clone();
+        if server != normalise_server_url(&self.workspaces[index].runtime.url) {
+            self.reopen(index, server, ctx);
+        }
+        let ws = &mut self.workspaces[index];
+        ws.form.reset_mode = true;
+        ws.runtime.store.busy = true;
+        ws.runtime.store.error = None;
+        ws.runtime.net.send(Command::RecoverPassword { token, password });
+    }
+
     /// Manda a senha do servidor, para servidores fechados.
     fn unlock_server(&mut self) {
         let index = self.active;
@@ -2690,7 +2733,25 @@ impl PapoApp {
                                 self.settings.push_devices.remove(&key);
                             }
                         }
+                        RuntimeEffect::PasswordRecovered => {
+                            ws.form.reset_mode = false;
+                            ws.form.reset_link.clear();
+                            ws.form.reset_password.clear();
+                            ws.form.reset_confirmation.clear();
+                            ws.runtime.store.error = None;
+                            self.ui.error = Some((
+                                "Senha alterada com sucesso. Entre com a nova senha.".into(),
+                                ctx.input(|input| input.time),
+                            ));
+                        }
                         RuntimeEffect::PasswordResetLink { url, expires_at } => {
+                            // O servidor remoto pertence ao workspace em que o reset
+                            // foi solicitado; a URL de entrega nunca é global.
+                            let mut link = url::Url::parse(&url).ok();
+                            if let Some(link) = link.as_mut() {
+                                link.query_pairs_mut().append_pair("server", &ws.runtime.url);
+                            }
+                            let url = link.map(|url| url.to_string()).unwrap_or(url);
                             crate::platform::copy::text(ctx, url.clone());
                             let when = expires_at.with_timezone(&chrono::Local)
                                 .format("%Y-%m-%d %H:%M")
@@ -4107,6 +4168,7 @@ impl eframe::App for PapoApp {
                 match response.action {
                     AuthAction::SignIn => self.authenticate(false, &ctx),
                     AuthAction::Register => self.authenticate(true, &ctx),
+                    AuthAction::RecoverPassword => self.recover_password(&ctx),
                     AuthAction::UnlockServer => self.unlock_server(),
                     _ => {}
                 }
