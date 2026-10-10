@@ -6396,7 +6396,7 @@ fn custom_embed_material(t: &Tokens) -> (Color32, Stroke) {
 /// diferente do preview de link que tem uma largura mais curta por causa de
 /// capas/vídeo 16:9.
 fn custom_embed_inner_width(available: f32) -> f32 {
-    (available - space::XL * 2.0).max(1.0).min(560.0)
+    (available - space::XL * 2.0).clamp(1.0, 560.0)
 }
 
 /// Embeds personalizados de bridges (Discord, IRC etc.) devem parecer parte
@@ -10744,11 +10744,14 @@ mod custom_embed_tests {
     fn custom_embeds_use_neutral_material_in_both_themes() {
         use crate::ui::theme::Appearance;
         for appearance in [Appearance::Dark, Appearance::Light] {
-            let tokens = Tokens::new(appearance, Some(Color32::from_rgb(255, 20, 20)));
-            let (fill, stroke) = custom_embed_material(&tokens);
-            assert_eq!(fill.r(), fill.g());
-            assert_eq!(fill.g(), fill.b());
-            assert_eq!(stroke.color, tokens.separator);
+            let red = Tokens::new(appearance, Some(Color32::from_rgb(255, 20, 20)));
+            let blue = Tokens::new(appearance, Some(Color32::from_rgb(20, 20, 255)));
+            let (red_fill, red_stroke) = custom_embed_material(&red);
+            let (blue_fill, blue_stroke) = custom_embed_material(&blue);
+            // Embeds dependem somente das superfícies neutras, não da accent color.
+            assert_eq!(red_fill, blue_fill);
+            assert_eq!(red_stroke, blue_stroke);
+            assert_eq!(red_stroke.color, red.separator);
         }
     }
 
