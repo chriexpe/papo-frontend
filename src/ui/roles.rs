@@ -13,6 +13,7 @@ pub enum RoleAction {
         name: String,
         color: Option<String>,
         permissions: RolePermissions,
+        people: Vec<String>,
     },
     Update {
         role_id: String,

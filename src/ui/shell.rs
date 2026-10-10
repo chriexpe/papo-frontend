@@ -170,6 +170,8 @@ pub enum ChatAction {
         name: String,
         kind: String,
         topic: Option<String>,
+        parent_id: Option<String>,
+        access_roles: Vec<String>,
     },
     /// Salva nome/tópico de um canal depois da edição inline.
     UpdateChannel {

@@ -185,6 +185,9 @@ pub struct SettingsState {
     /// Quem tem acesso a cada canal, por pessoa. Só vive no app por ora: o
     /// servidor ainda não guarda isso.
     pub channel_people: std::collections::HashMap<String, Vec<String>>,
+    /// Pessoas de um canal que acabou de ser pedido: casam com o id quando
+    /// ele aparece na lista.
+    pub pending_channel_people: Option<(String, Vec<String>)>,
 }
 
 impl Default for SettingsState {
@@ -201,6 +204,7 @@ impl Default for SettingsState {
             server_pane: ServerPane::General,
             draft: Draft::default(),
             channel_people: std::collections::HashMap::new(),
+            pending_channel_people: None,
         }
     }
 }
@@ -2183,7 +2187,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
                 }
             }
         });
-        if draft.id.is_some() {
+        {
             card.section(s.people_caption, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = Vec2::splat(6.0);
@@ -2213,6 +2217,8 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
                     }
                 });
             });
+        }
+        if draft.id.is_some() {
             card.section("", |ui| {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.delete_role.to_owned(), px(12.0, "regular"), t.danger).size().x + 24.0, 26.0), Sense::click());
                 ui.painter().rect_filled(rect, CornerRadius::same(6), t.danger.gamma_multiply(if response.hovered() { 0.24 } else { 0.14 }));
@@ -2249,7 +2255,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
                         }
                         draft.original_people = draft.people.clone();
                     }
-                    None => actions.push(SettingsAction::Role(RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions })),
+                    None => actions.push(SettingsAction::Role(RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions, people: draft.people.clone() })),
                 }
             }
             Some(false) => data.roles.draft = None,
@@ -4656,6 +4662,12 @@ fn server_pane(
                 .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
                 .cloned()
                 .collect();
+            if let Some((name, _)) = &state.pending_channel_people
+                && let Some(created) = channels.iter().find(|c| c.name == *name && !state.channel_people.contains_key(&c.id))
+                && let Some((_, people)) = state.pending_channel_people.take()
+            {
+                state.channel_people.insert(created.id.clone(), people);
+            }
             let draft = &mut state.draft;
             let mut close_editor = false;
             let mut cancel_delete = false;
@@ -4694,7 +4706,7 @@ fn server_pane(
                             crate::ui::profile::inline_field(ui, t, "canal-topico", &mut editor.topic, s.channel_topic_hint, px(13.0, "regular"), t.label, 512, (1, 3));
                         });
                     }
-                    if existing.is_some() && editor.kind != "category" {
+                    if editor.kind != "category" {
                         card.section(s.channel_category, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::splat(6.0);
@@ -4718,7 +4730,7 @@ fn server_pane(
                             });
                         });
                     }
-                    if existing.is_some() && editor.kind != "category" {
+                    if editor.kind != "category" {
                         card.section(s.who_access, |ui| {
                             ui.horizontal_wrapped(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::splat(6.0);
@@ -4820,10 +4832,16 @@ fn server_pane(
                                 actions.push(SettingsAction::Chat(ChatAction::UpdateChannel { channel_id, name, topic }));
                             }
                             None => {
+                                let is_category = editor.kind == "category";
+                                if !is_category && !editor.people.is_empty() {
+                                    state.pending_channel_people = Some((name.clone(), editor.people.clone()));
+                                }
                                 actions.push(SettingsAction::Chat(ChatAction::CreateChannel {
                                     name,
                                     kind: editor.kind.clone(),
                                     topic: topic.filter(|topic| !topic.is_empty()),
+                                    parent_id: if is_category { None } else { editor.parent.clone() },
+                                    access_roles: if is_category { Vec::new() } else { editor.access_roles.clone() },
                                 }));
                             }
                         }
