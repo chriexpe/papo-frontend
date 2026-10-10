@@ -4,6 +4,7 @@
 //! grava e lê a projeção delimitada que a Store produz.
 
 use std::collections::HashSet;
+use base64::Engine as _;
 
 use turso::{Builder, Connection, Value};
 
@@ -11,7 +12,7 @@ use super::schema::apply_migrations;
 use super::types::{
     CachedAttachment, CachedChannel, CachedDraft, CachedMember, CachedMentionBinding, CachedMessage,
     CachedMessagePage, CachedOutgoing, CachedPreview, CachedReaction, CachedReadState, CachedServer,
-    CachedServerMetadata, CachedServerSnapshot, CacheOp, ClaimResult,
+    CachedServerMetadata, CachedServerSnapshot, CachedEmoji, CacheOp, ClaimResult,
     NotificationLedgerEntry, NotificationLedgerStats, OutgoingState, PreviewCacheState,
     CACHE_PAGE_SIZE, MESSAGE_RETENTION, NOTIFICATION_LEDGER_LIMIT, OUTGOING_LIMIT, PINNED_RETENTION,
     PREVIEW_CACHE_LIMIT,
@@ -267,6 +268,28 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             });
             statements
         }
+        CacheOp::ReplaceEmojis(emojis) => {
+            let mut statements = vec![Stmt {
+                sql: "DELETE FROM server_emojis WHERE server_key = ?1",
+                params: vec![text(server_key)],
+            }];
+            for emoji in emojis {
+                let bytes = emoji.blob.as_ref().and_then(|blob|
+                    base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()).ok()
+                );
+                statements.push(Stmt {
+                    sql: "INSERT INTO server_emojis (server_key, emoji_id, name, image_data) VALUES (?1,?2,?3,?4)",
+                    params: vec![text(server_key), text(&emoji.id), text(&emoji.name),
+                        bytes.map(Value::Blob).unwrap_or(Value::Null)],
+                });
+            }
+            statements.push(Stmt {
+                sql: "INSERT INTO server_emojis_state (server_key, updated_at) VALUES (?1,?2)
+                      ON CONFLICT(server_key) DO UPDATE SET updated_at = excluded.updated_at",
+                params: vec![text(server_key), integer(super::types::now_millis())],
+            });
+            statements
+        }
         CacheOp::ReplaceMembers(members) => {
             let mut statements = vec![Stmt {
                 sql: "DELETE FROM members WHERE server_key = ?1",
@@ -426,6 +449,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             params: vec![text(server_key), text(owner_user_id), text(channel_id)],
         }],
         CacheOp::ClearCachedData => vec![
+            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
                 sql: "DELETE FROM messages WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -448,6 +473,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
         ],
         CacheOp::ClearServer => vec![
+            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
+            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
                 sql: "DELETE FROM drafts WHERE server_key = ?1",
                 params: vec![text(server_key)],
@@ -991,6 +1018,27 @@ impl TursoCache {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    pub async fn load_emojis(&self, server_key: &str) -> Result<Option<Vec<CachedEmoji>>, turso::Error> {
+        let mut state = self.conn.query(
+            "SELECT 1 FROM server_emojis_state WHERE server_key = ?1", [server_key]).await?;
+        let cached = state.next().await?.is_some();
+        drop(state);
+        if !cached { return Ok(None); }
+        let mut rows = self.conn.query(
+            "SELECT emoji_id, name, image_data FROM server_emojis WHERE server_key = ?1 ORDER BY emoji_id",
+            [server_key]).await?;
+        let mut emojis = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let bytes: Option<Vec<u8>> = row.get(2)?;
+            emojis.push(CachedEmoji {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                blob: bytes.map(|b| base64::engine::general_purpose::STANDARD.encode(b)),
+            });
+        }
+        Ok(Some(emojis))
     }
 
     /// Lê apenas metadados de startup. Timelines ficam fora deste caminho para
