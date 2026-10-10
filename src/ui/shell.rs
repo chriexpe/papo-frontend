@@ -6361,9 +6361,9 @@ fn link_previews(
 /// O backend pode colocar o mesmo nome tanto em author.name quanto em title.
 /// Para embeds de bridge, a identidade do autor é o cabeçalho e não deve ser
 /// repetida abaixo como se fosse um título independente.
-fn custom_embed_title<'a>(
-    embed: &'a crate::api::models::LinkPreview,
-) -> Option<&'a str> {
+fn custom_embed_title(
+    embed: &crate::api::models::LinkPreview,
+) -> Option<&str> {
     let title = embed.title.as_deref().map(str::trim).filter(|value| !value.is_empty())?;
     let author = embed
         .author
