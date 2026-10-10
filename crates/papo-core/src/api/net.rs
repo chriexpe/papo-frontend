@@ -2631,7 +2631,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.emojis()).await {
-        Ok(emojis) if !emojis.is_empty() => updates.push(Update::Emojis(emojis)),
+        Ok(emojis) => updates.push(Update::Emojis(emojis)),
         Ok(_) => {}
         Err(error) => {
             complete = false;
@@ -3591,7 +3591,7 @@ async fn bootstrap(
         }
     }
     match with_retry(|| api.emojis()).await {
-        Ok(emojis) if !emojis.is_empty() => publish(updates, wake, Update::Emojis(emojis)),
+        Ok(emojis) => publish(updates, wake, Update::Emojis(emojis)),
         Ok(_) => {}
         Err(error) => {
             unauthorized |= matches!(error, ApiError::Unauthorized);
