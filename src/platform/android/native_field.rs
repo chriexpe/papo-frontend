@@ -22,6 +22,8 @@ pub enum Mode {
     Text,
     Password,
     Search,
+    /// Várias linhas (a bio do cartão de perfil): Enter quebra a linha.
+    Multiline,
 }
 
 impl Mode {
@@ -30,6 +32,7 @@ impl Mode {
             Self::Text => 0,
             Self::Password => 1,
             Self::Search => 2,
+            Self::Multiline => 3,
         }
     }
 }

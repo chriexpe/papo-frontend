@@ -973,14 +973,6 @@ impl Rows<'_> {
         self.field_hinted(label, None, value, limit, secret)
     }
 
-    /// Campo de várias linhas, para texto que quebra linha (a descrição).
-    /// No Android o campo nativo segue de uma linha, por enquanto.
-    fn field_lines(&mut self, label: &str, value: &mut String, limit: usize, lines: usize) {
-        self.lines = lines;
-        self.field_hinted(label, None, value, limit, false);
-        self.lines = 1;
-    }
-
     /// Campo cujo valor só vale quando a pessoa termina de digitar: devolve
     /// `true` quando ele não está com o foco, e aí o rascunho pode ser
     /// aplicado. Serve para o que reconecta ou reinicia algo a cada mudança
@@ -3028,10 +3020,23 @@ fn app_pane(
                 .is_some_and(|profile| profile.banner.is_some());
 
             section(ui, t, s.profile);
-            // O cabeçalho do cartão como ele fica, e clicável.
+            // O cartão como ele fica para os outros, e cada parte é o campo:
+            // recado no balão, apelido no nome, bio em "Sobre".
             ui.horizontal(|ui| {
                 ui.add_space(ROW_INSET);
-                match crate::ui::profile::header_preview(ui, t, s, data.store, data.media) {
+                match crate::ui::profile::edit_card(
+                    ui,
+                    t,
+                    s,
+                    data.store,
+                    data.media,
+                    crate::ui::profile::CardDraft {
+                        nickname: &mut draft.nickname,
+                        status: &mut draft.status_message,
+                        description: &mut draft.description,
+                        typing: &mut draft.typing,
+                    },
+                ) {
                     crate::ui::profile::PreviewHit::Avatar => pick_avatar = true,
                     crate::ui::profile::PreviewHit::Banner => pick_banner = true,
                     crate::ui::profile::PreviewHit::None => {}
@@ -3053,18 +3058,6 @@ fn app_pane(
                 }
             });
             ui.add_space(space::MD);
-            group(ui, t, |rows| {
-                rows.field(s.nickname, &mut draft.nickname, 32, false);
-                rows.field(s.status_message, &mut draft.status_message, 64, false);
-                rows.field_lines(s.description, &mut draft.description, 512, 3);
-                rows.field_hinted(
-                    s.typing_phrase,
-                    Some(s.typing_phrase_hint),
-                    &mut draft.typing,
-                    64,
-                    false,
-                );
-            });
             ui.add_space(space::SM);
             actions_row(ui, |ui| {
                 if row_button(ui, t, s.save_profile, Emphasis::Primary) {

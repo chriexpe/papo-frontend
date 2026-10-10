@@ -987,6 +987,7 @@ public class PapoActivity extends GameActivity {
     private static final int NATIVE_FIELD_TEXT = 0;
     private static final int NATIVE_FIELD_PASSWORD = 1;
     private static final int NATIVE_FIELD_SEARCH = 2;
+    private static final int NATIVE_FIELD_MULTILINE = 3;
 
     private FrameLayout nativeFieldLayer;
     private final Map<String, NativeFieldEditText> nativeFields = new HashMap<>();
@@ -1118,6 +1119,17 @@ public class PapoActivity extends GameActivity {
 
             final int inputType;
             final int action;
+            // Uma linha por padrão; a bio do perfil é de várias. `setSingleLine`
+            // mexe no inputType, então vem antes de ele ser aplicado.
+            final boolean multiline = mode == NATIVE_FIELD_MULTILINE;
+            editor.setSingleLine(!multiline);
+            editor.setHorizontallyScrolling(!multiline);
+            editor.setGravity(multiline
+                    ? (Gravity.START | Gravity.TOP)
+                    : (Gravity.START | Gravity.CENTER_VERTICAL));
+            if (multiline) {
+                editor.setMaxLines(Integer.MAX_VALUE);
+            }
             if (mode == NATIVE_FIELD_PASSWORD) {
                 inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
                 action = EditorInfo.IME_ACTION_DONE;
@@ -1125,6 +1137,14 @@ public class PapoActivity extends GameActivity {
             } else if (mode == NATIVE_FIELD_SEARCH) {
                 inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
                 action = EditorInfo.IME_ACTION_SEARCH;
+                editor.setTransformationMethod(null);
+            } else if (multiline) {
+                inputType = InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_VARIATION_NORMAL
+                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                action = EditorInfo.IME_ACTION_NONE;
                 editor.setTransformationMethod(null);
             } else {
                 inputType = InputType.TYPE_CLASS_TEXT
