@@ -13,6 +13,7 @@ pub struct AuthForm {
     pub username: String,
     pub password: String,
     pub reset_mode: bool,
+    pub reset_success: bool,
     pub reset_link: String,
     pub reset_password: String,
     pub reset_confirmation: String,
@@ -143,6 +144,11 @@ pub fn sign_in(
         }
 
         problem(ui, t, store, s);
+        if form.reset_success {
+            ui.add_space(space::MD);
+            ui.label(RichText::new("Senha alterada. Entre com sua nova senha.")
+                .font(text::footnote()).color(t.label));
+        }
 
         ui.add_space(space::XXL);
         let sign_in_ready = !form.username.trim().is_empty() && !form.password.is_empty();
