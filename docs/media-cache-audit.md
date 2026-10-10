@@ -20,8 +20,8 @@ Evicting a GPU texture must not be treated as invalidating the source asset. Off
 | Link preview metadata | preview coordinator | Turso | distinct from image bytes |
 | Custom server stickers (emojis) | /emojis base64 list | **Turso BLOB snapshot, added here** | asynchronous restore; authoritative empty list; per-server isolation |
 | Custom sticker/avatar/icon GPU images | base64 attached to state | volatile textures | texture keys versioned by source content in this PR |
-| User profile avatars | /users/profiles base64 | **volatile only** | future: use versioned, bounded original asset cache with account/server ownership |
-| Server icon | /server base64 | **volatile only** | future: persist alongside versioned server metadata, not as an unbounded list |
+| User profile avatars | /users/profiles base64 | **bounded Turso BLOB cache, added here** | up to 128 avatars/server, 512 KiB/image; async hydration and authoritative invalidation |
+| Server icon | /server base64 | **bounded Turso BLOB cache, added here** | up to 512 KiB per server; async hydration; authoritative removal |
 | Giphy picker previews | Giphy provider | volatile only | intentionally ephemeral; never pin decoded animation indefinitely |
 | GIFs in chat | remote provider URLs | provider-dependent | preserve animation limits and eviction priority |
 | Audio/video players | authenticated assets | file cache + live player | player lifetime bounded independently |
@@ -37,8 +37,8 @@ Evicting a GPU texture must not be treated as invalidating the source asset. Off
 
 ## Remaining cross-cutting work before calling media persistence fully unified
 
-- Move other repeatedly-used base64 media (profile avatars, server icon) behind a versioned, bounded disk asset API rather than copying base64 into many UI state maps.
-- Add global disk-budget enforcement for those new buckets, quota instrumentation, and version-aware orphan cleanup.
+- Consider eventually migrating the now-bounded image BLOB cache to a content-addressed filesystem asset store if profiling identifies DB-size or I/O pressure; do not duplicate original assets unnecessarily.
+- Add global budget instrumentation and retention visibility for cached database BLOBs; per-server image budgets and replacement semantics are implemented.
 - Preserve client responsiveness: no synchronous asset DB/disk reads in the render frame.
 - Consider conditional requests (ETag/If-None-Match or revision cursor) at the backend for /emojis and profile/server endpoints to avoid repeat wire transfer. The current contract returns full base64.
 - Test stale/empty/offline/owner-switch/multi-server and GPU pressure scenarios on desktop and Android.
