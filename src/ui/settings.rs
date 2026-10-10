@@ -3962,29 +3962,73 @@ fn server_pane(
                 actions.push(SettingsAction::Admin(AdminAction::PickServerIcon));
             }
 
-            ui.add_space(space::SM);
-            let currently_public = data
+            let (saved_name, saved_public) = data
                 .store
                 .server
                 .as_ref()
-                .is_none_or(|server| server.public);
-            let making_private = currently_public && !draft.server_public;
-            let password_ok = !making_private
-                || draft.server_password.chars().count() >= 8;
-            let ready = !draft.server_name.trim().is_empty() && password_ok;
-            actions_row(ui, |ui| {
-                if ready && row_button(ui, t, s.save, Emphasis::Primary) {
-                    actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
-                        crate::api::models::PatchServerRequest {
-                            name: Some(draft.server_name.trim().to_owned()),
-                            public: Some(draft.server_public),
-                            password: (!draft.server_password.is_empty())
-                                .then(|| draft.server_password.clone()),
-                            ..Default::default()
-                        },
-                    ))));
-                }
-            });
+                .map(|server| (server.name.clone(), server.public))
+                .unwrap_or_default();
+            let making_private = saved_public && !draft.server_public;
+            let name_ok = !draft.server_name.trim().is_empty();
+            let password_ok = !making_private || draft.server_password.chars().count() >= 8;
+            let dirty = draft.server_name.trim() != saved_name.trim()
+                || draft.server_public != saved_public
+                || !draft.server_password.is_empty();
+            let mut save_server = false;
+            let mut discard_server = false;
+            if dirty {
+                // Mesma pastilha do perfil: só existe enquanto há algo por salvar
+                // e diz o que falta quando ainda não dá.
+                let pill_id = egui::Id::new("servidor-salvar");
+                let blocked = if !name_ok {
+                    Some(s.server_name_required)
+                } else if !password_ok {
+                    Some(s.server_password_short)
+                } else {
+                    None
+                };
+                crate::ui::widgets::floating_pill(
+                    ui.ctx(),
+                    pill_id,
+                    t,
+                    *data.translucency,
+                    space::LG,
+                    420.0,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.label(
+                                RichText::new(blocked.unwrap_or(s.unsaved_changes))
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if blocked.is_none() && row_button(ui, t, s.save_server, Emphasis::Primary) {
+                                    save_server = true;
+                                }
+                                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                                    discard_server = true;
+                                }
+                            });
+                        });
+                    },
+                );
+                ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+            }
+            if save_server {
+                actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
+                    crate::api::models::PatchServerRequest {
+                        name: Some(draft.server_name.trim().to_owned()),
+                        public: Some(draft.server_public),
+                        password: (!draft.server_password.is_empty())
+                            .then(|| draft.server_password.clone()),
+                        ..Default::default()
+                    },
+                ))));
+            }
+            if discard_server {
+                draft.loaded_server = false;
+            }
         }
 
         ServerPane::Channels => {
