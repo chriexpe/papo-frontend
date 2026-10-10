@@ -39,11 +39,6 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     }
 
     let safe = ui.ctx().content_rect();
-    // Match the search/pinned panel fix from #66: a raw Foreground child is
-    // not enough for egui's layer hit-testing, so mouse-wheel input would be
-    // routed to the chat behind the picker. Register this modal layer as an
-    // Area before drawing any of its widgets.
-    super::shell::claim_overlay_layer(ui.ctx(), ui.layer_id(), safe);
 
     let size = Vec2::new(
         PICKER_W.min((safe.width() - space::XL).max(260.0)),
@@ -55,11 +50,25 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
     } else {
         emoji::popup_area(ui, anchor, size)
     };
-    let backdrop = ui.interact(
-        safe,
-        Id::new("giphy-picker-backdrop"),
-        Sense::click(),
-    );
+    // The picker, not the viewport, owns mouse input. Dismissal is based
+    // on the raw outside click, so other composer controls remain responsive.
+    let now = ui.input(|input| input.time);
+    let outside = ui.input(|input| {
+        now > opened + 0.05
+            && input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|pos| {
+                !rect.contains(pos) && !anchor.contains(pos)
+            })
+    });
+    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
+    if outside || escape {
+        state.gif_picker_opened = None;
+        state.gif_picker_anchor = None;
+        ui.ctx().request_discard("GIF picker closed before painting");
+        return;
+    }
+    super::shell::claim_overlay_layer(ui.ctx(), ui.layer_id(), rect);
+    ui.ctx().move_to_top(ui.layer_id());
 
     ui.painter().rect(
         rect,
@@ -148,17 +157,6 @@ pub fn picker_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Stri
 
     state.giphy = Some(giphy);
 
-    let now = ui.input(|input| input.time);
-    let outside = now > opened + 0.05
-        && backdrop.clicked()
-        && backdrop
-            .interact_pointer_pos()
-            .is_some_and(|position| !rect.contains(position));
-    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
-    if outside || escape {
-        state.gif_picker_opened = None;
-        state.gif_picker_anchor = None;
-    }
 }
 
 fn draw_results_header(
