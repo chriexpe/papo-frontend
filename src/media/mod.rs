@@ -1580,16 +1580,13 @@ impl MediaStore {
         self.textures.get(&key)
     }
 
-    /// Imagem de um link preview. Se o evento já trouxe `image_data`, evita
-    /// a ida extra à rede; para mensagens antigas busca GET /link-previews/:id.
+    /// Imagem de embed. Os bytes são buscados sob demanda em GET /embeds/:id.
     pub fn preview(&mut self, preview: &LinkPreview) -> Option<&Texture> {
         let key = preview_key(&preview.id);
         if !self.textures.contains_key(&key) {
             // Sem MIME/tamanho e sem blob o backend já disse que não há imagem:
             // não vale disparar uma requisição que só voltaria vazia.
             if preview.image_data.is_none()
-                && preview.image_mime_type.is_none()
-                && preview.image_size_bytes.is_none()
                 && preview.thumbnail.is_none()
                 && preview.image.is_none()
             {

@@ -6568,7 +6568,6 @@ fn preview_card(
         .and_then(|preview| preview.provider_name.as_deref())
         .or_else(|| backend.and_then(|preview| preview.site_name.as_deref()))
         .or_else(|| backend.and_then(|preview| preview.provider.as_deref()))
-        .or_else(|| backend.and_then(|preview| preview.provider_name.as_deref()))
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .or_else(|| {

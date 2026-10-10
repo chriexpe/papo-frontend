@@ -54,18 +54,6 @@ pub enum Event {
         message_id: String,
         embeds: Vec<LinkPreview>,
     },
-    NewPreview {
-        message_id: String,
-        preview_id: String,
-    },
-    RemovePreview {
-        message_id: String,
-        preview_id: String,
-    },
-    LinkPreviewUpdated {
-        message_id: String,
-        preview: LinkPreview,
-    },
     /// A moderação assíncrona decidiu sobre uma imagem.
     AttachmentModeration {
         message_id: String,
@@ -562,18 +550,6 @@ fn parse(text: &str) -> Option<Event> {
             channel_id: string("channel_id")?,
             message_id: string("message_id")?,
             embeds: serde_json::from_value(value.get("embeds")?.clone()).ok()?,
-        }),
-        "new_preview" => Some(Event::NewPreview {
-            message_id: string("message_id")?,
-            preview_id: string("preview_id")?,
-        }),
-        "remove_preview" => Some(Event::RemovePreview {
-            message_id: string("message_id")?,
-            preview_id: string("preview_id")?,
-        }),
-        "link_preview_update" => Some(Event::LinkPreviewUpdated {
-            message_id: string("message_id")?,
-            preview: serde_json::from_value(value.get("preview")?.clone()).ok()?,
         }),
         "attachment_moderation_update" => Some(Event::AttachmentModeration {
             message_id: string("message_id")?,

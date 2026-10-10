@@ -2149,27 +2149,8 @@ async fn worker(
                     });
                 }
 
-                // new_preview traz só o id porque o crawl termina depois da
-                // mensagem. Busca o objeto uma vez aqui, fora da thread da UI,
-                // para a Store receber o mesmo formato das mensagens listadas.
-                if let Event::NewPreview { message_id, preview_id } = event {
-                    match api.link_preview(&preview_id).await {
-                        Ok(preview) => publish(
-                            &updates,
-                            &wake,
-                            Update::Event(Box::new(Event::LinkPreviewUpdated {
-                                message_id,
-                                preview,
-                            })),
-                        ),
-                        Err(error) => log::warn!(
-                            "runtime {}: preview {preview_id} não carregou: {error}",
-                            storage_key
-                        ),
-                    }
-                } else {
-                    publish(&updates, &wake, Update::Event(Box::new(event)));
-                }
+                // O evento de embeds já traz o snapshot autoritativo da mensagem.
+                publish(&updates, &wake, Update::Event(Box::new(event)));
             }
             status = status_rx.recv() => {
                 let Some(status) = status else { continue };

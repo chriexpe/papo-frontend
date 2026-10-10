@@ -675,8 +675,8 @@ pub struct Message {
     #[serde(default, deserialize_with = "nullable_list")]
     pub attachments: Vec<Attachment>,
     // O backend unificou previews automáticos e embeds customizados em `embeds`.
-    // A propriedade interna permanece `previews` para o cache local existente.
-    #[serde(default, rename = "embeds", alias = "previews", deserialize_with = "nullable_list")]
+    // A representação local de previews continua independente do contrato REST.
+    #[serde(default, rename = "embeds", deserialize_with = "nullable_list")]
     pub previews: Vec<LinkPreview>,
     /// Contagem por tipo de emoji, sem a lista de quem reagiu.
     #[serde(default, deserialize_with = "nullable_list")]
@@ -724,7 +724,7 @@ impl Attachment {
 #[derive(Debug, Clone, Deserialize)]
 pub struct LinkPreview {
     pub id: String,
-    /// 'link' ou 'custom'; ausente nos servidores com o contrato anterior.
+    /// `link` ou `custom`.
     #[serde(default)]
     pub source_type: Option<String>,
     #[serde(default)]
@@ -735,9 +735,6 @@ pub struct LinkPreview {
     pub site_name: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
-    /// Campo do contrato anterior, que também deve continuar opcional.
-    #[serde(default)]
-    pub kind: String,
     pub title: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
@@ -754,15 +751,8 @@ pub struct LinkPreview {
     pub footer: Option<EmbedFooter>,
     #[serde(default)]
     pub fields: Vec<EmbedField>,
-    /// Nome legado do provedor, mantido para os servidores antigos.
-    #[serde(default)]
-    pub provider_name: Option<String>,
     #[serde(default)]
     pub embed_url: Option<String>,
-    #[serde(default)]
-    pub image_mime_type: Option<String>,
-    #[serde(default)]
-    pub image_size_bytes: Option<i64>,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -1299,7 +1289,7 @@ mod embed_contract_tests {
 
     #[test]
     fn backend_embeds_deserialize_with_custom_fields_and_null_lists() {
-        let message: Message = serde_json::from_str(r#"{
+        let message: Message = serde_json::from_str(r##"{
             "id":"m1","channel_id":"c1","author_id":"u1",
             "content":null,"created_at":"2026-10-09T00:00:00Z",
             "edited_at":null,"reply_to":null,"attachments":null,
@@ -1309,7 +1299,7 @@ mod embed_contract_tests {
                 "fields":[{"position":0,"name":"Status","value":"Ready","inline":true}],
                 "footer":{"text":"End"}}],
             "reactions":null,"user_reactions":null
-        }"#).unwrap();
+        }"##).unwrap();
         assert_eq!(message.previews.len(), 1);
         let embed = &message.previews[0];
         assert_eq!(embed.source_type.as_deref(), Some("custom"));
@@ -1317,15 +1307,5 @@ mod embed_contract_tests {
         assert_eq!(embed.author.as_ref().and_then(|a| a.name.as_deref()), Some("System"));
     }
 
-    #[test]
-    fn legacy_previews_still_deserialize() {
-        let message: Message = serde_json::from_str(r#"{
-            "id":"m1","channel_id":"c1","author_id":"u1",
-            "content":"test","created_at":"2026-10-09T00:00:00Z",
-            "edited_at":null,"reply_to":null,
-            "previews":[{"id":"p1","kind":"opengraph","site_name":"Example"}]
-        }"#).unwrap();
-        assert_eq!(message.previews.len(), 1);
-        assert_eq!(message.previews[0].site_name.as_deref(), Some("Example"));
-    }
+
 }
