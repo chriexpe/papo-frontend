@@ -8950,6 +8950,126 @@ mod composer_picker_tests {
     }
 }
 
+fn custom_embed_form_field(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    label: &str,
+    value: &mut String,
+    multiline: bool,
+) {
+    ui.label(RichText::new(label).font(text::footnote()).color(t.label_secondary));
+    #[cfg(target_os = "android")]
+    {
+        let height = if multiline { 82.0 } else { 34.0 };
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), height), Sense::click(),
+        );
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
+        crate::platform::native_field::show(
+            ui.ctx(), key, value, rect.shrink2(Vec2::splat(space::XS)),
+            "", if multiline {
+                crate::platform::native_field::Mode::Multiline
+            } else {
+                crate::platform::native_field::Mode::Text
+            },
+            0, false, t.label, t.label_tertiary, text::body().size,
+        );
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = t;
+        let _ = key;
+        if multiline {
+            ui.add(egui::TextEdit::multiline(value).desired_rows(3));
+        } else {
+            ui.text_edit_singleline(value);
+        }
+    }
+}
+
+/// Editor tipado, reutilizado para os dois sistemas de texto (egui/Android).
+/// Nunca tenta reconstruir mídia privada dos embeds recebidos pelo backend.
+fn custom_embed_authoring(ui: &egui::Ui, state: &mut UiState, t: &Tokens) {
+    if !state.custom_embed_editor {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Embeds personalizados")
+        .id(Id::new("custom-embed-authoring"))
+        .resizable(true)
+        .collapsible(false)
+        .default_width(400.0)
+        .frame(
+            Frame::new()
+                .fill(t.glass_opaque)
+                .stroke(Stroke::new(1.0, t.separator))
+                .corner_radius(CornerRadius::same(radius::SHEET)),
+        )
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            let mut removed = None;
+            let mut add_new = false;
+            egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+                for (i, embed) in state.custom_embeds.iter_mut().enumerate() {
+                    ui.heading(format!("Embed {}", i + 1));
+                    let prefix = format!("embed-{i}");
+                    custom_embed_form_field(ui, t, &format!("{prefix}-title"), "Título", &mut embed.title, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-description"), "Descrição", &mut embed.description, true);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-url"), "URL do cartão", &mut embed.url, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-site"), "Site", &mut embed.site_name, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-color"), "Cor (#RRGGBB)", &mut embed.color, false);
+                    let author = embed.author.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author"), "Autor", &mut author.name, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author-url"), "Link do autor", &mut author.url, false);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-author-icon"), "Ícone do autor (HTTPS)", &mut author.icon_url, false);
+                    if author.name.is_empty() && author.url.is_empty() && author.icon_url.is_empty() {
+                        embed.author = None;
+                    }
+                    let image = embed.image.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-image"), "Imagem (HTTPS)", &mut image.url, false);
+                    if image.url.is_empty() { embed.image = None; }
+                    let thumb = embed.thumbnail.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-thumbnail"), "Miniatura (HTTPS)", &mut thumb.url, false);
+                    if thumb.url.is_empty() { embed.thumbnail = None; }
+                    let video = embed.video.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-video"), "Vídeo direto (HTTPS)", &mut video.url, false);
+                    if !video.url.is_empty() {
+                        custom_embed_form_field(ui, t, &format!("{prefix}-video-mime"), "MIME do vídeo (ex.: video/mp4)", &mut video.mime_type, false);
+                    } else {
+                        embed.video = None;
+                    }
+                    let footer = embed.footer.get_or_insert_with(Default::default);
+                    custom_embed_form_field(ui, t, &format!("{prefix}-footer"), "Rodapé", &mut footer.text, false);
+                    if footer.text.is_empty() { embed.footer = None; }
+                    let mut removed_field = None;
+                    for (j, field) in embed.fields.iter_mut().enumerate() {
+                        ui.separator();
+                        custom_embed_form_field(ui, t, &format!("{prefix}-field-{j}-name"), "Campo: nome", &mut field.name, false);
+                        custom_embed_form_field(ui, t, &format!("{prefix}-field-{j}-value"), "Campo: valor", &mut field.value, true);
+                        ui.checkbox(&mut field.inline, "Inline");
+                        if ui.button(format!("Remover campo {}", j + 1)).clicked() {
+                            removed_field = Some(j);
+                        }
+                    }
+                    if let Some(j) = removed_field { embed.fields.remove(j); }
+                    if embed.fields.len() < 25 && ui.button("+ Campo").clicked() {
+                        embed.fields.push(Default::default());
+                    }
+                    if ui.button("Remover este embed").clicked() {
+                        removed = Some(i);
+                    }
+                    ui.separator();
+                }
+            });
+            if let Some(i) = removed { state.custom_embeds.remove(i); }
+            if state.custom_embeds.len() < 10 && ui.button("+ Embed").clicked() { add_new = true; }
+            if add_new { state.custom_embeds.push(Default::default()); }
+            ui.label("Embeds serão enviados junto com a mensagem, pela fila normal.");
+        });
+    state.custom_embed_editor = open && !state.custom_embeds.is_empty();
+}
+
 fn composer(
     ui: &mut egui::Ui,
     store: &Store,
@@ -8979,49 +9099,7 @@ fn composer(
         egui::pos2(area.max.x - PILL_MARGIN, area.max.y - PILL_MARGIN),
     );
 
-    // Opt-in custom embeds belong to the same send transaction as the text.
-    // This editor stays independent of the remote preview coordinator.
-    let mut editor_open = state.custom_embed_editor;
-    if editor_open {
-        egui::Window::new("Embed personalizado")
-            .id(Id::new("custom-embed-authoring"))
-            .resizable(false)
-            .collapsible(false)
-            .default_width(350.0)
-            .open(&mut editor_open)
-            .show(ui.ctx(), |ui| {
-                let embed = state.custom_embeds.first_mut().expect("embed editor draft");
-                ui.label("Título");
-                ui.text_edit_singleline(&mut embed.title);
-                ui.label("Descrição");
-                ui.add(egui::TextEdit::multiline(&mut embed.description).desired_rows(3));
-                ui.label("Endereço do link (opcional)");
-                ui.text_edit_singleline(&mut embed.url);
-                ui.label("Site (opcional)");
-                ui.text_edit_singleline(&mut embed.site_name);
-                ui.label("Cor #RRGGBB (opcional)");
-                ui.text_edit_singleline(&mut embed.color);
-                ui.label("Autor (opcional)");
-                let author = embed.author.get_or_insert_with(Default::default);
-                ui.text_edit_singleline(&mut author.name);
-                ui.label("Imagem (HTTPS, opcional)");
-                let image = embed.image.get_or_insert_with(Default::default);
-                ui.text_edit_singleline(&mut image.url);
-                if image.url.trim().is_empty() { embed.image = None; }
-                ui.label("Rodapé (opcional)");
-                let footer = embed.footer.get_or_insert_with(Default::default);
-                ui.text_edit_singleline(&mut footer.text);
-                if footer.text.trim().is_empty() { embed.footer = None; }
-                if author.name.trim().is_empty() && author.url.is_empty() && author.icon_url.is_empty() {
-                    embed.author = None;
-                }
-                if ui.button("Remover embed").clicked() {
-                    state.custom_embeds.clear();
-                    state.custom_embed_editor = false;
-                }
-            });
-    }
-    state.custom_embed_editor = editor_open && !state.custom_embeds.is_empty();
+    custom_embed_authoring(ui, state, t);
     typing_pill(ui, store, state, t, s, rect);
     pill_surface(ui, state, t, rect);
 
