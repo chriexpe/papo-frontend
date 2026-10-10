@@ -382,6 +382,7 @@ pub enum Command {
     /// Envio de texto durável. A UI fornece o owner que já estava verificado
     /// na projeção; o worker recusa se ele divergir da sessão verificada.
     QueueMessage {
+        embeds: Vec<super::models::CustomEmbedInput>,
         local_id: String,
         owner_user_id: String,
         channel_id: String,
@@ -401,6 +402,7 @@ pub enum Command {
         owner_user_id: String,
     },
     SendMessage {
+        embeds: Vec<super::models::CustomEmbedInput>,
         channel_id: String,
         content: String,
         reply_to: Option<String>,
@@ -408,6 +410,7 @@ pub enum Command {
         attachments: Vec<Upload>,
     },
     EditMessage {
+        embeds: Option<Vec<super::models::CustomEmbedInput>>,
         message_id: String,
         content: String,
     },
@@ -1133,6 +1136,7 @@ async fn drive_outgoing(
                 &attempt.content,
                 attempt.reply_to.as_deref(),
                 attempt.notify_reply,
+                &attempt.embeds,
             )
             .await
         {
@@ -1711,6 +1715,7 @@ async fn worker(
 
                 match command {
                     Command::QueueMessage {
+                        embeds,
                         local_id,
                         owner_user_id,
                         channel_id,
@@ -1745,6 +1750,7 @@ async fn worker(
                             owner_user_id: owner_user_id.clone(),
                             channel_id,
                             content: content.clone(),
+                            embeds,
                             reply_to: reply_to.clone(),
                             notify_reply,
                             created_at,
@@ -3306,6 +3312,7 @@ async fn handle(
             unreachable!("comando de fila é interceptado pelo worker antes do handler legado")
         }
         Command::SendMessage {
+            embeds,
             channel_id,
             content,
             reply_to,
@@ -3319,6 +3326,7 @@ async fn handle(
                     reply_to.as_deref(),
                     notify_reply,
                     &attachments,
+                    &embeds,
                 )
                 .await
             {
@@ -3335,9 +3343,10 @@ async fn handle(
             }
         }
         Command::EditMessage {
+            embeds,
             message_id,
             content,
-        } => match api.edit_message(&message_id, &content).await {
+        } => match api.edit_message(&message_id, &content, embeds).await {
             Ok(message) => publish(updates, wake, Update::Edited(Box::new(message))),
             Err(error) => report(storage_key, updates, wake, error),
         },
