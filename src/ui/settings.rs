@@ -210,6 +210,10 @@ pub struct ChannelDraft {
     pub topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     pub kind: String,
+    /// Categoria escolhida no editor (só de canal que já existe) e a de
+    /// origem, para saber se mudou.
+    pub parent: Option<String>,
+    pub original_parent: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +233,8 @@ impl ChannelDraft {
             emoji_group: 0,
             topic: String::new(),
             kind: "text".to_owned(),
+            parent: None,
+            original_parent: None,
         }
     }
 
@@ -248,6 +254,8 @@ impl ChannelDraft {
                 // settings projection.
                 ChannelKind::Direct => "dm".to_owned(),
             },
+            parent: channel.parent_id.clone(),
+            original_parent: channel.parent_id.clone(),
         }
     }
 }
@@ -1877,6 +1885,24 @@ fn tree_drop(
     (new.max(1), parent)
 }
 
+/// O pedido de mover `items[dragged]` para a fresta `gap`, se isso muda algo.
+fn move_action(
+    items: &[(String, i32, bool, Option<String>, bool)],
+    dragged: usize,
+    gap: usize,
+    total: i32,
+) -> Option<TreeAction> {
+    let (new_position, parent) = tree_drop(items, dragged, gap, total);
+    let (id, old_position, _, old_parent, _) = &items[dragged];
+    let parent_change = (parent != *old_parent).then(|| parent.clone().unwrap_or_default());
+    (new_position != *old_position || parent_change.is_some()).then(|| TreeAction::Move {
+        channel_id: id.clone(),
+        old_position: *old_position,
+        new_position,
+        parent_id: parent_change,
+    })
+}
+
 /// Categorias e canais com alça de arrastar e ações fixas à direita.
 /// Soltar reordena (e troca de categoria) num pedido só.
 fn channel_tree(
@@ -1971,7 +1997,7 @@ fn channel_tree(
             ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
             x += 18.0;
         }
-        let tools_w = if hovered { 60.0 } else { 0.0 };
+        let tools_w = 4.0 * (tool_side + tool_gap);
         let name_rect = super::emoji::draw_channel_name(
             ui,
             t,
@@ -2008,9 +2034,20 @@ fn channel_tree(
         // de largura quando o estado da linha muda.
         if dragging.is_none() {
             let mut right = rect.max.x - space::SM;
-            for (glyph, danger, which) in
-                [(icon::TRASH, true, 1), (icon::PENCIL_SIMPLE, false, 0)]
-            {
+            let last = items.len() - 1;
+            for (glyph, danger, which) in [
+                (icon::TRASH, true, 1),
+                (icon::PENCIL_SIMPLE, false, 0),
+                (icon::ARROW_DOWN, false, 3),
+                (icon::ARROW_UP, false, 2),
+            ] {
+                // Setas: no toque não há hover nem arrasto fácil, então subir
+                // e descer um passo é um toque. Nas pontas ficam apagadas.
+                let enabled = match which {
+                    2 => index > 0,
+                    3 => index < last,
+                    _ => true,
+                };
                 let tool = Rect::from_min_size(
                     egui::pos2(right - tool_side, rect.center().y - tool_side / 2.0),
                     Vec2::splat(tool_side),
@@ -2019,9 +2056,9 @@ fn channel_tree(
                 let tool_response = ui.interact(
                     tool,
                     egui::Id::new(("ferramenta-canal", &channel.id, which)),
-                    Sense::click(),
+                    if enabled { Sense::click() } else { Sense::hover() },
                 );
-                if tool_response.hovered() {
+                if tool_response.hovered() && enabled {
                     ui.painter().rect_filled(
                         tool,
                         CornerRadius::same(radius::CONTROL),
@@ -2033,14 +2070,16 @@ fn channel_tree(
                     egui::Align2::CENTER_CENTER,
                     glyph,
                     text::icon(if touch_layout { 15.0 } else { 13.0 }),
-                    if danger { t.danger } else { t.label_secondary },
+                    if danger { t.danger } else { t.label_secondary }
+                        .gamma_multiply(if enabled { 1.0 } else { 0.3 }),
                 );
                 if tool_response.clicked() {
-                    action = Some(if which == 1 {
-                        TreeAction::Delete(channel.id.clone(), channel.name.clone())
-                    } else {
-                        TreeAction::Edit(channel.id.clone())
-                    });
+                    match which {
+                        1 => action = Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
+                        0 => action = Some(TreeAction::Edit(channel.id.clone())),
+                        2 => action = move_action(&items, index, index - 1, total),
+                        _ => action = move_action(&items, index, index + 2, total),
+                    }
                 }
             }
         }
@@ -2068,16 +2107,8 @@ fn channel_tree(
             ui.painter().line_segment([egui::pos2(left + space::SM, y), egui::pos2(right - space::SM, y)], Stroke::new(2.0, t.accent));
             ui.ctx().request_repaint();
             if released {
-                let (new_position, parent) = tree_drop(&items, dragged, gap, total);
-                let (_, old_position, _, old_parent, _) = &items[dragged];
-                let parent_change = (parent != *old_parent).then(|| parent.clone().unwrap_or_default());
-                if new_position != *old_position || parent_change.is_some() {
-                    action = Some(TreeAction::Move {
-                        channel_id: id,
-                        old_position: *old_position,
-                        new_position,
-                        parent_id: parent_change,
-                    });
+                if let Some(moved) = move_action(&items, dragged, gap, total) {
+                    action = Some(moved);
                 }
                 *dragging = None;
             }
@@ -4093,6 +4124,27 @@ fn server_pane(
                     if editor.kind != "category" {
                         rows.field(s.channel_topic, &mut editor.topic, 512, false);
                     }
+
+                    // Trocar de categoria: só de canal que já existe, porque a
+                    // criação não aceita categoria. Aplica ao salvar.
+                    if editor.id.is_some() && editor.kind != "category" {
+                        rows.row(s.channel_category, None, |ui, _| {
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .add(egui::Button::selectable(editor.parent.is_none(), s.no_category))
+                                    .clicked()
+                                {
+                                    editor.parent = None;
+                                }
+                                for category in channels.iter().filter(|c| c.kind == crate::state::ChannelKind::Category) {
+                                    let selected = editor.parent.as_deref() == Some(category.id.as_str());
+                                    if ui.add(egui::Button::selectable(selected, &category.name)).clicked() {
+                                        editor.parent = Some(category.id.clone());
+                                    }
+                                }
+                            });
+                        });
+                    }
                 });
 
                 ui.add_space(space::SM);
@@ -4118,6 +4170,16 @@ fn server_pane(
                             .then(|| editor.topic.trim().to_owned());
                         match editor.id.clone() {
                             Some(channel_id) => {
+                                if editor.parent != editor.original_parent
+                                    && let Some(channel) = channels.iter().find(|c| c.id == channel_id)
+                                {
+                                    actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
+                                        channel_id: channel_id.clone(),
+                                        old_position: channel.position,
+                                        new_position: channel.position,
+                                        parent_id: Some(editor.parent.clone().unwrap_or_default()),
+                                    }));
+                                }
                                 actions.push(SettingsAction::Chat(ChatAction::UpdateChannel {
                                     channel_id,
                                     name,
@@ -4742,7 +4804,7 @@ fn audit_chip(ui: &mut egui::Ui, t: &Tokens, icon: &str, label: &str, on: bool, 
 
 #[cfg(test)]
 mod tree_tests {
-    use super::tree_drop;
+    use super::{TreeAction, move_action, tree_drop};
 
     fn item(id: &str, position: i32, category: bool, parent: Option<&str>) -> (String, i32, bool, Option<String>, bool) {
         (id.into(), position, category, parent.map(str::to_owned), false)
@@ -4788,5 +4850,32 @@ mod tree_tests {
         // A categoria "arquivo" solta entre dev e design vai para antes de
         // Projetos, e sem categoria.
         assert_eq!(tree_drop(&list, 5, 3, 6), (2, None));
+    }
+
+    #[test]
+    fn step_up_from_the_first_child_leaves_the_category() {
+        let items = items();
+        // dev é o índice 2; subir um passo é a fresta antes de Projetos.
+        match move_action(&items, 2, 1, 5) {
+            Some(TreeAction::Move { channel_id, new_position, parent_id, .. }) => {
+                assert_eq!(channel_id, "dev");
+                assert_eq!(new_position, 2);
+                assert_eq!(parent_id, Some(String::new()));
+            }
+            _ => panic!("devia mover"),
+        }
+    }
+
+    #[test]
+    fn step_down_into_an_open_category_enters_it() {
+        let items = items();
+        // geral (0) desce: depois de Projetos, logo na primeira vaga dela.
+        match move_action(&items, 0, 2, 5) {
+            Some(TreeAction::Move { channel_id, parent_id, .. }) => {
+                assert_eq!(channel_id, "geral");
+                assert_eq!(parent_id, Some("proj".to_owned()));
+            }
+            _ => panic!("devia mover"),
+        }
     }
 }

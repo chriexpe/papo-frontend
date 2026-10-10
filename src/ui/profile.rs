@@ -456,7 +456,9 @@ fn hidden_field(
 
     let (fill, stroke) = if focused {
         (t.fill_soft, Stroke::new(1.5, t.accent))
-    } else if hovered {
+    } else if hovered || cfg!(target_os = "android") {
+        // No toque não há hover: o fundo suave fica sempre, para o campo
+        // se reconhecer como campo.
         (t.fill_soft, Stroke::NONE)
     } else {
         (Color32::TRANSPARENT, Stroke::NONE)
