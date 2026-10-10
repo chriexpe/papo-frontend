@@ -1041,7 +1041,7 @@ public class PapoActivity extends GameActivity {
                         && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
                         && event.getAction() == KeyEvent.ACTION_DOWN
                         && !event.isShiftPressed();
-                if (action || enter) {
+                if ((action || enter) && imeAction != EditorInfo.IME_ACTION_NONE) {
                     nativeFieldSubmit(key);
                     return true;
                 }
@@ -1122,6 +1122,13 @@ public class PapoActivity extends GameActivity {
                 inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
                 action = EditorInfo.IME_ACTION_DONE;
                 editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
+            } else if (mode == 3) {
+                inputType = InputType.TYPE_CLASS_TEXT
+                        | InputType.TYPE_TEXT_VARIATION_NORMAL
+                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
+                action = EditorInfo.IME_ACTION_NONE;
+                editor.setTransformationMethod(null);
             } else if (mode == NATIVE_FIELD_SEARCH) {
                 inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
                 action = EditorInfo.IME_ACTION_SEARCH;
@@ -1134,6 +1141,9 @@ public class PapoActivity extends GameActivity {
                 action = EditorInfo.IME_ACTION_DONE;
                 editor.setTransformationMethod(null);
             }
+            editor.setSingleLine(mode != 3);
+            editor.setHorizontallyScrolling(mode != 3);
+            editor.setGravity(mode == 3 ? Gravity.TOP | Gravity.START : Gravity.CENTER_VERTICAL | Gravity.START);
             if (editor.getInputType() != inputType) {
                 editor.setInputType(inputType);
             }
