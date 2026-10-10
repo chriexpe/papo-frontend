@@ -344,7 +344,6 @@ pub struct CardDraft<'a> {
     pub nickname: &'a mut String,
     pub status: &'a mut String,
     pub description: &'a mut String,
-    pub typing: &'a mut String,
 }
 
 /// Respiro de um campo escondido: só aparece no destaque, o texto fica no
@@ -758,22 +757,6 @@ pub fn edit_card(
                         .color(t.label_tertiary),
                 );
             }
-        });
-
-        // --- Frase de digitação ---------------------------------------------------
-        section(ui, t, inset, |ui| {
-            caption(ui, t, s.typing_phrase);
-            inline_field(
-                ui,
-                t,
-                "digitacao",
-                draft.typing,
-                s.typing_one,
-                text::body(),
-                t.label,
-                64,
-                (1, 2),
-            );
         });
 
         // A superfície do cartão, por trás de tudo, do tamanho que deu.
@@ -1786,7 +1769,6 @@ mod tests {
         nickname: String,
         status: String,
         description: String,
-        typing: String,
     }
 
     impl CardHarness {
@@ -1803,7 +1785,6 @@ mod tests {
                 nickname: String::new(),
                 status: String::new(),
                 description: String::new(),
-                typing: String::new(),
             };
             // As fontes só valem a partir do quadro seguinte.
             harness.frame(vec![]);
@@ -1824,7 +1805,6 @@ mod tests {
                 nickname,
                 status,
                 description,
-                typing,
             } = self;
             let s = crate::i18n::Lang::En.strings();
             let mut output = ctx.run_ui(input, |ui| {
@@ -1844,7 +1824,6 @@ mod tests {
                                 nickname,
                                 status,
                                 description,
-                                typing,
                             },
                         );
                     },
@@ -1891,7 +1870,6 @@ mod tests {
             "Leave a note…",
             "What should we call you",
             "Tell us about yourself…",
-            "is typing…",
         ] {
             assert!(text_rect(&shapes, hint).is_some(), "falta a dica {hint:?}");
         }

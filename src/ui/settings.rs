@@ -3034,7 +3034,6 @@ fn app_pane(
                         nickname: &mut draft.nickname,
                         status: &mut draft.status_message,
                         description: &mut draft.description,
-                        typing: &mut draft.typing,
                     },
                 ) {
                     crate::ui::profile::PreviewHit::Avatar => pick_avatar = true,
@@ -3058,20 +3057,6 @@ fn app_pane(
                 }
             });
             ui.add_space(space::MD);
-            ui.add_space(space::SM);
-            actions_row(ui, |ui| {
-                if row_button(ui, t, s.save_profile, Emphasis::Primary) {
-                    actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
-                        crate::api::models::UpdateUserRequest {
-                            nickname: draft.nickname.trim().to_owned(),
-                            status: draft.status_message.trim().to_owned(),
-                            description: draft.description.trim().to_owned(),
-                            // Vazio grava vazio, e vazio volta ao texto padrão.
-                            typing: Some(draft.typing.trim().to_owned()),
-                        },
-                    ))));
-                }
-            });
             if pick_avatar {
                 actions.push(SettingsAction::Admin(AdminAction::PickAvatar));
             }
@@ -3080,6 +3065,81 @@ fn app_pane(
             }
             if remove_banner {
                 actions.push(SettingsAction::Admin(AdminAction::RemoveBanner));
+            }
+
+            // O recado da frase de digitação não aparece no cartão, mas os
+            // outros veem na hora em que você digita: fica à parte do cartão.
+            let stored = |pick: fn(&Store, Option<&crate::state::Member>) -> String| {
+                pick(data.store, data.store.member(&data.store.me))
+            };
+            let saved_nickname = stored(|store, _| store.my_name.clone());
+            let saved_status = stored(|_, me| {
+                me.and_then(|member| member.status_message.clone()).unwrap_or_default()
+            });
+            let saved_typing = stored(|_, me| {
+                me.and_then(|member| member.typing_label.clone()).unwrap_or_default()
+            });
+            let saved_description = stored(|store, _| {
+                store
+                    .profiles
+                    .get(&store.me)
+                    .and_then(|profile| profile.description.clone())
+                    .unwrap_or_default()
+            });
+            let dirty = draft.nickname.trim() != saved_nickname.trim()
+                || draft.status_message.trim() != saved_status.trim()
+                || draft.description.trim() != saved_description.trim()
+                || draft.typing.trim() != saved_typing.trim();
+            let mut save_profile = false;
+            let mut discard_profile = false;
+            if dirty {
+                // A pastilha flutuante de confirmação: só existe enquanto há
+                // algo por salvar.
+                let pill_id = egui::Id::new("perfil-salvar");
+                crate::ui::widgets::floating_pill(
+                    ui.ctx(),
+                    pill_id,
+                    t,
+                    *data.translucency,
+                    space::LG,
+                    420.0,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.label(
+                                RichText::new(s.unsaved_changes)
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if row_button(ui, t, s.save_profile, Emphasis::Primary) {
+                                    save_profile = true;
+                                }
+                                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                                    discard_profile = true;
+                                }
+                            });
+                        });
+                    },
+                );
+                // Clicar na folha a traz para frente; a pastilha fica por cima.
+                ui.ctx()
+                    .move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+            }
+            if save_profile {
+                actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
+                    crate::api::models::UpdateUserRequest {
+                        nickname: draft.nickname.trim().to_owned(),
+                        status: draft.status_message.trim().to_owned(),
+                        description: draft.description.trim().to_owned(),
+                        // Vazio grava vazio, e vazio volta ao texto padrão.
+                        typing: Some(draft.typing.trim().to_owned()),
+                    },
+                ))));
+            }
+            if discard_profile {
+                // Recarrega o rascunho do que está valendo, no quadro seguinte.
+                draft.loaded_account = false;
             }
 
             section(ui, t, s.presence);
@@ -3109,6 +3169,17 @@ fn app_pane(
                         )));
                     }
                 });
+            });
+
+            section(ui, t, s.typing_section);
+            group(ui, t, |rows| {
+                rows.field_hinted(
+                    s.typing_phrase,
+                    Some(s.typing_phrase_hint),
+                    &mut draft.typing,
+                    64,
+                    false,
+                );
             });
 
             // Segurança: senha e sair, juntos — as duas coisas que não são
