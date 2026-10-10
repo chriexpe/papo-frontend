@@ -3866,6 +3866,7 @@ mod network_hint_tests {
             owner_user_id: "me".to_owned(),
             channel_id: "general".to_owned(),
             content: content.to_owned(),
+            embeds: Vec::new(),
             reply_to: None,
             notify_reply: false,
             created_at: crate::cache::now_millis(),
