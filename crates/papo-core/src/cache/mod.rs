@@ -13,7 +13,7 @@ mod tests;
 
 pub use store::TursoCache;
 pub use types::{
-    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedMember,
+    new_local_id, now_millis, CachedAttachment, CachedChannel, CachedDraft, CachedEmoji, CachedMember,
     CachedMentionBinding, CachedMessage, CachedMessagePage, CachedOutgoing, CachedPreview,
     CachedReaction, CachedReadState, CachedServer, CachedServerMetadata, CachedServerSnapshot, CacheOp,
     ClaimResult, NotificationDecision, NotificationLedgerEntry, NotificationLedgerStats,
@@ -86,6 +86,10 @@ enum WorkerMsg {
     LoadMetadata {
         server_key: String,
         reply: std::sync::mpsc::Sender<Result<CachedServerMetadata, String>>,
+    },
+    LoadEmojis {
+        server_key: String,
+        reply: std::sync::mpsc::Sender<Result<Option<Vec<CachedEmoji>>, String>>,
     },
     LoadChannelPage {
         server_key: String,
@@ -543,6 +547,14 @@ impl ClientDb {
         }
     }
 
+    /// Hidratação de figurinhas no worker, sem bloquear a renderização.
+    pub fn load_emojis_async(
+        &self, server_key: &str,
+    ) -> Option<std::sync::mpsc::Receiver<Result<Option<Vec<CachedEmoji>>, String>>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.enqueue(WorkerMsg::LoadEmojis { server_key: server_key.to_owned(), reply: tx }, false).then_some(rx)
+    }
+
     /// Enfileira uma página de timeline sem bloquear o chamador. O Receiver é
     /// sondado pela camada de runtime/UI, mantendo o worker Turso fora do frame.
     pub fn load_channel_page_async(
@@ -754,6 +766,10 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
                 .load_metadata(&server_key)
                 .await
                 .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+        }
+        WorkerMsg::LoadEmojis { server_key, reply } => {
+            let result = cache.load_emojis(&server_key).await.map_err(|error| error.to_string());
             let _ = reply.send(result);
         }
         WorkerMsg::LoadChannelPage {
