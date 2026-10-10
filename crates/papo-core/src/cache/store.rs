@@ -573,8 +573,8 @@ impl TursoCache {
             "INSERT INTO send_queue (
                  server_key, local_id, owner_user_id, channel_id, content,
                  reply_to, notify_reply, created_at, state, attempt_count,
-                 last_attempt_at, last_error
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                 last_attempt_at, last_error, embeds
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             vec![
                 text(server_key),
                 text(&outgoing.local_id),
@@ -588,6 +588,7 @@ impl TursoCache {
                 integer(outgoing.attempt_count as i64),
                 outgoing.last_attempt_at.map(Value::Integer).unwrap_or(Value::Null),
                 opt_text(outgoing.last_error.as_deref()),
+                text(&serde_json::to_string(&outgoing.embeds).map_err(|e| turso::Error::Misuse(e.to_string()))?),
             ],
         )
         .await?;
@@ -761,7 +762,7 @@ impl TursoCache {
             .query(
                 "SELECT local_id, owner_user_id, channel_id, content, reply_to,
                         notify_reply, created_at, state, attempt_count,
-                        last_attempt_at, last_error
+                        last_attempt_at, last_error, embeds
                  FROM send_queue
                  WHERE server_key = ?1 AND owner_user_id = ?2
                  ORDER BY created_at, local_id",
@@ -788,6 +789,8 @@ impl TursoCache {
                 attempt_count: row.get::<i64>(8)?.max(0) as u32,
                 last_attempt_at: row.get(9)?,
                 last_error: row.get(10)?,
+                embeds: serde_json::from_str(&row.get::<String>(11)?)
+                    .map_err(|e| turso::Error::Misuse(e.to_string()))?,
             });
         }
         Ok(outgoing)
