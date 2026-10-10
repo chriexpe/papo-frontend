@@ -8135,17 +8135,28 @@ fn emoji_popup(
         desired.x.min((safe.width() - space::XL).max(220.0)),
         desired.y.min((safe.height() - space::XL).max(220.0)),
     );
-    let rect = if state.compact
-        && matches!(
-            popup.kind,
-            PopupKind::ComposerEmoji | PopupKind::ComposerSticker
-        )
-    {
-        composer_picker_rect(state, size)
-            .unwrap_or_else(|| emoji::popup_area(ui, popup.anchor, size))
+    let rect = if matches!(
+        popup.kind,
+        PopupKind::ComposerEmoji | PopupKind::ComposerSticker
+    ) {
+        // Composer pickers belong to the chat pane, not the window or the
+        // button's screen position. Never resurrect a stale anchor if there
+        // is no composer on the current surface.
+        let Some(rect) = composer_picker_rect(state, size) else {
+            state.close_popup();
+            return;
+        };
+        rect
     } else {
         emoji::popup_area(ui, popup.anchor, size)
     };
+    // An actual hit-test surface behind the picker keeps mouse presses away
+    // from messages, even in the frame's empty margins.
+    let _backdrop = ui.interact(
+        safe,
+        Id::new("emoji-picker-backdrop"),
+        Sense::click(),
+    );
     let mut chosen = None;
     let mut query = std::mem::take(&mut state.emoji_query);
     let mut group = state.emoji_group;
@@ -8892,25 +8903,76 @@ fn inline_button(
     response.on_hover_text(tooltip)
 }
 
-/// Retângulo de um picker aberto pelo compositor.
-pub(super) fn composer_picker_rect(
-    state: &UiState,
-    desired: Vec2,
-) -> Option<Rect> {
+/// Picker attached to the compositor, confined to the conversation chrome.
+/// On compact screens it fills the available width; on desktop it keeps its
+/// preferred width, right-aligned to the compositor rather than to the icon.
+pub(super) fn composer_picker_rect(state: &UiState, desired: Vec2) -> Option<Rect> {
     let bounds = state.composer_picker_bounds?;
     if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
         return None;
     }
 
-    // No mobile o picker pertence ao mesmo "corredor" visual do chrome de
-    // baixo, portanto usa toda a largura disponível em vez de um número
-    // específico de cada feature. A altura continua sendo a desejada pelo
-    // conteúdo, limitada ao espaço entre as duas fileiras de pastilhas.
+    let width = if state.compact {
+        bounds.width()
+    } else {
+        desired.x.min(bounds.width())
+    };
     let height = desired.y.min(bounds.height());
-    Some(Rect::from_min_max(
-        egui::pos2(bounds.min.x, bounds.max.y - height),
-        bounds.max,
+    Some(Rect::from_min_size(
+        egui::pos2(bounds.max.x - width, bounds.max.y - height),
+        Vec2::new(width, height),
     ))
+}
+
+#[cfg(test)]
+mod composer_picker_tests {
+    use super::*;
+
+    #[test]
+    fn desktop_picker_stays_inside_chat_even_with_a_right_sidebar() {
+        let state = UiState {
+            compact: false,
+            composer_picker_bounds: Some(Rect::from_min_max(
+                egui::pos2(20.0, 80.0),
+                egui::pos2(400.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        let emoji = composer_picker_rect(&state, Vec2::new(316.0, 380.0)).unwrap();
+        assert_eq!(emoji.min, egui::pos2(84.0, 220.0));
+        assert_eq!(emoji.max, egui::pos2(400.0, 600.0));
+
+        // GIF may be wider than the chat pane, but cannot cover its sidebar.
+        let gif = composer_picker_rect(&state, Vec2::new(430.0, 520.0)).unwrap();
+        assert_eq!(gif.min, egui::pos2(20.0, 80.0));
+        assert_eq!(gif.max, egui::pos2(400.0, 600.0));
+    }
+
+    #[test]
+    fn compact_picker_uses_pill_margins_and_tracks_composer_height() {
+        let mut state = UiState {
+            compact: true,
+            composer_picker_bounds: Some(Rect::from_min_max(
+                egui::pos2(12.0, 72.0),
+                egui::pos2(348.0, 500.0),
+            )),
+            ..Default::default()
+        };
+        let first = composer_picker_rect(&state, Vec2::new(316.0, 380.0)).unwrap();
+        assert_eq!(first.min, egui::pos2(12.0, 120.0));
+        assert_eq!(first.max, egui::pos2(348.0, 500.0));
+
+        // Replies/attachments lift the compositor and thus the picker.
+        state.composer_picker_bounds = Some(Rect::from_min_max(
+            egui::pos2(12.0, 72.0),
+            egui::pos2(348.0, 425.0),
+        ));
+        let lifted = composer_picker_rect(&state, Vec2::new(316.0, 380.0)).unwrap();
+        assert_eq!(lifted.min, egui::pos2(12.0, 72.0));
+        assert_eq!(lifted.max, egui::pos2(348.0, 425.0));
+        state.composer_picker_bounds = None;
+        assert!(composer_picker_rect(&state, Vec2::new(316.0, 380.0)).is_none());
+    }
 }
 
 fn composer(
@@ -8952,20 +9014,16 @@ fn composer(
         Vec2::splat(side),
     );
 
-    if state.compact {
-        // A caixa dos pickers deriva das próprias pastilhas, em vez de
-        // repetir larguras/offsets de GIF, emoji e figurinha. Horizontalmente
-        // ela vai do começo do clipe ao fim da caixa de texto. Verticalmente
-        // fica entre a fileira superior e o topo do compositor, com um
-        // pequeno respiro dos dois lados.
-        let top = area.min.y + PILL_MARGIN + PILL_HEIGHT + space::SM;
-        let bottom = rect.min.y - space::SM;
-        if bottom > top {
-            state.composer_picker_bounds = Some(Rect::from_min_max(
-                egui::pos2(attach_rect.min.x, top),
-                egui::pos2(rect.max.x, bottom),
-            ));
-        }
+    // Derive the shared overlay corridor from the actual chat/composer
+    // geometry on *both* desktop and mobile. It never reaches the member
+    // sidebar, and the bottom follows growing composer/reply/attachment rows.
+    let top = area.min.y + PILL_MARGIN + PILL_HEIGHT + space::SM;
+    let bottom = rect.min.y - space::SM;
+    if bottom > top {
+        state.composer_picker_bounds = Some(Rect::from_min_max(
+            egui::pos2(attach_rect.min.x, top),
+            egui::pos2(rect.max.x, bottom),
+        ));
     }
 
     #[cfg(target_os = "android")]
