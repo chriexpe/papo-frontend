@@ -471,6 +471,14 @@ impl CachedMessage {
     }
 }
 
+/// Figurinhas customizadas, com o conteúdo original (nunca texturas GPU).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CachedEmoji {
+    pub id: String,
+    pub name: String,
+    pub blob: Option<String>,
+}
+
 /// Metadados suficientes para abrir um servidor sem varrer suas timelines.
 #[derive(Clone, Debug, Default)]
 pub struct CachedServerMetadata {
@@ -538,6 +546,8 @@ pub enum CacheOp {
     },
     ReplaceChannels(Vec<CachedChannel>),
     ReplaceMembers(Vec<CachedMember>),
+    /// Listagem completa, inclusive quando o backend responde vazia.
+    ReplaceEmojis(Vec<CachedEmoji>),
     UpsertReadState(CachedReadState),
     ReplaceChannelSnapshot {
         channel_id: String,
