@@ -448,7 +448,7 @@ pub fn picker(
 
     // The scroll viewport owns all remaining panel height. On shorter
     // windows its items must scroll, not paint beyond the popup or into chat.
-    let scroll_height = ui.available_height().min(260.0).max(1.0);
+    let scroll_height = ui.available_height().clamp(1.0, 260.0);
     egui::ScrollArea::vertical()
         .max_height(scroll_height)
         .auto_shrink([false, false])
