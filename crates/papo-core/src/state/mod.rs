@@ -3368,6 +3368,7 @@ impl Store {
             owner_user_id: self.me.clone(),
             channel_id: channel_id.to_owned(),
             content: content.to_owned(),
+            embeds: Vec::new(),
             reply_to,
             notify_reply: false,
             created_at: now_millis(),
