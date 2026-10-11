@@ -1342,6 +1342,7 @@ pub struct Context<'a> {
     pub badge: &'a mut bool,
     pub topic_reveal: &'a mut bool,
     pub open_at_newest: &'a mut bool,
+    pub mark_read_at_newest: &'a mut bool,
     pub record_button: &'a mut bool,
     pub channel_emoji_monochrome: &'a mut bool,
     pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
@@ -2798,6 +2799,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Appearance, s.translucency),
         (AppPane::Appearance, s.topic_reveal),
         (AppPane::Appearance, s.open_at_newest),
+        (AppPane::Appearance, s.mark_read_at_newest),
         (AppPane::Appearance, s.record_button),
         (AppPane::Appearance, s.channel_emoji_monochrome),
         (AppPane::Appearance, s.webembed_offscreen),
@@ -3982,6 +3984,13 @@ fn app_pane(
                 rows.row(s.open_at_newest, Some(s.open_at_newest_hint), |ui, t| {
                     switch(ui, t, data.open_at_newest);
                 });
+                rows.row(
+                    s.mark_read_at_newest,
+                    Some(s.mark_read_at_newest_hint),
+                    |ui, t| {
+                        switch(ui, t, data.mark_read_at_newest);
+                    },
+                );
                 rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
                     switch(ui, t, data.record_button);
                 });

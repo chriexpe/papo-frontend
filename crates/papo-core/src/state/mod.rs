@@ -1965,6 +1965,17 @@ impl Store {
     /// Tudo é comparado por chave `(horário, id)`, então a fronteira pode
     /// apontar para uma mensagem que nem está carregada.
     pub fn observe_visible_messages(&mut self, channel_id: &str, visible: &[String]) {
+        self.observe_visible_messages_with_policy(channel_id, visible, false);
+    }
+
+    /// Variante de [`Store::observe_visible_messages`] que permite à interface
+    /// escolher se alcançar o head também confirma o bloco pulado como lido.
+    pub fn observe_visible_messages_with_policy(
+        &mut self,
+        channel_id: &str,
+        visible: &[String],
+        mark_read_at_newest: bool,
+    ) {
         if channel_id.is_empty() || visible.is_empty() {
             return;
         }
@@ -2015,7 +2026,9 @@ impl Store {
             state.seen_to_id = Some(hi.1.clone());
         }
 
-        // Fronteira.
+        // Fronteira. Enquanto a viewport percorre a timeline, só o trecho
+        // coberto pode avançar a leitura: um salto para o meio não confirma o
+        // que ficou para trás.
         let mut frontier: Option<MessageKey> = state
             .read_at
             .map(|at| (at, state.read_message_id.clone().unwrap_or_default()));
@@ -2029,6 +2042,18 @@ impl Store {
             } else {
                 break;
             }
+        }
+
+        // Esta é uma confirmação explícita diferente de atravessar um
+        // intervalo durante um salto. Só a preferência da interface pode
+        // transformar a chegada ao head em leitura da lacuna antiga; a
+        // ampulheta continua sendo a navegação secundária desse intervalo.
+        let at_newest = mark_read_at_newest
+            && ordered
+                .last()
+                .is_some_and(|(newest, _)| newest == &hi);
+        if at_newest && frontier.as_ref().is_none_or(|current| current < &hi) {
+            frontier = Some(hi.clone());
         }
         if let Some((at, id)) = frontier.filter(|(_, id)| !id.is_empty()) {
             state.read_at = Some(at);
@@ -2044,9 +2069,13 @@ impl Store {
             state.seen_to_id = Some(read.1);
         }
 
-        state
-            .unread_mentions
-            .retain(|mention| !visible_ids.contains(mention.as_str()));
+        if at_newest {
+            state.unread_mentions.clear();
+        } else {
+            state
+                .unread_mentions
+                .retain(|mention| !visible_ids.contains(mention.as_str()));
+        }
 
         if let Some(read_at) = state.read_at {
             self.read_marks.insert(channel_id.to_owned(), read_at);
@@ -2055,6 +2084,10 @@ impl Store {
         if self.read_states.get(channel_id) != before.as_ref() {
             self.refresh_channel_read_badge(channel_id);
             self.persist_read_state(channel_id);
+        } else if at_newest {
+            // A live arrival or a stale channel projection may have left the
+            // badge set even though the state itself already reached the head.
+            self.refresh_channel_read_badge(channel_id);
         }
     }
 
@@ -5351,14 +5384,42 @@ mod tests {
     }
 
     #[test]
-    fn jump_does_not_mark_the_interval_it_skips() {
+    fn reaching_newest_marks_a_gap_read_when_enabled() {
+        let mut store = navigation_store(6);
+
+        store.observe_visible_messages_with_policy("geral", &["m6".to_owned()], true);
+
+        assert_eq!(frontier_id(&store).as_deref(), Some("m6"));
+        assert_eq!(store.hourglass_target("geral"), None);
+        assert!(!store.channel("geral").unwrap().unread);
+    }
+
+    #[test]
+    fn reaching_newest_preserves_a_gap_when_disabled() {
         let mut store = navigation_store(6);
 
         store.observe_visible_messages("geral", &["m6".to_owned()]);
 
         assert_eq!(frontier_id(&store).as_deref(), Some("m1"));
-        // Algo depois da lacuna foi visto: a ampulheta aponta para o começo dela.
         assert_eq!(store.hourglass_target("geral").as_deref(), Some("m2"));
+        assert!(store.channel("geral").unwrap().unread);
+    }
+
+    #[test]
+    fn reaching_newest_clears_mentions_even_when_it_skips_history() {
+        let mut store = navigation_store(6);
+        store.read_states.get_mut("geral").unwrap().unread_mentions =
+            VecDeque::from(["m2".to_owned()]);
+
+        store.observe_visible_messages_with_policy("geral", &["m6".to_owned()], true);
+
+        assert!(store
+            .read_states
+            .get("geral")
+            .unwrap()
+            .unread_mentions
+            .is_empty());
+        assert!(!store.channel("geral").unwrap().unread);
     }
 
     #[test]
@@ -5396,7 +5457,7 @@ mod tests {
     #[test]
     fn reading_through_the_gap_retires_the_hourglass() {
         let mut store = navigation_store(6);
-        store.observe_visible_messages("geral", &["m6".to_owned()]);
+        store.observe_visible_messages("geral", &["m5".to_owned()]);
         assert!(store.hourglass_target("geral").is_some());
 
         // A ampulheta leva ao começo da lacuna (salto) e o usuário lê até o fim.
@@ -5429,7 +5490,7 @@ mod tests {
         let mut store = navigation_store(10);
         store.observe_visible_messages("geral", &ids(2..=3));
         store.reset_read_span("geral");
-        store.observe_visible_messages("geral", &ids(9..=10));
+        store.observe_visible_messages("geral", &ids(7..=9));
 
         assert_eq!(frontier_id(&store).as_deref(), Some("m3"));
         assert_eq!(store.hourglass_target("geral").as_deref(), Some("m4"));
@@ -5467,7 +5528,7 @@ mod tests {
     #[test]
     fn mark_read_clears_the_gap() {
         let mut store = navigation_store(6);
-        store.observe_visible_messages("geral", &["m6".to_owned()]);
+        store.observe_visible_messages("geral", &["m5".to_owned()]);
         assert!(store.hourglass_target("geral").is_some());
 
         store.mark_read("geral");
