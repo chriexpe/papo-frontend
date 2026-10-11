@@ -947,6 +947,8 @@ pub struct UiState {
     /// Última geometria observada da conversa, usada para preservar o ponto
     /// visual quando uma página antiga entra antes do conteúdo visível.
     chat_scroll_metrics: Option<(String, f32, f32)>,
+    /// Quanto ainda falta rolar do que a roda do mouse pediu (ver `glide_wheel`).
+    wheel_glide: f32,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
     /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
@@ -1082,6 +1084,7 @@ impl Default for UiState {
             recorder: None,
             error: None,
             chat_scroll_metrics: None,
+            wheel_glide: 0.0,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
@@ -3073,6 +3076,7 @@ fn conversation(
                 .as_ref()
                 .filter(|(previous_channel, _, _)| previous_channel == &channel_id)
                 .map(|(_, offset, _)| *offset);
+            glide_wheel(ui, &mut state.wheel_glide, full, state.panel.is_none());
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
@@ -8757,6 +8761,68 @@ fn webembed_chrome_occlusions(
     rects
 }
 
+/// Distância que um clique da roda do mouse rola, como numa página web. O
+/// egui anda 40 pt por clique e termina o movimento em um décimo de segundo,
+/// o que dá a sensação de rolagem "amarrada".
+const WHEEL_NOTCH_PX: f32 = 96.0;
+/// Constante de tempo do deslizamento: ~90% do caminho em 0,2 s.
+const WHEEL_GLIDE_TAU: f32 = 0.085;
+
+/// Quanto rolar neste quadro, dado o que a roda pediu agora (`requested`) e o
+/// que ainda sobrava (`remaining`). A rolagem desacelera até parar em vez de
+/// andar tudo de uma vez.
+fn glide_step(remaining: &mut f32, requested: f32, dt: f32) -> f32 {
+    *remaining += requested;
+    let mut step = *remaining * (1.0 - (-dt.clamp(0.0, 0.05) / WHEEL_GLIDE_TAU).exp());
+    *remaining -= step;
+    if remaining.abs() < 0.5 {
+        step += *remaining;
+        *remaining = 0.0;
+    }
+    step
+}
+
+/// Troca a rolagem da roda do mouse sobre a conversa por um deslizamento
+/// suave e mais longo. Trackpad (pixels) continua com o tratamento do egui,
+/// que já vem suavizado pelo sistema.
+fn glide_wheel(ui: &egui::Ui, remaining: &mut f32, area: Rect, enabled: bool) {
+    let hovering = enabled
+        && ui.input(|input| input.pointer.hover_pos()).is_some_and(|position| {
+            area.contains(position)
+                && ui
+                    .ctx()
+                    .layer_id_at(position)
+                    .is_none_or(|layer| layer == ui.layer_id())
+        });
+    if !hovering {
+        *remaining = 0.0;
+        return;
+    }
+    let (requested, dt) = ui.input(|input| {
+        let mut px = 0.0;
+        for event in &input.events {
+            if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = event
+                && !modifiers.command
+                && !modifiers.shift
+            {
+                px += match unit {
+                    egui::MouseWheelUnit::Line => delta.y * WHEEL_NOTCH_PX,
+                    egui::MouseWheelUnit::Page => delta.y * area.height() * 0.9,
+                    egui::MouseWheelUnit::Point => 0.0,
+                };
+            }
+        }
+        (px, input.stable_dt)
+    });
+    if requested == 0.0 && remaining.abs() < 0.5 {
+        *remaining = 0.0;
+        return;
+    }
+    let step = glide_step(remaining, requested, dt);
+    ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
+    ui.ctx().request_repaint();
+}
+
 /// Largura em que o texto do compositor quebra: a caixa menos a reserva dos
 /// quatro controles à direita e das margens do campo. Medir a altura e
 /// desenhar o texto usam a mesma conta, senão o tamanho A/B oscila.
@@ -10885,5 +10951,39 @@ mod custom_embed_tests {
         assert_eq!(custom_embed_inner_width(640.0), 560.0);
         assert_eq!(custom_embed_inner_width(320.0), 288.0);
         assert_eq!(custom_embed_inner_width(160.0), 128.0);
+    }
+}
+
+#[cfg(test)]
+mod wheel_glide_tests {
+    use super::*;
+
+    #[test]
+    fn one_notch_glides_over_several_frames_and_lands_exactly() {
+        let mut remaining = 0.0;
+        let mut steps = vec![glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0)];
+        while remaining != 0.0 && steps.len() < 200 {
+            steps.push(glide_step(&mut remaining, 0.0, 1.0 / 60.0));
+        }
+        assert!(steps.len() > 8, "tem que durar vários quadros: {}", steps.len());
+        // O último passo só recolhe o resto abaixo de meio pixel.
+        let body = &steps[..steps.len() - 1];
+        assert!(body.windows(2).all(|pair| pair[1] <= pair[0] + 1e-3), "desacelera: {steps:?}");
+        let total: f32 = steps.iter().sum();
+        assert!((total - WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+        // ~90% do caminho em ~0,2 s (12 quadros).
+        let early: f32 = steps.iter().take(12).sum();
+        assert!(early > WHEEL_NOTCH_PX * 0.85, "{early}");
+    }
+
+    #[test]
+    fn extra_notches_add_up_instead_of_restarting() {
+        let mut remaining = 0.0;
+        let mut total = glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0);
+        total += glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0);
+        while remaining != 0.0 {
+            total += glide_step(&mut remaining, 0.0, 1.0 / 60.0);
+        }
+        assert!((total - 2.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
     }
 }
