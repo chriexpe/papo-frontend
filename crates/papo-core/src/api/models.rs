@@ -262,6 +262,13 @@ pub struct CreateChannelRequest {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topic: Option<String>,
+    /// Categoria em que o canal nasce (backend: `parent_id`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    /// Cargos que já nascem com acesso (backend: `access_roles`). O servidor
+    /// cria as regras na mesma transação do canal.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub access_roles: Vec<String>,
 }
 
 /// Edição de canal (`PUT /channels/{id}`). Tópico ausente não mexe no que
@@ -566,6 +573,9 @@ pub struct RoleRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     pub permissions: RolePermissions,
+    /// Quem já nasce com o cargo (só na criação; backend: `people`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1067,6 +1077,7 @@ mod tests {
     #[test]
     fn cargo_manda_as_sete_permissoes() {
         let body = serde_json::to_string(&RoleRequest {
+            people: Vec::new(),
             name: "membro".to_owned(),
             color: Some("#FF0000".to_owned()),
             permissions: RolePermissions {
@@ -1091,11 +1102,30 @@ mod tests {
             name: "geral".to_owned(),
             kind: "text".to_owned(),
             topic: Some("conversa".to_owned()),
+            parent_id: None,
+            access_roles: Vec::new(),
         })
         .unwrap();
         assert_eq!(
             body,
             r#"{"name":"geral","type":"text","topic":"conversa"}"#
+        );
+    }
+
+    /// Categoria e cargos de acesso viajam no mesmo pedido da criação.
+    #[test]
+    fn canal_novo_leva_categoria_e_acessos() {
+        let body = serde_json::to_string(&CreateChannelRequest {
+            name: "dev".to_owned(),
+            kind: "text".to_owned(),
+            topic: None,
+            parent_id: Some("cat-1".to_owned()),
+            access_roles: vec!["r1".to_owned(), "r2".to_owned()],
+        })
+        .unwrap();
+        assert_eq!(
+            body,
+            r#"{"name":"dev","type":"text","parent_id":"cat-1","access_roles":["r1","r2"]}"#
         );
     }
 
@@ -1106,6 +1136,8 @@ mod tests {
             name: "avisos".to_owned(),
             kind: "category".to_owned(),
             topic: None,
+            parent_id: None,
+            access_roles: Vec::new(),
         })
         .unwrap();
         assert_eq!(body, r#"{"name":"avisos","type":"category"}"#);
