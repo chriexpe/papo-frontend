@@ -957,6 +957,10 @@ pub struct UiState {
     /// O texto do compositor passa do que cabe e rola por dentro: a roda do
     /// mouse sobre ele é dele, não da conversa por baixo.
     composer_overflows: bool,
+    /// Altura de cada linha da conversa na última vez que foi montada, com a
+    /// assinatura do que a determina. Linhas longe da tela não são montadas
+    /// de novo: reservam esta altura (ver `message_list`).
+    row_heights: std::collections::HashMap<String, (u64, f32)>,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
     /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
@@ -1094,6 +1098,7 @@ impl Default for UiState {
             chat_scroll_metrics: None,
             wheel_glide: 0.0,
             composer_overflows: false,
+            row_heights: std::collections::HashMap::new(),
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
@@ -5372,6 +5377,31 @@ fn go_to(
 const CHAT_LOAD_ABOVE: f32 = 1200.0;
 const CHAT_LOAD_BELOW: f32 = 320.0;
 
+/// Resumo do que decide a altura de uma linha da conversa. Se mudar, a
+/// altura guardada vale nada e a linha é montada de novo.
+fn row_signature(message: &Message, grouped: bool, new_day: bool, width: f32, ppp: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    width.to_bits().hash(&mut hasher);
+    ppp.to_bits().hash(&mut hasher);
+    grouped.hash(&mut hasher);
+    new_day.hash(&mut hasher);
+    message.content.hash(&mut hasher);
+    message.edited.hash(&mut hasher);
+    message.pinned.hash(&mut hasher);
+    message.reply_to.hash(&mut hasher);
+    message.attachments.len().hash(&mut hasher);
+    for attachment in &message.attachments {
+        attachment.name().hash(&mut hasher);
+    }
+    message.previews.len().hash(&mut hasher);
+    message.reactions.len().hash(&mut hasher);
+    for reaction in &message.reactions {
+        reaction.count.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5406,8 +5436,41 @@ fn message_list(
     let mut last_at: Option<chrono::DateTime<Local>> = None;
     let mut last_day: Option<u32> = None;
 
+    // Montar toda linha carregada a cada quadro custa O(mensagens): com umas
+    // centenas, a rolagem trava. Linha longe da tela, cuja altura já se
+    // conhece, só reserva o espaço.
+    let cull_margin = CHAT_LOAD_ABOVE.max(CHAT_LOAD_BELOW).max(readable.height());
+    let can_cull = readable.width() > 0.0
+        && readable.height() > 0.0
+        && state.jump.is_none()
+        && state.reply_drag.is_none();
+
     for message in &messages {
+        let y_start = ui.cursor().top();
         let day = message.at.day();
+        let new_day = last_day != Some(day);
+        let will_group = !new_day
+            && last_author.as_deref() == Some(message.author_id.as_str())
+            && last_at.is_some_and(|prev| (message.at - prev).num_minutes() < GROUP_GAP_MINUTES);
+        let signature = row_signature(message, will_group, new_day, width, ui.pixels_per_point());
+        if can_cull
+            && !message.pending
+            && focused_message.as_deref() != Some(message.id.as_str())
+            && state.editing.as_ref().is_none_or(|(id, _)| id != &message.id)
+            && let Some(&(cached, height)) = state.row_heights.get(&message.id)
+            && cached == signature
+            && (y_start + height < readable.min.y - cull_margin
+                || y_start > readable.max.y + cull_margin)
+        {
+            ui.allocate_exact_size(
+                Vec2::new(width, (height - ui.spacing().item_spacing.y).max(0.0)),
+                Sense::hover(),
+            );
+            last_day = Some(day);
+            last_author = Some(message.author_id.clone());
+            last_at = Some(message.at);
+            continue;
+        }
         if last_day != Some(day) {
             day_divider(ui, t, s, message.at, width);
             last_day = Some(day);
@@ -5726,6 +5789,9 @@ fn message_list(
 
         last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
+        state
+            .row_heights
+            .insert(message.id.clone(), (signature, ui.cursor().top() - y_start));
     }
 
     if ui.ctx().pointer_hover_pos().is_none() {
@@ -11014,5 +11080,42 @@ mod wheel_glide_tests {
             total += glide_step(&mut remaining, 0.0, 1.0 / 60.0);
         }
         assert!((total - 2.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+    }
+}
+
+#[cfg(test)]
+mod row_cache_tests {
+    use super::*;
+
+    fn message(content: &str) -> Message {
+        Message {
+            id: "m".into(),
+            channel_id: "c".into(),
+            author_id: "u".into(),
+            content: content.into(),
+            at: Local::now(),
+            edited: false,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
+            pending: false,
+        }
+    }
+
+    #[test]
+    fn row_signature_changes_with_whatever_changes_the_height() {
+        let base = message("oi");
+        let sig = |m: &Message, grouped, new_day, width| row_signature(m, grouped, new_day, width, 1.0);
+        let reference = sig(&base, false, false, 600.0);
+        assert_eq!(reference, sig(&message("oi"), false, false, 600.0));
+        assert_ne!(reference, sig(&message("oi, tudo bem?"), false, false, 600.0));
+        assert_ne!(reference, sig(&base, true, false, 600.0));
+        assert_ne!(reference, sig(&base, false, true, 600.0));
+        assert_ne!(reference, sig(&base, false, false, 601.0));
+        let mut edited = message("oi");
+        edited.edited = true;
+        assert_ne!(reference, sig(&edited, false, false, 600.0));
     }
 }
