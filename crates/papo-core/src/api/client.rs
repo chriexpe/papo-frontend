@@ -659,6 +659,8 @@ impl Api {
         name: &str,
         kind: &str,
         topic: Option<&str>,
+        parent_id: Option<String>,
+        access_roles: Vec<String>,
     ) -> ApiResult<Channel> {
         self.post(
             "/channels",
@@ -666,6 +668,8 @@ impl Api {
                 name: name.to_owned(),
                 kind: kind.to_owned(),
                 topic: topic.map(str::to_owned),
+                parent_id,
+                access_roles,
             },
         )
         .await
@@ -1232,6 +1236,7 @@ impl Api {
         name: &str,
         color: Option<&str>,
         permissions: RolePermissions,
+        people: Vec<String>,
     ) -> ApiResult<Role> {
         self.post(
             "/roles",
@@ -1239,6 +1244,7 @@ impl Api {
                 name: name.to_owned(),
                 color: color.map(str::to_owned),
                 permissions,
+                people,
             },
         )
         .await
@@ -1257,6 +1263,7 @@ impl Api {
                 name: name.to_owned(),
                 color: color.map(str::to_owned),
                 permissions,
+                people: Vec::new(),
             },
         )
         .await

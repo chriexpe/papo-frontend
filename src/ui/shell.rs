@@ -24,7 +24,7 @@ use super::markdown;
 use super::markdown_view;
 use super::glass::SharedGlass;
 use super::gif;
-use super::theme::{radius, space, text, Tokens, HIT_TARGET};
+use super::theme::{adaptive_font, radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
@@ -104,7 +104,12 @@ const COMPOSER_REPLY_H: f32 = 26.0;
 const COMPOSER_LINE_H: f32 = 52.0;
 /// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
 /// quatro linhas. Depois disso a própria área de texto rola internamente.
-const COMPOSER_MAX_ROWS: usize = 4;
+/// Linhas que a caixa de texto alcança antes de o texto passar a rolar dentro
+/// dela (o triplo do que era). Em janela baixa o limite cai: ver
+/// `composer_max_rows`.
+const COMPOSER_MAX_ROWS: usize = 12;
+/// Fração da altura da conversa que a caixa de texto pode ocupar.
+const COMPOSER_MAX_SHARE: f32 = 0.45;
 const TOAST_SECONDS: f64 = 4.0;
 const TOAST_MOBILE_MAX_WIDTH: f32 = 300.0;
 const TOAST_DESKTOP_MAX_WIDTH: f32 = 420.0;
@@ -172,6 +177,8 @@ pub enum ChatAction {
         name: String,
         kind: String,
         topic: Option<String>,
+        parent_id: Option<String>,
+        access_roles: Vec<String>,
     },
     /// Salva nome/tópico de um canal depois da edição inline.
     UpdateChannel {
@@ -960,6 +967,20 @@ pub struct UiState {
     /// Última geometria observada da conversa, usada para preservar o ponto
     /// visual quando uma página antiga entra antes do conteúdo visível.
     chat_scroll_metrics: Option<(String, f32, f32)>,
+    /// Quanto ainda falta rolar do que a roda do mouse pediu (ver `glide_wheel`).
+    wheel_glide: WheelGlide,
+    /// O texto do compositor passa do que cabe e rola por dentro: a roda do
+    /// mouse sobre ele é dele, não da conversa por baixo.
+    composer_overflows: bool,
+    /// Altura de cada linha da conversa na última vez que foi montada, com a
+    /// assinatura do que a determina. Linhas longe da tela não são montadas
+    /// de novo: reservam esta altura (ver `message_list`).
+    row_heights: std::collections::HashMap<String, (u64, f32)>,
+    /// Linhas que o quadro anterior pulou (ver `message_list`).
+    culled_rows: std::collections::HashSet<String>,
+    /// Quanto as linhas acima da tela mudaram de altura ao serem montadas de
+    /// novo; a conversa rola esse tanto para o que se lê não pular.
+    row_drift: f32,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
     /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
@@ -1098,6 +1119,11 @@ impl Default for UiState {
             recorder: None,
             error: None,
             chat_scroll_metrics: None,
+            wheel_glide: WheelGlide::default(),
+            composer_overflows: false,
+            row_heights: std::collections::HashMap::new(),
+            culled_rows: std::collections::HashSet::new(),
+            row_drift: 0.0,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
@@ -1478,15 +1504,37 @@ fn mobile_drawers(
 /// Desenha o fundo embaçado de uma barra: o que já foi pintado por baixo
 /// dela entra borrado, e a tinta translúcida vem por cima.
 pub(super) fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner: f32) {
-    if !state.translucent || state.glass.is_none() {
-        return;
+    glass_blur(ui, &state.glass, state.translucent, rect, corner);
+}
+
+/// O mesmo desfoque, para quem não tem o `UiState` à mão (a folha de Ajustes).
+pub(super) fn glass_blur(
+    ui: &egui::Ui,
+    glass: &Option<SharedGlass>,
+    translucent: bool,
+    rect: Rect,
+    corner: f32,
+) {
+    if let Some(shape) = glass_blur_shape(glass, translucent, rect, corner) {
+        ui.painter().add(shape);
+    }
+}
+
+/// O desfoque como forma pronta, para quem só sabe o tamanho da superfície
+/// depois de medi-la e precisa guardar o lugar dele antes do conteúdo.
+pub(super) fn glass_blur_shape(
+    glass: &Option<SharedGlass>,
+    translucent: bool,
+    rect: Rect,
+    corner: f32,
+) -> Option<egui::Shape> {
+    if !translucent || glass.is_none() {
+        return None;
     }
 
     #[cfg(target_os = "android")]
     {
-        let Some(glass) = state.glass.clone() else {
-            return;
-        };
+        let glass = glass.clone()?;
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             let viewport = info.viewport_in_pixels();
             if let Ok(mut glass) = glass.lock() {
@@ -1503,19 +1551,19 @@ pub(super) fn glass_backdrop(ui: &egui::Ui, state: &UiState, rect: Rect, corner:
                 );
             }
         });
-        ui.painter().add(egui::PaintCallback {
+        Some(egui::Shape::Callback(egui::PaintCallback {
             rect,
             callback: std::sync::Arc::new(callback),
-        });
+        }))
     }
 
     #[cfg(not(target_os = "android"))]
-    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+    Some(egui::Shape::from(eframe::egui_wgpu::Callback::new_paint_callback(
         rect,
         super::glass::GlassCallback {
             corner_points: corner,
         },
-    ));
+    )))
 }
 // ---------------------------------------------------------------------------
 // Coluna esquerda — canais
@@ -3069,12 +3117,22 @@ fn conversation(
                 .as_ref()
                 .filter(|(previous_channel, _, _)| previous_channel == &channel_id)
                 .map(|(_, offset, _)| *offset);
+            // Sobre o compositor, quando o texto dele rola, a roda é dele.
+            let composer_top = full.max.y - PILL_MARGIN * 2.0 - composer_height;
+            let wheel_free = !(state.composer_overflows
+                && ui
+                    .input(|input| input.pointer.hover_pos())
+                    .is_some_and(|position| position.y >= composer_top));
+            glide_wheel(ui, &mut state.wheel_glide, full, state.panel.is_none() && wheel_free);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
                     egui::containers::scroll_area::ScrollSource::NONE
                 } else {
-                    egui::containers::scroll_area::ScrollSource::ALL
+                    egui::containers::scroll_area::ScrollSource {
+                        mouse_wheel: wheel_free,
+                        ..egui::containers::scroll_area::ScrollSource::ALL
+                    }
                 })
                 .auto_shrink([false, false])
                 // Um salto que resolve a abertura não pode animar a partir da
@@ -3154,6 +3212,15 @@ fn conversation(
                 state.open_channel_pending = None;
                 ui.ctx()
                     .request_discard("posição inicial da conversa resolvida no anchor");
+            }
+
+            // Linhas acima da tela mudaram de altura ao deixar de ser puladas:
+            // o scroll acompanha, senão o que se lê dá um tranco.
+            let drift = std::mem::take(&mut state.row_drift);
+            if drift.abs() > 0.5 && !opening_pass {
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), (output.state.offset.y + drift).max(0.0)));
+                ui.ctx().request_discard("linhas acima da tela mudaram de altura");
             }
 
             // Só pagina depois que a abertura estabilizou e com base no offset
@@ -5346,6 +5413,31 @@ fn go_to(
 const CHAT_LOAD_ABOVE: f32 = 1200.0;
 const CHAT_LOAD_BELOW: f32 = 320.0;
 
+/// Resumo do que decide a altura de uma linha da conversa. Se mudar, a
+/// altura guardada vale nada e a linha é montada de novo.
+fn row_signature(message: &Message, grouped: bool, new_day: bool, width: f32, ppp: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    width.to_bits().hash(&mut hasher);
+    ppp.to_bits().hash(&mut hasher);
+    grouped.hash(&mut hasher);
+    new_day.hash(&mut hasher);
+    message.content.hash(&mut hasher);
+    message.edited.hash(&mut hasher);
+    message.pinned.hash(&mut hasher);
+    message.reply_to.hash(&mut hasher);
+    message.attachments.len().hash(&mut hasher);
+    for attachment in &message.attachments {
+        attachment.name().hash(&mut hasher);
+    }
+    message.previews.len().hash(&mut hasher);
+    message.reactions.len().hash(&mut hasher);
+    for reaction in &message.reactions {
+        reaction.count.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5380,8 +5472,43 @@ fn message_list(
     let mut last_at: Option<chrono::DateTime<Local>> = None;
     let mut last_day: Option<u32> = None;
 
+    // Montar toda linha carregada a cada quadro custa O(mensagens): com umas
+    // centenas, a rolagem trava. Linha longe da tela, cuja altura já se
+    // conhece, só reserva o espaço.
+    let mut culled_now = std::collections::HashSet::new();
+    let cull_margin = CHAT_LOAD_ABOVE.max(CHAT_LOAD_BELOW).max(readable.height());
+    let can_cull = readable.width() > 0.0
+        && readable.height() > 0.0
+        && state.jump.is_none()
+        && state.reply_drag.is_none();
+
     for message in &messages {
+        let y_start = ui.cursor().top();
         let day = message.at.day();
+        let new_day = last_day != Some(day);
+        let will_group = !new_day
+            && last_author.as_deref() == Some(message.author_id.as_str())
+            && last_at.is_some_and(|prev| (message.at - prev).num_minutes() < GROUP_GAP_MINUTES);
+        let signature = row_signature(message, will_group, new_day, width, ui.pixels_per_point());
+        if can_cull
+            && !message.pending
+            && focused_message.as_deref() != Some(message.id.as_str())
+            && state.editing.as_ref().is_none_or(|(id, _)| id != &message.id)
+            && let Some(&(cached, height)) = state.row_heights.get(&message.id)
+            && cached == signature
+            && (y_start + height < readable.min.y - cull_margin
+                || y_start > readable.max.y + cull_margin)
+        {
+            ui.allocate_exact_size(
+                Vec2::new(width, (height - ui.spacing().item_spacing.y).max(0.0)),
+                Sense::hover(),
+            );
+            culled_now.insert(message.id.clone());
+            last_day = Some(day);
+            last_author = Some(message.author_id.clone());
+            last_at = Some(message.at);
+            continue;
+        }
         if last_day != Some(day) {
             day_divider(ui, t, s, message.at, width);
             last_day = Some(day);
@@ -5700,7 +5827,20 @@ fn message_list(
 
         last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
+        let height = ui.cursor().top() - y_start;
+        // Uma linha acima da tela que vinha sendo pulada e agora tem outra
+        // altura (mídia ou prévia que só aparece quando ela entra no alcance
+        // de carga) empurraria o que se lê. O desvio é devolvido ao scroll.
+        if state.culled_rows.contains(&message.id)
+            && let Some(&(_, before)) = state.row_heights.get(&message.id)
+            && (height - before).abs() > 0.5
+            && ui.cursor().top() <= readable.min.y
+        {
+            state.row_drift += height - before;
+        }
+        state.row_heights.insert(message.id.clone(), (signature, height));
     }
+    state.culled_rows = culled_now;
 
     if ui.ctx().pointer_hover_pos().is_none() {
         state.hover_actions = None;
@@ -5797,19 +5937,21 @@ fn message_body(
                 // O Android desenha e edita este texto de verdade. O egui só
                 // reserva o lugar e mantém a moldura alinhada com a mensagem.
                 let inner_width = (width - space::MD * 2.0).max(80.0);
+                let edit_font = adaptive_font(ui, &text::message(), &buffer_copy, inner_width);
                 let rows = ui
                     .painter()
-                    .layout(
-                        buffer_copy.clone(),
-                        text::message(),
-                        Color32::WHITE,
-                        inner_width,
-                    )
+                    .layout(buffer_copy.clone(), edit_font.clone(), Color32::WHITE, inner_width)
                     .rows
                     .len()
                     .clamp(1, 6);
-                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&edit_font))
                     + ui.spacing().extra_text_line_spacing;
+                // O campo nativo mede as linhas dele (outra fonte, outra
+                // quebra); a moldura segue essa medida.
+                let (rows, line_height) = match crate::platform::native_text::measured() {
+                    Some((lines, line_h)) if !buffer_copy.is_empty() => (lines.clamp(1, 6), line_h),
+                    _ => (rows, line_height),
+                };
                 let height = rows as f32 * line_height + space::SM * 2.0;
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -5878,10 +6020,16 @@ fn message_body(
                         }
                         submit
                     });
+                let edit_font = adaptive_font(
+                    ui,
+                    &text::message(),
+                    &buffer_copy,
+                    (width - space::MD * 2.0).max(80.0),
+                );
                 let response = ui.add(
                     egui::TextEdit::multiline(&mut buffer_copy)
                         .id(edit_id)
-                        .font(text::message())
+                        .font(edit_font)
                         .desired_width(width)
                         .desired_rows(1)
                         .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
@@ -8472,6 +8620,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                 Id::new("toast-error"),
                 t,
                 state.translucent,
+                &state.glass,
                 space::XXXL * 2.0,
                 toast_max_width(ui.ctx()),
                 |ui| {
@@ -8515,6 +8664,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
         Id::new("toast-saved"),
         t,
         state.translucent,
+        &state.glass,
         space::XXXL * 2.0,
         toast_max_width(ui.ctx()),
         |ui| {
@@ -8804,6 +8954,136 @@ fn webembed_chrome_occlusions(
     rects
 }
 
+/// Distância que um clique da roda do mouse rola, como numa página web. O
+/// egui anda 40 pt por clique e termina o movimento em um décimo de segundo,
+/// o que dá a sensação de rolagem "amarrada".
+const WHEEL_NOTCH_PX: f32 = 96.0;
+/// Rigidez da mola do deslizamento (rad/s). Com amortecimento crítico o
+/// movimento acelera, desacelera e termina sem passar do alvo: ~99% do
+/// caminho em ~0,25 s, sem uma cauda longa se arrastando.
+const WHEEL_SPRING: f32 = 26.0;
+
+/// Estado do deslizamento da roda do mouse sobre a conversa.
+#[derive(Default)]
+struct WheelGlide {
+    /// O que ainda falta rolar.
+    remaining: f32,
+    /// Velocidade com que esse resto está diminuindo (px/s).
+    velocity: f32,
+    /// O que o quadro rolou, para repetir se o egui refizer o quadro.
+    last_step: f32,
+}
+
+impl WheelGlide {
+    fn idle(&self) -> bool {
+        self.remaining.abs() < 0.5 && self.velocity.abs() < 5.0
+    }
+
+    fn stop(&mut self) {
+        self.remaining = 0.0;
+        self.velocity = 0.0;
+    }
+}
+
+/// Quanto rolar neste quadro, dado o que a roda pediu agora (`requested`) e o
+/// que ainda sobrava. É uma mola de amortecimento crítico sobre o resto, com
+/// solução exata para qualquer `dt`: a velocidade é contínua entre cliques e o
+/// movimento não depende do ritmo dos quadros.
+fn glide_step(glide: &mut WheelGlide, requested: f32, dt: f32) -> f32 {
+    if requested != 0.0 && requested * glide.remaining < 0.0 {
+        // Inverteu o sentido: para o que vinha e segue o novo pedido.
+        glide.stop();
+    }
+    glide.remaining += requested;
+    let t = dt.clamp(0.0, 0.05);
+    let w = WHEEL_SPRING;
+    let r0 = glide.remaining;
+    let v0 = glide.velocity;
+    let decay = (-w * t).exp();
+    let pending = v0 + w * r0;
+    let mut remaining = (r0 + pending * t) * decay;
+    let mut velocity = (v0 - w * pending * t) * decay;
+    // O resto nunca muda de sinal: sem "voltar um pouco" no fim.
+    if remaining * r0 <= 0.0 || remaining.abs() < 0.5 {
+        remaining = 0.0;
+        velocity = 0.0;
+    }
+    let step = r0 - remaining;
+    glide.remaining = remaining;
+    glide.velocity = velocity;
+    step
+}
+
+/// Troca a rolagem da roda do mouse sobre a conversa por um deslizamento
+/// suave. Trackpad (pixels) continua com o tratamento do egui, que já vem
+/// suavizado pelo sistema.
+fn glide_wheel(ui: &egui::Ui, glide: &mut WheelGlide, area: Rect, enabled: bool) {
+    // Quadro refeito (`request_discard`): o mesmo passo, não outro.
+    if ui.ctx().current_pass_index() > 0 {
+        let step = glide.last_step;
+        if step != 0.0 {
+            ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
+        }
+        return;
+    }
+    glide.last_step = 0.0;
+    let hovering = enabled
+        && ui.input(|input| input.pointer.hover_pos()).is_some_and(|position| {
+            area.contains(position)
+                && ui
+                    .ctx()
+                    .layer_id_at(position)
+                    .is_none_or(|layer| layer == ui.layer_id())
+        });
+    if !hovering {
+        glide.stop();
+        return;
+    }
+    let (requested, dt) = ui.input(|input| {
+        let mut px = 0.0;
+        for event in &input.events {
+            if let egui::Event::MouseWheel { unit, delta, modifiers, .. } = event
+                && !modifiers.command
+                && !modifiers.shift
+            {
+                px += match unit {
+                    egui::MouseWheelUnit::Line => delta.y * WHEEL_NOTCH_PX,
+                    egui::MouseWheelUnit::Page => delta.y * area.height() * 0.9,
+                    egui::MouseWheelUnit::Point => 0.0,
+                };
+            }
+        }
+        (px, input.stable_dt)
+    });
+    if requested == 0.0 && glide.idle() {
+        glide.stop();
+        return;
+    }
+    let step = glide_step(glide, requested, dt);
+    glide.last_step = step;
+    ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
+    ui.ctx().request_repaint();
+}
+
+/// Largura em que o texto do compositor quebra: a caixa menos a reserva dos
+/// quatro controles à direita e das margens do campo. Medir a altura e
+/// desenhar o texto usam a mesma conta, senão o tamanho A/B oscila.
+fn composer_text_width(area: Rect, with_record: bool) -> f32 {
+    let left_count = 1 + usize::from(with_record);
+    let left_width =
+        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
+    let composer_width = (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
+    (composer_width - controls_width).max(80.0)
+}
+
+/// Máximo de linhas da caixa: `COMPOSER_MAX_ROWS`, ou menos se a conversa for
+/// baixa demais para dar tanto espaço (nunca menos de 3).
+fn composer_max_rows(area: Rect, row_h: f32) -> usize {
+    let fit = ((area.height() * COMPOSER_MAX_SHARE - space::SM * 2.0) / row_h.max(1.0)).floor();
+    (fit.max(3.0) as usize).min(COMPOSER_MAX_ROWS)
+}
+
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
@@ -8811,33 +9091,32 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     let with_record = state.show_record;
     #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
-    let left_count = 1 + usize::from(with_record);
-    let left_width =
-        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
-    let composer_width =
-        (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+    let text_width = composer_text_width(area, with_record);
 
-    // Reserva dos quatro controles à direita e das margens do campo.
-    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
-    let text_width = (composer_width - controls_width).max(80.0);
-
+    // Tamanho A numa linha, B quando quebra: a altura segue o tamanho em uso.
+    let font = adaptive_font(ui, &text::message(), &state.composer, text_width);
     let rows = if state.composer.is_empty() {
         1
     } else {
         ui.painter()
-            .layout(
-                state.composer.clone(),
-                text::message(),
-                Color32::WHITE,
-                text_width,
-            )
+            .layout(state.composer.clone(), font.clone(), Color32::WHITE, text_width)
             .rows
             .len()
-            .clamp(1, COMPOSER_MAX_ROWS)
+            .max(1)
     };
 
-    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font))
         + ui.spacing().extra_text_line_spacing;
+    // No Android quem mede é o próprio EditText (outra fonte, outra quebra):
+    // a caixa cresce com as linhas dele, até o limite, e o resto rola dentro.
+    #[cfg(target_os = "android")]
+    let (rows, row_h) = match crate::platform::native_text::measured() {
+        Some((lines, line_h)) if !state.composer.is_empty() && state.editing.is_none() => {
+            (lines.max(1), line_h)
+        }
+        _ => (rows, row_h),
+    };
+    let rows = rows.min(composer_max_rows(area, row_h));
     let text_h = rows as f32 * row_h + space::SM * 2.0;
     let mut height = COMPOSER_LINE_H.max(text_h);
 
@@ -9586,6 +9865,14 @@ fn composer(
         egui::pos2(line.min.x + space::MD, line.min.y),
         egui::pos2(embed_rect.min.x - space::XXS, line.max.y),
     );
+    // Tamanho A (cabe numa linha) ou B (quebrou). No Android quem decide é o
+    // campo nativo, que recebe só o A; aqui vale para o desenho do egui.
+    let composer_font = adaptive_font(
+        ui,
+        &text::message(),
+        &state.composer,
+        composer_text_width(area, with_record),
+    );
 
     #[cfg(target_os = "android")]
     let android_composer_tap = if state.editing.is_some() {
@@ -9751,7 +10038,7 @@ fn composer(
                         field.left_center(),
                         egui::Align2::LEFT_CENTER,
                         shown,
-                        text::message(),
+                        composer_font.clone(),
                         if state.composer.is_empty() {
                             t.label_tertiary
                         } else {
@@ -9830,18 +10117,29 @@ fn composer(
                     crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
                 let viewport_h =
                     (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
+                // Janela do texto centrada na caixa; o layout do pai a deixava
+                // começar no topo e o texto descia uns pontos abaixo do centro.
+                let mut viewport = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(Rect::from_center_size(
+                            field.center(),
+                            Vec2::new(field.width(), viewport_h),
+                        ))
+                        .layout(Layout::top_down(Align::Min)),
+                );
                 let response = egui::ScrollArea::vertical()
                     .id_salt("composer-text-scroll")
+                    .min_scrolled_height(viewport_h)
                     .max_height(viewport_h)
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
+                    .show(&mut viewport, |ui| {
                         ui.set_min_height(viewport_h);
                         egui::TextEdit::multiline(&mut state.composer)
                             .id(edit_id)
                             .hint_text(RichText::new(hint).color(t.label_tertiary))
                             .frame(Frame::NONE)
-                            .font(text::message())
+                            .font(composer_font.clone())
                             .desired_rows(1)
                             .vertical_align(Align::Center)
                             .min_size(Vec2::new(0.0, viewport_h))
@@ -9850,8 +10148,10 @@ fn composer(
                             .show(ui)
                             .response
                             .response
-                    })
-                    .inner;
+                    });
+                state.composer_overflows =
+                    response.content_size.y > response.inner_rect.height() + 1.0;
+                let response = response.inner;
                 let _ = crate::platform::ime::sync_text_edit(
                     ui.ctx(),
                     edit_id,
@@ -11043,5 +11343,111 @@ mod custom_embed_tests {
         assert_eq!(custom_embed_inner_width(640.0), 560.0);
         assert_eq!(custom_embed_inner_width(320.0), 288.0);
         assert_eq!(custom_embed_inner_width(160.0), 128.0);
+    }
+}
+
+#[cfg(test)]
+mod wheel_glide_tests {
+    use super::*;
+
+    fn run(requests: &[(usize, f32)], frames: usize, dt: f32) -> Vec<f32> {
+        let mut glide = WheelGlide::default();
+        (0..frames)
+            .map(|frame| {
+                let requested = requests
+                    .iter()
+                    .find(|(at, _)| *at == frame)
+                    .map_or(0.0, |(_, px)| *px);
+                glide_step(&mut glide, requested, dt)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_notch_speeds_up_slows_down_and_lands_exactly() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX)], 60, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!((total - WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+        // Nunca anda para trás.
+        assert!(steps.iter().all(|step| *step >= 0.0), "{steps:?}");
+        // Acelera no começo (a mola parte parada)...
+        assert!(steps[1] > steps[0], "{steps:?}");
+        // ...e depois só desacelera, sem tranco no meio do caminho.
+        let peak = steps.iter().cloned().fold(0.0, f32::max);
+        let peak_at = steps.iter().position(|step| *step == peak).unwrap();
+        assert!(peak_at <= 4, "pico cedo: {peak_at}");
+        // (O último passo só recolhe o que sobra abaixo de meio pixel.)
+        let last = steps.iter().rposition(|step| *step > 0.0).unwrap();
+        assert!(
+            steps[peak_at..last].windows(2).all(|pair| pair[1] <= pair[0] + 1e-3),
+            "{steps:?}"
+        );
+        // Termina de vez: ~99% em ~0,25 s (15 quadros) e nada depois de 0,4 s.
+        let early: f32 = steps.iter().take(15).sum();
+        assert!(early > WHEEL_NOTCH_PX * 0.98, "{early}");
+        assert!(steps.iter().skip(24).all(|step| *step == 0.0), "{steps:?}");
+    }
+
+    #[test]
+    fn motion_does_not_depend_on_the_frame_rate() {
+        let slow: f32 = run(&[(0, WHEEL_NOTCH_PX)], 30, 1.0 / 30.0).iter().take(8).sum();
+        let fast: f32 = run(&[(0, WHEEL_NOTCH_PX)], 120, 1.0 / 120.0).iter().take(32).sum();
+        // Mesmo instante (~0,27 s), mesma posição, com ritmos de quadro diferentes.
+        assert!((slow - fast).abs() < 1.0, "{slow} vs {fast}");
+    }
+
+    #[test]
+    fn extra_notches_add_up_without_stalling() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX), (3, WHEEL_NOTCH_PX), (6, WHEEL_NOTCH_PX)], 90, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!((total - 3.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+        assert!(steps.iter().all(|step| *step >= 0.0), "{steps:?}");
+        // A velocidade passa de um clique ao seguinte sem cair a zero.
+        assert!(steps[3..8].iter().all(|step| *step > 1.0), "{steps:?}");
+    }
+
+    #[test]
+    fn reversing_direction_stops_instead_of_bouncing() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX), (5, -WHEEL_NOTCH_PX)], 90, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!(total.abs() < 100.0 && steps[..5].iter().all(|step| *step >= 0.0));
+        assert!(steps[5..].iter().all(|step| *step <= 0.0), "{steps:?}");
+    }
+}
+
+#[cfg(test)]
+mod row_cache_tests {
+    use super::*;
+
+    fn message(content: &str) -> Message {
+        Message {
+            id: "m".into(),
+            channel_id: "c".into(),
+            author_id: "u".into(),
+            content: content.into(),
+            at: Local::now(),
+            edited: false,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
+            pending: false,
+        }
+    }
+
+    #[test]
+    fn row_signature_changes_with_whatever_changes_the_height() {
+        let base = message("oi");
+        let sig = |m: &Message, grouped, new_day, width| row_signature(m, grouped, new_day, width, 1.0);
+        let reference = sig(&base, false, false, 600.0);
+        assert_eq!(reference, sig(&message("oi"), false, false, 600.0));
+        assert_ne!(reference, sig(&message("oi, tudo bem?"), false, false, 600.0));
+        assert_ne!(reference, sig(&base, true, false, 600.0));
+        assert_ne!(reference, sig(&base, false, true, 600.0));
+        assert_ne!(reference, sig(&base, false, false, 601.0));
+        let mut edited = message("oi");
+        edited.edited = true;
+        assert_ne!(reference, sig(&edited, false, false, 600.0));
     }
 }

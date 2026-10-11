@@ -268,6 +268,10 @@ pub enum Command {
         name: String,
         kind: String,
         topic: Option<String>,
+        /// Categoria em que o canal nasce.
+        parent_id: Option<String>,
+        /// Cargos com acesso (ids): o servidor cria a regra de cada um.
+        access_roles: Vec<String>,
     },
     UpdateChannel {
         channel_id: String,
@@ -305,6 +309,8 @@ pub enum Command {
         name: String,
         color: Option<String>,
         permissions: crate::api::models::RolePermissions,
+        /// Quem já nasce com o cargo (ids).
+        people: Vec<String>,
     },
     UpdateRole {
         role_id: String,
@@ -2971,8 +2977,10 @@ async fn handle(
         | Command::SetActivity(_) => {}
         // As três mexidas em canal terminam iguais: relista os canais, porque
         // a posição dos outros muda junto, e deixa a lista nova ser a verdade.
-        Command::CreateChannel { name, kind, topic } => {
-            match api.create_channel(&name, &kind, topic.as_deref()).await {
+        Command::CreateChannel { name, kind, topic, parent_id, access_roles } => {
+            // Categoria e acessos vão no próprio pedido: o servidor cria tudo
+            // numa transação, e o canal nunca aparece pela metade.
+            match api.create_channel(&name, &kind, topic.as_deref(), parent_id, access_roles).await {
                 Ok(channel) => {
                     let id = channel.id.clone();
                     relist_channels(api, storage_key, updates, wake).await;
@@ -3273,7 +3281,8 @@ async fn handle(
             name,
             color,
             permissions,
-        } => match api.create_role(&name, color.as_deref(), permissions).await {
+            people,
+        } => match api.create_role(&name, color.as_deref(), permissions, people).await {
             Ok(_) => relist_roles(api, storage_key, updates, wake).await,
             Err(error) => report(storage_key, updates, wake, error),
         },

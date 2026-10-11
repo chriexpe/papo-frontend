@@ -13,6 +13,7 @@ pub enum RoleAction {
         name: String,
         color: Option<String>,
         permissions: RolePermissions,
+        people: Vec<String>,
     },
     Update {
         role_id: String,
@@ -40,6 +41,9 @@ pub struct Draft {
     pub name: String,
     pub color: String,
     pub permissions: RolePermissions,
+    /// Quem tem o cargo (ids), no rascunho e como estava ao abrir.
+    pub people: Vec<String>,
+    pub original_people: Vec<String>,
 }
 
 /// Aba do cargo aberto.

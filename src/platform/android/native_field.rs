@@ -22,6 +22,8 @@ pub enum Mode {
     Text,
     Password,
     Search,
+    /// Várias linhas (bio do cartão, formulários de embed): Enter quebra a
+    /// linha, e o texto troca de tamanho A/B conforme quebra.
     Multiline,
 }
 
@@ -58,12 +60,16 @@ struct FieldState {
     submit: bool,
     focused: bool,
     last: Option<Spec>,
+    /// Linhas e altura de cada linha (px) que o próprio EditText mediu, só nos
+    /// campos de várias linhas. A caixa segue isso, não a conta do egui.
+    lines: Option<(usize, i32)>,
 }
 
 #[derive(Default)]
 struct State {
     seen: HashSet<String>,
     fields: HashMap<String, FieldState>,
+    pixels_per_point: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -73,8 +79,35 @@ pub struct Events {
     pub focused: bool,
 }
 
+/// Linhas que o texto ocupa no campo nativo `key` e a altura de cada uma, em
+/// pontos do egui, se ele já mediu o texto de agora.
+pub fn measured(key: &str) -> Option<(usize, f32)> {
+    let state = state().lock().ok()?;
+    let (lines, line_px) = state.fields.get(key)?.lines?;
+    (lines > 0 && line_px > 0 && state.pixels_per_point > 0.0)
+        .then(|| (lines, line_px as f32 / state.pixels_per_point))
+}
+
 pub fn install(app: AndroidApp) {
+    install_font(&app);
     let _ = APP.set(app);
+}
+
+/// Deixa a Inter, a mesma fonte do egui, num arquivo que o Java lê
+/// (`PapoActivity.papoTypeface`): os campos nativos usavam a fonte do sistema
+/// e por isso o texto saía com outro tamanho e outra cara que o do egui.
+fn install_font(app: &AndroidApp) {
+    const INTER: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+    let Some(dir) = app.internal_data_path().map(|path| path.join("fonts")) else {
+        return;
+    };
+    let path = dir.join("Inter-Regular.ttf");
+    let current = std::fs::metadata(&path).map(|meta| meta.len()).ok();
+    if current != Some(INTER.len() as u64)
+        && let Err(error) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, INTER))
+    {
+        log::warn!("não consegui gravar a fonte dos campos nativos: {error}");
+    }
 }
 
 pub fn begin_frame() {
@@ -140,6 +173,7 @@ pub fn show(
             return Events::default();
         };
         state.seen.insert(key.to_owned());
+        state.pixels_per_point = ppp;
         let field = state.fields.entry(key.to_owned()).or_default();
 
         if let Some(incoming) = field.incoming.take() {
@@ -174,8 +208,12 @@ pub fn show(
     }
 }
 
+/// ARGB "reto" para o Android. `Color32` guarda os canais já multiplicados
+/// pelo alfa; passá-los assim faz uma cor translúcida (a dica, o texto
+/// terciário) chegar ao EditText bem mais escura do que no egui.
 fn android_color(color: egui::Color32) -> i32 {
-    i32::from_be_bytes([color.a(), color.r(), color.g(), color.b()])
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    u32::from_be_bytes([a, r, g, b]) as i32
 }
 
 fn call_show(spec: &Spec, focus: bool) {
@@ -279,6 +317,23 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldFocu
         && let Some(field) = state.fields.get_mut(String::from(key).as_str())
     {
         field.focused = focused != 0;
+    }
+    super::wake::request();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldLines(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    key: jni::objects::JString,
+    lines: jni::sys::jint,
+    line_height_px: jni::sys::jint,
+) {
+    let Ok(key) = env.get_string(&key) else { return; };
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.lines = Some((lines.max(0) as usize, line_height_px.max(0)));
     }
     super::wake::request();
 }

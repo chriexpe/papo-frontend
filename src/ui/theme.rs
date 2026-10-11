@@ -133,6 +133,24 @@ pub mod text {
     }
 }
 
+/// Campo de várias linhas: o texto tem o tamanho A enquanto cabe numa linha
+/// e passa ao tamanho B (menor) quando quebra. A conta é sempre feita com o
+/// tamanho A, nunca com o atual: assim, voltar a caber numa linha volta ao A
+/// sem ficar piscando entre os dois. O Android faz o mesmo no campo nativo
+/// (`WRAP_TEXT_SCALE` em `PapoActivity.java`); os dois valores andam juntos.
+pub const WRAP_SCALE: f32 = 0.86;
+
+pub fn adaptive_font(ui: &egui::Ui, a: &FontId, text: &str, width: f32) -> FontId {
+    let fits = !text.contains('\n')
+        && (text.is_empty()
+            || ui.painter().layout_no_wrap(text.to_owned(), a.clone(), Color32::WHITE).size().x <= width);
+    if fits {
+        a.clone()
+    } else {
+        FontId::new((a.size * WRAP_SCALE).round().max(8.0), a.family.clone())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cores
 // ---------------------------------------------------------------------------
@@ -179,6 +197,10 @@ pub struct Tokens {
     pub danger: Color32,
     /// Amarelo das menções, opaco: quem usa é que decide a transparência.
     pub mention: Color32,
+    /// Cartão de lista dentro de uma folha (Ajustes).
+    pub card: Color32,
+    /// Coluna lateral da folha de Ajustes.
+    pub side: Color32,
 }
 
 impl Tokens {
@@ -193,7 +215,7 @@ impl Tokens {
                 glass_highlight: rgba(0xFF, 0xFF, 0xFF, 0x14),
                 label: rgb(0xFF, 0xFF, 0xFF),
                 label_secondary: rgba(0xEB, 0xEB, 0xF5, 0x99),
-                label_tertiary: rgba(0xEB, 0xEB, 0xF5, 0x4D),
+                label_tertiary: rgba(0xEB, 0xEB, 0xF5, 0x66),
                 separator: rgba(0xFF, 0xFF, 0xFF, 0x1A),
                 fill_soft: rgba(0xFF, 0xFF, 0xFF, 0x0F),
                 fill_medium: rgba(0xFF, 0xFF, 0xFF, 0x1F),
@@ -204,6 +226,8 @@ impl Tokens {
                 busy: rgb(0xFF, 0x45, 0x3A),
                 danger: rgb(0xFF, 0x45, 0x3A),
                 mention: rgb(0xFF, 0xD6, 0x0A),
+                card: rgb(0x32, 0x32, 0x36),
+                side: rgb(0x1E, 0x1E, 0x22),
             },
             Appearance::Light => Self {
                 appearance,
@@ -225,6 +249,8 @@ impl Tokens {
                 busy: rgb(0xFF, 0x3B, 0x30),
                 danger: rgb(0xFF, 0x3B, 0x30),
                 mention: rgb(0xFF, 0xB8, 0x00),
+                card: rgb(0xFF, 0xFF, 0xFF),
+                side: rgb(0xEC, 0xEC, 0xF0),
             },
         };
         if let Some(accent) = accent {

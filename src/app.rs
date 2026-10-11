@@ -2174,8 +2174,8 @@ impl PapoApp {
             ChatAction::NewChannel
             | ChatAction::EditChannel(_)
             | ChatAction::RequestDeleteChannel(_) => unreachable!("tratadas antes do match"),
-            ChatAction::CreateChannel { name, kind, topic } => {
-                ws.runtime.net.send(Command::CreateChannel { name, kind, topic })
+            ChatAction::CreateChannel { name, kind, topic, parent_id, access_roles } => {
+                ws.runtime.net.send(Command::CreateChannel { name, kind, topic, parent_id, access_roles })
             }
             ChatAction::UpdateChannel {
                 channel_id,
@@ -2417,7 +2417,7 @@ impl PapoApp {
             | ChatAction::RequestDeleteChannel(_) => unreachable!("tratadas antes do match"),
             // Na demonstração não há rede: o canal nasce, muda e some aqui
             // mesmo, para o editor inline poder ser testado sem backend.
-            ChatAction::CreateChannel { name, kind, topic } => {
+            ChatAction::CreateChannel { name, kind, topic, parent_id, access_roles } => {
                 use crate::state::{Channel, ChannelKind};
                 let kind = match kind.as_str() {
                     "voice" => ChannelKind::Voice,
@@ -2432,9 +2432,28 @@ impl PapoApp {
                     kind,
                     topic,
                     position,
-                    permissions: Vec::new(),
+                    permissions: access_roles
+                        .iter()
+                        .map(|role_id| crate::api::models::ChannelPermissionEntry {
+                            role_id: role_id.clone(),
+                            role_name: ws
+                                .runtime
+                                .store
+                                .roles
+                                .iter()
+                                .find(|role| &role.id == role_id)
+                                .map(|role| role.name.clone())
+                                .unwrap_or_default(),
+                            permissions: crate::api::models::ChannelPermissions {
+                                read_channel: true,
+                                send_messages: true,
+                                delete_messages: false,
+                                connect_voice: true,
+                            },
+                        })
+                        .collect(),
                     notification_settings: "only_mentions".to_owned(),
-                    parent_id: None,
+                    parent_id,
                     unread: false,
                     mentions: 0,
                 });
@@ -3379,10 +3398,12 @@ impl PapoApp {
                 name,
                 color,
                 permissions,
+                people,
             } => Command::CreateRole {
                 name,
                 color,
                 permissions,
+                people,
             },
             RoleAction::Update {
                 role_id,
@@ -3530,6 +3551,7 @@ impl PapoApp {
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,
                 translucency: &mut self.settings.translucency,
+                glass: self.ui.glass.clone(),
                 notifications: &mut self.settings.notifications,
                 reply_notifications: &mut self.settings.reply_notifications,
                 close_to_tray: &mut self.settings.close_to_tray,

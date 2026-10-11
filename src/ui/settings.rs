@@ -86,11 +86,11 @@ impl ChannelNotifyMode {
 impl AppPane {
     const ALL: [Self; 8] = [
         Self::Account,
-        Self::Activity,
         Self::Appearance,
+        Self::Activity,
         Self::Alerts,
-        Self::Files,
         Self::Language,
+        Self::Files,
         Self::Sessions,
         Self::Diagnostics,
     ];
@@ -182,6 +182,12 @@ pub struct SettingsState {
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
     /// tecla digitada.
     pub draft: Draft,
+    /// Quem tem acesso a cada canal, por pessoa. Só vive no app por ora: o
+    /// servidor ainda não guarda isso.
+    pub channel_people: std::collections::HashMap<String, Vec<String>>,
+    /// Pessoas de um canal que acabou de ser pedido: casam com o id quando
+    /// ele aparece na lista.
+    pub pending_channel_people: Option<(String, Vec<String>)>,
 }
 
 impl Default for SettingsState {
@@ -197,6 +203,8 @@ impl Default for SettingsState {
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
             draft: Draft::default(),
+            channel_people: std::collections::HashMap::new(),
+            pending_channel_people: None,
         }
     }
 }
@@ -210,6 +218,15 @@ pub struct ChannelDraft {
     pub topic: String,
     /// `text`, `voice` ou `category`, como o contrato espera.
     pub kind: String,
+    /// Categoria escolhida no editor (só de canal que já existe) e a de
+    /// origem, para saber se mudou.
+    pub parent: Option<String>,
+    pub original_parent: Option<String>,
+    /// Cargos que têm acesso (ids) e como estavam ao abrir.
+    pub access_roles: Vec<String>,
+    pub original_access_roles: Vec<String>,
+    /// Pessoas com acesso: por enquanto só no app, até o servidor guardar.
+    pub people: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -229,6 +246,11 @@ impl ChannelDraft {
             emoji_group: 0,
             topic: String::new(),
             kind: "text".to_owned(),
+            parent: None,
+            original_parent: None,
+            access_roles: Vec::new(),
+            original_access_roles: Vec::new(),
+            people: Vec::new(),
         }
     }
 
@@ -248,6 +270,11 @@ impl ChannelDraft {
                 // settings projection.
                 ChannelKind::Direct => "dm".to_owned(),
             },
+            parent: channel.parent_id.clone(),
+            original_parent: channel.parent_id.clone(),
+            access_roles: channel.permissions.iter().filter(|entry| entry.permissions.read_channel).map(|entry| entry.role_id.clone()).collect(),
+            original_access_roles: channel.permissions.iter().filter(|entry| entry.permissions.read_channel).map(|entry| entry.role_id.clone()).collect(),
+            people: Vec::new(),
         }
     }
 }
@@ -261,6 +288,8 @@ pub struct Draft {
     /// Frase de digitação ("está digitando…" do seu jeito).
     pub typing: String,
     pub password: String,
+    /// A caixa de senha nova está aberta.
+    pub password_open: bool,
     pub loaded_server: bool,
     pub server_name: String,
     pub server_public: bool,
@@ -313,7 +342,9 @@ impl SettingsState {
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.mobile_page = true;
-        self.draft.channel = Some(ChannelDraft::edit(channel));
+        let mut editor = ChannelDraft::edit(channel);
+        editor.people = self.channel_people.get(&channel.id).cloned().unwrap_or_default();
+        self.draft.channel = Some(editor);
         self.draft.channel_permission = None;
         self.draft.deleting = None;
     }
@@ -407,13 +438,11 @@ impl SettingsState {
 // do sistema, e ele carrega hierarquia sem precisar de mais cor.
 // ---------------------------------------------------------------------------
 
-const ROW_HEIGHT: f32 = 38.0;
+const ROW_HEIGHT: f32 = 42.0;
 const ROW_INSET: f32 = space::LG;
 /// Largura reservada ao controle, encostado à direita da linha.
-const CONTROL_COLUMN: f32 = 190.0;
+const CONTROL_COLUMN: f32 = 290.0;
 /// Linhas que mostram figurinha: a arte e a altura que ela pede.
-const STICKER_SIDE: f32 = 28.0;
-const STICKER_ROW_H: f32 = 44.0;
 /// Alvo de clique no desktop: 28×28 é o padrão do guia, 20×20 o mínimo.
 const SWITCH_W: f32 = 38.0;
 const SWITCH_H: f32 = 22.0;
@@ -449,19 +478,30 @@ fn section(ui: &mut egui::Ui, t: &Tokens, label: &str) {
         ui.add_space(space::XS);
         return;
     }
-    ui.add_space(space::LG);
+    // 22 entre grupos, menos no primeiro, que já nasce no topo do corpo.
+    if ui.min_rect().height() > 8.0 {
+        ui.add_space(22.0);
+    }
     ui.horizontal(|ui| {
         // Mesmo recuo das linhas: o título tem de nascer na mesma coluna
         // que os rótulos que ele cobre.
         ui.add_space(ROW_INSET);
-        ui.label(
-            RichText::new(label.to_uppercase())
-                .font(text::caption())
-                .color(t.label_tertiary),
-        );
+        ui.label(RichText::new(label).font(px(11.5, "semibold")).color(t.label_secondary));
     });
-    ui.add_space(space::SM);
+    ui.add_space(6.0);
 }
+
+/// A largura que cabe de verdade na janela de rolagem: um texto sem quebra
+/// pode esticar o `available_width` além da folha, e as linhas o seguiam.
+fn fit_width(ui: &egui::Ui) -> f32 {
+    let right = ui.ctx().data(|data| data.get_temp::<f32>(egui::Id::new(PANE_RIGHT_KEY)));
+    match right {
+        Some(right) => ui.available_width().min((right - ui.cursor().min.x).max(0.0)),
+        None => ui.available_width().min((ui.clip_rect().max.x - ui.cursor().min.x).max(0.0)),
+    }
+}
+
+const PANE_RIGHT_KEY: &str = "ajustes-borda-direita";
 
 /// Agrupa linhas. Sem fundo próprio: um bloco mais claro dentro da folha
 /// vira uma segunda janela, e duas superfícies empilhadas foi exatamente o
@@ -474,6 +514,11 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
     if tiled {
         ui.spacing_mut().item_spacing.y = 0.0;
     }
+    // O cartão: o fundo é reservado antes e pintado depois, quando se sabe
+    // a altura. No celular (peças) cada linha tem o seu.
+    let card_top = ui.cursor().min.y;
+    let card_w = fit_width(ui);
+    let card = (!tiled).then(|| ui.painter().add(egui::Shape::Noop));
     let mut rows = Rows {
         ui,
         t: *t,
@@ -483,6 +528,7 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
         tiled,
         pieces: Vec::new(),
         stack_next: false,
+        no_separator_next: false,
         editing: false,
         min_height_next: ROW_HEIGHT,
     };
@@ -512,13 +558,26 @@ fn group(ui: &mut egui::Ui, t: &Tokens, contents: impl FnOnce(&mut Rows)) {
     }
 
     let rect = ui.min_rect();
+    if let Some(slot) = card {
+        let body = Rect::from_min_max(egui::pos2(rect.min.x, card_top), egui::pos2(rect.min.x + card_w, rect.max.y));
+        ui.painter().set(
+            slot,
+            egui::epaint::RectShape::new(
+                body,
+                CornerRadius::same(10),
+                t.card,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
     for y in separators {
         ui.painter().line_segment(
             [
                 egui::pos2(rect.min.x + ROW_INSET, y),
-                egui::pos2(rect.max.x, y),
+                egui::pos2(rect.min.x + card_w, y),
             ],
-            Stroke::new(1.0, t.separator),
+            Stroke::new(0.5, t.separator),
         );
     }
 }
@@ -537,6 +596,8 @@ pub struct Rows<'u> {
     pieces: Vec<(egui::layers::ShapeIdx, Rect)>,
     /// A próxima linha empilha o controle embaixo do rótulo (campos).
     stack_next: bool,
+    /// A próxima linha nasce colada na anterior, sem o fio entre elas.
+    no_separator_next: bool,
     /// O último campo desenhado está com o foco (a pessoa ainda digita).
     editing: bool,
     /// Altura mínima de uma linha especial (por exemplo, um preview de 36px).
@@ -547,7 +608,7 @@ pub struct Rows<'u> {
 impl Rows<'_> {
     /// Reserva a faixa de uma linha e devolve a área útil dela.
     fn band(&mut self, height: f32) -> (Rect, Rect) {
-        let width = self.ui.available_width();
+        let width = fit_width(self.ui);
         if self.tiled {
             if !self.first {
                 self.ui.add_space(TILE_GAP);
@@ -568,15 +629,75 @@ impl Rows<'_> {
         let (rect, _) = self
             .ui
             .allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        if !self.first {
+        let joined = std::mem::take(&mut self.no_separator_next);
+        if !self.first && !joined {
             self.separators.push(rect.min.y);
         }
         self.first = false;
         let inner = Rect::from_min_max(
             egui::pos2(rect.min.x + ROW_INSET, rect.min.y),
-            egui::pos2(rect.max.x - space::MD, rect.max.y),
+            egui::pos2(rect.max.x - ROW_INSET, rect.max.y),
         );
         (rect, inner)
+    }
+
+    /// A próxima linha empilha o controle embaixo do rótulo, mesmo com espaço.
+    fn stack_next(&mut self) {
+        self.stack_next = true;
+    }
+
+    /// A próxima linha continua a anterior, sem fio no meio.
+    fn join_next(&mut self) {
+        self.no_separator_next = true;
+    }
+
+    /// Um painel de aviso dentro do cartão: pontinhos e uma frase, como a
+    /// prévia de "digitando…".
+    fn typing_panel(&mut self, text: &str) {
+        let t = self.t;
+        let (_, inner) = self.band(52.0);
+        let panel = Rect::from_min_max(egui::pos2(inner.min.x, inner.min.y), egui::pos2(inner.max.x, inner.max.y - 12.0));
+        self.ui.painter().rect(panel, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+        for i in 0..3 {
+            self.ui.painter().circle_filled(egui::pos2(panel.min.x + 16.0 + i as f32 * 8.0, panel.center().y), 2.5, t.label_tertiary);
+        }
+        crate::ui::widgets::text_fit(
+            self.ui.painter(),
+            egui::pos2(panel.min.x + 14.0 + 3.0 * 8.0 + 8.0, panel.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            px(12.5, "regular"),
+            t.label_secondary,
+            panel.width() - 60.0,
+        );
+    }
+
+    /// As regras da senha nova, uma por linha, e o botão de trocar à direita.
+    fn password_rules(&mut self, rules: &[(&str, bool)], button: &str, ready: bool) -> bool {
+        let t = self.t;
+        let (rect, inner) = self.band(20.0 + rules.len() as f32 * 17.0);
+        let mut y = rect.min.y + 10.0;
+        for (label, ok) in rules {
+            let ink = if *ok { t.online } else { t.label_tertiary };
+            self.ui.painter().text(
+                egui::pos2(inner.min.x, y),
+                egui::Align2::LEFT_TOP,
+                format!("{} {label}", if *ok { "●" } else { "○" }),
+                px(11.5, "regular"),
+                ink,
+            );
+            y += 17.0;
+        }
+        let width = self.ui.painter().layout_no_wrap(button.to_owned(), px(12.0, "regular"), t.label).size().x + 24.0;
+        let slot = Rect::from_min_size(egui::pos2(inner.max.x - width, rect.max.y - 10.0 - 26.0), Vec2::new(width, 26.0));
+        let response = self.ui.interact(slot, self.ui.id().with("trocar-senha-ok"), if ready { Sense::click() } else { Sense::hover() });
+        let fill = if ready { if response.hovered() { t.accent.gamma_multiply(0.85) } else { t.accent } } else { t.fill_soft };
+        self.ui.painter().rect_filled(slot, CornerRadius::same(6), fill);
+        self.ui.painter().text(slot.center(), egui::Align2::CENTER_CENTER, button, px(12.0, "regular"), if ready { t.accent_label } else { t.label_tertiary });
+        if ready && response.hovered() {
+            self.ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        ready && response.clicked()
     }
 
     /// Rótulo + apoio + controle. Em espaço largo mantém duas colunas;
@@ -585,19 +706,16 @@ impl Rows<'_> {
         &mut self,
         label: &str,
         hint: Option<&str>,
-        control: impl FnOnce(&mut egui::Ui, &Tokens),
+        mut control: impl FnMut(&mut egui::Ui, &Tokens),
     ) {
         let t = self.t;
         let min_height = std::mem::replace(&mut self.min_height_next, ROW_HEIGHT);
-        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
-        let full = (self.ui.available_width() - inset).max(120.0);
+        let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET * 2.0 };
+        let full = (fit_width(self.ui) - inset).max(120.0);
         // Em peças o controle fica à direita (chave, menu) e só os campos
         // descem para baixo do rótulo.
-        let stacked = if self.tiled {
-            std::mem::take(&mut self.stack_next) || full < 220.0
-        } else {
-            full < 430.0
-        };
+        let force = std::mem::take(&mut self.stack_next);
+        let stacked = if self.tiled { force || full < 220.0 } else { force || full < 430.0 };
         let control_width = if stacked {
             full
         } else if self.tiled {
@@ -605,23 +723,40 @@ impl Rows<'_> {
         } else {
             CONTROL_COLUMN.min(full * 0.48)
         };
+        // O texto ocupa o que o controle deixa: mede o controle de verdade
+        // (num passe invisível e sem toque) em vez de reservar uma coluna fixa.
+        let natural = if stacked || self.tiled {
+            control_width
+        } else {
+            let probe = Rect::from_min_size(egui::pos2(-10_000.0, -10_000.0), Vec2::new(control_width, 30.0));
+            let mut ui = self.ui.new_child(
+                UiBuilder::new()
+                    .id_salt(("medida-do-controle", label))
+                    .max_rect(probe)
+                    .layout(Layout::right_to_left(Align::Center))
+                    .sizing_pass()
+                    .invisible(),
+            );
+            control(&mut ui, &t);
+            ui.min_rect().width().clamp(0.0, control_width)
+        };
         let text_width = if stacked {
             full
         } else {
-            (full - control_width - space::LG).max(120.0)
+            (full - natural - space::LG).max(120.0)
         };
 
         let label_galley = self.ui.painter().layout(
             label.to_owned(),
-            text::body(),
+            px(13.0, "medium"),
             t.label,
             text_width,
         );
         let hint_galley = hint.map(|hint| {
             self.ui.painter().layout(
                 hint.to_owned(),
-                text::footnote(),
-                t.label_tertiary,
+                px(11.5, "regular"),
+                t.label_secondary,
                 text_width,
             )
         });
@@ -635,7 +770,7 @@ impl Rows<'_> {
             (space::MD + text_height + space::SM + control_h + space::MD).max(min_height)
         } else {
             // Campo de várias linhas ao lado do rótulo: a linha cresce com ele.
-            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + space::MD * 2.0)
+            (text_height.max(if self.lines > 1 { control_h } else { 0.0 }) + 20.0)
                 .max(min_height)
         };
         let (band_rect, inner) = self.band(height);
@@ -655,7 +790,7 @@ impl Rows<'_> {
             self.ui.painter().galley(
                 egui::pos2(inner.min.x, text_top + text_height - galley.size().y),
                 galley,
-                t.label_tertiary,
+                t.label_secondary,
             );
         }
 
@@ -682,14 +817,10 @@ impl Rows<'_> {
         self.ui.advance_cursor_after_rect(band_rect);
     }
 
-    fn min_height_next(&mut self, height: f32) {
-        self.min_height_next = height.max(ROW_HEIGHT);
-    }
-
     /// Linha inteira clicável, para navegar ou disparar uma ação.
     fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
         let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
-        let width = (self.ui.available_width() - inset).max(120.0);
+        let width = (fit_width(self.ui) - inset).max(120.0);
         let label_galley = self
             .ui
             .painter()
@@ -769,216 +900,11 @@ impl Rows<'_> {
         response.clicked()
     }
 
-    /// Linha com a figurinha desenhada à esquerda do rótulo. Uma lista de
-    /// figurinhas sem as figurinhas é uma lista de nomes.
-    fn preview_row(
-        &mut self,
-        label: &str,
-        media: &mut crate::media::MediaStore,
-        id: &str,
-        blob: Option<&str>,
-        control: impl FnOnce(&mut egui::Ui, &Tokens),
-    ) {
-        let (rect, inner) = self.band(STICKER_ROW_H);
-        let t = self.t;
-        let ctx = self.ui.ctx().clone();
-        let texture = media
-            .emoji(id, blob)
-            .and_then(|texture| texture.frame(&ctx))
-            .map(|handle| handle.id());
-        let art = Rect::from_center_size(
-            egui::pos2(inner.min.x + STICKER_SIDE / 2.0, rect.center().y),
-            Vec2::splat(STICKER_SIDE),
-        );
-        draw_sticker(self.ui, &t, art, texture);
-        self.ui.painter().text(
-            egui::pos2(art.max.x + space::MD, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            label,
-            text::body(),
-            t.label,
-        );
-        let control_rect =
-            Rect::from_min_max(egui::pos2(inner.max.x - CONTROL_COLUMN, inner.min.y), inner.max);
-        self.ui.scope_builder(
-            UiBuilder::new()
-                .max_rect(control_rect)
-                .layout(Layout::right_to_left(Align::Center)),
-            |ui| control(ui, &t),
-        );
-        // O controle mora dentro da faixa; o escopo dele deixaria o cursor
-        // no pé do controle, acima do fim da faixa, e a linha seguinte
-        // começaria por cima desta (no celular, as peças se sobrepunham).
-        self.ui.advance_cursor_after_rect(rect);
-    }
 
-    /// Campo de nome de canal com o mesmo seletor de emoji da conversa
-    /// embutido à esquerda. O emoji continua sendo texto do próprio nome:
-    /// Unicode entra literal e emoji do servidor entra como `:apelido:`.
-    fn channel_name_field(
-        &mut self,
-        label: &str,
-        editor: &mut ChannelDraft,
-        store: &Store,
-        media: &mut crate::media::MediaStore,
-        s: &Strings,
-    ) {
-        if self.tiled {
-            self.stack_next = true;
-        }
-        self.row(label, None, |ui, t| {
-            let width = ui.available_width();
-            let (rect, _) =
-                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
-            ui.painter().rect(
-                rect,
-                CornerRadius::same(radius::FIELD),
-                t.fill_soft,
-                Stroke::new(1.0, t.separator),
-                egui::StrokeKind::Inside,
-            );
-
-            let picker_rect =
-                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
-            let picker = ui.interact(
-                picker_rect,
-                ui.id().with((
-                    "settings-channel-name-emoji",
-                    editor.id.as_deref().unwrap_or("new"),
-                )),
-                Sense::click(),
-            );
-            if picker.hovered() {
-                ui.painter().rect_filled(
-                    picker_rect.shrink(2.0),
-                    CornerRadius::same(radius::CONTROL),
-                    t.fill_medium,
-                );
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            ui.painter().text(
-                picker_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::SMILEY,
-                text::icon(14.0),
-                if picker.hovered() {
-                    t.label
-                } else {
-                    t.label_tertiary
-                },
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
-                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let field_rect = Rect::from_min_max(
-                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
-                rect.max,
-            );
-            let edit_id = ui.id().with((
-                "settings-channel-name",
-                editor.id.as_deref().unwrap_or("new"),
-            ));
-
-            #[cfg(target_os = "android")]
-            {
-                let key = format!("settings:{edit_id:?}");
-                let _ = crate::platform::native_field::show(
-                    ui.ctx(),
-                    &key,
-                    &mut editor.name,
-                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
-                    "",
-                    crate::platform::native_field::Mode::Text,
-                    32,
-                    false,
-                    t.label,
-                    t.label_tertiary,
-                    text::body().size,
-                );
-            }
-
-            #[cfg(not(target_os = "android"))]
-            {
-                let _ =
-                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut editor.name);
-                let response = ui.put(
-                    field_rect,
-                    egui::TextEdit::singleline(&mut editor.name)
-                        .id(edit_id)
-                        .char_limit(32)
-                        .font(text::body())
-                        .margin(egui::Margin::symmetric(
-                            space::MD as i8,
-                            space::XS as i8,
-                        )),
-                );
-                let _ = crate::platform::ime::sync_text_edit(
-                    ui.ctx(),
-                    edit_id,
-                    &mut editor.name,
-                    response.has_focus(),
-                    crate::platform::ime::Kind::Text,
-                );
-            }
-
-            let mut chosen = None;
-            egui::Popup::menu(&picker).show(|ui| {
-                ui.set_max_height(380.0);
-                chosen = super::emoji::picker(
-                    ui,
-                    t,
-                    s,
-                    store,
-                    media,
-                    &mut editor.emoji_query,
-                    &mut editor.emoji_group,
-                    false,
-                );
-                if chosen.is_some() {
-                    ui.close();
-                }
-            });
-
-            if let Some(chosen) = chosen {
-                let prefix = match chosen {
-                    crate::state::Emoji::Unicode(glyph) => glyph,
-                    crate::state::Emoji::Custom(id) => store
-                        .emojis
-                        .iter()
-                        .find(|custom| custom.id == id)
-                        .map(|custom| format!(":{}:", custom.name))
-                        .unwrap_or_default(),
-                };
-                if !prefix.is_empty() {
-                    let next = if editor.name.trim().is_empty() {
-                        format!("{prefix} ")
-                    } else {
-                        format!("{prefix} {}", editor.name.trim_start())
-                    };
-                    if next.chars().count() <= 32 {
-                        editor.name = next;
-                    }
-                }
-            }
-        });
-    }
 
     /// Linha com um campo de texto ocupando a direita.
     fn field(&mut self, label: &str, value: &mut String, limit: usize, secret: bool) -> bool {
         self.field_hinted(label, None, value, limit, secret)
-    }
-
-    /// Campo de várias linhas, para texto que quebra linha (a descrição).
-    /// No Android o campo nativo segue de uma linha, por enquanto.
-    fn field_lines(&mut self, label: &str, value: &mut String, limit: usize, lines: usize) {
-        self.lines = lines;
-        self.field_hinted(label, None, value, limit, false);
-        self.lines = 1;
     }
 
     /// Campo cujo valor só vale quando a pessoa termina de digitar: devolve
@@ -1152,7 +1078,7 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
         *on = !*on;
     }
     let track = if *on {
-        t.accent
+        t.online
     } else {
         t.fill_medium
     };
@@ -1164,7 +1090,7 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
         rect.center().y,
     );
     ui.painter()
-        .circle_filled(knob, SWITCH_H / 2.0 - 3.0, egui::Color32::WHITE);
+        .circle_filled(knob, SWITCH_H / 2.0 - 2.0, egui::Color32::WHITE);
     if response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -1172,12 +1098,6 @@ fn switch(ui: &mut egui::Ui, t: &Tokens, on: &mut bool) -> bool {
 }
 
 /// Controle segmentado: as opções lado a lado, uma acesa.
-/// Abas (Permissões / Membros / Aparência): sempre lado a lado, mesmo
-/// com rótulos longos — navegar não é escolher um valor.
-fn tabs<T: PartialEq + Copy>(ui: &mut egui::Ui, t: &Tokens, current: &mut T, options: &[(T, &str)]) -> bool {
-    segmented_inner(ui, t, current, options, true)
-}
-
 fn segmented<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     t: &Tokens,
@@ -1200,10 +1120,10 @@ fn segmented_inner<T: PartialEq + Copy>(
         .iter()
         .map(|(_, label)| {
             ui.painter()
-                .layout_no_wrap((*label).to_owned(), text::callout(), t.label)
+                .layout_no_wrap((*label).to_owned(), px(13.0, "medium"), t.label)
                 .size()
                 .x
-                + space::LG
+                + 24.0
         })
         .collect();
     let total: f32 = widths.iter().sum();
@@ -1213,37 +1133,41 @@ fn segmented_inner<T: PartialEq + Copy>(
     // com a linha, e o menu abre por cima do valor tocado.
     // Segmentado só para poucas opções curtas (Tema, presença); o resto é
     // menu suspenso, também no desktop — é o que não transborda.
-    let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 10);
+    let short = options.len() <= 3 && options.iter().all(|(_, label)| label.chars().count() <= 18);
     if !always && (tiles(ui) || !short || total > ui.available_width() + 0.5) {
         return dropdown_choice(ui, t, current, options);
     }
     // O id vem do próprio controle, não do rótulo: numa lista de canais
     // cada linha tem os mesmos rótulos, e `ui.id().with(label)` repetia o
     // mesmo id em todas — o aviso vermelho de colisão do egui.
+    let gap = 2.0;
+    let total = total + gap * (options.len().saturating_sub(1)) as f32 + 4.0;
     let (rect, base) = ui.allocate_exact_size(Vec2::new(total, height), Sense::hover());
     let base = base.id;
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_medium);
+        .rect_filled(rect, CornerRadius::same(8), t.fill_soft);
 
-    let mut x = rect.min.x;
+    let mut x = rect.min.x + 2.0;
     for ((value, label), width) in options.iter().zip(widths) {
         let slot = Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::new(width, height));
-        x += width;
+        x += width + gap;
         let selected = *current == *value;
         let response = ui.interact(slot, base.with(*label), Sense::click());
         if selected {
-            ui.painter().rect_filled(
+            ui.painter().rect(
                 slot.shrink(2.0),
-                CornerRadius::same(radius::CONTROL),
+                CornerRadius::same(6),
                 t.glass_opaque,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
             );
         }
         ui.painter().text(
             slot.center(),
             egui::Align2::CENTER_CENTER,
             *label,
-            text::callout(),
-            if selected { t.label } else { t.label_secondary },
+            if selected { px(13.0, "medium") } else { px(13.0, "regular") },
+            t.label,
         );
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1368,15 +1292,15 @@ fn row_button(ui: &mut egui::Ui, t: &Tokens, label: &str, emphasis: Emphasis) ->
 // A folha
 // ---------------------------------------------------------------------------
 
-const SHEET_W: f32 = 720.0;
+const SHEET_W: f32 = 880.0;
 /// A altura acompanha a janela (80%) entre estes limites: Conta ficou
 /// grande demais para 440, e uma folha enorme numa tela alta vira janela.
 const SHEET_H_MIN: f32 = 440.0;
-const SHEET_H_MAX: f32 = 640.0;
-const RAIL_W: f32 = 176.0;
+const SHEET_H_MAX: f32 = 620.0;
+const RAIL_W: f32 = 276.0;
 /// Altura de um item da coluna de painéis.
-const RAIL_ENTRY_H: f32 = 32.0;
-const HEADER_H: f32 = 52.0;
+const RAIL_ENTRY_H: f32 = 46.0;
+const HEADER_H: f32 = 54.0;
 
 /// O que a folha pediu. O `app` traduz em comandos de rede; os ajustes que
 /// são só locais ela mesma já escreveu em `Settings`.
@@ -1409,6 +1333,8 @@ pub struct Context<'a> {
     pub lang: &'a mut crate::i18n::Lang,
     pub theme: &'a mut crate::ui::theme::ThemePref,
     pub translucency: &'a mut bool,
+    /// O desfoque do vidro, quando o renderizador sabe fazê-lo.
+    pub glass: Option<crate::ui::glass::SharedGlass>,
     pub notifications: &'a mut bool,
     pub reply_notifications: &'a mut bool,
     pub close_to_tray: &'a mut bool,
@@ -1431,6 +1357,102 @@ pub struct Context<'a> {
     pub update_status: Option<&'a str>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     pub update_enabled: bool,
+}
+
+/// A paleta do mock de Ajustes: a folha, o cartão e as cores de texto são
+/// as dele, e valem só dentro da folha do desktop.
+fn sheet_tokens(base: &Tokens) -> Tokens {
+    use egui::Color32;
+    let dark = base.appearance == super::theme::Appearance::Dark;
+    let mut t = *base;
+    if dark {
+        t.elevated_bg = Color32::from_rgb(0x26, 0x26, 0x29);
+        t.glass_opaque = Color32::from_rgb(0x26, 0x26, 0x29);
+        t.label = Color32::from_rgb(0xF2, 0xF2, 0xF5);
+        t.label_secondary = Color32::from_rgb(0xA0, 0xA0, 0xAA);
+        t.label_tertiary = Color32::from_rgb(0x6F, 0x6F, 0x78);
+        t.separator = Color32::from_white_alpha(23);
+        t.fill_soft = Color32::from_white_alpha(23);
+        t.fill_medium = Color32::from_white_alpha(56);
+    } else {
+        t.elevated_bg = Color32::from_rgb(0xF6, 0xF6, 0xF8);
+        t.glass_opaque = Color32::from_rgb(0xF6, 0xF6, 0xF8);
+        t.label = Color32::from_rgb(0x1C, 0x1C, 0x1E);
+        t.label_secondary = Color32::from_rgb(0x6B, 0x6B, 0x73);
+        t.label_tertiary = Color32::from_rgb(0x9A, 0x9A, 0xA2);
+        t.separator = Color32::from_rgba_unmultiplied(60, 60, 67, 36);
+        t.fill_soft = Color32::from_rgba_unmultiplied(120, 120, 128, 31);
+        t.fill_medium = Color32::from_rgba_unmultiplied(120, 120, 128, 82);
+    }
+    t.online = Color32::from_rgb(0x30, 0xB3, 0x50);
+    t
+}
+
+/// Tamanho fixo com o peso pedido (o mock fala em px: 11.5, 14, 17).
+fn px(size: f32, weight: &str) -> egui::FontId {
+    let family = match weight {
+        "medium" | "semibold" | "display" => egui::FontFamily::Name(weight.into()),
+        _ => egui::FontFamily::Proportional,
+    };
+    egui::FontId::new(size, family)
+}
+
+/// A legenda de uma prévia, logo embaixo dela.
+fn caption_below(ui: &mut egui::Ui, t: &Tokens, caption: &str) {
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INSET);
+        ui.add(egui::Label::new(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary)).wrap());
+    });
+}
+
+/// A prévia ao vivo de Aparência: um pedaço de conversa que muda com o tema,
+/// a translucidez e o emoji de uma cor, e a legenda embaixo.
+fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: &str) {
+    let width = fit_width(ui);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 133.0), Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    let left = rect.min.x + 14.0;
+    let mono = *data.channel_emoji_monochrome;
+    super::emoji::draw_channel_name(
+        ui,
+        t,
+        data.media,
+        data.store,
+        "🎨 design-ui",
+        egui::pos2(left, rect.min.y + 14.0 + 8.0),
+        px(12.0, "semibold"),
+        t.label_secondary,
+        rect.width() - 28.0,
+        mono,
+        false,
+    );
+    let mut y = rect.min.y + 14.0 + 16.0 + 8.0;
+    let messages: [(&str, egui::Color32, &str, &str, &str); 2] = [
+        ("AN", egui::Color32::from_rgb(0xFF, 0x6A, 0x3D), "Ana", "14:02", "olha o render novo"),
+        ("CH", egui::Color32::from_rgb(0x0A, 0x84, 0xFF), "chriexpe", "14:03", "@Ana ficou limpo, gostei."),
+    ];
+    for (initials, color, name, time, body) in messages {
+        let avatar = Rect::from_min_size(egui::pos2(left, y), Vec2::splat(28.0));
+        ui.painter().circle_filled(avatar.center(), 14.0, color);
+        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, initials, px(11.0, "semibold"), egui::Color32::WHITE);
+        let x = avatar.max.x + 9.0;
+        let galley = ui.painter().layout_no_wrap(name.to_owned(), px(13.0, "semibold"), t.label);
+        ui.painter().galley(egui::pos2(x, y), galley.clone(), t.label);
+        ui.painter().text(egui::pos2(x + galley.size().x + 6.0, y + 2.0), egui::Align2::LEFT_TOP, time, px(11.0, "regular"), t.label_tertiary);
+        let line = y + 17.0;
+        if let Some(rest) = body.strip_prefix("@Ana") {
+            let tag = ui.painter().layout_no_wrap("@Ana".to_owned(), px(13.0, "regular"), t.accent);
+            let pill = Rect::from_min_size(egui::pos2(x, line), Vec2::new(tag.size().x + 6.0, tag.size().y + 1.0));
+            ui.painter().rect_filled(pill, CornerRadius::same(4), t.accent.gamma_multiply(0.16));
+            ui.painter().galley(egui::pos2(x + 3.0, line), tag, t.accent);
+            ui.painter().text(egui::pos2(pill.max.x, line), egui::Align2::LEFT_TOP, rest, px(13.0, "regular"), t.label);
+        } else {
+            ui.painter().text(egui::pos2(x, line), egui::Align2::LEFT_TOP, body, px(13.0, "regular"), t.label);
+        }
+        y += 28.0 + 8.0 + 2.0;
+    }
+    caption_below(ui, t, caption);
 }
 
 /// Desenha a folha, ancorada na pastilha que a abriu.
@@ -1466,9 +1488,23 @@ pub fn sheet(
     // de áreas, e o painel por cima dela.
     state.compact = screen.width() < crate::ui::shell::COMPACT_BREAKPOINT;
     if state.compact {
+        ctx.data_mut(|data| data.remove::<f32>(egui::Id::new(PANE_RIGHT_KEY)));
         mobile(ctx, state, data, t, s, surface, screen, &mut actions);
         return actions;
     }
+    let mut sheet_t = sheet_tokens(t);
+    // Vidro fosco como nas pastilhas: com o desfoque disponível a tinta pode
+    // ser bem translúcida; sem ele, só um toque, para o texto do chat que
+    // passa por baixo não atrapalhar a leitura.
+    let frosted = *data.translucency && data.glass.is_some();
+    if *data.translucency {
+        let (sheet_alpha, side_alpha) = if frosted { (219, 179) } else { (244, 236) };
+        let [r, g, b, _] = sheet_t.elevated_bg.to_array();
+        sheet_t.elevated_bg = egui::Color32::from_rgba_unmultiplied(r, g, b, sheet_alpha);
+        let [r, g, b, _] = sheet_t.side.to_array();
+        sheet_t.side = egui::Color32::from_rgba_unmultiplied(r, g, b, side_alpha);
+    }
+    let t = &sheet_t;
 
     // Sobe da pastilha de baixo, desce da de cima; e nunca passa da janela.
     // A altura é fixa, como a largura: uma folha que encolhe e cresce a cada
@@ -1504,63 +1540,57 @@ pub fn sheet(
             let shadow = ctx.global_style().visuals.window_shadow;
             ui.painter()
                 .add(shadow.as_shape(rect, radius::SHEET as f32 + 4.0));
+            const SHEET_RADIUS: u8 = 14;
+            super::shell::glass_blur(ui, &data.glass, *data.translucency, rect, SHEET_RADIUS as f32);
             ui.painter().rect(
                 rect,
-                CornerRadius::same(radius::SHEET + 4),
+                CornerRadius::same(SHEET_RADIUS),
                 t.elevated_bg,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             );
 
+            // Coluna lateral de cima a baixo, mais escura que a folha.
+            let rail_rect = Rect::from_min_size(rect.min, Vec2::new(RAIL_W, rect.height()));
+            ui.painter().rect_filled(
+                rail_rect,
+                CornerRadius { nw: SHEET_RADIUS, sw: SHEET_RADIUS, ne: 0, se: 0 },
+                t.side,
+            );
+            ui.painter().line_segment(
+                [egui::pos2(rail_rect.max.x, rect.min.y + 1.0), egui::pos2(rail_rect.max.x, rect.max.y - 1.0)],
+                Stroke::new(1.0, t.separator),
+            );
+            rail(ui, state, data, t, s, rail_rect, surface);
+
+            // À direita: o título do painel e o X, e o corpo logo abaixo.
+            let main = Rect::from_min_max(egui::pos2(rail_rect.max.x, rect.min.y), rect.max);
             let title = match surface {
+                Surface::App if state.app_pane == AppPane::Account => s.profile,
                 Surface::App => state.app_pane.title(s),
                 Surface::Server => state.server_pane.title(s),
             };
-            header(ui, state, t, s, rect, surface, title);
-            let body = Rect::from_min_max(
-                egui::pos2(rect.min.x, rect.min.y + HEADER_H),
-                rect.max,
-            );
-            ui.painter().line_segment(
-                [
-                    egui::pos2(body.min.x + space::MD, body.min.y),
-                    egui::pos2(body.max.x - space::MD, body.min.y),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let rail_rect =
-                Rect::from_min_size(body.min, Vec2::new(RAIL_W, body.height()));
-            rail(ui, state, data.store, t, s, rail_rect, surface);
-            ui.painter().line_segment(
-                [
-                    egui::pos2(rail_rect.max.x, body.min.y + space::SM),
-                    egui::pos2(rail_rect.max.x, body.max.y - space::SM),
-                ],
-                Stroke::new(1.0, t.separator),
-            );
-
-            let pane_rect = Rect::from_min_max(
-                egui::pos2(rail_rect.max.x, body.min.y),
-                body.max,
-            );
+            header(ui, state, t, s, main, surface, title);
+            let pane_rect = Rect::from_min_max(egui::pos2(main.min.x, main.min.y + HEADER_H), main.max);
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new(PANE_RIGHT_KEY), main.max.x - 24.0));
             ui.scope_builder(
                 UiBuilder::new()
-                    .max_rect(pane_rect.shrink2(Vec2::new(space::XL, space::SM)))
+                    .max_rect(pane_rect.shrink2(Vec2::new(0.0, 1.0)))
                     .layout(Layout::top_down(Align::Min)),
                 |ui| {
                     // Um rolamento por painel: trocar de painel começa do
-                    // topo (com a prévia), não onde o anterior parou.
+                    // topo (com a prévia), não onde o anterior parou. A barra
+                    // fica na borda da folha; o miolo é que tem a margem.
                     egui::ScrollArea::vertical()
                         .id_salt(("corpo-do-painel", title))
                         .auto_shrink([false, false])
-                        .show(ui, |ui| match surface {
-                            Surface::App => {
-                                app_pane(ui, state, data, t, s, &mut actions);
-                            }
-                            Surface::Server => {
-                                server_pane(ui, state, data, t, s, &mut actions);
-                            }
+                        .show(ui, |ui| {
+                            egui::Frame::NONE
+                                .inner_margin(egui::Margin { left: 24, right: 24, top: 4, bottom: 28 })
+                                .show(ui, |ui| match surface {
+                                    Surface::App => app_pane(ui, state, data, t, s, &mut actions),
+                                    Surface::Server => server_pane(ui, state, data, t, s, &mut actions),
+                                });
                         });
                 },
             );
@@ -1590,37 +1620,52 @@ pub fn sheet(
 /// Cargos: a lista à esquerda (com quantos têm cada um) e o cargo aberto à
 /// direita, em abas — Permissões, Membros, Aparência. No celular, empilhado.
 fn roles_pane(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
-    let wide = !tiles(ui) && ui.available_width() >= 460.0;
-    if wide {
-        ui.add_space(space::MD);
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(170.0);
-                role_list(ui, data, t, s);
-            });
-            ui.add_space(space::LG);
-            ui.vertical(|ui| role_detail(ui, data, t, s, actions));
-        });
-    } else {
-        role_list(ui, data, t, s);
-        role_detail(ui, data, t, s, actions);
-    }
+    role_list(ui, data, t, s);
+    role_detail(ui, data, t, s, actions);
 }
 
 fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
     use super::roles::{Draft, Tab};
     let roles = data.store.roles.clone();
-    section(ui, t, s.roles);
+    let mut new_role = false;
+    // A barra do topo: o nome da lista e o botão de criar, como no mock.
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INSET);
+        ui.label(RichText::new(s.roles).font(px(11.5, "semibold")).color(t.label_secondary));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+                new_role = true;
+            }
+        });
+    });
+    ui.add_space(10.0);
     if roles.is_empty() {
         ui.add(egui::Label::new(RichText::new(s.no_roles).font(text::footnote()).color(t.label_tertiary)).wrap());
     }
     let selected_id = data.roles.draft.as_ref().and_then(|draft| draft.id.clone());
-    for role in &roles {
+    let width = fit_width(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let card_slot = ui.painter().add(egui::Shape::Noop);
+    let card_top = ui.cursor().min.y;
+    let last = roles.len().saturating_sub(1);
+    for (position, role) in roles.iter().enumerate() {
         let count = data.store.members.iter().filter(|m| m.roles.iter().any(|id| id == &role.id)).count();
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 42.0), Sense::click());
         let selected = selected_id.as_deref() == Some(role.id.as_str());
         if selected || response.hovered() {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), if selected { t.fill_medium } else { t.fill_soft });
+            let top = if position == 0 { 10 } else { 0 };
+            let bottom = if position == last { 10 } else { 0 };
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius { nw: top, ne: top, sw: bottom, se: bottom },
+                if selected { t.accent.gamma_multiply(0.16) } else { t.fill_soft },
+            );
+        }
+        if position > 0 {
+            ui.painter().line_segment(
+                [egui::pos2(rect.min.x + ROW_INSET, rect.min.y), egui::pos2(rect.max.x, rect.min.y)],
+                Stroke::new(0.5, t.separator),
+            );
         }
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1631,195 +1676,737 @@ fn role_list(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings)
             .and_then(crate::api::models::parse_hex_color)
             .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
             .unwrap_or(t.label_tertiary);
-        ui.painter().circle_filled(egui::pos2(rect.min.x + space::MD + 5.0, rect.center().y), 5.0, color);
-        let count_text = count.to_string();
-        let count_w = ui.painter().layout_no_wrap(count_text.clone(), text::footnote(), t.label_tertiary).size().x;
-        ui.painter().text(egui::pos2(rect.max.x - space::MD, rect.center().y), egui::Align2::RIGHT_CENTER, count_text, text::footnote(), t.label_tertiary);
-        let left = rect.min.x + space::MD + 18.0;
+        ui.painter().circle_filled(egui::pos2(rect.min.x + 12.0 + 5.0, rect.center().y), 4.0, color);
+        let count_text = format!("{count} {}", if count == 1 { s.person_one } else { s.count_members });
+        let count_w = ui.painter().layout_no_wrap(count_text.clone(), px(13.0, "regular"), t.label_secondary).size().x;
+        ui.painter().text(egui::pos2(rect.max.x - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, count_text, px(13.0, "regular"), t.label_secondary);
+        let left = rect.min.x + 12.0 + 10.0 + 16.0;
         crate::ui::widgets::text_fit(
             ui.painter(),
             egui::pos2(left, rect.center().y),
             egui::Align2::LEFT_CENTER,
             &role.name,
-            text::body(),
+            px(13.0, "regular"),
             t.label,
-            rect.max.x - space::MD - count_w - space::SM - left,
+            rect.max.x - 12.0 - count_w - 8.0 - left,
         );
         if response.clicked() {
+            let people: Vec<String> = data
+                .store
+                .members
+                .iter()
+                .filter(|member| member.roles.iter().any(|id| id == &role.id))
+                .map(|member| member.id.clone())
+                .collect();
             data.roles.draft = Some(Draft {
                 id: Some(role.id.clone()),
                 name: role.name.clone(),
                 color: role.color.clone().unwrap_or_default(),
                 permissions: role.permissions,
+                original_people: people.clone(),
+                people,
             });
             data.roles.member_query.clear();
         }
     }
-    ui.add_space(space::SM);
-    if row_button(ui, t, s.new_role, Emphasis::Quiet) {
+    let bottom = ui.cursor().min.y;
+    if bottom > card_top {
+        ui.painter().set(
+            card_slot,
+            egui::epaint::RectShape::new(
+                Rect::from_min_max(egui::pos2(ui.max_rect().min.x, card_top), egui::pos2(ui.max_rect().min.x + width, bottom)),
+                CornerRadius::same(10),
+                t.card,
+                Stroke::new(0.5, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    }
+    ui.spacing_mut().item_spacing.y = spacing;
+    if new_role {
         // Cargo novo começa pelo nome e pela cor.
         data.roles.draft = Some(Draft::default());
         data.roles.tab = Tab::Look;
     }
+    ui.add_space(22.0);
 }
 
-fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
-    use super::roles::{RoleAction, Tab};
-    let Some(draft) = data.roles.draft.as_mut() else {
-        ui.add_space(space::LG);
-        ui.label(RichText::new(s.role_pick_hint).font(text::body()).color(t.label_tertiary));
-        return;
-    };
-    let members = data
-        .store
-        .members
-        .iter()
-        .filter(|m| draft.id.as_deref().is_some_and(|id| m.roles.iter().any(|r| r == id)))
-        .count();
-    let members_label = format!("{} · {members}", s.role_tab_members);
-    ui.add_space(space::SM);
-    let mut tab = data.roles.tab;
-    if tabs(
-        ui,
-        t,
-        &mut tab,
-        &[(Tab::Permissions, s.role_tab_permissions), (Tab::Members, &members_label), (Tab::Look, s.role_tab_look)],
-    ) {
-        data.roles.tab = tab;
-    }
+/// O campo do nome do canal, com o seletor de emoji embutido à esquerda.
+fn channel_name_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    editor: &mut ChannelDraft,
+    store: &Store,
+    media: &mut crate::media::MediaStore,
+    s: &Strings,
+) {
+            let width = ui.available_width();
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::hover());
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(radius::FIELD),
+                t.fill_soft,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            );
 
-    match data.roles.tab {
-        Tab::Permissions => {
-            group(ui, t, |rows| {
-                for (label, value) in [
-                    (s.perm_send_attachment, &mut draft.permissions.send_attachment),
-                    (s.perm_manage_channels, &mut draft.permissions.manage_channels),
-                    (s.perm_pin_message, &mut draft.permissions.pin_message),
-                    (s.perm_everyone_message, &mut draft.permissions.everyone_message),
-                    (s.perm_ban_members, &mut draft.permissions.ban_members),
-                    (s.perm_manage_roles, &mut draft.permissions.manage_roles),
-                    (s.perm_manage_server, &mut draft.permissions.manage_server),
-                ] {
-                    rows.row(label, None, |ui, t| {
-                        switch(ui, t, value);
-                    });
+            let picker_rect =
+                Rect::from_min_size(rect.min, Vec2::new(30.0, rect.height()));
+            let picker = ui.interact(
+                picker_rect,
+                ui.id().with((
+                    "settings-channel-name-emoji",
+                    editor.id.as_deref().unwrap_or("new"),
+                )),
+                Sense::click(),
+            );
+            if picker.hovered() {
+                ui.painter().rect_filled(
+                    picker_rect.shrink(2.0),
+                    CornerRadius::same(radius::CONTROL),
+                    t.fill_medium,
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            ui.painter().text(
+                picker_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::SMILEY,
+                text::icon(14.0),
+                if picker.hovered() {
+                    t.label
+                } else {
+                    t.label_tertiary
+                },
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(picker_rect.max.x, rect.min.y + 4.0),
+                    egui::pos2(picker_rect.max.x, rect.max.y - 4.0),
+                ],
+                Stroke::new(1.0, t.separator),
+            );
+
+            let field_rect = Rect::from_min_max(
+                egui::pos2(picker_rect.max.x + 1.0, rect.min.y),
+                rect.max,
+            );
+            let edit_id = ui.id().with((
+                "settings-channel-name",
+                editor.id.as_deref().unwrap_or("new"),
+            ));
+
+            #[cfg(target_os = "android")]
+            {
+                let key = format!("settings:{edit_id:?}");
+                let _ = crate::platform::native_field::show(
+                    ui.ctx(),
+                    &key,
+                    &mut editor.name,
+                    field_rect.shrink2(Vec2::new(space::MD, space::XS)),
+                    "",
+                    crate::platform::native_field::Mode::Text,
+                    32,
+                    false,
+                    t.label,
+                    t.label_tertiary,
+                    text::body().size,
+                );
+            }
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let _ =
+                    crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut editor.name);
+                let response = ui.put(
+                    field_rect,
+                    egui::TextEdit::singleline(&mut editor.name)
+                        .id(edit_id)
+                        .char_limit(32)
+                        .font(text::body())
+                        .margin(egui::Margin::symmetric(
+                            space::MD as i8,
+                            space::XS as i8,
+                        )),
+                );
+                let _ = crate::platform::ime::sync_text_edit(
+                    ui.ctx(),
+                    edit_id,
+                    &mut editor.name,
+                    response.has_focus(),
+                    crate::platform::ime::Kind::Text,
+                );
+            }
+
+            let mut chosen = None;
+            egui::Popup::menu(&picker).frame(crate::ui::widgets::menu_frame(ui.ctx())).show(|ui| {
+                ui.set_max_height(380.0);
+                chosen = super::emoji::picker(
+                    ui,
+                    t,
+                    s,
+                    store,
+                    media,
+                    &mut editor.emoji_query,
+                    &mut editor.emoji_group,
+                    false,
+                );
+                if chosen.is_some() {
+                    ui.close();
                 }
             });
+
+            if let Some(chosen) = chosen {
+                let prefix = match chosen {
+                    crate::state::Emoji::Unicode(glyph) => glyph,
+                    crate::state::Emoji::Custom(id) => store
+                        .emojis
+                        .iter()
+                        .find(|custom| custom.id == id)
+                        .map(|custom| format!(":{}:", custom.name))
+                        .unwrap_or_default(),
+                };
+                if !prefix.is_empty() {
+                    let next = if editor.name.trim().is_empty() {
+                        format!("{prefix} ")
+                    } else {
+                        format!("{prefix} {}", editor.name.trim_start())
+                    };
+                    if next.chars().count() <= 32 {
+                        editor.name = next;
+                    }
+                }
+            }
+}
+
+// ---------------------------------------------------------------------------
+// Peças dos editores (cartão com seções, fichas, seletor com busca)
+// ---------------------------------------------------------------------------
+
+/// O cartão do editor: seções separadas por fio, cada uma com a legenda em
+/// versalete em cima.
+struct CardUi<'a> {
+    ui: &'a mut egui::Ui,
+    t: Tokens,
+    first: bool,
+    width: f32,
+}
+
+impl CardUi<'_> {
+    fn section(&mut self, caption: &str, contents: impl FnOnce(&mut egui::Ui)) {
+        let t = self.t;
+        if !self.first {
+            let y = self.ui.cursor().min.y;
+            let left = self.ui.max_rect().min.x;
+            self.ui.painter().line_segment(
+                [egui::pos2(left, y), egui::pos2(left + self.width, y)],
+                Stroke::new(0.5, t.separator),
+            );
         }
-        Tab::Look => {
-            group(ui, t, |rows| {
-                rows.field(s.role_name, &mut draft.name, 32, false);
-                rows.row(s.role_color, None, |ui, _| {
-                    let mut picked = crate::api::models::parse_hex_color(&draft.color).unwrap_or([128, 128, 128]);
-                    if ui.color_edit_button_srgb(&mut picked).changed() {
-                        draft.color = format!("#{:02X}{:02X}{:02X}", picked[0], picked[1], picked[2]);
+        self.first = false;
+        self.ui.add_space(12.0);
+        let inner = self.width - 36.0;
+        self.ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                ui.set_width(inner);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if !caption.is_empty() {
+                    ui.label(RichText::new(caption.to_uppercase()).font(px(10.0, "semibold")).color(t.label_tertiary));
+                    ui.add_space(6.0);
+                }
+                contents(ui);
+            });
+        });
+        self.ui.add_space(14.0);
+    }
+}
+
+fn sheet_card(ui: &mut egui::Ui, t: &Tokens, build: impl FnOnce(&mut CardUi)) {
+    let width = fit_width(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().min.y;
+    let left = ui.max_rect().min.x;
+    {
+        let mut card = CardUi { ui, t: *t, first: true, width };
+        build(&mut card);
+    }
+    let bottom = ui.cursor().min.y;
+    ui.painter().set(
+        slot,
+        egui::epaint::RectShape::new(
+            Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + width, bottom)),
+            CornerRadius::same(10),
+            t.card,
+            Stroke::new(0.5, t.separator),
+            egui::StrokeKind::Inside,
+        ),
+    );
+    ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// Um item de seletor: nome, bolinha de cor ou foto com iniciais.
+struct PickItem {
+    label: String,
+    dot: Option<egui::Color32>,
+    avatar: Option<(String, egui::Color32)>,
+}
+
+fn mix(base: egui::Color32, over: egui::Color32, amount: f32) -> egui::Color32 {
+    let a = |x: u8, y: u8| (x as f32 * (1.0 - amount) + y as f32 * amount).round() as u8;
+    egui::Color32::from_rgb(a(base.r(), over.r()), a(base.g(), over.g()), a(base.b(), over.b()))
+}
+
+fn mini_avatar(painter: &egui::Painter, center: egui::Pos2, radius: f32, initials: &str, color: egui::Color32) {
+    painter.circle_filled(center, radius, color);
+    painter.text(center, egui::Align2::CENTER_CENTER, initials, px(radius * 1.0, "semibold"), egui::Color32::WHITE);
+}
+
+/// Uma ficha: cargo (com a cor), pessoa (com a foto) ou "Todos". Devolve
+/// `true` quando o X é clicado.
+fn chip(ui: &mut egui::Ui, t: &Tokens, id: &str, label: &str, dot: Option<egui::Color32>, avatar: Option<(&str, egui::Color32)>, removable: bool) -> bool {
+    let font = px(12.0, "regular");
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), t.label).size().x;
+    let lead = if dot.is_some() { 14.0 } else if avatar.is_some() { 22.0 } else { 0.0 };
+    let width = 10.0 + lead + text_w + if removable { 6.0 + 16.0 + 4.0 } else { 10.0 };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 24.0), Sense::hover());
+    let fill = match dot {
+        Some(color) => mix(t.card, color, 0.20),
+        None => t.fill_soft,
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
+    let mut x = rect.min.x + 10.0;
+    if let Some(color) = dot {
+        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.0, color);
+        x += 14.0;
+    }
+    if let Some((initials, color)) = avatar {
+        mini_avatar(ui.painter(), egui::pos2(x + 6.0, rect.center().y), 8.0, initials, color);
+        x += 22.0;
+    }
+    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, label, font, t.label);
+    if !removable {
+        return false;
+    }
+    let cross = Rect::from_center_size(egui::pos2(rect.max.x - 4.0 - 8.0, rect.center().y), Vec2::splat(16.0));
+    let response = ui.interact(cross, egui::Id::new(("ficha-x", id)), Sense::click());
+    if response.hovered() {
+        ui.painter().circle_filled(cross.center(), 8.0, t.fill_medium);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(9.0), t.label_secondary);
+    response.clicked()
+}
+
+/// O botão "+ Cargo" / "+ Pessoa" que abre o seletor.
+fn add_chip(ui: &mut egui::Ui, t: &Tokens, label: &str) -> egui::Response {
+    let font = px(12.0, "regular");
+    let text_w = ui.painter().layout_no_wrap(label.to_owned(), font.clone(), t.label).size().x;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(10.0 + 14.0 + text_w + 12.0, 24.0), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(12), t.fill_soft);
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    ui.painter().text(egui::pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::PLUS, text::icon(11.0), t.accent);
+    ui.painter().text(egui::pos2(rect.min.x + 10.0 + 14.0, rect.center().y), egui::Align2::LEFT_CENTER, label, font, t.accent);
+    response
+}
+
+/// Campo de uma linha dentro de um retângulo, com a integração certa de cada
+/// plataforma: campo nativo no Android (teclado e IME de verdade) e `TextEdit`
+/// com a ponte do IME no desktop. Devolve se está com o foco.
+#[allow(clippy::too_many_arguments)]
+fn text_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    rect: Rect,
+    hint: &str,
+    font: egui::FontId,
+    limit: usize,
+    focus: bool,
+) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::native_field::show(
+            ui.ctx(),
+            key,
+            value,
+            rect,
+            hint,
+            crate::platform::native_field::Mode::Search,
+            limit,
+            focus,
+            t.label,
+            t.label_tertiary,
+            font.size,
+        )
+        .focused
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let id = ui.id().with(key);
+        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), id, value);
+        let response = ui.put(
+            rect,
+            egui::TextEdit::singleline(value)
+                .id(id)
+                .char_limit(if limit == 0 { usize::MAX } else { limit })
+                .hint_text(hint)
+                .frame(egui::Frame::NONE)
+                .font(font)
+                .text_color(t.label)
+                .vertical_align(Align::Center),
+        );
+        let _ = crate::platform::ime::sync_text_edit(ui.ctx(), id, value, response.has_focus(), crate::platform::ime::Kind::Text);
+        if focus {
+            response.request_focus();
+        }
+        response.has_focus()
+    }
+}
+
+/// Campo de busca: o campo de texto da plataforma mais o X redondo que limpa.
+/// `field` é a caixa inteira (o fundo já foi pintado) e `left` é onde termina
+/// a lupa. Limpar pelo app precisa forçar o campo nativo a aceitar o texto
+/// novo, porque o Android é quem manda enquanto o campo tem o foco.
+#[allow(clippy::too_many_arguments)]
+fn search_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    field: Rect,
+    left: f32,
+    hint: &str,
+    font: egui::FontId,
+    focus: bool,
+) {
+    let ctx = ui.ctx().clone();
+    let force_id = egui::Id::new(("limpar-busca-pendente", key));
+    let force = ctx.data_mut(|data| data.remove_temp::<bool>(force_id)).unwrap_or(false);
+    let has_text = !value.is_empty();
+    let right = if has_text { 30.0 } else { 8.0 };
+    let input = Rect::from_min_max(egui::pos2(field.min.x + left, field.min.y), egui::pos2(field.max.x - right, field.max.y));
+    text_input(ui, t, key, value, input, hint, font, 0, focus || force);
+    if has_text {
+        let cross = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
+        let response = ui.interact(cross, egui::Id::new(("limpar-busca", key)), Sense::click());
+        ui.painter().circle_filled(cross.center(), 9.0, t.fill_medium);
+        ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(10.0), t.label);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            value.clear();
+            ctx.data_mut(|data| data.insert_temp(force_id, true));
+            ctx.request_repaint();
+        }
+    }
+}
+
+/// O seletor com busca que abre do botão: devolve o índice escolhido.
+///
+/// É uma camada própria (Area), com fundo opaco: ela fica por cima, segura o
+/// toque e a rolagem para si, e a busca usa o campo certo de cada plataforma.
+fn picker_menu(response: &egui::Response, t: &Tokens, placeholder: &str, empty: &str, items: &[PickItem]) -> Option<usize> {
+    let ctx = response.ctx.clone();
+    let open_id = response.id.with("aberto");
+    let query_id = response.id.with("busca");
+    let mut open: bool = ctx.data(|data| data.get_temp(open_id)).unwrap_or(false);
+    let mut just_opened = false;
+    if response.clicked() {
+        open = !open;
+        just_opened = open;
+        ctx.data_mut(|data| data.insert_temp(query_id, String::new()));
+    }
+    if !open {
+        ctx.data_mut(|data| data.insert_temp(open_id, false));
+        return None;
+    }
+
+    let mut query: String = ctx.data(|data| data.get_temp(query_id)).unwrap_or_default();
+    let needle = query.trim().to_lowercase();
+    let matching: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| needle.is_empty() || item.label.to_lowercase().contains(&needle))
+        .map(|(index, _)| index)
+        .collect();
+    // O tamanho e o lado são decididos uma vez, na abertura: se o seletor
+    // encolhesse ou trocasse de lado a cada letra, o campo de busca nativo
+    // sairia do lugar a cada toque no teclado.
+    let max_list = if cfg!(target_os = "android") { 150.0 } else { 210.0 };
+    let list_h = (items.len().max(1) as f32 * 30.0).min(max_list);
+    let size = Vec2::new(264.0, 8.0 + 34.0 + 6.0 + list_h + 8.0);
+    let screen = ctx.content_rect();
+    let side_id = response.id.with("lado");
+    if just_opened {
+        // Embaixo do botão quando ele está na metade de cima da tela; senão
+        // por cima (o teclado cobre a parte de baixo).
+        let above = response.rect.center().y > screen.center().y;
+        ctx.data_mut(|data| data.insert_temp(side_id, above));
+    }
+    let above: bool = ctx.data(|data| data.get_temp(side_id)).unwrap_or(false);
+    let mut pos = egui::pos2(
+        response.rect.min.x,
+        if above { response.rect.min.y - 6.0 - size.y } else { response.rect.max.y + 6.0 },
+    );
+    pos.y = pos.y.clamp(screen.min.y + 8.0, (screen.max.y - size.y - 8.0).max(screen.min.y + 8.0));
+    pos.x = pos.x.min(screen.max.x - size.x - 8.0).max(screen.min.x + 8.0);
+    let rect = Rect::from_min_size(pos, size);
+
+    let mut chosen = None;
+    let area = egui::Area::new(response.id.with("camada"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .constrain(false)
+        .fade_in(false)
+        .show(&ctx, |ui| {
+            let (_, _) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            // Fundo opaco, sombra e fio: nada de texto aparecendo por trás.
+            ui.painter().add(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(90) }.as_shape(rect, CornerRadius::same(12)));
+            ui.painter().rect(rect, CornerRadius::same(12), t.card.to_opaque(), Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+            let field = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0), Vec2::new(rect.width() - 16.0, 34.0));
+            ui.painter().rect_filled(field, CornerRadius::same(8), t.fill_soft);
+            ui.painter().text(egui::pos2(field.min.x + 12.0, field.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::MAGNIFYING_GLASS, text::icon(13.0), t.label_tertiary);
+            search_input(ui, t, "busca", &mut query, field, 30.0, placeholder, px(13.0, "regular"), just_opened);
+            let list = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, field.max.y + 6.0), Vec2::new(rect.width() - 16.0, list_h));
+            let mut inner = ui.new_child(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)));
+            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(&mut inner, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if matching.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(empty).font(px(12.0, "regular")).color(t.label_tertiary));
+                }
+                for index in &matching {
+                    let item = &items[*index];
+                    let (row_rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+                    if row.hovered() {
+                        ui.painter().rect_filled(row_rect, CornerRadius::same(8), t.fill_soft);
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    let mut x = row_rect.min.x + 8.0;
+                    if let Some(color) = item.dot {
+                        ui.painter().circle_filled(egui::pos2(x + 4.0, row_rect.center().y), 4.0, color);
+                        x += 16.0;
+                    }
+                    if let Some((initials, color)) = &item.avatar {
+                        mini_avatar(ui.painter(), egui::pos2(x + 10.0, row_rect.center().y), 10.0, initials, *color);
+                        x += 28.0;
+                    }
+                    crate::ui::widgets::text_fit(ui.painter(), egui::pos2(x, row_rect.center().y), egui::Align2::LEFT_CENTER, &item.label, px(13.0, "regular"), t.label, row_rect.max.x - x - 8.0);
+                    if row.clicked() {
+                        chosen = Some(*index);
+                    }
+                }
+            });
+        });
+    ctx.move_to_top(area.response.layer_id);
+
+    // Fecha ao escolher, com Esc ou com um toque fora (do seletor e do botão).
+    let outside = ctx.input(|input| {
+        input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|pos| !rect.contains(pos) && !response.rect.contains(pos))
+    });
+    let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+    if chosen.is_some() || (outside && !just_opened) || escape {
+        open = false;
+        ctx.data_mut(|data| data.remove::<String>(query_id));
+    } else {
+        ctx.data_mut(|data| data.insert_temp(query_id, query));
+    }
+    ctx.data_mut(|data| data.insert_temp(open_id, open));
+    chosen
+}
+
+fn person_tint(store: &Store, member: &crate::state::Member, accent: egui::Color32) -> egui::Color32 {
+    let _ = store;
+    member.role_color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(accent)
+}
+
+/// A pastilha de salvar dos editores: o motivo quando ainda não dá.
+#[allow(clippy::too_many_arguments)]
+fn save_pill(ctx: &egui::Context, id: &str, t: &Tokens, translucent: bool, glass: &Option<crate::ui::glass::SharedGlass>, s: &Strings, label: &str, blocked: Option<&str>) -> Option<bool> {
+    let mut result = None;
+    let pill_id = egui::Id::new(id);
+    crate::ui::widgets::floating_pill(ctx, pill_id, t, translucent, glass, space::LG, 420.0, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::SM;
+            ui.label(RichText::new(blocked.unwrap_or(s.unsaved_changes)).font(text::body()).color(t.label_secondary));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if blocked.is_none() && row_button(ui, t, label, Emphasis::Primary) {
+                    result = Some(true);
+                }
+                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                    result = Some(false);
+                }
+            });
+        });
+    });
+    ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+    result
+}
+
+/// O cargo aberto, como no mock: nome, cor, permissões, pessoas e excluir,
+/// num cartão só; a pastilha confirma.
+fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &Strings, actions: &mut Vec<SettingsAction>) {
+    use super::roles::RoleAction;
+    let ctx = ui.ctx().clone();
+    let translucent = *data.translucency;
+    let glass = data.glass.clone();
+    let Some(draft) = data.roles.draft.as_mut() else {
+        return;
+    };
+    let stored = draft.id.as_ref().and_then(|id| data.store.roles.iter().find(|role| &role.id == id));
+    let dirty = match stored {
+        Some(role) => {
+            draft.name.trim() != role.name.trim()
+                || draft.color.to_lowercase() != role.color.clone().unwrap_or_default().to_lowercase()
+                || draft.permissions != role.permissions
+                || draft.people != draft.original_people
+        }
+        None => true,
+    };
+    section(ui, t, s.edit_role_title);
+    const COLORS: [&str; 8] = ["#ff6a3d", "#f5b50a", "#30b350", "#38bdf8", "#0a84ff", "#7c5cff", "#ff4f8b", "#9a9aa2"];
+    let mut delete = false;
+    let store = data.store;
+    sheet_card(ui, t, |card| {
+        card.section(s.role_name, |ui| {
+            ui.horizontal(|ui| {
+                let color = crate::api::models::parse_hex_color(&draft.color)
+                    .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                    .unwrap_or(t.label_tertiary);
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 7.0, color);
+                ui.add_space(4.0);
+                crate::ui::profile::inline_field(ui, t, "cargo-nome", &mut draft.name, s.role_name, px(13.0, "regular"), t.label, 32, (1, 1));
+            });
+        });
+        card.section(s.role_color, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::splat(10.0);
+                for hex in COLORS {
+                    let color = crate::api::models::parse_hex_color(hex)
+                        .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                        .unwrap_or(t.label_tertiary);
+                    let (rect, response) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::click());
+                    ui.painter().circle_filled(rect.center(), 12.0, color);
+                    let chosen = draft.color.eq_ignore_ascii_case(hex);
+                    if chosen {
+                        ui.painter().circle_stroke(rect.center(), 15.0, Stroke::new(2.0, t.accent));
+                    }
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if response.clicked() {
+                        draft.color = hex.to_owned();
+                    }
+                }
+            });
+        });
+        card.section(s.role_tab_permissions, |ui| {
+            let list = [
+                (s.perm_manage_server, &mut draft.permissions.manage_server),
+                (s.perm_manage_channels, &mut draft.permissions.manage_channels),
+                (s.perm_manage_roles, &mut draft.permissions.manage_roles),
+                (s.perm_ban_members, &mut draft.permissions.ban_members),
+                (s.perm_pin_message, &mut draft.permissions.pin_message),
+                (s.perm_everyone_message, &mut draft.permissions.everyone_message),
+                (s.perm_send_attachment, &mut draft.permissions.send_attachment),
+            ];
+            let width = ui.available_width();
+            let count = list.len();
+            for (index, (label, value)) in list.into_iter().enumerate() {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 38.0), Sense::hover());
+                ui.painter().text(egui::pos2(rect.min.x, rect.center().y), egui::Align2::LEFT_CENTER, label, px(13.0, "medium"), t.label);
+                let slot = Rect::from_min_size(egui::pos2(rect.max.x - SWITCH_W, rect.center().y - SWITCH_H / 2.0), Vec2::new(SWITCH_W, SWITCH_H));
+                let mut child = ui.new_child(UiBuilder::new().max_rect(slot));
+                switch(&mut child, t, value);
+                if index + 1 < count {
+                    ui.painter().line_segment([egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.max.y)], Stroke::new(0.5, t.separator));
+                }
+            }
+        });
+        {
+            card.section(s.people_caption, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                    if draft.people.is_empty() {
+                        ui.label(RichText::new(s.nobody_yet).font(px(12.0, "regular")).color(t.label_secondary));
+                    }
+                    let mut remove = None;
+                    for id in &draft.people {
+                        if let Some(member) = store.member(id) {
+                            let tint = person_tint(store, member, t.accent);
+                            if chip(ui, t, &format!("cargo-pessoa-{id}"), &member.name, None, Some((&member.initials(), tint)), true) {
+                                remove = Some(id.clone());
+                            }
+                        }
+                    }
+                    if let Some(id) = remove {
+                        draft.people.retain(|x| *x != id);
+                    }
+                    let button = add_chip(ui, t, s.add_person);
+                    let candidates: Vec<&crate::state::Member> = store.members.iter().filter(|m| !draft.people.contains(&m.id)).collect();
+                    let items: Vec<PickItem> = candidates
+                        .iter()
+                        .map(|m| PickItem { label: m.name.clone(), dot: None, avatar: Some((m.initials(), person_tint(store, m, t.accent))) })
+                        .collect();
+                    if let Some(index) = picker_menu(&button, t, s.search_person, s.nothing_to_add, &items) {
+                        draft.people.push(candidates[index].id.clone());
                     }
                 });
             });
         }
-        Tab::Members => {
-            let Some(role_id) = draft.id.clone() else {
-                ui.add_space(space::MD);
-                ui.label(RichText::new(s.role_members_hint).font(text::footnote()).color(t.label_tertiary));
-                return;
-            };
-            ui.add_space(space::MD);
-            // Busca por apelido, @usuário ou ID.
-            let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::hover());
-            ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
-            ui.painter().text(
-                egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::MAGNIFYING_GLASS,
-                text::icon(12.0),
-                t.label_tertiary,
-            );
-            let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 18.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
-            let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
-            child.add_sized(
-                inner.size(),
-                egui::TextEdit::singleline(&mut data.roles.member_query)
-                    .hint_text(s.role_member_search)
-                    .frame(egui::Frame::NONE)
-                    .font(text::callout())
-                    .vertical_align(Align::Center),
-            );
-            ui.add_space(space::SM);
-
-            let query = data.roles.member_query.trim().trim_start_matches('@').to_lowercase();
-            let role_colors: std::collections::HashMap<String, egui::Color32> = data
-                .store
-                .roles
-                .iter()
-                .filter_map(|role| {
-                    let color = role.color.as_deref().and_then(crate::api::models::parse_hex_color)?;
-                    Some((role.id.clone(), egui::Color32::from_rgb(color[0], color[1], color[2])))
-                })
-                .collect();
-            let mut shown = 0;
-            for member in &data.store.members {
-                let matches = query.is_empty()
-                    || member.name.to_lowercase().contains(&query)
-                    || member.username.to_lowercase().contains(&query)
-                    || member.id.to_lowercase().starts_with(&query);
-                if !matches {
-                    continue;
+        if draft.id.is_some() {
+            card.section("", |ui| {
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.delete_role.to_owned(), px(12.0, "regular"), t.danger).size().x + 24.0, 26.0), Sense::click());
+                ui.painter().rect_filled(rect, CornerRadius::same(6), t.danger.gamma_multiply(if response.hovered() { 0.24 } else { 0.14 }));
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, s.delete_role, px(12.0, "regular"), t.danger);
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                shown += 1;
-                let has = member.roles.iter().any(|id| id == &role_id);
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 40.0), Sense::hover());
-                let face = Rect::from_center_size(egui::pos2(rect.min.x + space::MD + 13.0, rect.center().y), Vec2::splat(26.0));
-                let tint = member.role_color.map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.accent);
-                ui.painter().circle_filled(face.center(), 13.0, tint.gamma_multiply(0.30));
-                ui.painter().text(face.center(), egui::Align2::CENTER_CENTER, member.initials(), egui::FontId::new(10.0, egui::FontFamily::Name("semibold".into())), tint);
-                // Chave à direita; pontinhos dos outros cargos antes dela.
-                let toggle = Rect::from_min_size(egui::pos2(rect.max.x - space::SM - SWITCH_W, rect.center().y - SWITCH_H / 2.0), Vec2::new(SWITCH_W, SWITCH_H));
-                let mut dots_x = toggle.min.x - space::MD;
-                for other in member.roles.iter().filter(|id| *id != &role_id).take(4) {
-                    if let Some(color) = role_colors.get(other) {
-                        ui.painter().circle_filled(egui::pos2(dots_x - 4.0, rect.center().y), 4.0, *color);
-                        dots_x -= 11.0;
-                    }
+                if response.clicked() {
+                    delete = true;
                 }
-                let text_left = face.max.x + space::MD;
-                let text_right = dots_x - space::SM;
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y - 7.0), egui::Align2::LEFT_CENTER, &member.name, text::body(), t.label, text_right - text_left);
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(text_left, rect.center().y + 8.0), egui::Align2::LEFT_CENTER, &format!("@{}", member.username), text::footnote(), t.label_tertiary, text_right - text_left);
-                let mut on = has;
-                let mut slot = ui.new_child(UiBuilder::new().max_rect(toggle));
-                if switch(&mut slot, t, &mut on) {
-                    actions.push(SettingsAction::Role(if has {
-                        RoleAction::Unassign { user_id: member.id.clone(), role_id: role_id.clone() }
-                    } else {
-                        RoleAction::Assign { user_id: member.id.clone(), role_id: role_id.clone() }
-                    }));
-                }
-            }
-            if shown == 0 {
-                ui.label(RichText::new(s.no_results).font(text::body()).color(t.label_secondary));
-            }
-            ui.add_space(space::SM);
-            ui.add(egui::Label::new(RichText::new(s.role_members_toggle_hint).font(text::footnote()).color(t.label_tertiary)).wrap());
-            return;
-        }
-    }
-
-    // Salvar e apagar valem para as abas que editam o cargo.
-    ui.add_space(space::SM);
-    let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
-    actions_row(ui, |ui| {
-        if !draft.name.trim().is_empty() && row_button(ui, t, s.save, Emphasis::Primary) {
-            actions.push(SettingsAction::Role(match draft.id.clone() {
-                Some(role_id) => RoleAction::Update { role_id, name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
-                None => RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions },
-            }));
-        }
-        if let Some(role_id) = draft.id.clone()
-            && row_button(ui, t, s.delete_role, Emphasis::Danger)
-        {
-            actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+            });
         }
     });
+
+    let color = (!draft.color.trim().is_empty()).then(|| draft.color.trim().to_owned());
+    if delete {
+        if let Some(role_id) = draft.id.clone() {
+            actions.push(SettingsAction::Role(RoleAction::Delete(role_id)));
+        }
+        return;
+    }
+    if dirty {
+        let blocked = draft.name.trim().is_empty().then_some(s.role_name_required);
+        match save_pill(&ctx, "cargo-salvar", t, translucent, &glass, s, s.save_role, blocked) {
+            Some(true) => {
+                match draft.id.clone() {
+                    Some(role_id) => {
+                        actions.push(SettingsAction::Role(RoleAction::Update { role_id: role_id.clone(), name: draft.name.trim().to_owned(), color, permissions: draft.permissions }));
+                        for user_id in draft.people.iter().filter(|id| !draft.original_people.contains(id)) {
+                            actions.push(SettingsAction::Role(RoleAction::Assign { user_id: user_id.clone(), role_id: role_id.clone() }));
+                        }
+                        for user_id in draft.original_people.iter().filter(|id| !draft.people.contains(id)) {
+                            actions.push(SettingsAction::Role(RoleAction::Unassign { user_id: user_id.clone(), role_id: role_id.clone() }));
+                        }
+                        draft.original_people = draft.people.clone();
+                    }
+                    None => actions.push(SettingsAction::Role(RoleAction::Create { name: draft.name.trim().to_owned(), color, permissions: draft.permissions, people: draft.people.clone() })),
+                }
+            }
+            Some(false) => data.roles.draft = None,
+            None => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1837,7 +2424,6 @@ enum TreeAction {
     },
 }
 
-const TREE_ROW: f32 = 34.0;
 const TREE_INDENT: f32 = 20.0;
 
 /// Para onde um arrasto leva: antes de qual item visível (ou para o fim) e
@@ -1885,7 +2471,77 @@ fn tree_drop(
     (new.max(1), parent)
 }
 
-/// Categorias e canais com alça de arrastar e ações fixas à direita.
+/// O pedido de mover `items[dragged]` para a fresta `gap`, se isso muda algo.
+fn move_action(
+    items: &[(String, i32, bool, Option<String>, bool)],
+    dragged: usize,
+    gap: usize,
+    total: i32,
+) -> Option<TreeAction> {
+    let (new_position, parent) = tree_drop(items, dragged, gap, total);
+    let (id, old_position, _, old_parent, _) = &items[dragged];
+    let parent_change = (parent != *old_parent).then(|| parent.clone().unwrap_or_default());
+    (new_position != *old_position || parent_change.is_some()).then(|| TreeAction::Move {
+        channel_id: id.clone(),
+        old_position: *old_position,
+        new_position,
+        parent_id: parent_change,
+    })
+}
+
+/// Os quatro botões de uma linha: subir, descer, editar e apagar. Aparecem
+/// com o ponteiro em cima e, no toque, ficam sempre à mostra.
+fn row_tools(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    id: &str,
+    rect: Rect,
+    can_up: bool,
+    can_down: bool,
+    show: bool,
+) -> Option<usize> {
+    use egui_phosphor::regular as icon;
+    let side = 28.0;
+    let gap = 4.0;
+    let mut right = rect.max.x - 12.0;
+    let mut hit = None;
+    for (glyph, danger, which) in [
+        (icon::TRASH, true, 3),
+        (icon::PENCIL_SIMPLE, false, 2),
+        (icon::ARROW_DOWN, false, 1),
+        (icon::ARROW_UP, false, 0),
+    ] {
+        let enabled = match which {
+            0 => can_up,
+            1 => can_down,
+            _ => true,
+        };
+        let tool = Rect::from_min_size(egui::pos2(right - side, rect.center().y - side / 2.0), Vec2::splat(side));
+        right -= side + gap;
+        // O espaço é reservado mesmo escondido: o texto não muda de largura.
+        let response = ui.interact(tool, egui::Id::new(("ferramenta", id, which)), if show && enabled { Sense::click() } else { Sense::hover() });
+        if !show {
+            continue;
+        }
+        if response.hovered() && enabled {
+            ui.painter().rect_filled(tool, CornerRadius::same(8), t.fill_soft);
+        }
+        ui.painter().text(
+            tool.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            text::icon(15.0),
+            if danger && response.hovered() { t.danger } else { t.label_secondary }.gamma_multiply(if enabled { 1.0 } else { 0.3 }),
+        );
+        if response.clicked() {
+            hit = Some(which);
+        }
+    }
+    hit
+}
+
+/// Categorias e canais como no mock: cada categoria é um cartão com o nome
+/// em cima, a alça para arrastar à esquerda e as ações à direita.
 /// Soltar reordena (e troca de categoria) num pedido só.
 fn channel_tree(
     ui: &mut egui::Ui,
@@ -1894,163 +2550,189 @@ fn channel_tree(
     store: &Store,
     media: &mut crate::media::MediaStore,
     channel_emoji_monochrome: bool,
-    collapsed: &mut std::collections::HashSet<String>,
+    _collapsed: &mut std::collections::HashSet<String>,
     dragging: &mut Option<String>,
 ) -> Option<TreeAction> {
     use egui_phosphor::regular as icon;
     let layout = store.channel_layout();
     let total = layout.len() as i32;
-    // Visíveis: os filhos de categoria recolhida somem.
     let visible: Vec<(&crate::state::Channel, Option<String>)> = layout
         .iter()
         .map(|(index, parent)| (&store.channels[*index], parent.clone()))
-        .filter(|(_, parent)| parent.as_ref().is_none_or(|p| !collapsed.contains(p)))
         .collect();
     let items: Vec<(String, i32, bool, Option<String>, bool)> = visible
         .iter()
-        .map(|(c, parent)| {
-            let is_category = c.kind == crate::state::ChannelKind::Category;
-            (c.id.clone(), c.position, is_category, parent.clone(), is_category && collapsed.contains(&c.id))
-        })
+        .map(|(c, parent)| (c.id.clone(), c.position, c.kind == crate::state::ChannelKind::Category, parent.clone(), false))
         .collect();
 
     let mut action = None;
-    let mut rects = Vec::with_capacity(visible.len());
-    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 2.0);
-    let touch_layout = tiles(ui);
-    let row_h = if touch_layout { 46.0 } else { TREE_ROW };
-    let tool_side = if touch_layout { 32.0 } else { 24.0 };
-    let tool_gap = 4.0;
-    for (index, (channel, parent)) in visible.iter().enumerate() {
+    let mut rects: Vec<Rect> = Vec::with_capacity(visible.len());
+    let touch = tiles(ui);
+    let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+    let width = fit_width(ui);
+    let last = items.len().saturating_sub(1);
+    let mut index = 0;
+    let mut first_group = true;
+    while index < visible.len() {
+        let (head_channel, _) = &visible[index];
         let is_category = items[index].2;
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
-        rects.push(rect);
-        let being_dragged = dragging.as_deref() == Some(channel.id.as_str());
-        let hovered = response.hovered() || being_dragged;
-        if hovered {
-            ui.painter().rect_filled(rect, CornerRadius::same(radius::FIELD), t.fill_soft);
+        if !first_group {
+            ui.add_space(22.0);
         }
-        let alpha = if being_dragged { 0.45 } else { 1.0 };
-        let indent = if parent.is_some() { TREE_INDENT } else { 0.0 };
+        first_group = false;
 
-        // Alça: é por ela que se arrasta, para o clique no resto da linha
-        // continuar sendo clique. No layout de toque ela cresce junto da linha.
-        let grip_w = if touch_layout { 28.0 } else { 22.0 };
-        let grip = Rect::from_min_size(
-            egui::pos2(rect.min.x + indent, rect.min.y),
-            Vec2::new(grip_w, row_h),
-        );
-        let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
-        if grip_response.hovered() || grip_response.dragged() {
-            ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
-        }
-        if grip_response.drag_started() {
-            *dragging = Some(channel.id.clone());
-        }
-        ui.painter().text(
-            grip.center(),
-            egui::Align2::CENTER_CENTER,
-            icon::DOTS_SIX_VERTICAL,
-            text::icon(13.0),
-            if hovered { t.label_secondary } else { t.label_tertiary }.gamma_multiply(alpha),
-        );
-
-        let mut x = grip.max.x + space::XS;
+        // Cabeçalho do grupo: a categoria (com alça e ações) ou "Sem categoria".
         if is_category {
-            let folded = collapsed.contains(&channel.id);
-            ui.painter().text(
-                egui::pos2(x + 5.0, rect.center().y),
-                egui::Align2::CENTER_CENTER,
-                if folded { icon::CARET_RIGHT } else { icon::CARET_DOWN },
-                text::icon(10.0),
-                t.label_secondary,
+            let channel = *head_channel;
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 28.0), Sense::hover());
+            rects.push(rect);
+            let being = dragging.as_deref() == Some(channel.id.as_str());
+            let alpha = if being { 0.45 } else { 1.0 };
+            let grip = Rect::from_min_size(egui::pos2(rect.min.x + 6.0, rect.min.y), Vec2::new(18.0, 28.0));
+            let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
+            if grip_response.hovered() || grip_response.dragged() {
+                ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+            }
+            if grip_response.drag_started() {
+                *dragging = Some(channel.id.clone());
+            }
+            ui.painter().text(grip.center(), egui::Align2::CENTER_CENTER, icon::DOTS_SIX_VERTICAL, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+            let tools_w = 4.0 * 32.0 + 12.0;
+            super::emoji::draw_channel_name(
+                ui,
+                t,
+                media,
+                store,
+                &channel.name,
+                egui::pos2(rect.min.x + 28.0, rect.center().y),
+                px(11.5, "semibold"),
+                t.label_secondary.gamma_multiply(alpha),
+                rect.width() - 28.0 - tools_w,
+                channel_emoji_monochrome,
+                false,
             );
-            if response.clicked() {
-                if folded {
-                    collapsed.remove(&channel.id);
-                } else {
-                    collapsed.insert(channel.id.clone());
-                }
+            let show = (response.hovered() || ui.rect_contains_pointer(rect) || touch) && dragging.is_none();
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, index > 0, index < last, show) {
+                action = match which {
+                    0 => move_action(&items, index, index - 1, total),
+                    1 => move_action(&items, index, index + 2, total),
+                    2 => Some(TreeAction::Edit(channel.id.clone())),
+                    _ => Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
+                };
             }
-            x += 16.0;
+            ui.add_space(6.0);
+            index += 1;
         } else {
-            let glyph = if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH };
-            ui.painter().text(egui::pos2(x + 6.0, rect.center().y), egui::Align2::CENTER_CENTER, glyph, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
-            x += 18.0;
-        }
-        let tools_w = if hovered { 60.0 } else { 0.0 };
-        let name_rect = super::emoji::draw_channel_name(
-            ui,
-            t,
-            media,
-            store,
-            &channel.name,
-            egui::pos2(x, rect.center().y),
-            if is_category {
-                text::subheadline()
-            } else {
-                text::body()
-            },
-            if is_category {
-                t.label_secondary
-            } else {
-                t.label
-            }
-            .gamma_multiply(alpha),
-            rect.max.x - tools_w - space::MD - x,
-            channel_emoji_monochrome,
-            is_category,
-        );
-        if let Some(topic) = channel.topic.as_deref().filter(|topic| !topic.is_empty() && !is_category) {
-            let left = name_rect.max.x + space::SM;
-            let room = rect.max.x - tools_w - space::MD - left;
-            if room > 40.0 {
-                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y), egui::Align2::LEFT_CENTER, topic, text::footnote(), t.label_tertiary, room);
-            }
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.label(RichText::new(s.no_category).font(px(11.5, "semibold")).color(t.label_secondary));
+            });
+            ui.add_space(6.0);
         }
 
-        // Editar e apagar são ações fixas. Em toque elas ganham alvos maiores;
-        // no desktop continuam compactas e recebem apenas o realce de hover.
-        // A coluna fica reservada até durante drag, então o texto nunca muda
-        // de largura quando o estado da linha muda.
-        if dragging.is_none() {
-            let mut right = rect.max.x - space::SM;
-            for (glyph, danger, which) in
-                [(icon::TRASH, true, 1), (icon::PENCIL_SIMPLE, false, 0)]
-            {
-                let tool = Rect::from_min_size(
-                    egui::pos2(right - tool_side, rect.center().y - tool_side / 2.0),
-                    Vec2::splat(tool_side),
-                );
-                right -= tool_side + tool_gap;
-                let tool_response = ui.interact(
-                    tool,
-                    egui::Id::new(("ferramenta-canal", &channel.id, which)),
-                    Sense::click(),
-                );
-                if tool_response.hovered() {
-                    ui.painter().rect_filled(
-                        tool,
-                        CornerRadius::same(radius::CONTROL),
-                        t.fill_medium,
-                    );
-                }
-                ui.painter().text(
-                    tool.center(),
-                    egui::Align2::CENTER_CENTER,
-                    glyph,
-                    text::icon(if touch_layout { 15.0 } else { 13.0 }),
-                    if danger { t.danger } else { t.label_secondary },
-                );
-                if tool_response.clicked() {
-                    action = Some(if which == 1 {
-                        TreeAction::Delete(channel.id.clone(), channel.name.clone())
-                    } else {
-                        TreeAction::Edit(channel.id.clone())
-                    });
-                }
+        // Os canais do grupo: os filhos da categoria, ou a fileira de canais
+        // soltos até a próxima categoria.
+        let owner = is_category.then(|| head_channel.id.clone());
+        let start = index;
+        while index < visible.len() {
+            let belongs = if let Some(owner) = &owner {
+                visible[index].1.as_deref() == Some(owner.as_str())
+            } else {
+                !items[index].2 && visible[index].1.is_none()
+            };
+            if !belongs {
+                break;
             }
+            index += 1;
+        }
+        let card_slot = ui.painter().add(egui::Shape::Noop);
+        let card_top = ui.cursor().min.y;
+        if start == index {
+            // Categoria vazia: um aviso no lugar das linhas.
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 40.0), Sense::hover());
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, s.category_empty, px(12.0, "regular"), t.label_secondary);
+        }
+        for (row, (channel, _)) in visible.iter().enumerate().take(index).skip(start) {
+            let h = if channel.topic.as_deref().is_some_and(|topic| !topic.is_empty()) { 54.0 } else { 48.0 };
+            let (rect, response) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+            rects.push(rect);
+            let being = dragging.as_deref() == Some(channel.id.as_str());
+            let alpha = if being { 0.45 } else { 1.0 };
+            let hovered = ui.rect_contains_pointer(rect) || being;
+            if hovered {
+                let top = if row == start { 10 } else { 0 };
+                let bottom = if row + 1 == index { 10 } else { 0 };
+                ui.painter().rect_filled(rect, CornerRadius { nw: top, ne: top, sw: bottom, se: bottom }, t.fill_soft);
+            }
+            if row > start {
+                ui.painter().line_segment(
+                    [egui::pos2(rect.min.x + ROW_INSET, rect.min.y), egui::pos2(rect.max.x, rect.min.y)],
+                    Stroke::new(0.5, t.separator),
+                );
+            }
+            let _ = response;
+            let grip = Rect::from_min_size(egui::pos2(rect.min.x + 6.0, rect.min.y), Vec2::new(18.0, h));
+            let grip_response = ui.interact(grip, egui::Id::new(("alca-canal", &channel.id)), Sense::drag());
+            if grip_response.hovered() || grip_response.dragged() {
+                ui.ctx().set_cursor_icon(if grip_response.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+            }
+            if grip_response.drag_started() {
+                *dragging = Some(channel.id.clone());
+            }
+            ui.painter().text(grip.center(), egui::Align2::CENTER_CENTER, icon::DOTS_SIX_VERTICAL, text::icon(13.0), t.label_tertiary.gamma_multiply(alpha));
+
+            let tile = Rect::from_center_size(egui::pos2(rect.min.x + 34.0 + 14.0, rect.center().y), Vec2::splat(28.0));
+            ui.painter().rect_filled(tile, CornerRadius::same(8), t.fill_soft.gamma_multiply(alpha));
+            ui.painter().text(
+                tile.center(),
+                egui::Align2::CENTER_CENTER,
+                if channel.kind == crate::state::ChannelKind::Voice { icon::SPEAKER_HIGH } else { icon::HASH },
+                text::icon(14.0),
+                t.label_secondary.gamma_multiply(alpha),
+            );
+            let left = rect.min.x + 78.0;
+            let room = rect.width() - 78.0 - (4.0 * 32.0 + 12.0);
+            let topic = channel.topic.as_deref().filter(|topic| !topic.is_empty());
+            let name_y = if topic.is_some() { rect.center().y - 9.0 } else { rect.center().y };
+            super::emoji::draw_channel_name(
+                ui,
+                t,
+                media,
+                store,
+                &channel.name,
+                egui::pos2(left, name_y),
+                px(13.0, "medium"),
+                t.label.gamma_multiply(alpha),
+                room,
+                channel_emoji_monochrome,
+                false,
+            );
+            if let Some(topic) = topic {
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y + 9.0), egui::Align2::LEFT_CENTER, topic, px(11.5, "regular"), t.label_secondary.gamma_multiply(alpha), room);
+            }
+            let show = (hovered || touch) && dragging.is_none();
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, row > 0, row < last, show) {
+                action = match which {
+                    0 => move_action(&items, row, row - 1, total),
+                    1 => move_action(&items, row, row + 2, total),
+                    2 => Some(TreeAction::Edit(channel.id.clone())),
+                    _ => Some(TreeAction::Delete(channel.id.clone(), channel.name.clone())),
+                };
+            }
+        }
+        // O cartão do grupo, pintado atrás das linhas agora que se sabe a altura.
+        let bottom = ui.cursor().min.y;
+        if bottom > card_top {
+            ui.painter().set(
+                card_slot,
+                egui::epaint::RectShape::new(
+                    Rect::from_min_max(egui::pos2(ui.max_rect().min.x, card_top), egui::pos2(ui.max_rect().min.x + width, bottom)),
+                    CornerRadius::same(10),
+                    t.card,
+                    Stroke::new(0.5, t.separator),
+                    egui::StrokeKind::Inside,
+                ),
+            );
         }
     }
     ui.spacing_mut().item_spacing.y = spacing;
@@ -2076,16 +2758,8 @@ fn channel_tree(
             ui.painter().line_segment([egui::pos2(left + space::SM, y), egui::pos2(right - space::SM, y)], Stroke::new(2.0, t.accent));
             ui.ctx().request_repaint();
             if released {
-                let (new_position, parent) = tree_drop(&items, dragged, gap, total);
-                let (_, old_position, _, old_parent, _) = &items[dragged];
-                let parent_change = (parent != *old_parent).then(|| parent.clone().unwrap_or_default());
-                if new_position != *old_position || parent_change.is_some() {
-                    action = Some(TreeAction::Move {
-                        channel_id: id,
-                        old_position: *old_position,
-                        new_position,
-                        parent_id: parent_change,
-                    });
+                if let Some(moved) = move_action(&items, dragged, gap, total) {
+                    action = Some(moved);
                 }
                 *dragging = None;
             }
@@ -2093,7 +2767,6 @@ fn channel_tree(
             *dragging = None;
         }
     }
-    let _ = s;
     action
 }
 
@@ -2133,7 +2806,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Alerts, s.menu_notifications),
         (AppPane::Alerts, s.reply_notifications_default),
         (AppPane::Alerts, s.badge),
-        (AppPane::Alerts, s.menu_close_to_tray),
+        (AppPane::Alerts, s.close_to_tray_title),
         (AppPane::Alerts, s.start_at_login),
         (AppPane::Files, s.downloads),
         (AppPane::Files, s.download_folder),
@@ -2213,14 +2886,22 @@ fn spotlight(ui: &egui::Ui, rect: Rect, label: &str) {
 /// Faixa de prévia no topo de um painel: fundo suave, cantos de cartão. O
 /// conteúdo é desenhado por `draw` dentro da área útil.
 fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui::Ui, Rect)) {
-    ui.add_space(space::MD);
+    let tiled = tiles(ui);
+    if tiled {
+        ui.add_space(space::MD);
+    }
+    // Desktop: o cartão da prévia do mock, na cor da folha e com 14 de miolo.
+    let pad = if tiled { space::LG } else { 14.0 };
     let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), height + space::LG * 2.0),
+        Vec2::new(fit_width(ui), height + pad * 2.0),
         Sense::hover(),
     );
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
-    draw(ui, rect.shrink(space::LG));
+    if tiled {
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::SHEET), t.fill_soft);
+    } else {
+        ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    }
+    draw(ui, rect.shrink(pad));
     // Some previews draw through a bounded child Ui. Keep the parent cursor
     // explicitly below the reserved card so the following settings section
     // can never start on top of the preview.
@@ -2228,59 +2909,18 @@ fn hero(ui: &mut egui::Ui, t: &Tokens, height: f32, draw: impl FnOnce(&mut egui:
 }
 
 /// Texto de apoio à direita da prévia, quando sobra espaço.
-fn hint_beside(ui: &egui::Ui, t: &Tokens, area: Rect, used: Rect, hint: &str) {
-    let left = used.max.x + space::XL;
-    let width = area.max.x - left;
-    if width < 140.0 {
-        return;
-    }
-    let galley = ui.painter().layout(hint.to_owned(), text::footnote(), t.label_tertiary, width);
-    let pos = egui::pos2(left, area.max.y - galley.size().y);
-    ui.painter().galley(pos, galley, t.label_tertiary);
-}
-
-/// Um Papo em miniatura com as cores do momento: trilho, conversa e a
-/// caixa de texto flutuando. Muda junto com o tema e a translucidez.
-fn appearance_preview(ui: &egui::Ui, t: &Tokens, rect: Rect, translucent: bool) {
-    let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(radius::CARD), t.content_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    let rail = Rect::from_min_size(rect.min, Vec2::new(40.0, rect.height()));
-    painter.rect_filled(
-        rail.shrink(1.0),
-        CornerRadius { nw: radius::CARD - 1, sw: radius::CARD - 1, ne: 0, se: 0 },
-        t.glass_opaque,
-    );
-    for index in 0..3 {
-        let tile = Rect::from_min_size(rail.min + Vec2::new(6.0, 6.0 + index as f32 * 33.0), Vec2::splat(28.0));
-        painter.rect_filled(tile, CornerRadius::same(radius::FIELD), if index == 0 { t.accent } else { t.fill_medium });
-    }
-    let content = Rect::from_min_max(egui::pos2(rail.max.x + 10.0, rect.min.y + 12.0), egui::pos2(rect.max.x - 10.0, rect.max.y - 10.0));
-    for (row, fraction) in [0.6_f32, 0.85, 0.4].into_iter().enumerate() {
-        let line = Rect::from_min_size(
-            content.min + Vec2::new(0.0, row as f32 * 16.0),
-            Vec2::new(content.width() * fraction, 8.0),
-        );
-        painter.rect_filled(line, CornerRadius::same(4), t.fill_medium);
-    }
-    let pill = Rect::from_min_max(egui::pos2(content.min.x, content.max.y - 22.0), content.max);
-    painter.rect(pill, CornerRadius::same(radius::FIELD), t.pill_fill(translucent), Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-}
-
-/// Um aviso de exemplo, como o sistema mostraria. Apagado quando os avisos
-/// estão desligados.
-fn notification_preview(ui: &egui::Ui, t: &Tokens, s: &Strings, rect: Rect, initials: &str, on: bool) {
+fn notification_preview(ui: &egui::Ui, t: &Tokens, s: &Strings, rect: Rect, _initials: &str, on: bool) {
     let painter = ui.painter();
     let alpha = if on { 1.0 } else { 0.4 };
-    painter.add(ui.visuals().popup_shadow.as_shape(rect, CornerRadius::same(radius::SHEET)));
-    painter.rect(rect, CornerRadius::same(radius::SHEET), t.elevated_bg, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-    let icon = Rect::from_min_size(rect.min + Vec2::new(space::LG, space::LG), Vec2::splat(32.0));
-    painter.rect_filled(icon, CornerRadius::same(radius::FIELD), t.accent.gamma_multiply(alpha));
-    painter.text(icon.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent_label);
-    let x = icon.max.x + space::MD;
+    painter.add(ui.visuals().popup_shadow.as_shape(rect, CornerRadius::same(12)));
+    painter.rect(rect, CornerRadius::same(12), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+    let icon = Rect::from_min_size(egui::pos2(rect.min.x + 12.0, rect.center().y - 15.0), Vec2::splat(30.0));
+    painter.rect_filled(icon, CornerRadius::same(8), t.accent.gamma_multiply(alpha));
+    let x = icon.max.x + 10.0;
     let clip = painter.with_clip_rect(rect.shrink(2.0));
-    clip.text(egui::pos2(x, icon.min.y), egui::Align2::LEFT_TOP, s.preview_notify_title, text::headline(), t.label.gamma_multiply(alpha));
-    clip.text(egui::pos2(x, icon.min.y + 17.0), egui::Align2::LEFT_TOP, s.preview_notify_body, text::callout(), t.label_secondary.gamma_multiply(alpha));
-    clip.text(egui::pos2(rect.max.x - space::LG, icon.min.y), egui::Align2::RIGHT_TOP, s.preview_notify_meta, text::footnote(), t.label_tertiary);
+    clip.text(egui::pos2(x, rect.center().y - 15.0), egui::Align2::LEFT_TOP, s.preview_notify_title, px(13.0, "semibold"), t.label.gamma_multiply(alpha));
+    clip.text(egui::pos2(x, rect.center().y + 2.0), egui::Align2::LEFT_TOP, s.preview_notify_body, px(13.0, "regular"), t.label_secondary.gamma_multiply(alpha));
+    clip.text(egui::pos2(rect.max.x - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, s.preview_notify_meta, px(11.0, "regular"), t.label_tertiary);
 }
 
 /// Ícone do servidor num quadrado arredondado, ou as iniciais.
@@ -2295,8 +2935,15 @@ fn paint_server_icon(ui: &egui::Ui, t: &Tokens, rect: Rect, icon: Option<egui::T
             egui::Color32::WHITE,
         ),
         None => {
-            ui.painter().rect_filled(rect, CornerRadius::same(corner), t.accent.gamma_multiply(0.30));
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials, text::headline(), t.accent);
+            let _ = t;
+            ui.painter().rect_filled(rect, CornerRadius::same(corner), egui::Color32::from_rgb(0xFF, 0x5C, 0x63));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                initials,
+                px((rect.height() * 0.36).max(11.0), "semibold"),
+                egui::Color32::WHITE,
+            );
         }
     }
 }
@@ -2493,35 +3140,7 @@ fn search_field(ui: &mut egui::Ui, t: &Tokens, s: &Strings, query: &mut String) 
         text::icon(17.0),
         t.accent,
     );
-    let field = Rect::from_min_max(egui::pos2(rect.min.x + space::XL + 24.0, rect.min.y + 4.0), egui::pos2(rect.max.x - space::XL, rect.max.y - 4.0));
-    #[cfg(target_os = "android")]
-    {
-        let _ = crate::platform::native_field::show(
-            ui.ctx(),
-            "ajustes-celular:busca",
-            query,
-            field,
-            s.settings_search,
-            crate::platform::native_field::Mode::Text,
-            64,
-            false,
-            t.label,
-            t.label_tertiary,
-            15.0,
-        );
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let mut child = ui.new_child(UiBuilder::new().max_rect(field));
-        child.add_sized(
-            field.size(),
-            egui::TextEdit::singleline(query)
-                .hint_text(s.settings_search)
-                .frame(egui::Frame::NONE)
-                .font(egui::FontId::new(15.0, egui::FontFamily::Proportional))
-                .vertical_align(Align::Center),
-        );
-    }
+    search_input(ui, t, "ajustes-celular:busca", query, rect, space::XL + 24.0, s.settings_search, egui::FontId::new(15.0, egui::FontFamily::Proportional), false);
     ui.add_space(space::MD);
 }
 
@@ -2567,11 +3186,9 @@ fn footnote(ui: &mut egui::Ui, t: &Tokens, note: &str) {
     });
 }
 
-/// Lista dos ajustes do usuário.
-fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
-    use egui_phosphor::regular as icon;
-    search_field(ui, t, s, &mut state.mobile_query);
-
+/// A linha de resumo de cada painel do usuário: a mesma na lista do celular
+/// e na coluna do desktop.
+fn app_summaries(data: &Context<'_>, s: &Strings) -> Vec<(AppPane, String)> {
     let theme = match *data.theme {
         crate::ui::theme::ThemePref::System => s.theme_system,
         crate::ui::theme::ThemePref::Light => s.theme_light,
@@ -2597,14 +3214,32 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
     let count = data.store.devices.len().max(1);
     let devices = format!("{count} {}", if count == 1 { s.sum_device } else { s.sum_devices });
     let presence_summary = rich_presence_source_label(data.rich_presence_snapshot.source.clone(), s).to_owned();
+    vec![
+        (AppPane::Appearance, appearance),
+        (AppPane::Activity, presence_summary),
+        (AppPane::Alerts, alerts),
+        (AppPane::Language, data.lang.endonym().to_owned()),
+        (AppPane::Files, files),
+        (AppPane::Sessions, devices),
+        (AppPane::Diagnostics, s.sum_diagnostics.to_owned()),
+    ]
+}
+
+/// Lista dos ajustes do usuário.
+fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    use egui_phosphor::regular as icon;
+    search_field(ui, t, s, &mut state.mobile_query);
+
+    let summaries = app_summaries(data, s);
+    let summary = |pane: AppPane| summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.clone()).unwrap_or_default();
     let rows: Vec<(AppPane, Entry<'_>)> = vec![
-        (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: appearance }),
-        (AppPane::Activity, Entry { glyph: icon::GAME_CONTROLLER, title: AppPane::Activity.title(s), summary: presence_summary }),
-        (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: alerts }),
-        (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: data.lang.endonym().to_owned() }),
-        (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: files }),
-        (AppPane::Sessions, Entry { glyph: icon::DEVICES, title: AppPane::Sessions.title(s), summary: devices }),
-        (AppPane::Diagnostics, Entry { glyph: icon::PULSE, title: AppPane::Diagnostics.title(s), summary: s.sum_diagnostics.to_owned() }),
+        (AppPane::Appearance, Entry { glyph: icon::PALETTE, title: AppPane::Appearance.title(s), summary: summary(AppPane::Appearance) }),
+        (AppPane::Activity, Entry { glyph: icon::GAME_CONTROLLER, title: AppPane::Activity.title(s), summary: summary(AppPane::Activity) }),
+        (AppPane::Alerts, Entry { glyph: icon::BELL, title: AppPane::Alerts.title(s), summary: summary(AppPane::Alerts) }),
+        (AppPane::Language, Entry { glyph: icon::GLOBE, title: AppPane::Language.title(s), summary: summary(AppPane::Language) }),
+        (AppPane::Files, Entry { glyph: icon::FOLDER, title: AppPane::Files.title(s), summary: summary(AppPane::Files) }),
+        (AppPane::Sessions, Entry { glyph: icon::DEVICES, title: AppPane::Sessions.title(s), summary: summary(AppPane::Sessions) }),
+        (AppPane::Diagnostics, Entry { glyph: icon::PULSE, title: AppPane::Diagnostics.title(s), summary: summary(AppPane::Diagnostics) }),
     ];
 
     let mut open = None;
@@ -2667,34 +3302,38 @@ fn app_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>
     }
 }
 
-/// Lista dos ajustes do servidor: só o que o cargo permite.
-fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
-    use egui_phosphor::regular as icon;
-    search_field(ui, t, s, &mut state.mobile_query);
-    let store = data.store;
-    let all: Vec<(ServerPane, Entry<'_>)> = [
-        (ServerPane::General, icon::IDENTIFICATION_CARD, s.sum_identity.to_owned()),
+/// A linha de resumo de cada painel do servidor: a mesma na lista do celular
+/// e na coluna do desktop.
+fn server_summaries(store: &Store, s: &Strings) -> Vec<(ServerPane, String)> {
+    vec![
+        (ServerPane::General, s.sum_identity.to_owned()),
         (
             ServerPane::Channels,
-            icon::LIST_BULLETS,
             format!(
                 "{} {}",
-                store
-                    .channels
-                    .iter()
-                    .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
-                    .count(),
+                store.channels.iter().filter(|channel| channel.kind != crate::state::ChannelKind::Direct).count(),
                 s.sum_channels
             ),
         ),
-        (ServerPane::Roles, icon::SHIELD, format!("{} {}", store.roles.len(), s.sum_roles)),
-        (ServerPane::Emojis, icon::SMILEY, format!("{} {}", store.emojis.len(), s.sum_stickers)),
-        (ServerPane::Audit, icon::CLOCK_COUNTER_CLOCKWISE, s.sum_audit.to_owned()),
+        (ServerPane::Roles, format!("{} {}", store.roles.len(), s.sum_roles)),
+        (ServerPane::Emojis, format!("{} {}", store.emojis.len(), s.sum_stickers)),
+        (ServerPane::Audit, s.sum_audit.to_owned()),
     ]
-    .into_iter()
-    .filter(|(pane, _, _)| server_pane_allowed(store, *pane))
-    .map(|(pane, glyph, summary)| (pane, Entry { glyph, title: pane.title(s), summary }))
-    .collect();
+}
+
+/// Lista dos ajustes do servidor: só o que o cargo permite.
+fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<'_>, t: &Tokens, s: &Strings) {
+    search_field(ui, t, s, &mut state.mobile_query);
+    let store = data.store;
+    let summaries = server_summaries(store, s);
+    let all: Vec<(ServerPane, Entry<'_>)> = ServerPane::ALL
+        .into_iter()
+        .filter(|pane| server_pane_allowed(store, *pane))
+        .map(|pane| {
+            let summary = summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.clone()).unwrap_or_default();
+            (pane, Entry { glyph: pane.glyph(), title: pane.title(s), summary })
+        })
+        .collect();
 
     let mut open = None;
     if !state.mobile_query.trim().is_empty() {
@@ -2733,8 +3372,8 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
                 painter.text(rect.center(), egui::Align2::CENTER_CENTER, &initials, egui::FontId::new(14.0, egui::FontFamily::Name("semibold".into())), t.accent);
             }
         };
-        let address = data.server_url.trim_start_matches("https://").trim_start_matches("http://");
-        let head = Entry { glyph: "", title: &name, summary: format!("{address} · {} {}", store.members.len(), s.count_members) };
+        let access = if store.server.as_ref().is_none_or(|server| server.public) { s.access_public } else { s.access_private };
+        let head = Entry { glyph: "", title: &name, summary: format!("{access} · {} {}", store.members.len(), s.count_members) };
         list_tile(ui, t, &head, true, true, Some(&lead));
         ui.add_space(space::LG);
         let split = all.iter().position(|(pane, _)| matches!(pane, ServerPane::Emojis | ServerPane::Audit)).unwrap_or(all.len());
@@ -2758,70 +3397,38 @@ fn server_list(ui: &mut egui::Ui, state: &mut SettingsState, data: &mut Context<
     }
 }
 
-/// Cabeçalho: quem ou o quê está sendo ajustado, o nome do painel e o X.
+/// Cabeçalho do painel: o nome dele em negrito e o X redondo à direita.
 fn header(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
     t: &Tokens,
-    s: &Strings,
+    _s: &Strings,
     rect: Rect,
-    surface: Surface,
+    _surface: Surface,
     title: &str,
 ) {
     let head = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_H));
-    let painter = ui.painter();
-    painter.text(
-        egui::pos2(head.min.x + space::XL, head.center().y),
-        egui::Align2::LEFT_CENTER,
-        match surface {
-            Surface::App => s.settings,
-            Surface::Server => s.server_settings,
-        },
-        text::title3(),
-        t.label,
-    );
-    // O guia pede que o título acompanhe o painel aberto; o nome do painel
-    // vem depois do da folha, em tom secundário.
-    let width = painter
-        .layout_no_wrap(
-            match surface {
-                Surface::App => s.settings.to_owned(),
-                Surface::Server => s.server_settings.to_owned(),
-            },
-            text::title3(),
-            t.label,
-        )
-        .size()
-        .x;
-    painter.text(
-        egui::pos2(head.min.x + space::XL + width + space::MD, head.center().y),
+    let mid = head.min.y + 16.0 + 13.0;
+    ui.painter().text(
+        egui::pos2(head.min.x + 24.0, mid),
         egui::Align2::LEFT_CENTER,
         title,
-        text::body(),
-        t.label_tertiary,
+        px(17.0, "display"),
+        t.label,
     );
-
-    // Margens iguais dos dois lados do canto: com o centro a 16 do bordo,
-    // o botão de 28 encostava a 2 px da direita e ficava a 12 do topo — o
-    // desencontro é que fazia parecer que ele estava abaixo do canto.
-    const CLOSE: f32 = 28.0;
-    let inset = (HEADER_H - CLOSE) / 2.0;
-    let close = Rect::from_center_size(
-        egui::pos2(head.max.x - inset - CLOSE / 2.0, head.min.y + inset + CLOSE / 2.0),
-        Vec2::splat(CLOSE),
-    );
+    const CLOSE: f32 = 26.0;
+    let close = Rect::from_center_size(egui::pos2(head.max.x - 16.0 - CLOSE / 2.0, mid), Vec2::splat(CLOSE));
     let response = ui.interact(close, ui.id().with("fechar-ajustes"), Sense::click());
+    ui.painter().circle_filled(close.center(), CLOSE / 2.0, if response.hovered() { t.fill_medium } else { t.fill_soft });
     if response.hovered() {
-        ui.painter()
-            .rect_filled(close, CornerRadius::same(radius::FIELD), t.fill_soft);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     ui.painter().text(
         close.center(),
         egui::Align2::CENTER_CENTER,
         egui_phosphor::regular::X,
-        text::icon(14.0),
-        t.label_secondary,
+        text::icon(12.0),
+        if response.hovered() { t.label } else { t.label_secondary },
     );
     let escape = !state.modal_above && ui.input(|input| input.key_pressed(egui::Key::Escape));
     if response.clicked() || escape {
@@ -2833,83 +3440,163 @@ fn header(
 fn rail(
     ui: &mut egui::Ui,
     state: &mut SettingsState,
-    store: &Store,
+    data: &mut Context<'_>,
     t: &Tokens,
     s: &Strings,
     rect: Rect,
     surface: Surface,
 ) {
+    let store = data.store;
+    let summaries = app_summaries(data, s);
+    let server_sums = server_summaries(store, s);
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(space::SM, space::MD)))
+            .max_rect(rect.shrink2(Vec2::new(12.0, 14.0)))
             .layout(Layout::top_down(Align::Min)),
         |ui| {
-            // O `top_down` põe um respiro entre widgets por conta própria;
-            // com ele, seis painéis passavam da borda de baixo da folha.
             ui.spacing_mut().item_spacing.y = 0.0;
-            // Busca no topo da coluna: filtra os painéis pelo nome.
+            // Busca no topo da coluna: pílula de 36, lupa na cor de destaque
+            // e um X redondo para limpar quando há texto.
             {
-                let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::hover());
-                ui.painter().rect_filled(field, CornerRadius::same(radius::FIELD), t.fill_soft);
+                let (field, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::hover());
+                ui.painter().rect(field, CornerRadius::same(18), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
                 ui.painter().text(
-                    egui::pos2(field.min.x + space::MD + 6.0, field.center().y),
+                    egui::pos2(field.min.x + 13.0 + 7.5, field.center().y),
                     egui::Align2::CENTER_CENTER,
                     egui_phosphor::regular::MAGNIFYING_GLASS,
-                    text::icon(12.0),
-                    t.label_tertiary,
+                    text::icon(15.0),
+                    t.accent,
                 );
-                let inner = Rect::from_min_max(egui::pos2(field.min.x + space::MD + 16.0, field.min.y), egui::pos2(field.max.x - space::SM, field.max.y));
+                let inner = Rect::from_min_max(egui::pos2(field.min.x + 34.0, field.min.y), egui::pos2(field.max.x - 32.0, field.max.y));
                 let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
                 child.add_sized(
                     inner.size(),
                     egui::TextEdit::singleline(&mut state.mobile_query)
                         .hint_text(s.rail_search)
                         .frame(egui::Frame::NONE)
-                        .font(text::callout())
+                        .font(px(13.0, "regular"))
                         .vertical_align(Align::Center),
                 );
-                ui.add_space(space::MD);
+                if !state.mobile_query.is_empty() {
+                    let x = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
+                    let response = ui.interact(x, ui.id().with("limpar-busca"), Sense::click());
+                    ui.painter().circle_filled(x.center(), 9.0, t.fill_medium);
+                    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(10.0), t.label);
+                    if response.clicked() {
+                        state.mobile_query.clear();
+                    }
+                }
+                ui.add_space(10.0);
             }
             let query = state.mobile_query.trim().to_lowercase();
             let shown = |title: &str| query.is_empty() || title.to_lowercase().contains(&query);
-            let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, active: bool| -> bool {
-                let (slot, response) = ui.allocate_exact_size(
-                    Vec2::new(ui.available_width(), RAIL_ENTRY_H),
-                    Sense::click(),
-                );
+            // Cada item: bolinha de 34 com o ícone (acesa no painel aberto), o
+            // nome e, embaixo, o resumo do que está valendo.
+            let entry = |ui: &mut egui::Ui, glyph: &str, label: &str, summary: Option<&str>, active: bool| -> bool {
+                let height = if summary.is_some() { RAIL_ENTRY_H } else { 36.0 };
+                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::click());
                 if active {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        t.accent.gamma_multiply(0.16),
-                    );
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.accent.gamma_multiply(0.16));
                 } else if response.hovered() {
-                    ui.painter().rect_filled(
-                        slot,
-                        CornerRadius::same(radius::CONTROL),
-                        t.fill_soft,
-                    );
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.fill_soft);
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                let ink = if active { t.accent } else { t.label_secondary };
+                let badge_d = if summary.is_some() { 34.0 } else { 26.0 };
+                let badge = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + badge_d / 2.0, slot.center().y), Vec2::splat(badge_d));
+                ui.painter().circle_filled(badge.center(), badge_d / 2.0, if active { t.accent } else { t.fill_soft });
                 ui.painter().text(
-                    egui::pos2(slot.min.x + space::MD + 7.0, slot.center().y),
+                    badge.center(),
                     egui::Align2::CENTER_CENTER,
                     glyph,
-                    text::icon(14.0),
-                    if active { t.accent } else { t.label_tertiary },
+                    text::icon(if summary.is_some() { 17.0 } else { 13.0 }),
+                    if active { t.accent_label } else { t.label },
                 );
-                crate::ui::widgets::text_fit(
-                    ui.painter(),
-                    egui::pos2(slot.min.x + space::MD + 22.0, slot.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    if active { text::headline() } else { text::body() },
-                    ink,
-                    slot.max.x - space::SM - (slot.min.x + space::MD + 22.0),
-                );
+                let left = badge.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
+                let ink = if active { t.accent } else { t.label };
+                match summary {
+                    Some(summary) => {
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, label, px(14.0, "medium"), ink, room);
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, summary, px(11.5, "regular"), t.label_secondary, room);
+                    }
+                    None => {
+                        crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y), egui::Align2::LEFT_CENTER, label, px(13.0, "medium"), ink, room);
+                    }
+                }
+                ui.add_space(4.0);
                 response.clicked()
             };
+
+            // Você no topo (Conta): foto de 42, apelido e o que cabe em "Conta".
+            if surface == Surface::App && query.is_empty() {
+                let me = store.member(&store.me);
+                let tint = me
+                    .and_then(|member| member.role_color)
+                    .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+                    .unwrap_or(t.accent);
+                let initials = me.map(|member| member.initials()).unwrap_or_default();
+                let ctx = ui.ctx().clone();
+                let face = data
+                    .media
+                    .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                let active = state.app_pane == AppPane::Account;
+                let (slot, response) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::click());
+                if active {
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.accent.gamma_multiply(0.16));
+                } else if response.hovered() {
+                    ui.painter().rect_filled(slot, CornerRadius::same(10), t.fill_soft);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let avatar = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + 21.0, slot.center().y), Vec2::splat(42.0));
+                match face {
+                    Some(texture) => crate::ui::widgets::round_photo(ui.painter(), avatar, texture, egui::Color32::WHITE),
+                    None => {
+                        ui.painter().circle_filled(avatar.center(), 21.0, tint.gamma_multiply(0.30));
+                        ui.painter().text(avatar.center(), egui::Align2::CENTER_CENTER, &initials, px(15.0, "semibold"), tint);
+                    }
+                }
+                let left = avatar.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &store.my_name, px(14.0, "medium"), if active { t.accent } else { t.label }, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, s.sum_account, px(11.5, "regular"), t.label_secondary, room);
+                if response.clicked() {
+                    state.app_pane = AppPane::Account;
+                    state.draft.loaded_account = false;
+                }
+                ui.add_space(10.0);
+            }
+
+            // O servidor no topo: ícone, nome, endereço e quantos são. Só
+            // identifica; "Geral" é que abre a identidade.
+            if surface == Surface::Server && query.is_empty() {
+                let name = store.server.as_ref().map(|server| server.name.clone()).unwrap_or_default();
+                let ctx = ui.ctx().clone();
+                let texture = store
+                    .server
+                    .as_ref()
+                    .and_then(|server| server.icon.as_deref())
+                    .and_then(|blob| data.media.server_icon(blob))
+                    .and_then(|texture| texture.frame(&ctx))
+                    .map(|handle| handle.id());
+                let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
+                let (slot, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), Sense::hover());
+                let tile = Rect::from_center_size(egui::pos2(slot.min.x + 12.0 + 21.0, slot.center().y), Vec2::splat(42.0));
+                match texture {
+                    Some(texture) => crate::ui::widgets::photo(ui.painter(), tile, texture, crate::ui::widgets::FULL_UV, CornerRadius::same(10), egui::Color32::WHITE),
+                    None => {
+                        ui.painter().rect_filled(tile, CornerRadius::same(10), t.accent.gamma_multiply(0.30));
+                        ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, &initials, px(15.0, "semibold"), t.accent);
+                    }
+                }
+                let left = tile.max.x + 12.0;
+                let room = slot.max.x - 12.0 - left;
+                let access = if store.server.as_ref().is_none_or(|server| server.public) { s.access_public } else { s.access_private };
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y - 8.0), egui::Align2::LEFT_CENTER, &name, px(14.0, "medium"), t.label, room);
+                crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, slot.center().y + 9.0), egui::Align2::LEFT_CENTER, &format!("{access} · {} {}", store.members.len(), s.count_members), px(11.5, "regular"), t.label_secondary, room);
+                ui.add_space(10.0);
+            }
 
             // A coluna rola: com a busca, a lista de ajustes pode passar da
             // altura da folha.
@@ -2921,10 +3608,13 @@ fn rail(
                 match surface {
                     Surface::App => {
                         for pane in AppPane::ALL {
-                            if !shown(pane.title(s)) {
+                            // Conta mora no cartão do topo; com busca ela
+                            // volta à lista como qualquer painel.
+                            if (pane == AppPane::Account && query.is_empty()) || !shown(pane.title(s)) {
                                 continue;
                             }
-                            if entry(ui, pane.glyph(), pane.title(s), state.app_pane == pane) {
+                            let summary = summaries.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.as_str()).or((pane == AppPane::Account).then_some(s.sum_account));
+                            if entry(ui, pane.glyph(), pane.title(s), summary, state.app_pane == pane) {
                                 state.app_pane = pane;
                             }
                         }
@@ -2934,7 +3624,8 @@ fn rail(
                             if !server_pane_allowed(store, pane) || !shown(pane.title(s)) {
                                 continue;
                             }
-                            if entry(ui, pane.glyph(), pane.title(s), state.server_pane == pane) {
+                            let summary = server_sums.iter().find(|(p, _)| *p == pane).map(|(_, text)| text.as_str());
+                            if entry(ui, pane.glyph(), pane.title(s), summary, state.server_pane == pane) {
                                 state.server_pane = pane;
                             }
                         }
@@ -2962,7 +3653,7 @@ fn rail(
                         ui.add_space(space::XS);
                     }
                     for (app, server, glyph, label) in hits {
-                        if entry(ui, glyph, label, false) {
+                        if entry(ui, glyph, label, None, false) {
                             if let Some(pane) = app {
                                 state.app_pane = pane;
                             }
@@ -3027,21 +3718,30 @@ fn app_pane(
                 .get(&data.store.me)
                 .is_some_and(|profile| profile.banner.is_some());
 
-            section(ui, t, s.profile);
-            // O cabeçalho do cartão como ele fica, e clicável.
-            ui.horizontal(|ui| {
-                ui.add_space(ROW_INSET);
-                match crate::ui::profile::header_preview(ui, t, s, data.store, data.media) {
+            // O cartão como ele fica para os outros, e cada parte é o campo:
+            // recado no balão, apelido no nome, bio em "Sobre".
+            {
+                match crate::ui::profile::edit_card(
+                    ui,
+                    t,
+                    s,
+                    data.store,
+                    data.media,
+                    crate::ui::profile::CardDraft {
+                        nickname: &mut draft.nickname,
+                        status: &mut draft.status_message,
+                        description: &mut draft.description,
+                    },
+                ) {
                     crate::ui::profile::PreviewHit::Avatar => pick_avatar = true,
                     crate::ui::profile::PreviewHit::Banner => pick_banner = true,
                     crate::ui::profile::PreviewHit::None => {}
                 }
-            });
+            }
             // Os botões moram com a prévia: são dela, não linhas à parte.
-            ui.add_space(space::SM);
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
-                ui.add_space(ROW_INSET);
-                ui.spacing_mut().item_spacing.x = space::SM;
+                ui.spacing_mut().item_spacing.x = space::MD;
                 if row_button(ui, t, s.change_avatar, Emphasis::Quiet) {
                     pick_avatar = true;
                 }
@@ -3050,33 +3750,6 @@ fn app_pane(
                 }
                 if has_banner && row_button(ui, t, s.remove_banner, Emphasis::Danger) {
                     remove_banner = true;
-                }
-            });
-            ui.add_space(space::MD);
-            group(ui, t, |rows| {
-                rows.field(s.nickname, &mut draft.nickname, 32, false);
-                rows.field(s.status_message, &mut draft.status_message, 64, false);
-                rows.field_lines(s.description, &mut draft.description, 512, 3);
-                rows.field_hinted(
-                    s.typing_phrase,
-                    Some(s.typing_phrase_hint),
-                    &mut draft.typing,
-                    64,
-                    false,
-                );
-            });
-            ui.add_space(space::SM);
-            actions_row(ui, |ui| {
-                if row_button(ui, t, s.save_profile, Emphasis::Primary) {
-                    actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
-                        crate::api::models::UpdateUserRequest {
-                            nickname: draft.nickname.trim().to_owned(),
-                            status: draft.status_message.trim().to_owned(),
-                            description: draft.description.trim().to_owned(),
-                            // Vazio grava vazio, e vazio volta ao texto padrão.
-                            typing: Some(draft.typing.trim().to_owned()),
-                        },
-                    ))));
                 }
             });
             if pick_avatar {
@@ -3089,22 +3762,98 @@ fn app_pane(
                 actions.push(SettingsAction::Admin(AdminAction::RemoveBanner));
             }
 
+            // O recado da frase de digitação não aparece no cartão, mas os
+            // outros veem na hora em que você digita: fica à parte do cartão.
+            let stored = |pick: fn(&Store, Option<&crate::state::Member>) -> String| {
+                pick(data.store, data.store.member(&data.store.me))
+            };
+            let saved_nickname = stored(|store, _| store.my_name.clone());
+            let saved_status = stored(|_, me| {
+                me.and_then(|member| member.status_message.clone()).unwrap_or_default()
+            });
+            let saved_typing = stored(|_, me| {
+                me.and_then(|member| member.typing_label.clone()).unwrap_or_default()
+            });
+            let saved_description = stored(|store, _| {
+                store
+                    .profiles
+                    .get(&store.me)
+                    .and_then(|profile| profile.description.clone())
+                    .unwrap_or_default()
+            });
+            let dirty = draft.nickname.trim() != saved_nickname.trim()
+                || draft.status_message.trim() != saved_status.trim()
+                || draft.description.trim() != saved_description.trim()
+                || draft.typing.trim() != saved_typing.trim();
+            let mut save_profile = false;
+            let mut discard_profile = false;
+            if dirty {
+                // A pastilha flutuante de confirmação: só existe enquanto há
+                // algo por salvar.
+                let pill_id = egui::Id::new("perfil-salvar");
+                crate::ui::widgets::floating_pill(
+                    ui.ctx(),
+                    pill_id,
+                    t,
+                    *data.translucency,
+                    &data.glass,
+                    space::LG,
+                    420.0,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.label(
+                                RichText::new(s.unsaved_changes)
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if row_button(ui, t, s.save_profile, Emphasis::Primary) {
+                                    save_profile = true;
+                                }
+                                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                                    discard_profile = true;
+                                }
+                            });
+                        });
+                    },
+                );
+                // Clicar na folha a traz para frente; a pastilha fica por cima.
+                ui.ctx()
+                    .move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+            }
+            if save_profile {
+                actions.push(SettingsAction::Admin(AdminAction::SaveProfile(Box::new(
+                    crate::api::models::UpdateUserRequest {
+                        nickname: draft.nickname.trim().to_owned(),
+                        status: draft.status_message.trim().to_owned(),
+                        description: draft.description.trim().to_owned(),
+                        // Vazio grava vazio, e vazio volta ao texto padrão.
+                        typing: Some(draft.typing.trim().to_owned()),
+                    },
+                ))));
+            }
+            if discard_profile {
+                // Recarrega o rascunho do que está valendo, no quadro seguinte.
+                draft.loaded_account = false;
+            }
+
             section(ui, t, s.presence);
             group(ui, t, |rows| {
                 let mine = data
                     .store
                     .member(&data.store.me)
                     .map(|member| member.presence);
-                rows.row(s.presence, None, |ui, t| {
+                rows.row(s.presence, Some(s.presence_hint), |ui, t| {
                     let mut chosen = mine.unwrap_or(crate::state::Presence::Online);
                     if segmented(
                         ui,
                         t,
                         &mut chosen,
                         &[
-                            (crate::state::Presence::Busy, s.presence_busy),
-                            (crate::state::Presence::Away, s.presence_away),
                             (crate::state::Presence::Online, s.presence_online),
+                            (crate::state::Presence::Away, s.presence_away),
+                            (crate::state::Presence::Busy, s.presence_busy),
                         ],
                     ) {
                         actions.push(SettingsAction::Admin(AdminAction::SetPresence(
@@ -3118,36 +3867,74 @@ fn app_pane(
                 });
             });
 
+            section(ui, t, s.typing_section);
+            let typing_preview = {
+                let name = if draft.nickname.trim().is_empty() { data.store.my_name.as_str() } else { draft.nickname.trim() };
+                let phrase = if draft.typing.trim().is_empty() { s.typing_one } else { draft.typing.trim() };
+                format!("{name} {phrase}")
+            };
+            group(ui, t, |rows| {
+                rows.stack_next();
+                rows.field_hinted(
+                    s.typing_phrase,
+                    Some(s.typing_phrase_hint),
+                    &mut draft.typing,
+                    64,
+                    false,
+                );
+                rows.join_next();
+                rows.typing_panel(&typing_preview);
+            });
+
             // Segurança: senha e sair, juntos — as duas coisas que não são
             // perfil e não mudam na hora como a presença.
             section(ui, t, s.security);
             group(ui, t, |rows| {
-                let sent = rows.field(s.new_password, &mut draft.password, 64, true);
-                let ready = draft.password.chars().count() >= 8;
-                rows.row(s.change_password, Some(s.password_rule_length), |ui, t| {
-                    if (row_button(ui, t, s.change_password, Emphasis::Primary) || sent) && ready {
+                let open = draft.password_open;
+                let mut toggle = false;
+                rows.row(s.change_password, Some(s.password_hint), |ui, t| {
+                    if row_button(ui, t, if open { s.cancel } else { s.change_password_open }, Emphasis::Quiet) {
+                        toggle = true;
+                    }
+                });
+                if toggle {
+                    draft.password_open = !open;
+                    draft.password.clear();
+                }
+                if draft.password_open {
+                    rows.stack_next();
+                    let sent = rows.field(s.new_password, &mut draft.password, 64, true);
+                    let value = draft.password.clone();
+                    let checks = [
+                        (s.password_rule_length, value.chars().count() >= 8),
+                        (s.password_rule_uppercase, value.chars().any(char::is_uppercase)),
+                        (s.password_rule_special, value.chars().any(|c| !c.is_alphanumeric())),
+                    ];
+                    let ready = checks.iter().all(|(_, ok)| *ok);
+                    rows.join_next();
+                    if rows.password_rules(&checks, s.change_password, ready) || (sent && ready) {
                         actions.push(SettingsAction::Admin(AdminAction::ChangePassword(
                             draft.password.clone(),
                         )));
                         draft.password.clear();
+                        draft.password_open = false;
+                    }
+                }
+                rows.row(s.sign_out, Some(s.sign_out_hint), |ui, t| {
+                    if row_button(ui, t, s.sign_out_short, Emphasis::Danger) {
+                        actions.push(SettingsAction::Menu(
+                            crate::platform::menu::MenuCommand::SignOut,
+                        ));
                     }
                 });
-                if rows.action(s.sign_out, Some(s.sign_out_hint), true) {
-                    actions.push(SettingsAction::Menu(
-                        crate::platform::menu::MenuCommand::SignOut,
-                    ));
-                }
             });
         }
 
         AppPane::Appearance => {
-            hero(ui, t, 150.0, |ui, area| {
-                let window = Rect::from_min_size(area.min, Vec2::new(area.width().min(300.0), 150.0));
-                appearance_preview(ui, t, window, *data.translucency);
-                hint_beside(ui, t, area, window, s.preview_theme_hint);
-            });
-            section(ui, t, s.appearance);
+            preview_chat(ui, t, data, s.preview_theme_hint);
+            section(ui, t, s.theme);
             group(ui, t, |rows| {
+                use crate::ui::profile::SelfCardStyle;
                 rows.row(s.theme, None, |ui, t| {
                     segmented(
                         ui,
@@ -3163,15 +3950,6 @@ fn app_pane(
                 rows.row(s.translucency, Some(s.translucency_hint), |ui, t| {
                     switch(ui, t, data.translucency);
                 });
-                rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
-                    switch(ui, t, data.topic_reveal);
-                });
-                rows.row(s.open_at_newest, Some(s.open_at_newest_hint), |ui, t| {
-                    switch(ui, t, data.open_at_newest);
-                });
-                rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
-                    switch(ui, t, data.record_button);
-                });
                 rows.row(
                     s.channel_emoji_monochrome,
                     Some(s.channel_emoji_monochrome_hint),
@@ -3179,41 +3957,6 @@ fn app_pane(
                         switch(ui, t, data.channel_emoji_monochrome);
                     },
                 );
-                rows.row(
-                    s.webembed_offscreen,
-                    Some(s.webembed_offscreen_hint),
-                    |ui, t| {
-                        segmented(
-                            ui,
-                            t,
-                            data.webembed_offscreen,
-                            &[
-                                (crate::webembed::OffscreenBehavior::Stop, s.webembed_stop),
-                                (crate::webembed::OffscreenBehavior::Float, s.webembed_float),
-                            ],
-                        );
-                    },
-                );
-                rows.row(
-                    s.webembed_scope,
-                    Some(s.webembed_scope_hint),
-                    |ui, t| {
-                        segmented(
-                            ui,
-                            t,
-                            data.webembed_scope,
-                            &[
-                                (crate::webembed::FloatScope::CurrentChannel, s.webembed_scope_channel),
-                                (crate::webembed::FloatScope::Global, s.webembed_scope_global),
-                            ],
-                        );
-                    },
-                );
-            });
-
-            section(ui, t, s.profile);
-            group(ui, t, |rows| {
-                use crate::ui::profile::SelfCardStyle;
                 let hint = match *data.self_card {
                     SelfCardStyle::Pill => s.self_card_pill_hint,
                     SelfCardStyle::Floating => s.self_card_floating_hint,
@@ -3229,6 +3972,55 @@ fn app_pane(
                         ],
                     );
                 });
+            });
+
+            section(ui, t, s.section_chat);
+            group(ui, t, |rows| {
+                rows.row(s.topic_reveal, Some(s.topic_reveal_hint), |ui, t| {
+                    switch(ui, t, data.topic_reveal);
+                });
+                rows.row(s.open_at_newest, Some(s.open_at_newest_hint), |ui, t| {
+                    switch(ui, t, data.open_at_newest);
+                });
+                rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
+                    switch(ui, t, data.record_button);
+                });
+            });
+
+            section(ui, t, s.section_video);
+            group(ui, t, |rows| {
+                rows.row(
+                    s.webembed_offscreen,
+                    Some(s.webembed_offscreen_hint),
+                    |ui, t| {
+                        segmented(
+                            ui,
+                            t,
+                            data.webembed_offscreen,
+                            &[
+                                (crate::webembed::OffscreenBehavior::Stop, s.webembed_stop),
+                                (crate::webembed::OffscreenBehavior::Float, s.webembed_float),
+                            ],
+                        );
+                    },
+                );
+                if matches!(*data.webembed_offscreen, crate::webembed::OffscreenBehavior::Float) {
+                    rows.row(
+                        s.webembed_scope,
+                        Some(s.webembed_scope_hint),
+                        |ui, t| {
+                            segmented(
+                                ui,
+                                t,
+                                data.webembed_scope,
+                                &[
+                                    (crate::webembed::FloatScope::CurrentChannel, s.webembed_scope_channel),
+                                    (crate::webembed::FloatScope::Global, s.webembed_scope_global),
+                                ],
+                            );
+                        },
+                    );
+                }
             });
         }
 
@@ -3266,10 +4058,13 @@ fn app_pane(
                                     .color(t.label),
                             );
                             if !snapshot.detail.is_empty() {
-                                ui.label(
-                                    RichText::new(format!("· {}", snapshot.detail))
-                                        .font(text::footnote())
-                                        .color(t.label_tertiary),
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!("· {}", snapshot.detail))
+                                            .font(text::footnote())
+                                            .color(t.label_tertiary),
+                                    )
+                                    .truncate(),
                                 );
                             }
                         });
@@ -3499,8 +4294,8 @@ fn app_pane(
         }
 
         AppPane::Alerts => {
-            hero(ui, t, 76.0, |ui, area| {
-                let card = Rect::from_min_size(area.min + Vec2::new(0.0, 6.0), Vec2::new(area.width().min(300.0), 64.0));
+            hero(ui, t, 50.0, |ui, area| {
+                let card = Rect::from_min_size(area.min, Vec2::new(area.width(), 50.0));
                 let initials: String = data
                     .store
                     .server
@@ -3508,8 +4303,8 @@ fn app_pane(
                     .map(|server| server.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase())
                     .unwrap_or_else(|| "P".to_owned());
                 notification_preview(ui, t, s, card, &initials, *data.notifications);
-                hint_beside(ui, t, area, card, s.preview_notify_hint);
             });
+            caption_below(ui, t, s.preview_notify_hint);
             section(ui, t, s.menu_notifications);
             group(ui, t, |rows| {
                 rows.row(s.menu_notifications, Some(s.notifications_hint), |ui, t| {
@@ -3525,7 +4320,7 @@ fn app_pane(
                 rows.row(s.badge, Some(s.badge_hint), |ui, t| {
                     switch(ui, t, data.badge);
                 });
-                rows.row(s.menu_close_to_tray, Some(s.close_to_tray_hint), |ui, t| {
+                rows.row(s.close_to_tray_title, Some(s.close_to_tray_hint), |ui, t| {
                     switch(ui, t, data.close_to_tray);
                 });
                 rows.row(s.start_at_login, Some(s.start_at_login_hint), |ui, t| {
@@ -3831,62 +4626,55 @@ fn server_pane(
                 .take(2)
                 .collect::<String>()
                 .to_uppercase();
-            hero(ui, t, 52.0, |ui, area| {
-                let tile = Rect::from_min_size(area.min + Vec2::new(0.0, 4.0), Vec2::splat(44.0));
-                paint_server_icon(ui, t, tile, icon, &initials, radius::SHEET);
-                let pill = Rect::from_min_size(egui::pos2(tile.max.x + space::LG, area.min.y + 3.0), Vec2::new(216.0_f32.min(area.width() - 60.0), 46.0));
-                ui.painter().rect(pill, CornerRadius::same(12), t.glass_opaque, Stroke::new(1.0, t.separator), egui::StrokeKind::Inside);
-                let small = Rect::from_center_size(egui::pos2(pill.min.x + space::SM + 14.0, pill.center().y), Vec2::splat(28.0));
-                paint_server_icon(ui, t, small, icon, &initials, radius::FIELD);
-                let clip = ui.painter().with_clip_rect(pill.shrink(2.0));
-                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y - 7.0), egui::Align2::LEFT_CENTER, &draft.server_name, text::headline(), t.label);
-                let owner = data.store.server.as_ref().and_then(|server| server.description.clone()).unwrap_or_default();
-                clip.text(egui::pos2(small.max.x + space::MD, pill.center().y + 8.0), egui::Align2::LEFT_CENTER, owner, text::footnote(), t.label_tertiary);
-                let wide = Rect::from_min_max(tile.min, pill.max);
-                hint_beside(ui, t, area, wide, s.preview_identity_hint);
-            });
-            section(ui, t, s.pane_identity);
-            group(ui, t, |rows| {
-                rows.field(s.server_name, &mut draft.server_name, 64, false);
-                // 36px icon + 26px picker button need actual breathing room
-                // between the separators; a normal 44px row made them appear
-                // pinned to the lower divider.
-                rows.min_height_next(52.0);
-                rows.row(s.server_icon, None, |ui, t| {
-                    if row_button(ui, t, s.change_server_icon, Emphasis::Quiet) {
-                        pick_icon = true;
-                    }
-                    // O ícone como o trilho mostra; clicar nele também troca.
-                    let (slot, response) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
-                    let corners = CornerRadius::same(radius::FIELD);
-                    match icon {
-                        Some(icon) => crate::ui::widgets::photo(
-                            ui.painter(),
-                            slot,
-                            icon,
-                            crate::ui::widgets::FULL_UV,
-                            corners,
-                            egui::Color32::WHITE,
-                        ),
-                        None => {
-                            ui.painter().rect_filled(slot, corners, t.fill_medium);
-                            ui.painter().text(
-                                slot.center(),
-                                egui::Align2::CENTER_CENTER,
-                                &initials,
-                                text::headline(),
-                                t.label,
-                            );
-                        }
-                    }
-                    if response.hovered() {
-                        ui.painter().rect_filled(slot, corners, egui::Color32::from_black_alpha(90));
+            // O cabeçalho da identidade: o ícone grande (clicar troca), o nome
+            // editável ali mesmo e, embaixo, quantos são e o atalho do ícone.
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.spacing_mut().item_spacing.x = 18.0;
+                let (slot, response) = ui.allocate_exact_size(Vec2::splat(84.0), Sense::click());
+                paint_server_icon(ui, t, slot, icon, &initials, 22);
+                if response.hovered() {
+                    ui.painter().rect_filled(slot, CornerRadius::same(22), egui::Color32::from_black_alpha(115));
+                    ui.painter().text(slot.center(), egui::Align2::CENTER_CENTER, s.server_icon_swap, px(11.5, "regular"), egui::Color32::WHITE);
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if response.clicked() {
+                    pick_icon = true;
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    ui.add_space(8.0);
+                    crate::ui::profile::inline_field_fit(
+                        ui,
+                        t,
+                        "servidor-nome",
+                        &mut draft.server_name,
+                        s.server_name,
+                        px(22.0, "display"),
+                        t.label,
+                        64,
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(format!("{} {}", data.store.members.len(), s.count_members))
+                            .font(px(12.0, "regular"))
+                            .color(t.label_secondary),
+                    );
+                    ui.add_space(6.0);
+                    let link = ui.add(
+                        egui::Label::new(RichText::new(s.change_server_icon).font(px(12.0, "regular")).color(t.accent))
+                            .sense(Sense::click()),
+                    );
+                    if link.hovered() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    if response.clicked() {
+                    if link.clicked() {
                         pick_icon = true;
                     }
                 });
+            });
+            section(ui, t, s.server_access);
+            group(ui, t, |rows| {
                 rows.row(s.server_public, Some(s.server_public_hint), |ui, t| {
                     switch(ui, t, &mut draft.server_public);
                 });
@@ -3898,33 +4686,93 @@ fn server_pane(
                 actions.push(SettingsAction::Admin(AdminAction::PickServerIcon));
             }
 
-            ui.add_space(space::SM);
-            let currently_public = data
+            let (saved_name, saved_public) = data
                 .store
                 .server
                 .as_ref()
-                .is_none_or(|server| server.public);
-            let making_private = currently_public && !draft.server_public;
-            let password_ok = !making_private
-                || draft.server_password.chars().count() >= 8;
-            let ready = !draft.server_name.trim().is_empty() && password_ok;
-            actions_row(ui, |ui| {
-                if ready && row_button(ui, t, s.save, Emphasis::Primary) {
-                    actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
-                        crate::api::models::PatchServerRequest {
-                            name: Some(draft.server_name.trim().to_owned()),
-                            public: Some(draft.server_public),
-                            password: (!draft.server_password.is_empty())
-                                .then(|| draft.server_password.clone()),
-                            ..Default::default()
-                        },
-                    ))));
-                }
-            });
+                .map(|server| (server.name.clone(), server.public))
+                .unwrap_or_default();
+            let making_private = saved_public && !draft.server_public;
+            let name_ok = !draft.server_name.trim().is_empty();
+            let password_ok = !making_private || draft.server_password.chars().count() >= 8;
+            let dirty = draft.server_name.trim() != saved_name.trim()
+                || draft.server_public != saved_public
+                || !draft.server_password.is_empty();
+            let mut save_server = false;
+            let mut discard_server = false;
+            if dirty {
+                // Mesma pastilha do perfil: só existe enquanto há algo por salvar
+                // e diz o que falta quando ainda não dá.
+                let pill_id = egui::Id::new("servidor-salvar");
+                let blocked = if !name_ok {
+                    Some(s.server_name_required)
+                } else if !password_ok {
+                    Some(s.server_password_short)
+                } else {
+                    None
+                };
+                crate::ui::widgets::floating_pill(
+                    ui.ctx(),
+                    pill_id,
+                    t,
+                    *data.translucency,
+                    &data.glass,
+                    space::LG,
+                    420.0,
+                    |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.label(
+                                RichText::new(blocked.unwrap_or(s.unsaved_changes))
+                                    .font(text::body())
+                                    .color(t.label_secondary),
+                            );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if blocked.is_none() && row_button(ui, t, s.save_server, Emphasis::Primary) {
+                                    save_server = true;
+                                }
+                                if row_button(ui, t, s.discard, Emphasis::Quiet) {
+                                    discard_server = true;
+                                }
+                            });
+                        });
+                    },
+                );
+                ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Foreground, pill_id));
+            }
+            if save_server {
+                actions.push(SettingsAction::Admin(AdminAction::SaveServer(Box::new(
+                    crate::api::models::PatchServerRequest {
+                        name: Some(draft.server_name.trim().to_owned()),
+                        public: Some(draft.server_public),
+                        password: (!draft.server_password.is_empty())
+                            .then(|| draft.server_password.clone()),
+                        ..Default::default()
+                    },
+                ))));
+            }
+            if discard_server {
+                draft.loaded_server = false;
+            }
         }
 
         ServerPane::Channels => {
-            section(ui, t, s.text_channels);
+            let mut create_kind: Option<&str> = None;
+            // A barra do topo: o nome da lista e os dois botões de criar.
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INSET);
+                ui.label(RichText::new(s.channels_list_title).font(px(11.5, "semibold")).color(t.label_secondary));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if row_button(ui, t, s.create_channel, Emphasis::Quiet) {
+                        create_kind = Some("text");
+                    }
+                    if row_button(ui, t, s.create_category, Emphasis::Quiet) {
+                        create_kind = Some("category");
+                    }
+                });
+            });
+            ui.add_space(10.0);
             let channels: Vec<_> = data
                 .store
                 .channels
@@ -3932,244 +4780,200 @@ fn server_pane(
                 .filter(|channel| channel.kind != crate::state::ChannelKind::Direct)
                 .cloned()
                 .collect();
+            if let Some((name, _)) = &state.pending_channel_people
+                && let Some(created) = channels.iter().find(|c| c.name == *name && !state.channel_people.contains_key(&c.id))
+                && let Some((_, people)) = state.pending_channel_people.take()
+            {
+                state.channel_people.insert(created.id.clone(), people);
+            }
             let draft = &mut state.draft;
             let mut close_editor = false;
             let mut cancel_delete = false;
             let mut confirmed_delete: Option<String> = None;
 
             if let Some(editor) = draft.channel.as_mut() {
-                section(
-                    ui,
-                    t,
-                    if editor.id.is_some() {
-                        s.edit_channel_title
-                    } else {
-                        s.create_channel
-                    },
-                );
-                group(ui, t, |rows| {
-                    rows.channel_name_field(
-                        s.channel_name,
-                        editor,
-                        data.store,
-                        data.media,
-                        s,
-                    );
-
-                    rows.row(s.channel_kind, None, |ui, t| {
-                        if editor.id.is_some() {
-                            let kind = match editor.kind.as_str() {
-                                "voice" => s.channel_kind_voice,
-                                "category" => s.channel_kind_category,
-                                _ => s.channel_kind_text,
+                let ctx = ui.ctx().clone();
+                let translucent = *data.translucency;
+                let glass = data.glass.clone();
+                let store = data.store;
+                let existing = editor.id.clone();
+                section(ui, t, if existing.is_some() { s.edit_channel_title } else { s.create_channel });
+                let mut finish: Option<bool> = None;
+                sheet_card(ui, t, |card| {
+                    card.section(s.role_name, |ui| {
+                        channel_name_input(ui, t, editor, store, data.media, s);
+                    });
+                    card.section(s.channel_kind, |ui| {
+                        let locked = existing.is_some();
+                        ui.add_enabled_ui(!locked, |ui| {
+                            let mut kind: &'static str = match editor.kind.as_str() {
+                                "voice" => "voice",
+                                "category" => "category",
+                                _ => "text",
                             };
-                            ui.label(
-                                RichText::new(kind)
-                                    .font(text::body())
-                                    .color(t.label_secondary),
-                            );
-                        } else {
-                            for (value, label) in [
-                                ("text", s.channel_kind_text),
-                                ("voice", s.channel_kind_voice),
-                                ("category", s.channel_kind_category),
-                            ] {
-                                let selected = editor.kind == value;
-                                if ui.add(egui::Button::selectable(selected, label)).clicked() {
-                                    editor.kind = value.to_owned();
-                                }
+                            // Sempre lado a lado, também no celular: são três opções curtas.
+                            if segmented_inner(ui, t, &mut kind, &[("text", s.channel_kind_text), ("voice", s.channel_kind_voice), ("category", s.channel_kind_category)], true) {
+                                editor.kind = kind.to_owned();
                             }
+                        });
+                        if locked {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(s.channel_kind_locked).font(px(12.0, "regular")).color(t.label_secondary));
                         }
                     });
-
                     if editor.kind != "category" {
-                        rows.field(s.channel_topic, &mut editor.topic, 512, false);
+                        card.section(s.channel_topic, |ui| {
+                            crate::ui::profile::inline_field(ui, t, "canal-topico", &mut editor.topic, s.channel_topic_hint, px(13.0, "regular"), t.label, 512, (1, 3));
+                        });
+                    }
+                    if editor.kind != "category" {
+                        card.section(s.channel_category, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                                let mut options: Vec<(Option<String>, String)> = vec![(None, s.no_category.to_owned())];
+                                options.extend(channels.iter().filter(|c| c.kind == crate::state::ChannelKind::Category).map(|c| (Some(c.id.clone()), c.name.clone())));
+                                for (value, label) in options {
+                                    let selected = editor.parent == value;
+                                    let font = px(12.0, "regular");
+                                    let text_w = ui.painter().layout_no_wrap(label.clone(), font.clone(), t.label).size().x;
+                                    let (rect, response) = ui.allocate_exact_size(Vec2::new(text_w + 22.0, 24.0), Sense::click());
+                                    let fill = if selected { t.accent.gamma_multiply(0.16) } else if response.hovered() { t.fill_medium } else { t.fill_soft };
+                                    ui.painter().rect(rect, CornerRadius::same(12), fill, if selected { Stroke::new(1.0, t.accent) } else { Stroke::NONE }, egui::StrokeKind::Inside);
+                                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, &label, font, if selected { t.accent } else { t.label });
+                                    if response.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if response.clicked() {
+                                        editor.parent = value;
+                                    }
+                                }
+                            });
+                        });
+                    }
+                    if editor.kind != "category" {
+                        card.section(s.who_access, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::splat(6.0);
+                                // "Todos" é o que o canal tem até alguém ser adicionado.
+                                if editor.access_roles.is_empty() && editor.people.is_empty() {
+                                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.painter().layout_no_wrap(s.everyone_chip.to_owned(), px(12.0, "regular"), t.accent).size().x + 34.0, 24.0), Sense::hover());
+                                    ui.painter().rect_filled(rect, CornerRadius::same(12), t.accent.gamma_multiply(0.16));
+                                    ui.painter().text(egui::pos2(rect.min.x + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::GLOBE, text::icon(12.0), t.accent);
+                                    ui.painter().text(egui::pos2(rect.min.x + 26.0, rect.center().y), egui::Align2::LEFT_CENTER, s.everyone_chip, px(12.0, "regular"), t.accent);
+                                }
+                                let mut drop_role = None;
+                                for id in &editor.access_roles {
+                                    if let Some(role) = store.roles.iter().find(|role| &role.id == id) {
+                                        let color = role.color.as_deref().and_then(crate::api::models::parse_hex_color).map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.label_tertiary);
+                                        if chip(ui, t, &format!("canal-cargo-{id}"), &role.name, Some(color), None, true) {
+                                            drop_role = Some(id.clone());
+                                        }
+                                    }
+                                }
+                                if let Some(id) = drop_role {
+                                    editor.access_roles.retain(|x| *x != id);
+                                }
+                                let mut drop_person = None;
+                                for id in &editor.people {
+                                    if let Some(member) = store.member(id) {
+                                        let tint = person_tint(store, member, t.accent);
+                                        if chip(ui, t, &format!("canal-pessoa-{id}"), &member.name, None, Some((&member.initials(), tint)), true) {
+                                            drop_person = Some(id.clone());
+                                        }
+                                    }
+                                }
+                                if let Some(id) = drop_person {
+                                    editor.people.retain(|x| *x != id);
+                                }
+                                let role_button = add_chip(ui, t, s.add_role);
+                                let free_roles: Vec<&crate::api::models::Role> = store.roles.iter().filter(|role| !editor.access_roles.contains(&role.id)).collect();
+                                let items: Vec<PickItem> = free_roles
+                                    .iter()
+                                    .map(|role| PickItem {
+                                        label: role.name.clone(),
+                                        dot: Some(role.color.as_deref().and_then(crate::api::models::parse_hex_color).map(|[r, g, b]| egui::Color32::from_rgb(r, g, b)).unwrap_or(t.label_tertiary)),
+                                        avatar: None,
+                                    })
+                                    .collect();
+                                if let Some(index) = picker_menu(&role_button, t, s.search_role, s.nothing_to_add, &items) {
+                                    editor.access_roles.push(free_roles[index].id.clone());
+                                }
+                                let person_button = add_chip(ui, t, s.add_person);
+                                let free_people: Vec<&crate::state::Member> = store.members.iter().filter(|m| !editor.people.contains(&m.id)).collect();
+                                let items: Vec<PickItem> = free_people
+                                    .iter()
+                                    .map(|m| PickItem { label: m.name.clone(), dot: None, avatar: Some((m.initials(), person_tint(store, m, t.accent))) })
+                                    .collect();
+                                if let Some(index) = picker_menu(&person_button, t, s.search_person, s.nothing_to_add, &items) {
+                                    editor.people.push(free_people[index].id.clone());
+                                }
+                            });
+                        });
                     }
                 });
 
-                ui.add_space(space::SM);
-                actions_row(ui, |ui| {
-                    if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                        close_editor = true;
-                    }
-                    let ready = !editor.name.trim().is_empty();
-                    if ready
-                        && row_button(
-                            ui,
-                            t,
-                            if editor.id.is_some() {
-                                s.save
-                            } else {
-                                s.create_channel
-                            },
-                            Emphasis::Primary,
-                        )
-                    {
+                let blocked = editor.name.trim().is_empty().then_some(s.channel_name_required);
+                let label = if existing.is_some() { s.save_channel } else { s.create_channel };
+                match save_pill(&ctx, "canal-salvar", t, translucent, &glass, s, label, blocked) {
+                    Some(true) => {
                         let name = editor.name.trim().to_owned();
-                        let topic = (editor.kind != "category")
-                            .then(|| editor.topic.trim().to_owned());
-                        match editor.id.clone() {
+                        let topic = (editor.kind != "category").then(|| editor.topic.trim().to_owned());
+                        match existing.clone() {
                             Some(channel_id) => {
-                                actions.push(SettingsAction::Chat(ChatAction::UpdateChannel {
-                                    channel_id,
-                                    name,
-                                    topic,
-                                }));
+                                if editor.parent != editor.original_parent
+                                    && let Some(channel) = channels.iter().find(|c| c.id == channel_id)
+                                {
+                                    actions.push(SettingsAction::Chat(ChatAction::MoveChannel {
+                                        channel_id: channel_id.clone(),
+                                        old_position: channel.position,
+                                        new_position: channel.position,
+                                        parent_id: Some(editor.parent.clone().unwrap_or_default()),
+                                    }));
+                                }
+                                for role_id in editor.access_roles.iter().filter(|id| !editor.original_access_roles.contains(id)) {
+                                    actions.push(SettingsAction::Chat(ChatAction::SetChannelPermissions {
+                                        channel_id: channel_id.clone(),
+                                        role_id: role_id.clone(),
+                                        permissions: crate::api::models::ChannelPermissions {
+                                            read_channel: true,
+                                            send_messages: true,
+                                            delete_messages: false,
+                                            connect_voice: true,
+                                        },
+                                    }));
+                                }
+                                for role_id in editor.original_access_roles.iter().filter(|id| !editor.access_roles.contains(id)) {
+                                    actions.push(SettingsAction::Chat(ChatAction::RemoveChannelRolePermission {
+                                        channel_id: channel_id.clone(),
+                                        role_id: role_id.clone(),
+                                    }));
+                                }
+                                state.channel_people.insert(channel_id.clone(), editor.people.clone());
+                                actions.push(SettingsAction::Chat(ChatAction::UpdateChannel { channel_id, name, topic }));
                             }
                             None => {
+                                let is_category = editor.kind == "category";
+                                if !is_category && !editor.people.is_empty() {
+                                    state.pending_channel_people = Some((name.clone(), editor.people.clone()));
+                                }
                                 actions.push(SettingsAction::Chat(ChatAction::CreateChannel {
                                     name,
                                     kind: editor.kind.clone(),
                                     topic: topic.filter(|topic| !topic.is_empty()),
+                                    parent_id: if is_category { None } else { editor.parent.clone() },
+                                    access_roles: if is_category { Vec::new() } else { editor.access_roles.clone() },
                                 }));
                             }
                         }
-                        close_editor = true;
+                        finish = Some(true);
                     }
-                });
+                    Some(false) => finish = Some(false),
+                    None => {}
+                }
+                if finish.is_some() {
+                    close_editor = true;
+                }
                 ui.add_space(space::LG);
-            }
-
-            // Overrides por cargo pertencem ao canal existente. Canal recém-criado
-            // só ganha regras depois que o backend lhe deu um id.
-            if let Some((channel_id, channel_kind)) = draft
-                .channel
-                .as_ref()
-                .and_then(|editor| editor.id.clone().map(|id| (id, editor.kind.clone())))
-                && let Some(channel) = channels.iter().find(|channel| channel.id == channel_id)
-            {
-                    section(ui, t, s.channel_permissions);
-
-                    if channel.permissions.is_empty() {
-                        group(ui, t, |rows| {
-                            rows.row(
-                                s.channel_permissions_open,
-                                Some(s.channel_permissions_open_hint),
-                                |_, _| {},
-                            );
-                        });
-                        ui.add_space(space::SM);
-                    }
-
-                    if let Some(permission) = draft
-                        .channel_permission
-                        .as_mut()
-                        .filter(|permission| permission.channel_id == channel_id)
-                    {
-                        group(ui, t, |rows| {
-                            rows.row(&permission.role_name, None, |_, _| {});
-                            rows.row(s.perm_read_channel, None, |ui, t| {
-                                switch(ui, t, &mut permission.permissions.read_channel);
-                            });
-                            if channel_kind == "text" {
-                                rows.row(s.perm_send_messages, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.send_messages);
-                                });
-                                rows.row(s.perm_delete_messages, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.delete_messages);
-                                });
-                            }
-                            if channel_kind == "voice" {
-                                rows.row(s.perm_connect_voice, None, |ui, t| {
-                                    switch(ui, t, &mut permission.permissions.connect_voice);
-                                });
-                            }
-                        });
-                        ui.add_space(space::SM);
-                        let existing_override = channel
-                            .permissions
-                            .iter()
-                            .any(|entry| entry.role_id == permission.role_id);
-                        let mut cancel_permission = false;
-                        let mut save_permission = None;
-                        let mut remove_permission = None;
-                        actions_row(ui, |ui| {
-                            if row_button(ui, t, s.cancel, Emphasis::Quiet) {
-                                cancel_permission = true;
-                            }
-                            if existing_override
-                                && row_button(
-                                    ui,
-                                    t,
-                                    s.channel_permission_remove,
-                                    Emphasis::Danger,
-                                )
-                            {
-                                remove_permission = Some((
-                                    permission.channel_id.clone(),
-                                    permission.role_id.clone(),
-                                ));
-                            }
-                            if row_button(ui, t, s.save, Emphasis::Primary) {
-                                save_permission = Some((
-                                    permission.channel_id.clone(),
-                                    permission.role_id.clone(),
-                                    permission.permissions,
-                                ));
-                            }
-                        });
-                        if cancel_permission {
-                            draft.channel_permission = None;
-                        }
-                        if let Some((channel_id, role_id)) = remove_permission {
-                            actions.push(SettingsAction::Chat(
-                                ChatAction::RemoveChannelRolePermission {
-                                    channel_id,
-                                    role_id,
-                                },
-                            ));
-                            draft.channel_permission = None;
-                        }
-                        if let Some((channel_id, role_id, permissions)) = save_permission {
-                            actions.push(SettingsAction::Chat(
-                                ChatAction::SetChannelPermissions {
-                                    channel_id,
-                                    role_id,
-                                    permissions,
-                                },
-                            ));
-                            draft.channel_permission = None;
-                        }
-                    } else {
-                        group(ui, t, |rows| {
-                            for entry in &channel.permissions {
-                                rows.row(&entry.role_name, None, |ui, t| {
-                                    if row_button(ui, t, s.edit, Emphasis::Quiet) {
-                                        draft.channel_permission = Some(ChannelPermissionDraft {
-                                            channel_id: channel_id.clone(),
-                                            role_id: entry.role_id.clone(),
-                                            role_name: entry.role_name.clone(),
-                                            permissions: entry.permissions,
-                                        });
-                                    }
-                                });
-                            }
-
-                            for role in data.store.roles.iter().filter(|role| {
-                                !channel
-                                    .permissions
-                                    .iter()
-                                    .any(|entry| entry.role_id == role.id)
-                            }) {
-                                rows.row(&role.name, None, |ui, t| {
-                                    if row_button(
-                                        ui,
-                                        t,
-                                        s.channel_permission_add_role,
-                                        Emphasis::Quiet,
-                                    ) {
-                                        draft.channel_permission = Some(ChannelPermissionDraft {
-                                            channel_id: channel_id.clone(),
-                                            role_id: role.id.clone(),
-                                            role_name: role.name.clone(),
-                                            permissions: Default::default(),
-                                        });
-                                    }
-                                });
-                            }
-                        });
-                    }
-                    ui.add_space(space::LG);
             }
 
             // Apagar pede o nome digitado: é o que separa "quis" de
@@ -4240,14 +5044,13 @@ fn server_pane(
                 draft.deleting = None;
             }
 
-            ui.add_space(space::SM);
-            actions_row(ui, |ui| {
-                if row_button(ui, t, s.create_channel, Emphasis::Primary) {
-                    draft.deleting = None;
-                    draft.channel_permission = None;
-                    draft.channel = Some(ChannelDraft::create());
-                }
-            });
+            if let Some(kind) = create_kind {
+                draft.deleting = None;
+                draft.channel_permission = None;
+                let mut editor = ChannelDraft::create();
+                editor.kind = kind.to_owned();
+                draft.channel = Some(editor);
+            }
         }
 
         ServerPane::Roles => roles_pane(ui, data, t, s, actions),
@@ -4255,12 +5058,20 @@ fn server_pane(
         ServerPane::Emojis => {
             // Escolher o arquivo abre o editor: recorte, prévia na conversa
             // e o nome, tudo num lugar só; Salvar já sobe.
-            section(ui, t, s.sticker_new);
-            group(ui, t, |rows| {
-                if rows.action(s.add_emoji, Some(s.sticker_hint), false) {
-                    actions.push(SettingsAction::Admin(AdminAction::PickSticker));
-                }
-            });
+            let width = fit_width(ui);
+            let (drop, response) = ui.allocate_exact_size(Vec2::new(width, 62.0), Sense::click());
+            if response.hovered() {
+                ui.painter().rect_filled(drop, CornerRadius::same(12), t.fill_soft);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let dash = Stroke::new(1.5, t.fill_medium);
+            let outline = [drop.left_top(), drop.right_top(), drop.right_bottom(), drop.left_bottom(), drop.left_top()];
+            ui.painter().extend(egui::Shape::dashed_line(&outline, dash, 5.0, 4.0));
+            ui.painter().text(egui::pos2(drop.center().x, drop.center().y - 8.0), egui::Align2::CENTER_CENTER, format!("+ {}", s.add_emoji), px(13.0, "regular"), t.label_secondary);
+            ui.painter().text(egui::pos2(drop.center().x, drop.center().y + 10.0), egui::Align2::CENTER_CENTER, s.sticker_hint, px(11.5, "regular"), t.label_tertiary);
+            if response.clicked() {
+                actions.push(SettingsAction::Admin(AdminAction::PickSticker));
+            }
 
             section(ui, t, s.server_emojis);
             let stickers: Vec<(String, String, Option<String>)> = data
@@ -4269,36 +5080,63 @@ fn server_pane(
                 .iter()
                 .map(|emoji| (emoji.id.clone(), emoji.name.clone(), emoji.blob.clone()))
                 .collect();
-            group(ui, t, |rows| {
-                if stickers.is_empty() {
-                    rows.row(s.no_stickers, None, |_, _| {});
-                }
-                for (id, name, blob) in &stickers {
-                    rows.preview_row(
+            if stickers.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(ROW_INSET);
+                    ui.label(RichText::new(s.no_stickers).font(px(12.0, "regular")).color(t.label_secondary));
+                });
+            }
+            // Grade de cartões: 104 de largura mínima, 10 entre eles.
+            let gap = 10.0;
+            let columns = (((width + gap) / (104.0 + gap)).floor() as usize).max(1);
+            let card_w = (width - gap * (columns as f32 - 1.0)) / columns as f32;
+            let ctx = ui.ctx().clone();
+            for chunk in stickers.chunks(columns) {
+                let (row, _) = ui.allocate_exact_size(Vec2::new(width, 104.0), Sense::hover());
+                for (column, (id, name, blob)) in chunk.iter().enumerate() {
+                    let rect = Rect::from_min_size(egui::pos2(row.min.x + column as f32 * (card_w + gap), row.min.y), Vec2::new(card_w, 104.0));
+                    let hovered = ui.rect_contains_pointer(rect);
+                    ui.painter().rect(rect, CornerRadius::same(12), t.card, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+                    let texture = data
+                        .media
+                        .emoji(id, blob.as_deref())
+                        .and_then(|texture| texture.frame(&ctx))
+                        .map(|handle| handle.id());
+                    let art = Rect::from_center_size(egui::pos2(rect.center().x, rect.min.y + 10.0 + 28.0), Vec2::splat(56.0));
+                    ui.painter().rect_filled(art, CornerRadius::same(14), t.fill_soft);
+                    draw_sticker(ui, t, art.shrink(8.0), texture);
+                    crate::ui::widgets::text_fit(
+                        ui.painter(),
+                        egui::pos2(rect.center().x, rect.max.y - 18.0),
+                        egui::Align2::CENTER_CENTER,
                         &format!(":{name}:"),
-                        data.media,
-                        id,
-                        blob.as_deref(),
-                        |ui, t| {
-                            if row_button(ui, t, s.delete, Emphasis::Danger) {
-                                actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(
-                                    id.clone(),
-                                )));
-                            }
-                        },
+                        px(11.5, "regular"),
+                        t.label_secondary,
+                        rect.width() - 12.0,
                     );
+                    let trash = Rect::from_min_size(egui::pos2(rect.max.x - 4.0 - 28.0, rect.min.y + 4.0), Vec2::splat(28.0));
+                    let tool = ui.interact(trash, egui::Id::new(("apagar-figurinha", id)), if hovered || tiles(ui) { Sense::click() } else { Sense::hover() });
+                    if hovered || tiles(ui) {
+                        if tool.hovered() {
+                            ui.painter().rect_filled(trash, CornerRadius::same(8), t.fill_soft);
+                        }
+                        ui.painter().text(trash.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::TRASH, text::icon(15.0), if tool.hovered() { t.danger } else { t.label_secondary });
+                    }
+                    if tool.clicked() {
+                        actions.push(SettingsAction::Admin(AdminAction::DeleteEmoji(id.clone())));
+                    }
                 }
-            });
+                ui.add_space(gap);
+            }
             // O backend não tem como renomear: `/emojis` só aceita criar e
             // apagar. Dizer isso é melhor do que oferecer um campo que não
             // salvaria, ou apagar e recriar por baixo — o id mudaria e as
             // reações já feitas com ela iriam junto.
-            ui.add_space(space::SM);
             ui.horizontal(|ui| {
                 ui.add_space(ROW_INSET);
                 ui.label(
                     RichText::new(s.sticker_rename_note)
-                        .font(text::footnote())
+                        .font(px(11.5, "regular"))
                         .color(t.label_tertiary),
                 );
             });
@@ -4339,19 +5177,7 @@ fn audit_pane(
         text::icon(12.0),
         t.label_tertiary,
     );
-    let inner = Rect::from_min_max(
-        egui::pos2(field.min.x + space::MD + 18.0, field.min.y),
-        egui::pos2(field.max.x - space::SM, field.max.y),
-    );
-    let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
-    child.add_sized(
-        inner.size(),
-        egui::TextEdit::singleline(&mut filter.person)
-            .hint_text(s.audit_person_search)
-            .frame(egui::Frame::NONE)
-            .font(text::callout())
-            .vertical_align(Align::Center),
-    );
+    search_input(ui, t, "auditoria-pessoa", &mut filter.person, field, space::MD + 18.0, s.audit_person_search, text::callout(), false);
     ui.add_space(space::SM);
 
     let kinds: Vec<(Kind, &str)> = Kind::ALL
@@ -4634,7 +5460,7 @@ fn audit_chip(ui: &mut egui::Ui, t: &Tokens, icon: &str, label: &str, on: bool, 
 
 #[cfg(test)]
 mod tree_tests {
-    use super::tree_drop;
+    use super::{TreeAction, move_action, tree_drop};
 
     fn item(id: &str, position: i32, category: bool, parent: Option<&str>) -> (String, i32, bool, Option<String>, bool) {
         (id.into(), position, category, parent.map(str::to_owned), false)
@@ -4680,5 +5506,32 @@ mod tree_tests {
         // A categoria "arquivo" solta entre dev e design vai para antes de
         // Projetos, e sem categoria.
         assert_eq!(tree_drop(&list, 5, 3, 6), (2, None));
+    }
+
+    #[test]
+    fn step_up_from_the_first_child_leaves_the_category() {
+        let items = items();
+        // dev é o índice 2; subir um passo é a fresta antes de Projetos.
+        match move_action(&items, 2, 1, 5) {
+            Some(TreeAction::Move { channel_id, new_position, parent_id, .. }) => {
+                assert_eq!(channel_id, "dev");
+                assert_eq!(new_position, 2);
+                assert_eq!(parent_id, Some(String::new()));
+            }
+            _ => panic!("devia mover"),
+        }
+    }
+
+    #[test]
+    fn step_down_into_an_open_category_enters_it() {
+        let items = items();
+        // geral (0) desce: depois de Projetos, logo na primeira vaga dela.
+        match move_action(&items, 0, 2, 5) {
+            Some(TreeAction::Move { channel_id, parent_id, .. }) => {
+                assert_eq!(channel_id, "geral");
+                assert_eq!(parent_id, Some("proj".to_owned()));
+            }
+            _ => panic!("devia mover"),
+        }
     }
 }

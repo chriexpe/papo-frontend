@@ -112,6 +112,7 @@ pub fn floating_pill(
     id: egui::Id,
     t: &Tokens,
     translucent: bool,
+    glass: &Option<super::glass::SharedGlass>,
     bottom_margin: f32,
     max_width: f32,
     contents: impl FnOnce(&mut Ui),
@@ -132,16 +133,40 @@ pub fn floating_pill(
         .constrain_to(safe)
         .show(ctx, |ui| {
             ui.set_max_width(max_width);
-            Frame::new()
-                .fill(t.pill_fill(translucent))
-                .stroke(Stroke::new(1.0, t.separator))
-                .corner_radius(CornerRadius::same(radius::SHEET))
+            // O desfoque e a tinta ficam atrás do conteúdo, mas só se sabe o
+            // tamanho da superfície depois de medi-lo: reserva os dois lugares.
+            let blur_slot = ui.painter().add(egui::Shape::Noop);
+            let fill_slot = ui.painter().add(egui::Shape::Noop);
+            let frame = Frame::new()
                 .inner_margin(Margin::symmetric(space::LG as i8, space::MD as i8))
                 .show(ui, |ui| {
                     ui.set_max_width(max_width - space::LG * 2.0);
                     contents(ui);
                 });
+            let rect = frame.response.rect;
+            let radius = radius::SHEET as f32;
+            if let Some(blur) = super::shell::glass_blur_shape(glass, translucent, rect, radius) {
+                ui.painter().set(blur_slot, blur);
+            }
+            ui.painter().set(
+                fill_slot,
+                egui::Shape::from(egui::epaint::RectShape::new(
+                    rect,
+                    CornerRadius::same(radius::SHEET),
+                    t.pill_fill(translucent),
+                    Stroke::new(1.0, t.separator),
+                    egui::StrokeKind::Inside,
+                )),
+            );
         });
+}
+
+/// Moldura de menu suspenso com o fundo opaco: o padrão do egui herda a
+/// transparência do tema e deixa o texto de trás aparecer.
+pub fn menu_frame(ctx: &egui::Context) -> Frame {
+    let style = ctx.global_style();
+    let fill = style.visuals.window_fill.to_opaque();
+    Frame::popup(&style).fill(fill)
 }
 
 /// Desvanecimento do conteúdo onde ele encontra uma barra (scroll edge effect).
@@ -196,11 +221,12 @@ pub fn dropdown<'a>(row: &Response, surface: Rect, value: Rect, compact: bool) -
             parent: Align2::RIGHT_TOP,
             child: Align2::RIGHT_TOP,
         };
-        egui::Popup::menu(row).anchor(value).align(over).gap(0.0)
+        egui::Popup::menu(row).frame(menu_frame(&row.ctx)).anchor(value).align(over).gap(0.0)
     } else {
         let edge = Rect::from_x_y_ranges(surface.min.x..=surface.max.x, row.rect.y_range());
         const SIDES: [RectAlign; 1] = [RectAlign::LEFT_START];
         egui::Popup::menu(row)
+            .frame(menu_frame(&row.ctx))
             .anchor(edge)
             .align(RectAlign::RIGHT_START)
             .align_alternatives(&SIDES)

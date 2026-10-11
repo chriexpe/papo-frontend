@@ -26,6 +26,8 @@ use super::widgets::{photo, round_photo};
 
 /// Largura do cartão dos outros (e do seu, no estilo flutuante).
 pub const CARD_WIDTH: f32 = 300.0;
+/// O cartão que se edita em Ajustes é um pouco mais largo que o dos outros.
+const EDIT_CARD_WIDTH: f32 = 340.0;
 /// Respiro entre o cartão e o que ele acompanha, e entre ele e a janela.
 const GAP: f32 = space::MD;
 const MARGIN: f32 = space::LG;
@@ -339,114 +341,523 @@ pub enum PreviewHit {
     Avatar,
 }
 
-/// Prévia do cabeçalho do seu cartão (banner e foto), no tamanho real do
-/// cartão de 300 pt — ou menor, se a tela não tiver isso. Clicar no banner
-/// ou na foto troca cada um: é o próprio objeto que se edita.
-pub fn header_preview(
+/// O que o cartão editável deixa mudar no próprio cartão.
+pub struct CardDraft<'a> {
+    pub nickname: &'a mut String,
+    pub status: &'a mut String,
+    pub description: &'a mut String,
+}
+
+/// Respiro de um campo escondido: só aparece no destaque, o texto fica no
+/// alinhamento do cartão.
+const FIELD_PAD: Vec2 = Vec2::new(space::SM, space::XS);
+
+/// Altura que o texto de um campo ocupa (sem o respiro), entre `rows.0` e
+/// `rows.1` linhas. Vazio mede a dica, que ocupa o lugar do texto.
+fn field_height(
+    ui: &egui::Ui,
+    key: &str,
+    font: &egui::FontId,
+    value: &str,
+    hint: &str,
+    width: f32,
+    rows: (usize, usize),
+) -> (f32, usize) {
+    // Campo de várias linhas: tamanho A numa linha, B quando quebra.
+    let multiline = rows.1 > 1;
+    let font = if multiline { super::theme::adaptive_font(ui, font, value, width) } else { font.clone() };
+    // No Android quem mede é o campo nativo (outra fonte, outra quebra): a
+    // caixa segue as linhas dele.
+    #[cfg(target_os = "android")]
+    if multiline
+        && !value.is_empty()
+        && let Some((native_lines, line_h)) = crate::platform::native_field::measured(&format!("perfil:{key}"))
+    {
+        let lines = native_lines.clamp(rows.0, rows.1);
+        return (lines as f32 * line_h, lines);
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = key;
+    let shown = if value.is_empty() { hint } else { value };
+    let lines = ui
+        .painter()
+        .layout(shown.to_owned(), font.clone(), Color32::WHITE, width.max(24.0))
+        .rows
+        .len()
+        .clamp(rows.0, rows.1);
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
+    (lines as f32 * row_h, lines)
+}
+
+/// Campo "escondido": parece o conteúdo do cartão e só mostra que é um campo
+/// quando o ponteiro passa ou ele ganha o foco. Vazio, mostra a dica em
+/// itálico onde o texto ficaria. Devolve se está com o foco.
+///
+/// `text_area` é onde o texto fica; o destaque sai um pouco para fora dele.
+#[allow(clippy::too_many_arguments)]
+fn hidden_field(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    text_area: Rect,
+    value: &mut String,
+    hint: &str,
+    font: &egui::FontId,
+    color: Color32,
+    limit: usize,
+    lines: usize,
+    multiline: bool,
+) -> bool {
+    let outer = text_area.expand2(FIELD_PAD);
+    let backdrop = ui.painter().add(egui::Shape::Noop);
+    let hovered = ui.rect_contains_pointer(outer);
+    // O mesmo tamanho A/B que `field_height` usou para medir.
+    let shown_font = if multiline {
+        super::theme::adaptive_font(ui, font, value, text_area.width())
+    } else {
+        font.clone()
+    };
+
+    #[cfg(not(target_os = "android"))]
+    let focused = {
+        let id = ui.id().with(("campo-escondido", key));
+        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), id, value);
+        let editor = if multiline {
+            egui::TextEdit::multiline(value).desired_rows(lines)
+        } else {
+            egui::TextEdit::singleline(value)
+        };
+        let editor = editor
+            .id(id)
+            .char_limit(limit)
+            .font(shown_font.clone())
+            .text_color(color)
+            .hint_text(
+                RichText::new(hint)
+                    .font(shown_font.clone())
+                    .italics()
+                    .color(t.label_tertiary),
+            )
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .desired_width(text_area.width());
+        let response = if multiline {
+            // Passando do limite de linhas o texto rola dentro do campo (roda
+            // do mouse ou arrasto), em vez de vazar para fora dele.
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(text_area)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
+            // `min_scrolled_height` vale 64 por padrão e vencia o `max_height`:
+            // a janela ficava maior que o campo e o texto vazava para fora.
+            let sa = egui::ScrollArea::vertical()
+                .min_scrolled_height(text_area.height())
+                .max_height(text_area.height())
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut child, |ui| ui.add(editor));
+            sa.inner
+        } else {
+            ui.put(text_area, editor)
+        };
+        let _ = crate::platform::ime::sync_text_edit(
+            ui.ctx(),
+            id,
+            value,
+            response.has_focus(),
+            if multiline {
+                crate::platform::ime::Kind::Multiline
+            } else {
+                crate::platform::ime::Kind::Text
+            },
+        );
+        response.has_focus()
+    };
+    #[cfg(target_os = "android")]
+    let focused = {
+        let _ = lines;
+        crate::platform::native_field::show(
+            ui.ctx(),
+            &format!("perfil:{key}"),
+            value,
+            text_area,
+            hint,
+            if multiline {
+                crate::platform::native_field::Mode::Multiline
+            } else {
+                crate::platform::native_field::Mode::Text
+            },
+            limit,
+            false,
+            color,
+            t.label_tertiary,
+            font.size,
+        )
+        .focused
+    };
+
+    let (fill, stroke) = if focused {
+        (t.fill_soft, Stroke::new(1.5, t.accent))
+    } else if hovered || cfg!(target_os = "android") {
+        // No toque não há hover: o fundo suave fica sempre, para o campo
+        // se reconhecer como campo.
+        (t.fill_soft, Stroke::NONE)
+    } else {
+        (Color32::TRANSPARENT, Stroke::NONE)
+    };
+    ui.painter().set(
+        backdrop,
+        egui::epaint::RectShape::new(
+            outer,
+            CornerRadius::same(radius::CONTROL),
+            fill,
+            stroke,
+            egui::StrokeKind::Inside,
+        ),
+    );
+    focused
+}
+
+/// Como `inline_field`, mas do tamanho do texto: o campo (e o realce) abraça
+/// o que está escrito, ou a dica quando vazio, até o limite do espaço.
+pub fn inline_field_fit(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    hint: &str,
+    font: egui::FontId,
+    color: Color32,
+    limit: usize,
+) -> bool {
+    let probe = if value.is_empty() { hint } else { value.as_str() };
+    let text_w = ui.painter().layout_no_wrap(probe.to_owned(), font.clone(), color).size().x;
+    let avail = ui.available_width();
+    // Folga para o cursor e para a letra seguinte não quebrar a linha.
+    let width = (text_w + 14.0).min(avail).max(24.0_f32.min(avail));
+    let (height, lines) = field_height(ui, key, &font, value, hint, width, (1, 1));
+    let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    hidden_field(ui, t, key, area, value, hint, &font, color, limit, lines, false)
+}
+
+/// Mede, reserva e desenha um campo escondido na largura que sobrou.
+#[allow(clippy::too_many_arguments)]
+pub fn inline_field(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    hint: &str,
+    font: egui::FontId,
+    color: Color32,
+    limit: usize,
+    rows: (usize, usize),
+) -> bool {
+    let width = ui.available_width();
+    let (height, lines) = field_height(ui, key, &font, value, hint, width, rows);
+    let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    hidden_field(ui, t, key, area, value, hint, &font, color, limit, lines, rows.1 > 1)
+}
+
+/// O seu cartão, nos Ajustes, como ele fica para os outros — e cada parte é o
+/// próprio campo: o recado no balão ao lado da foto, o apelido onde o nome
+/// aparece, a bio na seção "Sobre". Nada de formulário: vazio mostra uma dica
+/// em itálico no lugar do texto, e o campo só se revela ao passar o ponteiro
+/// ou ao tocar. O banner e a foto continuam clicáveis para trocar a imagem.
+pub fn edit_card(
     ui: &mut egui::Ui,
     t: &Tokens,
     s: &Strings,
     store: &Store,
     media: &mut crate::media::MediaStore,
+    draft: CardDraft<'_>,
 ) -> PreviewHit {
     let ctx = ui.ctx().clone();
-    let width = CARD_WIDTH.min(ui.available_width());
+    let width = EDIT_CARD_WIDTH.min(ui.available_width());
+    let scale = width / EDIT_CARD_WIDTH;
     let banner_h = (width / BANNER_RATIO).round();
-    let avatar_size = 80.0 * width / CARD_WIDTH;
+    let avatar_size = 80.0 * scale;
     let overlap = (avatar_size * AVATAR_OVERLAP).round();
-    let inset = space::XL * width / CARD_WIDTH;
-    let (slot, _) = ui.allocate_exact_size(
-        Vec2::new(width, banner_h + avatar_size - overlap),
-        Sense::hover(),
-    );
-    let banner = Rect::from_min_size(slot.min, Vec2::new(width, banner_h));
-    let avatar = Rect::from_min_size(
-        egui::pos2(slot.min.x + inset, banner.max.y - overlap),
-        Vec2::splat(avatar_size),
-    );
+    let inset = space::XL * scale;
     let me = store.member(&store.me);
     let tint = me.and_then(|member| member.role_color).map(rgb).unwrap_or(t.accent);
-    let corners = CornerRadius::same(radius::CARD);
+    let corners = CornerRadius::same(radius::SHEET);
+    let top_corners = CornerRadius {
+        nw: corners.nw,
+        ne: corners.ne,
+        sw: 0,
+        se: 0,
+    };
+    let mut hit = PreviewHit::None;
 
-    // A foto se registra depois do banner: onde os dois se sobrepõem, ganha
-    // ela.
-    let banner_response = ui.interact(banner, Id::new("previa-banner"), Sense::click());
-    let avatar_response = ui.interact(avatar, Id::new("previa-foto"), Sense::click());
-    let avatar_hovered = avatar_response.hovered();
-    let banner_hovered = banner_response.hovered() && !avatar_hovered;
+    ui.scope(|ui| {
+        ui.set_width(width);
+        let start = ui.cursor().min;
+        let surface = ui.painter().add(egui::Shape::Noop);
 
-    let picture = store
-        .profiles
-        .get(&store.me)
-        .and_then(|details| details.banner.as_deref())
-        .and_then(|sha| media.banner(sha))
-        .and_then(|texture| texture.frame(&ctx))
-        .map(|handle| (handle.id(), handle.size_vec2()));
-    let painter = ui.painter();
-    match picture {
-        Some((texture, size)) => photo(
-            painter,
-            banner,
-            texture,
-            cover_uv(size, banner.size()),
-            corners,
-            Color32::WHITE,
-        ),
-        None => {
-            painter.rect_filled(banner, corners, blend(t.elevated_bg, tint, 0.38));
-        }
-    }
-    if banner_hovered {
-        painter.rect_filled(banner, corners, Color32::from_black_alpha(90));
-        painter.text(
-            egui::pos2(banner.max.x - space::MD, banner.min.y + space::MD),
-            Align2::RIGHT_TOP,
-            s.change_banner,
-            text::callout(),
-            Color32::WHITE,
+        // --- Banner, foto e balão do recado ---------------------------------
+        // O balão fica ao lado da foto, como no cartão dos outros; a altura
+        // dele vem do texto de agora.
+        let status_font = text::callout();
+        let bubble_left = inset + avatar_size + space::LG;
+        let bubble_width = (width - inset.min(space::MD + 2.0) - bubble_left).max(60.0);
+        let text_width = bubble_width - space::MD * 2.0 - 4.0;
+        let (status_h, status_lines) = field_height(
+            ui,
+            "recado",
+            &status_font,
+            draft.status,
+            s.profile_status_hint,
+            text_width,
+            (1, 3),
         );
-    }
+        let bubble_h = status_h + space::SM * 2.0 + 2.0;
+        let below = (avatar_size - overlap).max(space::SM + bubble_h);
 
-    painter.circle_filled(avatar.center(), avatar_size / 2.0 + 4.0, t.elevated_bg);
-    let face = media
-        .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
-        .and_then(|texture| texture.frame(&ctx))
-        .map(|handle| handle.id());
-    let painter = ui.painter();
-    match face {
-        Some(texture) => round_photo(painter, avatar, texture, Color32::WHITE),
-        None => {
-            painter.circle_filled(avatar.center(), avatar_size / 2.0, blend(t.elevated_bg, tint, 0.30));
+        let (slot, _) =
+            ui.allocate_exact_size(Vec2::new(width, banner_h + below), Sense::hover());
+        let banner = Rect::from_min_size(slot.min, Vec2::new(width, banner_h));
+        let avatar = Rect::from_min_size(
+            egui::pos2(slot.min.x + inset, banner.max.y - overlap),
+            Vec2::splat(avatar_size),
+        );
+
+        // A foto se registra depois do banner: onde os dois se sobrepõem,
+        // ganha ela.
+        let banner_response = ui.interact(banner, Id::new("previa-banner"), Sense::click());
+        let avatar_response = ui.interact(avatar, Id::new("previa-foto"), Sense::click());
+        let avatar_hovered = avatar_response.hovered();
+        let banner_hovered = banner_response.hovered() && !avatar_hovered;
+
+        let picture = store
+            .profiles
+            .get(&store.me)
+            .and_then(|details| details.banner.as_deref())
+            .and_then(|sha| media.banner(sha))
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| (handle.id(), handle.size_vec2()));
+        let painter = ui.painter();
+        match picture {
+            Some((texture, size)) => photo(
+                painter,
+                banner,
+                texture,
+                cover_uv(size, banner.size()),
+                top_corners,
+                Color32::WHITE,
+            ),
+            None => {
+                // Sem banner: a faixa da cor de destaque que vai ao rosa,
+                // em tiras (o painter não tem gradiente com cantos).
+                const STRIPS: usize = 34;
+                let from = t.accent;
+                let to = blend(t.accent, Color32::from_rgb(0xFF, 0x4F, 0x8B), 0.65);
+                let strip_w = banner.width() / STRIPS as f32;
+                for i in 0..STRIPS {
+                    let amount = i as f32 / (STRIPS - 1) as f32;
+                    let x0 = banner.min.x + strip_w * i as f32;
+                    let rect = Rect::from_min_max(egui::pos2(x0, banner.min.y), egui::pos2(x0 + strip_w + 0.5, banner.max.y));
+                    let corners = CornerRadius {
+                        nw: if i == 0 { top_corners.nw } else { 0 },
+                        ne: if i == STRIPS - 1 { top_corners.ne } else { 0 },
+                        sw: 0,
+                        se: 0,
+                    };
+                    painter.rect_filled(rect, corners, blend(from, to, amount));
+                }
+            }
+        }
+        if banner_hovered {
+            painter.rect_filled(banner, top_corners, Color32::from_black_alpha(90));
+            painter.text(
+                egui::pos2(banner.max.x - space::MD, banner.min.y + space::MD),
+                Align2::RIGHT_TOP,
+                s.change_banner,
+                text::callout(),
+                Color32::WHITE,
+            );
+        }
+
+        painter.circle_filled(avatar.center(), avatar_size / 2.0 + 4.0, t.card);
+        let face = media
+            .avatar(&store.me, store.avatars.get(&store.me).map(String::as_str))
+            .and_then(|texture| texture.frame(&ctx))
+            .map(|handle| handle.id());
+        let painter = ui.painter();
+        match face {
+            Some(texture) => round_photo(painter, avatar, texture, Color32::WHITE),
+            None => {
+                painter.circle_filled(
+                    avatar.center(),
+                    avatar_size / 2.0,
+                    blend(t.card, tint, 0.30),
+                );
+                painter.text(
+                    avatar.center(),
+                    Align2::CENTER_CENTER,
+                    me.map(|member| member.initials()).unwrap_or_default(),
+                    egui::FontId::new(
+                        (avatar_size * 0.32).round(),
+                        egui::FontFamily::Name("semibold".into()),
+                    ),
+                    tint,
+                );
+            }
+        }
+        if avatar_hovered {
+            painter.circle_filled(avatar.center(), avatar_size / 2.0, Color32::from_black_alpha(110));
             painter.text(
                 avatar.center(),
                 Align2::CENTER_CENTER,
-                me.map(|member| member.initials()).unwrap_or_default(),
-                egui::FontId::new((avatar_size * 0.32).round(), egui::FontFamily::Name("semibold".into())),
-                tint,
+                icon::CAMERA,
+                text::icon(avatar_size * 0.3),
+                Color32::WHITE,
             );
         }
-    }
-    if avatar_hovered {
-        painter.circle_filled(avatar.center(), avatar_size / 2.0, Color32::from_black_alpha(110));
-        painter.text(
-            avatar.center(),
-            Align2::CENTER_CENTER,
-            icon::CAMERA,
-            text::icon(avatar_size * 0.3),
-            Color32::WHITE,
-        );
-    }
-    if avatar_hovered || banner_hovered {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
+        if avatar_hovered || banner_hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if avatar_response.clicked() {
+            hit = PreviewHit::Avatar;
+        } else if banner_response.clicked() {
+            hit = PreviewHit::Banner;
+        }
 
-    if avatar_response.clicked() {
-        PreviewHit::Avatar
-    } else if banner_response.clicked() {
-        PreviewHit::Banner
-    } else {
-        PreviewHit::None
-    }
+        // Balão de pensamento, com o recado dentro: o mesmo do cartão.
+        let bubble = Rect::from_min_size(
+            egui::pos2(slot.min.x + bubble_left, banner.max.y + space::SM),
+            Vec2::new(bubble_width, bubble_h),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(bubble, CornerRadius::same(radius::CARD), t.fill_medium);
+        painter.circle_filled(
+            egui::pos2(bubble.min.x - 3.0, bubble.min.y + 8.0),
+            4.5,
+            t.fill_medium,
+        );
+        painter.circle_filled(
+            egui::pos2(bubble.min.x - 9.0, bubble.min.y + 3.0),
+            2.5,
+            t.fill_medium,
+        );
+        let status_area = Rect::from_min_size(
+            bubble.min + Vec2::new(space::MD + 2.0, space::SM + 1.0),
+            Vec2::new(text_width, status_h),
+        );
+        hidden_field(
+            ui,
+            t,
+            "recado",
+            status_area,
+            draft.status,
+            s.profile_status_hint,
+            &status_font,
+            t.label,
+            64,
+            status_lines,
+            true,
+        );
+
+        // --- Nome --------------------------------------------------------------
+        ui.add_space(space::MD);
+        padded(ui, inset, |ui| {
+            inline_field(
+                ui,
+                t,
+                "apelido",
+                draft.nickname,
+                s.profile_name_hint,
+                text::title2(),
+                t.label,
+                32,
+                (1, 1),
+            );
+            ui.add_space(1.0);
+            if let Some(member) = me {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("@{}", member.username))
+                            .font(text::callout())
+                            .color(t.label_secondary),
+                    )
+                    .truncate(),
+                );
+            }
+        });
+        ui.add_space(space::LG);
+
+        // --- Cargos (só leitura) ------------------------------------------------
+        let roles: Vec<(String, Color32)> = store
+            .profiles
+            .get(&store.me)
+            .map(|details| {
+                details
+                    .roles
+                    .iter()
+                    .map(|role| {
+                        let color = role
+                            .color
+                            .as_deref()
+                            .and_then(papo_core::api::models::parse_hex_color)
+                            .map(rgb)
+                            .unwrap_or(t.label_tertiary);
+                        (role.name.clone(), color)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !roles.is_empty() {
+            section(ui, t, inset, |ui| {
+                caption(ui, t, s.profile_roles);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = Vec2::splat(space::SM);
+                    for (name, color) in &roles {
+                        role_chip(ui, t, name, *color);
+                    }
+                });
+            });
+        }
+
+        // --- Sobre --------------------------------------------------------------
+        section(ui, t, inset, |ui| {
+            caption(ui, t, s.profile_about);
+            let focused = inline_field(
+                ui,
+                t,
+                "sobre",
+                draft.description,
+                s.profile_about_hint,
+                text::body(),
+                t.label,
+                512,
+                (1, 8),
+            );
+            let used = draft.description.chars().count();
+            if focused && used > 0 {
+                ui.add_space(space::XS);
+                ui.label(
+                    RichText::new(format!("{used}/512"))
+                        .font(text::footnote())
+                        .color(t.label_tertiary),
+                );
+            }
+        });
+
+        // A superfície do cartão, por trás de tudo, do tamanho que deu.
+        let end = ui.min_rect().max.y;
+        ui.painter().set(
+            surface,
+            egui::epaint::RectShape::new(
+                Rect::from_min_max(start, egui::pos2(start.x + width, end)),
+                corners,
+                t.card,
+                Stroke::new(1.0, t.separator),
+                egui::StrokeKind::Inside,
+            ),
+        );
+    });
+    hit
 }
 
 /// O que as partes do cartão pediram neste quadro.
@@ -505,7 +916,7 @@ fn body_contents(
         // de gradiente — o cartão não é uma vitrine.
         None => {
             ui.painter()
-                .rect_filled(banner, banner_corners, blend(t.elevated_bg, tint, 0.38));
+                .rect_filled(banner, banner_corners, blend(t.card, tint, 0.38));
         }
     }
     if compact {
@@ -560,7 +971,7 @@ fn body_contents(
     painter.circle_filled(
         avatar_rect.center(),
         avatar_size / 2.0 + ring,
-        t.elevated_bg,
+        t.card,
     );
     let face = state
         .media
@@ -576,7 +987,7 @@ fn body_contents(
             painter.circle_filled(
                 avatar_rect.center(),
                 avatar_size / 2.0,
-                blend(t.elevated_bg, tint, 0.30),
+                blend(t.card, tint, 0.30),
             );
             painter.text(
                 avatar_rect.center(),
@@ -592,7 +1003,7 @@ fn body_contents(
     }
     let dot_r = if narrow { 6.0 } else { 7.0 };
     let dot = avatar_rect.center() + Vec2::splat(avatar_size / 2.0 * 0.72);
-    painter.circle_filled(dot, dot_r + ring, t.elevated_bg);
+    painter.circle_filled(dot, dot_r + ring, t.card);
     painter.circle_filled(dot, dot_r, presence_color(t, member.presence));
 
     if let Some((galley, bubble)) = bubble {
@@ -789,7 +1200,7 @@ fn banner_buttons(
     }
 
     let (_, more) = slot(ui, icon::DOTS_THREE, s.profile_more, true, "mais");
-    egui::Popup::menu(&more).show(|ui| {
+    egui::Popup::menu(&more).frame(crate::ui::widgets::menu_frame(ui.ctx())).show(|ui| {
         if ui.button(s.profile_copy_id).clicked() {
             crate::platform::copy::text(ui.ctx(), member.id.clone());
             state.error = Some((s.profile_id_copied.to_owned(), ui.input(|input| input.time)));
@@ -1031,7 +1442,7 @@ fn presence_segments(
             ui.painter().rect(
                 slot.shrink(2.0),
                 CornerRadius::same(radius::CONTROL - 1),
-                t.elevated_bg,
+                t.card,
                 Stroke::new(1.0, t.separator),
                 egui::StrokeKind::Inside,
             );
@@ -1432,5 +1843,208 @@ mod tests {
         assert_eq!(elapsed(chrono::Duration::minutes(38)), "38 min");
         assert_eq!(elapsed(chrono::Duration::minutes(72)), "1 h 12 min");
         assert_eq!(elapsed(chrono::Duration::minutes(120)), "2 h");
+    }
+
+    /// Quadro do cartão editável sem janela: devolve o que foi pintado.
+    struct CardHarness {
+        ctx: egui::Context,
+        t: Tokens,
+        store: Store,
+        media: crate::media::MediaStore,
+        nickname: String,
+        status: String,
+        description: String,
+    }
+
+    impl CardHarness {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::ui::theme::install_fonts(&ctx, None);
+            let t = Tokens::new(crate::ui::theme::Appearance::Dark, None);
+            crate::ui::theme::apply(&ctx, &t, false, 1.0);
+            let mut harness = Self {
+                ctx,
+                t,
+                store: Store::default(),
+                media: crate::media::MediaStore::new(None),
+                nickname: String::new(),
+                status: String::new(),
+                description: String::new(),
+            };
+            // As fontes só valem a partir do quadro seguinte.
+            harness.frame(vec![]);
+            harness
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) -> Vec<egui::epaint::ClippedShape> {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(500.0, 1600.0))),
+                events,
+                ..Default::default()
+            };
+            let Self {
+                ctx,
+                t,
+                store,
+                media,
+                nickname,
+                status,
+                description,
+            } = self;
+            let s = crate::i18n::Lang::En.strings();
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.scope_builder(
+                    UiBuilder::new().max_rect(Rect::from_min_size(
+                        egui::pos2(20.0, 20.0),
+                        Vec2::new(460.0, 1500.0),
+                    )),
+                    |ui| {
+                        edit_card(
+                            ui,
+                            t,
+                            s,
+                            store,
+                            media,
+                            CardDraft {
+                                nickname,
+                                status,
+                                description,
+                            },
+                        );
+                    },
+                );
+            });
+            output.textures_delta.clear();
+            std::mem::take(&mut output.shapes)
+        }
+
+        fn settle(&mut self) -> Vec<egui::epaint::ClippedShape> {
+            self.frame(vec![]);
+            self.frame(vec![])
+        }
+    }
+
+    fn text_rect(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<Rect> {
+        shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                Some(text.visual_bounding_rect())
+            }
+            _ => None,
+        })
+    }
+
+    fn click(at: egui::Pos2) -> Vec<Vec<egui::Event>> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        vec![
+            vec![egui::Event::PointerMoved(at)],
+            vec![button(true)],
+            vec![button(false)],
+        ]
+    }
+
+    #[test]
+    fn empty_card_shows_placeholders_where_the_text_goes() {
+        let mut harness = CardHarness::new();
+        let shapes = harness.settle();
+        for hint in [
+            "Leave a note…",
+            "What should we call you",
+            "Tell us about yourself…",
+        ] {
+            assert!(text_rect(&shapes, hint).is_some(), "falta a dica {hint:?}");
+        }
+        // Nada fora da largura do cartão.
+        let card = Rect::from_min_size(egui::pos2(20.0, 20.0), Vec2::new(EDIT_CARD_WIDTH, 2000.0));
+        for clipped in &shapes {
+            let bounds = clipped.shape.visual_bounding_rect();
+            if bounds.is_finite() {
+                assert!(
+                    bounds.min.x >= card.min.x - 6.0 && bounds.max.x <= card.max.x + 6.0,
+                    "pintou fora do cartão: {bounds:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn recado_bubble_sits_beside_the_avatar_like_the_real_card() {
+        let mut harness = CardHarness::new();
+        let shapes = harness.settle();
+        let hint = text_rect(&shapes, "Leave a note…").expect("dica do recado");
+        // À direita da foto (80 pt + recuo) e logo abaixo do banner (100 pt).
+        assert!(hint.min.x > 20.0 + 16.0 + 80.0, "{hint:?}");
+        assert!(hint.min.y > 20.0 + 100.0 && hint.min.y < 20.0 + 100.0 + 40.0, "{hint:?}");
+    }
+
+    #[test]
+    fn clicking_a_placeholder_and_typing_fills_that_field() {
+        let mut harness = CardHarness::new();
+        let shapes = harness.settle();
+        let about = text_rect(&shapes, "Tell us about yourself…").expect("dica da bio");
+        for events in click(about.center()) {
+            harness.frame(events);
+        }
+        harness.frame(vec![egui::Event::Text("oi, tudo bem".into())]);
+        assert_eq!(harness.description, "oi, tudo bem");
+        assert!(harness.status.is_empty() && harness.nickname.is_empty());
+
+        let status = text_rect(&harness.settle(), "Leave a note…").expect("dica do recado");
+        for events in click(status.center()) {
+            harness.frame(events);
+        }
+        harness.frame(vec![egui::Event::Text("no ar".into())]);
+        assert_eq!(harness.status, "no ar");
+        // O que foi digitado aparece no lugar da dica.
+        let shapes = harness.settle();
+        assert!(text_rect(&shapes, "no ar").is_some());
+        assert!(text_rect(&shapes, "Leave a note…").is_none());
+    }
+
+    #[test]
+    fn multiline_text_switches_between_size_a_and_b() {
+        let ctx = egui::Context::default();
+        let a = egui::FontId::proportional(14.0);
+        let mut sizes = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for text in ["", "oi", "uma frase bem mais comprida que não cabe em cento e vinte pontos", "a\nb", "oi"] {
+                sizes.push(super::super::theme::adaptive_font(ui, &a, text, 120.0).size);
+            }
+        });
+        output.textures_delta.clear();
+        let b = (14.0 * super::super::theme::WRAP_SCALE).round();
+        assert_eq!(sizes, vec![14.0, 14.0, b, b, 14.0]);
+    }
+
+    #[test]
+    fn bio_uses_size_a_on_one_line_and_size_b_once_it_wraps() {
+        fn bio_font_size(shapes: &[egui::epaint::ClippedShape], needle: &str) -> f32 {
+            shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                        text.galley.rows.first().map(|row| row.height())
+                    }
+                    _ => None,
+                })
+                .expect("texto da bio")
+        }
+        let mut harness = CardHarness::new();
+        let shapes = harness.settle();
+        let about = text_rect(&shapes, "Tell us about yourself…").expect("dica da bio");
+        for events in click(about.center()) {
+            harness.frame(events);
+        }
+        harness.frame(vec![egui::Event::Text("oi".into())]);
+        let one_line = bio_font_size(&harness.settle(), "oi");
+        harness.frame(vec![egui::Event::Text(
+            " e agora um texto bem mais comprido, que com certeza não cabe numa linha só do cartão".into(),
+        )]);
+        let wrapped = bio_font_size(&harness.settle(), "oi e agora");
+        assert!(wrapped < one_line, "{wrapped} !< {one_line}");
     }
 }

@@ -23,6 +23,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.drawable.Icon;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -175,12 +176,14 @@ public class PapoActivity extends GameActivity {
     private static native void nativeEditorTextChanged(String key, String text);
     private static native void nativeEditorSelectionChanged(String key, int start, int end);
     private static native void nativeEditorSubmit(String key);
+    private static native void nativeEditorLines(String key, int lines, int lineHeightPx);
     private static native void nativeEditorFocusChanged(String key, boolean focused);
 
     /** Eventos de campos nativos comuns. Cada chave possui sua própria View/estado. */
     private static native void nativeFieldTextChanged(String key, String text);
     private static native void nativeFieldSubmit(String key);
     private static native void nativeFieldFocusChanged(String key, boolean focused);
+    private static native void nativeFieldLines(String key, int lines, int lineHeightPx);
 
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
@@ -739,6 +742,79 @@ public class PapoActivity extends GameActivity {
         }
     }
 
+    /**
+     * Mesmo par de tamanhos de `theme::adaptive_font` no Rust: o texto tem o
+     * tamanho A enquanto cabe numa linha e passa ao B (menor) quando quebra.
+     * A conta sempre usa o A, nunca o tamanho atual, para voltar a A sem
+     * piscar entre os dois. Os dois lados mantêm {@code WRAP_TEXT_SCALE} igual.
+     */
+    private static final float WRAP_TEXT_SCALE = 0.86f;
+
+    private static void applyAdaptiveSize(EditText view, float sizeA) {
+        final ViewGroup.LayoutParams params = view.getLayoutParams();
+        final int available = (params != null ? params.width : view.getWidth())
+                - view.getPaddingLeft() - view.getPaddingRight();
+        final CharSequence text = view.getText();
+        boolean fits = true;
+        if (text != null && text.length() > 0) {
+            if (text.toString().indexOf('\n') >= 0) {
+                fits = false;
+            } else if (available > 0) {
+                final android.text.TextPaint paint = new android.text.TextPaint(view.getPaint());
+                paint.setTextSize(sizeA);
+                fits = android.text.Layout.getDesiredWidth(text, paint) <= available;
+            }
+        }
+        final float target = fits ? sizeA : Math.max(8f, Math.round(sizeA * WRAP_TEXT_SCALE));
+        if (Math.abs(view.getTextSize() - target) > 0.5f) {
+            view.setTextSize(TypedValue.COMPLEX_UNIT_PX, target);
+        }
+    }
+
+    private float nativeEditorBaseSizePx = 0f;
+
+    private int nativeEditorReportedLines = -1;
+    private int nativeEditorReportedLineHeight = -1;
+
+    /** Diz ao Rust quantas linhas o texto ocupa de verdade, para a caixa crescer. */
+    private void reportNativeEditorLines() {
+        if (nativeEditor == null || nativeEditorKey == null || nativeEditor.getLayout() == null) {
+            return;
+        }
+        if (nativeEditorBaseSizePx > 0f) {
+            applyAdaptiveSize(nativeEditor, nativeEditorBaseSizePx);
+        }
+        final int lines = Math.max(1, nativeEditor.getLineCount());
+        final int lineHeight = Math.max(1, nativeEditor.getLineHeight());
+        if (lines != nativeEditorReportedLines || lineHeight != nativeEditorReportedLineHeight) {
+            nativeEditorReportedLines = lines;
+            nativeEditorReportedLineHeight = lineHeight;
+            nativeEditorLines(nativeEditorKey, lines, lineHeight);
+        }
+    }
+
+    private Typeface papoFont;
+
+    /**
+     * A Inter que o Rust grava em files/fonts: os campos nativos usam a mesma
+     * fonte do egui. Sem o arquivo (primeira abertura, erro de disco) fica a
+     * do sistema e tenta de novo na próxima vez.
+     */
+    private Typeface papoTypeface() {
+        if (papoFont == null) {
+            try {
+                final java.io.File file =
+                        new java.io.File(getFilesDir(), "fonts/Inter-Regular.ttf");
+                if (file.isFile()) {
+                    papoFont = Typeface.createFromFile(file);
+                }
+            } catch (RuntimeException ignored) {
+                // cai na fonte do sistema
+            }
+        }
+        return papoFont;
+    }
+
     private void ensureNativeEditor() {
         if (nativeEditor != null) {
             return;
@@ -755,6 +831,9 @@ public class PapoActivity extends GameActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
         nativeEditor = new NativeEditText(this);
+        if (papoTypeface() != null) {
+            nativeEditor.setTypeface(papoTypeface());
+        }
         nativeEditor.setBackground(null);
         nativeEditor.setBackgroundColor(Color.TRANSPARENT);
         nativeEditor.setIncludeFontPadding(false);
@@ -787,8 +866,15 @@ public class PapoActivity extends GameActivity {
                 if (!mutatingNativeEditor && nativeEditorKey != null) {
                     nativeEditorTextChanged(nativeEditorKey, text.toString());
                 }
+                nativeEditor.post(PapoActivity.this::reportNativeEditorLines);
             }
         });
+        nativeEditor.addOnLayoutChangeListener(
+                (view, l, t, r, b, ol, ot, or, ob) -> {
+                    if (r - l != or - ol) {
+                        reportNativeEditorLines();
+                    }
+                });
 
         nativeEditor.setOnFocusChangeListener((view, focused) -> {
             if (nativeEditorKey != null) {
@@ -848,7 +934,7 @@ public class PapoActivity extends GameActivity {
             nativeEditorMode = mode;
             nativeEditorAutocomplete = autocomplete;
 
-            nativeEditor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+            nativeEditorBaseSizePx = textSizePx;
             nativeEditor.setTextColor(textColor);
             nativeEditor.setHintTextColor(hintColor);
             nativeEditor.setHint(hint);
@@ -882,7 +968,9 @@ public class PapoActivity extends GameActivity {
                         : Math.min(oldSelection, text.length());
                 nativeEditor.setSelection(target);
                 mutatingNativeEditor = false;
+                nativeEditor.post(this::reportNativeEditorLines);
             }
+            applyAdaptiveSize(nativeEditor, textSizePx);
 
             final InputMethodManager imm =
                     (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
@@ -931,6 +1019,8 @@ public class PapoActivity extends GameActivity {
             final InputMethodManager imm =
                     (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             nativeEditorKey = null;
+            nativeEditorReportedLines = -1;
+            nativeEditorReportedLineHeight = -1;
             nativeEditor.clearFocus();
             if (imm != null) {
                 imm.hideSoftInputFromWindow(nativeEditor.getWindowToken(), 0);
@@ -987,6 +1077,7 @@ public class PapoActivity extends GameActivity {
     private static final int NATIVE_FIELD_TEXT = 0;
     private static final int NATIVE_FIELD_PASSWORD = 1;
     private static final int NATIVE_FIELD_SEARCH = 2;
+    private static final int NATIVE_FIELD_MULTILINE = 3;
 
     private FrameLayout nativeFieldLayer;
     private final Map<String, NativeFieldEditText> nativeFields = new HashMap<>();
@@ -1000,10 +1091,43 @@ public class PapoActivity extends GameActivity {
         final String key;
         boolean mutating;
         int imeAction = EditorInfo.IME_ACTION_DONE;
+        // O que já foi aplicado ao campo. O Rust chama `showNativeField` a
+        // cada quadro; reaplicar tipo de entrada, transformação e layout a cada
+        // chamada reinicia a conexão com o teclado (e é o que fazia o
+        // cursor voltar ao começo e a tecla de apagar parar de repetir).
+        String appliedConfig;
+        String appliedGeometry;
+        // Campos de várias linhas: tamanho A/B conforme o texto quebra, e as
+        // linhas medidas voltam ao Rust para a caixa acompanhar.
+        boolean adaptive;
+        float baseSizePx;
+        int reportedLines = -1;
+        int reportedLineHeight = -1;
+
+        /** Aplica o tamanho A/B e conta as linhas que o texto ocupa de verdade. */
+        void adapt() {
+            if (!adaptive || baseSizePx <= 0f) {
+                return;
+            }
+            applyAdaptiveSize(this, baseSizePx);
+            if (getLayout() == null) {
+                return;
+            }
+            final int lines = Math.max(1, getLineCount());
+            final int lineHeight = Math.max(1, getLineHeight());
+            if (lines != reportedLines || lineHeight != reportedLineHeight) {
+                reportedLines = lines;
+                reportedLineHeight = lineHeight;
+                nativeFieldLines(key, lines, lineHeight);
+            }
+        }
 
         NativeFieldEditText(Context context, String key) {
             super(context);
             this.key = key;
+            if (papoTypeface() != null) {
+                setTypeface(papoTypeface());
+            }
             setBackground(null);
             setBackgroundColor(Color.TRANSPARENT);
             setIncludeFontPadding(false);
@@ -1028,8 +1152,13 @@ public class PapoActivity extends GameActivity {
                     if (!mutating) {
                         nativeFieldTextChanged(key, text.toString());
                     }
+                    if (adaptive) {
+                        post(NativeFieldEditText.this::adapt);
+                    }
                 }
             });
+
+            addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> adapt());
 
             setOnFocusChangeListener((view, focused) ->
                     nativeFieldFocusChanged(key, focused));
@@ -1107,62 +1236,91 @@ public class PapoActivity extends GameActivity {
             // transformationMethod ou filtros. Esses eventos NÃO são edição do
             // usuário e jamais podem voltar ao Rust como texto novo.
             editor.mutating = true;
+            // Reconfigurar o campo (inputType, transformação, filtros) pode
+            // levar o cursor ao começo; quem digita precisa que ele fique onde
+            // estava, no fim do que acabou de escrever.
+            final int keptStart = editor.getSelectionStart();
+            final int keptEnd = editor.getSelectionEnd();
 
-            editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
-            editor.setTextColor(textColor);
-            editor.setHintTextColor(hintColor);
-            editor.setHint(hint);
-            editor.setFilters(maxChars > 0
-                    ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
-                    : new InputFilter[0]);
+            final String config = mode + "|" + maxChars + "|" + textSizePx + "|" + textColor
+                    + "|" + hintColor + "|" + hint;
+            if (!config.equals(editor.appliedConfig)) {
+                editor.baseSizePx = textSizePx;
+                editor.adaptive = mode == NATIVE_FIELD_MULTILINE;
+                if (!editor.adaptive) {
+                    editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+                }
+                editor.setTextColor(textColor);
+                editor.setHintTextColor(hintColor);
+                editor.setHint(hint);
+                editor.setFilters(maxChars > 0
+                        ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
+                        : new InputFilter[0]);
 
-            final int inputType;
-            final int action;
-            if (mode == NATIVE_FIELD_PASSWORD) {
-                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
-                action = EditorInfo.IME_ACTION_DONE;
-                editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
-            } else if (mode == 3) {
-                inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_VARIATION_NORMAL
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
-                action = EditorInfo.IME_ACTION_NONE;
-                editor.setTransformationMethod(null);
-            } else if (mode == NATIVE_FIELD_SEARCH) {
-                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
-                action = EditorInfo.IME_ACTION_SEARCH;
-                editor.setTransformationMethod(null);
-            } else {
-                inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_VARIATION_NORMAL
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
-                action = EditorInfo.IME_ACTION_DONE;
-                editor.setTransformationMethod(null);
+                final int inputType;
+                final int action;
+                // Uma linha por padrão; a bio do perfil é de várias. `setSingleLine`
+                // mexe no inputType, então vem antes de ele ser aplicado.
+                final boolean multiline = mode == NATIVE_FIELD_MULTILINE;
+                editor.setSingleLine(!multiline);
+                editor.setHorizontallyScrolling(!multiline);
+                // Texto centrado na vertical em todos os campos: a caixa é
+                // derivada do texto, então a folga fica igual em cima e embaixo.
+                editor.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                if (multiline) {
+                    editor.setMaxLines(Integer.MAX_VALUE);
+                }
+                if (mode == NATIVE_FIELD_PASSWORD) {
+                    inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+                    action = EditorInfo.IME_ACTION_DONE;
+                    editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                } else if (mode == NATIVE_FIELD_SEARCH) {
+                    inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+                    action = EditorInfo.IME_ACTION_SEARCH;
+                    editor.setTransformationMethod(null);
+                } else if (multiline) {
+                    inputType = InputType.TYPE_CLASS_TEXT
+                            | InputType.TYPE_TEXT_VARIATION_NORMAL
+                            | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
+                    action = EditorInfo.IME_ACTION_NONE;
+                    editor.setTransformationMethod(null);
+                } else {
+                    inputType = InputType.TYPE_CLASS_TEXT
+                            | InputType.TYPE_TEXT_VARIATION_NORMAL
+                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                            | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                    action = EditorInfo.IME_ACTION_DONE;
+                    editor.setTransformationMethod(null);
+                }
+                if (editor.getInputType() != inputType) {
+                    editor.setInputType(inputType);
+                }
+                editor.imeAction = action;
+                editor.setImeOptions(
+                        EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                                | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                                | action);
+
+                editor.appliedConfig = config;
             }
-            editor.setSingleLine(mode != 3);
-            editor.setHorizontallyScrolling(mode != 3);
-            editor.setGravity(mode == 3 ? Gravity.TOP | Gravity.START : Gravity.CENTER_VERTICAL | Gravity.START);
-            if (editor.getInputType() != inputType) {
-                editor.setInputType(inputType);
-            }
-            editor.imeAction = action;
-            editor.setImeOptions(
-                    EditorInfo.IME_FLAG_NO_EXTRACT_UI
-                            | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                            | action);
 
-            final FrameLayout.LayoutParams params =
-                    (FrameLayout.LayoutParams) editor.getLayoutParams();
-            params.width = Math.max(1, width);
-            params.height = Math.max(1, height);
-            params.leftMargin = left;
-            params.topMargin = top;
-            editor.setLayoutParams(params);
-            editor.setVisibility(View.VISIBLE);
-            nativeFieldLayer.bringToFront();
-            editor.bringToFront();
+            final String geometry = left + "|" + top + "|" + width + "|" + height;
+            if (!geometry.equals(editor.appliedGeometry)) {
+                final FrameLayout.LayoutParams params =
+                        (FrameLayout.LayoutParams) editor.getLayoutParams();
+                params.width = Math.max(1, width);
+                params.height = Math.max(1, height);
+                params.leftMargin = left;
+                params.topMargin = top;
+                editor.setLayoutParams(params);
+                editor.appliedGeometry = geometry;
+            }
+            if (created || editor.getVisibility() != View.VISIBLE) {
+                editor.setVisibility(View.VISIBLE);
+                nativeFieldLayer.bringToFront();
+                editor.bringToFront();
+            }
 
             // Enquanto o usuário digita, Android é a fonte de verdade. Um
             // request de foco vindo do Rust também pode representar uma
@@ -1173,9 +1331,15 @@ public class PapoActivity extends GameActivity {
                     && !editor.getText().toString().equals(text)) {
                 editor.setText(text);
                 editor.setSelection(editor.getText().length());
+            } else if (!created && keptStart >= 0
+                    && (editor.getSelectionStart() != keptStart
+                            || editor.getSelectionEnd() != keptEnd)) {
+                final int length = editor.getText().length();
+                editor.setSelection(Math.min(keptStart, length), Math.min(keptEnd, length));
             }
 
             editor.mutating = false;
+            editor.adapt();
 
             if (focus) {
                 final NativeFieldEditText target = editor;
