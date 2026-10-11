@@ -2097,13 +2097,26 @@ fn picker_menu(response: &egui::Response, t: &Tokens, placeholder: &str, empty: 
         .filter(|(_, item)| needle.is_empty() || item.label.to_lowercase().contains(&needle))
         .map(|(index, _)| index)
         .collect();
-    let list_h = (matching.len().max(1) as f32 * 30.0).min(210.0);
+    // O tamanho e o lado são decididos uma vez, na abertura: se o seletor
+    // encolhesse ou trocasse de lado a cada letra, o campo de busca nativo
+    // sairia do lugar a cada toque no teclado.
+    let max_list = if cfg!(target_os = "android") { 150.0 } else { 210.0 };
+    let list_h = (items.len().max(1) as f32 * 30.0).min(max_list);
     let size = Vec2::new(264.0, 8.0 + 34.0 + 6.0 + list_h + 8.0);
     let screen = ctx.content_rect();
-    let mut pos = egui::pos2(response.rect.min.x, response.rect.max.y + 6.0);
-    if pos.y + size.y > screen.max.y - 8.0 {
-        pos.y = (response.rect.min.y - 6.0 - size.y).max(screen.min.y + 8.0);
+    let side_id = response.id.with("lado");
+    if just_opened {
+        // Embaixo do botão quando ele está na metade de cima da tela; senão
+        // por cima (o teclado cobre a parte de baixo).
+        let above = response.rect.center().y > screen.center().y;
+        ctx.data_mut(|data| data.insert_temp(side_id, above));
     }
+    let above: bool = ctx.data(|data| data.get_temp(side_id)).unwrap_or(false);
+    let mut pos = egui::pos2(
+        response.rect.min.x,
+        if above { response.rect.min.y - 6.0 - size.y } else { response.rect.max.y + 6.0 },
+    );
+    pos.y = pos.y.clamp(screen.min.y + 8.0, (screen.max.y - size.y - 8.0).max(screen.min.y + 8.0));
     pos.x = pos.x.min(screen.max.x - size.x - 8.0).max(screen.min.x + 8.0);
     let rect = Rect::from_min_size(pos, size);
 

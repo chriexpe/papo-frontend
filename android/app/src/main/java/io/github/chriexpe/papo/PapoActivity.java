@@ -1108,6 +1108,11 @@ public class PapoActivity extends GameActivity {
             // transformationMethod ou filtros. Esses eventos NÃO são edição do
             // usuário e jamais podem voltar ao Rust como texto novo.
             editor.mutating = true;
+            // Reconfigurar o campo (inputType, transformação, filtros) pode
+            // levar o cursor ao começo; quem digita precisa que ele fique onde
+            // estava, no fim do que acabou de escrever.
+            final int keptStart = editor.getSelectionStart();
+            final int keptEnd = editor.getSelectionEnd();
 
             editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
             editor.setTextColor(textColor);
@@ -1183,6 +1188,11 @@ public class PapoActivity extends GameActivity {
                     && !editor.getText().toString().equals(text)) {
                 editor.setText(text);
                 editor.setSelection(editor.getText().length());
+            } else if (!created && keptStart >= 0
+                    && (editor.getSelectionStart() != keptStart
+                            || editor.getSelectionEnd() != keptEnd)) {
+                final int length = editor.getText().length();
+                editor.setSelection(Math.min(keptStart, length), Math.min(keptEnd, length));
             }
 
             editor.mutating = false;
