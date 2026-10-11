@@ -497,7 +497,7 @@ fn fit_width(ui: &egui::Ui) -> f32 {
     let right = ui.ctx().data(|data| data.get_temp::<f32>(egui::Id::new(PANE_RIGHT_KEY)));
     match right {
         Some(right) => ui.available_width().min((right - ui.cursor().min.x).max(0.0)),
-        None => ui.available_width(),
+        None => ui.available_width().min((ui.clip_rect().max.x - ui.cursor().min.x).max(0.0)),
     }
 }
 
@@ -1402,14 +1402,14 @@ fn caption_below(ui: &mut egui::Ui, t: &Tokens, caption: &str) {
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.add_space(ROW_INSET);
-        ui.label(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary));
+        ui.add(egui::Label::new(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary)).wrap());
     });
 }
 
 /// A prévia ao vivo de Aparência: um pedaço de conversa que muda com o tema,
 /// a translucidez e o emoji de uma cor, e a legenda embaixo.
 fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: &str) {
-    let width = ui.available_width();
+    let width = fit_width(ui);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 133.0), Sense::hover());
     ui.painter().rect(rect, CornerRadius::same(10), t.elevated_bg, Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
     let left = rect.min.x + 14.0;
@@ -1452,11 +1452,7 @@ fn preview_chat(ui: &mut egui::Ui, t: &Tokens, data: &mut Context<'_>, caption: 
         }
         y += 28.0 + 8.0 + 2.0;
     }
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(ROW_INSET);
-        ui.label(RichText::new(caption).font(px(11.5, "regular")).color(t.label_secondary));
-    });
+    caption_below(ui, t, caption);
 }
 
 /// Desenha a folha, ancorada na pastilha que a abriu.
@@ -4526,7 +4522,7 @@ fn server_pane(
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.add_space(8.0);
-                    crate::ui::profile::inline_field(
+                    crate::ui::profile::inline_field_fit(
                         ui,
                         t,
                         "servidor-nome",
@@ -4535,7 +4531,6 @@ fn server_pane(
                         px(22.0, "display"),
                         t.label,
                         64,
-                        (1, 1),
                     );
                     ui.add_space(4.0);
                     ui.label(

@@ -478,6 +478,28 @@ fn hidden_field(
     focused
 }
 
+/// Como `inline_field`, mas do tamanho do texto: o campo (e o realce) abraça
+/// o que está escrito, ou a dica quando vazio, até o limite do espaço.
+pub fn inline_field_fit(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    hint: &str,
+    font: egui::FontId,
+    color: Color32,
+    limit: usize,
+) -> bool {
+    let probe = if value.is_empty() { hint } else { value.as_str() };
+    let text_w = ui.painter().layout_no_wrap(probe.to_owned(), font.clone(), color).size().x;
+    let avail = ui.available_width();
+    // Folga para o cursor e para a letra seguinte não quebrar a linha.
+    let width = (text_w + 14.0).min(avail).max(24.0_f32.min(avail));
+    let (height, lines) = field_height(ui, &font, value, hint, width, (1, 1));
+    let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    hidden_field(ui, t, key, area, value, hint, &font, color, limit, lines, false)
+}
+
 /// Mede, reserva e desenha um campo escondido na largura que sobrou.
 #[allow(clippy::too_many_arguments)]
 pub fn inline_field(
