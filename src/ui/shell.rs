@@ -104,7 +104,12 @@ const COMPOSER_REPLY_H: f32 = 26.0;
 const COMPOSER_LINE_H: f32 = 52.0;
 /// O compositor cresce pelo número de linhas VISUAIS (incluindo wrap), até
 /// quatro linhas. Depois disso a própria área de texto rola internamente.
-const COMPOSER_MAX_ROWS: usize = 4;
+/// Linhas que a caixa de texto alcança antes de o texto passar a rolar dentro
+/// dela (o triplo do que era). Em janela baixa o limite cai: ver
+/// `composer_max_rows`.
+const COMPOSER_MAX_ROWS: usize = 12;
+/// Fração da altura da conversa que a caixa de texto pode ocupar.
+const COMPOSER_MAX_SHARE: f32 = 0.45;
 const TOAST_SECONDS: f64 = 4.0;
 const TOAST_MOBILE_MAX_WIDTH: f32 = 300.0;
 const TOAST_DESKTOP_MAX_WIDTH: f32 = 420.0;
@@ -949,6 +954,9 @@ pub struct UiState {
     chat_scroll_metrics: Option<(String, f32, f32)>,
     /// Quanto ainda falta rolar do que a roda do mouse pediu (ver `glide_wheel`).
     wheel_glide: f32,
+    /// O texto do compositor passa do que cabe e rola por dentro: a roda do
+    /// mouse sobre ele é dele, não da conversa por baixo.
+    composer_overflows: bool,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
     /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
@@ -1085,6 +1093,7 @@ impl Default for UiState {
             error: None,
             chat_scroll_metrics: None,
             wheel_glide: 0.0,
+            composer_overflows: false,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
@@ -3076,13 +3085,22 @@ fn conversation(
                 .as_ref()
                 .filter(|(previous_channel, _, _)| previous_channel == &channel_id)
                 .map(|(_, offset, _)| *offset);
-            glide_wheel(ui, &mut state.wheel_glide, full, state.panel.is_none());
+            // Sobre o compositor, quando o texto dele rola, a roda é dele.
+            let composer_top = full.max.y - PILL_MARGIN * 2.0 - composer_height;
+            let wheel_free = !(state.composer_overflows
+                && ui
+                    .input(|input| input.pointer.hover_pos())
+                    .is_some_and(|position| position.y >= composer_top));
+            glide_wheel(ui, &mut state.wheel_glide, full, state.panel.is_none() && wheel_free);
             let mut scroll = egui::ScrollArea::vertical()
                 .id_salt(("chat-timeline", &channel_id))
                 .scroll_source(if state.panel.is_some() {
                     egui::containers::scroll_area::ScrollSource::NONE
                 } else {
-                    egui::containers::scroll_area::ScrollSource::ALL
+                    egui::containers::scroll_area::ScrollSource {
+                        mouse_wheel: wheel_free,
+                        ..egui::containers::scroll_area::ScrollSource::ALL
+                    }
                 })
                 .auto_shrink([false, false])
                 // Um salto que resolve a abertura não pode animar a partir da
@@ -8835,6 +8853,13 @@ fn composer_text_width(area: Rect, with_record: bool) -> f32 {
     (composer_width - controls_width).max(80.0)
 }
 
+/// Máximo de linhas da caixa: `COMPOSER_MAX_ROWS`, ou menos se a conversa for
+/// baixa demais para dar tanto espaço (nunca menos de 3).
+fn composer_max_rows(area: Rect, row_h: f32) -> usize {
+    let fit = ((area.height() * COMPOSER_MAX_SHARE - space::SM * 2.0) / row_h.max(1.0)).floor();
+    (fit.max(3.0) as usize).min(COMPOSER_MAX_ROWS)
+}
+
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
@@ -8853,7 +8878,7 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
             .layout(state.composer.clone(), font.clone(), Color32::WHITE, text_width)
             .rows
             .len()
-            .clamp(1, COMPOSER_MAX_ROWS)
+            .max(1)
     };
 
     let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font))
@@ -8863,10 +8888,11 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     #[cfg(target_os = "android")]
     let (rows, row_h) = match crate::platform::native_text::measured() {
         Some((lines, line_h)) if !state.composer.is_empty() && state.editing.is_none() => {
-            (lines.clamp(1, COMPOSER_MAX_ROWS), line_h)
+            (lines.max(1), line_h)
         }
         _ => (rows, row_h),
     };
+    let rows = rows.min(composer_max_rows(area, row_h));
     let text_h = rows as f32 * row_h + space::SM * 2.0;
     let mut height = COMPOSER_LINE_H.max(text_h);
 
@@ -9740,6 +9766,7 @@ fn composer(
                 );
                 let response = egui::ScrollArea::vertical()
                     .id_salt("composer-text-scroll")
+                    .min_scrolled_height(viewport_h)
                     .max_height(viewport_h)
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -9758,8 +9785,10 @@ fn composer(
                             .show(ui)
                             .response
                             .response
-                    })
-                    .inner;
+                    });
+                state.composer_overflows =
+                    response.content_size.y > response.inner_rect.height() + 1.0;
+                let response = response.inner;
                 let _ = crate::platform::ime::sync_text_edit(
                     ui.ctx(),
                     edit_id,

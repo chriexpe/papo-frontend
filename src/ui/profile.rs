@@ -449,12 +449,15 @@ fn hidden_field(
                     .max_rect(text_area)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            egui::ScrollArea::vertical()
+            // `min_scrolled_height` vale 64 por padrão e vencia o `max_height`:
+            // a janela ficava maior que o campo e o texto vazava para fora.
+            let sa = egui::ScrollArea::vertical()
+                .min_scrolled_height(text_area.height())
                 .max_height(text_area.height())
                 .auto_shrink([false, false])
                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                .show(&mut child, |ui| ui.add(editor))
-                .inner
+                .show(&mut child, |ui| ui.add(editor));
+            sa.inner
         } else {
             ui.put(text_area, editor)
         };
