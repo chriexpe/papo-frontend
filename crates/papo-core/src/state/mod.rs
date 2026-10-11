@@ -3139,7 +3139,11 @@ impl Store {
                         member.typing_label = typing;
                     }
                     if let Some(nickname) = nickname {
-                        member.name = nickname;
+                        member.name = if nickname.trim().is_empty() {
+                            member.username.clone()
+                        } else {
+                            nickname
+                        };
                     }
                     let cached: Vec<CachedMember> =
                         self.members.iter().map(CachedMember::from).collect();
@@ -3659,6 +3663,37 @@ mod channel_layout_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_presence_nickname_does_not_erase_member_name() {
+        let mut store = Store {
+            members: vec![Member {
+                id: "u1".to_owned(),
+                username: "jenosmobile".to_owned(),
+                name: "jenosmobile".to_owned(),
+                banned: false,
+                presence: Presence::Online,
+                status_message: None,
+                typing_label: None,
+                role_color: None,
+                roles: Vec::new(),
+            }],
+            ..Store::default()
+        };
+
+        store.apply(Update::Event(Box::new(Event::Presence {
+            user_id: "u1".to_owned(),
+            status: "online".to_owned(),
+            status_message: None,
+            typing: None,
+            nickname: Some(String::new()),
+        })));
+
+        assert_eq!(
+            store.member("u1").map(|member| member.name.as_str()),
+            Some("jenosmobile")
+        );
+    }
 
     #[test]
     fn diagnostics_project_freshness_refresh_and_barrier_state() {
