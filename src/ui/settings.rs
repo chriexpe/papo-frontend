@@ -1840,7 +1840,7 @@ fn channel_name_input(
             }
 
             let mut chosen = None;
-            egui::Popup::menu(&picker).show(|ui| {
+            egui::Popup::menu(&picker).frame(crate::ui::widgets::menu_frame(ui.ctx())).show(|ui| {
                 ui.set_max_height(380.0);
                 chosen = super::emoji::picker(
                     ui,
@@ -2014,65 +2014,161 @@ fn add_chip(ui: &mut egui::Ui, t: &Tokens, label: &str) -> egui::Response {
     response
 }
 
+/// Campo de uma linha dentro de um retângulo, com a integração certa de cada
+/// plataforma: campo nativo no Android (teclado e IME de verdade) e `TextEdit`
+/// com a ponte do IME no desktop. Devolve se está com o foco.
+#[allow(clippy::too_many_arguments)]
+fn text_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    rect: Rect,
+    hint: &str,
+    font: egui::FontId,
+    limit: usize,
+    focus: bool,
+) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::native_field::show(
+            ui.ctx(),
+            key,
+            value,
+            rect,
+            hint,
+            crate::platform::native_field::Mode::Search,
+            limit,
+            focus,
+            t.label,
+            t.label_tertiary,
+            font.size,
+        )
+        .focused
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let id = ui.id().with(key);
+        let _ = crate::platform::ime::prepare_text_edit(ui.ctx(), id, value);
+        let response = ui.put(
+            rect,
+            egui::TextEdit::singleline(value)
+                .id(id)
+                .char_limit(if limit == 0 { usize::MAX } else { limit })
+                .hint_text(hint)
+                .frame(egui::Frame::NONE)
+                .font(font)
+                .text_color(t.label)
+                .vertical_align(Align::Center),
+        );
+        let _ = crate::platform::ime::sync_text_edit(ui.ctx(), id, value, response.has_focus(), crate::platform::ime::Kind::Text);
+        if focus {
+            response.request_focus();
+        }
+        response.has_focus()
+    }
+}
+
 /// O seletor com busca que abre do botão: devolve o índice escolhido.
+///
+/// É uma camada própria (Area), com fundo opaco: ela fica por cima, segura o
+/// toque e a rolagem para si, e a busca usa o campo certo de cada plataforma.
 fn picker_menu(response: &egui::Response, t: &Tokens, placeholder: &str, empty: &str, items: &[PickItem]) -> Option<usize> {
-    let mut chosen = None;
+    let ctx = response.ctx.clone();
+    let open_id = response.id.with("aberto");
     let query_id = response.id.with("busca");
-    egui::Popup::menu(response)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(240.0);
-            ui.set_max_width(240.0);
-            let mut query: String = ui.data_mut(|data| data.get_temp(query_id)).unwrap_or_default();
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text(placeholder)
-                    .desired_width(f32::INFINITY),
-            );
-            if !search.has_focus() && !search.lost_focus() {
-                search.request_focus();
-            }
-            ui.add_space(6.0);
-            let needle = query.trim().to_lowercase();
-            egui::ScrollArea::vertical().max_height(210.0).show(ui, |ui| {
-                let mut shown = 0;
-                for (index, item) in items.iter().enumerate() {
-                    if !needle.is_empty() && !item.label.to_lowercase().contains(&needle) {
-                        continue;
-                    }
-                    shown += 1;
-                    let (rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    let mut open: bool = ctx.data(|data| data.get_temp(open_id)).unwrap_or(false);
+    let mut just_opened = false;
+    if response.clicked() {
+        open = !open;
+        just_opened = open;
+        ctx.data_mut(|data| data.insert_temp(query_id, String::new()));
+    }
+    if !open {
+        ctx.data_mut(|data| data.insert_temp(open_id, false));
+        return None;
+    }
+
+    let mut query: String = ctx.data(|data| data.get_temp(query_id)).unwrap_or_default();
+    let needle = query.trim().to_lowercase();
+    let matching: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| needle.is_empty() || item.label.to_lowercase().contains(&needle))
+        .map(|(index, _)| index)
+        .collect();
+    let list_h = (matching.len().max(1) as f32 * 30.0).min(210.0);
+    let size = Vec2::new(264.0, 8.0 + 34.0 + 6.0 + list_h + 8.0);
+    let screen = ctx.content_rect();
+    let mut pos = egui::pos2(response.rect.min.x, response.rect.max.y + 6.0);
+    if pos.y + size.y > screen.max.y - 8.0 {
+        pos.y = (response.rect.min.y - 6.0 - size.y).max(screen.min.y + 8.0);
+    }
+    pos.x = pos.x.min(screen.max.x - size.x - 8.0).max(screen.min.x + 8.0);
+    let rect = Rect::from_min_size(pos, size);
+
+    let mut chosen = None;
+    let area = egui::Area::new(response.id.with("camada"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .constrain(false)
+        .fade_in(false)
+        .show(&ctx, |ui| {
+            let (_, _) = ui.allocate_exact_size(size, Sense::click_and_drag());
+            // Fundo opaco, sombra e fio: nada de texto aparecendo por trás.
+            ui.painter().add(egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(90) }.as_shape(rect, CornerRadius::same(12)));
+            ui.painter().rect(rect, CornerRadius::same(12), t.card.to_opaque(), Stroke::new(0.5, t.separator), egui::StrokeKind::Inside);
+            let field = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0), Vec2::new(rect.width() - 16.0, 34.0));
+            ui.painter().rect_filled(field, CornerRadius::same(8), t.fill_soft);
+            ui.painter().text(egui::pos2(field.min.x + 12.0, field.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::MAGNIFYING_GLASS, text::icon(13.0), t.label_tertiary);
+            let input = Rect::from_min_max(egui::pos2(field.min.x + 30.0, field.min.y), egui::pos2(field.max.x - 8.0, field.max.y));
+            text_input(ui, t, "busca", &mut query, input, placeholder, px(13.0, "regular"), 0, just_opened);
+            let list = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, field.max.y + 6.0), Vec2::new(rect.width() - 16.0, list_h));
+            let mut inner = ui.new_child(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)));
+            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(&mut inner, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                if matching.is_empty() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(empty).font(px(12.0, "regular")).color(t.label_tertiary));
+                }
+                for index in &matching {
+                    let item = &items[*index];
+                    let (row_rect, row) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
                     if row.hovered() {
-                        ui.painter().rect_filled(rect, CornerRadius::same(8), t.fill_soft);
+                        ui.painter().rect_filled(row_rect, CornerRadius::same(8), t.fill_soft);
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
-                    let mut x = rect.min.x + 8.0;
+                    let mut x = row_rect.min.x + 8.0;
                     if let Some(color) = item.dot {
-                        ui.painter().circle_filled(egui::pos2(x + 4.0, rect.center().y), 4.0, color);
+                        ui.painter().circle_filled(egui::pos2(x + 4.0, row_rect.center().y), 4.0, color);
                         x += 16.0;
                     }
                     if let Some((initials, color)) = &item.avatar {
-                        mini_avatar(ui.painter(), egui::pos2(x + 10.0, rect.center().y), 10.0, initials, *color);
+                        mini_avatar(ui.painter(), egui::pos2(x + 10.0, row_rect.center().y), 10.0, initials, *color);
                         x += 28.0;
                     }
-                    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, &item.label, px(13.0, "regular"), t.label);
+                    crate::ui::widgets::text_fit(ui.painter(), egui::pos2(x, row_rect.center().y), egui::Align2::LEFT_CENTER, &item.label, px(13.0, "regular"), t.label, row_rect.max.x - x - 8.0);
                     if row.clicked() {
-                        chosen = Some(index);
-                        ui.close();
+                        chosen = Some(*index);
                     }
-                }
-                if shown == 0 {
-                    ui.label(RichText::new(empty).font(px(12.0, "regular")).color(t.label_tertiary));
-                }
-            });
-            ui.data_mut(|data| {
-                if chosen.is_some() {
-                    data.remove::<String>(query_id);
-                } else {
-                    data.insert_temp(query_id, query);
                 }
             });
         });
+    ctx.move_to_top(area.response.layer_id);
+
+    // Fecha ao escolher, com Esc ou com um toque fora (do seletor e do botão).
+    let outside = ctx.input(|input| {
+        input.pointer.any_click()
+            && input.pointer.interact_pos().is_some_and(|pos| !rect.contains(pos) && !response.rect.contains(pos))
+    });
+    let escape = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+    if chosen.is_some() || (outside && !just_opened) || escape {
+        open = false;
+        ctx.data_mut(|data| data.remove::<String>(query_id));
+    } else {
+        ctx.data_mut(|data| data.insert_temp(query_id, query));
+    }
+    ctx.data_mut(|data| data.insert_temp(open_id, open));
     chosen
 }
 
@@ -2082,10 +2178,11 @@ fn person_tint(store: &Store, member: &crate::state::Member, accent: egui::Color
 }
 
 /// A pastilha de salvar dos editores: o motivo quando ainda não dá.
-fn save_pill(ctx: &egui::Context, id: &str, t: &Tokens, translucent: bool, s: &Strings, label: &str, blocked: Option<&str>) -> Option<bool> {
+#[allow(clippy::too_many_arguments)]
+fn save_pill(ctx: &egui::Context, id: &str, t: &Tokens, translucent: bool, glass: &Option<crate::ui::glass::SharedGlass>, s: &Strings, label: &str, blocked: Option<&str>) -> Option<bool> {
     let mut result = None;
     let pill_id = egui::Id::new(id);
-    crate::ui::widgets::floating_pill(ctx, pill_id, t, translucent, space::LG, 420.0, |ui| {
+    crate::ui::widgets::floating_pill(ctx, pill_id, t, translucent, glass, space::LG, 420.0, |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = space::SM;
             ui.label(RichText::new(blocked.unwrap_or(s.unsaved_changes)).font(text::body()).color(t.label_secondary));
@@ -2109,6 +2206,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
     use super::roles::RoleAction;
     let ctx = ui.ctx().clone();
     let translucent = *data.translucency;
+    let glass = data.glass.clone();
     let Some(draft) = data.roles.draft.as_mut() else {
         return;
     };
@@ -2238,7 +2336,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
     }
     if dirty {
         let blocked = draft.name.trim().is_empty().then_some(s.role_name_required);
-        match save_pill(&ctx, "cargo-salvar", t, translucent, s, s.save_role, blocked) {
+        match save_pill(&ctx, "cargo-salvar", t, translucent, &glass, s, s.save_role, blocked) {
             Some(true) => {
                 match draft.id.clone() {
                     Some(role_id) => {
@@ -3675,6 +3773,7 @@ fn app_pane(
                     pill_id,
                     t,
                     *data.translucency,
+                    &data.glass,
                     space::LG,
                     420.0,
                     |ui| {
@@ -4594,6 +4693,7 @@ fn server_pane(
                     pill_id,
                     t,
                     *data.translucency,
+                    &data.glass,
                     space::LG,
                     420.0,
                     |ui| {
@@ -4671,6 +4771,7 @@ fn server_pane(
             if let Some(editor) = draft.channel.as_mut() {
                 let ctx = ui.ctx().clone();
                 let translucent = *data.translucency;
+                let glass = data.glass.clone();
                 let store = data.store;
                 let existing = editor.id.clone();
                 section(ui, t, if existing.is_some() { s.edit_channel_title } else { s.create_channel });
@@ -4790,7 +4891,7 @@ fn server_pane(
 
                 let blocked = editor.name.trim().is_empty().then_some(s.channel_name_required);
                 let label = if existing.is_some() { s.save_channel } else { s.create_channel };
-                match save_pill(&ctx, "canal-salvar", t, translucent, s, label, blocked) {
+                match save_pill(&ctx, "canal-salvar", t, translucent, &glass, s, label, blocked) {
                     Some(true) => {
                         let name = editor.name.trim().to_owned();
                         let topic = (editor.kind != "category").then(|| editor.topic.trim().to_owned());
@@ -5057,15 +5158,7 @@ fn audit_pane(
         egui::pos2(field.min.x + space::MD + 18.0, field.min.y),
         egui::pos2(field.max.x - space::SM, field.max.y),
     );
-    let mut child = ui.new_child(UiBuilder::new().max_rect(inner));
-    child.add_sized(
-        inner.size(),
-        egui::TextEdit::singleline(&mut filter.person)
-            .hint_text(s.audit_person_search)
-            .frame(egui::Frame::NONE)
-            .font(text::callout())
-            .vertical_align(Align::Center),
-    );
+    text_input(ui, t, "auditoria-pessoa", &mut filter.person, inner, s.audit_person_search, text::callout(), 0, false);
     ui.add_space(space::SM);
 
     let kinds: Vec<(Kind, &str)> = Kind::ALL

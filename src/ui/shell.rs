@@ -1471,15 +1471,26 @@ pub(super) fn glass_blur(
     rect: Rect,
     corner: f32,
 ) {
+    if let Some(shape) = glass_blur_shape(glass, translucent, rect, corner) {
+        ui.painter().add(shape);
+    }
+}
+
+/// O desfoque como forma pronta, para quem só sabe o tamanho da superfície
+/// depois de medi-la e precisa guardar o lugar dele antes do conteúdo.
+pub(super) fn glass_blur_shape(
+    glass: &Option<SharedGlass>,
+    translucent: bool,
+    rect: Rect,
+    corner: f32,
+) -> Option<egui::Shape> {
     if !translucent || glass.is_none() {
-        return;
+        return None;
     }
 
     #[cfg(target_os = "android")]
     {
-        let Some(glass) = glass.clone() else {
-            return;
-        };
+        let glass = glass.clone()?;
         let callback = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             let viewport = info.viewport_in_pixels();
             if let Ok(mut glass) = glass.lock() {
@@ -1496,19 +1507,19 @@ pub(super) fn glass_blur(
                 );
             }
         });
-        ui.painter().add(egui::PaintCallback {
+        Some(egui::Shape::Callback(egui::PaintCallback {
             rect,
             callback: std::sync::Arc::new(callback),
-        });
+        }))
     }
 
     #[cfg(not(target_os = "android"))]
-    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
+    Some(egui::Shape::from(eframe::egui_wgpu::Callback::new_paint_callback(
         rect,
         super::glass::GlassCallback {
             corner_points: corner,
         },
-    ));
+    )))
 }
 // ---------------------------------------------------------------------------
 // Coluna esquerda — canais
@@ -8409,6 +8420,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
                 Id::new("toast-error"),
                 t,
                 state.translucent,
+                &state.glass,
                 space::XXXL * 2.0,
                 toast_max_width(ui.ctx()),
                 |ui| {
@@ -8452,6 +8464,7 @@ fn saved_toast(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens, s: &Strings) 
         Id::new("toast-saved"),
         t,
         state.translucent,
+        &state.glass,
         space::XXXL * 2.0,
         toast_max_width(ui.ctx()),
         |ui| {
