@@ -8783,6 +8783,15 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
 
     let row_h = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
         + ui.spacing().extra_text_line_spacing;
+    // No Android quem mede é o próprio EditText (outra fonte, outra quebra):
+    // a caixa cresce com as linhas dele, até o limite, e o resto rola dentro.
+    #[cfg(target_os = "android")]
+    let (rows, row_h) = match crate::platform::native_text::measured() {
+        Some((lines, line_h)) if !state.composer.is_empty() && state.editing.is_none() => {
+            (lines.clamp(1, COMPOSER_MAX_ROWS), line_h)
+        }
+        _ => (rows, row_h),
+    };
     let text_h = rows as f32 * row_h + space::SM * 2.0;
     let mut height = COMPOSER_LINE_H.max(text_h);
 

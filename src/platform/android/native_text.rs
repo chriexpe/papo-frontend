@@ -5,12 +5,28 @@
 //! diretamente com um Editable Android; daqui só sincronizamos texto, seleção
 //! e a ação de concluir a edição.
 
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use android_activity::AndroidApp;
 
 static APP: OnceLock<AndroidApp> = OnceLock::new();
 static STATE: Mutex<State> = Mutex::new(State::new());
+/// O que o próprio EditText mediu: quantas linhas o texto ocupa e a altura de
+/// cada uma. A caixa do compositor cresce com isso, não com a conta do egui,
+/// que usa outra fonte e quebra em outro lugar.
+static NATIVE_LINES: AtomicUsize = AtomicUsize::new(0);
+static NATIVE_LINE_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
+static PIXELS_PER_POINT: AtomicU32 = AtomicU32::new(0);
+
+/// Linhas e altura de linha (em pontos do egui) do editor nativo, se ele já
+/// mediu o texto de agora.
+pub fn measured() -> Option<(usize, f32)> {
+    let lines = NATIVE_LINES.load(Ordering::Relaxed);
+    let line_px = NATIVE_LINE_HEIGHT_PX.load(Ordering::Relaxed);
+    let ppp = f32::from_bits(PIXELS_PER_POINT.load(Ordering::Relaxed));
+    (lines > 0 && line_px > 0 && ppp > 0.0).then(|| (lines, line_px as f32 / ppp))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -99,6 +115,7 @@ pub fn end_frame() {
         false
     };
     if hide {
+        NATIVE_LINES.store(0, Ordering::Relaxed);
         call_hide();
     }
 }
@@ -122,6 +139,7 @@ pub fn dismiss() {
         false
     };
     if hide {
+        NATIVE_LINES.store(0, Ordering::Relaxed);
         call_hide();
     }
 }
@@ -148,6 +166,7 @@ pub fn show(
     let mut selection = None;
 
     let ppp = ctx.pixels_per_point().max(0.1);
+    PIXELS_PER_POINT.store(ppp.to_bits(), Ordering::Relaxed);
     let spec;
 
     {
@@ -379,6 +398,19 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeEditorSel
             end.max(0) as usize,
         ));
     }
+    super::wake::request();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeEditorLines(
+    _env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    _key: jni::objects::JString,
+    lines: jni::sys::jint,
+    line_height_px: jni::sys::jint,
+) {
+    NATIVE_LINES.store(lines.max(0) as usize, Ordering::Relaxed);
+    NATIVE_LINE_HEIGHT_PX.store(line_height_px.max(0) as u32, Ordering::Relaxed);
     super::wake::request();
 }
 

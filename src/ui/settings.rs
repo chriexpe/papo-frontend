@@ -2096,7 +2096,7 @@ fn search_input(
         let cross = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
         let response = ui.interact(cross, egui::Id::new(("limpar-busca", key)), Sense::click());
         ui.painter().circle_filled(cross.center(), 9.0, t.fill_medium);
-        ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(8.0), t.card);
+        ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(10.0), t.label);
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -3481,7 +3481,7 @@ fn rail(
                     let x = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
                     let response = ui.interact(x, ui.id().with("limpar-busca"), Sense::click());
                     ui.painter().circle_filled(x.center(), 9.0, t.fill_medium);
-                    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(8.0), t.card);
+                    ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(10.0), t.label);
                     if response.clicked() {
                         state.mobile_query.clear();
                     }

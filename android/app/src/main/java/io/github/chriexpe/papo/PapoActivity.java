@@ -175,6 +175,7 @@ public class PapoActivity extends GameActivity {
     private static native void nativeEditorTextChanged(String key, String text);
     private static native void nativeEditorSelectionChanged(String key, int start, int end);
     private static native void nativeEditorSubmit(String key);
+    private static native void nativeEditorLines(String key, int lines, int lineHeightPx);
     private static native void nativeEditorFocusChanged(String key, boolean focused);
 
     /** Eventos de campos nativos comuns. Cada chave possui sua própria View/estado. */
@@ -739,6 +740,23 @@ public class PapoActivity extends GameActivity {
         }
     }
 
+    private int nativeEditorReportedLines = -1;
+    private int nativeEditorReportedLineHeight = -1;
+
+    /** Diz ao Rust quantas linhas o texto ocupa de verdade, para a caixa crescer. */
+    private void reportNativeEditorLines() {
+        if (nativeEditor == null || nativeEditorKey == null || nativeEditor.getLayout() == null) {
+            return;
+        }
+        final int lines = Math.max(1, nativeEditor.getLineCount());
+        final int lineHeight = Math.max(1, nativeEditor.getLineHeight());
+        if (lines != nativeEditorReportedLines || lineHeight != nativeEditorReportedLineHeight) {
+            nativeEditorReportedLines = lines;
+            nativeEditorReportedLineHeight = lineHeight;
+            nativeEditorLines(nativeEditorKey, lines, lineHeight);
+        }
+    }
+
     private void ensureNativeEditor() {
         if (nativeEditor != null) {
             return;
@@ -787,8 +805,15 @@ public class PapoActivity extends GameActivity {
                 if (!mutatingNativeEditor && nativeEditorKey != null) {
                     nativeEditorTextChanged(nativeEditorKey, text.toString());
                 }
+                nativeEditor.post(PapoActivity.this::reportNativeEditorLines);
             }
         });
+        nativeEditor.addOnLayoutChangeListener(
+                (view, l, t, r, b, ol, ot, or, ob) -> {
+                    if (r - l != or - ol) {
+                        reportNativeEditorLines();
+                    }
+                });
 
         nativeEditor.setOnFocusChangeListener((view, focused) -> {
             if (nativeEditorKey != null) {
@@ -882,6 +907,7 @@ public class PapoActivity extends GameActivity {
                         : Math.min(oldSelection, text.length());
                 nativeEditor.setSelection(target);
                 mutatingNativeEditor = false;
+                nativeEditor.post(this::reportNativeEditorLines);
             }
 
             final InputMethodManager imm =
@@ -931,6 +957,8 @@ public class PapoActivity extends GameActivity {
             final InputMethodManager imm =
                     (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
             nativeEditorKey = null;
+            nativeEditorReportedLines = -1;
+            nativeEditorReportedLineHeight = -1;
             nativeEditor.clearFocus();
             if (imm != null) {
                 imm.hideSoftInputFromWindow(nativeEditor.getWindowToken(), 0);
