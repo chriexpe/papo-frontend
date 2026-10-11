@@ -1315,14 +1315,32 @@ mod tests {
         }
         assert_eq!(resolved_display_name(Some("Jeno"), "jenosmobile"), "Jeno");
 
-        let summary: UserSummary =
-            serde_json::from_str(r#"{"id":"u1","username":"jenosmobile","nickname":""}"#)
-                .unwrap();
+        let summary = UserSummary {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some(String::new()),
+            banned: false,
+            status: None,
+            status_message: None,
+            typing: None,
+            roles: Vec::new(),
+        };
         assert_eq!(summary.display_name(), "jenosmobile");
 
-        let profile: UserProfile =
-            serde_json::from_str(r#"{"id":"u1","username":"jenosmobile","nickname":"  "}"#)
-                .unwrap();
+        let profile = UserProfile {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some("  ".to_owned()),
+            avatar_blob: None,
+            avatar_format: None,
+            banner_media: None,
+            description: None,
+            status: None,
+            status_message: None,
+            typing: None,
+            created_at: None,
+            roles: Vec::new(),
+        };
         assert_eq!(profile.display_name(), "jenosmobile");
 
         let whoami = Whoami {
