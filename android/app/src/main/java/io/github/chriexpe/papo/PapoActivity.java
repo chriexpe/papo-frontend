@@ -1001,6 +1001,12 @@ public class PapoActivity extends GameActivity {
         final String key;
         boolean mutating;
         int imeAction = EditorInfo.IME_ACTION_DONE;
+        // O que já foi aplicado ao campo. O Rust chama `showNativeField` a
+        // cada quadro; reaplicar tipo de entrada, transformação e layout a cada
+        // chamada reinicia a conexão com o teclado (e é o que fazia o
+        // cursor voltar ao começo e a tecla de apagar parar de repetir).
+        String appliedConfig;
+        String appliedGeometry;
 
         NativeFieldEditText(Context context, String key) {
             super(context);
@@ -1114,70 +1120,82 @@ public class PapoActivity extends GameActivity {
             final int keptStart = editor.getSelectionStart();
             final int keptEnd = editor.getSelectionEnd();
 
-            editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
-            editor.setTextColor(textColor);
-            editor.setHintTextColor(hintColor);
-            editor.setHint(hint);
-            editor.setFilters(maxChars > 0
-                    ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
-                    : new InputFilter[0]);
+            final String config = mode + "|" + maxChars + "|" + textSizePx + "|" + textColor
+                    + "|" + hintColor + "|" + hint;
+            if (!config.equals(editor.appliedConfig)) {
+                editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+                editor.setTextColor(textColor);
+                editor.setHintTextColor(hintColor);
+                editor.setHint(hint);
+                editor.setFilters(maxChars > 0
+                        ? new InputFilter[] {new InputFilter.LengthFilter(maxChars)}
+                        : new InputFilter[0]);
 
-            final int inputType;
-            final int action;
-            // Uma linha por padrão; a bio do perfil é de várias. `setSingleLine`
-            // mexe no inputType, então vem antes de ele ser aplicado.
-            final boolean multiline = mode == NATIVE_FIELD_MULTILINE;
-            editor.setSingleLine(!multiline);
-            editor.setHorizontallyScrolling(!multiline);
-            editor.setGravity(multiline
-                    ? (Gravity.START | Gravity.TOP)
-                    : (Gravity.START | Gravity.CENTER_VERTICAL));
-            if (multiline) {
-                editor.setMaxLines(Integer.MAX_VALUE);
-            }
-            if (mode == NATIVE_FIELD_PASSWORD) {
-                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
-                action = EditorInfo.IME_ACTION_DONE;
-                editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
-            } else if (mode == NATIVE_FIELD_SEARCH) {
-                inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
-                action = EditorInfo.IME_ACTION_SEARCH;
-                editor.setTransformationMethod(null);
-            } else if (multiline) {
-                inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_VARIATION_NORMAL
-                        | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
-                action = EditorInfo.IME_ACTION_NONE;
-                editor.setTransformationMethod(null);
-            } else {
-                inputType = InputType.TYPE_CLASS_TEXT
-                        | InputType.TYPE_TEXT_VARIATION_NORMAL
-                        | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                        | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
-                action = EditorInfo.IME_ACTION_DONE;
-                editor.setTransformationMethod(null);
-            }
-            if (editor.getInputType() != inputType) {
-                editor.setInputType(inputType);
-            }
-            editor.imeAction = action;
-            editor.setImeOptions(
-                    EditorInfo.IME_FLAG_NO_EXTRACT_UI
-                            | EditorInfo.IME_FLAG_NO_FULLSCREEN
-                            | action);
+                final int inputType;
+                final int action;
+                // Uma linha por padrão; a bio do perfil é de várias. `setSingleLine`
+                // mexe no inputType, então vem antes de ele ser aplicado.
+                final boolean multiline = mode == NATIVE_FIELD_MULTILINE;
+                editor.setSingleLine(!multiline);
+                editor.setHorizontallyScrolling(!multiline);
+                editor.setGravity(multiline
+                        ? (Gravity.START | Gravity.TOP)
+                        : (Gravity.START | Gravity.CENTER_VERTICAL));
+                if (multiline) {
+                    editor.setMaxLines(Integer.MAX_VALUE);
+                }
+                if (mode == NATIVE_FIELD_PASSWORD) {
+                    inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD;
+                    action = EditorInfo.IME_ACTION_DONE;
+                    editor.setTransformationMethod(PasswordTransformationMethod.getInstance());
+                } else if (mode == NATIVE_FIELD_SEARCH) {
+                    inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL;
+                    action = EditorInfo.IME_ACTION_SEARCH;
+                    editor.setTransformationMethod(null);
+                } else if (multiline) {
+                    inputType = InputType.TYPE_CLASS_TEXT
+                            | InputType.TYPE_TEXT_VARIATION_NORMAL
+                            | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                            | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                    action = EditorInfo.IME_ACTION_NONE;
+                    editor.setTransformationMethod(null);
+                } else {
+                    inputType = InputType.TYPE_CLASS_TEXT
+                            | InputType.TYPE_TEXT_VARIATION_NORMAL
+                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                            | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                    action = EditorInfo.IME_ACTION_DONE;
+                    editor.setTransformationMethod(null);
+                }
+                if (editor.getInputType() != inputType) {
+                    editor.setInputType(inputType);
+                }
+                editor.imeAction = action;
+                editor.setImeOptions(
+                        EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                                | EditorInfo.IME_FLAG_NO_FULLSCREEN
+                                | action);
 
-            final FrameLayout.LayoutParams params =
-                    (FrameLayout.LayoutParams) editor.getLayoutParams();
-            params.width = Math.max(1, width);
-            params.height = Math.max(1, height);
-            params.leftMargin = left;
-            params.topMargin = top;
-            editor.setLayoutParams(params);
-            editor.setVisibility(View.VISIBLE);
-            nativeFieldLayer.bringToFront();
-            editor.bringToFront();
+                editor.appliedConfig = config;
+            }
+
+            final String geometry = left + "|" + top + "|" + width + "|" + height;
+            if (!geometry.equals(editor.appliedGeometry)) {
+                final FrameLayout.LayoutParams params =
+                        (FrameLayout.LayoutParams) editor.getLayoutParams();
+                params.width = Math.max(1, width);
+                params.height = Math.max(1, height);
+                params.leftMargin = left;
+                params.topMargin = top;
+                editor.setLayoutParams(params);
+                editor.appliedGeometry = geometry;
+            }
+            if (created || editor.getVisibility() != View.VISIBLE) {
+                editor.setVisibility(View.VISIBLE);
+                nativeFieldLayer.bringToFront();
+                editor.bringToFront();
+            }
 
             // Enquanto o usuário digita, Android é a fonte de verdade. Um
             // request de foco vindo do Rust também pode representar uma
