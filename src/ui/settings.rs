@@ -4687,7 +4687,8 @@ fn server_pane(
                                 "category" => "category",
                                 _ => "text",
                             };
-                            if segmented(ui, t, &mut kind, &[("text", s.channel_kind_text), ("voice", s.channel_kind_voice), ("category", s.channel_kind_category)]) {
+                            // Sempre lado a lado, também no celular: são três opções curtas.
+                            if segmented_inner(ui, t, &mut kind, &[("text", s.channel_kind_text), ("voice", s.channel_kind_voice), ("category", s.channel_kind_category)], true) {
                                 editor.kind = kind.to_owned();
                             }
                         });
