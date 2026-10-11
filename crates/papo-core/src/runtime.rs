@@ -59,6 +59,7 @@ pub enum RuntimeEffect {
         token: String,
         registered: bool,
     },
+    PasswordRecovered,
     PasswordResetLink {
         url: String,
         expires_at: chrono::DateTime<chrono::Utc>,
@@ -501,6 +502,7 @@ impl ServerRuntime {
                     registered: *registered,
                 });
             }
+            Update::PasswordRecovered => effects.push(RuntimeEffect::PasswordRecovered),
             Update::PasswordResetLink { url, expires_at } => {
                 effects.push(RuntimeEffect::PasswordResetLink {
                     url: url.clone(),

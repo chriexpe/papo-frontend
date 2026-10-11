@@ -514,6 +514,15 @@ impl Api {
         .await
     }
 
+    /// Use-once reset; never sends the token to another server.
+    pub async fn recover_password(&self, token: &str, password: &str) -> ApiResult<()> {
+        let _: serde_json::Value = self.post(
+            "/auth/password_reset",
+            &serde_json::json!({ "token": token, "password": password }),
+        ).await?;
+        Ok(())
+    }
+
     pub async fn whoami(&self) -> ApiResult<Whoami> {
         self.get("/auth/whoami").await
     }
@@ -746,6 +755,7 @@ impl Api {
         reply_to: Option<&str>,
         notify_reply: bool,
         attachments: &[Upload],
+        embeds: &[super::models::CustomEmbedInput],
     ) -> ApiResult<Message> {
         let url = self
             .base
@@ -755,6 +765,10 @@ impl Api {
         let mut form = reqwest::multipart::Form::new()
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
+        if !embeds.is_empty() {
+            form = form.text("embeds", serde_json::to_string(embeds)
+                .map_err(|e| ApiError::Decode(e.to_string()))?);
+        }
         if let Some(reply_to) = reply_to {
             form = form
                 .text("reply_to", reply_to.to_owned())
@@ -837,6 +851,7 @@ impl Api {
         content: &str,
         reply_to: Option<&str>,
         notify_reply: bool,
+        embeds: &[super::models::CustomEmbedInput],
     ) -> Result<Message, SendMessageError> {
         let url = self
             .base
@@ -846,6 +861,11 @@ impl Api {
         let mut form = reqwest::multipart::Form::new()
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
+        if !embeds.is_empty() {
+            let payload = serde_json::to_string(embeds)
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Decode(e.to_string())))?;
+            form = form.text("embeds", payload);
+        }
         if let Some(reply_to) = reply_to {
             form = form
                 .text("reply_to", reply_to.to_owned())
@@ -906,11 +926,12 @@ impl Api {
         }
     }
 
-    pub async fn edit_message(&self, message_id: &str, content: &str) -> ApiResult<Message> {
+    pub async fn edit_message(&self, message_id: &str, content: &str, embeds: Option<Vec<super::models::CustomEmbedInput>>) -> ApiResult<Message> {
         self.put(
             &format!("/messages/{message_id}"),
             &UpdateMessageRequest {
                 content: content.to_owned(),
+                embeds,
             },
         )
         .await

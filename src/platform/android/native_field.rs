@@ -22,7 +22,8 @@ pub enum Mode {
     Text,
     Password,
     Search,
-    /// Várias linhas (a bio do cartão de perfil): Enter quebra a linha.
+    /// Várias linhas (bio do cartão, formulários de embed): Enter quebra a
+    /// linha, e o texto troca de tamanho A/B conforme quebra.
     Multiline,
 }
 

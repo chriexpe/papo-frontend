@@ -1170,7 +1170,7 @@ public class PapoActivity extends GameActivity {
                         && event.getKeyCode() == KeyEvent.KEYCODE_ENTER
                         && event.getAction() == KeyEvent.ACTION_DOWN
                         && !event.isShiftPressed();
-                if (action || enter) {
+                if ((action || enter) && imeAction != EditorInfo.IME_ACTION_NONE) {
                     nativeFieldSubmit(key);
                     return true;
                 }
@@ -1282,8 +1282,7 @@ public class PapoActivity extends GameActivity {
                     inputType = InputType.TYPE_CLASS_TEXT
                             | InputType.TYPE_TEXT_VARIATION_NORMAL
                             | InputType.TYPE_TEXT_FLAG_MULTI_LINE
-                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-                            | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT;
+                            | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES;
                     action = EditorInfo.IME_ACTION_NONE;
                     editor.setTransformationMethod(null);
                 } else {

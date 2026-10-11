@@ -231,6 +231,7 @@ impl NetworkGate {
 pub enum Command {
     Login { username: String, password: String },
     Register { username: String, password: String },
+    RecoverPassword { token: String, password: String },
     /// Senha do servidor, para servidores fechados.
     LoginServer { password: String },
     CreateServer { name: String },
@@ -387,6 +388,7 @@ pub enum Command {
     /// Envio de texto durável. A UI fornece o owner que já estava verificado
     /// na projeção; o worker recusa se ele divergir da sessão verificada.
     QueueMessage {
+        embeds: Vec<super::models::CustomEmbedInput>,
         local_id: String,
         owner_user_id: String,
         channel_id: String,
@@ -406,6 +408,7 @@ pub enum Command {
         owner_user_id: String,
     },
     SendMessage {
+        embeds: Vec<super::models::CustomEmbedInput>,
         channel_id: String,
         content: String,
         reply_to: Option<String>,
@@ -413,6 +416,7 @@ pub enum Command {
         attachments: Vec<Upload>,
     },
     EditMessage {
+        embeds: Option<Vec<super::models::CustomEmbedInput>>,
         message_id: String,
         content: String,
     },
@@ -518,6 +522,7 @@ pub enum Update {
     UserSettings(Box<UserSettings>),
     /// Uma operação deu certo e não devolve nada de útil para a tela.
     Done,
+    PasswordRecovered,
     PasswordResetLink {
         url: String,
         expires_at: chrono::DateTime<chrono::Utc>,
@@ -1137,6 +1142,7 @@ async fn drive_outgoing(
                 &attempt.content,
                 attempt.reply_to.as_deref(),
                 attempt.notify_reply,
+                &attempt.embeds,
             )
             .await
         {
@@ -1715,6 +1721,7 @@ async fn worker(
 
                 match command {
                     Command::QueueMessage {
+                        embeds,
                         local_id,
                         owner_user_id,
                         channel_id,
@@ -1749,6 +1756,7 @@ async fn worker(
                             owner_user_id: owner_user_id.clone(),
                             channel_id,
                             content: content.clone(),
+                            embeds,
                             reply_to: reply_to.clone(),
                             notify_reply,
                             created_at,
@@ -2936,6 +2944,12 @@ async fn handle(
             ),
             }
         }
+        Command::RecoverPassword { token, password } => {
+            match api.recover_password(&token, &password).await {
+                Ok(()) => publish(updates, wake, Update::PasswordRecovered),
+                Err(error) => report(storage_key, updates, wake, error),
+            }
+        }
         Command::OpenDirectMessage { .. }
         | Command::HideDirectMessage { .. }
         | Command::SetUserBlocked { .. } => {
@@ -3306,6 +3320,7 @@ async fn handle(
             unreachable!("comando de fila é interceptado pelo worker antes do handler legado")
         }
         Command::SendMessage {
+            embeds,
             channel_id,
             content,
             reply_to,
@@ -3319,6 +3334,7 @@ async fn handle(
                     reply_to.as_deref(),
                     notify_reply,
                     &attachments,
+                    &embeds,
                 )
                 .await
             {
@@ -3335,9 +3351,10 @@ async fn handle(
             }
         }
         Command::EditMessage {
+            embeds,
             message_id,
             content,
-        } => match api.edit_message(&message_id, &content).await {
+        } => match api.edit_message(&message_id, &content, embeds).await {
             Ok(message) => publish(updates, wake, Update::Edited(Box::new(message))),
             Err(error) => report(storage_key, updates, wake, error),
         },
@@ -3856,6 +3873,7 @@ mod network_hint_tests {
             owner_user_id: "me".to_owned(),
             channel_id: "general".to_owned(),
             content: content.to_owned(),
+            embeds: Vec::new(),
             reply_to: None,
             notify_reply: false,
             created_at: crate::cache::now_millis(),
