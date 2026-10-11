@@ -2069,6 +2069,45 @@ fn text_input(
     }
 }
 
+/// Campo de busca: o campo de texto da plataforma mais o X redondo que limpa.
+/// `field` é a caixa inteira (o fundo já foi pintado) e `left` é onde termina
+/// a lupa. Limpar pelo app precisa forçar o campo nativo a aceitar o texto
+/// novo, porque o Android é quem manda enquanto o campo tem o foco.
+#[allow(clippy::too_many_arguments)]
+fn search_input(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    key: &str,
+    value: &mut String,
+    field: Rect,
+    left: f32,
+    hint: &str,
+    font: egui::FontId,
+    focus: bool,
+) {
+    let ctx = ui.ctx().clone();
+    let force_id = egui::Id::new(("limpar-busca-pendente", key));
+    let force = ctx.data_mut(|data| data.remove_temp::<bool>(force_id)).unwrap_or(false);
+    let has_text = !value.is_empty();
+    let right = if has_text { 30.0 } else { 8.0 };
+    let input = Rect::from_min_max(egui::pos2(field.min.x + left, field.min.y), egui::pos2(field.max.x - right, field.max.y));
+    text_input(ui, t, key, value, input, hint, font, 0, focus || force);
+    if has_text {
+        let cross = Rect::from_center_size(egui::pos2(field.max.x - 8.0 - 9.0, field.center().y), Vec2::splat(18.0));
+        let response = ui.interact(cross, egui::Id::new(("limpar-busca", key)), Sense::click());
+        ui.painter().circle_filled(cross.center(), 9.0, t.fill_medium);
+        ui.painter().text(cross.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::X, text::icon(8.0), t.card);
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            value.clear();
+            ctx.data_mut(|data| data.insert_temp(force_id, true));
+            ctx.request_repaint();
+        }
+    }
+}
+
 /// O seletor com busca que abre do botão: devolve o índice escolhido.
 ///
 /// É uma camada própria (Area), com fundo opaco: ela fica por cima, segura o
@@ -2134,8 +2173,7 @@ fn picker_menu(response: &egui::Response, t: &Tokens, placeholder: &str, empty: 
             let field = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, rect.min.y + 8.0), Vec2::new(rect.width() - 16.0, 34.0));
             ui.painter().rect_filled(field, CornerRadius::same(8), t.fill_soft);
             ui.painter().text(egui::pos2(field.min.x + 12.0, field.center().y), egui::Align2::LEFT_CENTER, egui_phosphor::regular::MAGNIFYING_GLASS, text::icon(13.0), t.label_tertiary);
-            let input = Rect::from_min_max(egui::pos2(field.min.x + 30.0, field.min.y), egui::pos2(field.max.x - 8.0, field.max.y));
-            text_input(ui, t, "busca", &mut query, input, placeholder, px(13.0, "regular"), 0, just_opened);
+            search_input(ui, t, "busca", &mut query, field, 30.0, placeholder, px(13.0, "regular"), just_opened);
             let list = Rect::from_min_size(egui::pos2(rect.min.x + 8.0, field.max.y + 6.0), Vec2::new(rect.width() - 16.0, list_h));
             let mut inner = ui.new_child(UiBuilder::new().max_rect(list).layout(Layout::top_down(Align::Min)));
             egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(&mut inner, |ui| {
@@ -3102,35 +3140,7 @@ fn search_field(ui: &mut egui::Ui, t: &Tokens, s: &Strings, query: &mut String) 
         text::icon(17.0),
         t.accent,
     );
-    let field = Rect::from_min_max(egui::pos2(rect.min.x + space::XL + 24.0, rect.min.y + 4.0), egui::pos2(rect.max.x - space::XL, rect.max.y - 4.0));
-    #[cfg(target_os = "android")]
-    {
-        let _ = crate::platform::native_field::show(
-            ui.ctx(),
-            "ajustes-celular:busca",
-            query,
-            field,
-            s.settings_search,
-            crate::platform::native_field::Mode::Text,
-            64,
-            false,
-            t.label,
-            t.label_tertiary,
-            15.0,
-        );
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let mut child = ui.new_child(UiBuilder::new().max_rect(field));
-        child.add_sized(
-            field.size(),
-            egui::TextEdit::singleline(query)
-                .hint_text(s.settings_search)
-                .frame(egui::Frame::NONE)
-                .font(egui::FontId::new(15.0, egui::FontFamily::Proportional))
-                .vertical_align(Align::Center),
-        );
-    }
+    search_input(ui, t, "ajustes-celular:busca", query, rect, space::XL + 24.0, s.settings_search, egui::FontId::new(15.0, egui::FontFamily::Proportional), false);
     ui.add_space(space::MD);
 }
 
@@ -5167,11 +5177,7 @@ fn audit_pane(
         text::icon(12.0),
         t.label_tertiary,
     );
-    let inner = Rect::from_min_max(
-        egui::pos2(field.min.x + space::MD + 18.0, field.min.y),
-        egui::pos2(field.max.x - space::SM, field.max.y),
-    );
-    text_input(ui, t, "auditoria-pessoa", &mut filter.person, inner, s.audit_person_search, text::callout(), 0, false);
+    search_input(ui, t, "auditoria-pessoa", &mut filter.person, field, space::MD + 18.0, s.audit_person_search, text::callout(), false);
     ui.add_space(space::SM);
 
     let kinds: Vec<(Kind, &str)> = Kind::ALL
