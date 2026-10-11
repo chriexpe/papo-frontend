@@ -953,7 +953,7 @@ pub struct UiState {
     /// visual quando uma página antiga entra antes do conteúdo visível.
     chat_scroll_metrics: Option<(String, f32, f32)>,
     /// Quanto ainda falta rolar do que a roda do mouse pediu (ver `glide_wheel`).
-    wheel_glide: f32,
+    wheel_glide: WheelGlide,
     /// O texto do compositor passa do que cabe e rola por dentro: a roda do
     /// mouse sobre ele é dele, não da conversa por baixo.
     composer_overflows: bool,
@@ -961,6 +961,11 @@ pub struct UiState {
     /// assinatura do que a determina. Linhas longe da tela não são montadas
     /// de novo: reservam esta altura (ver `message_list`).
     row_heights: std::collections::HashMap<String, (u64, f32)>,
+    /// Linhas que o quadro anterior pulou (ver `message_list`).
+    culled_rows: std::collections::HashSet<String>,
+    /// Quanto as linhas acima da tela mudaram de altura ao serem montadas de
+    /// novo; a conversa rola esse tanto para o que se lê não pular.
+    row_drift: f32,
     /// Baseline capturada quando pedimos uma página mais antiga.
     history_scroll_anchor: Option<(String, f32, f32)>,
     /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
@@ -1096,9 +1101,11 @@ impl Default for UiState {
             recorder: None,
             error: None,
             chat_scroll_metrics: None,
-            wheel_glide: 0.0,
+            wheel_glide: WheelGlide::default(),
             composer_overflows: false,
             row_heights: std::collections::HashMap::new(),
+            culled_rows: std::collections::HashSet::new(),
+            row_drift: 0.0,
             history_scroll_anchor: None,
             forced_chat_scroll: None,
             relayout_scroll_anchor: None,
@@ -3185,6 +3192,15 @@ fn conversation(
                 state.open_channel_pending = None;
                 ui.ctx()
                     .request_discard("posição inicial da conversa resolvida no anchor");
+            }
+
+            // Linhas acima da tela mudaram de altura ao deixar de ser puladas:
+            // o scroll acompanha, senão o que se lê dá um tranco.
+            let drift = std::mem::take(&mut state.row_drift);
+            if drift.abs() > 0.5 && !opening_pass {
+                state.forced_chat_scroll =
+                    Some((channel_id.clone(), (output.state.offset.y + drift).max(0.0)));
+                ui.ctx().request_discard("linhas acima da tela mudaram de altura");
             }
 
             // Só pagina depois que a abertura estabilizou e com base no offset
@@ -5439,6 +5455,7 @@ fn message_list(
     // Montar toda linha carregada a cada quadro custa O(mensagens): com umas
     // centenas, a rolagem trava. Linha longe da tela, cuja altura já se
     // conhece, só reserva o espaço.
+    let mut culled_now = std::collections::HashSet::new();
     let cull_margin = CHAT_LOAD_ABOVE.max(CHAT_LOAD_BELOW).max(readable.height());
     let can_cull = readable.width() > 0.0
         && readable.height() > 0.0
@@ -5466,6 +5483,7 @@ fn message_list(
                 Vec2::new(width, (height - ui.spacing().item_spacing.y).max(0.0)),
                 Sense::hover(),
             );
+            culled_now.insert(message.id.clone());
             last_day = Some(day);
             last_author = Some(message.author_id.clone());
             last_at = Some(message.at);
@@ -5789,10 +5807,20 @@ fn message_list(
 
         last_author = Some(message.author_id.clone());
         last_at = Some(message.at);
-        state
-            .row_heights
-            .insert(message.id.clone(), (signature, ui.cursor().top() - y_start));
+        let height = ui.cursor().top() - y_start;
+        // Uma linha acima da tela que vinha sendo pulada e agora tem outra
+        // altura (mídia ou prévia que só aparece quando ela entra no alcance
+        // de carga) empurraria o que se lê. O desvio é devolvido ao scroll.
+        if state.culled_rows.contains(&message.id)
+            && let Some(&(_, before)) = state.row_heights.get(&message.id)
+            && (height - before).abs() > 0.5
+            && ui.cursor().top() <= readable.min.y
+        {
+            state.row_drift += height - before;
+        }
+        state.row_heights.insert(message.id.clone(), (signature, height));
     }
+    state.culled_rows = culled_now;
 
     if ui.ctx().pointer_hover_pos().is_none() {
         state.hover_actions = None;
@@ -8849,27 +8877,75 @@ fn webembed_chrome_occlusions(
 /// egui anda 40 pt por clique e termina o movimento em um décimo de segundo,
 /// o que dá a sensação de rolagem "amarrada".
 const WHEEL_NOTCH_PX: f32 = 96.0;
-/// Constante de tempo do deslizamento: ~90% do caminho em 0,2 s.
-const WHEEL_GLIDE_TAU: f32 = 0.085;
+/// Rigidez da mola do deslizamento (rad/s). Com amortecimento crítico o
+/// movimento acelera, desacelera e termina sem passar do alvo: ~99% do
+/// caminho em ~0,25 s, sem uma cauda longa se arrastando.
+const WHEEL_SPRING: f32 = 26.0;
+
+/// Estado do deslizamento da roda do mouse sobre a conversa.
+#[derive(Default)]
+struct WheelGlide {
+    /// O que ainda falta rolar.
+    remaining: f32,
+    /// Velocidade com que esse resto está diminuindo (px/s).
+    velocity: f32,
+    /// O que o quadro rolou, para repetir se o egui refizer o quadro.
+    last_step: f32,
+}
+
+impl WheelGlide {
+    fn idle(&self) -> bool {
+        self.remaining.abs() < 0.5 && self.velocity.abs() < 5.0
+    }
+
+    fn stop(&mut self) {
+        self.remaining = 0.0;
+        self.velocity = 0.0;
+    }
+}
 
 /// Quanto rolar neste quadro, dado o que a roda pediu agora (`requested`) e o
-/// que ainda sobrava (`remaining`). A rolagem desacelera até parar em vez de
-/// andar tudo de uma vez.
-fn glide_step(remaining: &mut f32, requested: f32, dt: f32) -> f32 {
-    *remaining += requested;
-    let mut step = *remaining * (1.0 - (-dt.clamp(0.0, 0.05) / WHEEL_GLIDE_TAU).exp());
-    *remaining -= step;
-    if remaining.abs() < 0.5 {
-        step += *remaining;
-        *remaining = 0.0;
+/// que ainda sobrava. É uma mola de amortecimento crítico sobre o resto, com
+/// solução exata para qualquer `dt`: a velocidade é contínua entre cliques e o
+/// movimento não depende do ritmo dos quadros.
+fn glide_step(glide: &mut WheelGlide, requested: f32, dt: f32) -> f32 {
+    if requested != 0.0 && requested * glide.remaining < 0.0 {
+        // Inverteu o sentido: para o que vinha e segue o novo pedido.
+        glide.stop();
     }
+    glide.remaining += requested;
+    let t = dt.clamp(0.0, 0.05);
+    let w = WHEEL_SPRING;
+    let r0 = glide.remaining;
+    let v0 = glide.velocity;
+    let decay = (-w * t).exp();
+    let pending = v0 + w * r0;
+    let mut remaining = (r0 + pending * t) * decay;
+    let mut velocity = (v0 - w * pending * t) * decay;
+    // O resto nunca muda de sinal: sem "voltar um pouco" no fim.
+    if remaining * r0 <= 0.0 || remaining.abs() < 0.5 {
+        remaining = 0.0;
+        velocity = 0.0;
+    }
+    let step = r0 - remaining;
+    glide.remaining = remaining;
+    glide.velocity = velocity;
     step
 }
 
 /// Troca a rolagem da roda do mouse sobre a conversa por um deslizamento
-/// suave e mais longo. Trackpad (pixels) continua com o tratamento do egui,
-/// que já vem suavizado pelo sistema.
-fn glide_wheel(ui: &egui::Ui, remaining: &mut f32, area: Rect, enabled: bool) {
+/// suave. Trackpad (pixels) continua com o tratamento do egui, que já vem
+/// suavizado pelo sistema.
+fn glide_wheel(ui: &egui::Ui, glide: &mut WheelGlide, area: Rect, enabled: bool) {
+    // Quadro refeito (`request_discard`): o mesmo passo, não outro.
+    if ui.ctx().current_pass_index() > 0 {
+        let step = glide.last_step;
+        if step != 0.0 {
+            ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
+        }
+        return;
+    }
+    glide.last_step = 0.0;
     let hovering = enabled
         && ui.input(|input| input.pointer.hover_pos()).is_some_and(|position| {
             area.contains(position)
@@ -8879,7 +8955,7 @@ fn glide_wheel(ui: &egui::Ui, remaining: &mut f32, area: Rect, enabled: bool) {
                     .is_none_or(|layer| layer == ui.layer_id())
         });
     if !hovering {
-        *remaining = 0.0;
+        glide.stop();
         return;
     }
     let (requested, dt) = ui.input(|input| {
@@ -8898,11 +8974,12 @@ fn glide_wheel(ui: &egui::Ui, remaining: &mut f32, area: Rect, enabled: bool) {
         }
         (px, input.stable_dt)
     });
-    if requested == 0.0 && remaining.abs() < 0.5 {
-        *remaining = 0.0;
+    if requested == 0.0 && glide.idle() {
+        glide.stop();
         return;
     }
-    let step = glide_step(remaining, requested, dt);
+    let step = glide_step(glide, requested, dt);
+    glide.last_step = step;
     ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
     ui.ctx().request_repaint();
 }
@@ -11053,33 +11130,68 @@ mod custom_embed_tests {
 mod wheel_glide_tests {
     use super::*;
 
-    #[test]
-    fn one_notch_glides_over_several_frames_and_lands_exactly() {
-        let mut remaining = 0.0;
-        let mut steps = vec![glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0)];
-        while remaining != 0.0 && steps.len() < 200 {
-            steps.push(glide_step(&mut remaining, 0.0, 1.0 / 60.0));
-        }
-        assert!(steps.len() > 8, "tem que durar vários quadros: {}", steps.len());
-        // O último passo só recolhe o resto abaixo de meio pixel.
-        let body = &steps[..steps.len() - 1];
-        assert!(body.windows(2).all(|pair| pair[1] <= pair[0] + 1e-3), "desacelera: {steps:?}");
-        let total: f32 = steps.iter().sum();
-        assert!((total - WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
-        // ~90% do caminho em ~0,2 s (12 quadros).
-        let early: f32 = steps.iter().take(12).sum();
-        assert!(early > WHEEL_NOTCH_PX * 0.85, "{early}");
+    fn run(requests: &[(usize, f32)], frames: usize, dt: f32) -> Vec<f32> {
+        let mut glide = WheelGlide::default();
+        (0..frames)
+            .map(|frame| {
+                let requested = requests
+                    .iter()
+                    .find(|(at, _)| *at == frame)
+                    .map_or(0.0, |(_, px)| *px);
+                glide_step(&mut glide, requested, dt)
+            })
+            .collect()
     }
 
     #[test]
-    fn extra_notches_add_up_instead_of_restarting() {
-        let mut remaining = 0.0;
-        let mut total = glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0);
-        total += glide_step(&mut remaining, WHEEL_NOTCH_PX, 1.0 / 60.0);
-        while remaining != 0.0 {
-            total += glide_step(&mut remaining, 0.0, 1.0 / 60.0);
-        }
-        assert!((total - 2.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+    fn one_notch_speeds_up_slows_down_and_lands_exactly() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX)], 60, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!((total - WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+        // Nunca anda para trás.
+        assert!(steps.iter().all(|step| *step >= 0.0), "{steps:?}");
+        // Acelera no começo (a mola parte parada)...
+        assert!(steps[1] > steps[0], "{steps:?}");
+        // ...e depois só desacelera, sem tranco no meio do caminho.
+        let peak = steps.iter().cloned().fold(0.0, f32::max);
+        let peak_at = steps.iter().position(|step| *step == peak).unwrap();
+        assert!(peak_at <= 4, "pico cedo: {peak_at}");
+        // (O último passo só recolhe o que sobra abaixo de meio pixel.)
+        let last = steps.iter().rposition(|step| *step > 0.0).unwrap();
+        assert!(
+            steps[peak_at..last].windows(2).all(|pair| pair[1] <= pair[0] + 1e-3),
+            "{steps:?}"
+        );
+        // Termina de vez: ~99% em ~0,25 s (15 quadros) e nada depois de 0,4 s.
+        let early: f32 = steps.iter().take(15).sum();
+        assert!(early > WHEEL_NOTCH_PX * 0.98, "{early}");
+        assert!(steps.iter().skip(24).all(|step| *step == 0.0), "{steps:?}");
+    }
+
+    #[test]
+    fn motion_does_not_depend_on_the_frame_rate() {
+        let slow: f32 = run(&[(0, WHEEL_NOTCH_PX)], 30, 1.0 / 30.0).iter().take(8).sum();
+        let fast: f32 = run(&[(0, WHEEL_NOTCH_PX)], 120, 1.0 / 120.0).iter().take(32).sum();
+        // Mesmo instante (~0,27 s), mesma posição, com ritmos de quadro diferentes.
+        assert!((slow - fast).abs() < 1.0, "{slow} vs {fast}");
+    }
+
+    #[test]
+    fn extra_notches_add_up_without_stalling() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX), (3, WHEEL_NOTCH_PX), (6, WHEEL_NOTCH_PX)], 90, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!((total - 3.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
+        assert!(steps.iter().all(|step| *step >= 0.0), "{steps:?}");
+        // A velocidade passa de um clique ao seguinte sem cair a zero.
+        assert!(steps[3..8].iter().all(|step| *step > 1.0), "{steps:?}");
+    }
+
+    #[test]
+    fn reversing_direction_stops_instead_of_bouncing() {
+        let steps = run(&[(0, WHEEL_NOTCH_PX), (5, -WHEEL_NOTCH_PX)], 90, 1.0 / 60.0);
+        let total: f32 = steps.iter().sum();
+        assert!(total.abs() < 100.0 && steps[..5].iter().all(|step| *step >= 0.0));
+        assert!(steps[5..].iter().all(|step| *step <= 0.0), "{steps:?}");
     }
 }
 
