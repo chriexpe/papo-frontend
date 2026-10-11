@@ -23,6 +23,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Insets;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.drawable.Icon;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -792,6 +793,28 @@ public class PapoActivity extends GameActivity {
         }
     }
 
+    private Typeface papoFont;
+
+    /**
+     * A Inter que o Rust grava em files/fonts: os campos nativos usam a mesma
+     * fonte do egui. Sem o arquivo (primeira abertura, erro de disco) fica a
+     * do sistema e tenta de novo na próxima vez.
+     */
+    private Typeface papoTypeface() {
+        if (papoFont == null) {
+            try {
+                final java.io.File file =
+                        new java.io.File(getFilesDir(), "fonts/Inter-Regular.ttf");
+                if (file.isFile()) {
+                    papoFont = Typeface.createFromFile(file);
+                }
+            } catch (RuntimeException ignored) {
+                // cai na fonte do sistema
+            }
+        }
+        return papoFont;
+    }
+
     private void ensureNativeEditor() {
         if (nativeEditor != null) {
             return;
@@ -808,6 +831,9 @@ public class PapoActivity extends GameActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
         nativeEditor = new NativeEditText(this);
+        if (papoTypeface() != null) {
+            nativeEditor.setTypeface(papoTypeface());
+        }
         nativeEditor.setBackground(null);
         nativeEditor.setBackgroundColor(Color.TRANSPARENT);
         nativeEditor.setIncludeFontPadding(false);
@@ -1099,6 +1125,9 @@ public class PapoActivity extends GameActivity {
         NativeFieldEditText(Context context, String key) {
             super(context);
             this.key = key;
+            if (papoTypeface() != null) {
+                setTypeface(papoTypeface());
+            }
             setBackground(null);
             setBackgroundColor(Color.TRANSPARENT);
             setIncludeFontPadding(false);

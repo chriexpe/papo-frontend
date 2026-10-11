@@ -249,7 +249,7 @@ pub fn set_selection(key: &str, text: &str, char_index: usize) {
 }
 
 fn android_color(color: egui::Color32) -> i32 {
-    let [r, g, b, a] = color.to_array();
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
     u32::from_be_bytes([a, r, g, b]) as i32
 }
 

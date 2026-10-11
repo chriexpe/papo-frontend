@@ -88,7 +88,25 @@ pub fn measured(key: &str) -> Option<(usize, f32)> {
 }
 
 pub fn install(app: AndroidApp) {
+    install_font(&app);
     let _ = APP.set(app);
+}
+
+/// Deixa a Inter, a mesma fonte do egui, num arquivo que o Java lê
+/// (`PapoActivity.papoTypeface`): os campos nativos usavam a fonte do sistema
+/// e por isso o texto saía com outro tamanho e outra cara que o do egui.
+fn install_font(app: &AndroidApp) {
+    const INTER: &[u8] = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+    let Some(dir) = app.internal_data_path().map(|path| path.join("fonts")) else {
+        return;
+    };
+    let path = dir.join("Inter-Regular.ttf");
+    let current = std::fs::metadata(&path).map(|meta| meta.len()).ok();
+    if current != Some(INTER.len() as u64)
+        && let Err(error) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, INTER))
+    {
+        log::warn!("não consegui gravar a fonte dos campos nativos: {error}");
+    }
 }
 
 pub fn begin_frame() {
@@ -189,8 +207,12 @@ pub fn show(
     }
 }
 
+/// ARGB "reto" para o Android. `Color32` guarda os canais já multiplicados
+/// pelo alfa; passá-los assim faz uma cor translúcida (a dica, o texto
+/// terciário) chegar ao EditText bem mais escura do que no egui.
 fn android_color(color: egui::Color32) -> i32 {
-    i32::from_be_bytes([color.a(), color.r(), color.g(), color.b()])
+    let [r, g, b, a] = color.to_srgba_unmultiplied();
+    u32::from_be_bytes([a, r, g, b]) as i32
 }
 
 fn call_show(spec: &Spec, focus: bool) {
