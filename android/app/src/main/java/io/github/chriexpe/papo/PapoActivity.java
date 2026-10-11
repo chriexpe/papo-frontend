@@ -182,6 +182,7 @@ public class PapoActivity extends GameActivity {
     private static native void nativeFieldTextChanged(String key, String text);
     private static native void nativeFieldSubmit(String key);
     private static native void nativeFieldFocusChanged(String key, boolean focused);
+    private static native void nativeFieldLines(String key, int lines, int lineHeightPx);
 
     /** Responde ao Rust se a permissão saiu. Em `src/platform/permission.rs`. */
     private static native void nativePermissionResult(String permission, boolean granted);
@@ -740,6 +741,37 @@ public class PapoActivity extends GameActivity {
         }
     }
 
+    /**
+     * Mesmo par de tamanhos de `theme::adaptive_font` no Rust: o texto tem o
+     * tamanho A enquanto cabe numa linha e passa ao B (menor) quando quebra.
+     * A conta sempre usa o A, nunca o tamanho atual, para voltar a A sem
+     * piscar entre os dois. Os dois lados mantêm {@code WRAP_TEXT_SCALE} igual.
+     */
+    private static final float WRAP_TEXT_SCALE = 0.86f;
+
+    private static void applyAdaptiveSize(EditText view, float sizeA) {
+        final ViewGroup.LayoutParams params = view.getLayoutParams();
+        final int available = (params != null ? params.width : view.getWidth())
+                - view.getPaddingLeft() - view.getPaddingRight();
+        final CharSequence text = view.getText();
+        boolean fits = true;
+        if (text != null && text.length() > 0) {
+            if (text.toString().indexOf('\n') >= 0) {
+                fits = false;
+            } else if (available > 0) {
+                final android.text.TextPaint paint = new android.text.TextPaint(view.getPaint());
+                paint.setTextSize(sizeA);
+                fits = android.text.Layout.getDesiredWidth(text, paint) <= available;
+            }
+        }
+        final float target = fits ? sizeA : Math.max(8f, Math.round(sizeA * WRAP_TEXT_SCALE));
+        if (Math.abs(view.getTextSize() - target) > 0.5f) {
+            view.setTextSize(TypedValue.COMPLEX_UNIT_PX, target);
+        }
+    }
+
+    private float nativeEditorBaseSizePx = 0f;
+
     private int nativeEditorReportedLines = -1;
     private int nativeEditorReportedLineHeight = -1;
 
@@ -747,6 +779,9 @@ public class PapoActivity extends GameActivity {
     private void reportNativeEditorLines() {
         if (nativeEditor == null || nativeEditorKey == null || nativeEditor.getLayout() == null) {
             return;
+        }
+        if (nativeEditorBaseSizePx > 0f) {
+            applyAdaptiveSize(nativeEditor, nativeEditorBaseSizePx);
         }
         final int lines = Math.max(1, nativeEditor.getLineCount());
         final int lineHeight = Math.max(1, nativeEditor.getLineHeight());
@@ -873,7 +908,7 @@ public class PapoActivity extends GameActivity {
             nativeEditorMode = mode;
             nativeEditorAutocomplete = autocomplete;
 
-            nativeEditor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+            nativeEditorBaseSizePx = textSizePx;
             nativeEditor.setTextColor(textColor);
             nativeEditor.setHintTextColor(hintColor);
             nativeEditor.setHint(hint);
@@ -909,6 +944,7 @@ public class PapoActivity extends GameActivity {
                 mutatingNativeEditor = false;
                 nativeEditor.post(this::reportNativeEditorLines);
             }
+            applyAdaptiveSize(nativeEditor, textSizePx);
 
             final InputMethodManager imm =
                     (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
@@ -1035,6 +1071,30 @@ public class PapoActivity extends GameActivity {
         // cursor voltar ao começo e a tecla de apagar parar de repetir).
         String appliedConfig;
         String appliedGeometry;
+        // Campos de várias linhas: tamanho A/B conforme o texto quebra, e as
+        // linhas medidas voltam ao Rust para a caixa acompanhar.
+        boolean adaptive;
+        float baseSizePx;
+        int reportedLines = -1;
+        int reportedLineHeight = -1;
+
+        /** Aplica o tamanho A/B e conta as linhas que o texto ocupa de verdade. */
+        void adapt() {
+            if (!adaptive || baseSizePx <= 0f) {
+                return;
+            }
+            applyAdaptiveSize(this, baseSizePx);
+            if (getLayout() == null) {
+                return;
+            }
+            final int lines = Math.max(1, getLineCount());
+            final int lineHeight = Math.max(1, getLineHeight());
+            if (lines != reportedLines || lineHeight != reportedLineHeight) {
+                reportedLines = lines;
+                reportedLineHeight = lineHeight;
+                nativeFieldLines(key, lines, lineHeight);
+            }
+        }
 
         NativeFieldEditText(Context context, String key) {
             super(context);
@@ -1063,8 +1123,13 @@ public class PapoActivity extends GameActivity {
                     if (!mutating) {
                         nativeFieldTextChanged(key, text.toString());
                     }
+                    if (adaptive) {
+                        post(NativeFieldEditText.this::adapt);
+                    }
                 }
             });
+
+            addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> adapt());
 
             setOnFocusChangeListener((view, focused) ->
                     nativeFieldFocusChanged(key, focused));
@@ -1151,7 +1216,11 @@ public class PapoActivity extends GameActivity {
             final String config = mode + "|" + maxChars + "|" + textSizePx + "|" + textColor
                     + "|" + hintColor + "|" + hint;
             if (!config.equals(editor.appliedConfig)) {
-                editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+                editor.baseSizePx = textSizePx;
+                editor.adaptive = mode == NATIVE_FIELD_MULTILINE;
+                if (!editor.adaptive) {
+                    editor.setTextSize(TypedValue.COMPLEX_UNIT_PX, textSizePx);
+                }
                 editor.setTextColor(textColor);
                 editor.setHintTextColor(hintColor);
                 editor.setHint(hint);
@@ -1166,9 +1235,9 @@ public class PapoActivity extends GameActivity {
                 final boolean multiline = mode == NATIVE_FIELD_MULTILINE;
                 editor.setSingleLine(!multiline);
                 editor.setHorizontallyScrolling(!multiline);
-                editor.setGravity(multiline
-                        ? (Gravity.START | Gravity.TOP)
-                        : (Gravity.START | Gravity.CENTER_VERTICAL));
+                // Texto centrado na vertical em todos os campos: a caixa é
+                // derivada do texto, então a folga fica igual em cima e embaixo.
+                editor.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
                 if (multiline) {
                     editor.setMaxLines(Integer.MAX_VALUE);
                 }
@@ -1242,6 +1311,7 @@ public class PapoActivity extends GameActivity {
             }
 
             editor.mutating = false;
+            editor.adapt();
 
             if (focus) {
                 final NativeFieldEditText target = editor;

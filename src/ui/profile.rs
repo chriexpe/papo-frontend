@@ -356,12 +356,28 @@ const FIELD_PAD: Vec2 = Vec2::new(space::SM, space::XS);
 /// `rows.1` linhas. Vazio mede a dica, que ocupa o lugar do texto.
 fn field_height(
     ui: &egui::Ui,
+    key: &str,
     font: &egui::FontId,
     value: &str,
     hint: &str,
     width: f32,
     rows: (usize, usize),
 ) -> (f32, usize) {
+    // Campo de várias linhas: tamanho A numa linha, B quando quebra.
+    let multiline = rows.1 > 1;
+    let font = if multiline { super::theme::adaptive_font(ui, font, value, width) } else { font.clone() };
+    // No Android quem mede é o campo nativo (outra fonte, outra quebra): a
+    // caixa segue as linhas dele.
+    #[cfg(target_os = "android")]
+    if multiline
+        && !value.is_empty()
+        && let Some((native_lines, line_h)) = crate::platform::native_field::measured(&format!("perfil:{key}"))
+    {
+        let lines = native_lines.clamp(rows.0, rows.1);
+        return (lines as f32 * line_h, lines);
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = key;
     let shown = if value.is_empty() { hint } else { value };
     let lines = ui
         .painter()
@@ -369,7 +385,7 @@ fn field_height(
         .rows
         .len()
         .clamp(rows.0, rows.1);
-    let row_h = ui.fonts_mut(|fonts| fonts.row_height(font));
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font));
     (lines as f32 * row_h, lines)
 }
 
@@ -395,6 +411,12 @@ fn hidden_field(
     let outer = text_area.expand2(FIELD_PAD);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let hovered = ui.rect_contains_pointer(outer);
+    // O mesmo tamanho A/B que `field_height` usou para medir.
+    let shown_font = if multiline {
+        super::theme::adaptive_font(ui, font, value, text_area.width())
+    } else {
+        font.clone()
+    };
 
     #[cfg(not(target_os = "android"))]
     let focused = {
@@ -408,18 +430,30 @@ fn hidden_field(
         let editor = editor
             .id(id)
             .char_limit(limit)
-            .font(font.clone())
+            .font(shown_font.clone())
             .text_color(color)
             .hint_text(
                 RichText::new(hint)
-                    .font(font.clone())
+                    .font(shown_font.clone())
                     .italics()
                     .color(t.label_tertiary),
             )
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .desired_width(text_area.width());
-        let response = ui.put(text_area, editor);
+        let response = if multiline {
+            // Passando do limite de linhas o texto rola dentro do campo (roda
+            // do mouse ou arrasto), em vez de vazar para fora dele.
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_area));
+            egui::ScrollArea::vertical()
+                .max_height(text_area.height())
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                .show(&mut child, |ui| ui.add(editor))
+                .inner
+        } else {
+            ui.put(text_area, editor)
+        };
         let _ = crate::platform::ime::sync_text_edit(
             ui.ctx(),
             id,
@@ -495,7 +529,7 @@ pub fn inline_field_fit(
     let avail = ui.available_width();
     // Folga para o cursor e para a letra seguinte não quebrar a linha.
     let width = (text_w + 14.0).min(avail).max(24.0_f32.min(avail));
-    let (height, lines) = field_height(ui, &font, value, hint, width, (1, 1));
+    let (height, lines) = field_height(ui, key, &font, value, hint, width, (1, 1));
     let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     hidden_field(ui, t, key, area, value, hint, &font, color, limit, lines, false)
 }
@@ -514,7 +548,7 @@ pub fn inline_field(
     rows: (usize, usize),
 ) -> bool {
     let width = ui.available_width();
-    let (height, lines) = field_height(ui, &font, value, hint, width, rows);
+    let (height, lines) = field_height(ui, key, &font, value, hint, width, rows);
     let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     hidden_field(ui, t, key, area, value, hint, &font, color, limit, lines, rows.1 > 1)
 }
@@ -564,6 +598,7 @@ pub fn edit_card(
         let text_width = bubble_width - space::MD * 2.0 - 4.0;
         let (status_h, status_lines) = field_height(
             ui,
+            "recado",
             &status_font,
             draft.status,
             s.profile_status_hint,
@@ -789,7 +824,7 @@ pub fn edit_card(
                 text::body(),
                 t.label,
                 512,
-                (2, 8),
+                (1, 8),
             );
             let used = draft.description.chars().count();
             if focused && used > 0 {
@@ -1961,5 +1996,48 @@ mod tests {
         let shapes = harness.settle();
         assert!(text_rect(&shapes, "no ar").is_some());
         assert!(text_rect(&shapes, "Leave a note…").is_none());
+    }
+
+    #[test]
+    fn multiline_text_switches_between_size_a_and_b() {
+        let ctx = egui::Context::default();
+        let a = egui::FontId::proportional(14.0);
+        let mut sizes = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for text in ["", "oi", "uma frase bem mais comprida que não cabe em cento e vinte pontos", "a\nb", "oi"] {
+                sizes.push(super::super::theme::adaptive_font(ui, &a, text, 120.0).size);
+            }
+        });
+        output.textures_delta.clear();
+        let b = (14.0 * super::super::theme::WRAP_SCALE).round();
+        assert_eq!(sizes, vec![14.0, 14.0, b, b, 14.0]);
+    }
+
+    #[test]
+    fn bio_uses_size_a_on_one_line_and_size_b_once_it_wraps() {
+        fn bio_font_size(shapes: &[egui::epaint::ClippedShape], needle: &str) -> f32 {
+            shapes
+                .iter()
+                .find_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text().contains(needle) => {
+                        text.galley.rows.first().map(|row| row.height())
+                    }
+                    _ => None,
+                })
+                .expect("texto da bio")
+        }
+        let mut harness = CardHarness::new();
+        let shapes = harness.settle();
+        let about = text_rect(&shapes, "Tell us about yourself…").expect("dica da bio");
+        for events in click(about.center()) {
+            harness.frame(events);
+        }
+        harness.frame(vec![egui::Event::Text("oi".into())]);
+        let one_line = bio_font_size(&harness.settle(), "oi");
+        harness.frame(vec![egui::Event::Text(
+            " e agora um texto bem mais comprido, que com certeza não cabe numa linha só do cartão".into(),
+        )]);
+        let wrapped = bio_font_size(&harness.settle(), "oi e agora");
+        assert!(wrapped < one_line, "{wrapped} !< {one_line}");
     }
 }

@@ -133,6 +133,24 @@ pub mod text {
     }
 }
 
+/// Campo de várias linhas: o texto tem o tamanho A enquanto cabe numa linha
+/// e passa ao tamanho B (menor) quando quebra. A conta é sempre feita com o
+/// tamanho A, nunca com o atual: assim, voltar a caber numa linha volta ao A
+/// sem ficar piscando entre os dois. O Android faz o mesmo no campo nativo
+/// (`WRAP_TEXT_SCALE` em `PapoActivity.java`); os dois valores andam juntos.
+pub const WRAP_SCALE: f32 = 0.86;
+
+pub fn adaptive_font(ui: &egui::Ui, a: &FontId, text: &str, width: f32) -> FontId {
+    let fits = !text.contains('\n')
+        && (text.is_empty()
+            || ui.painter().layout_no_wrap(text.to_owned(), a.clone(), Color32::WHITE).size().x <= width);
+    if fits {
+        a.clone()
+    } else {
+        FontId::new((a.size * WRAP_SCALE).round().max(8.0), a.family.clone())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cores
 // ---------------------------------------------------------------------------

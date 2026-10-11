@@ -24,7 +24,7 @@ use super::markdown;
 use super::markdown_view;
 use super::glass::SharedGlass;
 use super::gif;
-use super::theme::{radius, space, text, Tokens, HIT_TARGET};
+use super::theme::{adaptive_font, radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
@@ -5801,19 +5801,21 @@ fn message_body(
                 // O Android desenha e edita este texto de verdade. O egui só
                 // reserva o lugar e mantém a moldura alinhada com a mensagem.
                 let inner_width = (width - space::MD * 2.0).max(80.0);
+                let edit_font = adaptive_font(ui, &text::message(), &buffer_copy, inner_width);
                 let rows = ui
                     .painter()
-                    .layout(
-                        buffer_copy.clone(),
-                        text::message(),
-                        Color32::WHITE,
-                        inner_width,
-                    )
+                    .layout(buffer_copy.clone(), edit_font.clone(), Color32::WHITE, inner_width)
                     .rows
                     .len()
                     .clamp(1, 6);
-                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&edit_font))
                     + ui.spacing().extra_text_line_spacing;
+                // O campo nativo mede as linhas dele (outra fonte, outra
+                // quebra); a moldura segue essa medida.
+                let (rows, line_height) = match crate::platform::native_text::measured() {
+                    Some((lines, line_h)) if !buffer_copy.is_empty() => (lines.clamp(1, 6), line_h),
+                    _ => (rows, line_height),
+                };
                 let height = rows as f32 * line_height + space::SM * 2.0;
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -5882,10 +5884,16 @@ fn message_body(
                         }
                         submit
                     });
+                let edit_font = adaptive_font(
+                    ui,
+                    &text::message(),
+                    &buffer_copy,
+                    (width - space::MD * 2.0).max(80.0),
+                );
                 let response = ui.add(
                     egui::TextEdit::multiline(&mut buffer_copy)
                         .id(edit_id)
-                        .font(text::message())
+                        .font(edit_font)
                         .desired_width(width)
                         .desired_rows(1)
                         .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
@@ -8749,6 +8757,18 @@ fn webembed_chrome_occlusions(
     rects
 }
 
+/// Largura em que o texto do compositor quebra: a caixa menos a reserva dos
+/// quatro controles à direita e das margens do campo. Medir a altura e
+/// desenhar o texto usam a mesma conta, senão o tamanho A/B oscila.
+fn composer_text_width(area: Rect, with_record: bool) -> f32 {
+    let left_count = 1 + usize::from(with_record);
+    let left_width =
+        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
+    let composer_width = (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
+    (composer_width - controls_width).max(80.0)
+}
+
 fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
@@ -8756,32 +8776,21 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     let with_record = state.show_record;
     #[cfg(not(target_os = "android"))]
     let with_record = state.show_record || recording;
-    let left_count = 1 + usize::from(with_record);
-    let left_width =
-        left_count as f32 * PILL_HEIGHT + (left_count as f32 - 1.0) * space::SM + space::MD;
-    let composer_width =
-        (area.width() - PILL_MARGIN * 2.0 - left_width).max(COMPOSER_LINE_H);
+    let text_width = composer_text_width(area, with_record);
 
-    // Reserva dos quatro controles à direita e das margens do campo.
-    let controls_width = space::MD * 2.0 + HIT_TARGET * 4.0 + space::XXS * 4.0;
-    let text_width = (composer_width - controls_width).max(80.0);
-
+    // Tamanho A numa linha, B quando quebra: a altura segue o tamanho em uso.
+    let font = adaptive_font(ui, &text::message(), &state.composer, text_width);
     let rows = if state.composer.is_empty() {
         1
     } else {
         ui.painter()
-            .layout(
-                state.composer.clone(),
-                text::message(),
-                Color32::WHITE,
-                text_width,
-            )
+            .layout(state.composer.clone(), font.clone(), Color32::WHITE, text_width)
             .rows
             .len()
             .clamp(1, COMPOSER_MAX_ROWS)
     };
 
-    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&text::message()))
+    let row_h = ui.fonts_mut(|fonts| fonts.row_height(&font))
         + ui.spacing().extra_text_line_spacing;
     // No Android quem mede é o próprio EditText (outra fonte, outra quebra):
     // a caixa cresce com as linhas dele, até o limite, e o resto rola dentro.
@@ -9403,6 +9412,14 @@ fn composer(
         egui::pos2(line.min.x + space::MD, line.min.y),
         egui::pos2(emoji_rect.min.x - space::XXS, line.max.y),
     );
+    // Tamanho A (cabe numa linha) ou B (quebrou). No Android quem decide é o
+    // campo nativo, que recebe só o A; aqui vale para o desenho do egui.
+    let composer_font = adaptive_font(
+        ui,
+        &text::message(),
+        &state.composer,
+        composer_text_width(area, with_record),
+    );
 
     #[cfg(target_os = "android")]
     let android_composer_tap = if state.editing.is_some() {
@@ -9566,7 +9583,7 @@ fn composer(
                         field.left_center(),
                         egui::Align2::LEFT_CENTER,
                         shown,
-                        text::message(),
+                        composer_font.clone(),
                         if state.composer.is_empty() {
                             t.label_tertiary
                         } else {
@@ -9656,7 +9673,7 @@ fn composer(
                             .id(edit_id)
                             .hint_text(RichText::new(hint).color(t.label_tertiary))
                             .frame(Frame::NONE)
-                            .font(text::message())
+                            .font(composer_font.clone())
                             .desired_rows(1)
                             .vertical_align(Align::Center)
                             .min_size(Vec2::new(0.0, viewport_h))

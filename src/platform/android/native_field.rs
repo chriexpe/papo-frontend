@@ -59,12 +59,16 @@ struct FieldState {
     submit: bool,
     focused: bool,
     last: Option<Spec>,
+    /// Linhas e altura de cada linha (px) que o próprio EditText mediu, só nos
+    /// campos de várias linhas. A caixa segue isso, não a conta do egui.
+    lines: Option<(usize, i32)>,
 }
 
 #[derive(Default)]
 struct State {
     seen: HashSet<String>,
     fields: HashMap<String, FieldState>,
+    pixels_per_point: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -72,6 +76,15 @@ pub struct Events {
     pub changed: bool,
     pub submit: bool,
     pub focused: bool,
+}
+
+/// Linhas que o texto ocupa no campo nativo `key` e a altura de cada uma, em
+/// pontos do egui, se ele já mediu o texto de agora.
+pub fn measured(key: &str) -> Option<(usize, f32)> {
+    let state = state().lock().ok()?;
+    let (lines, line_px) = state.fields.get(key)?.lines?;
+    (lines > 0 && line_px > 0 && state.pixels_per_point > 0.0)
+        .then(|| (lines, line_px as f32 / state.pixels_per_point))
 }
 
 pub fn install(app: AndroidApp) {
@@ -141,6 +154,7 @@ pub fn show(
             return Events::default();
         };
         state.seen.insert(key.to_owned());
+        state.pixels_per_point = ppp;
         let field = state.fields.entry(key.to_owned()).or_default();
 
         if let Some(incoming) = field.incoming.take() {
@@ -280,6 +294,23 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldFocu
         && let Some(field) = state.fields.get_mut(String::from(key).as_str())
     {
         field.focused = focused != 0;
+    }
+    super::wake::request();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldLines(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    key: jni::objects::JString,
+    lines: jni::sys::jint,
+    line_height_px: jni::sys::jint,
+) {
+    let Ok(key) = env.get_string(&key) else { return; };
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.lines = Some((lines.max(0) as usize, line_height_px.max(0)));
     }
     super::wake::request();
 }
