@@ -9662,12 +9662,22 @@ fn composer(
                     crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
                 let viewport_h =
                     (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
+                // Janela do texto centrada na caixa; o layout do pai a deixava
+                // começar no topo e o texto descia uns pontos abaixo do centro.
+                let mut viewport = ui.new_child(
+                    UiBuilder::new()
+                        .max_rect(Rect::from_center_size(
+                            field.center(),
+                            Vec2::new(field.width(), viewport_h),
+                        ))
+                        .layout(Layout::top_down(Align::Min)),
+                );
                 let response = egui::ScrollArea::vertical()
                     .id_salt("composer-text-scroll")
                     .max_height(viewport_h)
                     .auto_shrink([false, false])
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
+                    .show(&mut viewport, |ui| {
                         ui.set_min_height(viewport_h);
                         egui::TextEdit::multiline(&mut state.composer)
                             .id(edit_id)

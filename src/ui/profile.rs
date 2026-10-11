@@ -444,7 +444,11 @@ fn hidden_field(
         let response = if multiline {
             // Passando do limite de linhas o texto rola dentro do campo (roda
             // do mouse ou arrasto), em vez de vazar para fora dele.
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_area));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(text_area)
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+            );
             egui::ScrollArea::vertical()
                 .max_height(text_area.height())
                 .auto_shrink([false, false])
