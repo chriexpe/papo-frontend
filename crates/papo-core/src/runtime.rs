@@ -10,7 +10,9 @@ use crate::cache::ClientDb;
 use crate::notification::{
     CandidateSource, NotificationContext, NotificationCoordinator,
 };
-use crate::state::{Phase, Screen, Store};
+use crate::state::{Phase, Store};
+#[cfg(test)]
+use crate::state::Screen;
 use crate::storage::{Secret, SecretStore};
 
 pub const DEFAULT_DRAIN_LIMIT: usize = 256;
