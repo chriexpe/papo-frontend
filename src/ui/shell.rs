@@ -6733,6 +6733,27 @@ fn custom_embed_card(
         };
         texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
     });
+    // A message-link embed can carry the original message's video separately
+    // from its thumbnail/image. The structured custom-card path used to ignore
+    // this field, leaving only the author and text visible.
+    let video_url = custom_embed_video_url(embed).map(str::to_owned);
+    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() {
+        let texture = if allow_network {
+            state.media.preview(embed)
+        } else {
+            state.media.loaded_preview(&embed.id)
+        };
+        texture
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned()
+    } else {
+        None
+    };
+    let video_player_id = video_url
+        .as_deref()
+        .and_then(crate::media::remote_player_key)
+        .unwrap_or_else(|| format!("custom-embed-video:{card_id}"));
+    let mut video_transport = None;
 
     ui.add_space(space::SM);
     let inner_width = custom_embed_inner_width(width);
@@ -6780,26 +6801,38 @@ fn custom_embed_card(
             }
             ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
         }
-        // Rich custom embeds retain their structured author/title/fields instead
-        // of falling into the generic link-preview layout merely because they
-        // include an image. Media uses the existing authenticated embed cache.
-        if embed.image.is_some() || embed.thumbnail.is_some() {
-            let texture = if allow_network {
-                state.media.preview(embed)
-            } else {
-                state.media.loaded_preview(&embed.id)
-            }.and_then(|texture| texture.frame(ui.ctx())).cloned();
-            if let Some(texture) = texture {
-                let original = texture.size_vec2();
-                if original.x > 0.0 && original.y > 0.0 {
-                    let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
-                    let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
-                    ui.painter().image(
-                        texture.id(), rect,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
+        if let Some(video_url) = video_url.as_deref() {
+            // The video URL is a published HTTPS media target, just like a
+            // direct link preview. The thumbnail, when present, is still
+            // loaded through the authenticated embed endpoint and acts as the
+            // poster before playback starts.
+            let poster = image_texture.as_ref().map(|texture| {
+                (texture.id(), texture.size_vec2())
+            });
+            let surface = attachments::video_surface(
+                ui,
+                t,
+                &mut state.media,
+                &video_player_id,
+                card_id,
+                crate::media::PlaySource::Remote(video_url),
+                poster,
+                inner_width,
+                false,
+                &mut state.media_seek_zones,
+            );
+            video_transport = surface.transport;
+            ui.add_space(space::SM);
+        } else if let Some(texture) = image_texture.as_ref() {
+            let original = texture.size_vec2();
+            if original.x > 0.0 && original.y > 0.0 {
+                let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
+                let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
+                ui.painter().image(
+                    texture.id(), rect,
+                    Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
             }
         }
         for field in &embed.fields {
@@ -6831,6 +6864,23 @@ fn custom_embed_card(
         }
     });
 
+    if matches!(video_transport, Some(attachments::Transport::Fullscreen))
+        && let Some(video_url) = video_url
+    {
+        state.link_viewer = Some(LinkViewer {
+            id: video_player_id,
+            url: video_url,
+            name: heading.or(embed.title.as_deref()).unwrap_or("video").to_owned(),
+            video: true,
+            ephemeral: false,
+            favourite_id: None,
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            fitted: true,
+            opened: ui.input(|input| input.time),
+        });
+    }
+
     let rect = content.response.rect;
     // Um único reflexo no topo sugere material elevado. Não há barra de
     // destaque lateral competindo com o conteúdo (caso do print anterior).
@@ -6854,6 +6904,15 @@ fn custom_embed_card(
         }
     }
     ui.add_space(space::XS);
+}
+
+fn custom_embed_video_url(embed: &crate::api::models::LinkPreview) -> Option<&str> {
+    embed
+        .video
+        .as_ref()
+        .and_then(|video| video.url.as_deref())
+        .map(str::trim)
+        .filter(|url| papo_core::preview::safe_remote_url(url))
 }
 
 fn rich_links_from_message(
@@ -10875,6 +10934,24 @@ mod link_preview_dedupe_tests {
             "https://two.example/post/2"
         );
         assert!(!backend_preview_urls(content, &[backend]).contains(&content_urls[0]));
+    }
+
+    #[test]
+    fn custom_message_embed_keeps_a_safe_nested_video() {
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "message-embed",
+            "source_type": "custom",
+            "video": {
+                "url": "https://cdn.example.test/attachment.mp4",
+                "mime_type": "video/mp4"
+            }
+        }))
+        .expect("valid custom embed");
+
+        assert_eq!(
+            custom_embed_video_url(&embed),
+            Some("https://cdn.example.test/attachment.mp4")
+        );
     }
 }
 
