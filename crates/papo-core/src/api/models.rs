@@ -7,6 +7,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// O backend pode persistir `nickname: ""` quando a pessoa remove o apelido.
+/// `Option::unwrap_or` sozinho não cobre esse caso.
+fn resolved_display_name<'a>(nickname: Option<&'a str>, username: &'a str) -> &'a str {
+    nickname
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(username)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Credentials {
     pub username: String,
@@ -154,7 +162,7 @@ pub struct Whoami {
 
 impl Whoami {
     pub fn display_name(&self) -> &str {
-        self.nickname.as_deref().unwrap_or(&self.username)
+        resolved_display_name(self.nickname.as_deref(), &self.username)
     }
 }
 
@@ -441,7 +449,7 @@ pub struct UserProfile {
 
 impl UserProfile {
     pub fn display_name(&self) -> &str {
-        self.nickname.as_deref().unwrap_or(&self.username)
+        resolved_display_name(self.nickname.as_deref(), &self.username)
     }
 }
 
@@ -1073,7 +1081,7 @@ pub struct UserSummary {
 
 impl UserSummary {
     pub fn display_name(&self) -> &str {
-        self.nickname.as_deref().unwrap_or(&self.username)
+        resolved_display_name(self.nickname.as_deref(), &self.username)
     }
 }
 
@@ -1298,6 +1306,56 @@ mod tests {
     fn arquivo_sem_pista_continua_arquivo() {
         assert_eq!(Kind::guess("application/octet-stream", "notas.pdf"), Kind::Other);
         assert_eq!(Kind::guess("application/octet-stream", "sem-ponto"), Kind::Other);
+    }
+
+    #[test]
+    fn blank_nicknames_fall_back_to_username_across_api_user_types() {
+        for nickname in [None, Some(""), Some("   ")] {
+            assert_eq!(resolved_display_name(nickname, "jenosmobile"), "jenosmobile");
+        }
+        assert_eq!(resolved_display_name(Some("Jeno"), "jenosmobile"), "Jeno");
+
+        let summary = UserSummary {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some(String::new()),
+            banned: false,
+            status: None,
+            status_message: None,
+            typing: None,
+            roles: Vec::new(),
+        };
+        assert_eq!(summary.display_name(), "jenosmobile");
+
+        let profile = UserProfile {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some("  ".to_owned()),
+            avatar_blob: None,
+            avatar_format: None,
+            banner_media: None,
+            description: None,
+            status: None,
+            status_message: None,
+            typing: None,
+            created_at: None,
+            roles: Vec::new(),
+        };
+        assert_eq!(profile.display_name(), "jenosmobile");
+
+        let whoami = Whoami {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some(String::new()),
+            status: None,
+            status_message: None,
+            roles: Vec::new(),
+            settings: WhoamiSettings {
+                version: 1,
+                config: UserConfig::default(),
+            },
+        };
+        assert_eq!(whoami.display_name(), "jenosmobile");
     }
 
     /// O campo é `ids`. Chamei de `user_ids` na primeira versão e o

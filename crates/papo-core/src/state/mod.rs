@@ -1021,6 +1021,9 @@ impl Store {
             self.me = server.me_user_id.clone().unwrap_or_default();
             self.my_name = server.me_display_name.clone().unwrap_or_default();
             self.my_username = server.me_username.clone().unwrap_or_default();
+            if self.my_name.trim().is_empty() {
+                self.my_name = self.my_username.clone();
+            }
             self.server = Some(Server {
                 name: server.name.clone(),
                 description: server.description.clone(),
@@ -1053,16 +1056,24 @@ impl Store {
         self.members = metadata
             .members
             .into_iter()
-            .map(|member| Member {
-                id: member.id,
-                username: member.username,
-                name: member.name,
-                banned: false,
-                presence: Presence::Offline,
-                status_message: None,
-                typing_label: None,
-                role_color: member.role_color,
-                roles: member.roles,
+            .map(|member| {
+                // Conserta inclusive nomes vazios persistidos por versões antigas.
+                let name = if member.name.trim().is_empty() {
+                    member.username.clone()
+                } else {
+                    member.name
+                };
+                Member {
+                    id: member.id,
+                    username: member.username,
+                    name,
+                    banned: false,
+                    presence: Presence::Offline,
+                    status_message: None,
+                    typing_label: None,
+                    role_color: member.role_color,
+                    roles: member.roles,
+                }
             })
             .collect();
 
@@ -3139,7 +3150,11 @@ impl Store {
                         member.typing_label = typing;
                     }
                     if let Some(nickname) = nickname {
-                        member.name = nickname;
+                        member.name = if nickname.trim().is_empty() {
+                            member.username.clone()
+                        } else {
+                            nickname
+                        };
                     }
                     let cached: Vec<CachedMember> =
                         self.members.iter().map(CachedMember::from).collect();
@@ -3659,6 +3674,106 @@ mod channel_layout_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_presence_nickname_does_not_erase_member_name() {
+        let mut store = Store {
+            members: vec![Member {
+                id: "u1".to_owned(),
+                username: "jenosmobile".to_owned(),
+                name: "jenosmobile".to_owned(),
+                banned: false,
+                presence: Presence::Online,
+                status_message: None,
+                typing_label: None,
+                role_color: None,
+                roles: Vec::new(),
+            }],
+            ..Store::default()
+        };
+
+        store.apply(Update::Event(Box::new(Event::Presence {
+            user_id: "u1".to_owned(),
+            status: "online".to_owned(),
+            status_message: None,
+            typing: None,
+            nickname: Some(String::new()),
+        })));
+
+        assert_eq!(
+            store.member("u1").map(|member| member.name.as_str()),
+            Some("jenosmobile")
+        );
+    }
+
+    #[test]
+    fn blank_profile_and_user_refreshes_keep_author_and_mention_names() {
+        let mut store = Store::default();
+        store.apply(Update::Profiles(vec![models::UserProfile {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some(String::new()),
+            avatar_blob: None,
+            avatar_format: None,
+            banner_media: None,
+            description: None,
+            status: None,
+            status_message: None,
+            typing: None,
+            created_at: None,
+            roles: Vec::new(),
+        }]));
+        let assert_visible = |store: &Store| {
+            assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
+            assert_eq!(store.display_mentions("oi @mention(<@u1>)"), "oi @jenosmobile");
+        };
+        assert_visible(&store);
+
+        let summary = models::UserSummary {
+            id: "u1".to_owned(),
+            username: "jenosmobile".to_owned(),
+            nickname: Some("   ".to_owned()),
+            banned: false,
+            status: None,
+            status_message: None,
+            typing: None,
+            roles: Vec::new(),
+        };
+        store.apply(Update::UserSummaries(vec![summary.clone()]));
+        assert_visible(&store);
+        store.apply(Update::Users(vec![summary]));
+        assert_visible(&store);
+
+        store.apply(Update::Event(Box::new(Event::Presence {
+            user_id: "u1".to_owned(),
+            status: "online".to_owned(),
+            status_message: None,
+            typing: None,
+            nickname: Some(String::new()),
+        })));
+        assert_visible(&store);
+    }
+
+    #[test]
+    fn cached_blank_member_name_is_repaired_before_rendering() {
+        let mut store = Store::default();
+        store.restore_cached_metadata(CachedServerMetadata {
+            owner_user_id: None,
+            server: None,
+            channels: Vec::new(),
+            members: vec![CachedMember {
+                id: "u1".to_owned(),
+                username: "jenosmobile".to_owned(),
+                name: String::new(),
+                role_color: None,
+                roles: Vec::new(),
+            }],
+            read_states: Vec::new(),
+            cached_channels: HashSet::new(),
+        });
+        assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
+        assert_eq!(store.display_mentions("@mention(<@u1>)"), "@jenosmobile");
+    }
 
     #[test]
     fn diagnostics_project_freshness_refresh_and_barrier_state() {
