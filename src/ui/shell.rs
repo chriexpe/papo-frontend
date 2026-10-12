@@ -6921,6 +6921,15 @@ fn custom_embed_card(
 /// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
 /// expose an HTML iframe in `video.url` with no video MIME type: do not
 /// send those HTML pages to the GStreamer MP4 player/relay.
+/// Klipy's /gifs pages publish silent MP4 renditions via og:video. MP4 is
+/// a transport format, not proof of user-facing video semantics. These pages
+/// are looping animations, unlike ordinary X status videos.
+fn gif_style_embed(source: &str) -> bool {
+    let Ok(url) = url::Url::parse(source) else { return false };
+    matches!(url.host_str(), Some("klipy.com" | "www.klipy.com"))
+        && url.path().starts_with("/gifs/")
+}
+
 fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
     let media = media?;
     let width = media.width.filter(|value| *value > 0)? as f32;
@@ -7154,22 +7163,25 @@ fn preview_card(
 
     // Backend videos have a dedicated authenticated relay. Prefer it to
     // local scraping: X/FxTwitter CDNs reject hotlinks from GStreamer.
+    // Pick a single media capability. The backend's validated player/embed
+    // contract takes precedence; client scraping only fills missing fields.
+    // Previously a frontend media_url could shadow a valid YouTube iframe,
+    // leaving a broken native video card instead of a WebView.
+    let backend_iframe = backend.and_then(|embed| {
+        embed.embed_url.clone().or_else(|| backend_iframe_video_url(embed))
+    }).filter(|url| papo_core::preview::safe_remote_url(url));
     let backend_video = backend
-        .filter(|embed| backend_has_playable_video(embed));
-    let video_url = if backend_video.is_some() {
+        .filter(|embed| backend_has_playable_video(embed) && embed.embed_url.is_none());
+    let embed_url = backend_iframe
+        .or_else(|| ready.as_ref().and_then(|preview| preview.embed_url.clone()))
+        .filter(|url| papo_core::preview::safe_remote_url(url));
+    let video_url = if backend_video.is_some() || embed_url.is_some() {
         None
     } else {
-        ready
-            .as_ref()
+        ready.as_ref()
             .filter(|preview| preview.kind == PreviewKind::Video)
             .and_then(|preview| preview.media_url.clone())
     };
-    let embed_url = ready
-        .as_ref()
-        .and_then(|preview| preview.embed_url.clone())
-        .or_else(|| backend.and_then(|preview| preview.embed_url.clone()))
-        .or_else(|| backend.and_then(backend_iframe_video_url))
-        .filter(|embed| papo_core::preview::safe_remote_url(embed));
 
     let post = ready
         .as_ref()
@@ -7263,7 +7275,21 @@ fn preview_card(
             ui.add_space(space::SM);
         }
 
-        if backend_video.is_some() || video_url.is_some() {
+        if gif_style_embed(url) && (backend_video.is_some() || video_url.is_some()) {
+            let source = if let Some(embed) = backend_video {
+                crate::media::PlaySource::EmbedVideo(&embed.id)
+            } else {
+                crate::media::PlaySource::Remote(video_url.as_deref().expect("checked above"))
+            };
+            let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
+            let rect = attachments::animation_surface(
+                ui, &mut state.media, &player_id, source, poster,
+                backend_video.and_then(|embed| media_aspect(embed.video.as_ref())),
+                card_width,
+            );
+            media_rect = Some(rect);
+            ui.add_space(space::SM);
+        } else if backend_video.is_some() || video_url.is_some() {
             let source = if let Some(embed) = backend_video {
                 crate::media::PlaySource::EmbedVideo(&embed.id)
             } else {

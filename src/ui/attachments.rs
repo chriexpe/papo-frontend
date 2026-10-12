@@ -617,6 +617,50 @@ pub fn video_surface(
     }
 }
 
+/// Animated MP4/GIF-style embeds are images semantically: no playback chrome,
+/// no sound, and they loop while visible. Keep their media pipeline separate
+/// from normal interactive videos (which retain seek/volume/fullscreen).
+#[allow(clippy::too_many_arguments)]
+pub fn animation_surface(
+    ui: &mut egui::Ui,
+    media: &mut MediaStore,
+    id: &str,
+    source: PlaySource<'_>,
+    poster: Option<(egui::TextureId, Vec2)>,
+    aspect_hint: Option<f32>,
+    max_width: f32,
+) -> Rect {
+    let visible = ui.clip_rect().expand(96.0);
+    if ui.cursor().min.y < visible.max.y && ui.cursor().min.y + 400.0 > visible.min.y {
+        media.autoplay_animation(id, source, ui.ctx());
+    } else {
+        media.pause_animation_offscreen(id);
+    }
+    let live = media.existing_player(id)
+        .and_then(|player| player.frame(ui.ctx()))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let shown = live.or(poster);
+    let aspect = live.map(|(_, size)| size.x / size.y.max(1.0))
+        .or(aspect_hint)
+        .or_else(|| poster.map(|(_, size)| size.x / size.y.max(1.0)))
+        .unwrap_or(16.0 / 9.0)
+        .clamp(0.25, 4.0);
+    let height = (max_width / aspect).min(320.0);
+    let width = (height * aspect).min(max_width);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
+    if let Some((texture, natural)) = shown {
+        let size = fit(natural, rect.size());
+        ui.painter().image(
+            texture,
+            Rect::from_center_size(rect.center(), size),
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+    rect
+}
+
 #[allow(clippy::ptr_arg)]
 fn audio(
     ui: &mut egui::Ui,

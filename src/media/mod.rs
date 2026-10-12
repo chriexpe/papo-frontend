@@ -1302,6 +1302,8 @@ pub struct MediaStore {
     /// o download chega em `pump`, o player abre e toca. O `bool` diz se é
     /// vídeo. Sem isto, pedir play só poderia funcionar com o arquivo em mãos.
     pending_play: HashMap<String, bool>,
+    /// GIF-style MP4 embeds awaiting the backend's authenticated relay.
+    pending_animations: std::collections::HashSet<String>,
     /// Anexos cujo disco já foi consultado uma vez, para um cartão desenhado
     /// a cada quadro não repetir a mesma pergunta. Não guarda o resultado:
     /// quem o tem é o mapa `files`.
@@ -1353,6 +1355,7 @@ impl MediaStore {
             used: HashMap::new(),
             tick: 0,
             pending_play: HashMap::new(),
+            pending_animations: std::collections::HashSet::new(),
             probed: std::collections::HashSet::new(),
             revealed: std::collections::HashSet::new(),
             full_wanted: std::collections::HashSet::new(),
@@ -1413,7 +1416,14 @@ impl MediaStore {
                     // caminho.
                     if let Some(video) = self.pending_play.remove(&id) {
                         self.toggle_player(&id, &path, video, ctx);
-                        self.solo(&id);
+                        if self.pending_animations.remove(&id) {
+                            if let Some(player) = self.existing_player(&id) {
+                                player.set_muted(true);
+                                player.set_looping(true);
+                            }
+                        } else {
+                            self.solo(&id);
+                        }
                     }
                 }
                 Loaded::Absent { .. } => {}
@@ -1433,6 +1443,7 @@ impl MediaStore {
                     }
                     if let Some(id) = key.strip_prefix("file:") {
                         self.pending_play.remove(id);
+                        self.pending_animations.remove(id);
                         self.files.insert(key, FileState::Failed);
                     } else {
                         self.textures.insert(key, Texture::Failed);
@@ -2243,6 +2254,61 @@ impl MediaStore {
                     self.pending_play.insert(id.to_owned(), true);
                     self.ask(Request::EmbedVideo { id: embed_id.to_owned() });
                 }
+            }
+        }
+    }
+
+    /// GIF-style MP4 playback: no audio, no transport UI, seamless restart on
+    /// EOS. A viewer/scroll can reenter without recreating the player. The
+    /// backend relay starts only when its animation is in the viewport.
+    pub fn autoplay_animation(
+        &mut self,
+        id: &str,
+        source: PlaySource<'_>,
+        ctx: &egui::Context,
+    ) {
+        if let Some(player) = self.existing_player(id) {
+            if !player.is_playing() && player.error().is_none() {
+                player.play();
+            }
+            return;
+        }
+        match source {
+            PlaySource::File(path) => {
+                if let Some(player) = self.start_player(id, path, true, ctx) {
+                    player.set_muted(true);
+                    player.set_looping(true);
+                    player.play();
+                }
+            }
+            PlaySource::Remote(url) => {
+                if let Some(player) = self.start_remote_player(id, url, ctx) {
+                    player.set_muted(true);
+                    player.set_looping(true);
+                    player.play();
+                }
+            }
+            PlaySource::EmbedVideo(embed_id) => {
+                if let Some(path) = self.file_ready(id) {
+                    if let Some(player) = self.start_player(id, &path, true, ctx) {
+                        player.set_muted(true);
+                        player.set_looping(true);
+                        player.play();
+                    }
+                } else if !matches!(self.file_state(id), Some(FileState::Loading | FileState::Failed)) {
+                    self.files.insert(file_key(id), FileState::Loading);
+                    self.pending_play.insert(id.to_owned(), true);
+                    self.pending_animations.insert(id.to_owned());
+                    self.ask(Request::EmbedVideo { id: embed_id.to_owned() });
+                }
+            }
+        }
+    }
+
+    pub fn pause_animation_offscreen(&mut self, id: &str) {
+        if let Some(player) = self.existing_player(id) {
+            if player.is_playing() {
+                player.pause();
             }
         }
     }
