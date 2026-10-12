@@ -6906,6 +6906,43 @@ fn custom_embed_card(
     ui.add_space(space::XS);
 }
 
+/// A backend video is a direct, authenticated media stream only if its
+/// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
+/// expose an HTML iframe in `video.url` with no video MIME type: do not
+/// send those HTML pages to the GStreamer MP4 player/relay.
+fn backend_has_playable_video(embed: &crate::api::models::LinkPreview) -> bool {
+    !embed.id.is_empty()
+        && embed.video.as_ref().is_some_and(|media| {
+            media.url.as_deref().is_some_and(papo_core::preview::safe_remote_url)
+                && media.mime_type.as_deref().is_some_and(|mime| {
+                    matches!(
+                        mime.trim().to_ascii_lowercase().as_str(),
+                        "video/mp4" | "video/webm" | "video/ogg"
+                    )
+                })
+        })
+}
+
+/// The current backend stores YouTube's documented embed URL in video.url
+/// without a direct-media MIME type. Honor only that specific iframe shape;
+/// an arbitrary HTML URL cannot become an executable web embed.
+fn backend_iframe_video_url(embed: &crate::api::models::LinkPreview) -> Option<String> {
+    let media = embed.video.as_ref()?;
+    if media.mime_type.is_some() {
+        return None;
+    }
+    let raw = media.url.as_deref()?;
+    let parsed = url::Url::parse(raw).ok()?;
+    if parsed.scheme() == "https"
+        && matches!(parsed.host_str(), Some("www.youtube.com" | "youtube.com" | "www.youtube-nocookie.com"))
+        && parsed.path().starts_with("/embed/")
+    {
+        Some(parsed.to_string())
+    } else {
+        None
+    }
+}
+
 fn custom_embed_video_url(embed: &crate::api::models::LinkPreview) -> Option<&str> {
     embed
         .video
@@ -7100,8 +7137,7 @@ fn preview_card(
     // Backend videos have a dedicated authenticated relay. Prefer it to
     // local scraping: X/FxTwitter CDNs reject hotlinks from GStreamer.
     let backend_video = backend
-        .filter(|embed| embed.video.as_ref().and_then(|media| media.url.as_ref()).is_some()
-            && !embed.id.is_empty());
+        .filter(|embed| backend_has_playable_video(embed));
     let video_url = if backend_video.is_some() {
         None
     } else {
@@ -7114,6 +7150,7 @@ fn preview_card(
         .as_ref()
         .and_then(|preview| preview.embed_url.clone())
         .or_else(|| backend.and_then(|preview| preview.embed_url.clone()))
+        .or_else(|| backend.and_then(backend_iframe_video_url))
         .filter(|embed| papo_core::preview::safe_remote_url(embed));
 
     let post = ready
