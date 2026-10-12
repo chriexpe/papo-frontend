@@ -31,6 +31,15 @@ pub trait PlaybackPlayer: Send {
     fn error(&self) -> Option<String>;
     fn update(&mut self);
     fn frame<'a>(&'a mut self, ctx: &egui::Context) -> Option<&'a TextureHandle>;
+    /// Bytes owned by the player-side egui texture, when the backend exposes
+    /// one. Backends without a texture report zero rather than guessing.
+    fn texture_memory_bytes(&self) -> usize { 0 }
+    /// A frame waiting between the player thread and the UI. This is separate
+    /// from the texture because it is CPU memory and can outlive a frame.
+    fn pending_frame_memory_bytes(&self) -> usize { 0 }
+    /// Coarse estimate for decoder/pipeline allocations that are not visible
+    /// to Rust. This is intentionally kept separate from known texture bytes.
+    fn native_memory_estimate(&self) -> usize { 0 }
 }
 
 pub struct DirectMediaPlayer {
@@ -55,6 +64,15 @@ impl DirectMediaPlayer {
     pub fn update(&mut self) { self.inner.update(); }
     pub fn frame<'a>(&'a mut self, ctx: &egui::Context) -> Option<&'a TextureHandle> {
         self.inner.frame(ctx)
+    }
+    pub fn texture_memory_bytes(&self) -> usize {
+        self.inner.texture_memory_bytes()
+    }
+    pub fn pending_frame_memory_bytes(&self) -> usize {
+        self.inner.pending_frame_memory_bytes()
+    }
+    pub fn native_memory_estimate(&self) -> usize {
+        self.inner.native_memory_estimate()
     }
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
@@ -120,4 +138,9 @@ impl PlaybackPlayer for player::Player {
     fn frame<'a>(&'a mut self, ctx: &egui::Context) -> Option<&'a TextureHandle> {
         player::Player::frame(self, ctx)
     }
+    fn texture_memory_bytes(&self) -> usize { player::Player::texture_memory_bytes(self) }
+    fn pending_frame_memory_bytes(&self) -> usize {
+        player::Player::pending_frame_memory_bytes(self)
+    }
+    fn native_memory_estimate(&self) -> usize { player::Player::native_memory_estimate(self) }
 }

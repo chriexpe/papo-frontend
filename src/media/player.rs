@@ -57,6 +57,8 @@ struct Shared {
     playing: AtomicBool,
     /// Proporção do vídeo em bits de `f32`; zero enquanto não há quadro.
     aspect: AtomicU32,
+    frame_width: AtomicU32,
+    frame_height: AtomicU32,
     error: Mutex<Option<String>>,
 }
 
@@ -254,6 +256,45 @@ impl Player {
             }
         }
         self.texture.as_ref()
+    }
+
+    pub fn texture_memory_bytes(&self) -> usize {
+        self.texture
+            .as_ref()
+            .map(|texture| {
+                let size = texture.size();
+                size[0]
+                    .saturating_mul(size[1])
+                    .saturating_mul(std::mem::size_of::<egui::Color32>())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn pending_frame_memory_bytes(&self) -> usize {
+        self.shared
+            .frame
+            .lock()
+            .ok()
+            .and_then(|frame| frame.as_ref().map(|frame| frame.pixels.len()))
+            .unwrap_or_default()
+            .saturating_mul(std::mem::size_of::<egui::Color32>())
+    }
+
+    /// This is not a measurement of GStreamer allocations. It is a stable,
+    /// deliberately coarse estimate for the decoder-side working set: one
+    /// small pipeline baseline plus three RGBA frame-sized buffers for a video.
+    /// Keeping it separate from `texture_memory_bytes` prevents the diagnostic
+    /// from presenting an estimate as an exact GPU total.
+    pub fn native_memory_estimate(&self) -> usize {
+        const PIPELINE_BASE: usize = 256 * 1024;
+        let width = self.shared.frame_width.load(Ordering::Relaxed) as usize;
+        let height = self.shared.frame_height.load(Ordering::Relaxed) as usize;
+        PIPELINE_BASE.saturating_add(
+            width
+                .saturating_mul(height)
+                .saturating_mul(std::mem::size_of::<egui::Color32>())
+                .saturating_mul(3),
+        )
     }
 }
 
@@ -540,6 +581,8 @@ fn video_sink(shared: Arc<Shared>, repaint: egui::Context) -> Option<gst::Elemen
                     });
                 }
                 if height > 0 {
+                    shared.frame_width.store(width as u32, Ordering::Relaxed);
+                    shared.frame_height.store(height as u32, Ordering::Relaxed);
                     shared.aspect.store(
                         (width as f32 / height as f32).to_bits(),
                         Ordering::Relaxed,
