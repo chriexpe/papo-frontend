@@ -487,15 +487,7 @@ pub struct LinkViewer {
     pub id: String,
     pub url: String,
     pub name: String,
-    /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
-    pub video: bool,
-    /// GIPHY/public provider media stays memory-only and can expose Favourite.
-    pub ephemeral: bool,
-    pub favourite_id: Option<String>,
-    pub zoom: f32,
-    pub offset: Vec2,
-    pub fitted: bool,
-    /// O clique que abriu o overlay não pode fechá-lo no mesmo quadro.
+    /// Native fullscreen video only. Images use the single shared Viewer.
     pub opened: f64,
 }
 
@@ -6891,12 +6883,6 @@ fn custom_embed_card(
             id: video_player_id,
             url: video_url,
             name: heading.or(embed.title.as_deref()).unwrap_or("video").to_owned(),
-            video: true,
-            ephemeral: false,
-            favourite_id: None,
-            zoom: 1.0,
-            offset: Vec2::ZERO,
-            fitted: true,
             opened: ui.input(|input| input.time),
         });
     }
@@ -7310,12 +7296,6 @@ fn preview_card(
                     id: player_id.clone(),
                     url: video_url.as_deref().unwrap_or(url).to_owned(),
                     name: title.unwrap_or("video").to_owned(),
-                    video: true,
-                    ephemeral: false,
-                    favourite_id: None,
-                    zoom: 1.0,
-                    offset: Vec2::ZERO,
-                    fitted: true,
                     opened: ui.input(|input| input.time),
                 });
             }
@@ -8334,7 +8314,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if state.link_viewer.is_some() {
-        link_image_viewer(ui, state, t, s);
+        link_video_viewer(ui, state, t, s);
     }
 
     if let Some(mut viewer) = state.viewer.take() {
@@ -8512,48 +8492,23 @@ fn external_link_prompt(
     }
 }
 
-fn link_image_viewer(
+fn link_video_viewer(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
 ) {
-    let Some(mut link) = state.link_viewer.take() else {
+    let Some(link) = state.link_viewer.take() else {
         return;
     };
-    match viewer::draw_remote_media(
-        ui,
-        t,
-        s,
-        &mut state.media,
-        &link.id,
-        &link.url,
-        &link.name,
-        link.video,
-        link.ephemeral,
-        link.favourite_id
-            .as_ref()
-            .map(|slug| state.gif_favourites.contains(slug)),
-        link.opened,
-        &mut link.zoom,
-        &mut link.offset,
-        &mut link.fitted,
+    if viewer::draw_remote_video(
+        ui, t, s, &mut state.media, &link.id, &link.url, &link.name, link.opened,
     ) {
-        Some(viewer::RemoteViewerAction::Close) => {
-            // Image sources use Viewer::external_image; this overlay is now
-            // exclusively the native fullscreen video player.
+        if let Some(player) = state.media.existing_player(&link.id) {
+            player.pause();
         }
-        Some(viewer::RemoteViewerAction::Download { path, name }) => {
-            state.actions.push(ChatAction::SaveCachedImage { path, name });
-            state.link_viewer = Some(link);
-        }
-        Some(viewer::RemoteViewerAction::ToggleFavourite) => {
-            if let Some(slug) = link.favourite_id.clone() {
-                gif::toggle_favourite(state, &slug);
-            }
-            state.link_viewer = Some(link);
-        }
-        None => state.link_viewer = Some(link),
+    } else {
+        state.link_viewer = Some(link);
     }
 }
 
