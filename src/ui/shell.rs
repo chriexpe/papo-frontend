@@ -6817,6 +6817,7 @@ fn custom_embed_card(
                 card_id,
                 crate::media::PlaySource::Remote(video_url),
                 poster,
+                media_aspect(embed.video.as_ref()),
                 inner_width,
                 false,
                 &mut state.media_seek_zones,
@@ -6920,6 +6921,13 @@ fn custom_embed_card(
 /// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
 /// expose an HTML iframe in `video.url` with no video MIME type: do not
 /// send those HTML pages to the GStreamer MP4 player/relay.
+fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
+    let media = media?;
+    let width = media.width.filter(|value| *value > 0)? as f32;
+    let height = media.height.filter(|value| *value > 0)? as f32;
+    Some((width / height).clamp(0.25, 4.0))
+}
+
 fn backend_has_playable_video(embed: &crate::api::models::LinkPreview) -> bool {
     !embed.id.is_empty()
         && embed.video.as_ref().is_some_and(|media| {
@@ -7264,6 +7272,7 @@ fn preview_card(
             let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
             let surface = attachments::video_surface(
                 ui, t, &mut state.media, &player_id, embed_id, source, poster,
+                backend_video.and_then(|embed| media_aspect(embed.video.as_ref())),
                 card_width, false, &mut state.media_seek_zones,
             );
             media_rect = Some(surface.rect);
