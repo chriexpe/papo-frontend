@@ -2255,17 +2255,19 @@ impl PapoApp {
                 }
                 ws.runtime.net.send(Command::OpenDirectMessage { user_id });
             }
-            ChatAction::HideDirectMessage(dm_id) => {
-                ws.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
-                if ws.runtime.store.selected_channel == dm_id {
-                    ws.runtime.store.selected_channel = ws
-                        .runtime
-                        .store
-                        .direct_messages
-                        .iter()
-                        .find(|dm| dm.id != dm_id)
-                        .map(|dm| dm.id.clone())
-                        .unwrap_or_default();
+            ChatAction::SelectInboxDirectMessage { workspace, dm_id } => {
+                self.open_inbox_dm(workspace, &dm_id, ctx);
+            }
+            ChatAction::HideDirectMessage { workspace, dm_id } => {
+                if let Some(target) = self.workspaces.get_mut(workspace) {
+                    target.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
+                    if target.runtime.store.selected_channel == dm_id {
+                        target.runtime.store.selected_channel = target.runtime.store.direct_messages
+                            .iter()
+                            .find(|dm| dm.id != dm_id)
+                            .map(|dm| dm.id.clone())
+                            .unwrap_or_default();
+                    }
                 }
             }
             ChatAction::SetUserBlocked { user_id, blocked } => {
@@ -3020,9 +3022,98 @@ impl PapoApp {
         entries
     }
 
+    /// Assemble a single inbox from already-connected, server-local sessions.
+    /// Each row keeps its backend index: UUIDs and user IDs are not globally unique.
+    fn inbox_entries(&mut self, ctx: &egui::Context) -> Vec<shell::InboxDm> {
+        let mut inbox = Vec::new();
+        for (workspace, ws) in self.workspaces.iter_mut().enumerate() {
+            if ws.runtime.store.screen != Screen::Chat {
+                continue;
+            }
+            let store = &ws.runtime.store;
+            let media = if workspace == self.active {
+                &mut self.ui.media
+            } else {
+                &mut ws.stash.media
+            };
+            if workspace != self.active {
+                media.pump(ctx);
+            }
+            for dm in &store.direct_messages {
+                let member = store.member(&dm.user.id);
+                let name = member
+                    .map(|member| member.name.as_str())
+                    .unwrap_or_else(|| dm.user.display_name());
+                let initials = member
+                    .map(|member| member.initials())
+                    .unwrap_or_else(|| shell::initials_of(name));
+                let presence = member
+                    .map(|member| member.presence)
+                    .unwrap_or(crate::state::Presence::Offline);
+                let avatar = media
+                    .avatar(&dm.user.id, store.avatars.get(&dm.user.id).map(String::as_str))
+                    .and_then(|texture| texture.frame(ctx))
+                    .map(|handle| handle.id());
+                let preview = dm.last_message.as_ref()
+                    .and_then(|message| message.content.as_deref())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or(" ")
+                    .to_owned();
+                let unread = store.channel(&dm.id)
+                    .filter(|channel| channel.unread)
+                    .map(|_| dm.unread_count.max(1))
+                    .unwrap_or(0);
+                let last_activity = dm.last_message.as_ref()
+                    .and_then(|message| message.created_at)
+                    .unwrap_or(dm.created_at);
+                inbox.push(shell::InboxDm {
+                    workspace,
+                    id: dm.id.clone(),
+                    name: name.to_owned(),
+                    initials,
+                    preview,
+                    presence,
+                    unread,
+                    avatar,
+                    last_activity,
+                });
+            }
+        }
+        inbox.sort_by(|a, b| {
+            b.last_activity.cmp(&a.last_activity)
+                .then_with(|| a.workspace.cmp(&b.workspace))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        inbox
+    }
+
+    /// Switch only the displayed workspace; its existing runtime owns the DM.
+    fn open_inbox_dm(&mut self, workspace: usize, dm_id: &str, ctx: &egui::Context) {
+        if !self.workspaces.get(workspace).is_some_and(|ws| {
+            ws.runtime.store.direct_messages.iter().any(|dm| dm.id == dm_id)
+        }) {
+            return;
+        }
+        self.activate(workspace, ctx);
+        let store = &mut self.workspaces[workspace].runtime.store;
+        if store.channel(&store.selected_channel)
+            .is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
+        {
+            self.ui.last_server_channel = store.selected_channel.clone();
+        }
+        self.ui.dm_surface = true;
+        store.selected_channel = dm_id.to_owned();
+        self.ui.topic_since = Some(ctx.input(|input| input.time));
+        self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
+        ctx.request_repaint();
+    }
+
     fn draw_rail(&mut self, ui: &mut egui::Ui, s: &'static crate::i18n::Strings, ctx: &egui::Context) {
         let entries = self.rail_entries(ctx);
-        let direct_unread = self.workspaces[self.active].runtime.store.direct_unread_total();
+        let direct_unread = self.workspaces.iter()
+            .map(|ws| ws.runtime.store.direct_unread_total())
+            .sum();
         if let Some(action) = crate::ui::rail::draw(
             ui,
             &entries,
@@ -3063,21 +3154,47 @@ impl PapoApp {
                 self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
             }
             crate::ui::rail::RailAction::DirectMessages => {
-                let store = &mut self.workspaces[self.active].runtime.store;
-                if !self.ui.dm_surface
-                    && store.channel(&store.selected_channel).is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
-                {
-                    self.ui.last_server_channel = store.selected_channel.clone();
+                // The global tile opens the most recently active DM, even if
+                // its backend isn't the currently selected server.
+                let current = self.ui.dm_surface.then(|| {
+                    let store = &self.workspaces[self.active].runtime.store;
+                    store.selected_direct_message()
+                        .map(|dm| (self.active, dm.id.clone()))
+                }).flatten();
+                let newest = self.workspaces.iter().enumerate()
+                    .filter(|(_, ws)| ws.runtime.store.screen == Screen::Chat)
+                    .flat_map(|(index, ws)| ws.runtime.store.direct_messages.iter()
+                        .map(move |dm| (index, dm)))
+                    .max_by(|(_, a), (_, b)| {
+                        let a_at = a.last_message.as_ref()
+                            .and_then(|message| message.created_at)
+                            .unwrap_or(a.created_at);
+                        let b_at = b.last_message.as_ref()
+                            .and_then(|message| message.created_at)
+                            .unwrap_or(b.created_at);
+                        a_at.cmp(&b_at)
+                    })
+                    .map(|(index, dm)| (index, dm.id.clone()));
+                if let Some((index, dm_id)) = current.or(newest) {
+                    self.open_inbox_dm(index, &dm_id, ctx);
+                } else {
+                    // An empty inbox still has a stable home, including when
+                    // the selected server isn't signed in.
+                    if self.workspaces[self.active].runtime.store.screen != Screen::Chat
+                        && let Some(index) = self.workspaces.iter()
+                            .position(|ws| ws.runtime.store.screen == Screen::Chat)
+                    {
+                        self.activate(index, ctx);
+                    }
+                    let store = &mut self.workspaces[self.active].runtime.store;
+                    if store.channel(&store.selected_channel)
+                        .is_some_and(|channel| channel.kind != crate::state::ChannelKind::Direct)
+                    {
+                        self.ui.last_server_channel = store.selected_channel.clone();
+                    }
+                    self.ui.dm_surface = true;
+                    self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
                 }
-                self.ui.dm_surface = true;
-                if !store.channel(&store.selected_channel).is_some_and(|channel| channel.kind == crate::state::ChannelKind::Direct) {
-                    store.selected_channel = store
-                        .direct_messages
-                        .first()
-                        .map(|dm| dm.id.clone())
-                        .unwrap_or_default();
-                }
-                self.ui.mobile_surface = crate::ui::shell::MobileSurface::Chat;
             }
             crate::ui::rail::RailAction::Add => self.add_server(ctx),
             crate::ui::rail::RailAction::Remove(index) => self.remove_server(index, ctx),
@@ -4354,7 +4471,11 @@ impl eframe::App for PapoApp {
                 self.ui.server_count = self.workspaces.len();
                 self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
                 let draft_channel_before = self.ui.last_channel.clone();
-                let direct_unread = self.workspaces[active].runtime.store.direct_unread_total();
+                let direct_unread = self.workspaces.iter()
+                    .map(|ws| ws.runtime.store.direct_unread_total())
+                    .sum();
+                let inbox = self.inbox_entries(&ctx);
+                self.ui.dm_server_name = self.workspaces[active].label.clone();
                 let direct_active = self.ui.dm_surface;
                 let rail_action = {
                     let ws = &mut self.workspaces[active];
@@ -4371,6 +4492,8 @@ impl eframe::App for PapoApp {
                             direct_unread,
                             direct_active,
                         }),
+                        &inbox,
+                        active,
                     )
                 };
                 self.settings.webembed_float_width = self.ui.webembed_float_width;
