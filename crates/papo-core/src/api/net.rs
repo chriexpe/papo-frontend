@@ -1513,6 +1513,7 @@ async fn worker(
     let mut reconcile_scheduler =
         ReconcileScheduler::with_scope(RECONCILE_CONCURRENCY, storage_key.clone());
     let mut reconcile_tasks = JoinSet::new();
+    let mut create_server_tasks: JoinSet<(u64, ApiResult<serde_json::Value>)> = JoinSet::new();
     let (reconcile_progress_tx, mut reconcile_progress_rx) =
         mpsc::unbounded_channel::<ReconcileProgress>();
     let mut reconcile_aborts: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
@@ -2014,6 +2015,13 @@ async fn worker(
                             Err(error) => report(&storage_key, &updates, &wake, error),
                         }
                     }
+                    Command::CreateServer { name } => {
+                        let api = api.clone();
+                        let owner_epoch = session_epoch;
+                        create_server_tasks.spawn(async move {
+                            (owner_epoch, api.create_server(&name).await)
+                        });
+                    }
                     Command::Refresh | Command::RefreshAfterConnect => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
                         if user_id.is_none() || !session.is_authenticated() {
@@ -2259,6 +2267,33 @@ async fn worker(
                 }
                 publish(&updates, &wake, Update::Connection(status));
             }
+            created = create_server_tasks.join_next(), if !create_server_tasks.is_empty() => {
+                if let Some(Ok((owner_epoch, result))) = created
+                    && owner_epoch == session_epoch
+                {
+                    match result {
+                        Ok(_) => {
+                            let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                            if user_id.is_some() && session.is_authenticated() {
+                                let result = reconcile_scheduler.submit(
+                                    ReconcileRequest {
+                                        owner: TaskOwner {
+                                            generation: runtime_generation,
+                                            session_epoch,
+                                        },
+                                        priority: ReconcilePriority::UserRequested,
+                                        kind: ReconcileKind::ServerMetadata { user_id },
+                                    },
+                                    std::time::Instant::now(),
+                                );
+                                abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                                diagnostics_dirty = true;
+                            }
+                        }
+                        Err(error) => report(&storage_key, &updates, &wake, error),
+                    }
+                }
+            }
             progress = reconcile_progress_rx.recv() => {
                 if let Some(progress) = progress {
                     publish_reconcile_progress(
@@ -2444,7 +2479,9 @@ async fn worker(
         &reconcile_scheduler,
     );
     reconcile_tasks.abort_all();
+    create_server_tasks.abort_all();
     while reconcile_tasks.join_next().await.is_some() {}
+    while create_server_tasks.join_next().await.is_some() {}
 
     if let Some(socket) = socket {
         socket.abort();
@@ -3077,17 +3114,8 @@ async fn handle(
             // Consumidos no laço do worker, onde também invalidam a validação
             // da fila durável.
         }
-        Command::CreateServer { name } => match api.create_server(&name).await {
-            Ok(_) => {
-                let id = me.lock().ok().and_then(|slot| slot.clone());
-                let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
-            }
-            Err(error) => publish_runtime(
-                storage_key,
-                updates,
-                wake,
-                Update::Error(error.to_string()),
-            ),
+        Command::CreateServer { .. } => {
+            // Handled by the worker's independent completion queue.
         },
         // Reconciliação é consumida no laço do worker e executada pelo
         // scheduler; nunca deve entrar no caminho ordenado abaixo.
