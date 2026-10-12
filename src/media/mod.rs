@@ -233,6 +233,7 @@ pub enum Loaded {
 pub struct Media {
     requests: mpsc::UnboundedSender<Request>,
     results: sync_mpsc::Receiver<Loaded>,
+    server_key: String,
 }
 
 impl Media {
@@ -240,6 +241,7 @@ impl Media {
         // A URL nunca entra no caminho em disco. Calcula uma vez por worker e
         // usa a mesma identidade estável que ClientDb/SecretStore já usam.
         let server_key = papo_core::server_key(&base_url);
+        let worker_server_key = server_key.clone();
         let (requests_tx, requests_rx) = mpsc::unbounded_channel();
         let (results_tx, results_rx) = sync_mpsc::channel();
 
@@ -259,7 +261,7 @@ impl Media {
                 };
                 runtime.block_on(worker(
                     base_url,
-                    server_key,
+                    worker_server_key,
                     session,
                     requests_rx,
                     results_tx,
@@ -271,7 +273,12 @@ impl Media {
         Some(Self {
             requests: requests_tx,
             results: results_rx,
+            server_key,
         })
+    }
+
+    fn preview_image_path(&self, id: &str) -> PathBuf {
+        authenticated_cache_path(&self.server_key, "files", id, "embed-image.bin")
     }
 
     pub fn request(&self, request: Request) {
@@ -548,7 +555,19 @@ async fn run(
                     .decode(blob.as_bytes())
                     .map_err(|error| error.to_string())
             }) {
-                Ok(bytes) => decode(key, &bytes, FULL_MAX),
+                Ok(bytes) => {
+                    // The full image is requested explicitly by Viewer, never
+                    // while scrolling. Keep its encoded original for Download,
+                    // using a per-server path just like attachments.
+                    let cache = authenticated_cache_path(
+                        server_key, "files", &id, "embed-image.bin",
+                    );
+                    if let Some(parent) = cache.parent() {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                    }
+                    let _ = tokio::fs::write(&cache, &bytes).await;
+                    decode(key, &bytes, FULL_MAX)
+                }
                 Err(error) => Loaded::Failed { key, error },
             }
         }
@@ -1816,6 +1835,13 @@ impl MediaStore {
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// Download from the same authenticated image source as the full viewer,
+    /// not from an external preview URL. Available after the image has loaded.
+    pub fn preview_full_cached_path(&self, id: &str) -> Option<PathBuf> {
+        let path = self.media.as_ref()?.preview_image_path(id);
+        path.is_file().then_some(path)
     }
 
     pub fn release_preview_viewer_texture(&mut self, id: &str) {
