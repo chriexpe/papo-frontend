@@ -324,9 +324,11 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
     if let Some(system_font) = system_font
         && let Some(faces) = load_system_faces(&system_font.family)
     {
-            for (slot, data) in faces {
+            for (slot, bytes, index) in faces {
                 let name = format!("system-{slot}");
-                fonts.font_data.insert(name.clone(), Arc::new(egui::FontData::from_owned(data)));
+                let mut font = egui::FontData::from_owned(bytes);
+                font.index = index;
+                fonts.font_data.insert(name.clone(), Arc::new(font));
                 let family = match slot {
                     "regular" => FontFamily::Proportional,
                     other => FontFamily::Name(other.into()),
@@ -334,6 +336,45 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
                 fonts.families.entry(family).or_default().insert(0, name);
             }
         set_body_size(system_font.body_px());
+    }
+
+    // egui won't ask fontconfig automatically when Inter lacks a glyph.
+    // Explicitly register Unicode fallbacks and honor the correct TTC face.
+    #[cfg(not(target_os = "android"))]
+    {
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        let fallback_families = [
+            ("cjk-jp", "Noto Sans CJK JP"),
+            ("cjk-jp-single", "Noto Sans JP"),
+            ("cjk-sc", "Noto Sans CJK SC"),
+            ("cjk-kr", "Noto Sans CJK KR"),
+            ("unicode", "DejaVu Sans"),
+        ];
+        for (tag, name) in fallback_families {
+            let query = fontdb::Query {
+                families: &[fontdb::Family::Name(name)],
+                weight: fontdb::Weight::NORMAL,
+                ..Default::default()
+            };
+            let Some(id) = db.query(&query) else { continue };
+            let Some((bytes, index)) =
+                db.with_face_data(id, |bytes, index| (bytes.to_vec(), index))
+            else { continue };
+            let mut data = egui::FontData::from_owned(bytes);
+            data.index = index;
+            let key = format!("fallback-{tag}");
+            fonts.font_data.insert(key.clone(), Arc::new(data));
+            for family in [
+                FontFamily::Proportional,
+                FontFamily::Monospace,
+                FontFamily::Name("medium".into()),
+                FontFamily::Name("semibold".into()),
+                FontFamily::Name("display".into()),
+            ] {
+                fonts.families.entry(family).or_default().push(key.clone());
+            }
+        }
     }
 
     add(
@@ -371,7 +412,7 @@ pub fn install_fonts(ctx: &egui::Context, system_font: Option<&crate::platform::
 }
 
 /// Procura no fontconfig os pesos da família pedida.
-fn load_system_faces(family: &str) -> Option<Vec<(&'static str, Vec<u8>)>> {
+fn load_system_faces(family: &str) -> Option<Vec<(&'static str, Vec<u8>, u32)>> {
     use fontdb::{Database, Family, Query, Weight};
 
     let mut db = Database::new();
@@ -390,9 +431,9 @@ fn load_system_faces(family: &str) -> Option<Vec<(&'static str, Vec<u8>)>> {
             ..Default::default()
         };
         let Some(id) = db.query(&query) else { continue };
-        let data = db.with_face_data(id, |data, _index| data.to_vec());
-        if let Some(data) = data {
-            faces.push((slot, data));
+        let data = db.with_face_data(id, |data, index| (data.to_vec(), index));
+        if let Some((data, index)) = data {
+            faces.push((slot, data, index));
         }
     }
 
