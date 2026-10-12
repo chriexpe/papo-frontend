@@ -10984,6 +10984,39 @@ mod link_preview_dedupe_tests {
     }
 
     #[test]
+    fn backend_video_must_be_direct_media_not_an_html_iframe() {
+        let direct: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "fx-embed",
+            "source_type": "link",
+            "video": {
+                "url": "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/example.mp4",
+                "mime_type": "video/mp4"
+            }
+        })).unwrap();
+        assert!(backend_has_playable_video(&direct));
+        assert!(backend_iframe_video_url(&direct).is_none());
+
+        let iframe: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "youtube-embed",
+            "source_type": "link",
+            "video": {"url": "https://www.youtube.com/embed/abcdefghijk"}
+        })).unwrap();
+        assert!(!backend_has_playable_video(&iframe));
+        assert_eq!(
+            backend_iframe_video_url(&iframe).as_deref(),
+            Some("https://www.youtube.com/embed/abcdefghijk")
+        );
+
+        let unknown: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "html-embed",
+            "source_type": "link",
+            "video": {"url": "https://example.com/private/script"}
+        })).unwrap();
+        assert!(!backend_has_playable_video(&unknown));
+        assert!(backend_iframe_video_url(&unknown).is_none());
+    }
+
+    #[test]
     fn custom_message_embed_keeps_a_safe_nested_video() {
         let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
             "id": "message-embed",
