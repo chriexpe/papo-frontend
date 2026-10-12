@@ -11101,6 +11101,38 @@ mod link_preview_dedupe_tests {
     }
 
     #[test]
+    fn nested_youtube_thumbnail_still_resolves_to_shared_webview() {
+        let source = "https://youtu.be/S_WnNiaU4m0?si=m37I98CU0aqRY9qr";
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "yt-custom",
+            "source_type": "custom",
+            "image": {"url": "https://img.youtube.com/vi/S_WnNiaU4m0/hqdefault.jpg"},
+            "video": {"url": "https://www.youtube.com/embed/S_WnNiaU4m0"}
+        })).unwrap();
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        assert!(backend_video.is_none());
+        assert!(direct.is_none());
+        assert!(iframe.unwrap().contains("/embed/S_WnNiaU4m0"));
+        assert!(youtube_player_url("https://example.com/watch?v=S_WnNiaU4m0").is_none());
+        assert!(youtube_player_url("https://youtu.be/invalid").is_none());
+    }
+
+    #[test]
+    fn klipy_gif_uses_animation_even_with_iframe_and_mp4_metadata() {
+        let source = "https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme";
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "klipy-custom",
+            "source_type": "custom",
+            "video": {"url": "https://cdn.example.test/animation.mp4", "mime_type": "video/mp4"}
+        })).unwrap();
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        assert!(gif_style_embed(source));
+        assert!(backend_video.is_some());
+        assert!(direct.is_none());
+        assert!(iframe.is_none());
+    }
+
+    #[test]
     fn custom_message_embed_keeps_a_safe_nested_video() {
         let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
             "id": "message-embed",
@@ -11112,10 +11144,11 @@ mod link_preview_dedupe_tests {
         }))
         .expect("valid custom embed");
 
-        assert_eq!(
-            custom_embed_video_url(&embed),
-            Some("https://cdn.example.test/attachment.mp4")
-        );
+        let (backend_video, video_url, iframe) =
+            choose_embed_media("https://cdn.example.test/post", Some(&embed), None);
+        assert!(backend_video.is_some(), "custom video goes through the native player");
+        assert!(video_url.is_none());
+        assert!(iframe.is_none());
     }
 }
 
