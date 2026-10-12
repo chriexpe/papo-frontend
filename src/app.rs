@@ -3621,6 +3621,10 @@ impl PapoApp {
         use crate::ui::settings::{SettingsAction, Surface};
 
         let Some(surface) = self.sheet.open else {
+            #[cfg(not(target_os = "android"))]
+            {
+                self.sheet.ui_scale_draft = None;
+            }
             return;
         };
         let s = self.settings.lang.strings();
@@ -3741,10 +3745,19 @@ impl PapoApp {
         };
 
         #[cfg(not(target_os = "android"))]
-        if before_ui_scale != self.settings.ui_scale {
-            self.settings.ui_scale = normalise_ui_scale(self.settings.ui_scale);
-            ctx.set_zoom_factor(self.settings.ui_scale);
-            ctx.request_repaint();
+        {
+            // The slider may update its draft every frame while dragging, but
+            // we only change egui's global zoom after the pointer is released.
+            // Keyboard edits, with no pointer held, apply immediately.
+            if !ctx.input(|input| input.pointer.any_down()) {
+                if let Some(scale) = self.sheet.ui_scale_draft.take() {
+                    self.settings.ui_scale = normalise_ui_scale(scale);
+                }
+            }
+            if before_ui_scale != self.settings.ui_scale {
+                ctx.set_zoom_factor(self.settings.ui_scale);
+                ctx.request_repaint();
+            }
         }
         // Um ajuste local mudou: grava e reflete na janela na hora.
         let after_primary = (

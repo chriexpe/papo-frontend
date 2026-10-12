@@ -179,6 +179,10 @@ pub struct SettingsState {
     pub compact: bool,
     pub app_pane: AppPane,
     pub server_pane: ServerPane,
+    /// Temporary value while dragging the desktop UI scale slider.
+    /// Applying viewport zoom mid-drag moves the slider under the pointer.
+    #[cfg(not(target_os = "android"))]
+    pub ui_scale_draft: Option<f32>,
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
     /// tecla digitada.
     pub draft: Draft,
@@ -202,6 +206,8 @@ impl Default for SettingsState {
             compact: false,
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
+            #[cfg(not(target_os = "android"))]
+            ui_scale_draft: None,
             draft: Draft::default(),
             channel_people: std::collections::HashMap::new(),
             pending_channel_people: None,
@@ -3954,12 +3960,16 @@ fn app_pane(
                 });
                 #[cfg(not(target_os = "android"))]
                 rows.row(s.ui_scale, Some(s.ui_scale_hint), |ui, _t| {
-                    let mut percent = (*data.ui_scale * 100.0).round() as i32;
+                    // Keep the value local during pointer interaction. Zooming
+                    // the viewport while the pointer is held would change the
+                    // slider geometry, causing a moving-target feedback loop.
+                    let current = state.ui_scale_draft.unwrap_or(*data.ui_scale);
+                    let mut percent = (current * 100.0).round() as i32;
                     if ui.add_sized(
                         [175.0, 26.0],
                         egui::Slider::new(&mut percent, 75..=200).step_by(5.0).suffix("%"),
                     ).changed() {
-                        *data.ui_scale = percent as f32 / 100.0;
+                        state.ui_scale_draft = Some(percent as f32 / 100.0);
                     }
                 });
                 rows.row(s.translucency, Some(s.translucency_hint), |ui, t| {
