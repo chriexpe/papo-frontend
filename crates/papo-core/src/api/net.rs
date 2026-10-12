@@ -2027,9 +2027,10 @@ async fn worker(
                         if user_id.is_none() || !session.is_authenticated() {
                             continue;
                         }
-                        if matches!(command, Command::RefreshAfterConnect)
-                            && reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
-                        {
+                        // Even a queued (not yet running) pre-connect fetch
+                        // may race the subscription. Require a second pass
+                        // after the first completes, not only if it is running.
+                        if matches!(command, Command::RefreshAfterConnect) {
                             refresh_after_connect = true;
                         }
                         let result = reconcile_scheduler.submit(
