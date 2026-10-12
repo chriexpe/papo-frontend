@@ -4324,6 +4324,11 @@ impl eframe::App for PapoApp {
         }
 
         self.pump_network(&ctx);
+        for ws in &mut self.workspaces {
+            if let Some(expires_in) = ws.runtime.store.expire_typing() {
+                ctx.request_repaint_after(expires_in);
+            }
+        }
         self.project_presence_activity(&ctx);
         self.pump_cache(&ctx);
         self.sync_active_portable_settings(&ctx);
