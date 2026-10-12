@@ -6834,18 +6834,13 @@ fn custom_embed_card(
                     Color32::WHITE,
                 );
                 if response.clicked() {
-                    state.link_viewer = Some(LinkViewer {
-                        id: format!("embed-image:{}", embed.id),
-                        url: embed.url.clone().unwrap_or_default(),
-                        name: heading.or(embed.title.as_deref()).unwrap_or("imagem").to_owned(),
-                        video: false,
-                        ephemeral: false,
-                        favourite_id: None,
-                        zoom: 1.0,
-                        offset: Vec2::ZERO,
-                        fitted: true,
-                        opened: ui.input(|input| input.time),
-                    });
+                    state.viewer = Some(Viewer::external_image(
+                        format!("embed-image:{}", embed.id),
+                        embed.url.clone().unwrap_or_default(),
+                        heading.or(embed.title.as_deref()).unwrap_or("imagem").to_owned(),
+                        false,
+                        None,
+                    ));
                 }
             }
         }
@@ -7363,18 +7358,13 @@ fn preview_card(
                 } else {
                     (id.to_owned(), image_url.clone().unwrap_or_default())
                 };
-                state.link_viewer = Some(LinkViewer {
-                    id: viewer_id,
-                    url: viewer_url,
-                    name: title.unwrap_or("image").to_owned(),
-                    video: false,
-                    ephemeral: false,
-                    favourite_id: None,
-                    zoom: 1.0,
-                    offset: Vec2::ZERO,
-                    fitted: true,
-                    opened: ui.input(|input| input.time),
-                });
+                state.viewer = Some(Viewer::external_image(
+                    viewer_id,
+                    viewer_url,
+                    title.unwrap_or("image").to_owned(),
+                    false,
+                    None,
+                ));
                 media_clicked = true;
             }
             ui.add_space(space::SM);
@@ -8322,13 +8312,30 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
                     .map(|message| message.attachments.clone())
             })
             .unwrap_or_default();
+        let external = viewer.external_source().cloned();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
             Some(ViewerAction::Close) => {
-                state.media.pause_all();
-                state.media.release_viewer_textures();
+                if let Some(image) = external {
+                    if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+                        state.media.release_preview_viewer_texture(embed_id);
+                    } else {
+                        state.media.release_remote_viewer_texture(&image.url, image.ephemeral);
+                    }
+                } else {
+                    state.media.pause_all();
+                    state.media.release_viewer_textures();
+                }
             }
             Some(ViewerAction::Download { id, name }) => {
                 state.actions.push(ChatAction::Download { id, name });
+                state.viewer = Some(viewer);
+            }
+            Some(ViewerAction::SaveCachedImage { path, name }) => {
+                state.actions.push(ChatAction::SaveCachedImage { path, name });
+                state.viewer = Some(viewer);
+            }
+            Some(ViewerAction::ToggleFavourite(slug)) => {
+                gif::toggle_favourite(state, &slug);
                 state.viewer = Some(viewer);
             }
             None => state.viewer = Some(viewer),
@@ -8498,11 +8505,8 @@ fn link_image_viewer(
         &mut link.fitted,
     ) {
         Some(viewer::RemoteViewerAction::Close) => {
-            if let Some(embed_id) = link.id.strip_prefix("embed-image:") {
-                state.media.release_preview_viewer_texture(embed_id);
-            } else if !link.video {
-                state.media.release_remote_viewer_texture(&link.url, link.ephemeral);
-            }
+            // Image sources use Viewer::external_image; this overlay is now
+            // exclusively the native fullscreen video player.
         }
         Some(viewer::RemoteViewerAction::Download { path, name }) => {
             state.actions.push(ChatAction::SaveCachedImage { path, name });
