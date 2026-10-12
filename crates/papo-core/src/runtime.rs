@@ -10,7 +10,9 @@ use crate::cache::ClientDb;
 use crate::notification::{
     CandidateSource, NotificationContext, NotificationCoordinator,
 };
-use crate::state::{Phase, Screen, Store};
+use crate::state::{Phase, Store};
+#[cfg(test)]
+use crate::state::Screen;
 use crate::storage::{Secret, SecretStore};
 
 pub const DEFAULT_DRAIN_LIMIT: usize = 256;
@@ -100,6 +102,8 @@ pub struct ServerRuntime {
     cached_owner: Option<String>,
     notification: Arc<NotificationCoordinator>,
     reconnect_refreshes: u64,
+    verified_session: bool,
+    last_online_refresh_generation: Option<u64>,
     mode: RuntimeMode,
     background_view: Option<RuntimeNotificationView>,
     background_result: Option<BackgroundRunResult>,
@@ -255,6 +259,8 @@ impl ServerRuntime {
             cached_owner,
             notification,
             reconnect_refreshes: 0,
+            verified_session: false,
+            last_online_refresh_generation: None,
             mode,
             background_view,
             background_result: None,
@@ -324,9 +330,9 @@ impl ServerRuntime {
             _ => None,
         };
         let session_ended = matches!(&update, Update::Session(None));
+        let session_started = matches!(&update, Update::Session(Some(_))) && !self.verified_session;
         let became_online = matches!(&update, Update::Connection(Connection::Online))
             && self.store.connection != Connection::Online;
-        let refresh_after_online = became_online && self.store.screen == Screen::Chat;
 
         self.store.apply(update);
 
@@ -343,8 +349,13 @@ impl ServerRuntime {
             }
             self.cached_owner = Some(me_id);
         }
+        if session_started {
+            self.verified_session = true;
+        }
         if session_ended {
             self.cached_owner = None;
+            self.verified_session = false;
+            self.last_online_refresh_generation = None;
         }
 
         let cache_ops = self.store.take_cache_ops();
@@ -352,8 +363,21 @@ impl ServerRuntime {
             self.cache.submit(&self.server_key, cache_ops);
         }
 
-        if refresh_after_online && self.mode == RuntimeMode::Interactive {
-            self.net.send(Command::Refresh);
+        // Authentication independently starts REST metadata, even without
+        // a functioning WebSocket. A separate post-connect catch-up closes
+        // the gap between an early REST snapshot and the WS subscription.
+        let online_refresh = became_online
+            && self.verified_session
+            && self.last_online_refresh_generation != Some(self.store.sync_generation());
+        if online_refresh {
+            self.last_online_refresh_generation = Some(self.store.sync_generation());
+        }
+        if self.mode == RuntimeMode::Interactive && (session_started || online_refresh) {
+            self.net.send(if online_refresh {
+                Command::RefreshAfterConnect
+            } else {
+                Command::Refresh
+            });
             self.reconnect_refreshes = self.reconnect_refreshes.saturating_add(1);
         }
 
@@ -877,12 +901,55 @@ mod tests {
     #[test]
     fn online_repetido_nao_duplica_refresh() {
         let (mut runtime, _) = disabled_runtime();
-        runtime.store.screen = Screen::Chat;
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        runtime.process_update(Update::Connection(Connection::Online));
+        runtime.process_update(Update::Connection(Connection::Online));
+
+        // One initial fetch and one post-connect catch-up, not three.
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 2);
+    }
+
+    #[test]
+    fn sessao_antes_do_online_agenda_refresh() {
+        let (mut runtime, _) = disabled_runtime();
+
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+        runtime.process_update(Update::Connection(Connection::Online));
+
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 2);
+    }
+
+    #[test]
+    fn online_antes_da_sessao_agenda_refresh() {
+        let (mut runtime, _) = disabled_runtime();
 
         runtime.process_update(Update::Connection(Connection::Online));
-        runtime.process_update(Update::Connection(Connection::Online));
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
 
         assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+    }
+
+    #[test]
+    fn autenticacao_carrega_metadados_sem_websocket() {
+        let (mut runtime, _) = disabled_runtime();
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        assert_eq!(runtime.store.connection, Connection::Offline);
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+    }
+
+    #[test]
+    fn reconexao_agenda_uma_unica_reconciliacao_por_geracao() {
+        let (mut runtime, _) = disabled_runtime();
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        runtime.process_update(Update::Connection(Connection::Online));
+        runtime.process_update(Update::Connection(Connection::Offline));
+        runtime.process_update(Update::Connection(Connection::Connecting));
+        runtime.process_update(Update::Connection(Connection::Online));
+        runtime.process_update(Update::Connection(Connection::Online));
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 3);
     }
 
     #[test]

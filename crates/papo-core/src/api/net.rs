@@ -237,6 +237,9 @@ pub enum Command {
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
+    /// Force a catch-up after the WS subscription, even when an older
+    /// initial metadata snapshot is already running.
+    RefreshAfterConnect,
     /// Abre/cria uma conversa direta com esta pessoa.
     OpenDirectMessage {
         user_id: String,
@@ -655,7 +658,27 @@ impl Default for RuntimeDiagnostics {
 struct ReconcileCompletion {
     run_id: u64,
     success: bool,
+    is_metadata: bool,
+    // Errors remain transactional with completion; successful metadata
+    // resources are delivered progressively through ReconcileProgress.
     updates: Vec<Update>,
+}
+
+struct ReconcileProgress {
+    run_id: u64,
+    update: Update,
+}
+
+fn publish_reconcile_progress(
+    progress: ReconcileProgress,
+    scheduler: &ReconcileScheduler,
+    scope: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) {
+    if scheduler.is_current_run(progress.run_id) {
+        publish_runtime(scope, updates, wake, progress.update);
+    }
 }
 
 pub struct Net {
@@ -1490,6 +1513,9 @@ async fn worker(
     let mut reconcile_scheduler =
         ReconcileScheduler::with_scope(RECONCILE_CONCURRENCY, storage_key.clone());
     let mut reconcile_tasks = JoinSet::new();
+    let mut create_server_tasks: JoinSet<(u64, ApiResult<serde_json::Value>)> = JoinSet::new();
+    let (reconcile_progress_tx, mut reconcile_progress_rx) =
+        mpsc::unbounded_channel::<ReconcileProgress>();
     let mut reconcile_aborts: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
@@ -1503,6 +1529,10 @@ async fn worker(
     outgoing_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     outgoing_retry.tick().await;
     let mut diagnostics_dirty = false;
+    let mut refresh_after_connect = false;
+    // Live metadata mutations racing an older REST snapshot are replayed
+    // after the snapshot; timeline mutations already have their own journal.
+    let mut metadata_live_events: Vec<Event> = Vec::new();
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
@@ -1603,6 +1633,7 @@ async fn worker(
             &mut reconcile_scheduler,
             &mut reconcile_tasks,
             &mut reconcile_aborts,
+            &reconcile_progress_tx,
         );
         if diagnostics_dirty {
             update_runtime_diagnostics(
@@ -1984,8 +2015,24 @@ async fn worker(
                             Err(error) => report(&storage_key, &updates, &wake, error),
                         }
                     }
-                    Command::Refresh => {
+                    Command::CreateServer { name } => {
+                        let api = api.clone();
+                        let owner_epoch = session_epoch;
+                        create_server_tasks.spawn(async move {
+                            (owner_epoch, api.create_server(&name).await)
+                        });
+                    }
+                    Command::Refresh | Command::RefreshAfterConnect => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                        if user_id.is_none() || !session.is_authenticated() {
+                            continue;
+                        }
+                        // Even a queued (not yet running) pre-connect fetch
+                        // may race the subscription. Require a second pass
+                        // after the first completes, not only if it is running.
+                        if matches!(command, Command::RefreshAfterConnect) {
+                            refresh_after_connect = true;
+                        }
                         let result = reconcile_scheduler.submit(
                             ReconcileRequest {
                                 owner: TaskOwner {
@@ -2046,6 +2093,25 @@ async fn worker(
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
                 hooks.event.emit(&event);
+
+                if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
+                    && matches!(
+                        &event,
+                        Event::ChannelCreated { .. }
+                            | Event::ChannelUpdated { .. }
+                            | Event::ChannelDeleted { .. }
+                            | Event::DirectMessageUpdated(_)
+                    )
+                {
+                    if metadata_live_events.len() < 512 {
+                        metadata_live_events.push(event.clone());
+                    } else {
+                        // Never let a long-running metadata fetch accumulate
+                        // unbounded events. Force a new authoritative pass.
+                        metadata_live_events.clear();
+                        refresh_after_connect = true;
+                    }
+                }
 
                 if let Event::Message(message) = &event {
                     if let Some(owner) = outgoing_owner.as_deref() {
@@ -2182,6 +2248,8 @@ async fn worker(
                         }),
                         &mut reconcile_aborts,
                     );
+                    metadata_live_events.clear();
+                    refresh_after_connect = false;
                 }
                 worker_connection = status;
                 if status == Connection::Online && previous_connection != Connection::Online {
@@ -2200,9 +2268,51 @@ async fn worker(
                 }
                 publish(&updates, &wake, Update::Connection(status));
             }
+            created = create_server_tasks.join_next(), if !create_server_tasks.is_empty() => {
+                if let Some(Ok((owner_epoch, result))) = created
+                    && owner_epoch == session_epoch
+                {
+                    match result {
+                        Ok(_) => {
+                            let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                            if user_id.is_some() && session.is_authenticated() {
+                                let result = reconcile_scheduler.submit(
+                                    ReconcileRequest {
+                                        owner: TaskOwner {
+                                            generation: runtime_generation,
+                                            session_epoch,
+                                        },
+                                        priority: ReconcilePriority::UserRequested,
+                                        kind: ReconcileKind::ServerMetadata { user_id },
+                                    },
+                                    std::time::Instant::now(),
+                                );
+                                abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                                diagnostics_dirty = true;
+                            }
+                        }
+                        Err(error) => report(&storage_key, &updates, &wake, error),
+                    }
+                }
+            }
+            progress = reconcile_progress_rx.recv() => {
+                if let Some(progress) = progress {
+                    publish_reconcile_progress(
+                        progress, &reconcile_scheduler, &storage_key, &updates, &wake,
+                    );
+                }
+            }
             completion = reconcile_tasks.join_next(), if !reconcile_tasks.is_empty() => {
                 match completion {
                     Some(Ok(completion)) => {
+                        // A completed task sent every progress update before
+                        // it returned. Drain those updates before clearing its
+                        // run ID, regardless of select! branch ordering.
+                        while let Ok(progress) = reconcile_progress_rx.try_recv() {
+                            publish_reconcile_progress(
+                                progress, &reconcile_scheduler, &storage_key, &updates, &wake,
+                            );
+                        }
                         reconcile_aborts.remove(&completion.run_id);
                         let current = reconcile_scheduler.complete(
                             completion.run_id,
@@ -2211,6 +2321,29 @@ async fn worker(
                         );
                         diagnostics_dirty = true;
                         if current {
+                            let retry_metadata = completion.is_metadata
+                                && (!completion.success || refresh_after_connect);
+                            if completion.is_metadata {
+                                refresh_after_connect = false;
+                            }
+                            if retry_metadata {
+                                let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                                if user_id.is_some() && session.is_authenticated() {
+                                    let result = reconcile_scheduler.submit(
+                                        ReconcileRequest {
+                                            owner: TaskOwner {
+                                                generation: runtime_generation,
+                                                session_epoch,
+                                            },
+                                            priority: ReconcilePriority::ActiveServer,
+                                            kind: ReconcileKind::ServerMetadata { user_id },
+                                        },
+                                        std::time::Instant::now(),
+                                    );
+                                    abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                                    diagnostics_dirty = true;
+                                }
+                            }
                             let session_invalid = completion
                                 .updates
                                 .iter()
@@ -2239,6 +2372,11 @@ async fn worker(
                                     }
                                 }
                                 publish_runtime(&storage_key, &updates, &wake, update);
+                            }
+                            if completion.is_metadata {
+                                for event in metadata_live_events.drain(..) {
+                                    publish(&updates, &wake, Update::Event(Box::new(event)));
+                                }
                             }
                         }
                     }
@@ -2342,7 +2480,9 @@ async fn worker(
         &reconcile_scheduler,
     );
     reconcile_tasks.abort_all();
+    create_server_tasks.abort_all();
     while reconcile_tasks.join_next().await.is_some() {}
+    while create_server_tasks.join_next().await.is_some() {}
 
     if let Some(socket) = socket {
         socket.abort();
@@ -2417,14 +2557,16 @@ fn spawn_ready_reconciles(
     scheduler: &mut ReconcileScheduler,
     tasks: &mut JoinSet<ReconcileCompletion>,
     aborts: &mut HashMap<u64, tokio::task::AbortHandle>,
+    progress: &mpsc::UnboundedSender<ReconcileProgress>,
 ) -> bool {
     let mut started_any = false;
     for StartedReconcile { run_id, request } in scheduler.start_ready(std::time::Instant::now()) {
         started_any = true;
         let api = api.clone();
         let scope = scope.to_owned();
+        let progress = progress.clone();
         let handle =
-            tasks.spawn(async move { run_reconcile(api, scope, run_id, request).await });
+            tasks.spawn(async move { run_reconcile(api, scope, run_id, request, progress).await });
         aborts.insert(run_id, handle);
     }
     started_any
@@ -2435,6 +2577,7 @@ async fn run_reconcile(
     scope: String,
     run_id: u64,
     request: ReconcileRequest,
+    progress: mpsc::UnboundedSender<ReconcileProgress>,
 ) -> ReconcileCompletion {
     match request.kind {
         ReconcileKind::ChannelHistory { ticket } => {
@@ -2442,6 +2585,7 @@ async fn run_reconcile(
             match with_retry(|| api.messages(&channel_id)).await {
                 Ok(list) => ReconcileCompletion {
                     run_id,
+                    is_metadata: false,
                     success: true,
                     updates: vec![Update::Messages {
                         ticket,
@@ -2452,6 +2596,7 @@ async fn run_reconcile(
                 },
                 Err(error) => ReconcileCompletion {
                     run_id,
+                    is_metadata: false,
                     success: false,
                     updates: vec![
                         Update::MessagesFailed(ticket),
@@ -2461,13 +2606,19 @@ async fn run_reconcile(
             }
         }
         ReconcileKind::ServerMetadata { user_id } => {
-            let (updates, complete) = bootstrap_updates(&api, &scope, user_id.as_deref()).await;
+            let (updates, complete) = bootstrap_updates(
+                &api, &scope, user_id.as_deref(),
+                |update| {
+                    let _ = progress.send(ReconcileProgress { run_id, update });
+                },
+            ).await;
             ReconcileCompletion {
                 run_id,
                 // A carga inicial que só perdeu por ritmo/rede não pode se
                 // declarar pronta: a marcação fica registrada para a próxima
                 // tentativa em vez de deixar cargos/emojis vazios para sempre.
                 success: complete,
+                is_metadata: true,
                 updates,
             }
         }
@@ -2580,21 +2731,27 @@ mod retry_tests {
     }
 }
 
-/// Devolve `(updates, complete)`. `complete` é falso quando alguma chamada
-/// falhou de forma transitória — o chamador então repete a carga inteira.
-async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Vec<Update>, bool) {
+/// Publishes each successful metadata resource as soon as it arrives.
+/// Returns only errors at completion, plus whether reconciliation was complete.
+/// Failed resources remain stale and are retried with bounded backoff.
+async fn bootstrap_updates(
+    api: &Api,
+    scope: &str,
+    user_id: Option<&str>,
+    mut publish: impl FnMut(Update),
+) -> (Vec<Update>, bool) {
     let mut updates = Vec::new();
     let mut complete = true;
 
     match with_retry(|| api.server()).await {
-        Ok(server) => updates.push(Update::Server(server.map(Box::new))),
+        Ok(server) => publish(Update::Server(server.map(Box::new))),
         Err(error) => {
             complete = false;
             updates.push(update_for_error(error));
         }
     }
     match with_retry(|| api.channels()).await {
-        Ok(channels) => updates.push(Update::Channels(channels)),
+        Ok(channels) => publish(Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2602,7 +2759,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.direct_messages()).await {
-        Ok(dms) => updates.push(Update::DirectMessages(dms)),
+        Ok(dms) => publish(Update::DirectMessages(dms)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2610,7 +2767,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.blocked_users()).await {
-        Ok(users) => updates.push(Update::BlockedUsers(users)),
+        Ok(users) => publish(Update::BlockedUsers(users)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2620,10 +2777,10 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
     match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
-            updates.push(Update::Users(users));
+            publish(Update::Users(users));
             if !ids.is_empty() {
                 match with_retry(|| api.profiles(ids.clone())).await {
-                    Ok(profiles) => updates.push(Update::Profiles(profiles)),
+                    Ok(profiles) => publish(Update::Profiles(profiles)),
                     Err(error) => {
                         complete = false;
                         log::warn!("runtime {scope}: perfis: {error}");
@@ -2638,14 +2795,14 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.roles()).await {
-        Ok(roles) => updates.push(Update::Roles(roles)),
+        Ok(roles) => publish(Update::Roles(roles)),
         Err(error) => {
             complete = false;
             log::warn!("runtime {scope}: cargos: {error}");
         }
     }
     match with_retry(|| api.emojis()).await {
-        Ok(emojis) => updates.push(Update::Emojis(emojis)),
+        Ok(emojis) => publish(Update::Emojis(emojis)),
         Err(error) => {
             complete = false;
             log::warn!("runtime {scope}: emojis: {error}");
@@ -2653,7 +2810,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
     }
     if let Some(user_id) = user_id {
         match with_retry(|| api.notifications(user_id)).await {
-            Ok(notifications) => updates.push(Update::Notifications(notifications)),
+            Ok(notifications) => publish(Update::Notifications(notifications)),
             Err(error) => {
                 complete = false;
                 log::warn!("runtime {scope}: notificações: {error}");
@@ -2669,6 +2826,14 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
 /// Só `Unauthorized` prova que o token deixou de valer. Timeout, DNS, 5xx,
 /// resposta incompleta e servidor temporariamente fora mantêm a credencial e
 /// deixam o próximo tique tentar novamente.
+///
+/// A sessão persistida é verificada sem carregar metadados.
+///
+/// A inicialização interativa não deve esperar o bootstrap REST antes de abrir
+/// o WebSocket. Quando o socket fica online, `ServerRuntime` agenda a
+/// atualização de metadados pelo caminho normal de reconciliação. Manter este
+/// helper restrito à autenticação também evita que uma requisição de mídia
+/// lenta adie a primeira conexão de mensagens ao vivo.
 async fn verify_saved_session(
     api: &Api,
     storage_key: &str,
@@ -2678,7 +2843,7 @@ async fn verify_saved_session(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
 ) {
-    if verify_saved_session_once(
+    let _ = verify_saved_session_once(
         api,
         storage_key,
         storage,
@@ -2687,12 +2852,7 @@ async fn verify_saved_session(
         updates,
         wake,
     )
-    .await
-        == SavedSessionOutcome::Verified
-    {
-        let id = me.lock().ok().and_then(|slot| slot.clone());
-        let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
-    }
+    .await;
 }
 
 async fn verify_saved_session_once(
@@ -2858,7 +3018,6 @@ async fn handle(
                             *slot = Some(id.clone());
                         }
                         publish(updates, wake, Update::Session(Some(Box::new(whoami))));
-                        bootstrap(api, storage_key, updates, wake, Some(&id)).await;
                     }
                     Err(error) => publish_runtime(
                 storage_key,
@@ -2956,21 +3115,13 @@ async fn handle(
             // Consumidos no laço do worker, onde também invalidam a validação
             // da fila durável.
         }
-        Command::CreateServer { name } => match api.create_server(&name).await {
-            Ok(_) => {
-                let id = me.lock().ok().and_then(|slot| slot.clone());
-                let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
-            }
-            Err(error) => publish_runtime(
-                storage_key,
-                updates,
-                wake,
-                Update::Error(error.to_string()),
-            ),
+        Command::CreateServer { .. } => {
+            // Handled by the worker's independent completion queue.
         },
         // Reconciliação é consumida no laço do worker e executada pelo
         // scheduler; nunca deve entrar no caminho ordenado abaixo.
         Command::Refresh
+        | Command::RefreshAfterConnect
         | Command::LoadMessages { .. }
         | Command::ProbeConnection
         | Command::NetworkHint(_)

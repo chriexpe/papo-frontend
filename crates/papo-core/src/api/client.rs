@@ -4,9 +4,10 @@
 //! nem armazenamento do navegador: guardamos o cookie num pote próprio e o
 //! gravamos em disco para sobreviver ao fechamento da janela.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -45,11 +46,35 @@ struct RequestGovernorState {
 #[derive(Debug, Default)]
 struct RequestGovernor {
     state: tokio::sync::Mutex<RequestGovernorState>,
+    high_priority_waiters: AtomicUsize,
+}
+
+struct PriorityWaiter<'a>(&'a AtomicUsize);
+
+impl Drop for PriorityWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl RequestGovernor {
     async fn wait_turn(&self) {
+        self.wait_turn_with_priority(false).await;
+    }
+
+    async fn wait_turn_with_priority(&self, high_priority: bool) {
+        // High-priority requests use the same rate-limit cooldown.
+        let _priority = if high_priority {
+            self.high_priority_waiters.fetch_add(1, Ordering::AcqRel);
+            Some(PriorityWaiter(&self.high_priority_waiters))
+        } else {
+            None
+        };
         loop {
+            if !high_priority && self.high_priority_waiters.load(Ordering::Acquire) > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
             let deadline = {
                 let mut state = self.state.lock().await;
                 let now = tokio::time::Instant::now();
@@ -329,7 +354,7 @@ impl Api {
     }
 
     pub(crate) async fn wait_request_turn(&self) {
-        self.governor.wait_turn().await;
+        self.governor.wait_turn_with_priority(true).await;
     }
 
     pub(crate) async fn note_rate_limit_value(&self, retry_after: Option<&str>) {
@@ -372,7 +397,7 @@ impl Api {
             request = request.json(body);
         }
 
-        self.governor.wait_turn().await;
+        self.governor.wait_turn_with_priority(path.starts_with("/auth/")).await;
         let response = request
             .send()
             .await
@@ -1341,8 +1366,9 @@ impl Api {
     /// Emojis custom do servidor, em páginas de 25.
     pub async fn emojis(&self) -> ApiResult<Vec<Emoji>> {
         let mut all = Vec::new();
+        let mut seen = HashSet::new();
         let mut page: EmojiList = self.get("/emojis").await?;
-        all.append(&mut page.emojis);
+        append_unique_emojis(&mut all, page.emojis.drain(..), &mut seen);
         // Uma página costuma bastar; o cursor evita perder emojis num
         // servidor com muitos.
         let mut guard = 0;
@@ -1354,7 +1380,13 @@ impl Api {
             if page.emojis.is_empty() {
                 break;
             }
-            all.append(&mut page.emojis);
+            let added = append_unique_emojis(&mut all, page.emojis.drain(..), &mut seen);
+            // Some backends include the cursor item in the next page. If a
+            // page contains no new IDs, stop instead of requesting the same
+            // cursor repeatedly.
+            if added == 0 {
+                break;
+            }
         }
         Ok(all)
     }
@@ -1427,6 +1459,16 @@ impl Api {
     }
 }
 
+fn append_unique_emojis(
+    all: &mut Vec<Emoji>,
+    emojis: impl IntoIterator<Item = Emoji>,
+    seen: &mut HashSet<String>,
+) -> usize {
+    let before = all.len();
+    all.extend(emojis.into_iter().filter(|emoji| seen.insert(emoji.id.clone())));
+    all.len() - before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1485,5 +1527,38 @@ mod tests {
         );
         assert!(matches!(error, ApiError::DirectMessageBlocked(_)));
         assert!(!error.is_transient());
+    }
+
+    #[test]
+    fn emojis_repetidos_na_paginacao_sao_descartados() {
+        let mut all = Vec::new();
+        let mut seen = HashSet::new();
+        let emoji = |id: &str| Emoji {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            format: None,
+            image_blob: None,
+        };
+
+        assert_eq!(
+            append_unique_emojis(
+                &mut all,
+                vec![emoji("a"), emoji("b")],
+                &mut seen,
+            ),
+            2
+        );
+        assert_eq!(
+            append_unique_emojis(
+                &mut all,
+                vec![emoji("b"), emoji("c")],
+                &mut seen,
+            ),
+            1
+        );
+        assert_eq!(
+            all.iter().map(|emoji| emoji.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
     }
 }
