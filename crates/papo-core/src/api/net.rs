@@ -2072,7 +2072,14 @@ async fn worker(
                             | Event::DirectMessageUpdated(_)
                     )
                 {
-                    metadata_live_events.push(event.clone());
+                    if metadata_live_events.len() < 512 {
+                        metadata_live_events.push(event.clone());
+                    } else {
+                        // Never let a long-running metadata fetch accumulate
+                        // unbounded events. Force a new authoritative pass.
+                        metadata_live_events.clear();
+                        refresh_after_connect = true;
+                    }
                 }
 
                 if let Event::Message(message) = &event {
