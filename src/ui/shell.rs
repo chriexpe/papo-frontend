@@ -6960,6 +6960,7 @@ fn render_embed_media(
     t: &Tokens,
     view: EmbedMediaView<'_>,
 ) -> (bool, Option<Rect>) {
+    const IMAGE_MAX_H: f32 = 300.0;
     let EmbedMediaView {
         id, embed_id, url, backend, image, remote_image, image_url,
         title, video_url, embed_url, backend_video, card_width, policy
@@ -7363,10 +7364,9 @@ fn preview_card(
     width: f32,
     policy: PreviewPolicy,
 ) {
-    use papo_core::preview::{PreviewKind, PreviewState};
+    use papo_core::preview::PreviewState;
 
     const MAX_W: f32 = 420.0;
-    const IMAGE_MAX_H: f32 = 300.0;
 
     // Sem URL, o embed customizado já é a fonte completa de metadados.
     let resolved = if url.is_empty() {
