@@ -232,7 +232,7 @@ pub fn draw(
     if external.and_then(|image| image.favourite_id.as_ref()).is_some() {
         buttons.push((icon::STAR, "favourite"));
     }
-    if external.is_none_or(|image| !image.ephemeral && !image.id.starts_with("embed-image:")) {
+    if external.is_none_or(|image| !image.ephemeral) {
         buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
     }
     buttons.push((icon::ARROWS_IN, "fit"));
@@ -264,7 +264,11 @@ pub fn draw(
                 "close" => action = Some(ViewerAction::Close),
                 "download" => {
                     if let Some(image) = external {
-                        let path = crate::media::remote_image_cached_path(&image.url);
+                        let path = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+                            media.preview_full_cached_path(embed_id)
+                        } else {
+                            crate::media::remote_image_cached_path(&image.url)
+                        };
                         if let Some(path) = path {
                             action = Some(ViewerAction::SaveCachedImage {
                                 path,
