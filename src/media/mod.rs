@@ -2309,10 +2309,8 @@ impl MediaStore {
     }
 
     pub fn pause_animation_offscreen(&mut self, id: &str) {
-        if let Some(player) = self.existing_player(id) {
-            if player.is_playing() {
-                player.pause();
-            }
+        if let Some(player) = self.existing_player(id) && player.is_playing() {
+            player.pause();
         }
     }
 
