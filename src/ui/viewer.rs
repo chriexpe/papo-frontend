@@ -138,7 +138,8 @@ pub fn draw(
     let background = ui.interact(screen, ui.id().with("viewer-backdrop"), Sense::click());
 
     let attachment = attachments.get(viewer.index);
-    let external = viewer.external.as_ref();
+    let external_owned = viewer.external.clone();
+    let external = external_owned.as_ref();
     if attachment.is_none() && external.is_none() {
         return Some(ViewerAction::Close);
     }
@@ -231,7 +232,7 @@ pub fn draw(
     if external.and_then(|image| image.favourite_id.as_ref()).is_some() {
         buttons.push((icon::STAR, "favourite"));
     }
-    if external.is_none_or(|image| !image.ephemeral) {
+    if external.is_none_or(|image| !image.ephemeral && !image.id.starts_with("embed-image:")) {
         buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
     }
     buttons.push((icon::ARROWS_IN, "fit"));
@@ -263,11 +264,7 @@ pub fn draw(
                 "close" => action = Some(ViewerAction::Close),
                 "download" => {
                     if let Some(image) = external {
-                        let path = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
-                            media.preview_full_cached_path(embed_id)
-                        } else {
-                            crate::media::remote_image_cached_path(&image.url)
-                        };
+                        let path = crate::media::remote_image_cached_path(&image.url);
                         if let Some(path) = path {
                             action = Some(ViewerAction::SaveCachedImage {
                                 path,
