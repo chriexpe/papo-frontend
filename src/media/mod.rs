@@ -82,6 +82,12 @@ const INLINE_MAX: u32 = 1600;
 /// A prévia do composer é pequena; não vale decodificar além disso.
 const LOCAL_PREVIEW_MAX: u32 = 640;
 const FULL_MAX: u32 = 4096;
+/// Imagens públicas ficam em cartões de poucos centenas de pixels. O cartão
+/// não deve materializar a versão 4K só porque a mensagem anuncia uma URL.
+const REMOTE_INLINE_MAX: u32 = INLINE_MAX;
+/// O visualizador público precisa de mais detalhe, mas continua limitado para
+/// que uma imagem isolada não consuma dezenas de MiB sem controle.
+const REMOTE_VIEWER_MAX: u32 = 2048;
 
 // KLIPY/provider GIFs are transient UI media, not full-size attachments.
 // Inline decodes are sized by the caller and hard-capped here; the viewer
@@ -143,6 +149,8 @@ pub enum Request {
     RemoteImage {
         id: String,
         url: String,
+        max: u32,
+        viewer: bool,
     },
     /// Public image fetched for a transient provider surface (KLIPY). Unlike
     /// rich-preview media this is never written to Papo's disk cache.
@@ -152,6 +160,7 @@ pub enum Request {
         max: u32,
         max_frames: usize,
         max_bytes: usize,
+        viewer: bool,
     },
 }
 
@@ -541,13 +550,22 @@ async fn run(
                 Err(error) => Loaded::Failed { key, error },
             }
         }
-        Request::RemoteImage { id, url } => {
-            let key = remote_image_key(&id);
+        Request::RemoteImage {
+            id,
+            url,
+            max,
+            viewer,
+        } => {
+            let key = if viewer {
+                remote_image_full_key(&id)
+            } else {
+                remote_image_key(&id)
+            };
             let path = public_remote_cache_path(&id);
             if let Ok(bytes) = tokio::fs::read(&path).await
                 && !bytes.is_empty()
             {
-                return decode(key, &bytes, FULL_MAX);
+                return decode(key, &bytes, max);
             }
             let Some(client) = remote_client else {
                 return Loaded::Failed {
@@ -562,7 +580,7 @@ async fn run(
                     } else {
                         let _ = tokio::task::spawn_blocking(|| sweep_cache(&cache_root())).await;
                     }
-                    decode(key, &bytes, FULL_MAX)
+                    decode(key, &bytes, max)
                 }
                 Err(error) => Loaded::Failed { key, error },
             }
@@ -573,8 +591,13 @@ async fn run(
             max,
             max_frames,
             max_bytes,
+            viewer,
         } => {
-            let key = ephemeral_image_key(&id);
+            let key = if viewer {
+                ephemeral_image_full_key(&id)
+            } else {
+                ephemeral_image_key(&id)
+            };
             let Some(client) = remote_client else {
                 return Loaded::Failed {
                     key,
@@ -1125,8 +1148,16 @@ fn remote_image_key(id: &str) -> String {
     format!("remote-image:{id}")
 }
 
+fn remote_image_full_key(id: &str) -> String {
+    format!("remote-image-full:{id}")
+}
+
 fn ephemeral_image_key(id: &str) -> String {
     format!("ephemeral-image:{id}")
+}
+
+fn ephemeral_image_full_key(id: &str) -> String {
+    format!("ephemeral-image-full:{id}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,6 +1262,15 @@ pub struct MediaStore {
     probed: std::collections::HashSet<String>,
     /// Anexos cuja moderação marcou como sensível e o usuário revelou.
     revealed: std::collections::HashSet<String>,
+    /// Full-size attachment textures are owned by the image viewer, not by
+    /// the timeline. Keeping this set lets us discard a viewer while a
+    /// download is still in flight instead of resurrecting it in `pump`.
+    full_wanted: std::collections::HashSet<String>,
+    /// Full-size public preview textures have the same viewer-only lifetime.
+    remote_full_wanted: std::collections::HashSet<String>,
+    /// Full-size provider textures use a separate key from inline GIFs so a
+    /// closed viewer cannot be resurrected by a late worker result.
+    ephemeral_full_wanted: std::collections::HashSet<String>,
     /// Último arquivo salvo, para o aviso flutuante.
     pub saved: Option<(String, PathBuf, f64)>,
     /// Emojis unicode em imagem colorida, tirados da fonte do sistema.
@@ -1267,6 +1307,9 @@ impl MediaStore {
             pending_play: HashMap::new(),
             probed: std::collections::HashSet::new(),
             revealed: std::collections::HashSet::new(),
+            full_wanted: std::collections::HashSet::new(),
+            remote_full_wanted: std::collections::HashSet::new(),
+            ephemeral_full_wanted: std::collections::HashSet::new(),
             saved: None,
             emoji_raster: EmojiRaster::new(),
         }
@@ -1286,10 +1329,16 @@ impl MediaStore {
         for item in loaded {
             match item {
                 Loaded::Image { key, image } => {
+                    if !self.accepts_texture_result(&key) {
+                        continue;
+                    }
                     let handle = ctx.load_texture(key.clone(), *image, TextureOptions::LINEAR);
                     self.textures.insert(key, Texture::Ready(handle));
                 }
                 Loaded::Animation { key, frames } => {
+                    if !self.accepts_texture_result(&key) {
+                        continue;
+                    }
                     let mut handles = Vec::with_capacity(frames.len());
                     let mut delays = Vec::with_capacity(frames.len());
                     for (index, (image, delay)) in frames.into_iter().enumerate() {
@@ -1330,6 +1379,9 @@ impl MediaStore {
                 }
                 Loaded::Failed { key, error } => {
                     log::warn!("mídia {key}: {error}");
+                    if !self.accepts_texture_result(&key) {
+                        continue;
+                    }
                     if let Some(id) = key.strip_prefix("file:") {
                         self.pending_play.remove(id);
                         self.files.insert(key, FileState::Failed);
@@ -1352,6 +1404,19 @@ impl MediaStore {
     fn touch_player(&mut self, key: &str) {
         self.touch(key);
         self.player_last_used.insert(key.to_owned(), Instant::now());
+    }
+
+    fn accepts_texture_result(&self, key: &str) -> bool {
+        if let Some(id) = key.strip_prefix("full:") {
+            return self.full_wanted.contains(id);
+        }
+        if let Some(id) = key.strip_prefix("remote-image-full:") {
+            return self.remote_full_wanted.contains(id);
+        }
+        if let Some(id) = key.strip_prefix("ephemeral-image-full:") {
+            return self.ephemeral_full_wanted.contains(id);
+        }
+        true
     }
 
     pub fn housekeep(&mut self) {
@@ -1575,6 +1640,11 @@ impl MediaStore {
     }
 
     pub fn full(&mut self, id: &str) -> Option<&Texture> {
+        // The viewer shows one attachment at a time. Do not keep every image
+        // visited with the arrow buttons alive until the global 192 MiB
+        // texture budget happens to be reached.
+        self.release_full_textures(Some(id));
+        self.full_wanted.insert(id.to_owned());
         let key = full_key(id);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
@@ -1582,6 +1652,29 @@ impl MediaStore {
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// Release the full-size textures owned by the viewer. Thumbnails remain
+    /// cached because the timeline can use them immediately after closing.
+    pub fn release_viewer_textures(&mut self) {
+        self.release_full_textures(None);
+    }
+
+    fn release_full_textures(&mut self, keep: Option<&str>) {
+        let keys: Vec<String> = self
+            .textures
+            .keys()
+            .filter_map(|key| {
+                let id = key.strip_prefix("full:")?;
+                (keep != Some(id)).then(|| key.clone())
+            })
+            .collect();
+        for key in keys {
+            self.textures.remove(&key);
+            self.used.remove(&key);
+        }
+
+        self.full_wanted.retain(|id| keep == Some(id.as_str()));
     }
 
     pub fn emoji(&mut self, id: &str, blob: Option<&str>) -> Option<&Texture> {
@@ -1684,13 +1777,86 @@ impl MediaStore {
     pub fn remote_image(&mut self, _id: &str, url: &str) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
         let id = remote_resource_id(&canonical);
+        if self.remote_full_wanted.contains(&id) {
+            let full_key = remote_image_full_key(&id);
+            if let Some(texture) = self.textures.get(&full_key)
+                && !matches!(texture, Texture::Failed)
+            {
+                self.touch(&full_key);
+                return self.textures.get(&full_key);
+            }
+        }
         let key = remote_image_key(&id);
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
-            self.ask(Request::RemoteImage { id, url: canonical });
+            self.ask(Request::RemoteImage {
+                id,
+                url: canonical,
+                max: REMOTE_INLINE_MAX,
+                viewer: false,
+            });
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// Public preview image for the fullscreen viewer. It deliberately uses a
+    /// different texture from the inline card: the card remains bounded, while
+    /// the larger viewer texture can be released as soon as the overlay closes.
+    pub fn remote_image_full(&mut self, url: &str) -> Option<&Texture> {
+        let canonical = papo_core::preview::canonical_url(url)?;
+        let id = remote_resource_id(&canonical);
+        let key = remote_image_full_key(&id);
+        self.remote_full_wanted.insert(id.clone());
+        if matches!(self.textures.get(&key), Some(Texture::Failed)) {
+            return self.remote_image("viewer-fallback", url);
+        }
+        // The underlying chat is painted before the overlay. Make it reuse the
+        // viewer key on the next frame instead of retaining two decoded copies
+        // of the same public image while the viewer is open.
+        let inline_key = remote_image_key(&id);
+        self.textures.remove(&inline_key);
+        self.used.remove(&inline_key);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::RemoteImage {
+                id: id.clone(),
+                url: canonical,
+                max: REMOTE_VIEWER_MAX,
+                viewer: true,
+            });
+        }
+        self.touch(&key);
+        if let Some(texture) = self.textures.get(&key)
+            && matches!(texture, Texture::Ready(_) | Texture::Animated { .. })
+        {
+            return Some(texture);
+        }
+        None
+    }
+
+    /// Releases the public texture owned by a fullscreen remote viewer. The
+    /// inline card texture is intentionally retained at its smaller bound.
+    pub fn release_remote_viewer_texture(&mut self, url: &str, ephemeral: bool) {
+        let Some(canonical) = papo_core::preview::canonical_url(url) else {
+            return;
+        };
+        if ephemeral {
+            let identity = format!(
+                "{}:{EPHEMERAL_VIEWER_MAX}:{EPHEMERAL_VIEWER_GIF_MAX_FRAMES}:{EPHEMERAL_VIEWER_GIF_MAX_BYTES}",
+                remote_resource_id(&canonical)
+            );
+            let key = ephemeral_image_full_key(&identity);
+            self.ephemeral_full_wanted.remove(&identity);
+            self.textures.remove(&key);
+            self.used.remove(&key);
+        } else {
+            let id = remote_resource_id(&canonical);
+            let key = remote_image_full_key(&id);
+            self.remote_full_wanted.remove(&id);
+            self.textures.remove(&key);
+            self.used.remove(&key);
+        }
     }
 
     /// Provider-owned public media that may live in GPU memory while visible
@@ -1713,6 +1879,7 @@ impl MediaStore {
             max.clamp(96, EPHEMERAL_INLINE_MAX),
             EPHEMERAL_GIF_MAX_FRAMES,
             EPHEMERAL_GIF_MAX_BYTES,
+            false,
         )
     }
 
@@ -1736,6 +1903,7 @@ impl MediaStore {
             EPHEMERAL_VIEWER_MAX,
             EPHEMERAL_VIEWER_GIF_MAX_FRAMES,
             EPHEMERAL_VIEWER_GIF_MAX_BYTES,
+            true,
         )
     }
 
@@ -1745,6 +1913,7 @@ impl MediaStore {
         max: u32,
         max_frames: usize,
         max_bytes: usize,
+        viewer: bool,
     ) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
         // Canonical URL + decode profile is the resource identity. Picker,
@@ -1753,7 +1922,14 @@ impl MediaStore {
             "{}:{max}:{max_frames}:{max_bytes}",
             remote_resource_id(&canonical)
         );
-        let key = ephemeral_image_key(&identity);
+        if viewer {
+            self.ephemeral_full_wanted.insert(identity.clone());
+        }
+        let key = if viewer {
+            ephemeral_image_full_key(&identity)
+        } else {
+            ephemeral_image_key(&identity)
+        };
         if !self.textures.contains_key(&key) {
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::RemoteEphemeral {
@@ -1762,6 +1938,7 @@ impl MediaStore {
                 max,
                 max_frames,
                 max_bytes,
+                viewer,
             });
         }
         self.touch(&key);
@@ -2321,6 +2498,118 @@ mod lifecycle_tests {
             media.textures.get("thumb:pendente"),
             Some(Texture::Loading)
         ));
+    }
+
+    #[test]
+    fn closing_viewer_releases_full_texture_and_ignores_late_result() {
+        let ctx = egui::Context::default();
+        let (requests, _request_rx) = mpsc::unbounded_channel();
+        let (results_tx, results_rx) = sync_mpsc::channel();
+        let mut media = MediaStore::with_backend_and_limits(
+            Some(Media {
+                requests,
+                results: results_rx,
+            }),
+            Arc::new(FakeBackend::default()),
+            MediaLimits::default(),
+        );
+
+        let key = full_key("image");
+        let _ = media.full("image");
+        media
+            .textures
+            .insert(key.clone(), textura(&ctx, &key, 10, 10));
+        media.used.insert(key.clone(), 1);
+
+        media.release_viewer_textures();
+        assert!(!media.textures.contains_key(&key));
+        assert!(media.full_wanted.is_empty());
+
+        let image = egui::ColorImage::from_rgba_unmultiplied([2, 2], &[0; 16]);
+        results_tx
+            .send(Loaded::Image {
+                key: key.clone(),
+                image: Box::new(image),
+            })
+            .unwrap();
+        media.pump(&ctx);
+
+        assert!(!media.textures.contains_key(&key));
+    }
+
+    #[test]
+    fn closing_remote_viewer_releases_large_texture_and_ignores_late_result() {
+        let ctx = egui::Context::default();
+        let (requests, _request_rx) = mpsc::unbounded_channel();
+        let (results_tx, results_rx) = sync_mpsc::channel();
+        let mut media = MediaStore::with_backend_and_limits(
+            Some(Media {
+                requests,
+                results: results_rx,
+            }),
+            Arc::new(FakeBackend::default()),
+            MediaLimits::default(),
+        );
+        let url = "https://example.com/image.png";
+        let id = remote_resource_id(url);
+        let key = remote_image_full_key(&id);
+
+        let _ = media.remote_image_full(url);
+        media
+            .textures
+            .insert(key.clone(), textura(&ctx, &key, 2048, 2048));
+        media.used.insert(key.clone(), 1);
+
+        media.release_remote_viewer_texture(url, false);
+        assert!(!media.textures.contains_key(&key));
+        assert!(!media.remote_full_wanted.contains(&id));
+
+        let image = egui::ColorImage::from_rgba_unmultiplied([2, 2], &[0; 16]);
+        results_tx
+            .send(Loaded::Image {
+                key: key.clone(),
+                image: Box::new(image),
+            })
+            .unwrap();
+        media.pump(&ctx);
+
+        assert!(!media.textures.contains_key(&key));
+    }
+
+    #[test]
+    fn remote_card_and_viewer_use_separate_decode_profiles() {
+        let backend = Arc::new(FakeBackend::default());
+        let (requests, mut request_rx) = mpsc::unbounded_channel();
+        let mut media = MediaStore::with_backend_and_limits(
+            Some(Media {
+                requests,
+                results: sync_mpsc::channel().1,
+            }),
+            backend,
+            MediaLimits::default(),
+        );
+        let url = "https://example.com/image.png";
+
+        let _ = media.remote_image("card", url);
+        assert!(matches!(
+            request_rx.try_recv(),
+            Ok(Request::RemoteImage {
+                max: REMOTE_INLINE_MAX,
+                viewer: false,
+                ..
+            })
+        ));
+
+        let _ = media.remote_image_full(url);
+        assert!(matches!(
+            request_rx.try_recv(),
+            Ok(Request::RemoteImage {
+                max: REMOTE_VIEWER_MAX,
+                viewer: true,
+                ..
+            })
+        ));
+        assert!(!media.textures.contains_key(&remote_image_key(&remote_resource_id(url))));
     }
 
     #[test]

@@ -3749,10 +3749,10 @@ impl PapoApp {
             // The slider may update its draft every frame while dragging, but
             // we only change egui's global zoom after the pointer is released.
             // Keyboard edits, with no pointer held, apply immediately.
-            if !ctx.input(|input| input.pointer.any_down()) {
-                if let Some(scale) = self.sheet.ui_scale_draft.take() {
-                    self.settings.ui_scale = normalise_ui_scale(scale);
-                }
+            if !ctx.input(|input| input.pointer.any_down())
+                && let Some(scale) = self.sheet.ui_scale_draft.take()
+            {
+                self.settings.ui_scale = normalise_ui_scale(scale);
             }
             if before_ui_scale != self.settings.ui_scale {
                 ctx.set_zoom_factor(self.settings.ui_scale);

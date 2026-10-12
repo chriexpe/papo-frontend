@@ -639,7 +639,7 @@ pub fn draw_remote_media(
             let texture = if ephemeral {
                 media.remote_ephemeral_full(id, url)
             } else {
-                media.remote_image(id, url)
+                media.remote_image_full(url)
             };
             texture
                 .and_then(|texture| texture.frame(top.ctx()))

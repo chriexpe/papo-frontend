@@ -602,6 +602,44 @@ pub enum Update {
     BackgroundFinished(BackgroundRunResult),
 }
 
+/// A janela pode parar de pintar quando fica minimizada ou em segundo plano.
+/// Não deixe eventos de websocket acumularem numa fila sem limite nesse
+/// intervalo: o back-pressure faz a rede esperar o consumidor, preservando a
+/// ordem e limitando a memória.
+const UPDATE_QUEUE_CAPACITY: usize = 256;
+
+/// Bounded update producer with cancellable back-pressure. `SyncSender::send`
+/// by itself cannot be interrupted, which would let background teardown wait
+/// forever behind a minimized UI. Polling `try_send` keeps the same bounded
+/// queue and order while allowing `Net::Drop`/cancellation to release the
+/// worker.
+#[derive(Clone)]
+struct UpdateSender {
+    tx: sync_mpsc::SyncSender<Update>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl UpdateSender {
+    fn send(&self, mut update: Update) -> bool {
+        loop {
+            match self.tx.try_send(update) {
+                Ok(()) => return true,
+                Err(sync_mpsc::TrySendError::Disconnected(_)) => return false,
+                Err(sync_mpsc::TrySendError::Full(next)) => {
+                    if self
+                        .cancel
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        return false;
+                    }
+                    update = next;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
+}
+
 const RECONCILE_CONCURRENCY: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -673,7 +711,7 @@ fn publish_reconcile_progress(
     progress: ReconcileProgress,
     scheduler: &ReconcileScheduler,
     scope: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     if scheduler.is_current_run(progress.run_id) {
@@ -740,7 +778,7 @@ impl Net {
         deadline: std::time::Duration,
     ) -> Self {
         let (commands_tx, commands_rx) = mpsc::unbounded_channel();
-        let (updates_tx, updates_rx) = sync_mpsc::channel();
+        let (updates_raw_tx, updates_rx) = sync_mpsc::sync_channel(UPDATE_QUEUE_CAPACITY);
         let event_hook = EventHook::default();
         let message_hook = MessageHook::default();
         let notification_hook = NotificationHook::default();
@@ -764,6 +802,10 @@ impl Net {
         let worker_diagnostics = Arc::clone(&diagnostics);
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let updates_tx = UpdateSender {
+            tx: updates_raw_tx,
+            cancel: Arc::clone(&cancel),
+        };
 
         let worker_thread = std::thread::Builder::new()
             .name("papo-net".into())
@@ -909,15 +951,15 @@ impl Drop for Net {
 
 /// Envia a atualização e acorda a janela: sem isso ela só apareceria na
 /// próxima interação do usuário.
-fn publish(tx: &sync_mpsc::Sender<Update>, wake: &Wake, update: Update) {
-    if tx.send(update).is_ok() {
+fn publish(tx: &UpdateSender, wake: &Wake, update: Update) {
+    if tx.send(update) {
         wake.wake();
     }
 }
 
 fn publish_runtime(
     scope: &str,
-    tx: &sync_mpsc::Sender<Update>,
+    tx: &UpdateSender,
     wake: &Wake,
     update: Update,
 ) {
@@ -969,7 +1011,7 @@ fn short_local_id(local_id: &str) -> &str {
 
 fn publish_outgoing(
     scope: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     outgoing: &CachedOutgoing,
 ) {
@@ -985,7 +1027,7 @@ fn restore_outgoing(
     cache: &ClientDb,
     scope: &str,
     owner: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     outgoing: &mut Vec<CachedOutgoing>,
 ) {
@@ -1039,7 +1081,7 @@ fn reconcile_outgoing_message(
     cache: &ClientDb,
     scope: &str,
     owner: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     outgoing: &mut Vec<CachedOutgoing>,
     message: &Message,
@@ -1084,7 +1126,7 @@ async fn drive_outgoing(
     owner: &str,
     network_unavailable: bool,
     channel_gate: &mut OutgoingChannelGate,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     outgoing: &mut Vec<CachedOutgoing>,
 ) {
@@ -1345,7 +1387,7 @@ async fn background_worker(
     storage: Arc<dyn SecretStore>,
     session: Arc<Session>,
     cache: Arc<ClientDb>,
-    updates: sync_mpsc::Sender<Update>,
+    updates: UpdateSender,
     wake: Wake,
     diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -1482,7 +1524,7 @@ async fn worker(
     session: Arc<Session>,
     cache: Arc<ClientDb>,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    updates: sync_mpsc::Sender<Update>,
+    updates: UpdateSender,
     wake: Wake,
     hooks: WorkerHooks,
     diagnostics: Arc<RwLock<RuntimeDiagnostics>>,
@@ -2678,6 +2720,20 @@ mod retry_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn cancelled_update_send_does_not_wait_for_hidden_consumer() {
+        let (tx, _rx) = sync_mpsc::sync_channel(1);
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sender = UpdateSender {
+            tx,
+            cancel: Arc::clone(&cancel),
+        };
+
+        assert!(sender.send(Update::Error("first".into())));
+        cancel.store(true, Ordering::Release);
+        assert!(!sender.send(Update::Error("second".into())));
+    }
+
     #[tokio::test]
     async fn network_errors_are_retried_until_success() {
         let calls = AtomicUsize::new(0);
@@ -2840,7 +2896,7 @@ async fn verify_saved_session(
     storage: &dyn SecretStore,
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     let _ = verify_saved_session_once(
@@ -2861,7 +2917,7 @@ async fn verify_saved_session_once(
     storage: &dyn SecretStore,
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) -> SavedSessionOutcome {
     let mut result = api.whoami().await;
@@ -2994,7 +3050,7 @@ async fn handle(
     storage: &dyn SecretStore,
     session: &Arc<Session>,
     me: &Arc<std::sync::Mutex<Option<String>>>,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     outbound: &mpsc::UnboundedSender<String>,
     command: Command,
@@ -3686,7 +3742,7 @@ async fn fetch_pinned_ids(api: &Api, scope: &str, channel_id: &str) -> Option<Ve
 async fn load_pinned(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     channel_id: String,
 ) {
@@ -3699,7 +3755,7 @@ async fn load_pinned(
 async fn bootstrap(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     user_id: Option<&str>,
 ) -> BootstrapOutcome {
@@ -3798,7 +3854,7 @@ async fn bootstrap(
 /// uma rajada a cada entrada; o `profile_batch` existe justamente para isso.
 async fn load_profiles(
     api: &Api,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     user_ids: Vec<String>,
 ) -> Result<(), ApiError> {
@@ -3814,7 +3870,7 @@ async fn load_profiles(
 async fn relist_users(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     match api.users().await {
@@ -3832,7 +3888,7 @@ async fn relist_users(
 async fn relist_emojis(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     match api.emojis().await {
@@ -3846,7 +3902,7 @@ async fn relist_emojis(
 async fn relist_roles(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     match api.roles().await {
@@ -3865,7 +3921,7 @@ async fn relist_roles(
 async fn relist_channels(
     api: &Api,
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
 ) {
     match api.channels().await {
@@ -3876,7 +3932,7 @@ async fn relist_channels(
 
 fn report(
     storage_key: &str,
-    updates: &sync_mpsc::Sender<Update>,
+    updates: &UpdateSender,
     wake: &Wake,
     error: ApiError,
 ) {

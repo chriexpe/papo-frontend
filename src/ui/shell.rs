@@ -8230,7 +8230,10 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
             })
             .unwrap_or_default();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
-            Some(ViewerAction::Close) => state.media.pause_all(),
+            Some(ViewerAction::Close) => {
+                state.media.pause_all();
+                state.media.release_viewer_textures();
+            }
             Some(ViewerAction::Download { id, name }) => {
                 state.actions.push(ChatAction::Download { id, name });
                 state.viewer = Some(viewer);
@@ -8401,7 +8404,9 @@ fn link_image_viewer(
         &mut link.offset,
         &mut link.fitted,
     ) {
-        Some(viewer::RemoteViewerAction::Close) => {}
+        Some(viewer::RemoteViewerAction::Close) => {
+            state.media.release_remote_viewer_texture(&link.url, link.ephemeral);
+        }
         Some(viewer::RemoteViewerAction::Download { path, name }) => {
             state.actions.push(ChatAction::SaveCachedImage { path, name });
             state.link_viewer = Some(link);
