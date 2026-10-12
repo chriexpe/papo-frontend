@@ -324,9 +324,11 @@ impl ServerRuntime {
             _ => None,
         };
         let session_ended = matches!(&update, Update::Session(None));
+        let session_started = matches!(&update, Update::Session(Some(_)))
+            && self.store.me.is_empty();
+        let was_online = self.store.connection == Connection::Online;
         let became_online = matches!(&update, Update::Connection(Connection::Online))
             && self.store.connection != Connection::Online;
-        let refresh_after_online = became_online && self.store.screen == Screen::Chat;
 
         self.store.apply(update);
 
@@ -352,7 +354,15 @@ impl ServerRuntime {
             self.cache.submit(&self.server_key, cache_ops);
         }
 
-        if refresh_after_online && self.mode == RuntimeMode::Interactive {
+        // The socket can publish Online before the UI consumes the Session
+        // update. In that order the first event still leaves the store on the
+        // Starting screen, so the Session transition must complete the same
+        // one-shot refresh trigger. The other order is covered by the normal
+        // Online transition.
+        let refresh_after_ready = self.mode == RuntimeMode::Interactive
+            && self.store.screen == Screen::Chat
+            && (became_online || (session_started && was_online));
+        if refresh_after_ready {
             self.net.send(Command::Refresh);
             self.reconnect_refreshes = self.reconnect_refreshes.saturating_add(1);
         }
@@ -881,6 +891,26 @@ mod tests {
 
         runtime.process_update(Update::Connection(Connection::Online));
         runtime.process_update(Update::Connection(Connection::Online));
+
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+    }
+
+    #[test]
+    fn sessao_antes_do_online_agenda_refresh() {
+        let (mut runtime, _) = disabled_runtime();
+
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
+        runtime.process_update(Update::Connection(Connection::Online));
+
+        assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
+    }
+
+    #[test]
+    fn online_antes_da_sessao_agenda_refresh() {
+        let (mut runtime, _) = disabled_runtime();
+
+        runtime.process_update(Update::Connection(Connection::Online));
+        runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
 
         assert_eq!(runtime.diagnostics().reconnect_refreshes, 1);
     }

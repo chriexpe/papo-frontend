@@ -2669,6 +2669,14 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
 /// Só `Unauthorized` prova que o token deixou de valer. Timeout, DNS, 5xx,
 /// resposta incompleta e servidor temporariamente fora mantêm a credencial e
 /// deixam o próximo tique tentar novamente.
+///
+/// A sessão persistida é verificada sem carregar metadados.
+///
+/// A inicialização interativa não deve esperar o bootstrap REST antes de abrir
+/// o WebSocket. Quando o socket fica online, `ServerRuntime` agenda a
+/// atualização de metadados pelo caminho normal de reconciliação. Manter este
+/// helper restrito à autenticação também evita que uma requisição de mídia
+/// lenta adie a primeira conexão de mensagens ao vivo.
 async fn verify_saved_session(
     api: &Api,
     storage_key: &str,
@@ -2678,7 +2686,7 @@ async fn verify_saved_session(
     updates: &sync_mpsc::Sender<Update>,
     wake: &Wake,
 ) {
-    if verify_saved_session_once(
+    let _ = verify_saved_session_once(
         api,
         storage_key,
         storage,
@@ -2687,12 +2695,7 @@ async fn verify_saved_session(
         updates,
         wake,
     )
-    .await
-        == SavedSessionOutcome::Verified
-    {
-        let id = me.lock().ok().and_then(|slot| slot.clone());
-        let _ = bootstrap(api, storage_key, updates, wake, id.as_deref()).await;
-    }
+    .await;
 }
 
 async fn verify_saved_session_once(
@@ -2858,7 +2861,6 @@ async fn handle(
                             *slot = Some(id.clone());
                         }
                         publish(updates, wake, Update::Session(Some(Box::new(whoami))));
-                        bootstrap(api, storage_key, updates, wake, Some(&id)).await;
                     }
                     Err(error) => publish_runtime(
                 storage_key,
