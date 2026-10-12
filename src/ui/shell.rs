@@ -28,6 +28,20 @@ use super::theme::{adaptive_font, radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
+/// A DM projected from one backend into the global inbox. IDs remain server-local.
+#[derive(Clone)]
+pub struct InboxDm {
+    pub workspace: usize,
+    pub id: String,
+    pub name: String,
+    pub initials: String,
+    pub preview: String,
+    pub presence: Presence,
+    pub unread: u32,
+    pub avatar: Option<egui::TextureId>,
+    pub last_activity: DateTime<chrono::Utc>,
+}
+
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
 /// Abaixo disto a conversa vira a superfície raiz e as laterais viram drawers.
@@ -201,8 +215,10 @@ pub enum ChatAction {
     DeleteChannel(String),
     /// Abre/cria a conversa direta com uma pessoa.
     OpenDirectMessage(String),
-    /// Oculta uma conversa direta da rail.
-    HideDirectMessage(String),
+    /// Seleciona uma conversa no inbox de todos os servidores.
+    SelectInboxDirectMessage { workspace: usize, dm_id: String },
+    /// Oculta a conversa no backend certo.
+    HideDirectMessage { workspace: usize, dm_id: String },
     /// Bloqueia/desbloqueia uma pessoa para mensagens diretas.
     SetUserBlocked {
         user_id: String,
@@ -889,6 +905,8 @@ pub struct UiState {
     pub popup: Option<Popup>,
     /// A superfície de mensagens diretas substitui a coluna de canais.
     pub dm_surface: bool,
+    /// Nome do servidor da DM aberta, atualizado pela janela, não pelo Stash.
+    pub dm_server_name: String,
     /// Último canal comum antes de entrar em mensagens diretas.
     pub last_server_channel: String,
     /// Cartão de perfil aberto.
@@ -1082,6 +1100,7 @@ impl Default for UiState {
             external_link_prompt: None,
             popup: None,
             dm_surface: false,
+            dm_server_name: String::new(),
             last_server_channel: String::new(),
             profile: None,
             server_card: None,
@@ -1195,6 +1214,8 @@ pub fn draw(
     t: &Tokens,
     s: &Strings,
     mobile_servers: Option<MobileServers<'_>>,
+    inbox: &[InboxDm],
+    inbox_active: usize,
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
@@ -1311,6 +1332,8 @@ pub fn draw(
             s,
             live,
             mobile_servers,
+            inbox,
+            inbox_active,
             shell_rect,
         );
         overlays(ui, store, state, t, s);
@@ -1327,7 +1350,7 @@ pub fn draw(
         state.drawer = Drawer::default();
         state.reply_drag = None;
         if state.dm_surface {
-            direct_messages_sidebar(ui, store, state, t, s);
+            direct_messages_sidebar(ui, store, state, t, s, inbox, inbox_active);
         } else {
             channels_sidebar(ui, store, state, t, s, live);
         }
@@ -1390,6 +1413,8 @@ fn mobile_drawers(
     s: &Strings,
     live: bool,
     servers: Option<MobileServers<'_>>,
+    inbox: &[InboxDm],
+    inbox_active: usize,
     area: Rect,
 ) -> Option<super::rail::RailAction> {
     advance_surfaces(&*root, state);
@@ -1456,7 +1481,7 @@ fn mobile_drawers(
                         s,
                     );
                     if state.dm_surface {
-                        direct_messages_sidebar(ui, store, state, t, s);
+                        direct_messages_sidebar(ui, store, state, t, s, inbox, inbox_active);
                     } else {
                         channels_sidebar(ui, store, state, t, s, live);
                     }
@@ -1761,8 +1786,9 @@ fn direct_messages_sidebar(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
+    inbox: &[InboxDm],
+    active: usize,
 ) {
-    let ctx = root.ctx().clone();
     egui::Panel::left("direct-messages")
         .exact_size(SIDEBAR_WIDTH)
         .resizable(false)
@@ -1805,57 +1831,32 @@ fn direct_messages_sidebar(
                                     });
                                 });
                                 ui.add_space(space::XS);
-                                let dms = store.direct_messages.clone();
-                                for dm in dms {
-                                    let member = store.member(&dm.user.id);
-                                    let presence = member
-                                        .map(|member| member.presence)
-                                        .unwrap_or(Presence::Offline);
-                                    let name = member
-                                        .map(|member| member.name.as_str())
-                                        .unwrap_or_else(|| dm.user.display_name());
-                                    let initials = member
-                                        .map(|member| member.initials())
-                                        .unwrap_or_else(|| initials_of(name));
-                                    let avatar = state
-                                        .media
-                                        .avatar(
-                                            &dm.user.id,
-                                            store.avatars.get(&dm.user.id).map(String::as_str),
-                                        )
-                                        .and_then(|texture| texture.frame(&ctx))
-                                        .map(|handle| handle.id());
-                                    let preview = dm
-                                        .last_message
-                                        .as_ref()
-                                        .and_then(|message| message.content.as_deref())
-                                        .map(str::trim)
-                                        .filter(|text| !text.is_empty())
-                                        .unwrap_or(" ");
-                                    let unread = store
-                                        .channel(&dm.id)
-                                        .filter(|channel| channel.unread)
-                                        .map(|_| dm.unread_count.max(1))
-                                        .unwrap_or(0);
+                                for dm in inbox {
                                     let row = direct_message_row(
                                         ui,
                                         t,
-                                        &initials,
-                                        name,
-                                        preview,
-                                        presence_color(t, presence),
-                                        unread,
-                                        store.selected_channel == dm.id,
+                                        &dm.initials,
+                                        &dm.name,
+                                        &dm.preview,
+                                        presence_color(t, dm.presence),
+                                        dm.unread,
+                                        dm.workspace == active && store.selected_channel == dm.id,
                                         width,
-                                        avatar,
+                                        dm.avatar,
                                     );
                                     if row.clicked() {
-                                        store.selected_channel = dm.id.clone();
+                                        state.actions.push(ChatAction::SelectInboxDirectMessage {
+                                            workspace: dm.workspace,
+                                            dm_id: dm.id.clone(),
+                                        });
                                         state.mobile_surface = MobileSurface::Chat;
                                     }
                                     row.context_menu(|ui| {
                                         if ui.button(s.hide_direct_message).clicked() {
-                                            state.actions.push(ChatAction::HideDirectMessage(dm.id.clone()));
+                                            state.actions.push(ChatAction::HideDirectMessage {
+                                                workspace: dm.workspace,
+                                                dm_id: dm.id.clone(),
+                                            });
                                             ui.close();
                                         }
                                     });
