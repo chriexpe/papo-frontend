@@ -513,7 +513,7 @@ pub fn video_surface(
     widget_key: &str,
     source: PlaySource<'_>,
     poster: Option<(egui::TextureId, Vec2)>,
-    /// Original media aspect, when present in the backend contract.
+    // Original media aspect, when present in the backend contract.
     aspect_hint: Option<f32>,
     card_width: f32,
     download: bool,
