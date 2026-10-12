@@ -11,6 +11,7 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 appdir="$workdir/AppDir"
 install -Dm755 "$rsrpc" "$appdir/usr/libexec/papo/rsrpc"
+install -Dm644 "assets/icons/256.png" "$workdir/$app.png"
 install -Dm644 "packaging/$app.metainfo.xml" \
   "$appdir/usr/share/metainfo/$app.metainfo.xml"
 # linuxdeploy bundles dynamically linked libraries, and the GStreamer plugin
@@ -28,7 +29,7 @@ export ARCH="$arch"
 "$workdir/linuxdeploy.AppImage" --appdir "$appdir" \
   --executable "$binary" \
   --desktop-file "packaging/$app.desktop" \
-  --icon-file "assets/icons/256.png" \
+  --icon-file "$workdir/$app.png" \
   --plugin gstreamer \
   --output appimage
 found="$(find . -maxdepth 1 -name '*.AppImage' -type f -print -quit)"
