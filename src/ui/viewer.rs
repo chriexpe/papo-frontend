@@ -24,6 +24,8 @@ pub struct Viewer {
     /// Keep their attachment snapshot with the viewer so image/video/audio
     /// still works without forcing a channel-history fetch first.
     attachments: Option<Vec<Attachment>>,
+    /// External/embedded images use this very same viewer and image stage.
+    external: Option<ExternalImage>,
     zoom: f32,
     offset: Vec2,
     /// Sem zoom manual: a imagem acompanha a janela.
@@ -36,6 +38,7 @@ impl Viewer {
             message_id,
             index,
             attachments: None,
+            external: None,
             zoom: 1.0,
             offset: Vec2::ZERO,
             fitted: true,
@@ -51,10 +54,33 @@ impl Viewer {
             message_id,
             index,
             attachments: Some(attachments),
+            external: None,
             zoom: 1.0,
             offset: Vec2::ZERO,
             fitted: true,
         }
+    }
+
+    pub fn external_image(
+        id: String,
+        url: String,
+        name: String,
+        ephemeral: bool,
+        favourite_id: Option<String>,
+    ) -> Self {
+        Self {
+            message_id: String::new(),
+            index: 0,
+            attachments: None,
+            external: Some(ExternalImage { id, url, name, ephemeral, favourite_id }),
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            fitted: true,
+        }
+    }
+
+    pub fn external_source(&self) -> Option<&ExternalImage> {
+        self.external.as_ref()
     }
 
     pub fn source_attachments(&self) -> Option<&[Attachment]> {
@@ -68,9 +94,20 @@ impl Viewer {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ExternalImage {
+    pub id: String,
+    pub url: String,
+    pub name: String,
+    pub ephemeral: bool,
+    pub favourite_id: Option<String>,
+}
+
 pub enum ViewerAction {
     Close,
     Download { id: String, name: String },
+    SaveCachedImage { path: std::path::PathBuf, name: String },
+    ToggleFavourite(String),
 }
 
 /// Desenha o visualizador. Devolve `None` quando nada mudou.
@@ -100,9 +137,11 @@ pub fn draw(
     // are added afterwards and therefore own overlapping clicks.
     let background = ui.interact(screen, ui.id().with("viewer-backdrop"), Sense::click());
 
-    let Some(attachment) = attachments.get(viewer.index) else {
+    let attachment = attachments.get(viewer.index);
+    let external = viewer.external.as_ref();
+    if attachment.is_none() && external.is_none() {
         return Some(ViewerAction::Close);
-    };
+    }
 
     // Navegação e saída pelo teclado.
     let (close, next, previous, reset) = ui.ctx().input(|input| {
@@ -135,11 +174,23 @@ pub fn draw(
 
     // Onde a mídia foi desenhada: clicar fora disso fecha.
     let mut content = Rect::NOTHING;
-    let mut action = match attachment.kind() {
-        Kind::Video | Kind::Audio => {
-            stage_player(ui, t, s, media, attachment, stage, &mut content)
+    let mut action = if let Some(image) = viewer.external.as_ref() {
+        let full = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+            media.preview_full(embed_id)
+        } else if image.ephemeral {
+            media.remote_ephemeral_full(&image.id, &image.url)
+        } else {
+            media.remote_image_full(&image.url)
+        };
+        let texture = full.and_then(|texture| texture.frame(ui.ctx())).cloned();
+        stage_image_texture(ui, t, s, viewer, texture, stage, &mut content)
+    } else if let Some(attachment) = attachment {
+        match attachment.kind() {
+            Kind::Video | Kind::Audio => stage_player(ui, t, s, media, attachment, stage, &mut content),
+            _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
         }
-        _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
+    } else {
+        None
     };
 
     // Barra de cima: nome, contador e ações.
@@ -147,19 +198,25 @@ pub fn draw(
     ui.painter().text(
         egui::pos2(header.min.x + space::XXL, header.center().y),
         egui::Align2::LEFT_CENTER,
-        elide(attachment.name(), 60),
+        elide(external.map_or_else(|| attachment.expect("attachment or external").name(), |image| image.name.as_str()), 60),
         text::headline(),
         Color32::WHITE,
     );
-    let subtitle = if attachments.len() > 1 {
-        format!(
-            "{} · {} / {}",
-            size_label(attachment.size_bytes),
-            viewer.index + 1,
-            attachments.len()
-        )
+    let subtitle = if let Some(image) = external {
+        image.url.clone()
+    } else if let Some(attachment) = attachment {
+        if attachments.len() > 1 {
+            format!(
+                "{} · {} / {}",
+                size_label(attachment.size_bytes),
+                viewer.index + 1,
+                attachments.len()
+            )
+        } else {
+            size_label(attachment.size_bytes)
+        }
     } else {
-        size_label(attachment.size_bytes)
+        String::new()
     };
     ui.painter().text(
         egui::pos2(header.min.x + space::XXL, header.center().y + 16.0),
@@ -170,11 +227,15 @@ pub fn draw(
     );
 
     let mut x = header.max.x - space::XXL - 16.0;
-    for (glyph, tag) in [
-        (icon::X, "close"),
-        (icon::DOWNLOAD_SIMPLE, "download"),
-        (icon::ARROWS_IN, "fit"),
-    ] {
+    let mut buttons = vec![(icon::X, "close")];
+    if external.and_then(|image| image.favourite_id.as_ref()).is_some() {
+        buttons.push((icon::STAR, "favourite"));
+    }
+    if external.is_none_or(|image| !image.ephemeral) {
+        buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
+    }
+    buttons.push((icon::ARROWS_IN, "fit"));
+    for (glyph, tag) in buttons {
         let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
         let response = ui
             .interact(rect, ui.id().with(("viewer", tag)), Sense::click())
@@ -201,10 +262,29 @@ pub fn draw(
             match tag {
                 "close" => action = Some(ViewerAction::Close),
                 "download" => {
-                    action = Some(ViewerAction::Download {
-                        id: attachment.id.clone(),
-                        name: attachment.name().to_owned(),
-                    })
+                    if let Some(image) = external {
+                        let path = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+                            media.preview_full_cached_path(embed_id)
+                        } else {
+                            crate::media::remote_image_cached_path(&image.url)
+                        };
+                        if let Some(path) = path {
+                            action = Some(ViewerAction::SaveCachedImage {
+                                path,
+                                name: image.name.clone(),
+                            });
+                        }
+                    } else if let Some(attachment) = attachment {
+                        action = Some(ViewerAction::Download {
+                            id: attachment.id.clone(),
+                            name: attachment.name().to_owned(),
+                        });
+                    }
+                }
+                "favourite" => {
+                    if let Some(id) = external.and_then(|image| image.favourite_id.as_ref()) {
+                        action = Some(ViewerAction::ToggleFavourite(id.clone()));
+                    }
                 }
                 _ => viewer.reset(),
             }
@@ -266,6 +346,22 @@ fn stage_image(
             .cloned(),
     };
 
+    stage_image_texture(ui, t, s, viewer, texture, stage, content)
+}
+
+/// Common image viewer for attachments, authenticated embeds and public GIFs.
+/// This is deliberately the only image-stage implementation: zoom, pan,
+/// double-click, fit and mouse/touch behavior stay identical for every source.
+#[allow(clippy::too_many_arguments)]
+fn stage_image_texture(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    viewer: &mut Viewer,
+    texture: Option<egui::TextureHandle>,
+    stage: Rect,
+    content: &mut Rect,
+) -> Option<ViewerAction> {
     let Some(texture) = texture else {
         ui.painter().text(
             stage.center(),
