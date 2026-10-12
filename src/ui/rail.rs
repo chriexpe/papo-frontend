@@ -64,7 +64,7 @@ pub fn draw(
             // Mensagens diretas são uma superfície fixa da conta ativa, não
             // um servidor. Mantê-las no topo evita que o atalho salte de
             // posição quando o usuário troca de backend.
-            if entries.get(active).is_some_and(|entry| entry.signed_in) {
+            if !entries.is_empty() {
                 if direct_tile(ui, direct_unread, direct_active, t, s) {
                     action = Some(RailAction::DirectMessages);
                 }
