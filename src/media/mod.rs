@@ -247,15 +247,25 @@ struct MediaStats {
 }
 
 fn decrement(counter: &AtomicUsize) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_sub(1))
-    });
+    decrement_by(counter, 1);
 }
 
 fn decrement_by(counter: &AtomicUsize, amount: usize) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_sub(amount))
-    });
+    // Maintain saturating semantics without the deprecated fetch_update
+    // (renamed in newer Rust) so this also builds on the project's MSRV.
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(amount);
+        match counter.compare_exchange_weak(
+            current,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 fn loaded_decoded_bytes(item: &Loaded) -> usize {
