@@ -1668,6 +1668,8 @@ impl PapoApp {
         if index == self.active || index >= self.workspaces.len() {
             return;
         }
+        // Unlike the channel sidebar, the DM surface belongs to the window.
+        let was_inbox = self.ui.dm_surface;
         self.persist_active_drafts(true);
         if self.settings.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
             self.ui.webembed.destroy_active();
@@ -1693,6 +1695,7 @@ impl PapoApp {
         let previous = self.active;
         self.workspaces[previous].stash.swap(&mut self.ui);
         self.workspaces[index].stash.swap(&mut self.ui);
+        self.ui.dm_surface = was_inbox;
         self.active = index;
         self.settings.active = index;
         self.settings.server_url = self.workspaces[index].runtime.url.clone();
@@ -1955,6 +1958,12 @@ impl PapoApp {
                 channel_id,
                 attempt,
             });
+            return;
+        }
+        // The shared inbox can target a different workspace. Dispatch its
+        // navigation before borrowing the currently selected workspace.
+        if let ChatAction::SelectInboxDirectMessage { workspace, dm_id } = &action {
+            self.open_inbox_dm(*workspace, dm_id, ctx);
             return;
         }
         let s = self.settings.lang.strings();
@@ -2255,9 +2264,7 @@ impl PapoApp {
                 }
                 ws.runtime.net.send(Command::OpenDirectMessage { user_id });
             }
-            ChatAction::SelectInboxDirectMessage { workspace, dm_id } => {
-                self.open_inbox_dm(workspace, &dm_id, ctx);
-            }
+            ChatAction::SelectInboxDirectMessage { .. } => unreachable!("handled before workspace borrow"),
             ChatAction::HideDirectMessage { workspace, dm_id } => {
                 if let Some(target) = self.workspaces.get_mut(workspace) {
                     target.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
