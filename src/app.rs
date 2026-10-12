@@ -1966,6 +1966,19 @@ impl PapoApp {
             self.open_inbox_dm(*workspace, dm_id, ctx);
             return;
         }
+        if let ChatAction::HideDirectMessage { workspace, dm_id } = &action {
+            if let Some(target) = self.workspaces.get_mut(*workspace) {
+                target.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
+                if target.runtime.store.selected_channel == *dm_id {
+                    target.runtime.store.selected_channel = target.runtime.store.direct_messages
+                        .iter()
+                        .find(|dm| dm.id != *dm_id)
+                        .map(|dm| dm.id.clone())
+                        .unwrap_or_default();
+                }
+            }
+            return;
+        }
         let s = self.settings.lang.strings();
         let ws = &mut self.workspaces[self.active];
         match action {
@@ -2265,18 +2278,7 @@ impl PapoApp {
                 ws.runtime.net.send(Command::OpenDirectMessage { user_id });
             }
             ChatAction::SelectInboxDirectMessage { .. } => unreachable!("handled before workspace borrow"),
-            ChatAction::HideDirectMessage { workspace, dm_id } => {
-                if let Some(target) = self.workspaces.get_mut(workspace) {
-                    target.runtime.net.send(Command::HideDirectMessage { dm_id: dm_id.clone() });
-                    if target.runtime.store.selected_channel == dm_id {
-                        target.runtime.store.selected_channel = target.runtime.store.direct_messages
-                            .iter()
-                            .find(|dm| dm.id != dm_id)
-                            .map(|dm| dm.id.clone())
-                            .unwrap_or_default();
-                    }
-                }
-            }
+            ChatAction::HideDirectMessage { .. } => unreachable!("handled before workspace borrow"),
             ChatAction::SetUserBlocked { user_id, blocked } => {
                 ws.runtime
                     .net
