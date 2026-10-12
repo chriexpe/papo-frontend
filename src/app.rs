@@ -2606,7 +2606,8 @@ impl PapoApp {
             // Sem rede na demonstração: estas ações não têm efeito local.
             ChatAction::LoadOlderMessages
             | ChatAction::OpenDirectMessage(_)
-            | ChatAction::HideDirectMessage(_)
+            | ChatAction::SelectInboxDirectMessage { .. }
+            | ChatAction::HideDirectMessage { .. }
             | ChatAction::SetUserBlocked { .. }
             | ChatAction::BanUser { .. }
             | ChatAction::ResetUser(_)
