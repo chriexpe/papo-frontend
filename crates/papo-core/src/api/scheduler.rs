@@ -260,6 +260,10 @@ impl ReconcileScheduler {
         log::debug!("reconcile {}: queued {key:?}", self.scope);
     }
 
+    pub fn is_running_key(&self, key: &ReconcileKey) -> bool {
+        self.active_by_key.contains_key(key)
+    }
+
     pub fn start_ready(&mut self, now: Instant) -> Vec<StartedReconcile> {
         let mut started = Vec::new();
 
