@@ -1415,13 +1415,16 @@ impl MediaStore {
                     // honrado agora: o clique era o pedido, o download foi o
                     // caminho.
                     if let Some(video) = self.pending_play.remove(&id) {
-                        self.toggle_player(&id, &path, video, ctx);
                         if self.pending_animations.remove(&id) {
-                            if let Some(player) = self.existing_player(&id) {
+                            // Mute before Play: an animation must never emit
+                            // even a brief audio burst during preroll.
+                            if let Some(player) = self.start_player(&id, &path, true, ctx) {
                                 player.set_muted(true);
                                 player.set_looping(true);
+                                player.play();
                             }
                         } else {
+                            self.toggle_player(&id, &path, video, ctx);
                             self.solo(&id);
                         }
                     }
