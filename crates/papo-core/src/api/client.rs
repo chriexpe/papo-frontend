@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -45,11 +46,35 @@ struct RequestGovernorState {
 #[derive(Debug, Default)]
 struct RequestGovernor {
     state: tokio::sync::Mutex<RequestGovernorState>,
+    high_priority_waiters: AtomicUsize,
+}
+
+struct PriorityWaiter<'a>(&'a AtomicUsize);
+
+impl Drop for PriorityWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl RequestGovernor {
     async fn wait_turn(&self) {
+        self.wait_turn_with_priority(false).await;
+    }
+
+    async fn wait_turn_with_priority(&self, high_priority: bool) {
+        // High-priority requests use the same rate-limit cooldown.
+        let _priority = if high_priority {
+            self.high_priority_waiters.fetch_add(1, Ordering::AcqRel);
+            Some(PriorityWaiter(&self.high_priority_waiters))
+        } else {
+            None
+        };
         loop {
+            if !high_priority && self.high_priority_waiters.load(Ordering::Acquire) > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                continue;
+            }
             let deadline = {
                 let mut state = self.state.lock().await;
                 let now = tokio::time::Instant::now();
@@ -329,7 +354,7 @@ impl Api {
     }
 
     pub(crate) async fn wait_request_turn(&self) {
-        self.governor.wait_turn().await;
+        self.governor.wait_turn_with_priority(true).await;
     }
 
     pub(crate) async fn note_rate_limit_value(&self, retry_after: Option<&str>) {
@@ -372,7 +397,7 @@ impl Api {
             request = request.json(body);
         }
 
-        self.governor.wait_turn().await;
+        self.governor.wait_turn_with_priority(path.starts_with("/auth/")).await;
         let response = request
             .send()
             .await
