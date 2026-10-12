@@ -144,6 +144,8 @@ pub enum Request {
         id: String,
         blob: Option<String>,
     },
+    /// Full-resolution image for the viewer; separate from the inline card.
+    PreviewFull { id: String },
     /// Authenticated, Range-capable backend embed video. Requested only on
     /// explicit playback, never while rendering the timeline.
     EmbedVideo { id: String },
@@ -183,6 +185,7 @@ impl Request {
             Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
             Self::PreviewAuthor { .. } => "preview-author",
+            Self::PreviewFull { .. } => "preview-full",
             Self::EmbedVideo { .. } => "embed-video",
             Self::RemoteImage { .. } => "remote-image",
             Self::RemoteEphemeral { .. } => "remote-ephemeral",
@@ -527,6 +530,25 @@ async fn run(
                     .map_err(|error| error.to_string())
             }) {
                 Ok(bytes) => decode(key, &bytes, INLINE_MAX),
+                Err(error) => Loaded::Failed { key, error },
+            }
+        }
+        Request::PreviewFull { id } => {
+            use base64::Engine as _;
+            let key = preview_full_key(&id);
+            let blob = api
+                .link_preview(&id)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|embed| {
+                    embed.image_data.ok_or_else(|| "embed sem imagem".to_owned())
+                });
+            match blob.and_then(|blob| {
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob.as_bytes())
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(bytes) => decode(key, &bytes, FULL_MAX),
                 Err(error) => Loaded::Failed { key, error },
             }
         }
@@ -1162,6 +1184,9 @@ fn versioned_emoji_key(id: &str, blob: &str) -> String {
 pub fn preview_key(id: &str) -> String {
     format!("preview:{id}")
 }
+fn preview_full_key(id: &str) -> String {
+    format!("preview-full:{id}")
+}
 pub fn preview_author_key(id: &str) -> String {
     format!("preview-author:{id}")
 }
@@ -1287,6 +1312,8 @@ pub struct MediaStore {
     /// the timeline. Keeping this set lets us discard a viewer while a
     /// download is still in flight instead of resurrecting it in `pump`.
     full_wanted: std::collections::HashSet<String>,
+    /// Authenticated embed images are decoded at viewer size only on demand.
+    preview_full_wanted: std::collections::HashSet<String>,
     /// Full-size public preview textures have the same viewer-only lifetime.
     remote_full_wanted: std::collections::HashSet<String>,
     /// Full-size provider textures use a separate key from inline GIFs so a
@@ -1329,6 +1356,7 @@ impl MediaStore {
             probed: std::collections::HashSet::new(),
             revealed: std::collections::HashSet::new(),
             full_wanted: std::collections::HashSet::new(),
+            preview_full_wanted: std::collections::HashSet::new(),
             remote_full_wanted: std::collections::HashSet::new(),
             ephemeral_full_wanted: std::collections::HashSet::new(),
             saved: None,
@@ -1430,6 +1458,9 @@ impl MediaStore {
     fn accepts_texture_result(&self, key: &str) -> bool {
         if let Some(id) = key.strip_prefix("full:") {
             return self.full_wanted.contains(id);
+        }
+        if let Some(id) = key.strip_prefix("preview-full:") {
+            return self.preview_full_wanted.contains(id);
         }
         if let Some(id) = key.strip_prefix("remote-image-full:") {
             return self.remote_full_wanted.contains(id);
@@ -1758,6 +1789,26 @@ impl MediaStore {
         }
         self.touch(&key);
         self.textures.get(&key)
+    }
+
+    /// The authenticated backend image, at viewer resolution. Separate
+    /// resource identity and lifetime from the inline card's small texture.
+    pub fn preview_full(&mut self, id: &str) -> Option<&Texture> {
+        self.preview_full_wanted.insert(id.to_owned());
+        let key = preview_full_key(id);
+        if !self.textures.contains_key(&key) {
+            self.textures.insert(key.clone(), Texture::Loading);
+            self.ask(Request::PreviewFull { id: id.to_owned() });
+        }
+        self.touch(&key);
+        self.textures.get(&key)
+    }
+
+    pub fn release_preview_viewer_texture(&mut self, id: &str) {
+        self.preview_full_wanted.remove(id);
+        let key = preview_full_key(id);
+        self.textures.remove(&key);
+        self.used.remove(&key);
     }
 
     /// Ícone do autor de um embed, separado da imagem principal.

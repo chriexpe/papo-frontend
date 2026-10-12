@@ -636,7 +636,9 @@ pub fn draw_remote_media(
     );
     let texture = (!video)
         .then(|| {
-            let texture = if ephemeral {
+            let texture = if let Some(embed_id) = id.strip_prefix("embed-image:") {
+                media.preview_full(embed_id)
+            } else if ephemeral {
                 media.remote_ephemeral_full(id, url)
             } else {
                 media.remote_image_full(url)
@@ -771,7 +773,7 @@ pub fn draw_remote_media(
         if favourite.is_some() {
             buttons.push((icon::STAR, "favourite"));
         }
-        if !ephemeral {
+        if !ephemeral && !id.starts_with("embed-image:") {
             buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
         }
         buttons.push((icon::ARROWS_IN, "fit"));

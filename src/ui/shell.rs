@@ -6827,12 +6827,26 @@ fn custom_embed_card(
             let original = texture.size_vec2();
             if original.x > 0.0 && original.y > 0.0 {
                 let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
-                let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
+                let (rect, response) = ui.allocate_exact_size(original * scale, Sense::click());
                 ui.painter().image(
                     texture.id(), rect,
                     Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                     Color32::WHITE,
                 );
+                if response.clicked() {
+                    state.link_viewer = Some(LinkViewer {
+                        id: format!("embed-image:{}", embed.id),
+                        url: embed.url.clone().unwrap_or_default(),
+                        name: heading.or(embed.title.as_deref()).unwrap_or("imagem").to_owned(),
+                        video: false,
+                        ephemeral: false,
+                        favourite_id: None,
+                        zoom: 1.0,
+                        offset: Vec2::ZERO,
+                        fitted: true,
+                        opened: ui.input(|input| input.time),
+                    });
+                }
             }
         }
         for field in &embed.fields {
@@ -6847,7 +6861,9 @@ fn custom_embed_card(
                 RichText::new(field.value.trim()).font(text::body()).color(t.label_secondary),
             );
         }
-        if footer.is_some() || source.is_some() {
+        if footer.is_some() || source.is_some()
+            || embed.url.as_deref().is_some_and(papo_core::preview::safe_remote_url)
+        {
             ui.add_space(space::SM);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
@@ -6859,6 +6875,14 @@ fn custom_embed_card(
                         ui.label(RichText::new("·").font(text::footnote()).color(t.label_tertiary));
                     }
                     ui.label(RichText::new(source).font(text::footnote()).color(t.label_tertiary));
+                }
+                if let Some(url) = embed.url.as_deref()
+                    && papo_core::preview::safe_remote_url(url)
+                {
+                    let open = ui.small_button("↗").on_hover_text(url);
+                    if open.clicked() {
+                        state.request_external_url(ui.ctx(), url.to_owned());
+                    }
                 }
             });
         }
@@ -6891,18 +6915,9 @@ fn custom_embed_card(
         ],
         Stroke::new(1.0, t.glass_highlight),
     );
-    // Custom embeds sem URL são apenas conteúdo: não há alvo de clique falso.
-    if let Some(url) = embed.url.as_deref()
-        && papo_core::preview::safe_remote_url(url)
-    {
-        let clicked = ui.interact(rect, Id::new(("custom-embed-open", card_id)), Sense::click());
-        if clicked.clicked() {
-            state.request_external_url(ui.ctx(), url.to_owned());
-        }
-        if clicked.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-    }
+    // No full-card hitbox: a late ui.interact(rect, Sense::click())
+    // overlapped every image/video/WebView inside the card and captured
+    // their mouse-up. Navigation has its own explicit control in the footer.
     ui.add_space(space::XS);
 }
 
@@ -7341,22 +7356,25 @@ fn preview_card(
                     media_clicked = true;
                 }
             } else if response.clicked() {
-                if let Some(remote) = image_url.as_ref() {
-                    state.link_viewer = Some(LinkViewer {
-                        id: id.to_owned(),
-                        url: remote.clone(),
-                        name: title.unwrap_or("image").to_owned(),
-                        video: false,
-                        ephemeral: false,
+                let (viewer_id, viewer_url) = if remote_image.is_some() {
+                    (id.to_owned(), image_url.clone().unwrap_or_default())
+                } else if let Some(embed) = backend {
+                    (format!("embed-image:{}", embed.id), url.to_owned())
+                } else {
+                    (id.to_owned(), image_url.clone().unwrap_or_default())
+                };
+                state.link_viewer = Some(LinkViewer {
+                    id: viewer_id,
+                    url: viewer_url,
+                    name: title.unwrap_or("image").to_owned(),
+                    video: false,
+                    ephemeral: false,
                     favourite_id: None,
                     zoom: 1.0,
-                        offset: Vec2::ZERO,
-                        fitted: true,
-                        opened: ui.input(|input| input.time),
-                    });
-                } else {
-                    state.request_external_url(ui.ctx(), url.to_owned());
-                }
+                    offset: Vec2::ZERO,
+                    fitted: true,
+                    opened: ui.input(|input| input.time),
+                });
                 media_clicked = true;
             }
             ui.add_space(space::SM);
@@ -7533,45 +7551,14 @@ fn preview_card(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    // The card background is a link, but the actual media surface is not:
-    // video/image/WebEmbed keeps its own interaction. Register only the
-    // rectangles around that media so we never steal its tap from a child.
-    let mut open_card = false;
-    let mut zones = Vec::new();
-    if let Some(media) = media_rect {
-        if rect.min.y < media.min.y {
-            zones.push(Rect::from_min_max(rect.min, egui::pos2(rect.max.x, media.min.y)));
-        }
-        if media.max.y < rect.max.y {
-            zones.push(Rect::from_min_max(
-                egui::pos2(rect.min.x, media.max.y),
-                rect.max,
-            ));
-        }
-        if rect.min.x < media.min.x {
-            zones.push(Rect::from_min_max(
-                egui::pos2(rect.min.x, media.min.y),
-                egui::pos2(media.min.x, media.max.y),
-            ));
-        }
-        if media.max.x < rect.max.x {
-            zones.push(Rect::from_min_max(
-                egui::pos2(media.max.x, media.min.y),
-                egui::pos2(rect.max.x, media.max.y),
-            ));
-        }
-    } else {
-        zones.push(rect);
-    }
-    for (index, zone) in zones.into_iter().filter(|zone| zone.is_positive()).enumerate() {
-        let response = ui.interact(
-            zone,
-            Id::new(("link-preview-open", embed_id, index)),
-            Sense::click(),
-        );
-        open_card |= response.clicked();
-    }
-    if open_card && !media_clicked && !url.is_empty() {
+    // The scope was registered before its child widgets. egui gives the
+    // pointer to the later child at the same coordinate. Never add a second
+    // click-catcher here after the image, video controls or WebView: doing so
+    // steals their release event and displays the external-link prompt.
+    let on_media = media_rect.is_some_and(|media| {
+        ui.ctx().pointer_interact_pos().is_some_and(|pos| media.contains(pos))
+    });
+    if inner.response.clicked() && !on_media && !media_clicked && !url.is_empty() {
         state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
@@ -8511,7 +8498,11 @@ fn link_image_viewer(
         &mut link.fitted,
     ) {
         Some(viewer::RemoteViewerAction::Close) => {
-            state.media.release_remote_viewer_texture(&link.url, link.ephemeral);
+            if let Some(embed_id) = link.id.strip_prefix("embed-image:") {
+                state.media.release_preview_viewer_texture(embed_id);
+            } else if !link.video {
+                state.media.release_remote_viewer_texture(&link.url, link.ephemeral);
+            }
         }
         Some(viewer::RemoteViewerAction::Download { path, name }) => {
             state.actions.push(ChatAction::SaveCachedImage { path, name });
