@@ -237,6 +237,9 @@ pub enum Command {
     CreateServer { name: String },
     /// Recarrega servidor, canais e pessoas.
     Refresh,
+    /// Force a catch-up after the WS subscription, even when an older
+    /// initial metadata snapshot is already running.
+    RefreshAfterConnect,
     /// Abre/cria uma conversa direta com esta pessoa.
     OpenDirectMessage {
         user_id: String,
@@ -655,6 +658,7 @@ impl Default for RuntimeDiagnostics {
 struct ReconcileCompletion {
     run_id: u64,
     success: bool,
+    is_metadata: bool,
     updates: Vec<Update>,
 }
 
@@ -1503,6 +1507,7 @@ async fn worker(
     outgoing_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     outgoing_retry.tick().await;
     let mut diagnostics_dirty = false;
+    let mut refresh_after_connect = false;
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
@@ -1984,8 +1989,16 @@ async fn worker(
                             Err(error) => report(&storage_key, &updates, &wake, error),
                         }
                     }
-                    Command::Refresh => {
+                    Command::Refresh | Command::RefreshAfterConnect => {
                         let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                        if user_id.is_none() || !session.is_authenticated() {
+                            continue;
+                        }
+                        if matches!(command, Command::RefreshAfterConnect)
+                            && reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
+                        {
+                            refresh_after_connect = true;
+                        }
                         let result = reconcile_scheduler.submit(
                             ReconcileRequest {
                                 owner: TaskOwner {
@@ -2211,6 +2224,29 @@ async fn worker(
                         );
                         diagnostics_dirty = true;
                         if current {
+                            let retry_metadata = completion.is_metadata
+                                && (!completion.success || refresh_after_connect);
+                            if completion.is_metadata {
+                                refresh_after_connect = false;
+                            }
+                            if retry_metadata {
+                                let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                                if user_id.is_some() && session.is_authenticated() {
+                                    let result = reconcile_scheduler.submit(
+                                        ReconcileRequest {
+                                            owner: TaskOwner {
+                                                generation: runtime_generation,
+                                                session_epoch,
+                                            },
+                                            priority: ReconcilePriority::ActiveServer,
+                                            kind: ReconcileKind::ServerMetadata { user_id },
+                                        },
+                                        std::time::Instant::now(),
+                                    );
+                                    abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                                    diagnostics_dirty = true;
+                                }
+                            }
                             let session_invalid = completion
                                 .updates
                                 .iter()
@@ -2442,6 +2478,7 @@ async fn run_reconcile(
             match with_retry(|| api.messages(&channel_id)).await {
                 Ok(list) => ReconcileCompletion {
                     run_id,
+                    is_metadata: false,
                     success: true,
                     updates: vec![Update::Messages {
                         ticket,
@@ -2452,6 +2489,7 @@ async fn run_reconcile(
                 },
                 Err(error) => ReconcileCompletion {
                     run_id,
+                    is_metadata: false,
                     success: false,
                     updates: vec![
                         Update::MessagesFailed(ticket),
@@ -2468,6 +2506,7 @@ async fn run_reconcile(
                 // declarar pronta: a marcação fica registrada para a próxima
                 // tentativa em vez de deixar cargos/emojis vazios para sempre.
                 success: complete,
+                is_metadata: true,
                 updates,
             }
         }
@@ -2973,6 +3012,7 @@ async fn handle(
         // Reconciliação é consumida no laço do worker e executada pelo
         // scheduler; nunca deve entrar no caminho ordenado abaixo.
         Command::Refresh
+        | Command::RefreshAfterConnect
         | Command::LoadMessages { .. }
         | Command::ProbeConnection
         | Command::NetworkHint(_)
