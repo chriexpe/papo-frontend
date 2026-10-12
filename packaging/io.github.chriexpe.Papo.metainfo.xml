@@ -67,6 +67,24 @@
   </content_rating>
 
   <releases>
+    <release version="0.8.0" date="2026-10-12">
+      <description>
+        <p>Caixa de mensagens diretas entre servidores, sincronização mais rápida e sessões mais confiáveis.</p>
+        <p xml:lang="en">Cross-server direct messages, faster synchronization, and more reliable sessions.</p>
+        <ul>
+          <li>Caixa de entrada agrega mensagens diretas de todos os servidores e leva você ao servidor certo</li>
+          <li xml:lang="en">The inbox aggregates direct messages across servers and takes you to the right server</li>
+          <li>O WebSocket abre cedo, os metadados chegam progressivamente e a reconexão recupera eventos sem lacunas</li>
+          <li xml:lang="en">The WebSocket connects early, metadata streams progressively, and reconnects recover events without gaps</li>
+          <li>O comportamento de leitura da mensagem mais nova agora é configurável</li>
+          <li xml:lang="en">The newest-message read behavior is now configurable</li>
+          <li>Recuperação de senha, sessões renovadas e embeds ricos alinhados ao backend</li>
+          <li xml:lang="en">Password recovery, refreshed sessions, and backend-aligned rich embeds</li>
+          <li>Cache persistente de figurinhas, avatares e ícones do servidor, com nomes de usuário preservados</li>
+          <li xml:lang="en">Persistent stickers, avatars and server icons cache, with usernames preserved</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.5" date="2026-10-05">
       <description>
         <p>Mensagens com formatação, anexos com prévia e mais cuidado com links e janelas.</p>
