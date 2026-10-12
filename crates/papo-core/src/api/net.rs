@@ -1508,6 +1508,9 @@ async fn worker(
     outgoing_retry.tick().await;
     let mut diagnostics_dirty = false;
     let mut refresh_after_connect = false;
+    // Live metadata mutations racing an older REST snapshot are replayed
+    // after the snapshot; timeline mutations already have their own journal.
+    let mut metadata_live_events: Vec<Event> = Vec::new();
     update_runtime_diagnostics(
         &diagnostics,
         worker_connection,
@@ -2060,6 +2063,18 @@ async fn worker(
                 let Some(event) = event else { continue };
                 hooks.event.emit(&event);
 
+                if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
+                    && matches!(
+                        &event,
+                        Event::ChannelCreated { .. }
+                            | Event::ChannelUpdated { .. }
+                            | Event::ChannelDeleted { .. }
+                            | Event::DirectMessageUpdated(_)
+                    )
+                {
+                    metadata_live_events.push(event.clone());
+                }
+
                 if let Event::Message(message) = &event {
                     if let Some(owner) = outgoing_owner.as_deref() {
                         let _ = reconcile_outgoing_message(
@@ -2195,6 +2210,8 @@ async fn worker(
                         }),
                         &mut reconcile_aborts,
                     );
+                    metadata_live_events.clear();
+                    refresh_after_connect = false;
                 }
                 worker_connection = status;
                 if status == Connection::Online && previous_connection != Connection::Online {
@@ -2275,6 +2292,11 @@ async fn worker(
                                     }
                                 }
                                 publish_runtime(&storage_key, &updates, &wake, update);
+                            }
+                            if completion.is_metadata {
+                                for event in metadata_live_events.drain(..) {
+                                    publish(&updates, &wake, Update::Event(Box::new(event)));
+                                }
                             }
                         }
                     }
