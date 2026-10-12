@@ -747,6 +747,7 @@ pub fn draw_remote_video(
     );
     top.painter().text(
         egui::pos2(header.min.x + space::XXL, header.center().y + 16.0),
+        egui::Align2::LEFT_CENTER,
         url,
         text::footnote(),
         Color32::from_white_alpha(170),
