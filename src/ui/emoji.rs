@@ -929,63 +929,47 @@ pub enum Token {
 /// emojis do servidor.
 pub fn tokenize(text: &str, custom: &[crate::state::CustomEmoji]) -> Vec<Token> {
     use super::emoji_raster::is_emoji;
+    use unicode_segmentation::UnicodeSegmentation;
 
-    let chars: Vec<char> = text.chars().collect();
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
     let mut tokens = Vec::new();
     let mut buffer = String::new();
     let mut index = 0;
 
-    while index < chars.len() {
-        let c = chars[index];
+    while index < graphemes.len() {
+        let grapheme = graphemes[index];
 
         // :apelido: de emoji do servidor.
-        if c == ':'
-            && let Some(end) = chars[index + 1..]
+        if grapheme == ":"
+            && let Some(end) = graphemes[index + 1..]
                 .iter()
-                .position(|c| *c == ':')
+                .position(|part| *part == ":")
                 .map(|offset| index + 1 + offset)
         {
-                let name: String = chars[index + 1..end].iter().collect();
-                let known = custom.iter().find(|emoji| emoji.name == name);
-                if let Some(emoji) = known {
-                    if !buffer.is_empty() {
-                        tokens.push(Token::Text(std::mem::take(&mut buffer)));
-                    }
-                    tokens.push(Token::Custom(emoji.id.clone()));
-                    index = end + 1;
-                    continue;
+            let name = graphemes[index + 1..end].concat();
+            let known = custom.iter().find(|emoji| emoji.name == name);
+            if let Some(emoji) = known {
+                if !buffer.is_empty() {
+                    tokens.push(Token::Text(std::mem::take(&mut buffer)));
                 }
+                tokens.push(Token::Custom(emoji.id.clone()));
+                index = end + 1;
+                continue;
+            }
         }
 
-        if is_emoji(c) {
+        if grapheme.chars().any(is_emoji) {
             if !buffer.is_empty() {
                 tokens.push(Token::Text(std::mem::take(&mut buffer)));
             }
-            // A sequência inteira é um emoji só: junta modificadores, ZWJ e
-            // seletores de variação.
-            let mut cluster = String::new();
-            while index < chars.len() {
-                let c = chars[index];
-                let code = c as u32;
-                let part = is_emoji(c)
-                    || code == 0x200D
-                    || (0x1F3FB..=0x1F3FF).contains(&code)
-                    || code == 0x20E3;
-                if !part {
-                    break;
-                }
-                cluster.push(c);
-                index += 1;
-                // Depois de um ZWJ vem sempre mais um pedaço.
-                if chars.get(index).map(|c| *c as u32) == Some(0x200D) {
-                    continue;
-                }
-            }
-            tokens.push(Token::Unicode(cluster));
+            // Um grafema preserva ZWJ, tons, bandeiras e teclas combinadas,
+            // sem juntar emojis vizinhos. O raster desenha um glifo por token.
+            tokens.push(Token::Unicode(grapheme.to_owned()));
+            index += 1;
             continue;
         }
 
-        buffer.push(c);
+        buffer.push_str(grapheme);
         index += 1;
     }
 
@@ -1029,6 +1013,46 @@ mod tests {
     fn junta_sequencia_com_zwj() {
         let tokens = tokenize("👩‍💻", &[]);
         assert_eq!(tokens, vec![Token::Unicode("👩\u{200d}💻".into())]);
+    }
+
+    #[test]
+    fn emojis_vizinhos_sao_tokens_independentes() {
+        let tokens = tokenize("😀🎉❤️", &[]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Unicode("😀".into()),
+                Token::Unicode("🎉".into()),
+                Token::Unicode("❤️".into()),
+            ]
+        );
+        assert!(jumbo(&tokens));
+        assert!(!jumbo(&tokenize("😀🎉❤️👍", &[])));
+    }
+
+    #[test]
+    fn preserva_grafemas_de_emoji_sem_juntar_vizinhos() {
+        for parts in [
+            vec!["👩‍💻", "👨‍👩‍👧‍👦"],
+            vec!["👍🏽", "👍🏻"],
+            vec!["🇧🇷", "🇵🇹"],
+            vec!["1️⃣", "#️⃣", "*️⃣"],
+            vec![
+                "🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}",
+                "🎉",
+            ],
+        ] {
+            let text = parts.concat();
+            let expected: Vec<_> = parts
+                .into_iter()
+                .map(|part| Token::Unicode(part.into()))
+                .collect();
+            assert_eq!(tokenize(&text, &[]), expected, "{text}");
+        }
+        assert_eq!(
+            tokenize("á 123#*", &[]),
+            vec![Token::Text("á 123#*".into())]
+        );
     }
 
     #[test]

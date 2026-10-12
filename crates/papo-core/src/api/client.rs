@@ -1367,7 +1367,7 @@ impl Api {
     pub async fn emojis(&self) -> ApiResult<Vec<Emoji>> {
         let mut all = Vec::new();
         let mut seen = HashSet::new();
-        let mut page: EmojiList = self.get("/emojis").await?;
+        let mut page: EmojiList = self.get("/emojis?order=asc").await?;
         append_unique_emojis(&mut all, page.emojis.drain(..), &mut seen);
         // Uma página costuma bastar; o cursor evita perder emojis num
         // servidor com muitos.
@@ -1375,7 +1375,22 @@ impl Api {
         while page.has_more && guard < 20 {
             guard += 1;
             let Some(last) = all.last() else { break };
-            let path = format!("/emojis?last_id={}", last.id);
+            let Some(created_at) = last.created_at else {
+                log::warn!("paginação de emojis sem created_at no cursor");
+                break;
+            };
+            // O backend ignora last_id sem since e repete a primeira página.
+            // Preserve os nanossegundos e o id: vários emojis podem ter a
+            // mesma data de criação.
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("order", "asc")
+                .append_pair(
+                    "since",
+                    &created_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                )
+                .append_pair("last_id", &last.id)
+                .finish();
+            let path = format!("/emojis?{query}");
             page = self.get(&path).await?;
             if page.emojis.is_empty() {
                 break;
@@ -1536,6 +1551,7 @@ mod tests {
         let emoji = |id: &str| Emoji {
             id: id.to_owned(),
             name: id.to_owned(),
+            created_at: None,
             format: None,
             image_blob: None,
         };
@@ -1560,5 +1576,83 @@ mod tests {
             all.iter().map(|emoji| emoji.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
+    }
+
+    // Replica o contrato do backend: páginas de 25, cursor composto e
+    // last_id ignorado quando since não está presente.
+    async fn mock_emoji_pages(repeat_page: bool) -> (Vec<Emoji>, usize) {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let count = requests.clone();
+        let timestamp = "2026-10-12T12:00:00.123456789Z";
+        let server = tokio::spawn(async move {
+            let emojis: Vec<_> = (0..60).map(|index| serde_json::json!({
+                "id": format!("emoji-{index:03}"),
+                "name": format!("emote-{index}"),
+                "created_at": timestamp,
+                "format": "PNG",
+                "image_blob": "aW1hZ2U=",
+            })).collect();
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                let path = line.split_whitespace().nth(1).unwrap();
+                let url = Url::parse(&format!("http://{address}{path}")).unwrap();
+                assert_eq!(url.path(), "/emojis");
+                let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+                assert_eq!(query.get("order").map(String::as_str), Some("asc"));
+                let offset = if !repeat_page && query.contains_key("since") {
+                    assert_eq!(query.get("since").unwrap(), timestamp);
+                    let cursor = query.get("last_id").unwrap();
+                    emojis.iter().position(|emoji| emoji["id"] == *cursor).unwrap() + 1
+                } else {
+                    0
+                };
+                loop {
+                    line.clear();
+                    if stream.read_line(&mut line).await.unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                let end = (offset + 25).min(emojis.len());
+                let body = serde_json::json!({
+                    "emojis": &emojis[offset..end],
+                    "has_more": end < emojis.len(),
+                }).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                count.fetch_add(1, Ordering::Relaxed);
+                stream.get_mut().write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), api.emojis()).await;
+        server.abort();
+        (result.unwrap().unwrap(), requests.load(Ordering::Relaxed))
+    }
+
+    #[tokio::test]
+    async fn emojis_carrega_todas_as_paginas_com_timestamp_igual() {
+        let (emojis, requests) = mock_emoji_pages(false).await;
+        assert_eq!(emojis.len(), 60);
+        assert_eq!(requests, 3);
+        for (index, emoji) in emojis.iter().enumerate() {
+            assert_eq!(emoji.id, format!("emoji-{index:03}"));
+            assert_eq!(emoji.image_blob.as_deref(), Some("aW1hZ2U="));
+        }
+    }
+
+    #[tokio::test]
+    async fn emojis_para_quando_servidor_repete_a_pagina() {
+        let (emojis, requests) = mock_emoji_pages(true).await;
+        assert_eq!(emojis.len(), 25);
+        assert_eq!(requests, 2);
     }
 }

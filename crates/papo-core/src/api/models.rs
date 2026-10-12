@@ -1015,6 +1015,9 @@ pub struct PinnedList {
 pub struct Emoji {
     pub id: String,
     pub name: String,
+    /// Cursor de paginação, combinado com o id para datas de criação iguais.
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
     /// `GIF`, `JPEG`, `JPG`, `PNG` ou `WEBP`.
     pub format: Option<String>,
     /// Imagem em base64 — o emoji não tem endpoint próprio de download.

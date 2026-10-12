@@ -25,7 +25,9 @@ const RASTER_PX: f32 = 72.0;
 /// Caminhos comuns da fonte colorida nos desktops; evita varrer o sistema
 /// inteiro. Android não entra aqui: lá a própria plataforma desenha o emoji.
 #[cfg(not(target_os = "android"))]
-const CANDIDATES: [&str; 6] = [
+const CANDIDATES: [&str; 8] = [
+    "/usr/share/fonts/noto-emoji/NotoColorEmoji.ttf", // runtime Freedesktop/Flatpak
+    "/run/host/fonts/noto/NotoColorEmoji.ttf", // fonte do host dentro do Flatpak
     "/usr/share/fonts/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/noto-color-emoji/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",

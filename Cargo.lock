@@ -4155,6 +4155,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tray-icon",
+ "unicode-segmentation",
  "url",
  "wayland-backend",
  "wayland-client",
