@@ -2183,7 +2183,7 @@ fn identity_pill(
 }
 
 /// Iniciais de um nome, para o ícone de quem não tem imagem.
-fn initials_of(name: &str) -> String {
+pub(crate) fn initials_of(name: &str) -> String {
     name.split_whitespace()
         .filter_map(|word| word.chars().next())
         .take(2)
@@ -4178,11 +4178,35 @@ fn direct_message_pill(
         .layout_no_wrap(subtitle.to_owned(), text::footnote(), t.label_tertiary)
         .size()
         .x;
-    let desired_width = space::SM
-        + 28.0
-        + space::MD
-        + name_width.max(subtitle_width)
-        + space::SM;
+    // The backend label rides beside the identity in the same hold-and-slide
+    // motion as channel topics. It never displaces the presence/status line.
+    let server_label = state.dm_server_name.trim();
+    let server_galley = ui.painter().layout_no_wrap(
+        server_label.to_owned(), text::callout(), t.label_tertiary,
+    );
+    let reveal = if server_label.is_empty() || !state.reveal_topic {
+        0.0
+    } else if let Some(since) = state.topic_since {
+        let elapsed = ui.input(|input| input.time) - since;
+        if elapsed < TOPIC_HOLD {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                (TOPIC_HOLD - elapsed).max(0.01),
+            ));
+            1.0
+        } else if elapsed < TOPIC_HOLD + TOPIC_SLIDE {
+            ui.ctx().request_repaint();
+            let progress = ((elapsed - TOPIC_HOLD) / TOPIC_SLIDE) as f32;
+            (1.0 - progress).powi(3)
+        } else {
+            state.topic_since = None;
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let base_width = space::SM + 28.0 + space::MD + name_width.max(subtitle_width) + space::SM;
+    let extension = space::LG * 2.0 + server_galley.size().x;
+    let desired_width = base_width + extension * reveal;
     let max_width = (
         area.width()
             - PILL_MARGIN * 2.0
@@ -4209,6 +4233,27 @@ fn direct_message_pill(
         false,
         "direct-message-pill",
     );
+    if reveal > 0.001 {
+        let start_x = rect.min.x + base_width - space::SM;
+        let slide = (1.0 - reveal) * extension;
+        let clip = Rect::from_min_max(
+            egui::pos2(start_x, rect.min.y),
+            egui::pos2(rect.max.x - space::SM, rect.max.y),
+        );
+        let painter = ui.painter().with_clip_rect(clip);
+        let x = start_x - slide;
+        let alpha = (reveal * 1.8).clamp(0.0, 1.0);
+        painter.line_segment(
+            [egui::pos2(x + space::SM, rect.center().y - 7.0),
+             egui::pos2(x + space::SM, rect.center().y + 7.0)],
+            Stroke::new(1.0, t.separator.gamma_multiply(alpha)),
+        );
+        painter.galley(
+            egui::pos2(x + space::LG, rect.center().y - server_galley.size().y / 2.0),
+            server_galley,
+            t.label_tertiary.gamma_multiply(alpha),
+        );
+    }
     if matches!(hit, PillHit::Body) {
         super::profile::open(
             state,
