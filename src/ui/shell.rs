@@ -28,6 +28,20 @@ use super::theme::{adaptive_font, radius, space, text, Tokens, HIT_TARGET};
 use super::viewer::{self, Viewer, ViewerAction};
 use super::widgets::{avatar, floating_pill, round_photo, icon_button, scroll_edge_fade, section_caption, sidebar_frame};
 
+/// A DM projected from one backend into the global inbox. IDs remain server-local.
+#[derive(Clone)]
+pub struct InboxDm {
+    pub workspace: usize,
+    pub id: String,
+    pub name: String,
+    pub initials: String,
+    pub preview: String,
+    pub presence: Presence,
+    pub unread: u32,
+    pub avatar: Option<egui::TextureId>,
+    pub last_activity: DateTime<chrono::Utc>,
+}
+
 pub const SIDEBAR_WIDTH: f32 = 232.0;
 pub const MEMBERS_WIDTH: f32 = 196.0;
 /// Abaixo disto a conversa vira a superfície raiz e as laterais viram drawers.
@@ -201,8 +215,10 @@ pub enum ChatAction {
     DeleteChannel(String),
     /// Abre/cria a conversa direta com uma pessoa.
     OpenDirectMessage(String),
-    /// Oculta uma conversa direta da rail.
-    HideDirectMessage(String),
+    /// Seleciona uma conversa no inbox de todos os servidores.
+    SelectInboxDirectMessage { workspace: usize, dm_id: String },
+    /// Oculta a conversa no backend certo.
+    HideDirectMessage { workspace: usize, dm_id: String },
     /// Bloqueia/desbloqueia uma pessoa para mensagens diretas.
     SetUserBlocked {
         user_id: String,
@@ -889,6 +905,8 @@ pub struct UiState {
     pub popup: Option<Popup>,
     /// A superfície de mensagens diretas substitui a coluna de canais.
     pub dm_surface: bool,
+    /// Nome do servidor da DM aberta, atualizado pela janela, não pelo Stash.
+    pub dm_server_name: String,
     /// Último canal comum antes de entrar em mensagens diretas.
     pub last_server_channel: String,
     /// Cartão de perfil aberto.
@@ -1086,6 +1104,7 @@ impl Default for UiState {
             external_link_prompt: None,
             popup: None,
             dm_surface: false,
+            dm_server_name: String::new(),
             last_server_channel: String::new(),
             profile: None,
             server_card: None,
@@ -1200,6 +1219,8 @@ pub fn draw(
     t: &Tokens,
     s: &Strings,
     mobile_servers: Option<MobileServers<'_>>,
+    inbox: &[InboxDm],
+    inbox_active: usize,
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
@@ -1316,6 +1337,8 @@ pub fn draw(
             s,
             live,
             mobile_servers,
+            inbox,
+            inbox_active,
             shell_rect,
         );
         overlays(ui, store, state, t, s);
@@ -1332,7 +1355,7 @@ pub fn draw(
         state.drawer = Drawer::default();
         state.reply_drag = None;
         if state.dm_surface {
-            direct_messages_sidebar(ui, store, state, t, s);
+            direct_messages_sidebar(ui, store, state, t, s, inbox, inbox_active);
         } else {
             channels_sidebar(ui, store, state, t, s, live);
         }
@@ -1395,6 +1418,8 @@ fn mobile_drawers(
     s: &Strings,
     live: bool,
     servers: Option<MobileServers<'_>>,
+    inbox: &[InboxDm],
+    inbox_active: usize,
     area: Rect,
 ) -> Option<super::rail::RailAction> {
     advance_surfaces(&*root, state);
@@ -1461,7 +1486,7 @@ fn mobile_drawers(
                         s,
                     );
                     if state.dm_surface {
-                        direct_messages_sidebar(ui, store, state, t, s);
+                        direct_messages_sidebar(ui, store, state, t, s, inbox, inbox_active);
                     } else {
                         channels_sidebar(ui, store, state, t, s, live);
                     }
@@ -1766,8 +1791,9 @@ fn direct_messages_sidebar(
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
+    inbox: &[InboxDm],
+    active: usize,
 ) {
-    let ctx = root.ctx().clone();
     egui::Panel::left("direct-messages")
         .exact_size(SIDEBAR_WIDTH)
         .resizable(false)
@@ -1810,57 +1836,32 @@ fn direct_messages_sidebar(
                                     });
                                 });
                                 ui.add_space(space::XS);
-                                let dms = store.direct_messages.clone();
-                                for dm in dms {
-                                    let member = store.member(&dm.user.id);
-                                    let presence = member
-                                        .map(|member| member.presence)
-                                        .unwrap_or(Presence::Offline);
-                                    let name = member
-                                        .map(|member| member.name.as_str())
-                                        .unwrap_or_else(|| dm.user.display_name());
-                                    let initials = member
-                                        .map(|member| member.initials())
-                                        .unwrap_or_else(|| initials_of(name));
-                                    let avatar = state
-                                        .media
-                                        .avatar(
-                                            &dm.user.id,
-                                            store.avatars.get(&dm.user.id).map(String::as_str),
-                                        )
-                                        .and_then(|texture| texture.frame(&ctx))
-                                        .map(|handle| handle.id());
-                                    let preview = dm
-                                        .last_message
-                                        .as_ref()
-                                        .and_then(|message| message.content.as_deref())
-                                        .map(str::trim)
-                                        .filter(|text| !text.is_empty())
-                                        .unwrap_or(" ");
-                                    let unread = store
-                                        .channel(&dm.id)
-                                        .filter(|channel| channel.unread)
-                                        .map(|_| dm.unread_count.max(1))
-                                        .unwrap_or(0);
+                                for dm in inbox {
                                     let row = direct_message_row(
                                         ui,
                                         t,
-                                        &initials,
-                                        name,
-                                        preview,
-                                        presence_color(t, presence),
-                                        unread,
-                                        store.selected_channel == dm.id,
+                                        &dm.initials,
+                                        &dm.name,
+                                        &dm.preview,
+                                        presence_color(t, dm.presence),
+                                        dm.unread,
+                                        dm.workspace == active && store.selected_channel == dm.id,
                                         width,
-                                        avatar,
+                                        dm.avatar,
                                     );
                                     if row.clicked() {
-                                        store.selected_channel = dm.id.clone();
+                                        state.actions.push(ChatAction::SelectInboxDirectMessage {
+                                            workspace: dm.workspace,
+                                            dm_id: dm.id.clone(),
+                                        });
                                         state.mobile_surface = MobileSurface::Chat;
                                     }
                                     row.context_menu(|ui| {
                                         if ui.button(s.hide_direct_message).clicked() {
-                                            state.actions.push(ChatAction::HideDirectMessage(dm.id.clone()));
+                                            state.actions.push(ChatAction::HideDirectMessage {
+                                                workspace: dm.workspace,
+                                                dm_id: dm.id.clone(),
+                                            });
                                             ui.close();
                                         }
                                     });
@@ -2187,7 +2188,7 @@ fn identity_pill(
 }
 
 /// Iniciais de um nome, para o ícone de quem não tem imagem.
-fn initials_of(name: &str) -> String {
+pub(crate) fn initials_of(name: &str) -> String {
     name.split_whitespace()
         .filter_map(|word| word.chars().next())
         .take(2)
@@ -4182,11 +4183,35 @@ fn direct_message_pill(
         .layout_no_wrap(subtitle.to_owned(), text::footnote(), t.label_tertiary)
         .size()
         .x;
-    let desired_width = space::SM
-        + 28.0
-        + space::MD
-        + name_width.max(subtitle_width)
-        + space::SM;
+    // The backend label rides beside the identity in the same hold-and-slide
+    // motion as channel topics. It never displaces the presence/status line.
+    let server_label = state.dm_server_name.trim();
+    let server_galley = ui.painter().layout_no_wrap(
+        server_label.to_owned(), text::callout(), t.label_tertiary,
+    );
+    let reveal = if server_label.is_empty() || !state.reveal_topic {
+        0.0
+    } else if let Some(since) = state.topic_since {
+        let elapsed = ui.input(|input| input.time) - since;
+        if elapsed < TOPIC_HOLD {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                (TOPIC_HOLD - elapsed).max(0.01),
+            ));
+            1.0
+        } else if elapsed < TOPIC_HOLD + TOPIC_SLIDE {
+            ui.ctx().request_repaint();
+            let progress = ((elapsed - TOPIC_HOLD) / TOPIC_SLIDE) as f32;
+            (1.0 - progress).powi(3)
+        } else {
+            state.topic_since = None;
+            0.0
+        }
+    } else {
+        0.0
+    };
+    let base_width = space::SM + 28.0 + space::MD + name_width.max(subtitle_width) + space::SM;
+    let extension = space::LG * 2.0 + server_galley.size().x;
+    let desired_width = base_width + extension * reveal;
     let max_width = (
         area.width()
             - PILL_MARGIN * 2.0
@@ -4213,6 +4238,27 @@ fn direct_message_pill(
         false,
         "direct-message-pill",
     );
+    if reveal > 0.001 {
+        let start_x = rect.min.x + base_width - space::SM;
+        let slide = (1.0 - reveal) * extension;
+        let clip = Rect::from_min_max(
+            egui::pos2(start_x, rect.min.y),
+            egui::pos2(rect.max.x - space::SM, rect.max.y),
+        );
+        let painter = ui.painter().with_clip_rect(clip);
+        let x = start_x - slide;
+        let alpha = (reveal * 1.8).clamp(0.0, 1.0);
+        painter.line_segment(
+            [egui::pos2(x + space::SM, rect.center().y - 7.0),
+             egui::pos2(x + space::SM, rect.center().y + 7.0)],
+            Stroke::new(1.0, t.separator.gamma_multiply(alpha)),
+        );
+        painter.galley(
+            egui::pos2(x + space::LG, rect.center().y - server_galley.size().y / 2.0),
+            server_galley,
+            t.label_tertiary.gamma_multiply(alpha),
+        );
+    }
     if matches!(hit, PillHit::Body) {
         super::profile::open(
             state,
