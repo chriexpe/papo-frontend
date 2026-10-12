@@ -260,6 +260,12 @@ impl ReconcileScheduler {
         log::debug!("reconcile {}: queued {key:?}", self.scope);
     }
 
+    pub fn is_current_run(&self, run_id: u64) -> bool {
+        self.running.get(&run_id).is_some_and(|running| {
+            self.active_by_key.get(&running.key) == Some(&run_id)
+        })
+    }
+
     pub fn is_running_key(&self, key: &ReconcileKey) -> bool {
         self.active_by_key.contains_key(key)
     }
