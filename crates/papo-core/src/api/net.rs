@@ -659,7 +659,26 @@ struct ReconcileCompletion {
     run_id: u64,
     success: bool,
     is_metadata: bool,
+    // Errors remain transactional with completion; successful metadata
+    // resources are delivered progressively through ReconcileProgress.
     updates: Vec<Update>,
+}
+
+struct ReconcileProgress {
+    run_id: u64,
+    update: Update,
+}
+
+fn publish_reconcile_progress(
+    progress: ReconcileProgress,
+    scheduler: &ReconcileScheduler,
+    scope: &str,
+    updates: &sync_mpsc::Sender<Update>,
+    wake: &Wake,
+) {
+    if scheduler.is_current_run(progress.run_id) {
+        publish_runtime(scope, updates, wake, progress.update);
+    }
 }
 
 pub struct Net {
@@ -1494,6 +1513,8 @@ async fn worker(
     let mut reconcile_scheduler =
         ReconcileScheduler::with_scope(RECONCILE_CONCURRENCY, storage_key.clone());
     let mut reconcile_tasks = JoinSet::new();
+    let (reconcile_progress_tx, mut reconcile_progress_rx) =
+        mpsc::unbounded_channel::<ReconcileProgress>();
     let mut reconcile_aborts: HashMap<u64, tokio::task::AbortHandle> = HashMap::new();
     let mut runtime_generation = 0_u64;
     let mut session_epoch = 0_u64;
@@ -1611,6 +1632,7 @@ async fn worker(
             &mut reconcile_scheduler,
             &mut reconcile_tasks,
             &mut reconcile_aborts,
+            &reconcile_progress_tx,
         );
         if diagnostics_dirty {
             update_runtime_diagnostics(
@@ -2237,9 +2259,24 @@ async fn worker(
                 }
                 publish(&updates, &wake, Update::Connection(status));
             }
+            progress = reconcile_progress_rx.recv() => {
+                if let Some(progress) = progress {
+                    publish_reconcile_progress(
+                        progress, &reconcile_scheduler, &storage_key, &updates, &wake,
+                    );
+                }
+            }
             completion = reconcile_tasks.join_next(), if !reconcile_tasks.is_empty() => {
                 match completion {
                     Some(Ok(completion)) => {
+                        // A completed task sent every progress update before
+                        // it returned. Drain those updates before clearing its
+                        // run ID, regardless of select! branch ordering.
+                        while let Ok(progress) = reconcile_progress_rx.try_recv() {
+                            publish_reconcile_progress(
+                                progress, &reconcile_scheduler, &storage_key, &updates, &wake,
+                            );
+                        }
                         reconcile_aborts.remove(&completion.run_id);
                         let current = reconcile_scheduler.complete(
                             completion.run_id,
@@ -2482,14 +2519,16 @@ fn spawn_ready_reconciles(
     scheduler: &mut ReconcileScheduler,
     tasks: &mut JoinSet<ReconcileCompletion>,
     aborts: &mut HashMap<u64, tokio::task::AbortHandle>,
+    progress: &mpsc::UnboundedSender<ReconcileProgress>,
 ) -> bool {
     let mut started_any = false;
     for StartedReconcile { run_id, request } in scheduler.start_ready(std::time::Instant::now()) {
         started_any = true;
         let api = api.clone();
         let scope = scope.to_owned();
+        let progress = progress.clone();
         let handle =
-            tasks.spawn(async move { run_reconcile(api, scope, run_id, request).await });
+            tasks.spawn(async move { run_reconcile(api, scope, run_id, request, progress).await });
         aborts.insert(run_id, handle);
     }
     started_any
@@ -2500,6 +2539,7 @@ async fn run_reconcile(
     scope: String,
     run_id: u64,
     request: ReconcileRequest,
+    progress: mpsc::UnboundedSender<ReconcileProgress>,
 ) -> ReconcileCompletion {
     match request.kind {
         ReconcileKind::ChannelHistory { ticket } => {
@@ -2528,7 +2568,12 @@ async fn run_reconcile(
             }
         }
         ReconcileKind::ServerMetadata { user_id } => {
-            let (updates, complete) = bootstrap_updates(&api, &scope, user_id.as_deref()).await;
+            let (updates, complete) = bootstrap_updates(
+                &api, &scope, user_id.as_deref(),
+                |update| {
+                    let _ = progress.send(ReconcileProgress { run_id, update });
+                },
+            ).await;
             ReconcileCompletion {
                 run_id,
                 // A carga inicial que só perdeu por ritmo/rede não pode se
@@ -2648,21 +2693,27 @@ mod retry_tests {
     }
 }
 
-/// Devolve `(updates, complete)`. `complete` é falso quando alguma chamada
-/// falhou de forma transitória — o chamador então repete a carga inteira.
-async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Vec<Update>, bool) {
+/// Publishes each successful metadata resource as soon as it arrives.
+/// Returns only errors at completion, plus whether reconciliation was complete.
+/// Failed resources remain stale and are retried with bounded backoff.
+async fn bootstrap_updates(
+    api: &Api,
+    scope: &str,
+    user_id: Option<&str>,
+    mut publish: impl FnMut(Update),
+) -> (Vec<Update>, bool) {
     let mut updates = Vec::new();
     let mut complete = true;
 
     match with_retry(|| api.server()).await {
-        Ok(server) => updates.push(Update::Server(server.map(Box::new))),
+        Ok(server) => publish(Update::Server(server.map(Box::new))),
         Err(error) => {
             complete = false;
             updates.push(update_for_error(error));
         }
     }
     match with_retry(|| api.channels()).await {
-        Ok(channels) => updates.push(Update::Channels(channels)),
+        Ok(channels) => publish(Update::Channels(channels)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2670,7 +2721,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.direct_messages()).await {
-        Ok(dms) => updates.push(Update::DirectMessages(dms)),
+        Ok(dms) => publish(Update::DirectMessages(dms)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2678,7 +2729,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.blocked_users()).await {
-        Ok(users) => updates.push(Update::BlockedUsers(users)),
+        Ok(users) => publish(Update::BlockedUsers(users)),
         Err(ApiError::NotFound) => {}
         Err(error) => {
             complete = false;
@@ -2688,10 +2739,10 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
     match with_retry(|| api.users()).await {
         Ok(users) => {
             let ids: Vec<String> = users.iter().map(|user| user.id.clone()).collect();
-            updates.push(Update::Users(users));
+            publish(Update::Users(users));
             if !ids.is_empty() {
                 match with_retry(|| api.profiles(ids.clone())).await {
-                    Ok(profiles) => updates.push(Update::Profiles(profiles)),
+                    Ok(profiles) => publish(Update::Profiles(profiles)),
                     Err(error) => {
                         complete = false;
                         log::warn!("runtime {scope}: perfis: {error}");
@@ -2706,14 +2757,14 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
         }
     }
     match with_retry(|| api.roles()).await {
-        Ok(roles) => updates.push(Update::Roles(roles)),
+        Ok(roles) => publish(Update::Roles(roles)),
         Err(error) => {
             complete = false;
             log::warn!("runtime {scope}: cargos: {error}");
         }
     }
     match with_retry(|| api.emojis()).await {
-        Ok(emojis) => updates.push(Update::Emojis(emojis)),
+        Ok(emojis) => publish(Update::Emojis(emojis)),
         Err(error) => {
             complete = false;
             log::warn!("runtime {scope}: emojis: {error}");
@@ -2721,7 +2772,7 @@ async fn bootstrap_updates(api: &Api, scope: &str, user_id: Option<&str>) -> (Ve
     }
     if let Some(user_id) = user_id {
         match with_retry(|| api.notifications(user_id)).await {
-            Ok(notifications) => updates.push(Update::Notifications(notifications)),
+            Ok(notifications) => publish(Update::Notifications(notifications)),
             Err(error) => {
                 complete = false;
                 log::warn!("runtime {scope}: notificações: {error}");
