@@ -11047,6 +11047,34 @@ mod link_preview_dedupe_tests {
     }
 
     #[test]
+    fn klipy_gif_style_mp4_is_animation_but_regular_twitter_video_is_not() {
+        assert!(gif_style_embed("https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme"));
+        assert!(gif_style_embed("https://www.klipy.com/gifs/a"));
+        assert!(!gif_style_embed("https://x.com/Lord_PSMG/status/2109376514688966914"));
+        assert!(!gif_style_embed("https://not-klipy.com/gifs/something"));
+        assert!(!gif_style_embed("https://klipy.com/videos/trailer"));
+    }
+
+    #[test]
+    fn aspect_hint_uses_video_dimensions_not_cropped_thumbnail() {
+        let landscape = crate::api::models::EmbedMedia {
+            url: None,
+            mime_type: Some("video/mp4".into()),
+            width: Some(1920),
+            height: Some(1080),
+            size_bytes: None,
+        };
+        let portrait = crate::api::models::EmbedMedia {
+            width: Some(720),
+            height: Some(1280),
+            ..landscape.clone()
+        };
+        assert!((media_aspect(Some(&landscape)).unwrap() - 16.0 / 9.0).abs() < 0.001);
+        assert!((media_aspect(Some(&portrait)).unwrap() - 9.0 / 16.0).abs() < 0.001);
+        assert!(media_aspect(None).is_none());
+    }
+
+    #[test]
     fn custom_message_embed_keeps_a_safe_nested_video() {
         let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
             "id": "message-embed",
