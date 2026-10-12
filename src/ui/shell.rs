@@ -5498,11 +5498,11 @@ fn message_list(
     area: Rect,
     readable: Rect,
 ) {
-    let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
-    if messages.is_empty() {
+    let mut messages = store.messages_in(&store.selected_channel);
+    let Some(first_message) = messages.next() else {
         empty_state(ui, store, state, t, s);
         return;
-    }
+    };
 
     let ctx = ui.ctx().clone();
     let width = area.width();
@@ -5533,7 +5533,7 @@ fn message_list(
         && state.jump.is_none()
         && state.reply_drag.is_none();
 
-    for message in &messages {
+    for message in std::iter::once(first_message).chain(messages) {
         let y_start = ui.cursor().top();
         let day = message.at.day();
         let new_day = last_day != Some(day);
@@ -6307,6 +6307,7 @@ fn message_body(
             state,
             t,
             &message.id,
+            &message.content,
             &message.previews,
             width,
             allow_network,
@@ -6558,24 +6559,36 @@ fn link_previews(
     state: &mut UiState,
     t: &Tokens,
     message_id: &str,
+    content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
     allow_network: bool,
 ) {
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews
+        .iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom"))
+        .count();
     for preview in previews {
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
         if preview.source_type.as_deref() == Some("custom") {
             custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
             continue;
         }
-        let url = preview.url.as_deref().unwrap_or("");
+        // The backend canonicalizes provider links (for example an
+        // oginstagram URL becomes the original Instagram reel URL), while
+        // the message still contains the URL the user sent. When there is a
+        // single automatic preview, resolve that user URL here so the
+        // backend metadata and the client-discovered direct media share one
+        // card instead of rendering two representations of the same post.
+        let url = backend_preview_render_url(preview, &content_urls, automatic_count);
         preview_card(
             ui,
             state,
             t,
             &preview.id,
             &embed_id,
-            url,
+            &url,
             Some(preview),
             width,
             PreviewPolicy {
@@ -6584,6 +6597,46 @@ fn link_previews(
             },
         );
     }
+}
+
+fn backend_preview_render_url(
+    preview: &crate::api::models::LinkPreview,
+    content_urls: &[String],
+    automatic_count: usize,
+) -> String {
+    if automatic_count == 1
+        && content_urls.len() == 1
+        && preview.source_type.as_deref() != Some("custom")
+    {
+        return content_urls[0].clone();
+    }
+    preview.url.clone().unwrap_or_default()
+}
+
+fn backend_preview_urls(
+    content: &str,
+    previews: &[crate::api::models::LinkPreview],
+) -> std::collections::HashSet<String> {
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews
+        .iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom"))
+        .count();
+    let mut urls = previews
+        .iter()
+        .filter_map(|preview| preview.url.as_deref())
+        .filter_map(papo_core::preview::canonical_url)
+        .collect::<std::collections::HashSet<_>>();
+
+    // Keep the client-side pass from painting a second card when the one
+    // backend preview refers to the same post through a canonical provider
+    // URL. The association is deliberately limited to one message URL and
+    // one automatic preview; multiple links must remain independently
+    // renderable.
+    if automatic_count == 1 && content_urls.len() == 1 {
+        urls.insert(content_urls[0].clone());
+    }
+    urls
 }
 
 /// O backend pode colocar o mesmo nome tanto em author.name quanto em title.
@@ -6815,11 +6868,7 @@ fn rich_links_from_message(
 ) {
     use std::hash::{Hash, Hasher};
 
-    let backend_urls: std::collections::HashSet<String> = previews
-        .iter()
-        .filter_map(|preview| preview.url.as_deref())
-        .filter_map(papo_core::preview::canonical_url)
-        .collect();
+    let backend_urls = backend_preview_urls(content, previews);
 
     let mut seen = std::collections::HashSet::new();
     for url in papo_core::preview::extract_https_urls(content) {
@@ -10777,6 +10826,50 @@ mod direct_media_tests {
         ));
         assert!(obvious_direct_media_url("https://cdn.example.test/movie.mp4"));
         assert!(!obvious_direct_media_url("https://example.test/post/123"));
+    }
+}
+
+#[cfg(test)]
+mod link_preview_dedupe_tests {
+    use super::*;
+
+    fn automatic_preview(url: &str) -> crate::api::models::LinkPreview {
+        serde_json::from_value(serde_json::json!({
+            "id": "preview-1",
+            "source_type": "link",
+            "url": url,
+        }))
+        .expect("valid automatic preview")
+    }
+
+    #[test]
+    fn one_backend_preview_claims_the_message_url_when_provider_canonicalizes_it() {
+        let content =
+            "https://www.oginstagram.com/reel/DeX8XPpvS8y/?dlrf=tracking-token";
+        let backend = automatic_preview(
+            "https://www.instagram.com/walaber_ent/reel/DeX8XPpvS8y/",
+        );
+        let content_urls = papo_core::preview::extract_https_urls(content);
+
+        assert_eq!(content_urls.len(), 1);
+        assert_eq!(
+            backend_preview_render_url(&backend, &content_urls, 1),
+            content_urls[0]
+        );
+        assert!(backend_preview_urls(content, &[backend]).contains(&content_urls[0]));
+    }
+
+    #[test]
+    fn multiple_message_urls_are_not_collapsed_into_one_backend_preview() {
+        let content = "https://one.example/post/1 https://two.example/post/2";
+        let backend = automatic_preview("https://two.example/post/2");
+        let content_urls = papo_core::preview::extract_https_urls(content);
+
+        assert_eq!(
+            backend_preview_render_url(&backend, &content_urls, 1),
+            "https://two.example/post/2"
+        );
+        assert!(!backend_preview_urls(content, &[backend]).contains(&content_urls[0]));
     }
 }
 

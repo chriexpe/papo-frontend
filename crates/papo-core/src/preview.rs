@@ -1050,25 +1050,27 @@ async fn resolve_oembed(
                 } else if !html.trim().is_empty() {
                     // Alguns oEmbed (ex.: blockquote + script) não oferecem
                     // iframe URL: o script monta o iframe a partir do
-                    // permalink do snippet. Sondamos essa página de embed
-                    // (mídia direta primeiro, player dela como fallback) e só
-                    // então caímos na página original, sem persistir HTML
-                    // executável.
-                    preview.kind = PreviewKind::Embed;
-                    preview.embed_url = canonical_url(source_url);
+                    // permalink do snippet. Sondamos essa página de embed,
+                    // mas só publicamos um player se ela realmente expuser
+                    // mídia ou outro embed. Uma foto social não deve ganhar
+                    // um botão de play só porque o oEmbed devolveu um
+                    // blockquote + script.
                     if let Some(page) = snippet_embed_page(html, source_url)
                         && let Ok(probe) = probe_embed_page(client, &page).await
                     {
                         persistent &= probe.persistent;
-                        preview.embed_url = Some(page);
-                        if let Some(media) = probe.preview.media_url {
+                        let probe = probe.preview;
+                        if let Some(media) = probe.media_url {
                             preview.kind = PreviewKind::Video;
                             preview.media_url = Some(media);
+                        } else if let Some(embed) = probe.embed_url {
+                            preview.kind = PreviewKind::Embed;
+                            preview.embed_url = Some(embed);
                         }
                         if preview.image_url.is_none() {
-                            preview.image_url = probe.preview.image_url;
+                            preview.image_url = probe.image_url;
                         }
-                        preview.post.fill_from(*probe.preview.post);
+                        preview.post.fill_from(*probe.post);
                     }
                 }
             }
@@ -1415,7 +1417,7 @@ async fn parse_html_preview(
     .unwrap_or_default()
     .to_ascii_lowercase();
 
-    let direct_video = meta_content(
+    let declared_video = meta_content(
         html,
         &[
             "og:video:secure_url",
@@ -1426,8 +1428,7 @@ async fn parse_html_preview(
     )
     .and_then(|raw| resolve_meta_url(base, &raw))
     .filter(|url| safe_remote_url(url))
-    .filter(|_| !video_type.starts_with("text/html"))
-    .or_else(|| html_media_url(html, base.as_str()));
+    .filter(|_| !video_type.starts_with("text/html"));
 
     let mut post = html_post_meta(html, base, title.as_deref());
     // Página de um post (tem autor): o estado que ela hidrata no player
@@ -1436,10 +1437,16 @@ async fn parse_html_preview(
     if post_page {
         post.fill_from(hydration_post(html));
     }
-    let direct_video = direct_video.or_else(|| {
-        post_page
-            .then(|| hydration_video(html, image_url.as_deref()))
-            .flatten()
+    // Social pages often render replies in the same HTML document. Their
+    // descendant <video> elements are not media belonging to the linked post;
+    // only use the broad HTML fallback for ordinary pages. Social posts use
+    // the post-scoped hydration data, which is tied to the post thumbnail.
+    let direct_video = declared_video.or_else(|| {
+        if post_page {
+            hydration_video(html, image_url.as_deref())
+        } else {
+            html_media_url(html, base.as_str())
+        }
     });
 
     let embed_url = meta_content(html, &["twitter:player"])
@@ -3150,6 +3157,25 @@ mod tests {
         let preview = parse_html_preview(base.as_str(), &base, player).await.unwrap();
         assert_eq!(preview.kind, PreviewKind::Embed);
         assert_eq!(preview.embed_url.as_deref(), Some("https://media.example/embed/1"));
+    }
+
+    #[tokio::test]
+    async fn social_post_ignores_video_from_rendered_reply() {
+        let base = Url::parse("https://x.com/LudeonStudios/status/2109695358829748688").unwrap();
+        let html = r#"
+            <meta property="og:title" content="Ludeon Studios (@LudeonStudios) on X">
+            <meta property="og:image" content="https://pbs.twimg.com/media/HUcezJiWIAAKl5e.jpg">
+            <meta name="twitter:creator" content="@LudeonStudios">
+            <video src="https://video.twimg.com/tweet_video/HUclzmQXEAANJz2.mp4"></video>
+        "#;
+        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+
+        assert_eq!(preview.kind, PreviewKind::Link);
+        assert_eq!(preview.media_url, None);
+        assert_eq!(
+            preview.image_url.as_deref(),
+            Some("https://pbs.twimg.com/media/HUcezJiWIAAKl5e.jpg")
+        );
     }
 
     #[tokio::test]

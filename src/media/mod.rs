@@ -796,7 +796,7 @@ fn authenticated_cache_path_at(
     id: &str,
     name: &str,
 ) -> PathBuf {
-    debug_assert!(matches!(bucket, "files" | "thumbs"));
+    debug_assert!(matches!(bucket, "files" | "thumbs" | "banners"));
     root.join("servers")
         .join(server_key)
         .join(bucket)
@@ -918,7 +918,7 @@ fn collect_cache_bucket(
 }
 
 /// Poda somente a árvore conhecida do Papo:
-/// `servers/<server-key>/{files,thumbs}` + `remote`. O teto é um só para
+/// `servers/<server-key>/{files,thumbs,banners}` + `remote`. O teto é um só para
 /// todos os servidores, não um teto por workspace.
 fn sweep_cache(root: &Path) {
     let limits = MediaLimits::default();
@@ -945,7 +945,7 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
                 continue;
             }
             let server_root = server.path();
-            for bucket in ["files", "thumbs"] {
+            for bucket in ["files", "thumbs", "banners"] {
                 collect_cache_bucket(&server_root.join(bucket), now, max_age, &mut kept);
             }
         }
@@ -2463,6 +2463,19 @@ mod limpeza {
         assert!(thumb.starts_with(raiz.join("servers/srv-a/thumbs")));
         assert!(poster.starts_with(raiz.join("servers/srv-a/thumbs")));
         assert!(full.starts_with(raiz.join("servers/srv-a/files")));
+    }
+
+    #[test]
+    fn banners_share_the_server_namespace_and_are_swept() {
+        let raiz = raiz("banners");
+        let banner = authenticated_cache_path_at(&raiz, "srv-a", "banners", "sha", "");
+        escreve(&banner, 10, HORA);
+
+        assert!(banner.starts_with(raiz.join("servers/srv-a/banners")));
+
+        sweep_cache_with(&raiz, 1 << 30, Duration::from_secs(0), HORA * 24);
+
+        assert!(!banner.exists(), "banners devem seguir a mesma política de idade");
     }
 
     #[test]
