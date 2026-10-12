@@ -4,7 +4,7 @@
 //! nem armazenamento do navegador: guardamos o cookie num pote próprio e o
 //! gravamos em disco para sobreviver ao fechamento da janela.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::Duration;
@@ -1341,8 +1341,9 @@ impl Api {
     /// Emojis custom do servidor, em páginas de 25.
     pub async fn emojis(&self) -> ApiResult<Vec<Emoji>> {
         let mut all = Vec::new();
+        let mut seen = HashSet::new();
         let mut page: EmojiList = self.get("/emojis").await?;
-        all.append(&mut page.emojis);
+        append_unique_emojis(&mut all, page.emojis.drain(..), &mut seen);
         // Uma página costuma bastar; o cursor evita perder emojis num
         // servidor com muitos.
         let mut guard = 0;
@@ -1354,7 +1355,13 @@ impl Api {
             if page.emojis.is_empty() {
                 break;
             }
-            all.append(&mut page.emojis);
+            let added = append_unique_emojis(&mut all, page.emojis.drain(..), &mut seen);
+            // Some backends include the cursor item in the next page. If a
+            // page contains no new IDs, stop instead of requesting the same
+            // cursor repeatedly.
+            if added == 0 {
+                break;
+            }
         }
         Ok(all)
     }
@@ -1427,6 +1434,16 @@ impl Api {
     }
 }
 
+fn append_unique_emojis(
+    all: &mut Vec<Emoji>,
+    emojis: impl IntoIterator<Item = Emoji>,
+    seen: &mut HashSet<String>,
+) -> usize {
+    let before = all.len();
+    all.extend(emojis.into_iter().filter(|emoji| seen.insert(emoji.id.clone())));
+    all.len() - before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1485,5 +1502,38 @@ mod tests {
         );
         assert!(matches!(error, ApiError::DirectMessageBlocked(_)));
         assert!(!error.is_transient());
+    }
+
+    #[test]
+    fn emojis_repetidos_na_paginacao_sao_descartados() {
+        let mut all = Vec::new();
+        let mut seen = HashSet::new();
+        let emoji = |id: &str| Emoji {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            format: None,
+            image_blob: None,
+        };
+
+        assert_eq!(
+            append_unique_emojis(
+                &mut all,
+                vec![emoji("a"), emoji("b")],
+                &mut seen,
+            ),
+            2
+        );
+        assert_eq!(
+            append_unique_emojis(
+                &mut all,
+                vec![emoji("b"), emoji("c")],
+                &mut seen,
+            ),
+            1
+        );
+        assert_eq!(
+            all.iter().map(|emoji| emoji.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
     }
 }
