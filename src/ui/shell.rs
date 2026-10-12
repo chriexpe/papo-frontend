@@ -939,15 +939,19 @@ pub struct UiState {
     pub topic_since: Option<f64>,
     /// A descrição aparece ao abrir o canal (ajuste do usuário).
     pub reveal_topic: bool,
-    /// Canais com não lidas abrem no head; o bloco pulado continua acessível.
+    /// Canais com não lidas abrem no head; a viewport confirma a leitura ao
+    /// mostrar a mensagem mais nova.
     pub open_at_newest: bool,
+    /// Ao chegar ao head, confirma uma lacuna antiga quando habilitado.
+    pub mark_read_at_newest: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
     /// Quantas páginas antigas a abertura já pediu em busca da âncora.
     open_history_requests: u8,
     open_history_retry_at: f64,
     /// O quadro atual não continua o anterior (salto ou abertura de canal);
-    /// o que ficou no meio do caminho não foi lido.
+    /// o que ficou no meio do caminho não foi lido, salvo quando o salto chega
+    /// ao head e a preferência confirma a mensagem mais nova.
     pub read_span_break: bool,
     /// Mensagens realmente expostas na área legível deste quadro.
     pub visible_message_ids: Vec<String>,
@@ -1107,6 +1111,7 @@ impl Default for UiState {
             topic_since: None,
             reveal_topic: true,
             open_at_newest: true,
+            mark_read_at_newest: false,
             open_channel_pending: None,
             open_history_requests: 0,
             open_history_retry_at: f64::NEG_INFINITY,

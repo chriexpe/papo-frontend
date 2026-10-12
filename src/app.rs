@@ -313,6 +313,10 @@ pub struct Settings {
     /// pulado como checkpoint de retorno.
     #[serde(default = "enabled")]
     pub open_at_newest: bool,
+    /// Ao chegar à mensagem mais nova, confirma também qualquer lacuna antiga.
+    /// Desligado, a leitura só avança quando a fronteira é percorrida sem saltos.
+    #[serde(default)]
+    pub mark_read_at_newest: bool,
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
@@ -411,6 +415,7 @@ impl Default for Settings {
             badge: true,
             topic_reveal: true,
             open_at_newest: true,
+            mark_read_at_newest: false,
             record_button: true,
             channel_emoji_monochrome: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
@@ -1020,6 +1025,7 @@ impl PapoApp {
         ui_state.translucent = settings.translucency;
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.open_at_newest = settings.open_at_newest;
+        ui_state.mark_read_at_newest = settings.mark_read_at_newest;
         ui_state.show_record = settings.record_button;
         ui_state.channel_emoji_monochrome = settings.channel_emoji_monochrome;
         ui_state.self_card = settings.self_card;
@@ -1827,7 +1833,11 @@ impl PapoApp {
             if !visible.is_empty() {
                 ws.runtime
                     .store
-                    .observe_visible_messages(&channel_id, &visible);
+                    .observe_visible_messages_with_policy(
+                        &channel_id,
+                        &visible,
+                        self.ui.mark_read_at_newest,
+                    );
 
                 // O backend recebe exatamente as notificações cujas mensagens
                 // ficaram visíveis; saltar por cima não confirma o intervalo.
@@ -3512,6 +3522,7 @@ impl PapoApp {
         let before_secondary = (
             self.settings.topic_reveal,
             self.settings.open_at_newest,
+            self.settings.mark_read_at_newest,
             self.settings.record_button,
             self.settings.channel_emoji_monochrome,
             self.settings.self_card,
@@ -3559,6 +3570,7 @@ impl PapoApp {
                 badge: &mut self.settings.badge,
                 topic_reveal: &mut self.settings.topic_reveal,
                 open_at_newest: &mut self.settings.open_at_newest,
+                mark_read_at_newest: &mut self.settings.mark_read_at_newest,
                 record_button: &mut self.settings.record_button,
                 channel_emoji_monochrome: &mut self.settings.channel_emoji_monochrome,
                 self_card: &mut self.settings.self_card,
@@ -3595,6 +3607,7 @@ impl PapoApp {
         let after_secondary = (
             self.settings.topic_reveal,
             self.settings.open_at_newest,
+            self.settings.mark_read_at_newest,
             self.settings.record_button,
             self.settings.channel_emoji_monochrome,
             self.settings.self_card,
@@ -3606,8 +3619,9 @@ impl PapoApp {
             self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
+            self.ui.mark_read_at_newest = self.settings.mark_read_at_newest;
             self.ui.show_record = self.settings.record_button;
-            if ask_download != before_secondary.7 {
+            if ask_download != before_secondary.8 {
                 self.settings.downloads = if ask_download {
                     DownloadMode::Ask
                 } else {
