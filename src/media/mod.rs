@@ -144,6 +144,9 @@ pub enum Request {
         id: String,
         blob: Option<String>,
     },
+    /// Authenticated, Range-capable backend embed video. Requested only on
+    /// explicit playback, never while rendering the timeline.
+    EmbedVideo { id: String },
     /// Imagem pública de preview. A chave é derivada da URL canônica e
     /// portanto é compartilhada entre mensagens e reinícios.
     RemoteImage {
@@ -180,6 +183,7 @@ impl Request {
             Self::Banner { .. } => "banner",
             Self::Preview { .. } => "preview",
             Self::PreviewAuthor { .. } => "preview-author",
+            Self::EmbedVideo { .. } => "embed-video",
             Self::RemoteImage { .. } => "remote-image",
             Self::RemoteEphemeral { .. } => "remote-ephemeral",
         }
@@ -548,6 +552,15 @@ async fn run(
             }) {
                 Ok(bytes) => decode(key, &bytes, 128),
                 Err(error) => Loaded::Failed { key, error },
+            }
+        }
+        Request::EmbedVideo { id } => {
+            let _slot = fetch_gate.acquire().await;
+            let file_id = embed_video_player_id(&id);
+            let path = authenticated_cache_path(server_key, "files", &file_id, "embed.mp4");
+            match cached_file(api, &path, &format!("/embeds/{id}/video")).await {
+                Ok(()) => Loaded::File { id: file_id, path },
+                Err(error) => Loaded::Failed { key: file_key(&file_id), error },
             }
         }
         Request::RemoteImage {
@@ -1009,6 +1022,14 @@ fn sweep_cache_with(root: &Path, budget: u64, max_age: Duration, recording_max_a
 pub enum PlaySource<'a> {
     File(&'a Path),
     Remote(&'a str),
+    /// A video belonging to a backend Embed; must be fetched with the
+    /// authenticated session, not hotlinked to a third-party CDN.
+    EmbedVideo(&'a str),
+}
+
+/// Player IDs are namespaced so a server embed cannot collide with attachments.
+pub fn embed_video_player_id(embed_id: &str) -> String {
+    format!("embed-video:{embed_id}")
 }
 
 pub fn remote_player_key(url: &str) -> Option<String> {
@@ -2152,6 +2173,10 @@ impl MediaStore {
         match source {
             PlaySource::File(path) => self.start_player(id, path, video, ctx),
             PlaySource::Remote(url) => self.start_remote_player(id, url, ctx),
+            PlaySource::EmbedVideo(_) => {
+                let path = self.file_ready(id)?;
+                self.start_player(id, &path, true, ctx)
+            }
         }
     }
 
@@ -2159,6 +2184,15 @@ impl MediaStore {
         match source {
             PlaySource::File(path) => self.toggle_player(id, path, true, ctx),
             PlaySource::Remote(url) => self.toggle_remote_player(id, url, ctx),
+            PlaySource::EmbedVideo(embed_id) => {
+                if let Some(path) = self.file_ready(id) {
+                    self.toggle_player(id, &path, true, ctx);
+                } else if !matches!(self.file_state(id), Some(FileState::Loading)) {
+                    self.files.insert(file_key(id), FileState::Loading);
+                    self.pending_play.insert(id.to_owned(), true);
+                    self.ask(Request::EmbedVideo { id: embed_id.to_owned() });
+                }
+            }
         }
     }
 

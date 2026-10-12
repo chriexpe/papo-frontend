@@ -7097,10 +7097,19 @@ fn preview_card(
         .cloned();
     let image = remote_image.as_ref().or(backend_image.as_ref());
 
-    let video_url = ready
-        .as_ref()
-        .filter(|preview| preview.kind == PreviewKind::Video)
-        .and_then(|preview| preview.media_url.clone());
+    // Backend videos have a dedicated authenticated relay. Prefer it to
+    // local scraping: X/FxTwitter CDNs reject hotlinks from GStreamer.
+    let backend_video = backend
+        .filter(|embed| embed.video.as_ref().and_then(|media| media.url.as_ref()).is_some()
+            && !embed.id.is_empty());
+    let video_url = if backend_video.is_some() {
+        None
+    } else {
+        ready
+            .as_ref()
+            .filter(|preview| preview.kind == PreviewKind::Video)
+            .and_then(|preview| preview.media_url.clone())
+    };
     let embed_url = ready
         .as_ref()
         .and_then(|preview| preview.embed_url.clone())
@@ -7158,12 +7167,16 @@ fn preview_card(
     // direita dele fica na mesma margem da caixa de mensagem (`PILL_MARGIN`).
     let card_width = (width - (space::MD - (space::XL - PILL_MARGIN))).clamp(160.0, MAX_W);
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let player_id = video_url
-        .as_deref()
-        .and_then(crate::media::remote_player_key)
-        .unwrap_or_else(|| format!("link-preview-player:{id}"));
+    let player_id = if let Some(embed) = backend_video {
+        crate::media::embed_video_player_id(&embed.id)
+    } else {
+        video_url
+            .as_deref()
+            .and_then(crate::media::remote_player_key)
+            .unwrap_or_else(|| format!("link-preview-player:{id}"))
+    };
 
-    let playing = video_url.is_some()
+    let playing = (video_url.is_some() || backend_video.is_some())
         && state
             .media
             .existing_player(&player_id)
@@ -7195,19 +7208,16 @@ fn preview_card(
             ui.add_space(space::SM);
         }
 
-        if let Some(remote) = video_url.as_deref() {
+        if backend_video.is_some() || video_url.is_some() {
+            let source = if let Some(embed) = backend_video {
+                crate::media::PlaySource::EmbedVideo(&embed.id)
+            } else {
+                crate::media::PlaySource::Remote(video_url.as_deref().expect("checked above"))
+            };
             let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
             let surface = attachments::video_surface(
-                ui,
-                t,
-                &mut state.media,
-                &player_id,
-                embed_id,
-                crate::media::PlaySource::Remote(remote),
-                poster,
-                card_width,
-                false,
-                &mut state.media_seek_zones,
+                ui, t, &mut state.media, &player_id, embed_id, source, poster,
+                card_width, false, &mut state.media_seek_zones,
             );
             media_rect = Some(surface.rect);
             if surface.clicked {
@@ -7216,7 +7226,7 @@ fn preview_card(
             if let Some(attachments::Transport::Fullscreen) = surface.transport {
                 state.link_viewer = Some(LinkViewer {
                     id: player_id.clone(),
-                    url: remote.to_owned(),
+                    url: video_url.as_deref().unwrap_or(url).to_owned(),
                     name: title.unwrap_or("video").to_owned(),
                     video: true,
                     ephemeral: false,

@@ -655,7 +655,11 @@ pub fn draw_remote_media(
             t,
             media,
             id,
-            PlaySource::Remote(url),
+            if let Some(embed_id) = id.strip_prefix("embed-video:") {
+                PlaySource::EmbedVideo(embed_id)
+            } else {
+                PlaySource::Remote(url)
+            },
             true,
             stage,
             &mut content,
