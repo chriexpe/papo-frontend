@@ -2426,6 +2426,9 @@ fn channel_row(
 ) -> egui::Response {
     let height = 30.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     if selected {
         ui.painter()
