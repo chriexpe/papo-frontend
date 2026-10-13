@@ -6031,7 +6031,7 @@ fn reply_quote(
                 (format!("{} {}", icon::PAPERCLIP, target.attachments[0].name()), Vec::new())
             } else {
                 let (display, bindings) = store.display_mentions_with_bindings(&target.content);
-                (attachments::elide(&display, 80), bindings)
+                (emoji::elide_preview(&display, &store.emojis, 80), bindings)
             },
         ),
         // Sem chave estrangeira no banco: a original pode ter sumido.
@@ -6042,6 +6042,8 @@ fn reply_quote(
     // Ela some do banco quando a original é apagada; aí não há aonde ir.
     let exists = store.message(reply_to).is_some();
     let sense = if exists { Sense::click() } else { Sense::hover() };
+    let preview_font = text::footnote();
+    let preview_size = 14.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
     if exists && state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -6076,17 +6078,36 @@ fn reply_quote(
         ui.set_clip_rect(ui.clip_rect().intersect(preview_rect));
         let chars: Vec<char> = preview.chars().collect();
         let mut cursor = 0;
-        let paint_text = |ui: &egui::Ui, x: &mut f32, start: usize, end: usize| {
+        let mut paint_text = |ui: &mut egui::Ui, x: &mut f32, start: usize, end: usize| {
             if start == end { return; }
-            let text: String = chars[start..end].iter().collect();
-            let galley = ui.painter().layout_no_wrap(text, text::footnote(), t.label_tertiary);
-            let width = galley.size().x;
-            ui.painter().galley(
-                egui::pos2(*x, rect.center().y - galley.size().y / 2.0),
-                galley,
-                t.label_tertiary,
-            );
-            *x += width;
+            let chunk: String = chars[start..end].iter().collect();
+            for token in emoji::tokenize(&chunk, &store.emojis) {
+                if *x >= preview_rect.max.x { break; }
+                let art = Rect::from_center_size(
+                    egui::pos2(*x + preview_size / 2.0, rect.center().y),
+                    Vec2::splat(preview_size),
+                );
+                match token {
+                    emoji::Token::Text(text) => {
+                        let galley = ui.painter().layout_no_wrap(text, preview_font.clone(), t.label_tertiary);
+                        let width = galley.size().x;
+                        ui.painter().galley(
+                            egui::pos2(*x, rect.center().y - galley.size().y / 2.0),
+                            galley,
+                            t.label_tertiary,
+                        );
+                        *x += width;
+                    }
+                    emoji::Token::Unicode(glyph) => {
+                        emoji::draw_unicode(ui, t, &mut state.media, &glyph, art);
+                        *x += preview_size;
+                    }
+                    emoji::Token::Custom(id) => {
+                        emoji::draw_reaction(ui, t, &mut state.media, store, &Emoji::Custom(id), art);
+                        *x += preview_size;
+                    }
+                }
+            }
         };
         for binding in &bindings {
             // A abreviação pode ter substituído até o próprio @ por ….
@@ -10798,16 +10819,9 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                 let texture = state
                     .media
                     .emoji(&emoji.id, emoji.blob.as_deref())
-                    .and_then(|texture| texture.frame(&ctx))
-                    .map(|handle| handle.id());
+                    .and_then(|texture| texture.frame(&ctx));
                 if let Some(texture) = texture {
-                    let mut mesh = egui::Mesh::with_texture(texture);
-                    mesh.add_rect_with_uv(
-                        art,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    overlay.painter().add(egui::Shape::mesh(mesh));
+                    emoji::paint_custom_image(overlay.painter(), texture, art, Color32::WHITE);
                 }
                 overlay.painter().text(
                     egui::pos2(art.max.x + space::MD, slot.center().y),
@@ -11820,6 +11834,66 @@ mod wheel_glide_tests {
 #[cfg(test)]
 mod reply_quote_tests {
     use super::*;
+
+    #[test]
+    fn reply_quote_renders_custom_emojis_around_styled_mentions() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        super::super::theme::apply(&ctx, &tokens, false, 1.0);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.emojis.push(crate::state::CustomEmoji {
+            id: "e-1".into(), name: "papo".into(), blob: None,
+        });
+        store.members.push(crate::state::Member {
+            id: "u1".into(), username: "Ana".into(), name: "Ana".into(), banned: false,
+            presence: Presence::Online, status_message: None, typing_label: None,
+            role_color: None, roles: Vec::new(),
+        });
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            content: ":papo:@mention(<@u1>):papo: :desconhecido: 👩‍💻👍🏽🇧🇷".into(),
+            at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
+            previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
+        });
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 400.0);
+        });
+        output.textures_delta.clear();
+        for glyph in ["👩‍💻", "👍🏽", "🇧🇷"] {
+            let drawn = match state.media.unicode_emoji(&ctx, glyph) {
+                Some(texture) => output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id()
+                )),
+                None => output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == glyph
+                )),
+            };
+            assert!(drawn, "emoji Unicode ausente: {glyph}");
+        }
+        let art: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == Color32::TRANSPARENT
+                && rect.stroke.color == tokens.separator => Some((rect.rect, shape.clip_rect)),
+            _ => None,
+        }).collect();
+        assert_eq!(art.len(), 2, "cada shortcode conhecido reserva uma imagem");
+        let mention = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == tokens.accent.gamma_multiply(0.16) => Some(rect.rect),
+            _ => None,
+        }).expect("menção estilizada");
+        assert!(art[0].0.max.x <= mention.min.x && mention.max.x <= art[1].0.min.x);
+        for (rect, clip) in art {
+            assert!(clip.contains_rect(rect), "emoji cortado: {rect:?} {clip:?}");
+            assert!((rect.center().y - mention.center().y).abs() < 1.0);
+        }
+        let drawn: String = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text()),
+            _ => None,
+        }).collect();
+        assert!(!drawn.contains(":papo:") && !drawn.contains("@mention("));
+        assert!(drawn.contains("@Ana") && drawn.contains(":desconhecido:"));
+    }
 
     #[test]
     fn reply_quote_resolves_mentions_before_shortening_the_preview() {

@@ -2660,6 +2660,58 @@ mod custom_asset_identity_tests {
     use super::*;
 
     #[test]
+    fn rectangular_custom_emojis_keep_their_shape_when_rendered() {
+        use egui::Color32;
+        use crate::state::{CustomEmoji, Emoji, Store};
+        use crate::ui::{emoji, theme::{Appearance, Tokens}};
+
+        let ctx = egui::Context::default();
+        let wide = ctx.load_texture(
+            "wide-emoji", ColorImage::filled([80, 40], Color32::WHITE), TextureOptions::LINEAR,
+        );
+        let tall = ctx.load_texture(
+            "tall-emoji", ColorImage::filled([40, 80], Color32::WHITE), TextureOptions::LINEAR,
+        );
+        let square = ctx.load_texture(
+            "square-emoji", ColorImage::filled([80, 80], Color32::WHITE), TextureOptions::LINEAR,
+        );
+        let mut media = MediaStore::new(None);
+        let mut store = Store::default();
+        store.emojis.push(CustomEmoji {
+            id: "custom".into(), name: "papo".into(), blob: Some("fixture".into()),
+        });
+        let key = versioned_emoji_key("custom", "fixture");
+        let tokens = Tokens::new(Appearance::Dark, None);
+        for (texture, ratio) in [(&wide, 2.0), (&tall, 0.5), (&square, 1.0)] {
+            for size in [14.0, 18.0, 34.0] {
+                let bounds = egui::Rect::from_min_size(egui::pos2(20.0, 20.0), egui::Vec2::splat(size));
+                // Use the real media lookup and render path, including an animated frame.
+                for animated in [false, true] {
+                    media.textures.insert(key.clone(), if animated {
+                        Texture::Animated { frames: vec![texture.clone()], delays: vec![0.1] }
+                    } else {
+                        Texture::Ready(texture.clone())
+                    });
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        emoji::draw_reaction(ui, &tokens, &mut media, &store, &Emoji::Custom("custom".into()), bounds);
+                    });
+                    output.textures_delta.clear();
+                    let mesh = output.shapes.iter().find_map(|shape| match &shape.shape {
+                        egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id() => Some(mesh),
+                        _ => None,
+                    }).expect("custom emoji image");
+                    let painted = mesh.vertices.iter().fold(egui::Rect::NOTHING, |rect, vertex| rect.union(egui::Rect::from_min_max(vertex.pos, vertex.pos)));
+                    assert!((painted.width() / painted.height() - ratio).abs() < 0.001, "{painted:?}");
+                    assert!(bounds.contains_rect(painted), "image must fit its slot");
+                    assert_eq!(painted.center(), bounds.center());
+                    assert_eq!(mesh.vertices[0].uv, egui::pos2(0.0, 0.0));
+                    assert_eq!(mesh.vertices[3].uv, egui::pos2(1.0, 1.0));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn custom_image_identity_tracks_content_and_owner() {
         let old = versioned_emoji_key("sticker-a", "YQ==");
         let newer = versioned_emoji_key("sticker-a", "Yg==");

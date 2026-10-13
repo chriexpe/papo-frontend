@@ -482,13 +482,7 @@ pub fn picker(
                         .emoji(&emoji.id, emoji.blob.as_deref())
                         .and_then(|texture| texture.frame(ui.ctx()))
                     {
-                        let id = texture.id();
-                        ui.painter().image(
-                            id,
-                            rect.shrink(4.0),
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
+                        paint_custom_image(ui.painter(), texture, rect.shrink(4.0), Color32::WHITE);
                     }
                     if response.on_hover_text(&emoji.name).clicked() {
                         chosen = Some(Emoji::Custom(emoji.id.clone()));
@@ -600,6 +594,24 @@ mod picker_grid_tests {
     }
 }
 
+/// Encaixa a imagem inteira no espaço disponível sem alterar sua proporção.
+pub(super) fn paint_custom_image(
+    painter: &egui::Painter,
+    texture: &egui::TextureHandle,
+    bounds: egui::Rect,
+    tint: Color32,
+) {
+    let natural = texture.size_vec2();
+    let scale = (bounds.width() / natural.x).min(bounds.height() / natural.y);
+    let rect = egui::Rect::from_center_size(bounds.center(), natural * scale);
+    painter.image(
+        texture.id(),
+        rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        tint,
+    );
+}
+
 /// Uma reação desenhada: emoji unicode ou a imagem do emoji custom.
 pub fn draw_reaction(
     ui: &mut egui::Ui,
@@ -621,12 +633,7 @@ pub fn draw_reaction(
                 .emoji(id, blob.as_deref())
                 .and_then(|texture| texture.frame(ui.ctx()))
             {
-                ui.painter().image(
-                    texture.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                paint_custom_image(ui.painter(), texture, rect, Color32::WHITE);
             } else {
                 ui.painter().rect_stroke(
                     rect,
@@ -704,15 +711,7 @@ pub fn draw_channel_name_emoji(
                 return;
             };
             if let Some(texture) = channel_custom_mono_texture(ui.ctx(), id, blob) {
-                ui.painter().image(
-                    texture.id(),
-                    rect,
-                    egui::Rect::from_min_max(
-                        egui::pos2(0.0, 0.0),
-                        egui::pos2(1.0, 1.0),
-                    ),
-                    color,
-                );
+                paint_custom_image(ui.painter(), &texture, rect, color);
             }
         }
     }
@@ -871,7 +870,7 @@ pub fn draw_channel_name(
     rect
 }
 
-/// Largura que a reação ocupa; o emoji custom é quadrado.
+/// Largura reservada à reação; a imagem cabe nela mantendo sua proporção.
 pub fn reaction_width(emoji: &Emoji) -> f32 {
     match emoji {
         Emoji::Unicode(_) => 16.0,
@@ -992,9 +991,64 @@ pub fn jumbo(tokens: &[Token]) -> bool {
     only_emoji && (1..=3).contains(&emojis)
 }
 
+/// Abrevia a prévia sem cortar shortcodes ou sequências Unicode de emoji.
+/// Cada imagem ocupa uma posição; o texto mantém os índices das menções.
+pub fn elide_preview(text: &str, custom: &[crate::state::CustomEmoji], max: usize) -> String {
+    let tokens = tokenize(text, custom);
+    let length: usize = tokens.iter().map(|token| match token {
+        Token::Text(chunk) => chunk.chars().count(),
+        _ => 1,
+    }).sum();
+    if length <= max { return text.to_owned(); }
+    if max == 0 { return String::new(); }
+    let mut remaining = max - 1;
+    let mut end = 0;
+    for token in tokens {
+        match token {
+            Token::Text(chunk) => {
+                for ch in chunk.chars().take(remaining) {
+                    end += ch.len_utf8();
+                    remaining -= 1;
+                }
+            }
+            Token::Unicode(glyph) if remaining > 0 => {
+                end += glyph.len();
+                remaining -= 1;
+            }
+            Token::Custom(_) if remaining > 0 => {
+                // O tokenizer já reconheceu :nome: neste ponto do texto.
+                // Usar a fonte preserva o nome quando há aliases do mesmo id.
+                end += text[end + 1..].find(':').expect("custom emoji has a closing colon") + 2;
+                remaining -= 1;
+            }
+            _ => break,
+        }
+        if remaining == 0 { break; }
+    }
+    format!("{}…", &text[..end])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previews_keep_custom_and_unicode_emojis_whole_at_the_limit() {
+        let custom = [crate::state::CustomEmoji {
+            id: "e-1".into(), name: "papo".into(), blob: None,
+        }, crate::state::CustomEmoji {
+            id: "e-1".into(), name: "outro_nome".into(), blob: None,
+        }];
+        for emoji in [":papo:", ":outro_nome:", "👩‍💻", "👍🏽", "🇧🇷", "1️⃣"] {
+            let content = format!("{}{} fim", "á".repeat(78), emoji);
+            assert_eq!(elide_preview(&content, &custom, 80), format!("{}{}…", "á".repeat(78), emoji));
+            assert_eq!(elide_preview(&content, &custom, 79), format!("{}…", "á".repeat(78)));
+        }
+        assert_eq!(elide_preview(":papo:👩‍💻", &custom, 2), ":papo:👩‍💻");
+        assert_eq!(elide_preview(":desconhecido:", &custom, 5), ":des…");
+        assert_eq!(elide_preview("oi", &custom, 0), "");
+        assert_eq!(elide_preview("oi", &custom, 1), "…");
+    }
 
     #[test]
     fn separa_texto_de_emoji() {
