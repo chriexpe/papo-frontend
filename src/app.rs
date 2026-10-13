@@ -2973,6 +2973,38 @@ impl PapoApp {
         ctx.request_repaint();
     }
 
+    /// Esc pertence a uma única camada; as views de baixo não recebem o
+    /// mesmo evento e o compositor só é cancelado depois dos flutuantes.
+    fn handle_escape(&mut self, ctx: &egui::Context) {
+        if !shell::take_escape(ctx) {
+            return;
+        }
+        ctx.request_repaint();
+        if egui::Popup::is_any_open(ctx) {
+            egui::Popup::close_all(ctx);
+            return;
+        }
+        if self.crop.take().is_some() {
+            return;
+        }
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        if self.update_prompt_visible {
+            self.update_prompt_visible = false;
+            return;
+        }
+        if self.sheet.open.take().is_some() {
+            return;
+        }
+        if self.add_server_previous.is_some() {
+            self.cancel_add_server(ctx);
+            return;
+        }
+        let store = &mut self.workspaces[self.active].runtime.store;
+        if store.screen == Screen::Chat {
+            self.ui.handle_escape(ctx, store);
+        }
+    }
+
     /// A call numa janela só dela. É uma viewport de verdade, não um
     /// diálogo dentro da janela: o pedido era poder jogá-la noutro monitor,
     /// e para isso ela precisa ser uma janela que o compositor conheça.
@@ -2988,6 +3020,7 @@ impl PapoApp {
         let interface = &mut self.ui;
         let ws = &mut self.workspaces[active];
         let mut closing = false;
+        let mut escape_close = false;
 
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("papo-call"),
@@ -2997,6 +3030,14 @@ impl PapoApp {
                 .with_inner_size([760.0, 520.0])
                 .with_min_inner_size([360.0, 280.0]),
             |ctx, _class| {
+                if shell::take_escape(ctx) {
+                    if egui::Popup::is_any_open(ctx) {
+                        egui::Popup::close_all(ctx);
+                    } else {
+                        closing = true;
+                        escape_close = true;
+                    }
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(t.content_bg))
                     .show(ctx, |ui| {
@@ -3019,6 +3060,10 @@ impl PapoApp {
         // junto, como não morreria se você tivesse encolhido a folha.
         if closing {
             ws.runtime.store.call.popped_out = false;
+            if escape_close {
+                ws.runtime.store.call.floating = false;
+                ws.runtime.store.call.collapsed = true;
+            }
         }
     }
 
@@ -4334,6 +4379,7 @@ impl eframe::App for PapoApp {
         self.sync_active_portable_settings(&ctx);
         self.ensure_active_drafts_loaded();
         self.sync_notification_contexts();
+        self.handle_escape(&ctx);
 
         // A call segue viva com outro servidor na tela: o trilho troca a
         // conversa, não quem está falando.
