@@ -446,6 +446,35 @@ fn code_chip(ui: &mut egui::Ui, v: &View, code: &str, scale: f32, column: f32) {
 
 /// Menção: pastilha com o nome, que abre o cartão da pessoa, igual à foto e ao
 /// nome do autor.
+pub(super) struct MentionPill {
+    galley: std::sync::Arc<egui::Galley>,
+    pad: Vec2,
+    color: Color32,
+}
+
+impl MentionPill {
+    pub(super) fn new(ui: &egui::Ui, label: &str, scale: f32) -> Self {
+        let size = em() * scale;
+        let pad = Vec2::new(0.3 * size, 0.06 * size);
+        let color = ui.visuals().hyperlink_color;
+        let galley = ui.painter().layout_no_wrap(format!("@{label}"), font(scale, true), color);
+        Self { galley, pad, color }
+    }
+
+    pub(super) fn size(&self) -> Vec2 {
+        self.galley.size() + self.pad * 2.0
+    }
+
+    pub(super) fn paint(self, ui: &egui::Ui, t: &Tokens, rect: egui::Rect, hovered: bool) {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(5),
+            t.accent.gamma_multiply(if hovered { 0.24 } else { 0.16 }),
+        );
+        ui.painter().galley(rect.min + self.pad, self.galley, self.color);
+    }
+}
+
 fn mention_pill(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -454,23 +483,13 @@ fn mention_pill(
     label: &str,
     scale: f32,
 ) {
-    let size = em() * scale;
-    let pad = Vec2::new(0.3 * size, 0.06 * size);
-    let color = ui.visuals().hyperlink_color;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(format!("@{label}"), font(scale, true), color);
-    let (rect, response) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
+    let pill = MentionPill::new(ui, label, scale);
+    let (rect, response) = ui.allocate_exact_size(pill.size(), Sense::click());
     let hovered = response.hovered();
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(5),
-        v.t.accent.gamma_multiply(if hovered { 0.24 } else { 0.16 }),
-    );
-    ui.painter().galley(rect.min + pad, galley, color);
+    pill.paint(ui, v.t, rect, hovered);
     if response.clicked() {
         let now = ui.input(|input| input.time);
         super::profile::open(state, user_id, super::profile::Anchor::Beside(rect), now);

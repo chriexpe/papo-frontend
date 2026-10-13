@@ -6021,20 +6021,21 @@ fn reply_quote(
     reply_to: &str,
     width: f32,
 ) {
-    let (name, preview) = match store.message(reply_to) {
+    let (name, (preview, bindings)) = match store.message(reply_to) {
         Some(target) => (
             store
                 .member(&target.author_id)
                 .map(|member| member.name.clone())
                 .unwrap_or_else(|| "?".into()),
             if target.content.is_empty() && !target.attachments.is_empty() {
-                format!("{} {}", icon::PAPERCLIP, target.attachments[0].name())
+                (format!("{} {}", icon::PAPERCLIP, target.attachments[0].name()), Vec::new())
             } else {
-                attachments::elide(&target.content, 80)
+                let (display, bindings) = store.display_mentions_with_bindings(&target.content);
+                (attachments::elide(&display, 80), bindings)
             },
         ),
         // Sem chave estrangeira no banco: a original pode ter sumido.
-        None => (String::new(), s.reply_missing.to_owned()),
+        None => (String::new(), (s.reply_missing.to_owned(), Vec::new())),
     };
 
     // A citação leva à original, como um resultado de busca ou uma fixada.
@@ -6070,13 +6071,38 @@ fn reply_quote(
         );
         x += galley.size().x + space::SM;
     }
-    painter.text(
-        egui::pos2(x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        preview,
-        text::footnote(),
-        t.label_tertiary,
-    );
+    let preview_rect = Rect::from_min_max(egui::pos2(x.min(rect.max.x), rect.min.y), rect.max);
+    ui.scope(|ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(preview_rect));
+        let chars: Vec<char> = preview.chars().collect();
+        let mut cursor = 0;
+        let paint_text = |ui: &egui::Ui, x: &mut f32, start: usize, end: usize| {
+            if start == end { return; }
+            let text: String = chars[start..end].iter().collect();
+            let galley = ui.painter().layout_no_wrap(text, text::footnote(), t.label_tertiary);
+            let width = galley.size().x;
+            ui.painter().galley(
+                egui::pos2(*x, rect.center().y - galley.size().y / 2.0),
+                galley,
+                t.label_tertiary,
+            );
+            *x += width;
+        };
+        for binding in &bindings {
+            // A abreviação pode ter substituído até o próprio @ por ….
+            if binding.start >= chars.len() || chars[binding.start] != '@' { break; }
+            paint_text(ui, &mut x, cursor, binding.start);
+            let end = (binding.start + 1 + binding.label.chars().count()).min(chars.len());
+            let label: String = chars[binding.start + 1..end].iter().collect();
+            let pill = markdown_view::MentionPill::new(ui, &label, text::footnote().size / text::message().size);
+            let size = pill.size();
+            let pill_rect = Rect::from_min_size(egui::pos2(x, rect.center().y - size.y / 2.0), size);
+            pill.paint(ui, t, pill_rect, false);
+            x += size.x;
+            cursor = end;
+        }
+        paint_text(ui, &mut x, cursor, chars.len());
+    });
     ui.add_space(space::XXS);
 }
 
@@ -11788,6 +11814,91 @@ mod wheel_glide_tests {
         let total: f32 = steps.iter().sum();
         assert!(total.abs() < 100.0 && steps[..5].iter().all(|step| *step >= 0.0));
         assert!(steps[5..].iter().all(|step| *step <= 0.0), "{steps:?}");
+    }
+}
+
+#[cfg(test)]
+mod reply_quote_tests {
+    use super::*;
+
+    #[test]
+    fn reply_quote_resolves_mentions_before_shortening_the_preview() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        super::super::theme::apply(&ctx, &tokens, false, 1.0);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.members = [("author", "Autor"), ("u1", "Ána *_Silva_*"), ("u2", "Bia")]
+            .into_iter()
+            .map(|(id, name)| crate::state::Member {
+                id: id.into(), username: name.into(), name: name.into(), banned: false,
+                presence: crate::state::Presence::Online, status_message: None,
+                typing_label: None, role_color: None, roles: Vec::new(),
+            })
+            .collect();
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "author".into(),
+            content: String::new(), at: Local::now(), edited: false, reply_to: None,
+            attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
+            pinned: false, pending: false,
+        });
+        let cases = [
+            (
+                "Oi @mention(<@u1>) e @mention(<@u2>)!".to_owned(),
+                "Oi @Ána *_Silva_* e @Bia!".to_owned(),
+                2,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(75)),
+                format!("{}@Bia…", "a".repeat(75)),
+                1,
+            ),
+            (
+                "Oi @Bia e @mention(<@u2>)!".to_owned(),
+                "Oi @Bia e @Bia!".to_owned(),
+                1,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(77)),
+                format!("{}@B…", "a".repeat(77)),
+                1,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(79)),
+                format!("{}…", "a".repeat(79)),
+                0,
+            ),
+        ];
+        for (content, expected, mention_count) in cases {
+            store.messages[0].content = content.clone();
+            let mut mention_color = Color32::TRANSPARENT;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                mention_color = ui.visuals().hyperlink_color;
+                reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 1200.0);
+            });
+            output.textures_delta.clear();
+            let drawn: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            }).collect();
+            assert_eq!(drawn[2..].concat(), expected, "{content:?}: {drawn:?}");
+            assert!(drawn.iter().all(|text| !text.contains("@mention(")));
+            let pills = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == tokens.accent.gamma_multiply(0.16)
+                    && rect.corner_radius == CornerRadius::same(5)
+            )).count();
+            assert_eq!(pills, mention_count);
+            let highlighted = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().starts_with('@')
+                    && text.galley.job.sections.iter().all(|section|
+                        section.format.color == mention_color
+                            && section.format.font_id.family == egui::FontFamily::Name("semibold".into())
+                    )
+            )).count();
+            assert_eq!(highlighted, mention_count);
+            assert_eq!(store.messages[0].content, content, "a prévia não altera a mensagem original");
+        }
     }
 }
 
