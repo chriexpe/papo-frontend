@@ -1229,6 +1229,8 @@ impl Store {
         self.pending_cache.clear();
         self.outgoing_states.clear();
         self.read_states.clear();
+        self.open_notifications.clear();
+        self.counted_notifications.clear();
         self.selected_channel.clear();
     }
 
@@ -1935,6 +1937,80 @@ impl Store {
         self.channels
             .iter()
             .any(|channel| channel.kind != ChannelKind::Direct && channel.unread)
+    }
+
+    /// The tray follows backend notification eligibility, including direct messages.
+    /// Generic unread messages and cached mention counts do not imply an alert.
+    pub fn pending_notification_count(&self) -> u32 {
+        if self.me.is_empty() {
+            return 0;
+        }
+        self.open_notifications
+            .iter()
+            .filter(|(channel_id, _)| {
+                self.channel(channel_id)
+                    .is_some_and(|channel| channel.notification_settings != "off")
+            })
+            .map(|(channel_id, entries)| {
+                entries
+                    .iter()
+                    .filter(|(_, message)| {
+                        message.as_ref().is_none_or(|id| {
+                            self.read_states
+                                .get(channel_id)
+                                .is_none_or(|state| state.unread_mentions.contains(id))
+                        })
+                    })
+                    .map(|(id, message)| message.as_ref().unwrap_or(id))
+                    .collect::<HashSet<_>>()
+                    .len() as u32
+            })
+            .sum()
+    }
+
+    fn confirm_notification_read(&mut self, notification: &models::Notification) {
+        let mut cleared = Vec::new();
+        for (channel_id, entries) in &mut self.open_notifications {
+            entries.retain(|(id, message_id)| {
+                if id == &notification.id {
+                    cleared.push((channel_id.clone(), message_id.clone()));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.open_notifications
+            .retain(|_, entries| !entries.is_empty());
+        for (channel_id, message_id) in cleared {
+            if let Some(message_id) = message_id {
+                let still_pending =
+                    self.open_notifications
+                        .get(&channel_id)
+                        .is_some_and(|entries| {
+                            entries
+                                .iter()
+                                .any(|(_, id)| id.as_deref() == Some(message_id.as_str()))
+                        });
+                if !still_pending {
+                    if let Some(state) = self.read_states.get_mut(&channel_id) {
+                        state.unread_mentions.retain(|id| id != &message_id);
+                    }
+                    let count = self
+                        .read_states
+                        .get(&channel_id)
+                        .map_or(0, |state| state.unread_mentions.len() as u32);
+                    if let Some(channel) = self
+                        .channels
+                        .iter_mut()
+                        .find(|channel| channel.id == channel_id)
+                    {
+                        channel.mentions = count;
+                    }
+                    self.persist_read_state(&channel_id);
+                }
+            }
+        }
     }
 
     fn message_key(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
@@ -3029,8 +3105,10 @@ impl Store {
             Update::Notifications(notifications) => {
                 for notification in notifications {
                     if notification.read {
+                        self.confirm_notification_read(&notification);
                         continue;
                     }
+                    if notification.author_id.as_deref() == Some(self.me.as_str()) { continue; }
                     let Some(channel_id) = notification.channel_id.clone() else {
                         continue;
                     };
@@ -3381,7 +3459,8 @@ impl Store {
             }
             // A sinalização é da thread da call, não do estado da tela.
             Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {}
-            Event::Notification { id, message_id, .. } => {
+            Event::Notification { id, message_id, author_id, .. } => {
+                if author_id.as_deref() == Some(self.me.as_str()) { return; }
                 // O evento não traz o canal. Se a mensagem ainda não chegou,
                 // deixamos a listagem REST resolver depois em vez de consumir
                 // o id sem conseguir guardar o alvo.
@@ -5849,5 +5928,147 @@ mod tests {
             .filter(|op| matches!(op, CacheOp::UpsertReadState(_)))
             .count();
         assert_eq!(writes, 1);
+    }
+}
+
+#[cfg(test)]
+mod notification_badge_tests {
+    use super::*;
+
+    fn store() -> Store {
+        let mut store = Store {
+            me: "me".into(),
+            ..Store::default()
+        };
+        store.channels = [
+            ("all", "all"),
+            ("mentions", "only_mentions"),
+            ("off", "off"),
+            ("dm", "all"),
+        ]
+        .into_iter()
+        .map(|(id, mode)| Channel {
+            id: id.into(),
+            name: id.into(),
+            kind: if id == "dm" {
+                ChannelKind::Direct
+            } else {
+                ChannelKind::Text
+            },
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: mode.into(),
+            parent_id: None,
+            unread: true,
+            mentions: 0,
+        })
+        .collect();
+        store
+    }
+
+    fn notification(id: &str, message: &str, channel: &str) -> models::Notification {
+        models::Notification {
+            id: id.into(),
+            message_id: Some(message.into()),
+            channel_id: Some(channel.into()),
+            author_id: Some("other".into()),
+            message_content: Some("texto".into()),
+            read: false,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn generic_unread_does_not_light_the_tray_and_muted_channels_are_excluded() {
+        let mut store = store();
+        assert!(store.has_unread());
+        assert_eq!(store.pending_notification_count(), 0);
+        store.apply(Update::Notifications(vec![notification("n1", "m1", "off")]));
+        assert_eq!(store.pending_notification_count(), 0);
+        store.apply(Update::Notifications(vec![notification(
+            "n2", "m2", "mentions",
+        )]));
+        assert_eq!(store.pending_notification_count(), 1);
+    }
+
+    #[test]
+    fn partial_read_keeps_the_badge_and_opening_a_channel_does_not_clear_it() {
+        let mut store = store();
+        let first = notification("n1", "m1", "all");
+        store.apply(Update::Notifications(vec![
+            first.clone(),
+            first,
+            notification("n2", "m2", "all"),
+        ]));
+        store.selected_channel = "all".into();
+        assert_eq!(store.pending_notification_count(), 2);
+        assert_eq!(store.take_seen_notifications("all", &["m1".into()]), ["n1"]);
+        assert_eq!(store.pending_notification_count(), 1);
+        assert_eq!(store.take_seen_notifications("all", &["m2".into()]), ["n2"]);
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn direct_messages_remote_read_and_explicit_mark_read_update_the_badge() {
+        let mut store = store();
+        let first = notification("n1", "m1", "dm");
+        store.apply(Update::Notifications(vec![
+            first.clone(),
+            notification("n2", "m2", "mentions"),
+        ]));
+        assert_eq!(store.pending_notification_count(), 2);
+        let mut read = first;
+        read.read = true;
+        store.apply(Update::Notifications(vec![read]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.take_all_open_notifications();
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn marking_skipped_history_read_at_newest_also_clears_the_tray() {
+        let mut store = store();
+        store.messages = (1..=2)
+            .map(|index| Message {
+                id: format!("m{index}"),
+                channel_id: "all".into(),
+                author_id: "other".into(),
+                content: "texto".into(),
+                at: Local::now() + chrono::Duration::seconds(index),
+                edited: false,
+                reply_to: None,
+                attachments: Vec::new(),
+                previews: Vec::new(),
+                reactions: Vec::new(),
+                pinned: false,
+                pending: false,
+            })
+            .collect();
+        store.apply(Update::Notifications(vec![notification("n1", "m1", "all")]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.observe_visible_messages_with_policy("all", &["m2".into()], false);
+        assert_eq!(
+            store.pending_notification_count(),
+            1,
+            "a jump alone is not reading"
+        );
+        store.observe_visible_messages_with_policy("all", &["m2".into()], true);
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn duplicate_message_notifications_own_messages_and_account_switch_do_not_leave_a_badge() {
+        let mut store = store();
+        let mut own = notification("own", "own-message", "all");
+        own.author_id = Some("me".into());
+        store.apply(Update::Notifications(vec![
+            own,
+            notification("n1", "m1", "all"),
+            notification("n2", "m1", "all"),
+        ]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.clear_cached_state();
+        assert_eq!(store.pending_notification_count(), 0);
     }
 }

@@ -20,6 +20,8 @@ pub fn in_flatpak() -> bool {
 #[path = "linux/blur.rs"]
 pub mod blur;
 pub mod desktop;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub(crate) mod tray_icon;
 /// Onde ficam sessão e cache em cada plataforma.
 pub mod dirs;
 pub mod copy;

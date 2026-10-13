@@ -41,15 +41,18 @@ pub struct Tray {
     commands: mpsc::Receiver<TrayCommand>,
     quit_requested: Arc<AtomicBool>,
     tooltip: std::cell::RefCell<String>,
+    icons: [tray_icon::Icon; 2],
+    last_badge: std::cell::Cell<Option<(u32, bool)>>,
 }
 
 impl Tray {
     pub fn spawn(repaint: egui::Context, labels: TrayLabels) -> Option<Self> {
-        let source = image::load_from_memory(include_bytes!("../../../assets/icon.png"))
-            .ok()?
-            .resize_exact(32, 32, image::imageops::FilterType::Lanczos3)
-            .to_rgba8();
-        let icon = tray_icon::Icon::from_rgba(source.into_raw(), 32, 32).ok()?;
+        let plain = crate::platform::tray_icon::render(32, false)?;
+        let marked = crate::platform::tray_icon::render(32, true)?;
+        let icons = [
+            tray_icon::Icon::from_rgba(plain.into_raw(), 32, 32).ok()?,
+            tray_icon::Icon::from_rgba(marked.into_raw(), 32, 32).ok()?,
+        ];
 
         let menu = Menu::new();
         let open = MenuItem::new(&labels.open, true, None);
@@ -75,7 +78,7 @@ impl Tray {
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .with_tooltip(&labels.tooltip)
-            .with_icon(icon)
+            .with_icon(icons[0].clone())
             .build()
         {
             Ok(tray) => tray,
@@ -135,6 +138,8 @@ impl Tray {
             commands: rx,
             quit_requested,
             tooltip: std::cell::RefCell::new(labels.tooltip),
+            icons,
+            last_badge: std::cell::Cell::new(None),
         })
     }
 
@@ -147,6 +152,16 @@ impl Tray {
     }
 
     pub fn set_badge(&self, mentions: u32, unread: bool) {
+        let previous = self.last_badge.replace(Some((mentions, unread)));
+        if previous == Some((mentions, unread)) {
+            return;
+        }
+        let pending = mentions > 0 || unread;
+        if previous.map(|(count, unread)| count > 0 || unread) != Some(pending) {
+            let _ = self
+                .icon
+                .set_icon(Some(self.icons[usize::from(pending)].clone()));
+        }
         let base = self.tooltip.borrow().clone();
         let tooltip = if mentions > 0 {
             format!("{base} · {mentions}")

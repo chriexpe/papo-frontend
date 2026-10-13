@@ -3,7 +3,11 @@
 //! O KDE fala SNI nativamente; o ksni cuida do D-Bus numa thread própria.
 //! A janela conversa com ele por canais, como no menu global.
 
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 
 use ksni::blocking::{Handle, TrayMethods};
 use ksni::menu::StandardItem;
@@ -29,6 +33,7 @@ pub struct TrayLabels {
 
 struct PapoTray {
     icons: Vec<Icon>,
+    badged_icons: Vec<Icon>,
     labels: TrayLabels,
     /// Menções esperando; é o número que o painel mostra.
     mentions: u32,
@@ -69,7 +74,15 @@ impl ksni::Tray for PapoTray {
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        self.icons.clone()
+        if self.mentions > 0 || self.unread {
+            self.badged_icons.clone()
+        } else {
+            self.icons.clone()
+        }
+    }
+
+    fn attention_icon_pixmap(&self) -> Vec<Icon> {
+        self.badged_icons.clone()
     }
 
     fn tool_tip(&self) -> ToolTip {
@@ -127,6 +140,7 @@ pub struct Tray {
     handle: Handle<PapoTray>,
     commands: mpsc::Receiver<TrayCommand>,
     quit_requested: Arc<AtomicBool>,
+    last_badge: std::cell::Cell<Option<(u32, bool)>>,
 }
 
 impl Tray {
@@ -135,7 +149,8 @@ impl Tray {
         let (tx, rx) = mpsc::channel();
         let quit_requested = Arc::new(AtomicBool::new(false));
         let tray = PapoTray {
-            icons: load_icons(),
+            icons: load_icons(false),
+            badged_icons: load_icons(true),
             labels,
             mentions: 0,
             unread: false,
@@ -158,6 +173,7 @@ impl Tray {
                     handle,
                     commands: rx,
                     quit_requested,
+                    last_badge: std::cell::Cell::new(None),
                 })
             }
             Err(error) => {
@@ -171,12 +187,14 @@ impl Tray {
         self.commands.try_recv().ok()
     }
 
-
     pub fn take_quit_requested(&self) -> bool {
         self.quit_requested.swap(false, Ordering::AcqRel)
     }
 
     pub fn set_badge(&self, mentions: u32, unread: bool) {
+        if self.last_badge.replace(Some((mentions, unread))) == Some((mentions, unread)) {
+            return;
+        }
         self.handle.update(|tray| {
             if tray.mentions != mentions || tray.unread != unread {
                 tray.mentions = mentions;
@@ -199,25 +217,20 @@ impl Tray {
 }
 
 /// O ícone do aplicativo em alguns tamanhos, em ARGB32.
-fn load_icons() -> Vec<Icon> {
-    let Ok(source) = image::load_from_memory(include_bytes!("../../../assets/icon.png")) else {
-        return Vec::new();
-    };
+fn load_icons(pending: bool) -> Vec<Icon> {
     [22u32, 32, 64]
         .into_iter()
-        .map(|size| {
-            let scaled = source
-                .resize_exact(size, size, image::imageops::FilterType::Lanczos3)
-                .to_rgba8();
+        .filter_map(|size| {
+            let scaled = crate::platform::tray_icon::render(size, pending)?;
             let data = scaled
                 .pixels()
                 .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
                 .collect();
-            Icon {
+            Some(Icon {
                 width: size as i32,
                 height: size as i32,
                 data,
-            }
+            })
         })
         .collect()
 }

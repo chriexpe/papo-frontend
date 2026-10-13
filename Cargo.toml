@@ -172,3 +172,5 @@ opt-level = 3
 [patch.crates-io]
 egui-wgpu = { path = "vendor/egui-wgpu-papo" }
 egui-winit = { path = "vendor/egui-winit-papo" }
+# Native Wayland hide/remap for close-to-tray; upstream 0.30 ignores visibility.
+winit = { path = "vendor/winit-papo" }

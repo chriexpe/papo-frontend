@@ -1097,8 +1097,12 @@ mod tests {
     }
 
     #[test]
-    fn mailto_and_unsafe_links_do_nothing_on_click() {
-        for source in ["[escreva](mailto:a@b.c)", "[escreva](javascript:alert(1))"] {
+    fn mailto_requests_the_system_handler_and_unsafe_links_do_nothing() {
+        for (source, expected) in [
+            ("[escreva](mailto:a@b.c)", vec!["mailto:a@b.c".to_owned()]),
+            ("[escreva](javascript:alert(1))", Vec::new()),
+        ] {
+            crate::platform::links::take_launched_urls();
             let mut harness = Harness::text(Appearance::Dark, source, 320.0);
             let shapes = harness.settle();
             let word = text_rect(&shapes, "escreva").expect("palavra").center();
@@ -1106,6 +1110,7 @@ mod tests {
             harness.frame(pointer(word, Some(false)));
             assert!(harness.state.external_link_prompt.is_none(), "{source}");
             assert!(harness.state.profile.is_none());
+            assert_eq!(crate::platform::links::take_launched_urls(), expected);
         }
     }
 

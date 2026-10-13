@@ -290,6 +290,8 @@ impl ServerRuntime {
             visible_server: view.visible_server,
             notifications_enabled: view.notifications_enabled,
             push_registered: view.push_registered,
+            channel_notification_settings: self.store.channels.iter()
+                .map(|channel| (channel.id.clone(), channel.notification_settings.clone())).collect(),
             channels: self
                 .store
                 .channels
