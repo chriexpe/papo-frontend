@@ -4356,11 +4356,11 @@ impl eframe::App for PapoApp {
         self.attach_window(frame);
         let was_hidden = self.window_hidden;
         self.handle_window_lifecycle(ctx);
-        if self.window_hidden && !was_hidden {
-            if let Some(storage) = frame.storage_mut() {
-                eframe::App::save(self, storage);
-                storage.flush();
-            }
+        if self.window_hidden && !was_hidden
+            && let Some(storage) = frame.storage_mut()
+        {
+            eframe::App::save(self, storage);
+            storage.flush();
         }
         self.notification
             .set_foreground(self.focused && !self.window_hidden);

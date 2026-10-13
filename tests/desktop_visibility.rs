@@ -52,7 +52,7 @@ impl App for Probe {
             } else {
                 assert_eq!(
                     visible,
-                    Some(self.phase % 2 == 0),
+                    Some(self.phase.is_multiple_of(2)),
                     "phase {}, logic={}, ui={}, x11_map={:?}, native={:?}, window={:?}",
                     self.phase,
                     self.logic_ticks,

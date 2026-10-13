@@ -1186,14 +1186,12 @@ impl UiState {
     fn dismiss_floating(&mut self, store: &mut Store) -> bool {
         if self.viewer.take().is_some() {
             self.media.pause_all();
-        } else if self.link_viewer.take().is_some() {
-        } else if self.external_link_prompt.take().is_some() {
+        } else if self.link_viewer.take().is_some() || self.external_link_prompt.take().is_some() {
         } else if self.gif_picker_opened.take().is_some() {
             self.gif_picker_anchor = None;
         } else if self.popup.is_some() {
             self.close_popup();
-        } else if self.profile.take().is_some() {
-        } else if self.server_card.take().is_some() {
+        } else if self.profile.take().is_some() || self.server_card.take().is_some() {
         } else if self.custom_embed_editor {
             self.custom_embed_editor = false;
         } else if self.panel.take().is_some() {
@@ -11350,7 +11348,7 @@ mod escape_tests {
     }
 
     fn press(ctx: &egui::Context, state: &mut UiState, store: &mut Store) {
-        render(&ctx, egui::RawInput {
+        render(ctx, egui::RawInput {
             events: vec![key(true, false), key(false, false)],
             ..Default::default()
         }, |ui| {
