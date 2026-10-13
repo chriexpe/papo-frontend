@@ -6,8 +6,9 @@
 //! linha nova, HTML cru descartado e só `http`, `https` e `mailto` viram link.
 //! Duas diferenças de propósito: imagens não são carregadas (vira o texto
 //! alternativo, ou o endereço, como link) e `@everyone` fica sem destaque.
+//! O sinal `+` permanece literal no início de linhas; listas usam `-` ou `*`.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use papo_core::state::MentionBinding;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
@@ -352,8 +353,36 @@ pub fn is_plain(text: &str) -> bool {
         }
         let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
         let ordered = digits > 0 && matches!(trimmed[digits..].chars().next(), Some('.' | ')'));
-        !(ordered || trimmed.starts_with(['#', '-', '+', '=', '>']))
+        !(ordered || trimmed.starts_with(['#', '-', '=', '>']))
     })
+}
+
+/// Escapa só os sinais que o parser reconheceu como marcadores de lista.
+/// Os offsets preservam código, tabelas e marcadores dentro de contêineres.
+fn escape_plus_list_markers(source: &str, options: Options) -> Cow<'_, str> {
+    if !source.contains('+') {
+        return Cow::Borrowed(source);
+    }
+    let mut markers = Parser::new_ext(source, options)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            (matches!(event, Event::Start(Tag::Item))
+                && source.as_bytes().get(range.start) == Some(&b'+'))
+            .then_some(range.start)
+        })
+        .peekable();
+    if markers.peek().is_none() {
+        return Cow::Borrowed(source);
+    }
+    let mut escaped = String::with_capacity(source.len());
+    let mut copied = 0;
+    for at in markers {
+        escaped.push_str(&source[copied..at]);
+        escaped.push('\\');
+        copied = at;
+    }
+    escaped.push_str(&source[copied..]);
+    Cow::Owned(escaped)
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +397,7 @@ pub fn parse(prepared: &Prepared) -> Vec<Block> {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
+    let source = escape_plus_list_markers(&source, options);
     let mut builder = Builder {
         mentions: &prepared.mentions,
         bold: 0,
@@ -1087,6 +1117,69 @@ mod tests {
     }
 
     #[test]
+    fn leading_plus_signs_stay_literal() {
+        for content in ["+ teste", "+", "+\tteste", "+ primeiro\n+ segundo"] {
+            let parsed = blocks(content);
+            only_paragraph(&parsed);
+            assert_eq!(plain(&parsed), content);
+        }
+    }
+
+    #[test]
+    fn leading_plus_keeps_styles_and_mentions() {
+        let prepared = substitute_mentions("+ @Ana **teste**", &[binding(2, "Ana", ID)]);
+        let parsed = parse(&prepared);
+        let inlines = only_paragraph(&parsed);
+        assert_eq!(plain(&parsed), "+ @Ana teste");
+        assert!(inlines.iter().any(|inline| {
+            matches!(inline, Inline::Mention { user_id, .. } if user_id == ID)
+        }));
+        assert!(texts(inlines).iter().any(|(text, style, _)| {
+            *text == "teste" && style.bold
+        }));
+    }
+
+    #[test]
+    fn plus_in_containers_is_literal_while_other_list_markers_work() {
+        let quoted = blocks("> + teste");
+        let [Block::Quote(inner)] = quoted.as_slice() else {
+            panic!("citação");
+        };
+        only_paragraph(inner);
+        assert_eq!(plain(inner), "+ teste");
+
+        for content in [
+            "- primeiro\n  + segundo",
+            "* primeiro\n  + segundo",
+            "1. primeiro\n   + segundo",
+        ] {
+            let parsed = blocks(content);
+            let [Block::List { items, .. }] = parsed.as_slice() else {
+                panic!("lista: {parsed:?}");
+            };
+            assert_eq!(items.len(), 1);
+            assert!(items[0].blocks.iter().all(|block| {
+                !matches!(block, Block::List { .. })
+            }));
+            assert!(plain(&parsed).contains("+ segundo"));
+        }
+    }
+
+    #[test]
+    fn plus_signs_in_code_are_not_escaped() {
+        for content in ["```\n+ teste\n```", "~~~\n+ teste\n~~~", "    + teste"] {
+            let parsed = blocks(content);
+            assert!(matches!(
+                parsed.as_slice(), [Block::Code { text, .. }] if text == "+ teste"
+            ));
+        }
+        assert_eq!(
+            only_paragraph(&blocks("`+ teste`")),
+            &[Inline::Code("+ teste".into())]
+        );
+    }
+
+    #[test]
     fn links_and_autolinks() {
         let parsed = blocks("[t](https://e.com/x) <https://e.com/y>");
         let runs = texts(only_paragraph(&parsed));
@@ -1334,6 +1427,9 @@ mod tests {
             "a\nb\n\nc",
             "ola :x: 👋",
             "https://a.com/x?y=1",
+            "+ teste",
+            "a\n+ b",
+            "+2",
         ] {
             assert!(is_plain(text), "{text:?} devia ser simples");
         }

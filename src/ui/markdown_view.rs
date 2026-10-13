@@ -966,6 +966,17 @@ mod tests {
     }
 
     #[test]
+    fn leading_plus_is_drawn_as_text_instead_of_a_bullet() {
+        for content in ["+ teste", "+ **teste**"] {
+            let mut harness = Harness::text(Appearance::Dark, content, 300.0);
+            let shapes = harness.settle();
+            assert!(text_rect(&shapes, "+").is_some());
+            assert!(text_rect(&shapes, "teste").is_some());
+            assert!(text_rect(&shapes, "•").is_none());
+        }
+    }
+
+    #[test]
     fn task_items_use_checkbox_glyphs_instead_of_bullets() {
         let mut harness = Harness::text(Appearance::Dark, "- [x] feito\n- [ ] falta", 300.0);
         let shapes = harness.settle();
