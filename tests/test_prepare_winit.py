@@ -86,7 +86,7 @@ class PreparationTests(unittest.TestCase):
         prepare.prepare(self.root)
         self.assertTrue(prepare.prepared(self.root))
         self.assertEqual(original, (self.root / "Cargo.lock").read_bytes())
-        self.archive_check.assert_called_once_with(self.root)
+        self.archive_check.assert_called_once_with(self.root.resolve())
 
     def test_verified_preparation_is_reused_and_force_recreates_it(self):
         prepare.prepare(self.root)
