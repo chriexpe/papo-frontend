@@ -1152,6 +1152,11 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dpi"
+version = "0.1.1"
+source = "git+https://github.com/prodesert22/winit.git?rev=86209e91c98f7a4c97a1cb3fd94f452eb9c4838f#86209e91c98f7a4c97a1cb3fd94f452eb9c4838f"
+
+[[package]]
+name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
@@ -3489,7 +3494,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cca139e57da4383727f189e43e66e84fa372347027fc996f9f1a007ec0a37996"
 dependencies = [
  "crossbeam-channel",
- "dpi",
+ "dpi 0.1.2",
  "gtk",
  "keyboard-types",
  "libxdo",
@@ -4058,7 +4063,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.45.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7167,7 +7172,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7520,6 +7525,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
+source = "git+https://github.com/prodesert22/winit.git?rev=86209e91c98f7a4c97a1cb3fd94f452eb9c4838f#86209e91c98f7a4c97a1cb3fd94f452eb9c4838f"
 dependencies = [
  "ahash",
  "android-activity",
@@ -7533,7 +7539,7 @@ dependencies = [
  "core-foundation",
  "core-graphics",
  "cursor-icon",
- "dpi",
+ "dpi 0.1.1",
  "js-sys",
  "libc",
  "memmap2",

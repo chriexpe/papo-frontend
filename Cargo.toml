@@ -173,4 +173,5 @@ opt-level = 3
 egui-wgpu = { path = "vendor/egui-wgpu-papo" }
 egui-winit = { path = "vendor/egui-winit-papo" }
 # Native Wayland hide/remap for close-to-tray; upstream 0.30 ignores visibility.
-winit = { path = "vendor/winit-papo" }
+# Pin the isolated fork to a reviewed commit; see docs/winit-patch.md.
+winit = { git = "https://github.com/prodesert22/winit.git", rev = "86209e91c98f7a4c97a1cb3fd94f452eb9c4838f" }

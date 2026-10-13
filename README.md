@@ -61,6 +61,10 @@ Sem ela o APK sai sem FCM, e as notificações com o app fechado ficam com a ver
 
 O projeto requer **Rust 1.98+**.
 
+A correção de visibilidade da janela no Wayland usa um fork do `winit` fixado
+por commit. O procedimento para atualizar ou remover esse patch está em
+[docs/winit-patch.md](docs/winit-patch.md).
+
 ```bash
 cargo test --locked --workspace
 cargo clippy --locked --all-targets -- -D warnings
