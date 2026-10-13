@@ -1,0 +1,168 @@
+--- a/src/platform_impl/linux/wayland/event_loop/mod.rs
++++ b/src/platform_impl/linux/wayland/event_loop/mod.rs
+@@ -483,7 +483,8 @@
+                 let mut window =
+                     state.windows.get_mut().get_mut(window_id).unwrap().lock().unwrap();
+ 
+-                if window.frame_callback_state() == FrameCallbackState::Requested {
++                let visible = window.is_visible().unwrap_or(true);
++                if visible && window.frame_callback_state() == FrameCallbackState::Requested {
+                     return None;
+                 }
+ 
+@@ -493,7 +494,9 @@
+                     window_requests.get(window_id).unwrap().take_redraw_requested();
+ 
+                 // Redraw the frame while at it.
+-                redraw_requested |= window.refresh_frame();
++                if visible {
++                    redraw_requested |= window.refresh_frame();
++                }
+ 
+                 redraw_requested.then_some(WindowEvent::RedrawRequested)
+             });
+--- a/src/platform_impl/linux/wayland/window/mod.rs
++++ b/src/platform_impl/linux/wayland/window/mod.rs
+@@ -126,7 +126,8 @@
+ 
+         // Set the app_id.
+         if let Some(name) = attributes.platform_specific.name.map(|name| name.general) {
+-            window.set_app_id(name);
++            window.set_app_id(name.clone());
++            window_state.app_id = Some(name);
+         }
+ 
+         // Set the window title.
+@@ -250,13 +251,14 @@
+     }
+ 
+     #[inline]
+-    pub fn set_visible(&self, _visible: bool) {
+-        // Not possible on Wayland.
++    pub fn set_visible(&self, visible: bool) {
++        self.window_state.lock().unwrap().set_visible(visible);
++        self.request_redraw();
+     }
+ 
+     #[inline]
+     pub fn is_visible(&self) -> Option<bool> {
+-        None
++        self.window_state.lock().unwrap().is_visible()
+     }
+ 
+     #[inline]
+--- a/src/platform_impl/linux/wayland/window/state.rs
++++ b/src/platform_impl/linux/wayland/window/state.rs
+@@ -65,6 +65,13 @@
+ 
+     /// The last received configure.
+     pub last_configure: Option<WindowConfigure>,
++
++    /// Runtime visibility; None preserves upstream's initial-frame behavior.
++    pub visibility: Option<bool>,
++    remapping: bool,
++    pub app_id: Option<String>,
++    restore_maximized: bool,
++    restore_fullscreen: bool,
+ 
+     /// The pointers observed on the window.
+     pub pointers: Vec<Weak<ThemedPointer<WinitPointerData>>>,
+@@ -201,6 +208,11 @@
+             ime_allowed: false,
+             ime_purpose: ImePurpose::Normal,
+             last_configure: None,
++            visibility: None,
++            remapping: false,
++            app_id: None,
++            restore_maximized: false,
++            restore_fullscreen: false,
+             max_inner_size: None,
+             min_inner_size: MIN_WINDOW_SIZE,
+             resize_increments: None,
+@@ -239,6 +251,50 @@
+         self.frame_callback_state
+     }
+ 
++    pub fn is_visible(&self) -> Option<bool> {
++        self.visibility.map(|visible| visible && !self.remapping)
++    }
++
++    pub fn set_visible(&mut self, visible: bool) {
++        if self.visibility == Some(visible) {
++            return;
++        }
++        let previous = self.visibility;
++        self.visibility = Some(visible);
++        self.frame_callback_reset();
++        if !visible {
++            if let Some(configure) = &self.last_configure {
++                self.restore_maximized = configure.is_maximized();
++                self.restore_fullscreen = configure.is_fullscreen();
++            }
++            self.remapping = false;
++            self.last_configure = None;
++            self.frame = None;
++            self.window.wl_surface().attach(None, 0, 0);
++            self.window.commit();
++        } else if previous == Some(false) {
++            self.remapping = true;
++            self.window.set_title(self.title.clone());
++            if let Some(app_id) = &self.app_id {
++                self.window.set_app_id(app_id.clone());
++            }
++            if self.restore_fullscreen {
++                self.window.set_fullscreen(None);
++            } else if self.restore_maximized {
++                self.window.set_maximized();
++            }
++            self.window.set_min_size(Some((
++                self.min_inner_size.width,
++                self.min_inner_size.height,
++            )));
++            self.window
++                .set_max_size(self.max_inner_size.map(|size| (size.width, size.height)));
++            // Remapping must configure before the renderer attaches a buffer.
++            self.window.commit();
++        }
++        let _ = self.connection.flush();
++    }
++
+     /// The frame callback was received, but not yet sent to the user.
+     pub fn frame_callback_received(&mut self) {
+         self.frame_callback_state = FrameCallbackState::Received;
+@@ -267,6 +323,11 @@
+         shm: &Shm,
+         subcompositor: &Option<Arc<SubcompositorState>>,
+     ) -> bool {
++        if self.visibility == Some(false) {
++            // A configure may already have been queued when the window hid.
++            return false;
++        }
++        self.remapping = false;
+         // NOTE: when using fractional scaling or wl_compositor@v6 the scaling
+         // should be delivered before the first configure, thus apply it to
+         // properly scale the physical sizes provided by the users.
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -967,7 +967,9 @@
+     ///
+     /// ## Platform-specific
+     ///
+-    /// - **Android / Wayland / Web:** Unsupported.
++    /// - **Wayland (Papo patch):** Runtime hide unmaps the toplevel; show waits for
++    ///   a fresh configure before reporting visibility. Initial visibility is unchanged.
++    /// - **Android / Web:** Unsupported.
+     /// - **iOS:** Can only be called on the main thread.
+     #[inline]
+     pub fn set_visible(&self, visible: bool) {
+@@ -983,7 +985,9 @@
+     /// ## Platform-specific
+     ///
+     /// - **X11:** Not implemented.
+-    /// - **Wayland / iOS / Android / Web:** Unsupported.
++    /// - **Wayland (Papo patch):** `None` until the first runtime visibility request;
++    ///   `Some(false)` while hidden or waiting to remap.
++    /// - **iOS / Android / Web:** Unsupported.
+     #[inline]
+     pub fn is_visible(&self) -> Option<bool> {
+         let _span = tracing::debug_span!("winit::Window::is_visible",).entered();

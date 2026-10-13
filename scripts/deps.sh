@@ -36,7 +36,7 @@ apt_runtime="libgstreamer1.0-0 libgstreamer-plugins-base1.0-0
     gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
     gstreamer1.0-nice gstreamer1.0-pipewire libxkbcommon0 libwayland-client0 libx11-6
     libfontconfig1 fonts-noto-color-emoji xdg-desktop-portal"
-apt_build="build-essential pkg-config libgstreamer1.0-dev
+apt_build="build-essential pkg-config git python3 libssl-dev libgstreamer1.0-dev
     libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev
     libxkbcommon-dev libwayland-dev
     libx11-dev libxcursor-dev libxi-dev libxrandr-dev libfontconfig1-dev"
@@ -45,7 +45,7 @@ dnf_runtime="gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good
     gstreamer1-plugins-bad-free gstreamer1-plugin-libav libnice-gstreamer1
     libxkbcommon libwayland-client
     libX11 fontconfig google-noto-color-emoji-fonts xdg-desktop-portal"
-dnf_build="gcc pkgconf-pkg-config gstreamer1-devel
+dnf_build="gcc pkgconf-pkg-config git python3 openssl-devel gstreamer1-devel
     gstreamer1-plugins-base-devel gstreamer1-plugins-bad-free-devel
     libxkbcommon-devel wayland-devel
     libX11-devel libXcursor-devel libXi-devel libXrandr-devel
@@ -54,7 +54,7 @@ dnf_build="gcc pkgconf-pkg-config gstreamer1-devel
 pacman_runtime="gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
     gst-libav libnice gst-plugin-pipewire libxkbcommon wayland libx11 fontconfig
     noto-fonts-emoji xdg-desktop-portal"
-pacman_build="base-devel pkgconf"
+pacman_build="base-devel pkgconf git python openssl"
 
 if command -v apt-get >/dev/null 2>&1; then
     manager="sudo apt-get install -y"

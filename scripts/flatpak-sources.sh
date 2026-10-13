@@ -5,6 +5,7 @@
 # declarada como fonte. Rode este script sempre que o Cargo.lock mudar.
 set -eu
 cd "$(dirname "$0")/.."
+python3 scripts/prepare-winit.py
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
