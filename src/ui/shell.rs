@@ -5826,7 +5826,7 @@ fn message_list(
             if let Some(remote) = &message.external_author {
                 state.profile = None;
                 state.external_author_popup = Some(ExternalAuthorPopup {
-                    author: remote.clone(),
+                    author: remote.as_ref().clone(),
                     anchor: face,
                 });
             } else {
