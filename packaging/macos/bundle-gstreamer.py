@@ -36,6 +36,21 @@ def dependencies(binary: Path) -> list[str]:
     return result
 
 
+def install_id(binary: Path) -> str | None:
+    """Read LC_ID_DYLIB, which otool -L also prints as its first entry.
+
+    A dylib's ID describes itself; it is not a dependency to bundle. Keeping
+    Homebrew's original ID, however, leaks machine-specific paths into the app.
+    """
+    result = subprocess.run(
+        ("otool", "-D", str(binary)), text=True, capture_output=True
+    )
+    if result.returncode:
+        return None  # Executables and plugin scanners have no LC_ID_DYLIB.
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return lines[1] if len(lines) > 1 else None
+
+
 def rpaths(binary: Path) -> list[str]:
     lines = run("otool", "-l", str(binary)).splitlines()
     paths: list[str] = []
@@ -194,14 +209,16 @@ class Bundle:
                 continue
             self.seen.add(destination)
             replacements: list[tuple[str, str]] = []
+            identity = install_id(original)
             for name in dependencies(original):
                 if system_dependency(name):
                     continue
                 if name.startswith("@rpath/libswift") or name.startswith("@rpath/libclang_rt"):
                     # Apple-supplied runtime resolved through the OS toolchain.
                     continue
-                # Ignore Mach-O's own install ID; reset it below for dylibs.
-                if original != self.exe and name == str(original):
+                # The LC_ID_DYLIB value (often a Homebrew absolute path)
+                # appears in otool -L, but it is NOT a dependency to follow.
+                if name == identity:
                     continue
                 source = self.resolve(name, original)
                 if system_dependency(str(source)):
@@ -215,9 +232,13 @@ class Bundle:
                 if old != new:
                     run("install_name_tool", "-change", old, new, str(destination))
 
-            # Rewrite the identity of each copied dylib as well as its users.
-            if destination.parent == self.frameworks:
-                run("install_name_tool", "-id", "@rpath/" + destination.name, str(destination))
+            # Rewrite the install ID of EVERY dylib, including GStreamer
+            # plugin modules. Previous code only rewrote Frameworks and
+            # consequently left /opt/homebrew LC_ID_DYLIB in plugin binaries.
+            if identity is not None:
+                relocated_id = ("@rpath/" if destination.parent == self.frameworks
+                                else "@loader_path/") + destination.name
+                run("install_name_tool", "-id", relocated_id, str(destination))
 
             for value in rpaths(destination):
                 if value.startswith(str(self.prefix)):
@@ -240,7 +261,15 @@ class Bundle:
         if not self.copied:
             raise RuntimeError("runtime has no bundled native libraries")
         for binary in sorted(self.changed):
+            identity = install_id(binary)
+            if identity is not None and (
+                identity.startswith(str(self.prefix))
+                or identity.startswith("/opt/homebrew/")
+            ):
+                raise RuntimeError(f"unrelocated dylib install ID in {binary}: {identity}")
             for dependency in dependencies(binary):
+                if dependency == identity:
+                    continue
                 if system_dependency(dependency):
                     continue
                 if dependency.startswith("@rpath/"):
