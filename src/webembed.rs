@@ -426,10 +426,16 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(crate::platform::windows_webembed::WindowsWebEmbedBackend::new())
 }
 
+#[cfg(target_os = "macos")]
+fn platform_backend() -> Box<dyn WebEmbedBackend> {
+    Box::new(crate::platform::macos_webembed::MacosWebEmbedBackend::new())
+}
+
 #[cfg(not(any(
     target_os = "android",
     target_os = "linux",
-    target_os = "windows"
+    target_os = "windows",
+    target_os = "macos"
 )))]
 fn platform_backend() -> Box<dyn WebEmbedBackend> {
     Box::new(UnavailableBackend)
@@ -438,7 +444,8 @@ fn platform_backend() -> Box<dyn WebEmbedBackend> {
 #[cfg(not(any(
     target_os = "android",
     target_os = "linux",
-    target_os = "windows"
+    target_os = "windows",
+    target_os = "macos"
 )))]
 struct UnavailableBackend;
 

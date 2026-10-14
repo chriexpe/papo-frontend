@@ -121,8 +121,10 @@ jobs:
           brew install gstreamer pkgconf
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
           gst-inspect-1.0 webrtcbin
-      - name: Compile macOS desktop application
+      - name: Compile macOS desktop application and native WebKit bridge
         run: cargo build --locked --bin papo
+      - name: Test WKWebView geometry contract
+        run: cargo test --locked --bin papo --lib point_conversion_is_scaled_once
       - name: Check native media runtime without GUI hardware
         run: |
           ./target/debug/papo voice-check | tee voice-check.log

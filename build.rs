@@ -3,6 +3,33 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=PAPO_GIPHY_API_KEY");
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rerun-if-changed=native/macos/webembed.m");
+        let output = std::process::Command::new("xcrun")
+            .args(["--sdk", "macosx", "--show-sdk-path"])
+            .output().expect("macOS SDK path");
+        assert!(output.status.success(), "xcrun failed");
+        let sdk = String::from_utf8(output.stdout).expect("SDK path is UTF-8");
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        let object = out.join("papo-webembed.o");
+        let status = std::process::Command::new("xcrun")
+            .args(["clang", "-fobjc-arc", "-fmodules", "-mmacosx-version-min=12.0",
+                "-isysroot", sdk.trim(), "-c", "native/macos/webembed.m", "-o"])
+            .arg(&object).status().expect("compile WKWebView bridge");
+        assert!(status.success(), "WKWebView bridge compilation failed");
+        let archive = out.join("libpapo_webembed.a");
+        let status = std::process::Command::new("xcrun")
+            .args(["ar", "rcs"]).arg(&archive).arg(&object)
+            .status().expect("archive WKWebView bridge");
+        assert!(status.success(), "archiving WKWebView bridge failed");
+        println!("cargo:rustc-link-search=native={}", out.display());
+        println!("cargo:rustc-link-lib=static=papo_webembed");
+        for framework in ["AppKit", "WebKit", "QuartzCore", "CoreFoundation"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+        return;
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
