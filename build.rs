@@ -5,6 +5,7 @@ fn main() {
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rerun-if-changed=native/macos/webembed.m");
+        println!("cargo:rerun-if-changed=native/macos/notify.m");
         let output = std::process::Command::new("xcrun")
             .args(["--sdk", "macosx", "--show-sdk-path"])
             .output().expect("macOS SDK path");
@@ -17,14 +18,20 @@ fn main() {
                 "-isysroot", sdk.trim(), "-c", "native/macos/webembed.m", "-o"])
             .arg(&object).status().expect("compile WKWebView bridge");
         assert!(status.success(), "WKWebView bridge compilation failed");
+        let notify_object = out.join("papo-notify.o");
+        let status = std::process::Command::new("xcrun")
+            .args(["clang", "-fobjc-arc", "-fmodules", "-mmacosx-version-min=12.0",
+                "-isysroot", sdk.trim(), "-c", "native/macos/notify.m", "-o"])
+            .arg(&notify_object).status().expect("compile macOS notifications bridge");
+        assert!(status.success(), "macOS notifications compilation failed");
         let archive = out.join("libpapo_webembed.a");
         let status = std::process::Command::new("xcrun")
-            .args(["ar", "rcs"]).arg(&archive).arg(&object)
-            .status().expect("archive WKWebView bridge");
+            .args(["ar", "rcs"]).arg(&archive).arg(&object).arg(&notify_object)
+            .status().expect("archive WKWebView and notifications bridge");
         assert!(status.success(), "archiving WKWebView bridge failed");
         println!("cargo:rustc-link-search=native={}", out.display());
         println!("cargo:rustc-link-lib=static=papo_webembed");
-        for framework in ["AppKit", "WebKit", "QuartzCore", "CoreFoundation"] {
+        for framework in ["AppKit", "WebKit", "QuartzCore", "CoreFoundation", "UserNotifications"] {
             println!("cargo:rustc-link-lib=framework={framework}");
         }
         return;
