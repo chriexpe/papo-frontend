@@ -11584,7 +11584,6 @@ mod row_cache_tests {
             channel_id: "c".into(),
             author_id: "u".into(),
             external_author: None,
-            external_author: None,
             content: content.into(),
             at: Local::now(),
             edited: false,
