@@ -45,7 +45,13 @@ fn launch(url: &str) -> bool {
         .is_ok()
 }
 
-#[cfg(all(unix, not(target_os = "android")))]
+#[cfg(target_os = "macos")]
+fn launch(url: &str) -> bool {
+    // Launch Services via the standard macOS opener. Never pass through a shell.
+    std::process::Command::new("open").arg(url).spawn().is_ok()
+}
+
+#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
 fn launch(url: &str) -> bool {
     // Sem shell: o endereço vai como um único argumento. No Flatpak o
     // `xdg-open` fala com o portal.

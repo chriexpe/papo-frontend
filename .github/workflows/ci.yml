@@ -100,6 +100,34 @@ jobs:
           bash -n scripts/deps.sh
           bash -n scripts/wpe-runtime.sh
 
+  # Build natively on an Apple Silicon runner. This is a compile/runtime
+  # bootstrap, not yet a signed .app or a distributable macOS release.
+  macos:
+    runs-on: macos-15
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64
+      - name: Install native GStreamer SDK
+        run: |
+          # Homebrew's current gstreamer formula bundles the former gst-* plugins.
+          brew install gstreamer pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
+          gst-inspect-1.0 webrtcbin
+      - name: Compile macOS desktop application
+        run: cargo build --locked --bin papo
+      - name: Check native media runtime without GUI hardware
+        run: |
+          ./target/debug/papo voice-check | tee voice-check.log
+          grep -q "GStreamer" voice-check.log
+
   windows:
     runs-on: windows-2025
     steps:
