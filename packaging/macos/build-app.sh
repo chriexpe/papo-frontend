@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build an experimental, ad-hoc-signed macOS app for machines with Homebrew GStreamer.
-# This is deliberately NOT a standalone release bundle.
+# Build an experimental, ad-hoc-signed self-contained Apple Silicon app.
+# Developer signing and notarization remain separate release work.
 set -euo pipefail
 
 if [[ $# -ne 3 ]]; then
@@ -76,8 +76,9 @@ done
 iconutil --convert icns --output "$contents/Resources/Papo.icns" "$iconset"
 
 plutil -lint "$contents/Info.plist"
+python3 packaging/macos/bundle-gstreamer.py "$app"
 # Apple Silicon requires valid code signatures. This local ad-hoc signature
 # provides no developer identity or notarization and is NOT a release signature.
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
-echo "Experimental macOS app: $app (Homebrew GStreamer required)"
+echo "Experimental macOS app with bundled GStreamer: $app"

@@ -1,28 +1,27 @@
 # macOS (Apple Silicon, experimental)
 
 The first macOS target compiles natively on GitHub Actions and provides a
-Finder-launchable **test** `Papo.app`. It is ad-hoc signed, **not** signed
-with an Apple Developer ID, notarized, or self-contained. It requires Homebrew
-GStreamer and its libnice plugin installed on the destination Mac. This
+Finder-launchable **test** `Papo.app`. It is ad-hoc signed, **not** signed with an Apple Developer ID or notarized.
+The bundle now includes GStreamer libraries, native plugins and the scanner;
+Homebrew is required on the build host only. This
 version is for development and hands-on compatibility tests only.
 
 ## Download the app from CI
 
 1. Open the latest successful [CI run](https://github.com/chriexpe/papo-frontend/actions/workflows/ci.yml)
    for the branch/PR, and download artifact `papo-macos-arm64-adhoc`.
-2. On an Apple Silicon MacBook, install the external runtime:
-   `brew install gstreamer libnice-gstreamer`.
-3. Extract `Papo-macos-arm64-adhoc.zip` and move `Papo.app` to
+2. Extract `Papo-macos-arm64-adhoc.zip` and move `Papo.app` to
    `/Applications` or another convenient directory.
-4. Open it via Finder. This test build is **not notarized**, so macOS may
+3. Open it via Finder. This test build is **not notarized**, so macOS may
    block the first launch. Use the standard system **Open Anyway** control in
    Privacy & Security after attempting the launch; do not disable Gatekeeper
    globally. Apple Silicon only — no Intel test bundle yet.
 
-This app depends on a working Homebrew installation (usually `/opt/homebrew`).
-It does not ship any GStreamer dynamic libraries, plugins, or helper binaries.
-If Homebrew is uninstalled or moved, the app may stop launching. Neither the
-zip nor the binary is an official signed release.
+This test bundle relocates GStreamer and its non-system dynamic dependencies
+into `Contents/Frameworks` and native plugins into `Contents/PlugIns`.
+It should not require Homebrew on the destination Mac. The bundle remains an
+experimental unsigned-developer-identity build; review third-party licenses
+and test real camera, microphone, and WebRTC hardware before distributing.
 
 ## Build from source
 
@@ -39,7 +38,7 @@ open dist/Papo.app
 ```
 
 Replace `0.7.5` with the current numeric version in `Cargo.toml`.
-The CI job builds and smoke-tests the packaged executable, validates its
+The CI job builds and smoke-tests the bundled executable, validates its
 `Info.plist`, generates a native icon and applies an ad-hoc signature.
 The `Info.plist` includes privacy usage descriptions for the microphone and
 camera, but hardware permission prompts still need a real MacBook test.
@@ -50,8 +49,8 @@ camera, but hardware permission prompts still need a real MacBook test.
   embeds are not supported on macOS yet.
 - Native notifications, macOS menu/dock/window semantics, and full hardware
   testing, including microphone/camera permissions and Metal rendering.
-- Self-contained GStreamer runtime and plugin distribution, relocatable
-  library paths, embedded helpers, developer signing and notarization.
+- Runtime dependency/license audit, embedded helpers, developer signing
+  and notarization.
 - Apple Intel build and validation, if we elect to support Intel Macs.
 
 Keep platform integration isolated behind existing platform interfaces. The

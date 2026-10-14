@@ -100,6 +100,7 @@ jobs:
           bash -n scripts/deps.sh
           bash -n scripts/wpe-runtime.sh
           bash -n packaging/macos/build-app.sh
+          python3 -m py_compile packaging/macos/bundle-gstreamer.py
 
   # Build natively on an Apple Silicon runner. This is a compile/runtime
   # bootstrap, not yet a signed .app or a distributable macOS release.
@@ -131,13 +132,16 @@ jobs:
         run: |
           ./target/debug/papo voice-check | tee voice-check.log
           grep -q "GStreamer" voice-check.log
-      - name: Package unsigned Finder-launchable test app
+      - name: Package self-contained Finder-launchable test app
         run: |
           version="$(grep -m1 '^version = "' Cargo.toml | cut -d '"' -f2)"
           bash packaging/macos/build-app.sh target/debug/papo "$version" dist
           file dist/Papo.app/Contents/MacOS/papo
           test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
-          dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
+          test -d dist/Papo.app/Contents/Frameworks
+          test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
+          env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
+            dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
           grep -q "GStreamer" packaged-voice-check.log
           (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app Papo-macos-arm64-adhoc.zip)
       - uses: actions/upload-artifact@v4
