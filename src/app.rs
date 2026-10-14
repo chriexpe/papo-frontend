@@ -843,8 +843,6 @@ pub struct PapoApp {
     /// Enquanto o servidor criado pelo botão + ainda está no modal, guarda
     /// qual servidor estava na tela para poder cancelar sem deixar lixo no trilho.
     add_server_previous: Option<usize>,
-    /// Última coleta periódica de atribuição de memória de mídia.
-    last_media_diagnostics: std::time::Instant,
     /// Excludes WorkManager runtimes for the whole lifetime of PapoApp.
     #[cfg(target_os = "android")]
     _runtime_lease: crate::platform::runtime_lease::ForegroundLease,
@@ -1150,8 +1148,6 @@ impl PapoApp {
             window_attached: false,
             demo,
             add_server_previous: None,
-            last_media_diagnostics: std::time::Instant::now()
-                - std::time::Duration::from_secs(30),
             #[cfg(target_os = "android")]
             _runtime_lease: runtime_lease,
         }
@@ -2698,151 +2694,6 @@ impl PapoApp {
         ctx.request_repaint();
     }
 
-    /// Registra uma fotografia de todos os stores, inclusive os que estão no
-    /// `Stash` de um workspace inativo. A manutenção segue sendo diagnóstico
-    /// apenas: não altera caches nem força a coleta, para que a comparação com
-    /// RSS mostre o custo real do estado retido.
-    fn log_media_diagnostics(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.last_media_diagnostics)
-            < std::time::Duration::from_secs(30)
-        {
-            return;
-        }
-        self.last_media_diagnostics = now;
-
-        let active = self.active;
-        let visible = self.ui.media.diagnostics();
-        let snapshots: Vec<(String, bool, crate::media::MediaDiagnostics)> = self
-            .workspaces
-            .iter()
-            .enumerate()
-            .map(|(index, workspace)| {
-                (
-                    crate::state::server_key(&workspace.runtime.url),
-                    index == active,
-                    if index == active {
-                        visible
-                    } else {
-                        workspace.stash.media.diagnostics()
-                    },
-                )
-            })
-            .collect();
-
-        let mut total = crate::media::MediaDiagnostics::default();
-        for (_, _, diagnostics) in &snapshots {
-            total.add_assign(*diagnostics);
-        }
-
-        #[cfg(target_os = "linux")]
-        let process_memory = std::fs::read_to_string("/proc/self/smaps_rollup")
-            .ok()
-            .map(|contents| {
-                let mut rss = 0;
-                let mut pss = 0;
-                let mut private_dirty = 0;
-                for line in contents.lines() {
-                    let Some((name, rest)) = line.split_once(':') else {
-                        continue;
-                    };
-                    let value = rest
-                        .split_whitespace()
-                        .next()
-                        .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or_default();
-                    match name {
-                        "Rss" => rss = value,
-                        "Pss" => pss = value,
-                        "Private_Dirty" => private_dirty = value,
-                        _ => {}
-                    }
-                }
-                (rss, pss, private_dirty)
-            });
-
-        #[cfg(target_os = "linux")]
-        log::info!(
-            "media snapshot rss_kib={} pss_kib={} private_dirty_kib={} textures={} texture_bytes={} pending_results={} pending_result_bytes={} queued={} in_flight={} players={} playing={} idle={} oldest_idle_secs={:?} player_texture_bytes={} player_frame_bytes={} player_native_estimate={} waveform_bytes={} pump_batch_bytes={} max_pump_batch_bytes={} housekeep={} last_housekeep_age_secs={:?} tracked_bytes={}",
-            process_memory.map(|memory| memory.0).unwrap_or_default(),
-            process_memory.map(|memory| memory.1).unwrap_or_default(),
-            process_memory.map(|memory| memory.2).unwrap_or_default(),
-            total.texture_count,
-            total.texture_bytes,
-            total.pending_result_count,
-            total.pending_result_bytes,
-            total.pending_request_count,
-            total.in_flight_request_count,
-            total.player_count,
-            total.playing_player_count,
-            total.idle_player_count,
-            total.oldest_idle_player_age_secs,
-            total.player_texture_bytes,
-            total.player_pending_frame_bytes,
-            total.player_native_estimate_bytes,
-            total.waveform_bytes,
-            total.pump_batch_bytes,
-            total.max_pump_batch_bytes,
-            total.housekeep_count,
-            total.last_housekeep_age_secs,
-            total.tracked_bytes(),
-        );
-
-        #[cfg(not(target_os = "linux"))]
-        log::info!(
-            "media snapshot textures={} texture_bytes={} pending_results={} pending_result_bytes={} queued={} in_flight={} players={} playing={} idle={} oldest_idle_secs={:?} player_texture_bytes={} player_frame_bytes={} player_native_estimate={} waveform_bytes={} pump_batch_bytes={} max_pump_batch_bytes={} housekeep={} last_housekeep_age_secs={:?} tracked_bytes={}",
-            total.texture_count,
-            total.texture_bytes,
-            total.pending_result_count,
-            total.pending_result_bytes,
-            total.pending_request_count,
-            total.in_flight_request_count,
-            total.player_count,
-            total.playing_player_count,
-            total.idle_player_count,
-            total.oldest_idle_player_age_secs,
-            total.player_texture_bytes,
-            total.player_pending_frame_bytes,
-            total.player_native_estimate_bytes,
-            total.waveform_bytes,
-            total.pump_batch_bytes,
-            total.max_pump_batch_bytes,
-            total.housekeep_count,
-            total.last_housekeep_age_secs,
-            total.tracked_bytes(),
-        );
-
-        for (server_key, active, diagnostics) in snapshots {
-            log::info!(
-                "media store server={} active={} textures={} texture_bytes={} ephemeral_bytes={} results={} result_bytes={} queued={} in_flight={} players={} playing={} idle={} oldest_idle_secs={:?} player_texture_bytes={} player_frame_bytes={} player_native_estimate={} waveforms={} files={} loading_files={} pump_batch_bytes={} max_pump_batch_bytes={} housekeep={} last_housekeep_age_secs={:?} tracked_bytes={}",
-                server_key,
-                active,
-                diagnostics.texture_count,
-                diagnostics.texture_bytes,
-                diagnostics.ephemeral_texture_bytes,
-                diagnostics.pending_result_count,
-                diagnostics.pending_result_bytes,
-                diagnostics.pending_request_count,
-                diagnostics.in_flight_request_count,
-                diagnostics.player_count,
-                diagnostics.playing_player_count,
-                diagnostics.idle_player_count,
-                diagnostics.oldest_idle_player_age_secs,
-                diagnostics.player_texture_bytes,
-                diagnostics.player_pending_frame_bytes,
-                diagnostics.player_native_estimate_bytes,
-                diagnostics.waveform_bytes,
-                diagnostics.file_count,
-                diagnostics.file_loading_count,
-                diagnostics.pump_batch_bytes,
-                diagnostics.max_pump_batch_bytes,
-                diagnostics.housekeep_count,
-                diagnostics.last_housekeep_age_secs,
-                diagnostics.tracked_bytes(),
-            );
-        }
-    }
-
     /// Sonda páginas Turso sem bloquear o frame. O SQL roda no worker do
     /// ClientDb; receivers vazios pedem apenas outro repaint curto.
     fn pump_cache(&mut self, ctx: &egui::Context) {
@@ -3830,22 +3681,14 @@ impl PapoApp {
             ask_download,
         );
 
-        let active_media = self.active;
-        let visible_media = &self.ui.media;
         let diagnostics: Vec<crate::ui::settings::WorkspaceDiagnostics> = self
             .workspaces
             .iter()
-            .enumerate()
-            .map(|(index, workspace)| crate::ui::settings::WorkspaceDiagnostics {
+            .map(|workspace| crate::ui::settings::WorkspaceDiagnostics {
                 label: workspace.label.clone(),
                 server_key: crate::state::server_key(&workspace.runtime.url),
                 runtime: workspace.runtime.net.diagnostics(),
                 store: workspace.runtime.store.diagnostics(),
-                media: if index == active_media {
-                    visible_media.diagnostics()
-                } else {
-                    workspace.stash.media.diagnostics()
-                },
                 cache_enabled: workspace.runtime.cache.is_enabled(),
                 cache: workspace.runtime.cache.stats(),
                 notification: self.notification.diagnostics(&workspace.runtime.server_key),
@@ -4784,7 +4627,6 @@ impl eframe::App for PapoApp {
         // Captura seleção/toggles ocorridos durante este próprio quadro; a
         // thread de rede pode consultar o snapshot sem esperar outro repaint.
         self.sync_notification_contexts();
-        self.log_media_diagnostics();
 
         // O browser é uma superfície nativa: qualquer frame que não declare
         // um dono/retângulo válido precisa suspendê-lo ou destruí-lo.

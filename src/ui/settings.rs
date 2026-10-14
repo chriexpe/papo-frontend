@@ -21,7 +21,6 @@ pub struct WorkspaceDiagnostics {
     pub server_key: String,
     pub runtime: RuntimeDiagnostics,
     pub store: StoreDiagnostics,
-    pub media: crate::media::MediaDiagnostics,
     pub cache_enabled: bool,
     pub cache: papo_core::cache::CacheStatsSnapshot,
     pub notification: papo_core::notification::NotificationDiagnostics,
@@ -1366,10 +1365,6 @@ pub struct Context<'a> {
     pub update_status: Option<&'a str>,
     #[cfg(any(target_os = "windows", target_os = "android"))]
     pub update_enabled: bool,
-}
-
-fn format_mib(bytes: usize) -> String {
-    format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 /// A paleta do mock de Ajustes: a folha, o cartão e as cores de texto são
@@ -4469,47 +4464,6 @@ fn app_pane(
                             .unwrap_or_default(),
                     );
                     rows.row("Outgoing", Some(&outgoing), |_, _| {});
-                    let media = &workspace.media;
-                    let media_textures = format!(
-                        "{} · {} textures · {} animated / {} frames · {} ephemeral",
-                        format_mib(media.texture_bytes),
-                        media.texture_count,
-                        media.animated_texture_count,
-                        media.animated_frame_count,
-                        format_mib(media.ephemeral_texture_bytes),
-                    );
-                    rows.row("Media textures", Some(&media_textures), |_, _| {});
-                    let media_players = format!(
-                        "{} total · {} playing · {} idle · {} texture · {} pending frame · {} native estimate{}",
-                        media.player_count,
-                        media.playing_player_count,
-                        media.idle_player_count,
-                        format_mib(media.player_texture_bytes),
-                        format_mib(media.player_pending_frame_bytes),
-                        format_mib(media.player_native_estimate_bytes),
-                        media
-                            .oldest_idle_player_age_secs
-                            .map(|age| format!(" · oldest idle {}s", age))
-                            .unwrap_or_default(),
-                    );
-                    rows.row("Media players", Some(&media_players), |_, _| {});
-                    let media_worker = format!(
-                        "{} queued · {} in flight · {} results / {} · pump {} / max {} · housekeeping {}{} · {} files · {} waveform",
-                        media.pending_request_count,
-                        media.in_flight_request_count,
-                        media.pending_result_count,
-                        format_mib(media.pending_result_bytes),
-                        format_mib(media.pump_batch_bytes),
-                        format_mib(media.max_pump_batch_bytes),
-                        media.housekeep_count,
-                        media
-                            .last_housekeep_age_secs
-                            .map(|age| format!(" / {}s ago", age))
-                            .unwrap_or_default(),
-                        media.file_count,
-                        format_mib(media.waveform_bytes),
-                    );
-                    rows.row("Media worker", Some(&media_worker), |_, _| {});
                     let scheduler = format!(
                         "{} running / {} queued / limit {}",
                         runtime.scheduler.running,

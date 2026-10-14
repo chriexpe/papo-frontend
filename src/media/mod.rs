@@ -15,10 +15,7 @@ pub mod prepare;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as sync_mpsc;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, Once,
-};
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant, SystemTime};
 
 
@@ -233,68 +230,10 @@ pub enum Loaded {
     },
 }
 
-/// Counters shared by one media worker and the `MediaStore` that drains it.
-///
-/// The request and result channels deliberately remain private implementation
-/// details. These counters make their lifetime visible without changing the
-/// ownership model while we investigate memory retention across workspaces.
-#[derive(Default)]
-struct MediaStats {
-    queued_requests: AtomicUsize,
-    in_flight_requests: AtomicUsize,
-    pending_results: AtomicUsize,
-    pending_result_bytes: AtomicUsize,
-}
-
-fn decrement(counter: &AtomicUsize) {
-    decrement_by(counter, 1);
-}
-
-fn decrement_by(counter: &AtomicUsize, amount: usize) {
-    // Maintain saturating semantics without the deprecated fetch_update
-    // (renamed in newer Rust) so this also builds on the project's MSRV.
-    let mut current = counter.load(Ordering::Relaxed);
-    loop {
-        let next = current.saturating_sub(amount);
-        match counter.compare_exchange_weak(
-            current,
-            next,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => break,
-            Err(actual) => current = actual,
-        }
-    }
-}
-
-fn loaded_decoded_bytes(item: &Loaded) -> usize {
-    fn image_bytes(image: &ColorImage) -> usize {
-        image.pixels.len().saturating_mul(std::mem::size_of::<egui::Color32>())
-    }
-
-    match item {
-        Loaded::Image { image, .. } => image_bytes(image),
-        Loaded::Animation { frames, .. } => frames
-            .iter()
-            .map(|(image, _)| image_bytes(image))
-            .sum(),
-        Loaded::Waveform { peaks, .. } => peaks
-            .len()
-            .saturating_mul(std::mem::size_of::<f32>()),
-        Loaded::Failed { .. }
-        | Loaded::File { .. }
-        | Loaded::Absent { .. }
-        | Loaded::Missing { .. }
-        | Loaded::Saved { .. } => 0,
-    }
-}
-
 pub struct Media {
     requests: mpsc::UnboundedSender<Request>,
     results: sync_mpsc::Receiver<Loaded>,
     server_key: String,
-    stats: Arc<MediaStats>,
 }
 
 impl Media {
@@ -305,8 +244,6 @@ impl Media {
         let worker_server_key = server_key.clone();
         let (requests_tx, requests_rx) = mpsc::unbounded_channel();
         let (results_tx, results_rx) = sync_mpsc::channel();
-        let stats = Arc::new(MediaStats::default());
-        let worker_stats = Arc::clone(&stats);
 
         std::thread::Builder::new()
             .name("papo-media".into())
@@ -329,7 +266,6 @@ impl Media {
                     requests_rx,
                     results_tx,
                     repaint,
-                    worker_stats,
                 ));
             })
             .ok()?;
@@ -338,7 +274,6 @@ impl Media {
             requests: requests_tx,
             results: results_rx,
             server_key,
-            stats,
         })
     }
 
@@ -347,22 +282,11 @@ impl Media {
     }
 
     pub fn request(&self, request: Request) {
-        self.stats.queued_requests.fetch_add(1, Ordering::Relaxed);
-        if self.requests.send(request).is_err() {
-            decrement(&self.stats.queued_requests);
-        }
+        let _ = self.requests.send(request);
     }
 
     pub fn try_recv(&self) -> Option<Loaded> {
-        match self.results.try_recv() {
-            Ok(item) => {
-                decrement(&self.stats.pending_results);
-                let bytes = loaded_decoded_bytes(&item);
-                decrement_by(&self.stats.pending_result_bytes, bytes);
-                Some(item)
-            }
-            Err(_) => None,
-        }
+        self.results.try_recv().ok()
     }
 }
 
@@ -373,7 +297,6 @@ async fn worker(
     mut requests: mpsc::UnboundedReceiver<Request>,
     results: sync_mpsc::Sender<Loaded>,
     repaint: egui::Context,
-    stats: Arc<MediaStats>,
 ) {
     let Ok(api) = Api::new(&base_url, session) else {
         log::error!("mídia sem cliente HTTP");
@@ -395,29 +318,17 @@ async fn worker(
     let fetch_gate = Arc::new(FetchGate::new(AUTH_FETCH_CONCURRENCY));
 
     while let Some(request) = requests.recv().await {
-        decrement(&stats.queued_requests);
-        stats.in_flight_requests.fetch_add(1, Ordering::Relaxed);
         let api = api.clone();
         let server_key = server_key.clone();
         let remote_client = remote_client.clone();
         let results = results.clone();
         let repaint = repaint.clone();
         let fetch_gate = fetch_gate.clone();
-        let stats = Arc::clone(&stats);
         tokio::spawn(async move {
             let outcome =
                 run(&api, &server_key, remote_client.as_ref(), &fetch_gate, request).await;
-            decrement(&stats.in_flight_requests);
-            let decoded_bytes = loaded_decoded_bytes(&outcome);
-            stats.pending_results.fetch_add(1, Ordering::Relaxed);
-            stats
-                .pending_result_bytes
-                .fetch_add(decoded_bytes, Ordering::Relaxed);
             if results.send(outcome).is_ok() {
                 repaint.request_repaint();
-            } else {
-                decrement(&stats.pending_results);
-                decrement_by(&stats.pending_result_bytes, decoded_bytes);
             }
         });
     }
@@ -1373,111 +1284,6 @@ pub enum FileState {
     Failed,
 }
 
-/// Attribution snapshot for one `MediaStore`.
-///
-/// The texture fields are decoded RGBA estimates used by the eviction policy.
-/// Player native bytes are intentionally labelled as an estimate: GStreamer
-/// owns those allocations and does not expose a portable exact total here.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct MediaDiagnostics {
-    pub texture_bytes: usize,
-    pub texture_count: usize,
-    pub animated_texture_count: usize,
-    pub animated_frame_count: usize,
-    pub ephemeral_texture_bytes: usize,
-    pub player_count: usize,
-    pub playing_player_count: usize,
-    pub idle_player_count: usize,
-    pub oldest_idle_player_age_secs: Option<u64>,
-    pub player_texture_bytes: usize,
-    pub player_pending_frame_bytes: usize,
-    pub player_native_estimate_bytes: usize,
-    pub waveform_bytes: usize,
-    pub file_count: usize,
-    pub file_loading_count: usize,
-    pub pending_request_count: usize,
-    pub in_flight_request_count: usize,
-    pub pending_result_count: usize,
-    pub pending_result_bytes: usize,
-    pub pump_batch_bytes: usize,
-    pub max_pump_batch_bytes: usize,
-    pub housekeep_count: u64,
-    pub last_housekeep_age_secs: Option<u64>,
-}
-
-impl MediaDiagnostics {
-    pub fn add_assign(&mut self, other: Self) {
-        self.texture_bytes = self.texture_bytes.saturating_add(other.texture_bytes);
-        self.texture_count = self.texture_count.saturating_add(other.texture_count);
-        self.animated_texture_count = self
-            .animated_texture_count
-            .saturating_add(other.animated_texture_count);
-        self.animated_frame_count = self
-            .animated_frame_count
-            .saturating_add(other.animated_frame_count);
-        self.ephemeral_texture_bytes = self
-            .ephemeral_texture_bytes
-            .saturating_add(other.ephemeral_texture_bytes);
-        self.player_count = self.player_count.saturating_add(other.player_count);
-        self.playing_player_count = self
-            .playing_player_count
-            .saturating_add(other.playing_player_count);
-        self.idle_player_count = self.idle_player_count.saturating_add(other.idle_player_count);
-        self.oldest_idle_player_age_secs = match (
-            self.oldest_idle_player_age_secs,
-            other.oldest_idle_player_age_secs,
-        ) {
-            (Some(left), Some(right)) => Some(left.max(right)),
-            (left, right) => left.or(right),
-        };
-        self.player_texture_bytes = self
-            .player_texture_bytes
-            .saturating_add(other.player_texture_bytes);
-        self.player_pending_frame_bytes = self
-            .player_pending_frame_bytes
-            .saturating_add(other.player_pending_frame_bytes);
-        self.player_native_estimate_bytes = self
-            .player_native_estimate_bytes
-            .saturating_add(other.player_native_estimate_bytes);
-        self.waveform_bytes = self.waveform_bytes.saturating_add(other.waveform_bytes);
-        self.file_count = self.file_count.saturating_add(other.file_count);
-        self.file_loading_count = self
-            .file_loading_count
-            .saturating_add(other.file_loading_count);
-        self.pending_request_count = self
-            .pending_request_count
-            .saturating_add(other.pending_request_count);
-        self.in_flight_request_count = self
-            .in_flight_request_count
-            .saturating_add(other.in_flight_request_count);
-        self.pending_result_count = self
-            .pending_result_count
-            .saturating_add(other.pending_result_count);
-        self.pending_result_bytes = self
-            .pending_result_bytes
-            .saturating_add(other.pending_result_bytes);
-        self.pump_batch_bytes = self.pump_batch_bytes.saturating_add(other.pump_batch_bytes);
-        self.max_pump_batch_bytes = self.max_pump_batch_bytes.max(other.max_pump_batch_bytes);
-        self.housekeep_count = self.housekeep_count.saturating_add(other.housekeep_count);
-        self.last_housekeep_age_secs = match (
-            self.last_housekeep_age_secs,
-            other.last_housekeep_age_secs,
-        ) {
-            (Some(left), Some(right)) => Some(left.max(right)),
-            (left, right) => left.or(right),
-        };
-    }
-
-    pub fn tracked_bytes(self) -> usize {
-        self.texture_bytes
-            .saturating_add(self.player_texture_bytes)
-            .saturating_add(self.player_pending_frame_bytes)
-            .saturating_add(self.player_native_estimate_bytes)
-            .saturating_add(self.waveform_bytes)
-            .saturating_add(self.pending_result_bytes)
-    }
-}
-
 /// Quanto um item custa em memória. O mapa guarda um identificador, mas os
 /// pixels seguem alocados enquanto o `TextureHandle` viver.
 fn texture_bytes(texture: &Texture) -> usize {
@@ -1534,11 +1340,6 @@ pub struct MediaStore {
     /// Full-size provider textures use a separate key from inline GIFs so a
     /// closed viewer cannot be resurrected by a late worker result.
     ephemeral_full_wanted: std::collections::HashSet<String>,
-    /// Diagnostic history for the result batch and housekeeping cadence.
-    last_pump_batch_bytes: usize,
-    max_pump_batch_bytes: usize,
-    housekeep_count: u64,
-    last_housekeep: Option<Instant>,
     /// Último arquivo salvo, para o aviso flutuante.
     pub saved: Option<(String, PathBuf, f64)>,
     /// Emojis unicode em imagem colorida, tirados da fonte do sistema.
@@ -1580,10 +1381,6 @@ impl MediaStore {
             preview_full_wanted: std::collections::HashSet::new(),
             remote_full_wanted: std::collections::HashSet::new(),
             ephemeral_full_wanted: std::collections::HashSet::new(),
-            last_pump_batch_bytes: 0,
-            max_pump_batch_bytes: 0,
-            housekeep_count: 0,
-            last_housekeep: None,
             saved: None,
             emoji_raster: EmojiRaster::new(),
         }
@@ -1596,13 +1393,9 @@ impl MediaStore {
             return false;
         };
         let mut loaded = Vec::new();
-        let mut batch_bytes: usize = 0;
         while let Some(item) = media.try_recv() {
-            batch_bytes = batch_bytes.saturating_add(loaded_decoded_bytes(&item));
             loaded.push(item);
         }
-        self.last_pump_batch_bytes = batch_bytes;
-        self.max_pump_batch_bytes = self.max_pump_batch_bytes.max(batch_bytes);
         let changed = !loaded.is_empty();
         for item in loaded {
             match item {
@@ -1711,96 +1504,11 @@ impl MediaStore {
         true
     }
 
-    /// Snapshot leve o bastante para a folha de diagnósticos e para o log
-    /// periódico. Não força uma limpeza e não toca em GStreamer.
-    pub fn diagnostics(&self) -> MediaDiagnostics {
-        let mut diagnostics = MediaDiagnostics {
-            texture_count: self.textures.len(),
-            player_count: self.players.len(),
-            waveform_bytes: self
-                .waveforms
-                .values()
-                .map(|peaks| peaks.len().saturating_mul(std::mem::size_of::<f32>()))
-                .sum(),
-            file_count: self.files.len(),
-            file_loading_count: self
-                .files
-                .values()
-                .filter(|state| matches!(state, FileState::Loading))
-                .count(),
-            ..MediaDiagnostics::default()
-        };
-
-        diagnostics.pump_batch_bytes = self.last_pump_batch_bytes;
-        diagnostics.max_pump_batch_bytes = self.max_pump_batch_bytes;
-        diagnostics.housekeep_count = self.housekeep_count;
-        diagnostics.last_housekeep_age_secs = self.last_housekeep.and_then(|last| {
-            Instant::now()
-                .checked_duration_since(last)
-                .map(|age| age.as_secs())
-        });
-
-        for (key, texture) in &self.textures {
-            diagnostics.texture_bytes = diagnostics
-                .texture_bytes
-                .saturating_add(texture_bytes(texture));
-            if key.starts_with("ephemeral-image") {
-                diagnostics.ephemeral_texture_bytes = diagnostics
-                    .ephemeral_texture_bytes
-                    .saturating_add(texture_bytes(texture));
-            }
-            if let Texture::Animated { frames, .. } = texture {
-                diagnostics.animated_texture_count += 1;
-                diagnostics.animated_frame_count = diagnostics
-                    .animated_frame_count
-                    .saturating_add(frames.len());
-            }
-        }
-
-        for player in self.players.values() {
-            if player.is_playing() {
-                diagnostics.playing_player_count += 1;
-            } else {
-                diagnostics.idle_player_count += 1;
-            }
-            diagnostics.player_texture_bytes = diagnostics
-                .player_texture_bytes
-                .saturating_add(player.texture_memory_bytes());
-            diagnostics.player_pending_frame_bytes = diagnostics
-                .player_pending_frame_bytes
-                .saturating_add(player.pending_frame_memory_bytes());
-            diagnostics.player_native_estimate_bytes = diagnostics
-                .player_native_estimate_bytes
-                .saturating_add(player.native_memory_estimate());
-        }
-
-        diagnostics.oldest_idle_player_age_secs = self
-            .players
-            .iter()
-            .filter(|(_, player)| !player.is_playing())
-            .filter_map(|(key, _)| self.player_last_used.get(key))
-            .filter_map(|last| Instant::now().checked_duration_since(*last))
-            .map(|age| age.as_secs())
-            .max();
-
-        if let Some(media) = &self.media {
-            diagnostics.pending_request_count = media.stats.queued_requests.load(Ordering::Relaxed);
-            diagnostics.in_flight_request_count =
-                media.stats.in_flight_requests.load(Ordering::Relaxed);
-            diagnostics.pending_result_count = media.stats.pending_results.load(Ordering::Relaxed);
-            diagnostics.pending_result_bytes =
-                media.stats.pending_result_bytes.load(Ordering::Relaxed);
-        }
-        diagnostics
-    }
-
     pub fn housekeep(&mut self) {
         self.housekeep_at(Instant::now());
     }
 
     fn housekeep_at(&mut self, now: Instant) {
-        self.housekeep_count = self.housekeep_count.saturating_add(1);
-        self.last_housekeep = Some(now);
         let ttl = self.limits.player_idle_ttl;
         let stale: Vec<String> = self
             .players
@@ -2979,8 +2687,6 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: results_rx,
-                server_key: "test".into(),
-                stats: Arc::new(MediaStats::default()),
             }),
             Arc::new(FakeBackend::default()),
             MediaLimits::default(),
@@ -3018,8 +2724,6 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: results_rx,
-                server_key: "test".into(),
-                stats: Arc::new(MediaStats::default()),
             }),
             Arc::new(FakeBackend::default()),
             MediaLimits::default(),
@@ -3058,8 +2762,6 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: sync_mpsc::channel().1,
-                server_key: "test".into(),
-                stats: Arc::new(MediaStats::default()),
             }),
             backend,
             MediaLimits::default(),
