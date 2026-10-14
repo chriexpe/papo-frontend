@@ -1,41 +1,58 @@
-# macOS bootstrap (Apple Silicon)
+# macOS (Apple Silicon, experimental)
 
-The macOS port is **experimental**. This first milestone checks that the native
-Rust desktop application links against GStreamer and starts its media command
-line without requiring a MacBook on the developer's desk. It does **not** yet
-produce a distributable `.app`, sign or notarize it, or provide a native
-WKWebView backend. Rich interactive web embeds currently have no macOS backend.
+The first macOS target compiles natively on GitHub Actions and provides a
+Finder-launchable **test** `Papo.app`. It is ad-hoc signed, **not** signed
+with an Apple Developer ID, notarized, or self-contained. It requires Homebrew
+GStreamer and its libnice plugin installed on the destination Mac. This
+version is for development and hands-on compatibility tests only.
 
-## Building on a Mac
+## Download the app from CI
 
-The CI target is `macos-15` (Apple Silicon / `aarch64-apple-darwin`). On an
-Apple Silicon Mac with Xcode Command Line Tools and Rust 1.98+ installed:
+1. Open the latest successful [CI run](https://github.com/chriexpe/papo-frontend/actions/workflows/ci.yml)
+   for the branch/PR, and download artifact `papo-macos-arm64-adhoc`.
+2. On an Apple Silicon MacBook, install the external runtime:
+   `brew install gstreamer libnice-gstreamer`.
+3. Extract `Papo-macos-arm64-adhoc.zip` and move `Papo.app` to
+   `/Applications` or another convenient directory.
+4. Open it via Finder. This test build is **not notarized**, so macOS may
+   block the first launch. Use the standard system **Open Anyway** control in
+   Privacy & Security after attempting the launch; do not disable Gatekeeper
+   globally. Apple Silicon only — no Intel test bundle yet.
+
+This app depends on a working Homebrew installation (usually `/opt/homebrew`).
+It does not ship any GStreamer dynamic libraries, plugins, or helper binaries.
+If Homebrew is uninstalled or moved, the app may stop launching. Neither the
+zip nor the binary is an official signed release.
+
+## Build from source
+
+On an Apple Silicon Mac with Xcode Command Line Tools and Rust 1.98+:
 
 ```sh
-brew install gstreamer pkgconf
-# Homebrew currently bundles the former gst-* plugin formulae in gstreamer.
+brew install gstreamer libnice-gstreamer pkgconf
 gst-inspect-1.0 webrtcbin
+gst-inspect-1.0 nicesrc
 cargo build --locked --bin papo
 ./target/debug/papo voice-check
-./target/debug/papo demo
+bash packaging/macos/build-app.sh target/debug/papo 0.7.5 dist
+open dist/Papo.app
 ```
 
-The app relies on Homebrew's GStreamer libraries/plugins at development time.
-Do not distribute `target/debug/papo` as a standalone binary: packaging and
-runtime relocation are still pending. For a practical test, verify login,
-text chat, attachments, scrolling and media; audio/video hardware availability
-and camera/microphone permission prompts require testing on a physical Mac.
+Replace `0.7.5` with the current numeric version in `Cargo.toml`.
+The CI job builds and smoke-tests the packaged executable, validates its
+`Info.plist`, generates a native icon and applies an ad-hoc signature.
+The `Info.plist` includes privacy usage descriptions for the microphone and
+camera, but hardware permission prompts still need a real MacBook test.
 
-## Missing pieces for a release
+## Still missing for a production macOS release
 
-- Native WKWebView implementation of `WebEmbedBackend` (including input,
-  clipping, scrolling and lifecycle), rather than the unavailable fallback.
-- Native notification and application lifecycle integrations, including macOS
-  menu/dock/tray behavior as appropriate.
-- `.app` packaging, GStreamer runtime/plugins and license bundling, stable
-  loader paths, `Info.plist` privacy usage strings, code signing/notarization.
-- Physical MacBook testing for microphones, camera, calls and GPU/Metal
-  rendering. Intel architecture is not yet a CI target.
+- WKWebView implementation of `WebEmbedBackend`; rich interactive web
+  embeds are not supported on macOS yet.
+- Native notifications, macOS menu/dock/window semantics, and full hardware
+  testing, including microphone/camera permissions and Metal rendering.
+- Self-contained GStreamer runtime and plugin distribution, relocatable
+  library paths, embedded helpers, developer signing and notarization.
+- Apple Intel build and validation, if we elect to support Intel Macs.
 
-Keep platform-specific functionality behind OS boundaries and preserve the
-shared egui/Papo core rather than forking application logic for macOS.
+Keep platform integration isolated behind existing platform interfaces. The
+shared Papo UI, state and networking must remain common to all platforms.

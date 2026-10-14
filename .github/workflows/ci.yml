@@ -99,6 +99,7 @@ jobs:
         run: |
           bash -n scripts/deps.sh
           bash -n scripts/wpe-runtime.sh
+          bash -n packaging/macos/build-app.sh
 
   # Build natively on an Apple Silicon runner. This is a compile/runtime
   # bootstrap, not yet a signed .app or a distributable macOS release.
@@ -118,9 +119,10 @@ jobs:
       - name: Install native GStreamer SDK
         run: |
           # Homebrew's current gstreamer formula bundles the former gst-* plugins.
-          brew install gstreamer pkgconf
+          brew install gstreamer libnice-gstreamer pkgconf
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
           gst-inspect-1.0 webrtcbin
+          gst-inspect-1.0 nicesrc
       - name: Compile macOS desktop application and native WebKit bridge
         run: cargo build --locked --bin papo
       - name: Test WKWebView geometry contract
@@ -129,6 +131,21 @@ jobs:
         run: |
           ./target/debug/papo voice-check | tee voice-check.log
           grep -q "GStreamer" voice-check.log
+      - name: Package unsigned Finder-launchable test app
+        run: |
+          version="$(grep -m1 '^version = "' Cargo.toml | cut -d '"' -f2)"
+          bash packaging/macos/build-app.sh target/debug/papo "$version" dist
+          file dist/Papo.app/Contents/MacOS/papo
+          test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
+          dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
+          grep -q "GStreamer" packaged-voice-check.log
+          (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app Papo-macos-arm64-adhoc.zip)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-macos-arm64-adhoc
+          path: dist/Papo-macos-arm64-adhoc.zip
+          retention-days: 7
+          if-no-files-found: error
 
   windows:
     runs-on: windows-2025
