@@ -2687,6 +2687,7 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: results_rx,
+                server_key: "test".into(),
             }),
             Arc::new(FakeBackend::default()),
             MediaLimits::default(),
@@ -2724,6 +2725,7 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: results_rx,
+                server_key: "test".into(),
             }),
             Arc::new(FakeBackend::default()),
             MediaLimits::default(),
@@ -2762,6 +2764,7 @@ mod lifecycle_tests {
             Some(Media {
                 requests,
                 results: sync_mpsc::channel().1,
+                server_key: "test".into(),
             }),
             backend,
             MediaLimits::default(),
