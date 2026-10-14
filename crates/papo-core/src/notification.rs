@@ -576,7 +576,6 @@ mod tests {
             channel_id: channel.to_owned(),
             author_id: author.to_owned(),
             external_author: None,
-            external_author: None,
             content: Some(content.to_owned()),
             created_at: Utc::now(),
             edited_at: None,

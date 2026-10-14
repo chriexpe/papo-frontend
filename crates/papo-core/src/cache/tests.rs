@@ -41,7 +41,6 @@ fn message(id: &str, channel: &str, content: &str, created_at: i64) -> CachedMes
         channel_id: channel.to_owned(),
         author_id: "author".to_owned(),
         external_author: None,
-        external_author: None,
         content: content.to_owned(),
         created_at,
         edited: false,
