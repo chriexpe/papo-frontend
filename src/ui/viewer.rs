@@ -24,6 +24,8 @@ pub struct Viewer {
     /// Keep their attachment snapshot with the viewer so image/video/audio
     /// still works without forcing a channel-history fetch first.
     attachments: Option<Vec<Attachment>>,
+    /// External/embedded images use this very same viewer and image stage.
+    external: Option<ExternalImage>,
     zoom: f32,
     offset: Vec2,
     /// Sem zoom manual: a imagem acompanha a janela.
@@ -36,6 +38,7 @@ impl Viewer {
             message_id,
             index,
             attachments: None,
+            external: None,
             zoom: 1.0,
             offset: Vec2::ZERO,
             fitted: true,
@@ -51,10 +54,33 @@ impl Viewer {
             message_id,
             index,
             attachments: Some(attachments),
+            external: None,
             zoom: 1.0,
             offset: Vec2::ZERO,
             fitted: true,
         }
+    }
+
+    pub fn external_image(
+        id: String,
+        url: String,
+        name: String,
+        ephemeral: bool,
+        favourite_id: Option<String>,
+    ) -> Self {
+        Self {
+            message_id: String::new(),
+            index: 0,
+            attachments: None,
+            external: Some(ExternalImage { id, url, name, ephemeral, favourite_id }),
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            fitted: true,
+        }
+    }
+
+    pub fn external_source(&self) -> Option<&ExternalImage> {
+        self.external.as_ref()
     }
 
     pub fn source_attachments(&self) -> Option<&[Attachment]> {
@@ -68,9 +94,20 @@ impl Viewer {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ExternalImage {
+    pub id: String,
+    pub url: String,
+    pub name: String,
+    pub ephemeral: bool,
+    pub favourite_id: Option<String>,
+}
+
 pub enum ViewerAction {
     Close,
     Download { id: String, name: String },
+    SaveCachedImage { path: std::path::PathBuf, name: String },
+    ToggleFavourite(String),
 }
 
 /// Desenha o visualizador. Devolve `None` quando nada mudou.
@@ -100,9 +137,12 @@ pub fn draw(
     // are added afterwards and therefore own overlapping clicks.
     let background = ui.interact(screen, ui.id().with("viewer-backdrop"), Sense::click());
 
-    let Some(attachment) = attachments.get(viewer.index) else {
+    let attachment = attachments.get(viewer.index);
+    let external_owned = viewer.external.clone();
+    let external = external_owned.as_ref();
+    if attachment.is_none() && external.is_none() {
         return Some(ViewerAction::Close);
-    };
+    }
 
     // Navegação e saída pelo teclado.
     let (close, next, previous, reset) = ui.ctx().input(|input| {
@@ -135,11 +175,23 @@ pub fn draw(
 
     // Onde a mídia foi desenhada: clicar fora disso fecha.
     let mut content = Rect::NOTHING;
-    let mut action = match attachment.kind() {
-        Kind::Video | Kind::Audio => {
-            stage_player(ui, t, s, media, attachment, stage, &mut content)
+    let mut action = if let Some(image) = viewer.external.as_ref() {
+        let full = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+            media.preview_full(embed_id)
+        } else if image.ephemeral {
+            media.remote_ephemeral_full(&image.id, &image.url)
+        } else {
+            media.remote_image_full(&image.url)
+        };
+        let texture = full.and_then(|texture| texture.frame(ui.ctx())).cloned();
+        stage_image_texture(ui, t, s, viewer, texture, stage, &mut content)
+    } else if let Some(attachment) = attachment {
+        match attachment.kind() {
+            Kind::Video | Kind::Audio => stage_player(ui, t, s, media, attachment, stage, &mut content),
+            _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
         }
-        _ => stage_image(ui, t, s, media, viewer, attachment, stage, &mut content),
+    } else {
+        None
     };
 
     // Barra de cima: nome, contador e ações.
@@ -147,19 +199,25 @@ pub fn draw(
     ui.painter().text(
         egui::pos2(header.min.x + space::XXL, header.center().y),
         egui::Align2::LEFT_CENTER,
-        elide(attachment.name(), 60),
+        elide(external.map_or_else(|| attachment.expect("attachment or external").name(), |image| image.name.as_str()), 60),
         text::headline(),
         Color32::WHITE,
     );
-    let subtitle = if attachments.len() > 1 {
-        format!(
-            "{} · {} / {}",
-            size_label(attachment.size_bytes),
-            viewer.index + 1,
-            attachments.len()
-        )
+    let subtitle = if let Some(image) = external {
+        image.url.clone()
+    } else if let Some(attachment) = attachment {
+        if attachments.len() > 1 {
+            format!(
+                "{} · {} / {}",
+                size_label(attachment.size_bytes),
+                viewer.index + 1,
+                attachments.len()
+            )
+        } else {
+            size_label(attachment.size_bytes)
+        }
     } else {
-        size_label(attachment.size_bytes)
+        String::new()
     };
     ui.painter().text(
         egui::pos2(header.min.x + space::XXL, header.center().y + 16.0),
@@ -170,11 +228,15 @@ pub fn draw(
     );
 
     let mut x = header.max.x - space::XXL - 16.0;
-    for (glyph, tag) in [
-        (icon::X, "close"),
-        (icon::DOWNLOAD_SIMPLE, "download"),
-        (icon::ARROWS_IN, "fit"),
-    ] {
+    let mut buttons = vec![(icon::X, "close")];
+    if external.and_then(|image| image.favourite_id.as_ref()).is_some() {
+        buttons.push((icon::STAR, "favourite"));
+    }
+    if external.is_none_or(|image| !image.ephemeral) {
+        buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
+    }
+    buttons.push((icon::ARROWS_IN, "fit"));
+    for (glyph, tag) in buttons {
         let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
         let response = ui
             .interact(rect, ui.id().with(("viewer", tag)), Sense::click())
@@ -201,10 +263,29 @@ pub fn draw(
             match tag {
                 "close" => action = Some(ViewerAction::Close),
                 "download" => {
-                    action = Some(ViewerAction::Download {
-                        id: attachment.id.clone(),
-                        name: attachment.name().to_owned(),
-                    })
+                    if let Some(image) = external {
+                        let path = if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+                            media.preview_full_cached_path(embed_id)
+                        } else {
+                            crate::media::remote_image_cached_path(&image.url)
+                        };
+                        if let Some(path) = path {
+                            action = Some(ViewerAction::SaveCachedImage {
+                                path,
+                                name: image.name.clone(),
+                            });
+                        }
+                    } else if let Some(attachment) = attachment {
+                        action = Some(ViewerAction::Download {
+                            id: attachment.id.clone(),
+                            name: attachment.name().to_owned(),
+                        });
+                    }
+                }
+                "favourite" => {
+                    if let Some(id) = external.and_then(|image| image.favourite_id.as_ref()) {
+                        action = Some(ViewerAction::ToggleFavourite(id.clone()));
+                    }
                 }
                 _ => viewer.reset(),
             }
@@ -266,6 +347,22 @@ fn stage_image(
             .cloned(),
     };
 
+    stage_image_texture(ui, t, s, viewer, texture, stage, content)
+}
+
+/// Common image viewer for attachments, authenticated embeds and public GIFs.
+/// This is deliberately the only image-stage implementation: zoom, pan,
+/// double-click, fit and mouse/touch behavior stay identical for every source.
+#[allow(clippy::too_many_arguments)]
+fn stage_image_texture(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    viewer: &mut Viewer,
+    texture: Option<egui::TextureHandle>,
+    stage: Rect,
+    content: &mut Rect,
+) -> Option<ViewerAction> {
     let Some(texture) = texture else {
         ui.painter().text(
             stage.center(),
@@ -585,16 +682,10 @@ pub(super) fn stage_playback(
 }
 
 
-pub enum RemoteViewerAction {
-    Close,
-    Download { path: std::path::PathBuf, name: String },
-    ToggleFavourite,
-}
-
-/// Same fullscreen UI used for attachments, backed by a public rich-preview
-/// image or video instead of a server attachment.
+/// Fullscreen player for rich links. Images use Viewer::external_image
+/// and draw() above; no duplicate image zoom/pan implementation remains.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_remote_media(
+pub fn draw_remote_video(
     ui: &mut egui::Ui,
     t: &Tokens,
     s: &Strings,
@@ -602,14 +693,8 @@ pub fn draw_remote_media(
     id: &str,
     url: &str,
     name: &str,
-    video: bool,
-    ephemeral: bool,
-    favourite: Option<bool>,
     opened: f64,
-    zoom: &mut f32,
-    offset: &mut Vec2,
-    fitted: &mut bool,
-) -> Option<RemoteViewerAction> {
+) -> bool {
     let screen = ui.ctx().viewport_rect();
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("papo-viewer"));
     super::shell::claim_overlay_layer(ui.ctx(), layer, screen);
@@ -620,117 +705,28 @@ pub fn draw_remote_media(
             .max_rect(screen)
             .sense(Sense::click_and_drag()),
     );
-
     top.painter()
         .rect_filled(screen, CornerRadius::ZERO, Color32::from_black_alpha(232));
-    let background =
-        top.interact(screen, top.id().with("viewer-backdrop"), Sense::click());
+    let background = top.interact(screen, top.id().with("viewer-backdrop"), Sense::click());
 
     if top.ctx().input(|input| input.key_pressed(Key::Escape)) {
-        return Some(RemoteViewerAction::Close);
+        return true;
     }
 
     let stage = Rect::from_min_max(
         egui::pos2(screen.min.x + space::XXXL, screen.min.y + 64.0),
         egui::pos2(screen.max.x - space::XXXL, screen.max.y - 64.0),
     );
-    let texture = (!video)
-        .then(|| {
-            let texture = if ephemeral {
-                media.remote_ephemeral_full(id, url)
-            } else {
-                media.remote_image(id, url)
-            };
-            texture
-                .and_then(|texture| texture.frame(top.ctx()))
-                .cloned()
-        })
-        .flatten();
-
     let mut content = Rect::NOTHING;
-    let mut stage_clicked_outside = false;
-    if video {
-        stage_playback(
-            &mut top,
-            t,
-            media,
-            id,
-            PlaySource::Remote(url),
-            true,
-            stage,
-            &mut content,
-        );
-    } else if let Some(texture) = texture {
-        let natural = texture.size_vec2();
-        let base = (stage.width() / natural.x)
-            .min(stage.height() / natural.y)
-            .min(1.0);
-        let scale = if *fitted { base } else { *zoom };
-        let response = top.interact(
-            stage,
-            top.id().with("viewer-stage"),
-            Sense::click_and_drag(),
-        );
-
-        let pinch = top.ctx().input(|input| input.zoom_delta());
-        if (pinch - 1.0).abs() > 0.001 {
-            let previous = scale;
-            let next = (previous * pinch).clamp(ZOOM_MIN, ZOOM_MAX);
-            let anchor = top
-                .ctx()
-                .input(|input| input.multi_touch().map(|touch| touch.center_pos))
-                .or_else(|| top.ctx().pointer_latest_pos());
-            if let Some(anchor) = anchor {
-                let centre = stage.center() + *offset;
-                *offset -= (anchor - centre) * (next / previous - 1.0);
-            }
-            *zoom = next;
-            *fitted = false;
-        }
-
-        let scroll = top.ctx().input(|input| input.smooth_scroll_delta.y);
-        if response.hovered() && scroll.abs() > 0.1 {
-            let previous = scale;
-            let next = (previous * (1.0 + scroll * 0.0015)).clamp(ZOOM_MIN, ZOOM_MAX);
-            if let Some(pointer) = top.ctx().pointer_latest_pos() {
-                let centre = stage.center() + *offset;
-                *offset -= (pointer - centre) * (next / previous - 1.0);
-            }
-            *zoom = next;
-            *fitted = false;
-        }
-        if response.dragged() {
-            *offset += response.drag_delta();
-            if *fitted {
-                *zoom = base;
-                *fitted = false;
-            }
-        }
-        if response.double_clicked() {
-            if *fitted {
-                *zoom = 1.0;
-                *fitted = false;
-                *offset = Vec2::ZERO;
-            } else {
-                *zoom = 1.0;
-                *offset = Vec2::ZERO;
-                *fitted = true;
-            }
-        }
-
-        let size = natural * scale;
-        content = Rect::from_center_size(stage.center() + *offset, size);
-        stage_clicked_outside = response.clicked()
-            && response
-                .interact_pointer_pos()
-                .is_some_and(|pointer| !content.expand(space::MD).contains(pointer));
-        top.painter().image(
-            texture.id(),
-            content,
-            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            Color32::WHITE,
-        );
+    let source = if let Some(embed_id) = id.strip_prefix("embed-video:") {
+        PlaySource::EmbedVideo(embed_id)
     } else {
+        PlaySource::Remote(url)
+    };
+    let _ = stage_playback(
+        &mut top, t, media, id, source, true, stage, &mut content,
+    );
+    if !content.is_positive() {
         top.painter().text(
             stage.center(),
             egui::Align2::CENTER_CENTER,
@@ -738,8 +734,7 @@ pub fn draw_remote_media(
             text::body(),
             Color32::from_white_alpha(160),
         );
-        top.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(150));
+        top.ctx().request_repaint_after(std::time::Duration::from_millis(150));
     }
 
     let header = Rect::from_min_size(screen.min, Vec2::new(screen.width(), 56.0));
@@ -758,80 +753,38 @@ pub fn draw_remote_media(
         Color32::from_white_alpha(170),
     );
 
-    let mut action = None;
-    let mut x = header.max.x - space::XXL - 16.0;
-    let buttons: Vec<(&str, &str)> = if video {
-        vec![(icon::X, "close")]
-    } else {
-        let mut buttons = vec![(icon::X, "close")];
-        if favourite.is_some() {
-            buttons.push((icon::STAR, "favourite"));
-        }
-        if !ephemeral {
-            buttons.push((icon::DOWNLOAD_SIMPLE, "download"));
-        }
-        buttons.push((icon::ARROWS_IN, "fit"));
-        buttons
-    };
-    for &(glyph, tag) in &buttons {
-        let rect = Rect::from_center_size(egui::pos2(x, header.center().y), Vec2::splat(32.0));
-        let response = top
-            .interact(rect, top.id().with(("remote-viewer", tag)), Sense::click())
-            .on_hover_text(match tag {
-                "close" => s.close,
-                "download" => s.viewer_download,
-                _ => s.viewer_fit,
-            });
-        if response.hovered() {
-            top.painter().rect_filled(
-                rect,
-                CornerRadius::same(radius::CONTROL),
-                Color32::from_white_alpha(28),
-            );
-        }
-        top.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            glyph,
-            text::icon(17.0),
-            Color32::WHITE,
+    let close_rect = Rect::from_center_size(
+        egui::pos2(header.max.x - space::XXL - 16.0, header.center().y),
+        Vec2::splat(32.0),
+    );
+    let close = top
+        .interact(close_rect, top.id().with("remote-viewer-close"), Sense::click())
+        .on_hover_text(s.close);
+    if close.hovered() {
+        top.painter().rect_filled(
+            close_rect,
+            CornerRadius::same(radius::CONTROL),
+            Color32::from_white_alpha(28),
         );
-        if response.clicked() {
-            match tag {
-                "close" => action = Some(RemoteViewerAction::Close),
-                "download" => {
-                    if let Some(path) = crate::media::remote_image_cached_path(url) {
-                        action = Some(RemoteViewerAction::Download {
-                            path,
-                            name: name.to_owned(),
-                        });
-                    }
-                }
-                "favourite" => action = Some(RemoteViewerAction::ToggleFavourite),
-                _ => {
-                    *zoom = 1.0;
-                    *offset = Vec2::ZERO;
-                    *fitted = true;
-                }
-            }
-        }
-        x -= 38.0;
+    }
+    top.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        icon::X,
+        text::icon(17.0),
+        Color32::WHITE,
+    );
+    if close.clicked() {
+        return true;
     }
 
-    let now = top.input(|input| input.time);
-    if action.is_none() && now > opened + 0.05 && stage_clicked_outside {
-        action = Some(RemoteViewerAction::Close);
-    }
-    if background.clicked() && action.is_none() {
+    if background.clicked() && top.input(|input| input.time) > opened + 0.05 {
         let pointer = background.interact_pointer_pos().unwrap_or_default();
-        let on_content = content.expand(space::MD).contains(pointer);
-        let on_header = pointer.y < screen.min.y + 56.0;
-        if now > opened + 0.05 && !on_content && !on_header {
-            action = Some(RemoteViewerAction::Close);
-        }
+        let on_player = content.expand2(Vec2::new(space::MD, 55.0)).contains(pointer);
+        let on_header = pointer.y < header.max.y;
+        return !on_player && !on_header;
     }
-
-    action
+    false
 }
 
 fn arrow(ui: &mut egui::Ui, t: &Tokens, centre: egui::Pos2, glyph: &str) -> bool {

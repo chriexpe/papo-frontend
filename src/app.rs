@@ -292,6 +292,9 @@ pub struct Settings {
     pub active: usize,
     pub lang: Lang,
     pub theme: ThemePref,
+    /// Multiplicador local do DPI do monitor, apenas para a interface.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
     /// Vidro fosco nas barras; desligado usa fundos opacos.
     pub translucency: bool,
     pub show_members: bool,
@@ -395,6 +398,12 @@ fn enabled() -> bool {
     true
 }
 
+fn default_ui_scale() -> f32 { 1.0 }
+
+fn normalise_ui_scale(value: f32) -> f32 {
+    if value.is_finite() { value.clamp(0.75, 2.0) } else { default_ui_scale() }
+}
+
 fn default_webembed_float_width() -> f32 {
     360.0
 }
@@ -407,6 +416,7 @@ impl Default for Settings {
             active: 0,
             lang: Lang::PtBr,
             theme: ThemePref::System,
+            ui_scale: default_ui_scale(),
             translucency: true,
             show_members: true,
             close_to_tray: true,
@@ -441,6 +451,7 @@ impl Settings {
     /// Garante que a lista de servidores existe e que o ativo aponta para um
     /// item de verdade. Ajustes gravados antes do trilho só têm `server_url`.
     fn normalise(&mut self) {
+        self.ui_scale = normalise_ui_scale(self.ui_scale);
         self.server_url = normalise_server_url(&self.server_url);
         self.gif_favourites.retain(|slug| crate::giphy::valid_id(slug));
         self.trusted_link_hosts = std::mem::take(&mut self.trusted_link_hosts)
@@ -880,6 +891,12 @@ impl PapoApp {
         let system = SystemTheme::read();
         #[cfg(not(target_os = "android"))]
         crate::render::log_adapter(cc);
+        #[cfg(not(target_os = "android"))]
+        {
+            cc.egui_ctx.set_zoom_factor(settings.ui_scale);
+            // The slider owns desktop zoom, so keyboard zoom cannot diverge.
+            cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        }
         theme::install_fonts(&cc.egui_ctx, desktop::system_ui_font().as_ref());
 
         let tokens = Tokens::new(appearance_for(&settings, &system), system.accent);
@@ -3604,6 +3621,10 @@ impl PapoApp {
         use crate::ui::settings::{SettingsAction, Surface};
 
         let Some(surface) = self.sheet.open else {
+            #[cfg(not(target_os = "android"))]
+            {
+                self.sheet.ui_scale_draft = None;
+            }
             return;
         };
         let s = self.settings.lang.strings();
@@ -3631,6 +3652,8 @@ impl PapoApp {
 
         let mut ask_download = self.settings.downloads == DownloadMode::Ask;
         let before_rich_presence = self.settings.rich_presence.clone();
+        #[cfg(not(target_os = "android"))]
+        let before_ui_scale = self.settings.ui_scale;
         // O início automático é estado do sistema, não um ajuste guardado: o
         // que vale é o arquivo em disco, então ele é lido e escrito à parte.
         let autostart_before = crate::platform::autostart::is_enabled();
@@ -3688,6 +3711,7 @@ impl PapoApp {
                 roles: &mut self.roles,
                 lang: &mut self.settings.lang,
                 theme: &mut self.settings.theme,
+                ui_scale: &mut self.settings.ui_scale,
                 translucency: &mut self.settings.translucency,
                 glass: self.ui.glass.clone(),
                 notifications: &mut self.settings.notifications,
@@ -3720,6 +3744,21 @@ impl PapoApp {
             crate::ui::settings::sheet(ctx, &mut self.sheet, &mut data, anchor, screen, &t, s)
         };
 
+        #[cfg(not(target_os = "android"))]
+        {
+            // The slider may update its draft every frame while dragging, but
+            // we only change egui's global zoom after the pointer is released.
+            // Keyboard edits, with no pointer held, apply immediately.
+            if !ctx.input(|input| input.pointer.any_down())
+                && let Some(scale) = self.sheet.ui_scale_draft.take()
+            {
+                self.settings.ui_scale = normalise_ui_scale(scale);
+            }
+            if before_ui_scale != self.settings.ui_scale {
+                ctx.set_zoom_factor(self.settings.ui_scale);
+                ctx.request_repaint();
+            }
+        }
         // Um ajuste local mudou: grava e reflete na janela na hora.
         let after_primary = (
             self.settings.lang,

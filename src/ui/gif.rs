@@ -6,7 +6,7 @@ use egui_phosphor::regular as icon;
 use crate::giphy::{BrowseMode, Category, GifItem};
 use crate::i18n::Strings;
 
-use super::shell::{ChatAction, LinkViewer, UiState};
+use super::shell::{ChatAction, UiState};
 use super::theme::{radius, space, text, Tokens};
 
 const PICKER_W: f32 = 430.0;
@@ -653,18 +653,13 @@ pub fn message(
         if star.clicked() {
             toggle_favourite(state, id);
         } else if response.clicked() {
-            state.link_viewer = Some(LinkViewer {
-                id: format!("giphy-viewer-{id}"),
-                url: item.gif_url.clone(),
-                name: item.title.clone(),
-                video: false,
-                ephemeral: true,
-                favourite_id: Some(id.to_owned()),
-                zoom: 1.0,
-                offset: Vec2::ZERO,
-                fitted: true,
-                opened: ui.input(|input| input.time),
-            });
+            state.viewer = Some(super::viewer::Viewer::external_image(
+                format!("giphy-viewer-{id}"),
+                item.gif_url.clone(),
+                item.title.clone(),
+                true,
+                Some(id.to_owned()),
+            ));
         }
     } else {
         ui.painter().text(

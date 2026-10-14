@@ -109,6 +109,18 @@ jobs:
             ./papo_*.deb || true
           for deb in papo_*.deb; do sha256sum "$deb" > "$deb.sha256"; done
 
+      - name: Arch package (.pkg.tar.zst)
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=dev
+          bash packaging/arch/build.sh "$version" "${{ matrix.arch }}"
+
+      - name: AppImage including GStreamer plugins
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ -n "$version" ] || version=dev
+          bash packaging/appimage/build.sh "$version" "${{ matrix.arch }}" target/release/papo rsrpc-helper
+
       - uses: actions/upload-artifact@v4
         with:
           name: papo-${{ matrix.arch }}
@@ -117,6 +129,10 @@ jobs:
             *.tar.gz.sha256
             *.deb
             *.deb.sha256
+            *.pkg.tar.zst
+            *.pkg.tar.zst.sha256
+            *.AppImage
+            *.AppImage.sha256
 
   windows:
     needs: version
@@ -408,6 +424,10 @@ jobs:
             *.tar.gz.sha256
             *.deb
             *.deb.sha256
+            *.pkg.tar.zst
+            *.pkg.tar.zst.sha256
+            *.AppImage
+            *.AppImage.sha256
             *.flatpak
             *.zip
             *.zip.sha256

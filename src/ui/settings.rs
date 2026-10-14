@@ -179,6 +179,10 @@ pub struct SettingsState {
     pub compact: bool,
     pub app_pane: AppPane,
     pub server_pane: ServerPane,
+    /// Temporary value while dragging the desktop UI scale slider.
+    /// Applying viewport zoom mid-drag moves the slider under the pointer.
+    #[cfg(not(target_os = "android"))]
+    pub ui_scale_draft: Option<f32>,
     /// Rascunhos dos campos de texto, para não reescrever o estado a cada
     /// tecla digitada.
     pub draft: Draft,
@@ -202,6 +206,8 @@ impl Default for SettingsState {
             compact: false,
             app_pane: AppPane::Account,
             server_pane: ServerPane::General,
+            #[cfg(not(target_os = "android"))]
+            ui_scale_draft: None,
             draft: Draft::default(),
             channel_people: std::collections::HashMap::new(),
             pending_channel_people: None,
@@ -1332,6 +1338,7 @@ pub struct Context<'a> {
     pub roles: &'a mut super::roles::RolesState,
     pub lang: &'a mut crate::i18n::Lang,
     pub theme: &'a mut crate::ui::theme::ThemePref,
+    pub ui_scale: &'a mut f32,
     pub translucency: &'a mut bool,
     /// O desfoque do vidro, quando o renderizador sabe fazê-lo.
     pub glass: Option<crate::ui::glass::SharedGlass>,
@@ -2796,6 +2803,8 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Activity, s.rich_presence_external),
         (AppPane::Activity, s.rich_presence_override),
         (AppPane::Appearance, s.theme),
+        #[cfg(not(target_os = "android"))]
+        (AppPane::Appearance, s.ui_scale),
         (AppPane::Appearance, s.translucency),
         (AppPane::Appearance, s.topic_reveal),
         (AppPane::Appearance, s.open_at_newest),
@@ -3948,6 +3957,20 @@ fn app_pane(
                             (crate::ui::theme::ThemePref::System, s.theme_system),
                         ],
                     );
+                });
+                #[cfg(not(target_os = "android"))]
+                rows.row(s.ui_scale, Some(s.ui_scale_hint), |ui, _t| {
+                    // Keep the value local during pointer interaction. Zooming
+                    // the viewport while the pointer is held would change the
+                    // slider geometry, causing a moving-target feedback loop.
+                    let current = state.ui_scale_draft.unwrap_or(*data.ui_scale);
+                    let mut percent = (current * 100.0).round() as i32;
+                    if ui.add_sized(
+                        [175.0, 26.0],
+                        egui::Slider::new(&mut percent, 75..=200).step_by(5.0).suffix("%"),
+                    ).changed() {
+                        state.ui_scale_draft = Some(percent as f32 / 100.0);
+                    }
                 });
                 rows.row(s.translucency, Some(s.translucency_hint), |ui, t| {
                     switch(ui, t, data.translucency);

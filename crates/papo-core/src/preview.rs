@@ -38,6 +38,10 @@ const RETRY_BASE_MS: i64 = 5 * 60 * 1000;
 const RETRY_MAX_MS: i64 = 6 * 60 * 60 * 1000;
 const RESOLVER_CONCURRENCY: usize = 4;
 const QUEUE_CAPACITY: usize = 128;
+/// Preview metadata is cheap compared with decoded media, but URLs and post
+/// metadata are still unbounded if a user scrolls through a busy channel. Keep
+/// a hot working set and let persistent cache restore entries that fall out.
+const MEMORY_ENTRY_LIMIT: usize = 512;
 /// Compatibility retry for origins whose Cloudflare policy challenges a
 /// conventional HTTP-client UA before the site's own crawler route can run.
 ///
@@ -258,6 +262,7 @@ struct MemoryEntry {
     ttl_ms: i64,
     retry_after: Option<i64>,
     in_flight: bool,
+    last_used: u64,
 }
 
 impl MemoryEntry {
@@ -268,6 +273,7 @@ impl MemoryEntry {
             ttl_ms: 0,
             retry_after: None,
             in_flight: false,
+            last_used: 0,
         }
     }
 
@@ -291,6 +297,7 @@ impl MemoryEntry {
 struct Inner {
     db: Arc<ClientDb>,
     entries: Mutex<HashMap<String, MemoryEntry>>,
+    access_tick: AtomicU64,
     wake: Arc<dyn Fn() + Send + Sync>,
     stats: PreviewStats,
 }
@@ -305,6 +312,7 @@ impl PreviewCoordinator {
         let inner = Arc::new(Inner {
             db,
             entries: Mutex::new(HashMap::new()),
+            access_tick: AtomicU64::new(0),
             wake,
             stats: PreviewStats::default(),
         });
@@ -330,33 +338,41 @@ impl PreviewCoordinator {
         let key = canonical_url(raw_url)?;
         let now = now_millis();
         let mut entries = self.inner.entries.lock().ok()?;
-        let entry = entries.entry(key.clone()).or_insert_with(MemoryEntry::loading);
+        let access_tick = self.inner.access_tick.fetch_add(1, Ordering::Relaxed) + 1;
+        let state = {
+            let entry = entries.entry(key.clone()).or_insert_with(MemoryEntry::loading);
+            entry.last_used = access_tick;
 
-        if entry.wants_refresh(now) {
-            match self.queue.try_send(key) {
-                Ok(()) => {
-                    entry.in_flight = true;
-                    self.inner.stats.queued.fetch_add(1, Ordering::Relaxed);
+            if entry.wants_refresh(now) {
+                match self.queue.try_send(key) {
+                    Ok(()) => {
+                        entry.in_flight = true;
+                        self.inner.stats.queued.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        // A fila é propositalmente limitada. Um próximo paint
+                        // pode tentar de novo; não existe storm de tasks.
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {}
                 }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    // A fila é propositalmente limitada. Um próximo paint
-                    // pode tentar de novo; não existe storm de tasks.
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {}
             }
-        }
 
-        Some(entry.state.clone())
+            entry.state.clone()
+        };
+
+        prune_entries(&mut entries);
+
+        Some(state)
     }
 
     pub fn peek(&self, raw_url: &str) -> Option<PreviewState> {
         let key = canonical_url(raw_url)?;
-        self.inner
-            .entries
-            .lock()
-            .ok()?
-            .get(&key)
-            .map(|entry| entry.state.clone())
+        let mut entries = self.inner.entries.lock().ok()?;
+        let entry = entries.get_mut(&key)?;
+        entry.last_used = self.inner.access_tick.fetch_add(1, Ordering::Relaxed) + 1;
+        let state = entry.state.clone();
+        prune_entries(&mut entries);
+        Some(state)
     }
 
     pub fn stats(&self) -> PreviewStatsSnapshot {
@@ -406,6 +422,22 @@ fn preview_worker(inner: Arc<Inner>, mut queue: mpsc::Receiver<String>) {
             });
         }
     });
+}
+
+fn prune_entries(entries: &mut HashMap<String, MemoryEntry>) {
+    while entries.len() > MEMORY_ENTRY_LIMIT {
+        let Some(victim) = entries
+            .iter()
+            .filter(|(_, entry)| !entry.in_flight)
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone())
+        else {
+            // A full resolver queue is allowed to exceed the hot-set limit
+            // briefly; in-flight work must not lose its completion slot.
+            break;
+        };
+        entries.remove(&victim);
+    }
 }
 
 async fn process_request(
@@ -669,6 +701,10 @@ fn publish(
     in_flight: bool,
 ) {
     if let Ok(mut entries) = inner.entries.lock() {
+        let last_used = entries
+            .get(key)
+            .map(|entry| entry.last_used)
+            .unwrap_or_else(|| inner.access_tick.fetch_add(1, Ordering::Relaxed) + 1);
         entries.insert(
             key.to_owned(),
             MemoryEntry {
@@ -677,8 +713,10 @@ fn publish(
                 ttl_ms,
                 retry_after,
                 in_flight,
+                last_used,
             },
         );
+        prune_entries(&mut entries);
     }
     (inner.wake)();
 }
@@ -1050,25 +1088,27 @@ async fn resolve_oembed(
                 } else if !html.trim().is_empty() {
                     // Alguns oEmbed (ex.: blockquote + script) não oferecem
                     // iframe URL: o script monta o iframe a partir do
-                    // permalink do snippet. Sondamos essa página de embed
-                    // (mídia direta primeiro, player dela como fallback) e só
-                    // então caímos na página original, sem persistir HTML
-                    // executável.
-                    preview.kind = PreviewKind::Embed;
-                    preview.embed_url = canonical_url(source_url);
+                    // permalink do snippet. Sondamos essa página de embed,
+                    // mas só publicamos um player se ela realmente expuser
+                    // mídia ou outro embed. Uma foto social não deve ganhar
+                    // um botão de play só porque o oEmbed devolveu um
+                    // blockquote + script.
                     if let Some(page) = snippet_embed_page(html, source_url)
                         && let Ok(probe) = probe_embed_page(client, &page).await
                     {
                         persistent &= probe.persistent;
-                        preview.embed_url = Some(page);
-                        if let Some(media) = probe.preview.media_url {
+                        let probe = probe.preview;
+                        if let Some(media) = probe.media_url {
                             preview.kind = PreviewKind::Video;
                             preview.media_url = Some(media);
+                        } else if let Some(embed) = probe.embed_url {
+                            preview.kind = PreviewKind::Embed;
+                            preview.embed_url = Some(embed);
                         }
                         if preview.image_url.is_none() {
-                            preview.image_url = probe.preview.image_url;
+                            preview.image_url = probe.image_url;
                         }
-                        preview.post.fill_from(*probe.preview.post);
+                        preview.post.fill_from(*probe.post);
                     }
                 }
             }
@@ -1415,7 +1455,7 @@ async fn parse_html_preview(
     .unwrap_or_default()
     .to_ascii_lowercase();
 
-    let direct_video = meta_content(
+    let declared_video = meta_content(
         html,
         &[
             "og:video:secure_url",
@@ -1426,8 +1466,7 @@ async fn parse_html_preview(
     )
     .and_then(|raw| resolve_meta_url(base, &raw))
     .filter(|url| safe_remote_url(url))
-    .filter(|_| !video_type.starts_with("text/html"))
-    .or_else(|| html_media_url(html, base.as_str()));
+    .filter(|_| !video_type.starts_with("text/html"));
 
     let mut post = html_post_meta(html, base, title.as_deref());
     // Página de um post (tem autor): o estado que ela hidrata no player
@@ -1436,10 +1475,16 @@ async fn parse_html_preview(
     if post_page {
         post.fill_from(hydration_post(html));
     }
-    let direct_video = direct_video.or_else(|| {
-        post_page
-            .then(|| hydration_video(html, image_url.as_deref()))
-            .flatten()
+    // Social pages often render replies in the same HTML document. Their
+    // descendant <video> elements are not media belonging to the linked post;
+    // only use the broad HTML fallback for ordinary pages. Social posts use
+    // the post-scoped hydration data, which is tied to the post thumbnail.
+    let direct_video = declared_video.or_else(|| {
+        if post_page {
+            hydration_video(html, image_url.as_deref())
+        } else {
+            html_media_url(html, base.as_str())
+        }
     });
 
     let embed_url = meta_content(html, &["twitter:player"])
@@ -3153,6 +3198,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn social_post_ignores_video_from_rendered_reply() {
+        let base = Url::parse("https://x.com/LudeonStudios/status/2109695358829748688").unwrap();
+        let html = r#"
+            <meta property="og:title" content="Ludeon Studios (@LudeonStudios) on X">
+            <meta property="og:image" content="https://pbs.twimg.com/media/HUcezJiWIAAKl5e.jpg">
+            <meta name="twitter:creator" content="@LudeonStudios">
+            <video src="https://video.twimg.com/tweet_video/HUclzmQXEAANJz2.mp4"></video>
+        "#;
+        let preview = parse_html_preview(base.as_str(), &base, html).await.unwrap();
+
+        assert_eq!(preview.kind, PreviewKind::Link);
+        assert_eq!(preview.media_url, None);
+        assert_eq!(
+            preview.image_url.as_deref(),
+            Some("https://pbs.twimg.com/media/HUcezJiWIAAKl5e.jpg")
+        );
+    }
+
+    #[tokio::test]
     async fn parses_schema_org_video_object_without_provider_hardcoding() {
         let base = Url::parse("https://video.example/watch/1").unwrap();
         let html = r#"
@@ -3178,6 +3242,7 @@ mod tests {
         let inner = Arc::new(Inner {
             db: Arc::new(ClientDb::open(None)),
             entries: Mutex::new(HashMap::new()),
+            access_tick: AtomicU64::new(0),
             wake: Arc::new(|| {}),
             stats: PreviewStats::default(),
         });
@@ -3212,6 +3277,17 @@ mod tests {
     }
 
     #[test]
+    fn memory_entry_set_stays_bounded_when_queue_is_busy() {
+        let (coordinator, _queue) = isolated_coordinator();
+        for index in 0..(MEMORY_ENTRY_LIMIT + QUEUE_CAPACITY + 32) {
+            let url = format!("https://example.com/post/{index}");
+            let _ = coordinator.get_or_request(&url);
+        }
+
+        assert!(coordinator.inner.entries.lock().unwrap().len() <= MEMORY_ENTRY_LIMIT);
+    }
+
+    #[test]
     fn stale_ready_is_served_while_exactly_one_refresh_is_queued() {
         let (coordinator, mut queue) = isolated_coordinator();
         let url = canonical_url("https://example.com/stale").unwrap();
@@ -3223,6 +3299,7 @@ mod tests {
                 ttl_ms: RICH_READY_TTL_MS,
                 retry_after: None,
                 in_flight: false,
+                last_used: 0,
             },
         );
 
@@ -3253,6 +3330,7 @@ mod tests {
                 ttl_ms: 0,
                 retry_after: Some(future),
                 in_flight: false,
+                last_used: 0,
             },
         );
 
