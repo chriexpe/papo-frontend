@@ -107,9 +107,12 @@ class Bundle:
     def stage_runtime(self) -> None:
         gst_prefix = brew_prefix("gstreamer")
         nice_prefix = brew_prefix("libnice-gstreamer")
+        # Homebrew's libnice-gstreamer formula deliberately moves libgstnice
+        # to libexec/gstreamer-1.0 to avoid a conflict with gstreamer's
+        # own plugin installation. Its formula test locates it via a link.
         plugin_dirs = [
             gst_prefix / "lib/gstreamer-1.0",
-            nice_prefix / "lib/gstreamer-1.0",
+            nice_prefix / "libexec/gstreamer-1.0",
         ]
         count = 0
         for plugin_dir in plugin_dirs:
@@ -121,6 +124,8 @@ class Bundle:
                     count += 1
         if not count:
             raise RuntimeError("no GStreamer plugins found")
+        if not (self.plugins / "libgstnice.dylib").is_file():
+            raise RuntimeError("libnice GStreamer ICE plugin was not bundled")
         scanner_candidates = [
             gst_prefix / "libexec/gstreamer-1.0/gst-plugin-scanner",
             self.prefix / "libexec/gstreamer-1.0/gst-plugin-scanner",
