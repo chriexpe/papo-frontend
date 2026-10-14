@@ -679,6 +679,10 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn nullable_author_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Original identity supplied by an integration; the authenticated author_id
 /// remains authoritative for authorization, moderation, ownership and audit.
 #[derive(Debug, Clone, serde::Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -696,6 +700,9 @@ pub struct ExternalAuthor {
 pub struct Message {
     pub id: String,
     pub channel_id: String,
+    // Webhook messages have no Papo user author; retain an empty identifier
+    // in the current store model while external_author supplies display identity.
+    #[serde(default, deserialize_with = "nullable_author_id")]
     pub author_id: String,
     #[serde(default)]
     pub external_author: Option<ExternalAuthor>,
