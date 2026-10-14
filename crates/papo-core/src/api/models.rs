@@ -679,11 +679,26 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Original identity supplied by an integration; the authenticated author_id
+/// remains authoritative for authorization, moderation, ownership and audit.
+#[derive(Debug, Clone, serde::Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ExternalAuthor {
+    pub source: String,
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub profile_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Message {
     pub id: String,
     pub channel_id: String,
     pub author_id: String,
+    #[serde(default)]
+    pub external_author: Option<ExternalAuthor>,
     pub content: Option<String>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,

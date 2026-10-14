@@ -4096,6 +4096,7 @@ mod network_hint_tests {
             id: "server-message".to_owned(),
             channel_id: "general".to_owned(),
             author_id: "me".to_owned(),
+            external_author: None,
             content: Some(content.to_owned()),
             created_at: chrono::Utc::now(),
             edited_at: None,
