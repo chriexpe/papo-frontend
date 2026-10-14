@@ -98,6 +98,11 @@ pub mod safe_area;
 #[path = "linux/wpe.rs"]
 pub mod linux_wpe;
 
+/// Native WKWebView browser surface for macOS WebEmbed.
+#[cfg(target_os = "macos")]
+#[path = "macos/webembed.rs"]
+pub mod macos_webembed;
+
 /// Native Edge WebView2 child-window backend for Windows WebEmbed.
 #[cfg(target_os = "windows")]
 #[path = "windows/webembed.rs"]
