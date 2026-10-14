@@ -664,12 +664,7 @@ impl Recorder {
         // A fonte varia com o sistema: PipeWire onde existe, ALSA como
         // reserva, e no Android o OpenSL ES, que é o único caminho. Sem
         // microfone, nada disso abre e a gravação nem começa.
-        #[cfg(target_os = "android")]
-        const SOURCES: &[&str] = &["openslessrc"];
-        #[cfg(not(target_os = "android"))]
-        const SOURCES: &[&str] = &["pipewiresrc", "alsasrc"];
-
-        for source in SOURCES {
+        for source in super::platform::audio_source_candidates() {
             // O `queue` logo depois da fonte é o que separa a captura da
             // codificação: sem ele, converter, resamplear e codificar em
             // Opus acontece na thread que está lendo o microfone, e cada
