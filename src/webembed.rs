@@ -452,7 +452,8 @@ struct UnavailableBackend;
 #[cfg(not(any(
     target_os = "android",
     target_os = "linux",
-    target_os = "windows"
+    target_os = "windows",
+    target_os = "macos"
 )))]
 impl WebEmbedBackend for UnavailableBackend {
     fn create(&mut self, _id: &str, _url: &str) -> Result<(), String> {
