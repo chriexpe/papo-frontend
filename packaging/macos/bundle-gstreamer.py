@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import filecmp
 from pathlib import Path
 import re
 import shutil
@@ -96,13 +97,23 @@ class Bundle:
         self.queue.append((resolved, destination))
         return destination
 
-    def stage_plugin(self, source: Path, destination_dir: Path) -> None:
+    def stage_plugin(self, source: Path, destination_dir: Path) -> bool:
         destination = destination_dir / source.name
+        resolved = source.resolve(strict=True)
         if destination.exists():
-            raise RuntimeError(f"duplicate plugin: {destination}")
-        shutil.copy2(source.resolve(strict=True), destination)
+            # The GStreamer and libnice Homebrew formulae may both expose
+            # libgstnice.dylib. Accept only identical binaries, never silently
+            # let one formula overwrite a different plugin version.
+            if not filecmp.cmp(resolved, destination, shallow=False):
+                raise RuntimeError(
+                    f"conflicting plugin binaries: {source} and {destination}"
+                )
+            print(f"Reusing identical plugin: {source.name}", flush=True)
+            return False
+        shutil.copy2(resolved, destination)
         destination.chmod(destination.stat().st_mode | 0o200)
         self.queue.append((source, destination))
+        return True
 
     def stage_runtime(self) -> None:
         gst_prefix = brew_prefix("gstreamer")
@@ -120,8 +131,7 @@ class Bundle:
                 raise RuntimeError(f"GStreamer plugin directory missing: {plugin_dir}")
             for plugin in sorted(plugin_dir.iterdir()):
                 if plugin.is_file() and plugin.suffix in (".dylib", ".so"):
-                    self.stage_plugin(plugin, self.plugins)
-                    count += 1
+                    count += int(self.stage_plugin(plugin, self.plugins))
         if not count:
             raise RuntimeError("no GStreamer plugins found")
         if not (self.plugins / "libgstnice.dylib").is_file():
