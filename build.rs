@@ -4,7 +4,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PAPO_GIPHY_API_KEY");
 
     let patch = "patches/winit+0.30.13.patch";
-    let marker = "target/patch/winit-0.30.13/.papo-applied.patch";
+    let marker = ".papo/patch/winit-0.30.13/.papo-applied.patch";
     println!("cargo:rerun-if-changed={patch}");
     println!("cargo:rerun-if-changed={marker}");
     let expected = std::fs::read(patch).expect("read the versioned winit patch");
