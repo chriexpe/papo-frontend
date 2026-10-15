@@ -796,22 +796,28 @@ pub enum UpdatePill {
     WaitingPermission,
 }
 
-/// Normal remote avatars are absolute HTTPS URLs. Incoming Papo webhooks
-/// instead return a server-local path, e.g. /webhooks/<uuid>/avatar.
-/// Resolve only that known API route against the *connected* server; never
+/// Remote avatars use safe absolute URLs; webhooks and apps can return
+/// server-local avatar paths.
+/// Resolve only the allowed API routes against the *connected* server; never
 /// interpret arbitrary relative paths, scheme-relative URLs or user URLs.
 fn external_avatar_url(raw: &str, server_url: &str) -> Option<String> {
     if papo_core::preview::safe_remote_url(raw) {
         return Some(raw.to_owned());
     }
-    let id = raw.strip_prefix("/webhooks/")?.strip_suffix("/avatar")?;
-    if id.len() != 36 || !id.bytes().enumerate().all(|(i, b)| {
-        if matches!(i, 8 | 13 | 18 | 23) {
-            b == b'-'
-        } else {
-            b.is_ascii_hexdigit()
-        }
-    }) {
+    const AVATAR_PREFIXES: [&str; 2] = ["/webhooks/", "/apps/"];
+    let id = AVATAR_PREFIXES
+        .iter()
+        .find_map(|prefix| raw.strip_prefix(prefix))?
+        .strip_suffix("/avatar")?;
+    if id.len() != 36
+        || !id.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+    {
         return None;
     }
     let base = url::Url::parse(server_url).ok()?;
@@ -12002,6 +12008,7 @@ mod escape_tests {
             }];
         store.messages = (0..60).map(|index| Message {
                 id: format!("m{index:03}"), channel_id: "c1".into(), author_id: "u1".into(),
+            external_author: None,
                 content: format!("Mensagem {index}: texto da conversa para testar a rolagem."),
                 at: chrono::Local::now(), edited: false, reply_to: None,
                 attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
@@ -12362,6 +12369,7 @@ mod reply_quote_tests {
         });
         store.messages.push(Message {
             id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            external_author: None,
             content: ":papo:@mention(<@u1>):papo: :desconhecido: 👩‍💻👍🏽🇧🇷".into(),
             at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
             previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
@@ -12422,6 +12430,7 @@ mod reply_quote_tests {
             .collect();
         store.messages.push(Message {
             id: "original".into(), channel_id: "c".into(), author_id: "author".into(),
+            external_author: None,
             content: String::new(), at: Local::now(), edited: false, reply_to: None,
             attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
             pinned: false, pending: false,
@@ -12527,21 +12536,44 @@ mod row_cache_tests {
 mod external_avatar_url_tests {
     use super::external_avatar_url;
 
-    const WEBHOOK_AVATAR: &str =
-        "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar";
+    const WEBHOOK_AVATAR: &str = "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar";
 
     #[test]
-    fn resolves_the_servers_own_webhook_avatar() {
-        assert_eq!(
-            external_avatar_url(WEBHOOK_AVATAR, "https://api.papo.example/v1/").as_deref(),
-            Some("https://api.papo.example/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar"),
-        );
+    fn resolves_the_servers_own_avatars() {
+        for prefix in ["webhooks", "apps"] {
+            let path = format!("/{prefix}/123e4567-e89b-12d3-a456-426614174000/avatar");
+            assert_eq!(
+                external_avatar_url(&path, "https://api.papo.example/v1/"),
+                Some(format!("https://api.papo.example{path}")),
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_server_bases() {
+        for base in [
+            "https://localhost/",
+            "https://127.0.0.1/",
+            "file:///tmp/",
+            "invalid",
+        ] {
+            for path in [
+                WEBHOOK_AVATAR,
+                "/apps/123e4567-e89b-12d3-a456-426614174000/avatar",
+            ] {
+                assert!(external_avatar_url(path, base).is_none(), "{base}: {path}");
+            }
+        }
     }
 
     #[test]
     fn accepts_public_absolute_avatars() {
         assert_eq!(
-            external_avatar_url("https://cdn.discordapp.com/avatars/123/photo.png", "https://api.papo.example/").as_deref(),
+            external_avatar_url(
+                "https://cdn.discordapp.com/avatars/123/photo.png",
+                "https://api.papo.example/"
+            )
+            .as_deref(),
             Some("https://cdn.discordapp.com/avatars/123/photo.png"),
         );
     }
@@ -12551,10 +12583,24 @@ mod external_avatar_url_tests {
         for raw in [
             "//example.org/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar",
             "/admin",
+            "/apps/../avatar",
+            "/apps/123e4567-e89b-12d3-a456-42661417400/avatar",
+            "/apps/123e4567-e89b-12d3-a456-4266141740000/avatar",
+            "/apps/123e4567_e89b-12d3-a456-426614174000/avatar",
+            "/apps/123e4567-e89b-12d3-a456-42661417400g/avatar",
+            "/apps/extra/123e4567-e89b-12d3-a456-426614174000/avatar",
+            "/apps/123e4567-e89b-12d3-a456-426614174000/avatar?redirect=x",
+            "/apps/123e4567-e89b-12d3-a456-426614174000/avatar#fragment",
+            "/apps/123e4567-e89b-12d3-a456-426614174000/avatar/x",
+            "/app/123e4567-e89b-12d3-a456-426614174000/avatar",
+            "/users/123e4567-e89b-12d3-a456-426614174000/avatar",
             "/webhooks/../../admin/avatar",
             "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar?redirect=x",
         ] {
-            assert!(external_avatar_url(raw, "https://api.papo.example/").is_none(), "{raw}");
+            assert!(
+                external_avatar_url(raw, "https://api.papo.example/").is_none(),
+                "{raw}"
+            );
         }
     }
 }

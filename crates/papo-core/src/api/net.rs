@@ -4101,6 +4101,7 @@ mod network_hint_tests {
             channel_id: "general".to_owned(),
             author_id: "me".to_owned(),
             external_author: None,
+            app_installation_id: None,
             content: Some(content.to_owned()),
             created_at: chrono::Utc::now(),
             edited_at: None,
