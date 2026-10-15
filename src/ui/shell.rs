@@ -487,15 +487,7 @@ pub struct LinkViewer {
     pub id: String,
     pub url: String,
     pub name: String,
-    /// `url` é um vídeo tocado pelo mesmo player do cartão, não uma imagem.
-    pub video: bool,
-    /// GIPHY/public provider media stays memory-only and can expose Favourite.
-    pub ephemeral: bool,
-    pub favourite_id: Option<String>,
-    pub zoom: f32,
-    pub offset: Vec2,
-    pub fitted: bool,
-    /// O clique que abriu o overlay não pode fechá-lo no mesmo quadro.
+    /// Native fullscreen video only. Images use the single shared Viewer.
     pub opened: f64,
 }
 
@@ -5612,11 +5604,11 @@ fn message_list(
     area: Rect,
     readable: Rect,
 ) {
-    let messages: Vec<Message> = store.messages_in(&store.selected_channel).cloned().collect();
-    if messages.is_empty() {
+    let mut messages = store.messages_in(&store.selected_channel);
+    let Some(first_message) = messages.next() else {
         empty_state(ui, store, state, t, s);
         return;
-    }
+    };
 
     let ctx = ui.ctx().clone();
     let width = area.width();
@@ -5647,7 +5639,7 @@ fn message_list(
         && state.jump.is_none()
         && state.reply_drag.is_none();
 
-    for message in &messages {
+    for message in std::iter::once(first_message).chain(messages) {
         let y_start = ui.cursor().top();
         let day = message.at.day();
         let new_day = last_day != Some(day);
@@ -6468,6 +6460,7 @@ fn message_body(
             state,
             t,
             &message.id,
+            &message.content,
             &message.previews,
             width,
             allow_network,
@@ -6719,24 +6712,43 @@ fn link_previews(
     state: &mut UiState,
     t: &Tokens,
     message_id: &str,
+    content: &str,
     previews: &[crate::api::models::LinkPreview],
     width: f32,
     allow_network: bool,
 ) {
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews
+        .iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom"))
+        .count();
     for preview in previews {
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
         if preview.source_type.as_deref() == Some("custom") {
-            custom_embed_card(ui, state, t, preview, &embed_id, width, allow_network);
+            let source_url = if content_urls.len() == 1 && previews.len() == 1 {
+                content_urls[0].as_str()
+            } else {
+                preview.url.as_deref().unwrap_or("")
+            };
+            custom_embed_card(
+                ui, state, t, preview, &embed_id, source_url, width, allow_network,
+            );
             continue;
         }
-        let url = preview.url.as_deref().unwrap_or("");
+        // The backend canonicalizes provider links (for example an
+        // oginstagram URL becomes the original Instagram reel URL), while
+        // the message still contains the URL the user sent. When there is a
+        // single automatic preview, resolve that user URL here so the
+        // backend metadata and the client-discovered direct media share one
+        // card instead of rendering two representations of the same post.
+        let url = backend_preview_render_url(preview, &content_urls, automatic_count);
         preview_card(
             ui,
             state,
             t,
             &preview.id,
             &embed_id,
-            url,
+            &url,
             Some(preview),
             width,
             PreviewPolicy {
@@ -6745,6 +6757,49 @@ fn link_previews(
             },
         );
     }
+}
+
+fn backend_preview_render_url(
+    preview: &crate::api::models::LinkPreview,
+    content_urls: &[String],
+    automatic_count: usize,
+) -> String {
+    if automatic_count == 1
+        && content_urls.len() == 1
+        && preview.source_type.as_deref() != Some("custom")
+    {
+        return content_urls[0].clone();
+    }
+    preview.url.clone().unwrap_or_default()
+}
+
+fn backend_preview_urls(
+    content: &str,
+    previews: &[crate::api::models::LinkPreview],
+) -> std::collections::HashSet<String> {
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews
+        .iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom"))
+        .count();
+    let mut urls = previews
+        .iter()
+        .filter_map(|preview| preview.url.as_deref())
+        .filter_map(papo_core::preview::canonical_url)
+        .collect::<std::collections::HashSet<_>>();
+
+    // Keep the client-side pass from painting a second card when the one
+    // backend preview refers to the same post through a canonical provider
+    // URL. The association is deliberately limited to one message URL and
+    // one automatic preview; multiple links must remain independently
+    // renderable.
+    if content_urls.len() == 1 && (automatic_count == 1
+        || (automatic_count == 0 && previews.len() == 1
+            && previews[0].source_type.as_deref() == Some("custom")))
+    {
+        urls.insert(content_urls[0].clone());
+    }
+    urls
 }
 
 /// O backend pode colocar o mesmo nome tanto em author.name quanto em title.
@@ -6797,6 +6852,7 @@ fn custom_embed_card(
     t: &Tokens,
     embed: &crate::api::models::LinkPreview,
     card_id: &str,
+    source_url: &str,
     width: f32,
     allow_network: bool,
 ) {
@@ -6841,6 +6897,35 @@ fn custom_embed_card(
         };
         texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
     });
+    let resolved = if source_url.is_empty() { None } else {
+        state.previews.as_ref().and_then(|coordinator| {
+            if allow_network { coordinator.get_or_request(source_url) }
+            else { coordinator.peek(source_url) }
+        })
+    };
+    let ready = match resolved.as_ref() {
+        Some(papo_core::preview::PreviewState::Ready(preview)) => Some(preview.clone()),
+        _ => None,
+    };
+    let (backend_video, video_url, embed_url) =
+        choose_embed_media(source_url, Some(embed), ready.as_ref());
+    let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
+    let remote_image = image_url.as_deref().and_then(|raw| {
+        if allow_network { state.media.remote_image(card_id, raw) }
+        else { state.media.loaded_remote_image(raw) }
+    }).and_then(|texture| texture.frame(ui.ctx())).cloned();
+    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() {
+        let texture = if allow_network {
+            state.media.preview(embed)
+        } else {
+            state.media.loaded_preview(&embed.id)
+        };
+        texture
+            .and_then(|texture| texture.frame(ui.ctx()))
+            .cloned()
+    } else {
+        None
+    };
 
     ui.add_space(space::SM);
     let inner_width = custom_embed_inner_width(width);
@@ -6888,28 +6973,19 @@ fn custom_embed_card(
             }
             ui.label(RichText::new(body).font(text::body()).color(t.label_secondary));
         }
-        // Rich custom embeds retain their structured author/title/fields instead
-        // of falling into the generic link-preview layout merely because they
-        // include an image. Media uses the existing authenticated embed cache.
-        if embed.image.is_some() || embed.thumbnail.is_some() {
-            let texture = if allow_network {
-                state.media.preview(embed)
-            } else {
-                state.media.loaded_preview(&embed.id)
-            }.and_then(|texture| texture.frame(ui.ctx())).cloned();
-            if let Some(texture) = texture {
-                let original = texture.size_vec2();
-                if original.x > 0.0 && original.y > 0.0 {
-                    let scale = (inner_width / original.x).min(280.0 / original.y).min(1.0);
-                    let (rect, _) = ui.allocate_exact_size(original * scale, Sense::hover());
-                    ui.painter().image(
-                        texture.id(), rect,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                }
-            }
-        }
+        let _ = render_embed_media(
+            ui, state, t,
+            EmbedMediaView {
+                id: &embed.id, embed_id: card_id, url: source_url,
+                backend: Some(embed),
+                image: remote_image.as_ref().or(image_texture.as_ref()),
+                remote_image: remote_image.as_ref(),
+                image_url, title: heading.or(embed.title.as_deref()),
+                video_url: video_url.clone(), embed_url: embed_url.clone(),
+                backend_video, card_width: inner_width,
+                policy: PreviewPolicy { webembed: true, network: allow_network },
+            },
+        );
         for field in &embed.fields {
             ui.add_space(space::SM);
             if !field.name.trim().is_empty() {
@@ -6922,7 +6998,9 @@ fn custom_embed_card(
                 RichText::new(field.value.trim()).font(text::body()).color(t.label_secondary),
             );
         }
-        if footer.is_some() || source.is_some() {
+        if footer.is_some() || source.is_some()
+            || embed.url.as_deref().is_some_and(papo_core::preview::safe_remote_url)
+        {
             ui.add_space(space::SM);
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = space::XS;
@@ -6935,9 +7013,18 @@ fn custom_embed_card(
                     }
                     ui.label(RichText::new(source).font(text::footnote()).color(t.label_tertiary));
                 }
+                if let Some(url) = embed.url.as_deref()
+                    && papo_core::preview::safe_remote_url(url)
+                {
+                    let open = ui.small_button("↗").on_hover_text(url);
+                    if open.clicked() {
+                        state.request_external_url(ui.ctx(), url.to_owned());
+                    }
+                }
             });
         }
     });
+
 
     let rect = content.response.rect;
     // Um único reflexo no topo sugere material elevado. Não há barra de
@@ -6949,19 +7036,357 @@ fn custom_embed_card(
         ],
         Stroke::new(1.0, t.glass_highlight),
     );
-    // Custom embeds sem URL são apenas conteúdo: não há alvo de clique falso.
-    if let Some(url) = embed.url.as_deref()
-        && papo_core::preview::safe_remote_url(url)
-    {
-        let clicked = ui.interact(rect, Id::new(("custom-embed-open", card_id)), Sense::click());
-        if clicked.clicked() {
-            state.request_external_url(ui.ctx(), url.to_owned());
-        }
-        if clicked.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-    }
+    // No full-card hitbox: a late ui.interact(rect, Sense::click())
+    // overlapped every image/video/WebView inside the card and captured
+    // their mouse-up. Navigation has its own explicit control in the footer.
     ui.add_space(space::XS);
+}
+
+/// A backend video is a direct, authenticated media stream only if its
+/// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
+/// expose an HTML iframe in `video.url` with no video MIME type: do not
+/// send those HTML pages to the GStreamer MP4 player/relay.
+/// Klipy's /gifs pages publish silent MP4 renditions via og:video. MP4 is
+/// a transport format, not proof of user-facing video semantics. These pages
+/// are looping animations, unlike ordinary X status videos.
+fn gif_style_embed(source: &str) -> bool {
+    let Ok(url) = url::Url::parse(source) else { return false };
+    matches!(url.host_str(), Some("klipy.com" | "www.klipy.com"))
+        && url.path().starts_with("/gifs/")
+}
+
+fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
+    let media = media?;
+    let width = media.width.filter(|value| *value > 0)? as f32;
+    let height = media.height.filter(|value| *value > 0)? as f32;
+    Some((width / height).clamp(0.25, 4.0))
+}
+
+fn backend_has_playable_video(embed: &crate::api::models::LinkPreview) -> bool {
+    !embed.id.is_empty()
+        && embed.video.as_ref().is_some_and(|media| {
+            media.url.as_deref().is_some_and(papo_core::preview::safe_remote_url)
+                && media.mime_type.as_deref().is_some_and(|mime| {
+                    matches!(
+                        mime.trim().to_ascii_lowercase().as_str(),
+                        "video/mp4" | "video/webm" | "video/ogg"
+                    )
+                })
+        })
+}
+
+/// The current backend stores YouTube's documented embed URL in video.url
+/// without a direct-media MIME type. Honor only that specific iframe shape;
+/// an arbitrary HTML URL cannot become an executable web embed.
+fn backend_iframe_video_url(embed: &crate::api::models::LinkPreview) -> Option<String> {
+    let media = embed.video.as_ref()?;
+    if media.mime_type.is_some() {
+        return None;
+    }
+    let raw = media.url.as_deref()?;
+    let parsed = url::Url::parse(raw).ok()?;
+    if parsed.scheme() == "https"
+        && matches!(parsed.host_str(), Some("www.youtube.com" | "youtube.com" | "www.youtube-nocookie.com"))
+        && parsed.path().starts_with("/embed/")
+    {
+        Some(parsed.to_string())
+    } else {
+        None
+    }
+}
+
+
+/// The container may change (ordinary link vs. imported structured embed),
+/// but media capability selection, playback, WebView and image viewing do not.
+struct EmbedMediaView<'a> {
+    id: &'a str,
+    embed_id: &'a str,
+    url: &'a str,
+    backend: Option<&'a crate::api::models::LinkPreview>,
+    image: Option<&'a egui::TextureHandle>,
+    remote_image: Option<&'a egui::TextureHandle>,
+    image_url: Option<String>,
+    title: Option<&'a str>,
+    video_url: Option<String>,
+    embed_url: Option<String>,
+    backend_video: Option<&'a crate::api::models::LinkPreview>,
+    card_width: f32,
+    policy: PreviewPolicy,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_embed_media(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    t: &Tokens,
+    view: EmbedMediaView<'_>,
+) -> (bool, Option<Rect>) {
+    const IMAGE_MAX_H: f32 = 300.0;
+    let EmbedMediaView {
+        id, embed_id, url, backend, image, remote_image, image_url,
+        title, video_url, embed_url, backend_video, card_width, policy
+    } = view;
+    let player_id = if let Some(embed) = backend_video {
+        crate::media::embed_video_player_id(&embed.id)
+    } else {
+        video_url
+            .as_deref()
+            .and_then(crate::media::remote_player_key)
+            .unwrap_or_else(|| format!("link-preview-player:{id}"))
+    };
+
+    let playing = (video_url.is_some() || backend_video.is_some())
+        && state
+            .media
+            .existing_player(&player_id)
+            .is_some_and(|player| player.is_playing());
+
+    let mut media_clicked = false;
+    let mut media_rect: Option<Rect> = None;
+    if gif_style_embed(url) && (backend_video.is_some() || video_url.is_some()) {
+        let source = if let Some(embed) = backend_video {
+            crate::media::PlaySource::EmbedVideo(&embed.id)
+        } else {
+            crate::media::PlaySource::Remote(video_url.as_deref().expect("checked above"))
+        };
+        let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
+        let rect = attachments::animation_surface(
+            ui, &mut state.media, &player_id, source, poster,
+            backend_video.and_then(|embed| media_aspect(embed.video.as_ref())),
+            card_width,
+        );
+        media_rect = Some(rect);
+        ui.add_space(space::SM);
+    } else if backend_video.is_some() || video_url.is_some() {
+        let source = if let Some(embed) = backend_video {
+            crate::media::PlaySource::EmbedVideo(&embed.id)
+        } else {
+            crate::media::PlaySource::Remote(video_url.as_deref().expect("checked above"))
+        };
+        let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
+        let surface = attachments::video_surface(
+            ui, t, &mut state.media, &player_id, embed_id, source, poster,
+            backend_video.and_then(|embed| media_aspect(embed.video.as_ref())),
+            card_width, false, &mut state.media_seek_zones,
+        );
+        media_rect = Some(surface.rect);
+        if surface.clicked {
+            state.webembed.destroy_active();
+        }
+        if let Some(attachments::Transport::Fullscreen) = surface.transport {
+            state.link_viewer = Some(LinkViewer {
+                id: player_id.clone(),
+                url: video_url.as_deref().unwrap_or(url).to_owned(),
+                name: title.unwrap_or("video").to_owned(),
+                opened: ui.input(|input| input.time),
+            });
+        }
+        media_clicked |= surface.clicked || surface.transport.is_some();
+        if playing {
+            ui.ctx().request_repaint();
+        }
+        ui.add_space(space::SM);
+    } else if let Some(texture) = image {
+        let source = texture.size_vec2();
+        let scale = (card_width / source.x)
+            .min(IMAGE_MAX_H / source.y)
+            .min(1.0);
+        let size = Vec2::new(
+            (source.x * scale).max(1.0),
+            (source.y * scale).max(1.0),
+        );
+        let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
+        media_rect = Some(image_rect);
+        ui.painter().image(
+            texture.id(),
+            image_rect,
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+
+        if let Some(embed) = embed_url.as_deref() {
+            if policy.webembed && state.webembed.is_active(embed_id) {
+                let allowed = webembed_inline_allowed(state);
+                let clip = state
+                    .webembed_chat_clip
+                    .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
+                state.webembed.present_inline(
+                    embed_id,
+                    image_rect,
+                    clip,
+                    ui.ctx().pixels_per_point(),
+                    &state.webembed_occlusions,
+                    allowed,
+                );
+                webembed_paint_and_input(ui, state, embed_id, image_rect, "inline-image");
+            } else {
+                ui.painter().circle_filled(
+                    image_rect.center(),
+                    24.0,
+                    Color32::from_black_alpha(170),
+                );
+                ui.painter().text(
+                    image_rect.center() + Vec2::new(1.0, 0.0),
+                    egui::Align2::CENTER_CENTER,
+                    icon::PLAY,
+                    text::icon(19.0),
+                    Color32::WHITE,
+                );
+            }
+
+            if response.clicked()
+                && (!policy.webembed || !state.webembed.is_active(embed_id))
+            {
+                if policy.webembed
+                    && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+                {
+                    state.media.pause_all();
+                    ui.ctx().request_repaint();
+                } else {
+                    state.request_external_url(ui.ctx(), url.to_owned());
+                }
+                media_clicked = true;
+            }
+        } else if response.clicked() {
+            let (viewer_id, viewer_url) = if remote_image.is_some() {
+                (id.to_owned(), image_url.clone().unwrap_or_default())
+            } else if let Some(embed) = backend {
+                (format!("embed-image:{}", embed.id), url.to_owned())
+            } else {
+                (id.to_owned(), image_url.clone().unwrap_or_default())
+            };
+            state.viewer = Some(Viewer::external_image(
+                viewer_id,
+                viewer_url,
+                title.unwrap_or("image").to_owned(),
+                false,
+                None,
+            ));
+            media_clicked = true;
+        }
+        ui.add_space(space::SM);
+    } else if let Some(embed) = embed_url.as_deref() {
+        let frame_size = Vec2::new(card_width, (card_width * 9.0 / 16.0).min(260.0));
+        let (rect, response) = ui.allocate_exact_size(frame_size, Sense::click());
+        media_rect = Some(rect);
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(radius::CARD),
+            Color32::from_black_alpha(225),
+        );
+
+        if policy.webembed && state.webembed.is_active(embed_id) {
+            let allowed = webembed_inline_allowed(state);
+            let clip = state
+                .webembed_chat_clip
+                .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
+            state.webembed.present_inline(
+                embed_id,
+                rect,
+                clip,
+                ui.ctx().pixels_per_point(),
+                &state.webembed_occlusions,
+                allowed,
+            );
+            webembed_paint_and_input(ui, state, embed_id, rect, "inline");
+        } else {
+            ui.painter()
+                .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
+            ui.painter().text(
+                rect.center() + Vec2::new(1.0, 0.0),
+                egui::Align2::CENTER_CENTER,
+                icon::PLAY,
+                text::icon(22.0),
+                Color32::WHITE,
+            );
+        }
+        if response.clicked()
+            && (!policy.webembed || !state.webembed.is_active(embed_id))
+        {
+            if policy.webembed
+                && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+            {
+                state.media.pause_all();
+                ui.ctx().request_repaint();
+            } else {
+                state.request_external_url(ui.ctx(), url.to_owned());
+            }
+            media_clicked = true;
+        }
+        ui.add_space(space::SM);
+    }
+
+    (media_clicked, media_rect)
+}
+
+/// Backend metadata is authoritative when it has a real player or playable
+/// video; local preview resolution fills omissions without overriding it.
+fn choose_embed_media<'a>(
+    source_url: &str,
+    backend: Option<&'a crate::api::models::LinkPreview>,
+    ready: Option<&papo_core::preview::ResolvedPreview>,
+) -> (Option<&'a crate::api::models::LinkPreview>, Option<String>, Option<String>) {
+    use papo_core::preview::PreviewKind;
+    let iframe = backend
+        .and_then(|embed| embed.embed_url.clone().or_else(|| backend_iframe_video_url(embed)))
+        .or_else(|| ready.and_then(|preview| preview.embed_url.clone()))
+        .or_else(|| youtube_player_url(source_url))
+        .filter(|url| papo_core::preview::safe_remote_url(url));
+
+    let mut backend_video = backend.filter(|embed| backend_has_playable_video(embed));
+    let mut direct = if backend_video.is_some() {
+        None
+    } else {
+        ready.filter(|preview| preview.kind == PreviewKind::Video)
+            .and_then(|preview| preview.media_url.clone())
+    };
+    if backend_video.is_none() && direct.is_none() {
+        // Some imported custom embeds omit mime_type but still carry a
+        // directly playable MP4 rendition. An iframe URL isn't a video.
+        direct = backend.and_then(|embed| embed.video.as_ref())
+            .and_then(|video| video.url.as_deref())
+            .and_then(|raw| {
+                let parsed = url::Url::parse(raw).ok()?;
+                let ext = parsed.path().rsplit('.').next()?.to_ascii_lowercase();
+                (matches!(ext.as_str(), "mp4" | "webm" | "ogv")
+                    && papo_core::preview::safe_remote_url(raw))
+                    .then_some(raw.to_owned())
+            });
+    }
+    let mut iframe = iframe;
+    if youtube_player_url(source_url).is_some() || (iframe.is_some() && !gif_style_embed(source_url)) {
+        backend_video = None;
+        direct = None;
+    } else if gif_style_embed(source_url) && (backend_video.is_some() || direct.is_some()) {
+        iframe = None;
+    }
+    (backend_video, direct, iframe)
+}
+
+/// YouTube's oEmbed sometimes returns a thumbnail without an iframe. A
+/// validated video ID can still be represented by a normal HTML player.
+/// Do not invent players for any other arbitrary host or URL path.
+fn youtube_player_url(raw: &str) -> Option<String> {
+    let uri = url::Url::parse(raw).ok()?;
+    if uri.scheme() != "https" { return None; }
+    let host = uri.host_str()?.trim_start_matches("www.");
+    let id: String = match host {
+        "youtu.be" => uri.path().trim_matches('/').split('/').next()?.to_owned(),
+        "youtube.com" | "youtube-nocookie.com" => {
+            let mut pieces = uri.path_segments()?;
+            match pieces.next()? {
+                "watch" => uri.query_pairs().find(|(key, _)| key == "v")
+                    .map(|(_, value)| value.into_owned())?,
+                "shorts" | "live" | "embed" => pieces.next()?.to_owned(),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    if id.len() != 11 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) {
+        return None;
+    }
+    Some(format!("https://www.youtube.com/embed/{id}?playsinline=1"))
 }
 
 fn rich_links_from_message(
@@ -6976,11 +7401,7 @@ fn rich_links_from_message(
 ) {
     use std::hash::{Hash, Hasher};
 
-    let backend_urls: std::collections::HashSet<String> = previews
-        .iter()
-        .filter_map(|preview| preview.url.as_deref())
-        .filter_map(papo_core::preview::canonical_url)
-        .collect();
+    let backend_urls = backend_preview_urls(content, previews);
 
     let mut seen = std::collections::HashSet::new();
     for url in papo_core::preview::extract_https_urls(content) {
@@ -7104,10 +7525,9 @@ fn preview_card(
     width: f32,
     policy: PreviewPolicy,
 ) {
-    use papo_core::preview::{PreviewKind, PreviewState};
+    use papo_core::preview::PreviewState;
 
     const MAX_W: f32 = 420.0;
-    const IMAGE_MAX_H: f32 = 300.0;
 
     // Sem URL, o embed customizado já é a fonte completa de metadados.
     let resolved = if url.is_empty() {
@@ -7150,15 +7570,14 @@ fn preview_card(
         .cloned();
     let image = remote_image.as_ref().or(backend_image.as_ref());
 
-    let video_url = ready
-        .as_ref()
-        .filter(|preview| preview.kind == PreviewKind::Video)
-        .and_then(|preview| preview.media_url.clone());
-    let embed_url = ready
-        .as_ref()
-        .and_then(|preview| preview.embed_url.clone())
-        .or_else(|| backend.and_then(|preview| preview.embed_url.clone()))
-        .filter(|embed| papo_core::preview::safe_remote_url(embed));
+    // Backend videos have a dedicated authenticated relay. Prefer it to
+    // local scraping: X/FxTwitter CDNs reject hotlinks from GStreamer.
+    // Pick a single media capability. The backend's validated player/embed
+    // contract takes precedence; client scraping only fills missing fields.
+    // Previously a frontend media_url could shadow a valid YouTube iframe,
+    // leaving a broken native video card instead of a WebView.
+    let (backend_video, video_url, embed_url) =
+        choose_embed_media(url, backend, ready.as_ref());
 
     let post = ready
         .as_ref()
@@ -7211,23 +7630,10 @@ fn preview_card(
     // direita dele fica na mesma margem da caixa de mensagem (`PILL_MARGIN`).
     let card_width = (width - (space::MD - (space::XL - PILL_MARGIN))).clamp(160.0, MAX_W);
     let backdrop = ui.painter().add(egui::Shape::Noop);
-    let player_id = video_url
-        .as_deref()
-        .and_then(crate::media::remote_player_key)
-        .unwrap_or_else(|| format!("link-preview-player:{id}"));
-
-    let playing = video_url.is_some()
-        && state
-            .media
-            .existing_player(&player_id)
-            .is_some_and(|player| player.is_playing());
-
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
-    // The preview itself is a real click target, registered before its media
-    // children. egui gives overlapping clicks to the later child widget, so
-    // image/video/play controls still win; otherwise the card wins instead
-    // of the surrounding message row.
+    // The scope gets pointer ownership before its children; the shared
+    // renderer's video/image/iframe widgets then receive their own input.
     let inner = ui.scope_builder(UiBuilder::new().sense(Sense::click()), |ui| {
         ui.set_width(card_width);
 
@@ -7248,174 +7654,17 @@ fn preview_card(
             ui.add_space(space::SM);
         }
 
-        if let Some(remote) = video_url.as_deref() {
-            let poster = image.map(|texture| (texture.id(), texture.size_vec2()));
-            let surface = attachments::video_surface(
-                ui,
-                t,
-                &mut state.media,
-                &player_id,
-                embed_id,
-                crate::media::PlaySource::Remote(remote),
-                poster,
-                card_width,
-                false,
-                &mut state.media_seek_zones,
-            );
-            media_rect = Some(surface.rect);
-            if surface.clicked {
-                state.webembed.destroy_active();
-            }
-            if let Some(attachments::Transport::Fullscreen) = surface.transport {
-                state.link_viewer = Some(LinkViewer {
-                    id: player_id.clone(),
-                    url: remote.to_owned(),
-                    name: title.unwrap_or("video").to_owned(),
-                    video: true,
-                    ephemeral: false,
-                    favourite_id: None,
-                    zoom: 1.0,
-                    offset: Vec2::ZERO,
-                    fitted: true,
-                    opened: ui.input(|input| input.time),
-                });
-            }
-            media_clicked |= surface.clicked || surface.transport.is_some();
-            if playing {
-                ui.ctx().request_repaint();
-            }
-            ui.add_space(space::SM);
-        } else if let Some(texture) = image {
-            let source = texture.size_vec2();
-            let scale = (card_width / source.x)
-                .min(IMAGE_MAX_H / source.y)
-                .min(1.0);
-            let size = Vec2::new(
-                (source.x * scale).max(1.0),
-                (source.y * scale).max(1.0),
-            );
-            let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
-            media_rect = Some(image_rect);
-            ui.painter().image(
-                texture.id(),
-                image_rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                Color32::WHITE,
-            );
-
-            if let Some(embed) = embed_url.as_deref() {
-                if policy.webembed && state.webembed.is_active(embed_id) {
-                    let allowed = webembed_inline_allowed(state);
-                    let clip = state
-                        .webembed_chat_clip
-                        .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
-                    state.webembed.present_inline(
-                        embed_id,
-                        image_rect,
-                        clip,
-                        ui.ctx().pixels_per_point(),
-                        &state.webembed_occlusions,
-                        allowed,
-                    );
-                    webembed_paint_and_input(ui, state, embed_id, image_rect, "inline-image");
-                } else {
-                    ui.painter().circle_filled(
-                        image_rect.center(),
-                        24.0,
-                        Color32::from_black_alpha(170),
-                    );
-                    ui.painter().text(
-                        image_rect.center() + Vec2::new(1.0, 0.0),
-                        egui::Align2::CENTER_CENTER,
-                        icon::PLAY,
-                        text::icon(19.0),
-                        Color32::WHITE,
-                    );
-                }
-
-                if response.clicked()
-                    && (!policy.webembed || !state.webembed.is_active(embed_id))
-                {
-                    if policy.webembed
-                        && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
-                    {
-                        state.media.pause_all();
-                        ui.ctx().request_repaint();
-                    } else {
-                        state.request_external_url(ui.ctx(), url.to_owned());
-                    }
-                    media_clicked = true;
-                }
-            } else if response.clicked() {
-                if let Some(remote) = image_url.as_ref() {
-                    state.link_viewer = Some(LinkViewer {
-                        id: id.to_owned(),
-                        url: remote.clone(),
-                        name: title.unwrap_or("image").to_owned(),
-                        video: false,
-                        ephemeral: false,
-                    favourite_id: None,
-                    zoom: 1.0,
-                        offset: Vec2::ZERO,
-                        fitted: true,
-                        opened: ui.input(|input| input.time),
-                    });
-                } else {
-                    state.request_external_url(ui.ctx(), url.to_owned());
-                }
-                media_clicked = true;
-            }
-            ui.add_space(space::SM);
-        } else if let Some(embed) = embed_url.as_deref() {
-            let frame_size = Vec2::new(card_width, (card_width * 9.0 / 16.0).min(260.0));
-            let (rect, response) = ui.allocate_exact_size(frame_size, Sense::click());
-            media_rect = Some(rect);
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same(radius::CARD),
-                Color32::from_black_alpha(225),
-            );
-
-            if policy.webembed && state.webembed.is_active(embed_id) {
-                let allowed = webembed_inline_allowed(state);
-                let clip = state
-                    .webembed_chat_clip
-                    .map_or_else(|| ui.clip_rect(), |safe| safe.intersect(ui.clip_rect()));
-                state.webembed.present_inline(
-                    embed_id,
-                    rect,
-                    clip,
-                    ui.ctx().pixels_per_point(),
-                    &state.webembed_occlusions,
-                    allowed,
-                );
-                webembed_paint_and_input(ui, state, embed_id, rect, "inline");
-            } else {
-                ui.painter()
-                    .circle_filled(rect.center(), 28.0, Color32::from_black_alpha(155));
-                ui.painter().text(
-                    rect.center() + Vec2::new(1.0, 0.0),
-                    egui::Align2::CENTER_CENTER,
-                    icon::PLAY,
-                    text::icon(22.0),
-                    Color32::WHITE,
-                );
-            }
-            if response.clicked()
-                && (!policy.webembed || !state.webembed.is_active(embed_id))
-            {
-                if policy.webembed
-                    && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
-                {
-                    state.media.pause_all();
-                    ui.ctx().request_repaint();
-                } else {
-                    state.request_external_url(ui.ctx(), url.to_owned());
-                }
-                media_clicked = true;
-            }
-            ui.add_space(space::SM);
-        }
+        let (clicked, painted) = render_embed_media(
+            ui, state, t,
+            EmbedMediaView {
+                id, embed_id, url, backend, image, remote_image: remote_image.as_ref(),
+                image_url: image_url.clone(), title,
+                video_url: video_url.clone(), embed_url: embed_url.clone(),
+                backend_video, card_width, policy,
+            },
+        );
+        media_clicked |= clicked;
+        media_rect = painted;
 
         if social {
             post_footer(
@@ -7539,45 +7788,14 @@ fn preview_card(
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
-    // The card background is a link, but the actual media surface is not:
-    // video/image/WebEmbed keeps its own interaction. Register only the
-    // rectangles around that media so we never steal its tap from a child.
-    let mut open_card = false;
-    let mut zones = Vec::new();
-    if let Some(media) = media_rect {
-        if rect.min.y < media.min.y {
-            zones.push(Rect::from_min_max(rect.min, egui::pos2(rect.max.x, media.min.y)));
-        }
-        if media.max.y < rect.max.y {
-            zones.push(Rect::from_min_max(
-                egui::pos2(rect.min.x, media.max.y),
-                rect.max,
-            ));
-        }
-        if rect.min.x < media.min.x {
-            zones.push(Rect::from_min_max(
-                egui::pos2(rect.min.x, media.min.y),
-                egui::pos2(media.min.x, media.max.y),
-            ));
-        }
-        if media.max.x < rect.max.x {
-            zones.push(Rect::from_min_max(
-                egui::pos2(media.max.x, media.min.y),
-                egui::pos2(rect.max.x, media.max.y),
-            ));
-        }
-    } else {
-        zones.push(rect);
-    }
-    for (index, zone) in zones.into_iter().filter(|zone| zone.is_positive()).enumerate() {
-        let response = ui.interact(
-            zone,
-            Id::new(("link-preview-open", embed_id, index)),
-            Sense::click(),
-        );
-        open_card |= response.clicked();
-    }
-    if open_card && !media_clicked && !url.is_empty() {
+    // The scope was registered before its child widgets. egui gives the
+    // pointer to the later child at the same coordinate. Never add a second
+    // click-catcher here after the image, video controls or WebView: doing so
+    // steals their release event and displays the external-link prompt.
+    let on_media = media_rect.is_some_and(|media| {
+        ui.ctx().pointer_interact_pos().is_some_and(|pos| media.contains(pos))
+    });
+    if inner.response.clicked() && !on_media && !media_clicked && !url.is_empty() {
         state.request_external_url(ui.ctx(), url.to_owned());
     }
     ui.add_space(space::XS);
@@ -8328,7 +8546,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     }
 
     if state.link_viewer.is_some() {
-        link_image_viewer(ui, state, t, s);
+        link_video_viewer(ui, state, t, s);
     }
 
     if let Some(mut viewer) = state.viewer.take() {
@@ -8341,10 +8559,30 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
                     .map(|message| message.attachments.clone())
             })
             .unwrap_or_default();
+        let external = viewer.external_source().cloned();
         match viewer::draw(ui, t, s, &mut state.media, &mut viewer, &attachments) {
-            Some(ViewerAction::Close) => state.media.pause_all(),
+            Some(ViewerAction::Close) => {
+                if let Some(image) = external {
+                    if let Some(embed_id) = image.id.strip_prefix("embed-image:") {
+                        state.media.release_preview_viewer_texture(embed_id);
+                    } else {
+                        state.media.release_remote_viewer_texture(&image.url, image.ephemeral);
+                    }
+                } else {
+                    state.media.pause_all();
+                    state.media.release_viewer_textures();
+                }
+            }
             Some(ViewerAction::Download { id, name }) => {
                 state.actions.push(ChatAction::Download { id, name });
+                state.viewer = Some(viewer);
+            }
+            Some(ViewerAction::SaveCachedImage { path, name }) => {
+                state.actions.push(ChatAction::SaveCachedImage { path, name });
+                state.viewer = Some(viewer);
+            }
+            Some(ViewerAction::ToggleFavourite(slug)) => {
+                gif::toggle_favourite(state, &slug);
                 state.viewer = Some(viewer);
             }
             None => state.viewer = Some(viewer),
@@ -8486,45 +8724,23 @@ fn external_link_prompt(
     }
 }
 
-fn link_image_viewer(
+fn link_video_viewer(
     ui: &mut egui::Ui,
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
 ) {
-    let Some(mut link) = state.link_viewer.take() else {
+    let Some(link) = state.link_viewer.take() else {
         return;
     };
-    match viewer::draw_remote_media(
-        ui,
-        t,
-        s,
-        &mut state.media,
-        &link.id,
-        &link.url,
-        &link.name,
-        link.video,
-        link.ephemeral,
-        link.favourite_id
-            .as_ref()
-            .map(|slug| state.gif_favourites.contains(slug)),
-        link.opened,
-        &mut link.zoom,
-        &mut link.offset,
-        &mut link.fitted,
+    if viewer::draw_remote_video(
+        ui, t, s, &mut state.media, &link.id, &link.url, &link.name, link.opened,
     ) {
-        Some(viewer::RemoteViewerAction::Close) => {}
-        Some(viewer::RemoteViewerAction::Download { path, name }) => {
-            state.actions.push(ChatAction::SaveCachedImage { path, name });
-            state.link_viewer = Some(link);
+        if let Some(player) = state.media.existing_player(&link.id) {
+            player.pause();
         }
-        Some(viewer::RemoteViewerAction::ToggleFavourite) => {
-            if let Some(slug) = link.favourite_id.clone() {
-                gif::toggle_favourite(state, &slug);
-            }
-            state.link_viewer = Some(link);
-        }
-        None => state.link_viewer = Some(link),
+    } else {
+        state.link_viewer = Some(link);
     }
 }
 
@@ -10931,6 +11147,162 @@ mod direct_media_tests {
         ));
         assert!(obvious_direct_media_url("https://cdn.example.test/movie.mp4"));
         assert!(!obvious_direct_media_url("https://example.test/post/123"));
+    }
+}
+
+#[cfg(test)]
+mod link_preview_dedupe_tests {
+    use super::*;
+
+    fn automatic_preview(url: &str) -> crate::api::models::LinkPreview {
+        serde_json::from_value(serde_json::json!({
+            "id": "preview-1",
+            "source_type": "link",
+            "url": url,
+        }))
+        .expect("valid automatic preview")
+    }
+
+    #[test]
+    fn one_backend_preview_claims_the_message_url_when_provider_canonicalizes_it() {
+        let content =
+            "https://www.oginstagram.com/reel/DeX8XPpvS8y/?dlrf=tracking-token";
+        let backend = automatic_preview(
+            "https://www.instagram.com/walaber_ent/reel/DeX8XPpvS8y/",
+        );
+        let content_urls = papo_core::preview::extract_https_urls(content);
+
+        assert_eq!(content_urls.len(), 1);
+        assert_eq!(
+            backend_preview_render_url(&backend, &content_urls, 1),
+            content_urls[0]
+        );
+        assert!(backend_preview_urls(content, &[backend]).contains(&content_urls[0]));
+    }
+
+    #[test]
+    fn multiple_message_urls_are_not_collapsed_into_one_backend_preview() {
+        let content = "https://one.example/post/1 https://two.example/post/2";
+        let backend = automatic_preview("https://two.example/post/2");
+        let content_urls = papo_core::preview::extract_https_urls(content);
+
+        assert_eq!(
+            backend_preview_render_url(&backend, &content_urls, 1),
+            "https://two.example/post/2"
+        );
+        assert!(!backend_preview_urls(content, &[backend]).contains(&content_urls[0]));
+    }
+
+    #[test]
+    fn backend_video_must_be_direct_media_not_an_html_iframe() {
+        let direct: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "fx-embed",
+            "source_type": "link",
+            "video": {
+                "url": "https://video.twimg.com/ext_tw_video/123/pu/vid/720x1280/example.mp4",
+                "mime_type": "video/mp4"
+            }
+        })).unwrap();
+        assert!(backend_has_playable_video(&direct));
+        assert!(backend_iframe_video_url(&direct).is_none());
+
+        let iframe: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "youtube-embed",
+            "source_type": "link",
+            "video": {"url": "https://www.youtube.com/embed/abcdefghijk"}
+        })).unwrap();
+        assert!(!backend_has_playable_video(&iframe));
+        assert_eq!(
+            backend_iframe_video_url(&iframe).as_deref(),
+            Some("https://www.youtube.com/embed/abcdefghijk")
+        );
+
+        let unknown: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "html-embed",
+            "source_type": "link",
+            "video": {"url": "https://example.com/private/script"}
+        })).unwrap();
+        assert!(!backend_has_playable_video(&unknown));
+        assert!(backend_iframe_video_url(&unknown).is_none());
+    }
+
+    #[test]
+    fn klipy_gif_style_mp4_is_animation_but_regular_twitter_video_is_not() {
+        assert!(gif_style_embed("https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme"));
+        assert!(gif_style_embed("https://www.klipy.com/gifs/a"));
+        assert!(!gif_style_embed("https://x.com/Lord_PSMG/status/2109376514688966914"));
+        assert!(!gif_style_embed("https://not-klipy.com/gifs/something"));
+        assert!(!gif_style_embed("https://klipy.com/videos/trailer"));
+    }
+
+    #[test]
+    fn aspect_hint_uses_video_dimensions_not_cropped_thumbnail() {
+        let landscape = crate::api::models::EmbedMedia {
+            url: None,
+            mime_type: Some("video/mp4".into()),
+            width: Some(1920),
+            height: Some(1080),
+            size_bytes: None,
+        };
+        let portrait = crate::api::models::EmbedMedia {
+            width: Some(720),
+            height: Some(1280),
+            ..landscape.clone()
+        };
+        assert!((media_aspect(Some(&landscape)).unwrap() - 16.0 / 9.0).abs() < 0.001);
+        assert!((media_aspect(Some(&portrait)).unwrap() - 9.0 / 16.0).abs() < 0.001);
+        assert!(media_aspect(None).is_none());
+    }
+
+    #[test]
+    fn nested_youtube_thumbnail_still_resolves_to_shared_webview() {
+        let source = "https://youtu.be/S_WnNiaU4m0?si=m37I98CU0aqRY9qr";
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "yt-custom",
+            "source_type": "custom",
+            "image": {"url": "https://img.youtube.com/vi/S_WnNiaU4m0/hqdefault.jpg"},
+            "video": {"url": "https://www.youtube.com/embed/S_WnNiaU4m0"}
+        })).unwrap();
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        assert!(backend_video.is_none());
+        assert!(direct.is_none());
+        assert!(iframe.unwrap().contains("/embed/S_WnNiaU4m0"));
+        assert!(youtube_player_url("https://example.com/watch?v=S_WnNiaU4m0").is_none());
+        assert!(youtube_player_url("https://youtu.be/invalid").is_none());
+    }
+
+    #[test]
+    fn klipy_gif_uses_animation_even_with_iframe_and_mp4_metadata() {
+        let source = "https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme";
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "klipy-custom",
+            "source_type": "custom",
+            "video": {"url": "https://cdn.example.test/animation.mp4", "mime_type": "video/mp4"}
+        })).unwrap();
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        assert!(gif_style_embed(source));
+        assert!(backend_video.is_some());
+        assert!(direct.is_none());
+        assert!(iframe.is_none());
+    }
+
+    #[test]
+    fn custom_message_embed_keeps_a_safe_nested_video() {
+        let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "message-embed",
+            "source_type": "custom",
+            "video": {
+                "url": "https://cdn.example.test/attachment.mp4",
+                "mime_type": "video/mp4"
+            }
+        }))
+        .expect("valid custom embed");
+
+        let (backend_video, video_url, iframe) =
+            choose_embed_media("https://cdn.example.test/post", Some(&embed), None);
+        assert!(backend_video.is_some(), "custom video goes through the native player");
+        assert!(video_url.is_none());
+        assert!(iframe.is_none());
     }
 }
 

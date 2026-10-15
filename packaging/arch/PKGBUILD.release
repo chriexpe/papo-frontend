@@ -1,0 +1,37 @@
+# Official binary package from the release's matching Linux tarball.
+# The existing packaging/PKGBUILD remains the source-build package.
+pkgname=papo
+pkgver="${PAPO_VERSION:?PAPO_VERSION required}"
+pkgrel=1
+pkgdesc="Cliente nativo do Papo - chat self-hosted"
+arch=('x86_64' 'aarch64')
+url="https://github.com/chriexpe/papo-frontend"
+license=('AGPL-3.0-or-later')
+depends=('gstreamer' 'gst-plugins-base' 'gst-plugins-good' 'gst-plugins-bad'
+         'gst-libav' 'libnice' 'libxkbcommon' 'wayland' 'libx11' 'fontconfig')
+optdepends=('pipewire: áudio e microfone'
+            'gst-plugin-pipewire: mídia pelo PipeWire'
+            'xdg-desktop-portal: seletor de arquivos'
+            'noto-fonts-cjk: escrita japonesa, chinesa e coreana')
+source=("papo-$pkgver-$CARCH-linux.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    local tree="$srcdir/papo-$pkgver-$CARCH-linux"
+    install -Dm755 "$tree/bin/papo" "$pkgdir/usr/bin/papo"
+    install -Dm755 "$tree/libexec/papo/rsrpc" "$pkgdir/usr/lib/papo/rsrpc"
+    install -Dm644 "$tree/share/applications/io.github.chriexpe.Papo.desktop" \
+        "$pkgdir/usr/share/applications/io.github.chriexpe.Papo.desktop"
+    install -Dm644 "$tree/share/metainfo/io.github.chriexpe.Papo.metainfo.xml" \
+        "$pkgdir/usr/share/metainfo/io.github.chriexpe.Papo.metainfo.xml"
+    for icon in "$tree"/share/icons/hicolor/*/apps/*.png; do
+        local size="$(basename "$(dirname "$(dirname "$icon")")")"
+        install -Dm644 "$icon" \
+            "$pkgdir/usr/share/icons/hicolor/$size/apps/io.github.chriexpe.Papo.png"
+    done
+    install -Dm644 "$tree/LICENSE" "$pkgdir/usr/share/licenses/papo/LICENSE"
+    install -Dm644 "$tree/share/doc/papo/RSRPC-LICENSE" \
+        "$pkgdir/usr/share/licenses/papo/RSRPC-LICENSE"
+    install -Dm644 "$tree/share/doc/papo/RSRPC-NOTICE" \
+        "$pkgdir/usr/share/licenses/papo/RSRPC-NOTICE"
+}

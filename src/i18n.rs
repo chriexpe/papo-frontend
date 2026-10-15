@@ -392,6 +392,8 @@ pub struct Strings {
     // Ajustes
     pub settings: &'static str,
     pub appearance: &'static str,
+    pub ui_scale: &'static str,
+    pub ui_scale_hint: &'static str,
     pub translucency: &'static str,
     pub translucency_hint: &'static str,
     pub channel_emoji_monochrome: &'static str,
@@ -922,6 +924,8 @@ pub static PT_BR: Strings = Strings {
 
     settings: "Ajustes",
     appearance: "Aparência",
+    ui_scale: "Escala da interface",
+    ui_scale_hint: "Arraste para escolher; a escala muda ao soltar o controle.",
     translucency: "Translucidez",
     translucency_hint: "Troca o vidro fosco das barras por fundos opacos.",
     channel_emoji_monochrome: "Emoji dos canais em uma cor",
@@ -1451,6 +1455,8 @@ pub static EN: Strings = Strings {
 
     settings: "Settings",
     appearance: "Appearance",
+    ui_scale: "Interface scale",
+    ui_scale_hint: "Drag to choose a scale; it applies when you release the control.",
     translucency: "Translucency",
     translucency_hint: "Turns off frosted bars and uses opaque backgrounds.",
     channel_emoji_monochrome: "Single-color emoji in channel names",

@@ -475,6 +475,7 @@ fn video(
         &attachment.id,
         PlaySource::File(&path),
         poster,
+        None,
         card_width,
         true,
         seek_zones,
@@ -512,6 +513,8 @@ pub fn video_surface(
     widget_key: &str,
     source: PlaySource<'_>,
     poster: Option<(egui::TextureId, Vec2)>,
+    // Original media aspect, when present in the backend contract.
+    aspect_hint: Option<f32>,
     card_width: f32,
     download: bool,
     seek_zones: &mut Vec<Rect>,
@@ -529,7 +532,7 @@ pub fn video_surface(
         .map(|texture| (texture.id(), texture.size_vec2()));
     let (player_aspect, playing, position, duration) = match media.existing_player(id) {
         Some(player) => (
-            Some(player.aspect().clamp(0.4, 3.0)),
+            Some(player.aspect().clamp(0.25, 4.0)),
             player.is_playing(),
             player.position(),
             player.duration(),
@@ -537,18 +540,24 @@ pub fn video_surface(
         None => (None, false, 0.0, 0.0),
     };
 
-    // A proporção sai do que existir de mais concreto: o quadro que está
-    // tocando, depois a capa, depois o que o player disse. O 16:9 é só o
-    // chute de enquanto não há nenhum dos três — e era ele que achatava
-    // vídeo em pé, porque a capa chegava depois do cartão já medido.
+    // A thumbnail can be cropped/letterboxed, and the player's provisional
+    // aspect is 16:9 until its first frame. Trust actual decoded pixels first,
+    // then the backend's original media dimensions, then the poster.
     let shown = live.or(poster);
-    let aspect = shown
+    let aspect = live
         .map(|(_, size)| size.x / size.y.max(1.0))
+        .or(aspect_hint)
+        .or_else(|| poster.map(|(_, size)| size.x / size.y.max(1.0)))
         .or(player_aspect)
         .unwrap_or(16.0 / 9.0)
-        .clamp(0.4, 3.0);
-    let frame_size = Vec2::new(card_width, (card_width / aspect).min(320.0));
-    let total = Vec2::new(card_width, frame_size.y + CONTROLS_H);
+        .clamp(0.25, 4.0);
+    // Fit *both* dimensions within the available card. Capping height while
+    // retaining the original width distorted portraits and created a wide
+    // letterboxed frame with the wrong control-bar width.
+    let frame_h = (card_width / aspect).min(320.0);
+    let frame_w = (frame_h * aspect).min(card_width);
+    let frame_size = Vec2::new(frame_w, frame_h);
+    let total = Vec2::new(frame_w, frame_size.y + CONTROLS_H);
     let (rect, response) = ui.allocate_exact_size(total, Sense::click());
     let frame_rect = Rect::from_min_size(rect.min, frame_size);
     let corner = CornerRadius::same(radius::CARD);
@@ -588,7 +597,7 @@ pub fn video_surface(
 
     let controls = Rect::from_min_size(
         egui::pos2(rect.min.x, frame_rect.max.y),
-        Vec2::new(card_width, CONTROLS_H),
+        Vec2::new(frame_w, CONTROLS_H),
     );
     let transport = transport(
         ui, t, media, id, widget_key, source, controls, position, duration, true, download,
@@ -606,6 +615,50 @@ pub fn video_surface(
         clicked: response.clicked(),
         transport,
     }
+}
+
+/// Animated MP4/GIF-style embeds are images semantically: no playback chrome,
+/// no sound, and they loop while visible. Keep their media pipeline separate
+/// from normal interactive videos (which retain seek/volume/fullscreen).
+#[allow(clippy::too_many_arguments)]
+pub fn animation_surface(
+    ui: &mut egui::Ui,
+    media: &mut MediaStore,
+    id: &str,
+    source: PlaySource<'_>,
+    poster: Option<(egui::TextureId, Vec2)>,
+    aspect_hint: Option<f32>,
+    max_width: f32,
+) -> Rect {
+    let visible = ui.clip_rect().expand(96.0);
+    if ui.cursor().min.y < visible.max.y && ui.cursor().min.y + 400.0 > visible.min.y {
+        media.autoplay_animation(id, source, ui.ctx());
+    } else {
+        media.pause_animation_offscreen(id);
+    }
+    let live = media.existing_player(id)
+        .and_then(|player| player.frame(ui.ctx()))
+        .map(|texture| (texture.id(), texture.size_vec2()));
+    let shown = live.or(poster);
+    let aspect = live.map(|(_, size)| size.x / size.y.max(1.0))
+        .or(aspect_hint)
+        .or_else(|| poster.map(|(_, size)| size.x / size.y.max(1.0)))
+        .unwrap_or(16.0 / 9.0)
+        .clamp(0.25, 4.0);
+    let height = (max_width / aspect).min(320.0);
+    let width = (height * aspect).min(max_width);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(radius::CARD), Color32::BLACK);
+    if let Some((texture, natural)) = shown {
+        let size = fit(natural, rect.size());
+        ui.painter().image(
+            texture,
+            Rect::from_center_size(rect.center(), size),
+            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+    rect
 }
 
 #[allow(clippy::ptr_arg)]

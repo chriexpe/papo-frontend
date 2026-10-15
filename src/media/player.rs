@@ -72,6 +72,7 @@ enum Command {
     Pause,
     Seek(f64),
     Muted(bool),
+    Looping(bool),
     Volume(f64),
 }
 
@@ -201,6 +202,10 @@ impl Player {
         self.send(Command::Muted(muted));
     }
 
+    pub fn set_looping(&mut self, looping: bool) {
+        self.send(Command::Looping(looping));
+    }
+
     /// Volume linear do `playbin` (0 a 1).
     pub fn set_volume(&mut self, volume: f64) {
         self.send(Command::Volume(volume.clamp(0.0, 1.0)));
@@ -310,6 +315,7 @@ fn run(
     publish(&pipeline, &shared);
     repaint.request_repaint();
 
+    let mut looping = false;
     loop {
         match commands.recv_timeout(TICK) {
             Ok(Command::Play) => match pipeline.set_state(gst::State::Playing) {
@@ -357,6 +363,7 @@ fn run(
                 repaint.request_repaint();
             }
             Ok(Command::Muted(muted)) => pipeline.set_property("mute", muted),
+            Ok(Command::Looping(enabled)) => looping = enabled,
             Ok(Command::Volume(volume)) => pipeline.set_property("volume", volume),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             // A janela soltou o player.
@@ -367,10 +374,15 @@ fn run(
             while let Some(message) = bus.pop() {
                 match message.view() {
                     gst::MessageView::Eos(_) => {
-                        shared.playing.store(false, Ordering::Relaxed);
-                        let _ = pipeline.set_state(gst::State::Paused);
                         let _ = pipeline
                             .seek_simple(gst::SeekFlags::FLUSH, gst::ClockTime::ZERO);
+                        if looping {
+                            let _ = pipeline.set_state(gst::State::Playing);
+                            shared.playing.store(true, Ordering::Relaxed);
+                        } else {
+                            shared.playing.store(false, Ordering::Relaxed);
+                            let _ = pipeline.set_state(gst::State::Paused);
+                        }
                         repaint.request_repaint();
                     }
                     gst::MessageView::Error(error) => {
@@ -652,12 +664,7 @@ impl Recorder {
         // A fonte varia com o sistema: PipeWire onde existe, ALSA como
         // reserva, e no Android o OpenSL ES, que é o único caminho. Sem
         // microfone, nada disso abre e a gravação nem começa.
-        #[cfg(target_os = "android")]
-        const SOURCES: &[&str] = &["openslessrc"];
-        #[cfg(not(target_os = "android"))]
-        const SOURCES: &[&str] = &["pipewiresrc", "alsasrc"];
-
-        for source in SOURCES {
+        for source in super::platform::audio_source_candidates() {
             // O `queue` logo depois da fonte é o que separa a captura da
             // codificação: sem ele, converter, resamplear e codificar em
             // Opus acontece na thread que está lendo o microfone, e cada
