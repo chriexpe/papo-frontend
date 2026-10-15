@@ -14,7 +14,11 @@ pub fn system_accent() -> Option<Color32> {
         kde_color(&["General"], "AccentColor")
             .or_else(|| kde_color(&["Colors:Selection"], "BackgroundNormal"))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos_appearance::read().1
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         None
     }
@@ -28,7 +32,11 @@ pub fn system_prefers_dark() -> Option<bool> {
         let l = 0.2126 * bg.r() as f32 + 0.7152 * bg.g() as f32 + 0.0722 * bg.b() as f32;
         Some(l < 128.0)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::macos_appearance::read().0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         None
     }
