@@ -706,6 +706,8 @@ pub struct Message {
     pub author_id: String,
     #[serde(default)]
     pub external_author: Option<ExternalAuthor>,
+    #[serde(default)]
+    pub app_installation_id: Option<String>,
     pub content: Option<String>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
@@ -1212,6 +1214,31 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_accepts_optional_app_installation_id() {
+        let mut payload = serde_json::json!({
+            "id": "message", "channel_id": "channel", "author_id": null,
+            "created_at": "2026-10-15T00:00:00Z",
+            "external_author": {"source": "app", "id": "app", "name": "Bot"}
+        });
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("installation")),
+        ] {
+            payload.as_object_mut().unwrap().remove("app_installation_id");
+            if let Some(value) = value {
+                payload["app_installation_id"] = value;
+            }
+            let message: Message = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(
+                message.app_installation_id.as_deref(),
+                payload["app_installation_id"].as_str()
+            );
+            assert_eq!(message.external_author.unwrap().name, "Bot");
+        }
+    }
 
     /// As sete permissões vão todas no corpo, inclusive as falsas: o
     /// `RolePermissions` do backend não tem `omitempty`, e mandar só as
