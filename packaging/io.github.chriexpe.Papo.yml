@@ -130,17 +130,17 @@ modules:
         archive-type: tar-gzip
         url: https://static.crates.io/crates/winit/winit-0.30.13.crate
         sha256: a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d
-        dest: target/patch/winit-0.30.13
+        dest: .papo/patch/winit-0.30.13
       - type: patch
         path: ../patches/winit+0.30.13.patch
-        dest: target/patch/winit-0.30.13
+        dest: .papo/patch/winit-0.30.13
         use-git: true
       - type: inline
         contents: '{"package":"a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d","files":{}}'
-        dest: target/patch/winit-0.30.13
+        dest: .papo/patch/winit-0.30.13
         dest-filename: .cargo-checksum.json
       - type: file
         path: ../patches/winit+0.30.13.patch
-        dest: target/patch/winit-0.30.13
+        dest: .papo/patch/winit-0.30.13
         dest-filename: .papo-applied.patch
       - cargo-sources.json
