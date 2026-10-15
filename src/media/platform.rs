@@ -60,6 +60,27 @@ fn camera_source_candidates_for(platform: GstPlatform) -> &'static [&'static str
 }
 
 pub fn prepare_environment() {
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let Some(contents) = exe.parent().and_then(|p| p.parent()) else { return };
+        let plugins = contents.join("PlugIns");
+        if plugins.is_dir() {
+            // Set once before gst::init spawns native worker threads.
+            unsafe {
+                std::env::set_var("GST_PLUGIN_PATH_1_0", &plugins);
+                std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", &plugins);
+            }
+        }
+        let scanner = contents.join("Helpers/gst-plugin-scanner");
+        if scanner.is_file() {
+            unsafe { std::env::set_var("GST_PLUGIN_SCANNER", &scanner) };
+        }
+        let gio = contents.join("Resources/gio-modules");
+        if gio.is_dir() {
+            unsafe { std::env::set_var("GIO_EXTRA_MODULES", &gio) };
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         let Ok(exe) = std::env::current_exe() else { return };

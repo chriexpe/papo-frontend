@@ -19,13 +19,14 @@ O Papo foi feito para manter a mesma experiência entre desktop e Android sem El
 | --- | --- | --- |
 | Linux | x86_64, aarch64 | Flatpak, .deb, tar.gz |
 | Windows | x86_64 | Setup.exe, ZIP portátil |
+| macOS (experimental) | Apple Silicon (aarch64) | Self-contained ad-hoc signed CI `.app` |
 | Android | arm64-v8a | APK assinado |
 
 No Windows, o Papo usa WebView2 e distribui seu próprio runtime do GStreamer. No Android, a mesma aplicação Rust/egui é empacotada como app nativo. Linux usa WPE WebKit para conteúdo web incorporado.
 
 Windows e instalações Android via sideload têm atualização pelo próprio app usando GitHub Releases.
 
-macOS e web ainda não são alvos de release suportados.
+macOS tem um `.app` experimental (assinatura ad-hoc, sem notarização) no CI para Apple Silicon, com GStreamer incluído no pacote e sem integrações completas de sistema; veja [docs/macos.md](docs/macos.md). A versão web também não é suportada.
 
 ## Instalação
 

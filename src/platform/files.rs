@@ -748,7 +748,9 @@ pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
 
 /// Entrega o arquivo ao aplicativo padrão do sistema.
 pub fn open_path(path: &Path) {
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(not(target_os = "android"), not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
     // Abrir um arquivo no Android é uma Intent, e para isso é preciso a
     // Activity — assunto do PR de integração com a plataforma.

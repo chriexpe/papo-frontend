@@ -111,6 +111,65 @@ jobs:
         run: |
           bash -n scripts/deps.sh
           bash -n scripts/wpe-runtime.sh
+          bash -n packaging/macos/build-app.sh
+          python3 -m py_compile packaging/macos/bundle-gstreamer.py
+
+  # Build natively on an Apple Silicon runner. This is a compile/runtime
+  # bootstrap, not yet a signed .app or a distributable macOS release.
+  macos:
+    runs-on: macos-15
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-arm64
+      - name: Install native GStreamer SDK
+        run: |
+          # Homebrew's current gstreamer formula bundles the former gst-* plugins.
+          brew install gstreamer libnice-gstreamer pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
+          gst-inspect-1.0 webrtcbin
+          gst-inspect-1.0 nicesrc
+      - name: Compile macOS desktop application and native WebKit bridge
+        run: cargo build --locked --bin papo
+      - name: Test WKWebView geometry contract
+        run: cargo test --locked --bin papo --lib point_conversion_is_scaled_once
+      - name: Test macOS launch-at-login plist
+        run: cargo test --locked --lib launchagent_escapes_paths_and_uses_array_arguments
+      - name: Check native media runtime without GUI hardware
+        run: |
+          ./target/debug/papo voice-check | tee voice-check.log
+          grep -q "GStreamer" voice-check.log
+      - name: Package self-contained Finder-launchable test app
+        run: |
+          version="$(grep -m1 '^version = "' Cargo.toml | cut -d '"' -f2)"
+          bash packaging/macos/build-app.sh target/debug/papo "$version" dist
+          file dist/Papo.app/Contents/MacOS/papo
+          test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
+          test -d dist/Papo.app/Contents/Frameworks
+          test -f dist/Papo.app/Contents/PlugIns/libgstnice.dylib
+          test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
+          # Invalid nested folders under Contents/PlugIns break codesign.
+          test -z "$(find dist/Papo.app/Contents/PlugIns -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
+            dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
+          grep -q "GStreamer" packaged-voice-check.log
+          grep -Eq '\[ok\] +webrtcbin' packaged-voice-check.log
+          grep -Eq '\[ok\] +nicesrc' packaged-voice-check.log
+          grep -Eq '\[ok\] +osxaudiosrc' packaged-voice-check.log
+          (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app Papo-macos-arm64-adhoc.zip)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-macos-arm64-adhoc
+          path: dist/Papo-macos-arm64-adhoc.zip
+          retention-days: 7
+          if-no-files-found: error
 
   windows:
     runs-on: windows-2025

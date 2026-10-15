@@ -105,6 +105,10 @@ x11rb = { version = "0.13", default-features = false }
 libloading = "0.8"
 libc = "0.2"
 
+# macOS uses POSIX signals for the rsRPC child process lifecycle.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 # ---------------------------------------------------------------------------
 # Windows
 # ---------------------------------------------------------------------------

@@ -160,7 +160,88 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::path::PathBuf;
+
+    const LABEL: &str = "io.github.chriexpe.Papo";
+    const PLIST_NAME: &str = "io.github.chriexpe.Papo.plist";
+
+    fn plist_path() -> Result<PathBuf, String> {
+        let home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .ok_or("macOS home directory unavailable")?;
+        Ok(PathBuf::from(home).join("Library/LaunchAgents").join(PLIST_NAME))
+    }
+
+    fn xml_escape(value: &str) -> String {
+        value.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
+    fn executable() -> Result<PathBuf, String> {
+        std::env::current_exe().map_err(|error| error.to_string())
+    }
+
+    fn entry(executable: &std::path::Path) -> String {
+        // LaunchAgents are per-user; RunAtLoad starts Papo on the next login.
+        // Pass arguments separately, never through a shell or string parsing.
+        let executable = xml_escape(&executable.to_string_lossy());
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\"><dict>\n\
+             <key>Label</key><string>{LABEL}</string>\n\
+             <key>ProgramArguments</key><array><string>{executable}</string></array>\n\
+             <key>RunAtLoad</key><true/>\n\
+             <key>KeepAlive</key><false/>\n\
+             </dict></plist>\n"
+        )
+    }
+
+    pub fn is_enabled() -> bool {
+        plist_path().is_ok_and(|path| path.is_file())
+    }
+
+    pub fn set(enabled: bool) -> Result<(), String> {
+        let path = plist_path()?;
+        if !enabled {
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+            }
+            return Ok(());
+        }
+        let executable = executable()?;
+        let parent = path.parent().ok_or("invalid LaunchAgents path")?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        // Atomic replacement prevents partially written launchd property lists.
+        let staging = path.with_extension(format!("{}.tmp", std::process::id()));
+        std::fs::write(&staging, entry(&executable)).map_err(|error| error.to_string())?;
+        if let Err(error) = std::fs::rename(&staging, &path) {
+            let _ = std::fs::remove_file(&staging);
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn launchagent_escapes_paths_and_uses_array_arguments() {
+            let value = entry(std::path::Path::new("/Applications/Papo & Friends.app/Contents/MacOS/papo"));
+            assert!(value.contains("Papo &amp; Friends.app"));
+            assert!(value.contains("<key>RunAtLoad</key><true/>"));
+            assert!(value.contains("<key>ProgramArguments</key><array>"));
+            assert!(!value.contains("<key>KeepAlive</key><true/>"));
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 mod imp {
     pub fn is_enabled() -> bool { false }
     pub fn set(_enabled: bool) -> Result<(), String> {

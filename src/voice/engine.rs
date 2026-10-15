@@ -1487,12 +1487,7 @@ fn audio_sink() -> Option<gst::Element> {
     // A call compartilhava a lista da área de trabalho e, no Android,
     // acabava dependendo de autoaudiosink por acaso. O player de anexos já
     // usa o sink nativo diretamente; a call deve fazer o mesmo.
-    #[cfg(target_os = "android")]
-    const SINKS: &[&str] = &["openslessink", "autoaudiosink"];
-    #[cfg(not(target_os = "android"))]
-    const SINKS: &[&str] = &["pipewiresink", "pulsesink", "alsasink", "autoaudiosink"];
-
-    for factory in SINKS {
+    for factory in crate::media::platform::audio_sink_candidates() {
         let Some(sink) = make(factory) else { continue };
         // Um sink que entra com o pipeline já andando não pode segurar a
         // troca de estado esperando o próprio preroll.

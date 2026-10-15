@@ -22,6 +22,7 @@ pub trait PlaybackPlayer: Send {
     fn toggle(&mut self);
     fn seek(&mut self, seconds: f64);
     fn set_muted(&mut self, muted: bool);
+    fn set_looping(&mut self, _looping: bool) {}
     fn set_volume(&mut self, volume: f64);
     fn is_playing(&self) -> bool;
     fn position(&self) -> f64;
@@ -58,6 +59,9 @@ impl DirectMediaPlayer {
     pub fn set_muted(&mut self, muted: bool) {
         self.muted = muted;
         self.inner.set_muted(muted);
+    }
+    pub fn set_looping(&mut self, looping: bool) {
+        self.inner.set_looping(looping);
     }
     /// `level` é a posição do controle (0 a 1); o ouvido percebe volume em
     /// escala logarítmica, então o `playbin` recebe o cubo, como o
@@ -105,6 +109,7 @@ impl PlaybackPlayer for player::Player {
     fn toggle(&mut self) { player::Player::toggle(self); }
     fn seek(&mut self, seconds: f64) { player::Player::seek(self, seconds); }
     fn set_muted(&mut self, muted: bool) { player::Player::set_muted(self, muted); }
+    fn set_looping(&mut self, looping: bool) { player::Player::set_looping(self, looping); }
     fn set_volume(&mut self, volume: f64) { player::Player::set_volume(self, volume); }
     fn is_playing(&self) -> bool { player::Player::is_playing(self) }
     fn position(&self) -> f64 { player::Player::position(self) }
