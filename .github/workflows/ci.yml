@@ -139,10 +139,16 @@ jobs:
           file dist/Papo.app/Contents/MacOS/papo
           test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
           test -d dist/Papo.app/Contents/Frameworks
+          test -f dist/Papo.app/Contents/PlugIns/libgstnice.dylib
           test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
+          # Invalid nested folders under Contents/PlugIns break codesign.
+          test -z "$(find dist/Papo.app/Contents/PlugIns -mindepth 1 -maxdepth 1 -type d -print -quit)"
           env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
             dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
           grep -q "GStreamer" packaged-voice-check.log
+          grep -Eq '\[ok\] +webrtcbin' packaged-voice-check.log
+          grep -Eq '\[ok\] +nicesrc' packaged-voice-check.log
+          grep -Eq '\[ok\] +osxaudiosrc' packaged-voice-check.log
           (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app Papo-macos-arm64-adhoc.zip)
       - uses: actions/upload-artifact@v4
         with:

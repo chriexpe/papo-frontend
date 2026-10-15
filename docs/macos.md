@@ -18,7 +18,8 @@ version is for development and hands-on compatibility tests only.
    globally. Apple Silicon only — no Intel test bundle yet.
 
 This test bundle relocates GStreamer and its non-system dynamic dependencies
-into `Contents/Frameworks` and native plugins into `Contents/PlugIns`.
+into `Contents/Frameworks`, native GStreamer dylibs directly under
+`Contents/PlugIns`, and GIO modules under `Contents/Resources/gio-modules`.
 It should not require Homebrew on the destination Mac. The bundle remains an
 experimental unsigned-developer-identity build; review third-party licenses
 and test real camera, microphone, and WebRTC hardware before distributing.

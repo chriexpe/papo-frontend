@@ -86,8 +86,8 @@ class Bundle:
         self.app = app.resolve()
         self.prefix = prefix.resolve()
         self.frameworks = self.app / "Contents/Frameworks"
-        self.plugins = self.app / "Contents/PlugIns/gstreamer-1.0"
-        self.gio = self.app / "Contents/PlugIns/gio-modules"
+        self.plugins = self.app / "Contents/PlugIns"
+        self.gio = self.app / "Contents/Resources/gio-modules"
         self.helpers = self.app / "Contents/Helpers"
         self.exe = self.app / "Contents/MacOS/papo"
         self.queue: deque[tuple[Path, Path]] = deque()
@@ -209,6 +209,11 @@ class Bundle:
 
     def process(self) -> None:
         self.stage_runtime()
+        # macOS code signing requires Contents/PlugIns to contain flat Mach-O
+        # files or proper bundles. A gstreamer-1.0 directory is treated as an
+        # invalid bundle and causes app signing to fail.
+        if any(path.is_dir() for path in self.plugins.iterdir()):
+            raise RuntimeError("unexpected directory inside flat Contents/PlugIns")
         while self.queue:
             original, destination = self.queue.popleft()
             if destination in self.seen:
@@ -253,7 +258,7 @@ class Bundle:
             if destination.parent == self.frameworks:
                 load_path = "@loader_path"
             elif destination.parent == self.plugins:
-                load_path = "@loader_path/../../Frameworks"
+                load_path = "@loader_path/../Frameworks"
             elif destination.parent == self.gio:
                 load_path = "@loader_path/../../Frameworks"
             else:
