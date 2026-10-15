@@ -128,6 +128,8 @@ jobs:
         run: cargo build --locked --bin papo
       - name: Test WKWebView geometry contract
         run: cargo test --locked --bin papo --lib point_conversion_is_scaled_once
+      - name: Test macOS launch-at-login plist
+        run: cargo test --locked --lib launchagent_escapes_paths_and_uses_array_arguments
       - name: Check native media runtime without GUI hardware
         run: |
           ./target/debug/papo voice-check | tee voice-check.log
