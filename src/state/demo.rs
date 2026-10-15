@@ -72,19 +72,23 @@ pub fn seed(store: &mut Store, server_key: &str) {
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
         // Uma categoria de verdade, para ver o arrastar entre categorias.
         Channel {
+            views: Vec::new(),
             kind: ChannelKind::Category,
             topic: None,
             ..channel("c-projetos", "Projetos", "", 2)
         },
         Channel {
+            views: Vec::new(),
             parent_id: Some("c-projetos".into()),
             ..channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 3)
         },
         Channel {
+            views: Vec::new(),
             parent_id: Some("c-projetos".into()),
             ..channel("c-design", "design", "Telas, protótipos e discussões de cor", 4)
         },
         Channel {
+            views: Vec::new(),
             id: "c-voz".into(),
             name: "sala de voz".into(),
             kind: ChannelKind::Voice,
@@ -669,6 +673,7 @@ fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>)
 
 fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
     Channel {
+        views: Vec::new(),
         id: id.into(),
         name: name.into(),
         kind: ChannelKind::Text,

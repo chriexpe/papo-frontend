@@ -99,8 +99,9 @@ pub enum Event {
     },
     ChannelUpdated {
         id: String,
-        name: String,
-        topic: Option<String>,
+        name: Option<String>,
+        topic: Option<Option<String>>,
+        views: Option<Vec<super::models::ChannelView>>,
     },
     ChannelDeleted {
         id: String,
@@ -518,8 +519,11 @@ fn parse(text: &str) -> Option<Event> {
         }),
         "channel_update" => Some(Event::ChannelUpdated {
             id: string("channel_id")?,
-            name: string("name").unwrap_or_default(),
-            topic: string("topic"),
+            name: string("name"),
+            topic: value.get("topic").map(|_| string("topic")),
+            views: value
+                .get("views")
+                .and_then(|views| serde_json::from_value(views.clone()).ok()),
         }),
         "channel_delete" => Some(Event::ChannelDeleted {
             id: string("channel_id")?,
@@ -796,5 +800,30 @@ mod tests {
                 ..
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod channel_view_tests {
+    use super::*;
+    #[test]
+    fn partial_view_update_and_explicit_empty_snapshot_are_distinct() {
+        for (json, expected) in [
+            (r#"{"type":"channel_update","channel_id":"a"}"#, None),
+            (
+                r#"{"type":"channel_update","channel_id":"a","views":[]}"#,
+                Some(Vec::new()),
+            ),
+        ] {
+            let Event::ChannelUpdated {
+                name, topic, views, ..
+            } = parse(json).unwrap()
+            else {
+                panic!("wrong event");
+            };
+            assert_eq!(name, None);
+            assert_eq!(topic, None);
+            assert_eq!(views, expected);
+        }
     }
 }

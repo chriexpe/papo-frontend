@@ -885,3 +885,7 @@ impl Drop for WindowsWebEmbedBackend {
         }
     }
 }
+
+// Separate passive-view construction; rich-link creation and policy stay intact.
+#[path = "channel_view.rs"]
+pub mod channel_view;

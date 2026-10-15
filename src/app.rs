@@ -1242,6 +1242,7 @@ impl PapoApp {
         self.window_hidden = true;
         self.focused = false;
         self.notification.set_foreground(false);
+        self.ui.channel_view.hide();
         self.ui.webembed.suspend_active();
         self.flush_all_drafts();
         self.hidden_viewports = ctx.input(|input| {
@@ -1753,6 +1754,8 @@ impl PapoApp {
         // Unlike the channel sidebar, the DM surface belongs to the window.
         let was_inbox = self.ui.dm_surface;
         self.persist_active_drafts(true);
+        self.ui.channel_view.destroy();
+        self.ui.channel_view_tab = false;
         if self.settings.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
             self.ui.webembed.destroy_active();
         }
@@ -2524,6 +2527,7 @@ impl PapoApp {
                 let position = ws.runtime.store.channels.len() as i32;
                 let id = format!("demo-channel-{position}");
                 ws.runtime.store.channels.push(Channel {
+                    views: Vec::new(),
                     id: id.clone(),
                     name,
                     kind,
@@ -2870,6 +2874,15 @@ impl PapoApp {
                 for effect in effects {
                     let ws = &mut self.workspaces[index];
                     match effect {
+                        RuntimeEffect::ChannelViewsInvalidated { channel_id } => {
+                            if index == self.active
+                                && self.ui.channel_view.owns(&ws.runtime.url, &channel_id)
+                            {
+                                self.ui.channel_view.destroy();
+                                self.ui.channel_view_tab = false;
+                            }
+                        }
+
                         RuntimeEffect::ServerUnlocked => {
                             // O formulário continua sendo apresentação; o
                             // runtime só avisa que a senha do servidor abriu.
@@ -4424,7 +4437,10 @@ impl eframe::App for PapoApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if self.window_hidden { return; }
+        if self.window_hidden {
+            return;
+        }
+        self.ui.channel_view.begin_frame(frame, &ctx);
         self.ui.webembed.set_context(&ctx);
         self.ui.webembed.begin_frame();
         self.ui.webembed.pump_events(&ctx);
@@ -4485,6 +4501,7 @@ impl eframe::App for PapoApp {
                 // justamente atrás que o sistema quer que a gente largue o
                 // que é reconstruível. A política é a mesma (Moderate, que
                 // preserva quem está tocando), só aplicada antes da suspensão.
+                self.ui.channel_view.hide();
                 self.ui.webembed.suspend_active();
                 self.trim_all_media(crate::media::TrimLevel::Moderate);
                 if let Some(storage) = frame.storage_mut() {
@@ -4562,6 +4579,7 @@ impl eframe::App for PapoApp {
             );
 
             if crate::platform::android_call::is_in_pip() {
+                self.ui.channel_view.hide();
                 self.ui.webembed.suspend_active();
                 ctx.request_repaint();
                 if let Some(index) = call_index {
@@ -4745,8 +4763,10 @@ impl eframe::App for PapoApp {
         #[cfg(not(target_os = "android"))]
         {
             let store = &self.workspaces[self.active].runtime.store;
-            let shortcuts = shortcut_commands(&ctx, store);
-            self.ui.pending.extend(shortcuts);
+            if !self.ui.channel_view_tab {
+                let shortcuts = shortcut_commands(&ctx, store);
+                self.ui.pending.extend(shortcuts);
+            }
         }
 
         let pending = std::mem::take(&mut self.ui.pending);
@@ -4761,6 +4781,7 @@ impl eframe::App for PapoApp {
 
         // O browser é uma superfície nativa: qualquer frame que não declare
         // um dono/retângulo válido precisa suspendê-lo ou destruí-lo.
+        self.ui.channel_view.end_frame();
         self.ui.webembed.end_frame(
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
@@ -4777,6 +4798,7 @@ impl eframe::App for PapoApp {
     #[cfg(target_os = "android")]
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         self.flush_all_drafts();
+        self.ui.channel_view.destroy();
         self.ui.webembed.destroy_active();
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
@@ -4788,6 +4810,7 @@ impl eframe::App for PapoApp {
     #[cfg(not(target_os = "android"))]
     fn on_exit(&mut self) {
         self.flush_all_drafts();
+        self.ui.channel_view.destroy();
         self.ui.webembed.destroy_active();
     }
 

@@ -47,6 +47,9 @@ pub enum CallRuntimeEffect {
 
 #[derive(Clone, Debug)]
 pub enum RuntimeEffect {
+    ChannelViewsInvalidated {
+        channel_id: String,
+    },
     ServerUnlocked,
     ServerLabelChanged(String),
     OutgoingRejected {
@@ -521,6 +524,18 @@ impl ServerRuntime {
     fn presentation_effects(&self, update: &Update) -> Vec<RuntimeEffect> {
         let mut effects = Vec::new();
         match update {
+            Update::Event(event)
+                if matches!(
+                    &**event,
+                    Event::ChannelUpdated { .. } | Event::ChannelDeleted { .. }
+                ) =>
+            {
+                if let Event::ChannelUpdated { id, .. } | Event::ChannelDeleted { id } = &**event {
+                    effects.push(RuntimeEffect::ChannelViewsInvalidated {
+                        channel_id: id.clone(),
+                    });
+                }
+            }
             Update::ServerUnlocked => effects.push(RuntimeEffect::ServerUnlocked),
             Update::PushDevice { token, registered } => {
                 effects.push(RuntimeEffect::PushDevice {

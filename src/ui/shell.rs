@@ -939,6 +939,8 @@ pub struct UiState {
     pub media: MediaStore,
     /// Browser rico é estado da janela/processo, nunca entra no Stash de servidor.
     pub webembed: crate::webembed::WebEmbedManager,
+    pub channel_view: crate::channel_view::ChannelViewSurface,
+    pub channel_view_tab: bool,
     /// O que fazer quando o cartão dono sai da viewport.
     pub webembed_behavior: crate::webembed::OffscreenBehavior,
     /// Até onde um WebEmbed flutuante acompanha a navegação.
@@ -1170,6 +1172,8 @@ impl Default for UiState {
             previews: None,
             media: MediaStore::new(None),
             webembed: crate::webembed::WebEmbedManager::default(),
+            channel_view: Default::default(),
+            channel_view_tab: false,
             webembed_behavior: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
@@ -1460,6 +1464,8 @@ pub fn draw(
     // Trocou de canal: a descrição reaparece e a mídia que estava tocando
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
+        state.channel_view.destroy();
+        state.channel_view_tab = false;
         let next_channel = store.selected_channel.clone();
         let previous_channel = state.last_channel.clone();
         state.switch_draft_channel(&next_channel);
@@ -3164,6 +3170,22 @@ fn conversation(
 ) {
     use crate::state::Stage;
 
+    let mut views = if state.dm_surface {
+        Vec::new()
+    } else {
+        store
+            .channel(&store.selected_channel)
+            .map(|c| c.views.clone())
+            .unwrap_or_default()
+    };
+    views.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+    state
+        .channel_view
+        .sync(&state.server_url, &store.selected_channel, &views);
+    if state.channel_view.selected_id().is_none() {
+        state.channel_view_tab = false;
+    }
+
     let voice = store
         .channel(&store.selected_channel)
         .is_some_and(|channel| channel.kind == ChannelKind::Voice);
@@ -3202,9 +3224,68 @@ fn conversation(
             return;
         }
 
+        if state.channel_view_tab {
+            channel_view_tabs(ui, state, &views, full);
+            // A view owns this content rectangle only. Chat input handlers and
+            // composer are not rendered while its tab is selected.
+            state.webembed.suspend_active();
+            let channel_rect = channel_pill(ui, store, state, t, s, full);
+            let update = update_pill(ui, state, t, s, full, channel_rect, None);
+            let content = Rect::from_min_max(
+                egui::pos2(
+                    full.min.x,
+                    full.min.y + PILL_MARGIN * 2.0 + PILL_HEIGHT + 36.0,
+                ),
+                full.max,
+            );
+            if state.channel_view.is_fallback() {
+                ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        ui.add_space((content.height() * 0.5 - 16.0).max(0.0));
+                        let url = state.channel_view.url().map(str::to_owned);
+                        if ui
+                            .add_enabled(url.is_some(), egui::Button::new("Open in browser"))
+                            .clicked()
+                            && let Some(url) = url
+                        {
+                            state.request_external_url(ui.ctx(), url);
+                        }
+                    });
+                });
+            } else if webembed_inline_allowed(state) && stage.is_none() {
+                let occlusions = update
+                    .map(|placement| vec![placement.rect])
+                    .unwrap_or_default();
+                state.channel_view.present(&crate::webembed::EmbedViewport {
+                    rect: content,
+                    clip_rect: content,
+                    occlusions,
+                    pixels_per_point: ui.ctx().pixels_per_point(),
+                });
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            call_layers(
+                ui,
+                store,
+                state,
+                call,
+                t,
+                s,
+                full,
+                stage,
+                channel_rect,
+                update
+                    .filter(|placement| placement.reserves_call_space)
+                    .map(|placement| placement.rect),
+            );
+            return;
+        }
+
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
+            channel_view_tabs(ui, state, &views, full);
             state.webembed_chat_clip = None;
             state.webembed_occlusions.clear();
             if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
@@ -3243,7 +3324,7 @@ fn conversation(
         }
 
         let composer_height = composer_height(ui, state, full);
-        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
+        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT + if views.is_empty() { 0.0 } else { 36.0 };
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
         #[cfg(target_os = "android")]
         {
@@ -3524,6 +3605,7 @@ fn conversation(
         );
 
         // Camada funcional: tudo flutua.
+        channel_view_tabs(ui, state, &views, full);
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
@@ -3538,8 +3620,23 @@ fn conversation(
             bottom_inset,
         );
         composer(ui, store, state, t, s, full, composer_height);
-        state.webembed_occlusions =
-            webembed_chrome_occlusions(ui, store, state, s, full, composer_height, channel_rect, actions_rect);
+        state.webembed_occlusions = webembed_chrome_occlusions(
+            ui,
+            store,
+            state,
+            s,
+            full,
+            composer_height,
+            channel_rect,
+            actions_rect,
+        );
+        if !views.is_empty() {
+            // Native rich-link surfaces must also leave the new tab row clickable.
+            state.webembed_occlusions.push(Rect::from_min_max(
+                egui::pos2(full.min.x, full.min.y + top_inset - 36.0),
+                egui::pos2(full.max.x, full.min.y + top_inset),
+            ));
+        }
         state.webembed_occlusions.extend(nav_rects);
         if let Some(update) = update {
             state.webembed_occlusions.push(update.rect);
@@ -3564,6 +3661,65 @@ fn conversation(
         if state.compact {
             handle_mobile_gesture(ui, store, state, full, top_inset, bottom_inset);
         }
+    });
+}
+
+/// Abas de conteúdo ficam acima da timeline e fora da área nativa.
+fn channel_view_tabs(
+    ui: &mut egui::Ui,
+    state: &mut UiState,
+    views: &[papo_core::api::models::ChannelView],
+    full: Rect,
+) {
+    if views.is_empty() {
+        return;
+    }
+    let tabs = Rect::from_min_size(
+        egui::pos2(
+            full.min.x + PILL_MARGIN,
+            full.min.y + PILL_MARGIN * 2.0 + PILL_HEIGHT,
+        ),
+        Vec2::new((full.width() - PILL_MARGIN * 2.0).max(1.0), 32.0),
+    );
+    ui.scope_builder(UiBuilder::new().max_rect(tabs), |ui| {
+        egui::ScrollArea::horizontal()
+            .id_salt("channel-view-tabs")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(!state.channel_view_tab, "Chat")
+                        .clicked()
+                    {
+                        state.channel_view_tab = false;
+                        state.channel_view.hide();
+                    }
+                    for view in views {
+                        let label = view
+                            .name
+                            .clone()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                url::Url::parse(&view.url)
+                                    .ok()
+                                    .and_then(|u| u.host_str().map(str::to_owned))
+                                    .unwrap_or_else(|| "View".into())
+                            });
+                        let selected = state.channel_view_tab
+                            && state.channel_view.selected_id() == Some(&view.id);
+                        if ui.selectable_label(selected, label).clicked() {
+                            state
+                                .channel_view
+                                .select(Some(view.clone()), &state.server_url);
+                            state.channel_view_tab = true;
+                            ui.memory_mut(|memory| {
+                                if let Some(id) = memory.focused() {
+                                    memory.surrender_focus(id);
+                                }
+                            });
+                        }
+                    }
+                });
+            });
     });
 }
 
@@ -8148,6 +8304,9 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
 /// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
 /// takes it away, and even then it is suspended, not destroyed.
 fn webembed_floating_allowed(state: &UiState) -> bool {
+    if state.channel_view_tab {
+        return false;
+    }
     !state.webembed_blocked
         && state.viewer.is_none()
         && state.link_viewer.is_none()
@@ -12001,14 +12160,24 @@ mod escape_tests {
         let mut store = Store::default();
         store.selected_channel = "c1".into();
         store.channels = vec![crate::state::Channel {
-                id: "c1".into(), name: "geral".into(), kind: ChannelKind::Text,
-                topic: None, position: 0, permissions: Vec::new(),
-                notification_settings: "only_mentions".into(), parent_id: None,
-                unread: true, mentions: 0,
-            }];
-        store.messages = (0..60).map(|index| Message {
-                id: format!("m{index:03}"), channel_id: "c1".into(), author_id: "u1".into(),
-            external_author: None,
+            views: Vec::new(),
+            id: "c1".into(),
+            name: "geral".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: "only_mentions".into(),
+            parent_id: None,
+            unread: true,
+            mentions: 0,
+        }];
+        store.messages = (0..60)
+            .map(|index| Message {
+                id: format!("m{index:03}"),
+                channel_id: "c1".into(),
+                author_id: "u1".into(),
+                external_author: None,
                 content: format!("Mensagem {index}: texto da conversa para testar a rolagem."),
                 at: chrono::Local::now(), edited: false, reply_to: None,
                 attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),

@@ -42,6 +42,7 @@ impl ChannelKind {
 
 #[derive(Clone, Debug)]
 pub struct Channel {
+    pub views: Vec<models::ChannelView>,
     pub id: String,
     pub name: String,
     pub kind: ChannelKind,
@@ -672,6 +673,7 @@ impl Store {
             channel.kind = ChannelKind::Direct;
         } else {
             self.channels.push(Channel {
+                views: Vec::new(),
                 id,
                 name,
                 kind: ChannelKind::Direct,
@@ -1069,6 +1071,7 @@ impl Store {
             .channels
             .into_iter()
             .map(|channel| Channel {
+                views: Vec::new(),
                 id: channel.id,
                 name: channel.name,
                 kind: ChannelKind::parse(&channel.kind),
@@ -2584,6 +2587,7 @@ impl Store {
                             .map(|(at, mark)| at > mark)
                             .unwrap_or(false);
                         Channel {
+                            views: channel.views,
                             unread: unread || fresh,
                             id: channel.id,
                             name: channel.name,
@@ -3378,6 +3382,7 @@ impl Store {
                 }
                 let position = self.channels.len() as i32 + 1;
                 self.channels.push(Channel {
+                    views: Vec::new(),
                     id,
                     name,
                     kind: ChannelKind::parse(&kind),
@@ -3390,10 +3395,21 @@ impl Store {
                     mentions: 0,
                 });
             }
-            Event::ChannelUpdated { id, name, topic } => {
+            Event::ChannelUpdated {
+                id,
+                name,
+                topic,
+                views,
+            } => {
                 if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == id) {
-                    channel.name = name;
-                    channel.topic = topic;
+                    if let Some(name) = name {
+                        channel.name = name;
+                    }
+                    if let Some(topic) = topic {
+                        channel.topic = topic;
+                    }
+                    // Sem snapshot no evento, invalida imediatamente até o REST autoritativo.
+                    channel.views = views.unwrap_or_default();
                 }
             }
             Event::ChannelDeleted { id } => {
@@ -3735,6 +3751,7 @@ mod channel_layout_tests {
 
     fn channel(id: &str, kind: ChannelKind, position: i32, parent: Option<&str>) -> Channel {
         Channel {
+            views: Vec::new(),
             id: id.into(),
             name: id.into(),
             kind,
@@ -4772,6 +4789,7 @@ mod tests {
         };
         store.channels = vec![
             Channel {
+                views: Vec::new(),
                 id: "aberto".to_owned(),
                 name: "Aberto".to_owned(),
                 kind: ChannelKind::Text,
@@ -4784,6 +4802,7 @@ mod tests {
                 mentions: 0,
             },
             Channel {
+                views: Vec::new(),
                 id: "outro".to_owned(),
                 name: "Outro".to_owned(),
                 kind: ChannelKind::Text,
@@ -5711,6 +5730,7 @@ mod tests {
             me: "eu".to_owned(),
             selected_channel: "geral".to_owned(),
             channels: vec![Channel {
+                views: Vec::new(),
                 id: "geral".to_owned(),
                 name: "Geral".to_owned(),
                 kind: ChannelKind::Text,
@@ -5955,6 +5975,7 @@ mod notification_badge_tests {
         ]
         .into_iter()
         .map(|(id, mode)| Channel {
+            views: Vec::new(),
             id: id.into(),
             name: id.into(),
             kind: if id == "dm" {
@@ -6078,5 +6099,57 @@ mod notification_badge_tests {
         assert_eq!(store.pending_notification_count(), 1);
         store.clear_cached_state();
         assert_eq!(store.pending_notification_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod channel_view_tests {
+    use super::*;
+
+    fn payload(views: serde_json::Value) -> models::Channel {
+        serde_json::from_value(serde_json::json!({
+            "id": "a", "name": "private-channel", "type": "text", "topic": "Keep topic",
+            "views": views,
+        }))
+        .unwrap()
+    }
+    fn views() -> serde_json::Value {
+        serde_json::json!([{"id":"map", "app_installation_id":"app", "channel_id":"a",
+            "url":"https://example.com/", "position":0, "name":"Map"}])
+    }
+    #[test]
+    fn channel_payload_carries_views_and_refresh_removes_revoked_entries() {
+        let mut store = Store::default();
+        store.apply(Update::Channels(vec![payload(views())]));
+        assert_eq!(store.channels[0].views[0].name.as_deref(), Some("Map"));
+        store.apply(Update::Channels(vec![payload(serde_json::json!([]))]));
+        assert!(store.channels[0].views.is_empty());
+    }
+    #[test]
+    fn partial_channel_update_invalidates_views_without_erasing_channel_identity() {
+        let mut store = Store::default();
+        store.apply(Update::Channels(vec![payload(views())]));
+        store.apply(Update::Event(Box::new(Event::ChannelUpdated {
+            id: "a".into(),
+            name: None,
+            topic: None,
+            views: None,
+        })));
+        assert!(store.channels[0].views.is_empty());
+        assert_eq!(store.channels[0].name, "private-channel");
+        assert_eq!(store.channels[0].topic.as_deref(), Some("Keep topic"));
+    }
+    #[test]
+    fn channel_update_snapshot_replaces_view_tabs() {
+        let mut store = Store::default();
+        store.apply(Update::Channels(vec![payload(views())]));
+        store.apply(Update::Event(Box::new(Event::ChannelUpdated {
+            id: "a".into(),
+            name: None,
+            topic: Some(None),
+            views: Some(Vec::new()),
+        })));
+        assert!(store.channels[0].views.is_empty());
+        assert_eq!(store.channels[0].topic, None);
     }
 }

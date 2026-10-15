@@ -2135,6 +2135,29 @@ async fn worker(
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
                 hooks.event.emit(&event);
+                if matches!(&event, Event::ChannelUpdated { .. }) && session.is_authenticated() {
+                    let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                    // Uma resposta anterior à revogação não pode recriar as abas.
+                    // Invalida também progressos/completions já enfileirados desse run.
+                    abort_reconciles(
+                        reconcile_scheduler.cancel_key(&ReconcileKey::ServerMetadata),
+                        &mut reconcile_aborts,
+                    );
+                    metadata_live_events.clear();
+                    let result = reconcile_scheduler.submit(
+                        ReconcileRequest {
+                            owner: TaskOwner {
+                                generation: runtime_generation,
+                                session_epoch,
+                            },
+                            priority: ReconcilePriority::ActiveServer,
+                            kind: ReconcileKind::ServerMetadata { user_id },
+                        },
+                        std::time::Instant::now(),
+                    );
+                    abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                    diagnostics_dirty = true;
+                }
 
                 if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
                     && matches!(

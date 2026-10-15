@@ -398,6 +398,17 @@ impl ReconcileScheduler {
         stale
     }
 
+    /// Cancela uma consulta cujo snapshot antecede uma invalidação do servidor.
+    pub fn cancel_key(&mut self, key: &ReconcileKey) -> Vec<u64> {
+        self.queued.retain(|queued| &queued.request.key() != key);
+        self.retry_until.remove(key);
+        let Some(run_id) = self.active_by_key.remove(key) else {
+            return Vec::new();
+        };
+        self.running.remove(&run_id);
+        vec![run_id]
+    }
+
     pub fn cancel_all(&mut self) -> Vec<u64> {
         self.queued.clear();
         self.retry_until.clear();
@@ -591,6 +602,23 @@ mod tests {
         assert_eq!(a.start_ready(now).len(), 1);
         assert_eq!(a.stats().queued, 1);
         assert_eq!(b.start_ready(now).len(), 1);
+    }
+
+    #[test]
+    fn view_invalidation_rejects_pre_revocation_metadata_progress_and_completion() {
+        let now = Instant::now();
+        let mut scheduler = ReconcileScheduler::new(2);
+        scheduler.submit(metadata(ReconcilePriority::ActiveServer), now);
+        let old = scheduler.start_ready(now).remove(0);
+        assert_eq!(
+            scheduler.cancel_key(&ReconcileKey::ServerMetadata),
+            vec![old.run_id]
+        );
+        assert!(!scheduler.is_current_run(old.run_id));
+        scheduler.submit(metadata(ReconcilePriority::ActiveServer), now);
+        let fresh = scheduler.start_ready(now).remove(0);
+        assert!(!scheduler.complete(old.run_id, true, now));
+        assert!(scheduler.is_current_run(fresh.run_id));
     }
 
     #[test]

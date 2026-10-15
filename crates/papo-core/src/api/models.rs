@@ -203,6 +203,8 @@ pub struct CreateServerRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Channel {
+    #[serde(default)]
+    pub views: Vec<ChannelView>,
     pub id: String,
     pub name: String,
     #[serde(rename = "type")]
@@ -220,6 +222,19 @@ pub struct Channel {
     pub parent_id: Option<String>,
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
+}
+
+/// View passiva externa, sem credenciais ou ponte nativa.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ChannelView {
+    pub id: String,
+    pub app_installation_id: String,
+    pub channel_id: String,
+    pub url: String,
+    #[serde(default)]
+    pub position: i32,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 fn default_channel_notification_setting() -> String {
