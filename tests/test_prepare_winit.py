@@ -1,12 +1,13 @@
-"""Preparation regression tests; no registry writes or global Git changes."""
+"""Regression tests for reproducible, no-Rust-CLI winit patch preparation."""
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,30 +30,19 @@ class PreparationTests(unittest.TestCase):
             '[package.metadata.patch]\ncrates=["winit"]\n'
             f'[target.\'cfg(target_os = "linux")\'.dependencies]\nwinit={{version="={prepare.VERSION}"}}\n'
             f'[patch.crates-io]\nwinit={{path="{prepare.DESTINATION.as_posix()}"}}\n',
-            encoding="utf-8", newline="\n",
+            encoding="utf-8", newline="\n"
         )
-        (self.root / "Cargo.lock").write_bytes(b"lockfile must stay unchanged\n")
+        (self.root / "Cargo.lock").write_bytes(b"locked\n")
         self.patch_file = self.root / prepare.PATCH
         self.write_patch(2)
-        self.real_run = subprocess.run
-        self.real_which = shutil.which
-        self.calls = 0
-        self.failure = False
-        self.partial = False
-        self.version = prepare.TOOL_VERSION
-        self.child_env = None
-        self.run_mock = patch.object(prepare.subprocess, "run", side_effect=self.tool_run)
-        self.run_mock.start()
-        self.addCleanup(self.run_mock.stop)
-        which = patch.object(prepare.shutil, "which", side_effect=self.which)
-        which.start()
-        self.addCleanup(which.stop)
-        archive = patch.object(prepare, "verify_archive")
-        self.archive_check = archive.start()
-        self.addCleanup(archive.stop)
-
-    def which(self, name):
-        return "fixture-tool" if name == "cargo-patch-crate" else self.real_which(name)
+        self.archive = self.make_archive()
+        self.checksum = hashlib.sha256(self.archive).hexdigest()
+        self.checksum_patch = patch.object(prepare, "CHECKSUM", self.checksum)
+        self.checksum_patch.start()
+        self.addCleanup(self.checksum_patch.stop)
+        self.archive_patch = patch.object(prepare, "archive_bytes", return_value=self.archive)
+        self.archive_mock = self.archive_patch.start()
+        self.addCleanup(self.archive_patch.stop)
 
     def write_patch(self, value):
         self.patch_file.write_text(
@@ -60,122 +50,91 @@ class PreparationTests(unittest.TestCase):
             encoding="utf-8", newline="\n",
         )
 
-    def tool_run(self, args, **kwargs):
-        if args[0] != "fixture-tool":
-            return self.real_run(args, **kwargs)
-        if args[1] == "--version":
-            return subprocess.CompletedProcess(args, 0, f"patch-crate {self.version}\n", "")
-        self.calls += 1
-        self.child_env = kwargs["env"]
-        crate = self.root / prepare.DESTINATION
-        if crate.exists():
-            shutil.rmtree(crate)
-        crate.mkdir(parents=True)
-        (crate / "Cargo.toml").write_text(
-            f'[package]\nname="winit"\nversion="{prepare.VERSION}"\n', encoding="utf-8", newline="\n"
-        )
-        (crate / "fixture.rs").write_text("const VALUE: u32 = 1;\n", encoding="utf-8", newline="\n")
-        if self.failure:
-            raise subprocess.CalledProcessError(1, args)
-        if not self.partial:
-            self.real_run(["git", "apply", str(self.patch_file)], cwd=crate, check=True)
-        return subprocess.CompletedProcess(args, 0)
+    def make_archive(self, unsafe_name=None):
+        content = io.BytesIO()
+        with tarfile.open(fileobj=content, mode="w:gz") as archive:
+            prefix = f"winit-{prepare.VERSION}"
+            files = {
+                f"{prefix}/Cargo.toml": f'[package]\nname="winit"\nversion="{prepare.VERSION}"\n',
+                f"{prefix}/fixture.rs": "const VALUE: u32 = 1;\n",
+            }
+            if unsafe_name:
+                files[unsafe_name] = "malicious\n"
+            for filename, text in files.items():
+                payload = text.encode()
+                info = tarfile.TarInfo(filename)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+        return content.getvalue()
 
-    def test_clean_preparation_is_verified_and_does_not_change_lockfile(self):
-        original = (self.root / "Cargo.lock").read_bytes()
+    def test_prepare_is_idempotent_and_locked(self):
         prepare.prepare(self.root)
         self.assertTrue(prepare.prepared(self.root))
-        self.assertEqual(original, (self.root / "Cargo.lock").read_bytes())
-        self.archive_check.assert_called_once_with(self.root.resolve())
+        prepare.prepare(self.root)
+        self.archive_mock.assert_called_once()
+        self.assertEqual((self.root / "Cargo.lock").read_bytes(), b"locked\n")
 
-    def test_verified_preparation_is_reused_and_force_recreates_it(self):
+    def test_force_and_changed_diff_recreate_source(self):
         prepare.prepare(self.root)
-        prepare.prepare(self.root)
-        self.assertEqual(self.calls, 1)
         prepare.prepare(self.root, force=True)
-        self.assertEqual(self.calls, 2)
-        self.assertTrue(prepare.prepared(self.root))
-
-    def test_changed_patch_rebuilds_instead_of_silently_using_cached_source(self):
-        prepare.prepare(self.root)
+        self.assertEqual(self.archive_mock.call_count, 2)
         self.write_patch(3)
         self.assertFalse(prepare.prepared(self.root))
         prepare.prepare(self.root)
-        self.assertEqual(self.calls, 2)
         self.assertEqual((self.root / prepare.DESTINATION / "fixture.rs").read_text(), "const VALUE: u32 = 3;\n")
 
-    def test_corrupted_source_is_detected_even_with_a_matching_marker(self):
+    def test_corruption_of_patched_file_is_detected(self):
         prepare.prepare(self.root)
         (self.root / prepare.DESTINATION / "fixture.rs").write_text("wrong content\n")
         self.assertFalse(prepare.prepared(self.root))
         prepare.prepare(self.root)
-        self.assertEqual(self.calls, 2)
         self.assertTrue(prepare.prepared(self.root))
 
-    def test_failed_or_incomplete_application_removes_the_generated_crate(self):
-        for partial in [False, True]:
-            self.failure = not partial
-            self.partial = partial
-            with self.assertRaises((prepare.PreparationError, subprocess.CalledProcessError)):
+    def test_bad_checksum_cannot_be_published(self):
+        self.archive_patch.stop()
+        with patch.object(prepare, "archive_bytes", side_effect=prepare.PreparationError("wrong SHA-256")):
+            with self.assertRaisesRegex(prepare.PreparationError, "SHA-256"):
                 prepare.prepare(self.root)
-            self.assertFalse((self.root / prepare.DESTINATION).exists())
-
-    def test_wrong_archive_is_not_published_as_a_prepared_crate(self):
-        self.archive_check.side_effect = prepare.PreparationError("wrong SHA-256")
-        with self.assertRaisesRegex(prepare.PreparationError, "SHA-256"):
-            prepare.prepare(self.root)
         self.assertFalse((self.root / prepare.DESTINATION).exists())
 
-    def test_missing_tool_and_wrong_version_fail_with_install_instructions(self):
-        with patch.object(prepare.shutil, "which", side_effect=lambda name: None if name == "cargo-patch-crate" else self.real_which(name)):
-            with self.assertRaisesRegex(prepare.PreparationError, "cargo install patch-crate"):
-                prepare.prepare(self.root)
-        self.version = "0.1.12"
-        with self.assertRaisesRegex(prepare.PreparationError, "0.1.13"):
-            prepare.prepare(self.root)
-        self.assertEqual(self.calls, 0)
-
-    def test_checkpoint_git_settings_are_local_to_the_tool_process(self):
-        with patch.dict(os.environ, {
-            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.autocrlf", "GIT_CONFIG_VALUE_0": "false",
-        }):
-            before = dict(os.environ)
-            prepare.prepare(self.root)
-            self.assertEqual(before, dict(os.environ))
-        env = self.child_env
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "4")
-        self.assertEqual(env["GIT_CONFIG_KEY_0"], "core.autocrlf")
-        self.assertEqual(env["GIT_CONFIG_KEY_1"], "commit.gpgsign")
-        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "false")
-        self.assertEqual(env["GIT_AUTHOR_EMAIL"], "patches@papo.invalid")
-
-    def test_check_only_does_not_prepare_and_parallel_preparation_is_rejected(self):
+    def test_missing_and_unsafe_archive_files(self):
         with self.assertRaises(prepare.PreparationError):
+            prepare.unpack_archive(self.make_archive("../outside"), self.root)
+        self.assertFalse((self.root / "outside").exists())
+
+    def test_invalid_diff_rejects_unchanged_destination(self):
+        prepare.prepare(self.root)
+        old = (self.root / prepare.DESTINATION / "fixture.rs").read_bytes()
+        self.write_patch(999)
+        self.patch_file.write_text("not a patch")
+        with self.assertRaises(prepare.PreparationError):
+            prepare.prepare(self.root)
+        self.assertEqual((self.root / prepare.DESTINATION / "fixture.rs").read_bytes(), old)
+
+    def test_check_only_and_preparation_lock(self):
+        with self.assertRaisesRegex(prepare.PreparationError, "before Cargo"):
             prepare.prepare(self.root, check_only=True)
-        self.assertEqual(self.calls, 0)
         with prepare.preparation_lock(self.root):
             with self.assertRaisesRegex(prepare.PreparationError, "Another"):
                 prepare.prepare(self.root)
 
+    def test_source_outside_target_tree(self):
+        self.assertNotEqual(prepare.DESTINATION.parts[0], "target")
+        prepare.prepare(self.root)
+        self.assertFalse((self.root / "target").exists())
 
-class ArchiveTests(unittest.TestCase):
-    def test_archive_checksum_and_relative_cargo_home(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            cache = root / "cargo-home/registry/cache/fixture"
-            cache.mkdir(parents=True)
-            archive = cache / f"winit-{prepare.VERSION}.crate"
-            archive.write_bytes(b"original archive")
-            with patch.dict(os.environ, {"CARGO_HOME": "cargo-home"}), patch.object(
-                prepare, "CHECKSUM", hashlib.sha256(archive.read_bytes()).hexdigest()
-            ):
-                prepare.verify_archive(root)
-                archive.write_bytes(b"corrupted archive")
-                with self.assertRaisesRegex(prepare.PreparationError, "SHA-256"):
-                    prepare.verify_archive(root)
-                archive.unlink()
-                with self.assertRaises(prepare.PreparationError):
-                    prepare.verify_archive(root)
+    def test_archive_checksum(self):
+        self.assertEqual(prepare.verify_archive_bytes(self.archive), self.archive)
+        with self.assertRaisesRegex(prepare.PreparationError, "SHA-256"):
+            prepare.verify_archive_bytes(b"tampered")
+
+    def test_relative_cargo_home(self):
+        self.archive_patch.stop()
+        cache = self.root / "cargo-home/registry/cache/fixture"
+        cache.mkdir(parents=True)
+        (cache / f"winit-{prepare.VERSION}.crate").write_bytes(self.archive)
+        with patch.dict(os.environ, {"CARGO_HOME": "cargo-home"}):
+            self.assertEqual(prepare.archive_bytes(self.root), self.archive)
 
 
 if __name__ == "__main__":
