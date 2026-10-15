@@ -18,7 +18,13 @@ import sys
 
 
 def run(*args: str) -> str:
-    result = subprocess.run(args, check=True, text=True, capture_output=True)
+    result = subprocess.run(args, text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(
+            f"{' '.join(args)} failed (exit {result.returncode})\n"
+            f"stdout: {result.stdout[-4000:]}\n"
+            f"stderr: {result.stderr[-4000:]}"
+        )
     return result.stdout
 
 
@@ -283,7 +289,12 @@ class Bundle:
                 raise RuntimeError(f"Homebrew LC_RPATH remains in {binary}")
 
         for binary in sorted(self.changed):
-            # install_name_tool invalidates existing vendor signatures.
+            # install_name_tool invalidates vendor signatures. Sign each nested
+            # dylib/plugin/scanner individually, then sign the enclosing .app
+            # once in build-app.sh. Do not sign the main executable a second
+            # time here while it is already within an unsigned app bundle.
+            if binary == self.exe:
+                continue
             run("codesign", "--force", "--sign", "-", str(binary))
 
         print(f"Bundled {len(self.copied)} dependent libraries and "
