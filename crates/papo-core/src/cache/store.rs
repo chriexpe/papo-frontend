@@ -81,8 +81,8 @@ fn original_image(blob: &Option<String>) -> Option<Vec<u8>> {
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         server_key, message_id, channel_id, author_id, content, created_at,
-        edited, reply_to, pinned, attachments, reactions, embeds
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+        edited, reply_to, pinned, attachments, reactions, embeds, external_author
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
     ON CONFLICT(server_key, message_id) DO UPDATE SET
         channel_id = excluded.channel_id,
         author_id = excluded.author_id,
@@ -93,7 +93,8 @@ const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         pinned = excluded.pinned,
         attachments = excluded.attachments,
         reactions = excluded.reactions,
-        embeds = excluded.embeds";
+        embeds = excluded.embeds,
+        external_author = excluded.external_author";
 
 fn message_params(server_key: &str, message: &CachedMessage) -> Vec<Value> {
     vec![
@@ -109,6 +110,7 @@ fn message_params(server_key: &str, message: &CachedMessage) -> Vec<Value> {
         text(&encode_json(&message.attachments)),
         text(&encode_json(&message.reactions)),
         text(&encode_json(&message.embeds)),
+        opt_text(message.external_author.as_ref().and_then(|a| serde_json::to_string(a).ok()).as_deref()),
     ]
 }
 
@@ -1255,7 +1257,7 @@ impl TursoCache {
             .conn
             .query(
                 "SELECT message_id, channel_id, author_id, content, created_at,
-                        edited, reply_to, pinned, attachments, reactions, embeds
+                        edited, reply_to, pinned, attachments, reactions, embeds, external_author
                  FROM messages
                  WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
                    AND (?3 IS NULL OR created_at < ?3
@@ -1271,6 +1273,7 @@ impl TursoCache {
             let attachments: String = row.get(8)?;
             let reactions: String = row.get(9)?;
             let embeds: String = row.get(10)?;
+            let external_json: Option<String> = row.get(11)?;
             messages.push(CachedMessage {
                 id: row.get(0)?,
                 channel_id: row.get(1)?,
@@ -1285,6 +1288,7 @@ impl TursoCache {
                 reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
                     .unwrap_or_default(),
                 embeds: serde_json::from_str(&embeds).unwrap_or_default(),
+                external_author: external_json.and_then(|value| serde_json::from_str(&value).ok()),
             });
         }
         let has_more = messages.len() > CACHE_PAGE_SIZE as usize;
@@ -1300,7 +1304,7 @@ impl TursoCache {
                 .conn
                 .query(
                     "SELECT message_id, channel_id, author_id, content, created_at,
-                            edited, reply_to, pinned, attachments, reactions, embeds
+                            edited, reply_to, pinned, attachments, reactions, embeds, external_author
                      FROM messages
                      WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1
                      ORDER BY created_at DESC, message_id DESC
@@ -1312,6 +1316,7 @@ impl TursoCache {
                 let attachments: String = row.get(8)?;
                 let reactions: String = row.get(9)?;
                 let embeds: String = row.get(10)?;
+            let external_json: Option<String> = row.get(11)?;
                 messages.push(CachedMessage {
                     id: row.get(0)?,
                     channel_id: row.get(1)?,
@@ -1326,6 +1331,7 @@ impl TursoCache {
                     reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
                         .unwrap_or_default(),
                     embeds: serde_json::from_str(&embeds).unwrap_or_default(),
+                external_author: external_json.and_then(|value| serde_json::from_str(&value).ok()),
                 });
             }
         }
@@ -1421,7 +1427,7 @@ impl TursoCache {
             .conn
             .query(
                 "SELECT message_id, channel_id, author_id, content, created_at,
-                        edited, reply_to, pinned, attachments, reactions, embeds
+                        edited, reply_to, pinned, attachments, reactions, embeds, external_author
                  FROM messages WHERE server_key = ?1 ORDER BY created_at",
                 [server_key],
             )
@@ -1430,6 +1436,7 @@ impl TursoCache {
             let attachments: String = row.get(8)?;
             let reactions: String = row.get(9)?;
             let embeds: String = row.get(10)?;
+            let external_json: Option<String> = row.get(11)?;
             snapshot.messages.push(CachedMessage {
                 id: row.get(0)?,
                 channel_id: row.get(1)?,
@@ -1444,6 +1451,7 @@ impl TursoCache {
                 reactions: serde_json::from_str::<Vec<CachedReaction>>(&reactions)
                     .unwrap_or_default(),
                 embeds: serde_json::from_str(&embeds).unwrap_or_default(),
+                external_author: external_json.and_then(|value| serde_json::from_str(&value).ok()),
             });
         }
         drop(rows);

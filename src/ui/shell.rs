@@ -796,6 +796,101 @@ pub enum UpdatePill {
     WaitingPermission,
 }
 
+/// Normal remote avatars are absolute HTTPS URLs. Incoming Papo webhooks
+/// instead return a server-local path, e.g. /webhooks/<uuid>/avatar.
+/// Resolve only that known API route against the *connected* server; never
+/// interpret arbitrary relative paths, scheme-relative URLs or user URLs.
+fn external_avatar_url(raw: &str, server_url: &str) -> Option<String> {
+    if papo_core::preview::safe_remote_url(raw) {
+        return Some(raw.to_owned());
+    }
+    let id = raw.strip_prefix("/webhooks/")?.strip_suffix("/avatar")?;
+    if id.len() != 36 || !id.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            b == b'-'
+        } else {
+            b.is_ascii_hexdigit()
+        }
+    }) {
+        return None;
+    }
+    let base = url::Url::parse(server_url).ok()?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return None;
+    }
+    let url = base.join(raw).ok()?.to_string();
+    papo_core::preview::safe_remote_url(&url).then_some(url)
+}
+
+/// An attributed identity is not a Papo user account, so it never opens the
+/// normal profile or triggers LoadProfile requests.
+#[derive(Clone, Debug)]
+pub struct ExternalAuthorPopup {
+    pub author: crate::api::models::ExternalAuthor,
+    pub anchor: Rect,
+}
+
+fn external_author_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
+    let Some(popup) = state.external_author_popup.clone() else { return };
+    let screen = ui.ctx().content_rect();
+    let width = 280.0;
+    let x = (popup.anchor.max.x + space::MD)
+        .min(screen.max.x - width - space::MD)
+        .max(screen.min.x + space::MD);
+    let y = popup.anchor.min.y
+        .min(screen.max.y - 152.0)
+        .max(screen.min.y + space::MD);
+    let area = egui::Area::new(Id::new("external-author-card"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(x, y))
+        .show(ui.ctx(), |ui| {
+            Frame::new()
+                .fill(t.elevated_bg)
+                .stroke(Stroke::new(1.0, t.separator))
+                .corner_radius(CornerRadius::same(16))
+                .inner_margin(egui::Margin::same(14))
+                .show(ui, |ui| {
+                    ui.set_width(width - 28.0);
+                    ui.horizontal(|ui| {
+                        let avatar_url = popup.author.avatar_url.as_deref()
+                            .and_then(|url| external_avatar_url(url, &state.server_url));
+                        let avatar = avatar_url.as_deref()
+                            .and_then(|url| state.media.remote_image(
+                                &format!("external-card:{}:{}", popup.author.source, popup.author.id), url))
+                            .and_then(|texture| texture.frame(ui.ctx()))
+                            .cloned();
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
+                        if let Some(texture) = avatar {
+                            round_photo(ui.painter(), rect, texture.id(), Color32::WHITE);
+                        } else {
+                            ui.painter().circle_filled(rect.center(), 22.0, t.fill_medium);
+                            ui.painter().text(rect.center(), Align2::CENTER_CENTER,
+                                initials_for_name(&popup.author.name), text::subheadline(), t.label);
+                        }
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(&popup.author.name).font(text::headline()).color(t.label));
+                            ui.label(RichText::new(format!("Via {}", popup.author.source)).font(text::caption()).color(t.label_secondary));
+                        });
+                    });
+                    ui.add_space(space::SM);
+                    ui.label(RichText::new("Identidade externa — não é uma conta do Papo")
+                        .font(text::footnote()).color(t.label_tertiary));
+                    if let Some(url) = popup.author.profile_url.as_deref()
+                        && papo_core::preview::safe_remote_url(url)
+                        && ui.small_button("Abrir perfil externo").clicked()
+                    {
+                        state.request_external_url(ui.ctx(), url.to_owned());
+                        state.external_author_popup = None;
+                    }
+                });
+        });
+    let outside = ui.ctx().input(|input| input.pointer.any_pressed()
+        && input.pointer.interact_pos().is_some_and(|p| !area.response.rect.contains(p)));
+    if outside || ui.ctx().input(|input| input.key_pressed(egui::Key::Escape)) {
+        state.external_author_popup = None;
+    }
+}
+
 pub struct UiState {
     /// Mensagens já interpretadas como markdown, por texto final; recomeça
     /// quando passa de `markdown::CACHE_LIMIT`.
@@ -903,6 +998,8 @@ pub struct UiState {
     pub last_server_channel: String,
     /// Cartão de perfil aberto.
     pub profile: Option<super::profile::ProfileCard>,
+    /// Lightweight card for attributed remote identities, never a Papo profile.
+    pub external_author_popup: Option<ExternalAuthorPopup>,
     /// Cartão do servidor aberto (a pastilha do servidor descomprimida).
     pub server_card: Option<super::server_card::ServerCard>,
     /// Categorias recolhidas (na coluna e nos ajustes de canais).
@@ -1099,6 +1196,7 @@ impl Default for UiState {
             dm_server_name: String::new(),
             last_server_channel: String::new(),
             profile: None,
+            external_author_popup: None,
             server_card: None,
             collapsed_categories: Default::default(),
             server_pill: None,
@@ -5450,6 +5548,21 @@ fn go_to(
 // Lista de mensagens
 // ---------------------------------------------------------------------------
 
+/// Group by actual external identity, not by bridge account or display name.
+fn message_group_key(message: &Message) -> String {
+    match &message.external_author {
+        Some(remote) => format!("external:{}:{}", remote.source, remote.id),
+        None => format!("papo:{}", message.author_id),
+    }
+}
+
+fn message_display_name<'a>(message: &'a Message, store: &'a Store) -> &'a str {
+    message.external_author.as_ref().map(|a| a.name.as_str())
+        .or_else(|| store.member(&message.author_id).map(|member| member.name.as_str()))
+        .unwrap_or("?")
+}
+
+
 /// Network loading window around the actual readable chat viewport. We bias
 /// strongly upward because history is consumed by scrolling toward older
 /// messages; below the viewport only a small runway is useful.
@@ -5466,6 +5579,7 @@ fn row_signature(message: &Message, grouped: bool, new_day: bool, width: f32, pp
     grouped.hash(&mut hasher);
     new_day.hash(&mut hasher);
     message.content.hash(&mut hasher);
+    message.external_author.hash(&mut hasher);
     message.edited.hash(&mut hasher);
     message.pinned.hash(&mut hasher);
     message.reply_to.hash(&mut hasher);
@@ -5526,11 +5640,12 @@ fn message_list(
         && state.reply_drag.is_none();
 
     for message in std::iter::once(first_message).chain(messages) {
+        let author_key = message_group_key(message);
         let y_start = ui.cursor().top();
         let day = message.at.day();
         let new_day = last_day != Some(day);
         let will_group = !new_day
-            && last_author.as_deref() == Some(message.author_id.as_str())
+            && last_author.as_deref() == Some(author_key.as_str())
             && last_at.is_some_and(|prev| (message.at - prev).num_minutes() < GROUP_GAP_MINUTES);
         let signature = row_signature(message, will_group, new_day, width, ui.pixels_per_point());
         if can_cull
@@ -5548,7 +5663,7 @@ fn message_list(
             );
             culled_now.insert(message.id.clone());
             last_day = Some(day);
-            last_author = Some(message.author_id.clone());
+            last_author = Some(author_key.clone());
             last_at = Some(message.at);
             continue;
         }
@@ -5558,7 +5673,7 @@ fn message_list(
             last_author = None;
         }
 
-        let grouped = last_author.as_deref() == Some(message.author_id.as_str())
+        let grouped = last_author.as_deref() == Some(author_key.as_str())
             && last_at.is_some_and(|prev| {
                 (message.at - prev).num_minutes() < GROUP_GAP_MINUTES
             });
@@ -5622,22 +5737,38 @@ fn message_list(
                     ui.allocate_exact_size(Vec2::new(avatar_size, 0.0), Sense::hover());
                     ui.add_space(space::LG);
                 } else {
-                    let initials = author.map(|a| a.initials()).unwrap_or_else(|| "?".into());
+                    let external = message.external_author.as_ref();
+                    let initials = external.map(|a| initials_for_name(&a.name))
+                        .or_else(|| author.map(|a| a.initials()))
+                        .unwrap_or_else(|| "?".into());
                     // A mesma foto que a lista de membros e a pastilha da
                     // conta mostram; sem ela, sobram as iniciais.
-                    let texture = author.and_then(|a| {
-                        state
-                            .media
-                            .avatar(&a.id, store.avatars.get(&a.id).map(String::as_str))
+                    let texture = if let Some(remote) = external {
+                        remote.avatar_url.as_deref()
+                            .and_then(|url| external_avatar_url(url, &state.server_url))
+                            .as_deref()
+                            .and_then(|url| {
+                                if network_eligible {
+                                    state.media.remote_image(&format!("external:{}:{}", remote.source, remote.id), url)
+                                } else {
+                                    state.media.loaded_remote_image(url)
+                                }
+                            })
                             .and_then(|texture| texture.frame(&ctx))
                             .map(|handle| handle.id())
-                    });
+                    } else {
+                        author.and_then(|a| {
+                            state.media.avatar(&a.id, store.avatars.get(&a.id).map(String::as_str))
+                                .and_then(|texture| texture.frame(&ctx))
+                                .map(|handle| handle.id())
+                        })
+                    };
                     let face = avatar(
                         ui,
                         t,
                         &initials,
                         avatar_size,
-                        author.and_then(|a| a.role_color.map(rgb)),
+                        if external.is_some() { None } else { author.and_then(|a| a.role_color.map(rgb)) },
                         texture,
                     );
                     // A foto abre o cartão de quem escreveu, ao lado dela.
@@ -5666,9 +5797,9 @@ fn message_list(
                         ui.horizontal(|ui| {
                             let name = ui.add(
                                 egui::Label::new(
-                                    RichText::new(author.map(|a| a.name.as_str()).unwrap_or("?"))
+                                    RichText::new(message_display_name(message, store))
                                         .font(text::headline())
-                                        .color(author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label)),
+                                        .color(if message.external_author.is_some() { t.label } else { author.and_then(|a| a.role_color.map(rgb)).unwrap_or(t.label) }),
                                 )
                                 .selectable(false)
                                 .sense(Sense::click()),
@@ -5720,13 +5851,20 @@ fn message_list(
         });
 
         if let Some(face) = open_author {
-            let now = ui.input(|input| input.time);
-            super::profile::open(
-                state,
-                &message.author_id,
-                super::profile::Anchor::Beside(face),
-                now,
-            );
+            if let Some(remote) = &message.external_author {
+                state.profile = None;
+                state.external_author_popup = Some(ExternalAuthorPopup {
+                    author: remote.as_ref().clone(),
+                    anchor: face,
+                });
+            } else {
+                state.external_author_popup = None;
+                let now = ui.input(|input| input.time);
+                super::profile::open(
+                    state, &message.author_id,
+                    super::profile::Anchor::Beside(face), now,
+                );
+            }
         }
 
         if let Some(layer) = sliding {
@@ -5868,7 +6006,7 @@ fn message_list(
             }
         }
 
-        last_author = Some(message.author_id.clone());
+        last_author = Some(author_key);
         last_at = Some(message.at);
         let height = ui.cursor().top() - y_start;
         // Uma linha acima da tela que vinha sendo pulada e agora tem outra
@@ -5902,10 +6040,7 @@ fn reply_quote(
 ) {
     let (name, preview) = match store.message(reply_to) {
         Some(target) => (
-            store
-                .member(&target.author_id)
-                .map(|member| member.name.clone())
-                .unwrap_or_else(|| "?".into()),
+            message_display_name(target, store).to_owned(),
             if target.content.is_empty() && !target.attachments.is_empty() {
                 format!("{} {}", icon::PAPERCLIP, target.attachments[0].name())
             } else {
@@ -8365,6 +8500,7 @@ fn overlays(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens, s
     let back = std::mem::take(&mut state.back);
     let used = super::server_card::draw(&mut top, store, state, t, s, back);
     super::profile::draw(&mut top, store, state, t, s, back && !used);
+    external_author_popup(&mut top, state, t);
     saved_toast(&mut top, state, t, s);
 
     if state.external_link_prompt.is_some() {
@@ -11847,6 +11983,7 @@ mod row_cache_tests {
             id: "m".into(),
             channel_id: "c".into(),
             author_id: "u".into(),
+            external_author: None,
             content: content.into(),
             at: Local::now(),
             edited: false,
@@ -11872,5 +12009,41 @@ mod row_cache_tests {
         let mut edited = message("oi");
         edited.edited = true;
         assert_ne!(reference, sig(&edited, false, false, 600.0));
+    }
+}
+
+#[cfg(test)]
+mod external_avatar_url_tests {
+    use super::external_avatar_url;
+
+    const WEBHOOK_AVATAR: &str =
+        "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar";
+
+    #[test]
+    fn resolves_the_servers_own_webhook_avatar() {
+        assert_eq!(
+            external_avatar_url(WEBHOOK_AVATAR, "https://api.papo.example/v1/").as_deref(),
+            Some("https://api.papo.example/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar"),
+        );
+    }
+
+    #[test]
+    fn accepts_public_absolute_avatars() {
+        assert_eq!(
+            external_avatar_url("https://cdn.discordapp.com/avatars/123/photo.png", "https://api.papo.example/").as_deref(),
+            Some("https://cdn.discordapp.com/avatars/123/photo.png"),
+        );
+    }
+
+    #[test]
+    fn rejects_arbitrary_relative_and_cross_origin_paths() {
+        for raw in [
+            "//example.org/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar",
+            "/admin",
+            "/webhooks/../../admin/avatar",
+            "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar?redirect=x",
+        ] {
+            assert!(external_avatar_url(raw, "https://api.papo.example/").is_none(), "{raw}");
+        }
     }
 }
