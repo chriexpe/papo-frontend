@@ -4446,6 +4446,19 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
+        // Keep system appearance synchronized while the desktop window is visible.
+        #[cfg(not(target_os = "android"))]
+        {
+            let fresh = SystemTheme::read();
+            if fresh.accent != self.system.accent
+                || fresh.prefers_dark != self.system.prefers_dark
+                || fresh.animation_factor != self.system.animation_factor
+            {
+                self.system = fresh;
+                self.retheme(&ctx);
+            }
+        }
+
         #[cfg(target_os = "android")]
         {
             self.pump_updater(&ctx);

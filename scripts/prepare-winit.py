@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Prepare the versioned winit diff without modifying Cargo's registry cache."""
+"""Prepare the checksum-pinned winit patch without building a helper CLI."""
 
 import argparse
 import contextlib
 import hashlib
+import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import tomllib
+import urllib.error
+import urllib.request
 
 VERSION = "0.30.13"
-TOOL_VERSION = "0.1.13"
 CHECKSUM = "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d"
 PATCH = Path(f"patches/winit+{VERSION}.patch")
-DESTINATION = Path(f"target/patch/winit-{VERSION}")
+# Outside target/: rust-cache cleans target/ during its post-job save.
+DESTINATION = Path(f".papo/patch/winit-{VERSION}")
 MARKER = ".papo-applied.patch"
-INSTALL = f"cargo install patch-crate --version {TOOL_VERSION} --locked"
+ARCHIVE_URL = f"https://static.crates.io/crates/winit/winit-{VERSION}.crate"
 
 
 class PreparationError(Exception):
@@ -27,11 +32,8 @@ class PreparationError(Exception):
 
 def run_git(crate, patch, *flags):
     return subprocess.run(
-        ["git", "apply", *flags, str(patch)],
-        cwd=crate,
-        capture_output=True,
-        text=True,
-        check=False,
+        ["git", "-c", "core.autocrlf=false", "apply", *flags, str(patch)],
+        cwd=crate, capture_output=True, text=True, check=False,
     )
 
 
@@ -75,9 +77,9 @@ def prepared(root):
 
 @contextlib.contextmanager
 def preparation_lock(root):
-    target = root / "target"
-    target.mkdir(exist_ok=True)
-    with (target / ".prepare-winit.lock").open("a+b") as lock:
+    directory = root / ".papo"
+    directory.mkdir(exist_ok=True)
+    with (directory / ".prepare-winit.lock").open("a+b") as lock:
         lock.seek(0, os.SEEK_END)
         if lock.tell() == 0:
             lock.write(b"0")
@@ -102,42 +104,52 @@ def preparation_lock(root):
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def tool_environment():
-    env = os.environ.copy()
-    count = int(env.get("GIT_CONFIG_COUNT", "0"))
-    settings = (
-        ("commit.gpgsign", "false"),
-        ("user.name", "Papo patch preparation"),
-        ("user.email", "patches@papo.invalid"),
-    )
-    for offset, (key, value) in enumerate(settings, count):
-        env[f"GIT_CONFIG_KEY_{offset}"] = key
-        env[f"GIT_CONFIG_VALUE_{offset}"] = value
-    env["GIT_CONFIG_COUNT"] = str(count + len(settings))
-    # Explicit identities also cover inherited author/committer environment variables.
-    for role in ("AUTHOR", "COMMITTER"):
-        env[f"GIT_{role}_NAME"] = "Papo patch preparation"
-        env[f"GIT_{role}_EMAIL"] = "patches@papo.invalid"
-    return env
+def verify_archive_bytes(data):
+    if hashlib.sha256(data).hexdigest() != CHECKSUM:
+        raise PreparationError("The original winit archive has the wrong SHA-256.")
+    return data
 
 
-def find_tool():
-    tool = shutil.which("cargo-patch-crate")
-    if not tool:
-        raise PreparationError(f"patch-crate is required. Install it with:\n  {INSTALL}")
-    result = subprocess.run([tool, "--version"], capture_output=True, text=True, check=False)
-    if result.returncode or result.stdout.strip() != f"patch-crate {TOOL_VERSION}":
-        raise PreparationError(f"patch-crate {TOOL_VERSION} is required. Run:\n  {INSTALL}")
-    return tool
-
-
-def verify_archive(root):
+def archive_bytes(root):
     cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).expanduser()
     if not cargo_home.is_absolute():
         cargo_home = root / cargo_home
-    archives = (cargo_home / "registry/cache").glob(f"*/winit-{VERSION}.crate")
-    if not any(hashlib.sha256(path.read_bytes()).hexdigest() == CHECKSUM for path in archives):
-        raise PreparationError("The cached original winit archive is missing or has the wrong SHA-256.")
+    archives = sorted((cargo_home / "registry/cache").glob(f"*/winit-{VERSION}.crate"))
+    for archive in archives:
+        return verify_archive_bytes(archive.read_bytes())
+    # Cargo cannot fetch a missing crate through a manifest whose path
+    # override has not been prepared. Bootstrap this single pinned archive.
+    try:
+        request = urllib.request.Request(ARCHIVE_URL, headers={"User-Agent": "Papo-winit-preparation"})
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return verify_archive_bytes(response.read())
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise PreparationError(f"Cannot download the pinned winit archive: {error}") from error
+
+
+def unpack_archive(data, directory):
+    prefix = f"winit-{VERSION}"
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
+        members = archive.getmembers()
+        # Never trust archive paths, even with checksum pinning.
+        for member in members:
+            parts = PurePosixPath(member.name).parts
+            if not parts or parts[0] != prefix or ".." in parts or not (
+                member.isfile() or member.isdir()
+            ):
+                raise PreparationError(f"Invalid archive member: {member.name}")
+        for member in members:
+            target = directory.joinpath(*PurePosixPath(member.name).parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source = archive.extractfile(member)
+                if source is None:
+                    raise PreparationError(f"Cannot read archive member: {member.name}")
+                with source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+    return directory / prefix
 
 
 def prepare(root, force=False, check_only=False):
@@ -154,31 +166,29 @@ def prepare(root, force=False, check_only=False):
             return
         if check_only:
             raise PreparationError("Run python3 scripts/prepare-winit.py before Cargo.")
-        crate = root / DESTINATION
-        # Never leave an old marker behind if the pinned tool is unavailable.
-        (crate / MARKER).unlink(missing_ok=True)
-        tool = find_tool()
         lockfile = root / "Cargo.lock"
         before = lockfile.read_bytes() if lockfile.exists() else None
-        try:
-            subprocess.run([tool, "--force"], cwd=root, env=tool_environment(), check=True)
-            if (lockfile.read_bytes() if lockfile.exists() else None) != before:
-                raise PreparationError("Cargo.lock changed during preparation; stop concurrent Cargo commands.")
-            verify_archive(root)
-            # Current Cargo caches omit this file; keep the same provenance
-            # record as the checksum-verified Flatpak source.
+        # Stage fully before replacing the path Cargo will resolve.
+        with tempfile.TemporaryDirectory(prefix="winit-", dir=root / ".papo") as temporary:
+            crate = unpack_archive(archive_bytes(root), Path(temporary))
+            result = run_git(crate, patch, "--check")
+            if result.returncode:
+                raise PreparationError(f"Cannot apply winit patch:\n{result.stderr.strip()}")
+            result = run_git(crate, patch)
+            if result.returncode:
+                raise PreparationError(f"Failed to apply winit patch:\n{result.stderr.strip()}")
             (crate / ".cargo-checksum.json").write_text(
                 json.dumps({"package": CHECKSUM, "files": {}}), encoding="utf-8"
             )
             verify(crate, patch)
-            # Publish the marker last, after all validation has succeeded.
-            temporary = crate / f"{MARKER}.tmp"
-            temporary.write_bytes(patch.read_bytes())
-            temporary.replace(crate / MARKER)
-        except BaseException:
-            if crate.exists():
-                shutil.rmtree(crate)
-            raise
+            (crate / MARKER).write_bytes(patch.read_bytes())
+            if (lockfile.read_bytes() if lockfile.exists() else None) != before:
+                raise PreparationError("Cargo.lock changed during preparation; stop concurrent Cargo commands.")
+            destination = root / DESTINATION
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                shutil.rmtree(destination)
+            crate.rename(destination)
         print(f"winit {VERSION}: patch prepared.")
 
 
@@ -191,7 +201,7 @@ def main():
         parser.error("--force and --check cannot be combined")
     try:
         prepare(Path(__file__).resolve().parents[1], args.force, args.check)
-    except (PreparationError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+    except (PreparationError, OSError, ValueError, KeyError, tarfile.TarError) as error:
         print(f"winit preparation failed: {error}", file=sys.stderr)
         return 1
     return 0

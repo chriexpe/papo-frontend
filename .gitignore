@@ -1,4 +1,5 @@
 /target
+/.papo/
 # Gerado por scripts/flatpak-sources.sh; o CI o refaz a cada release.
 /packaging/cargo-sources.json
 /packaging/rsrpc-cargo-sources.json

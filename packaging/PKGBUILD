@@ -45,9 +45,7 @@ _app_id=io.github.chriexpe.Papo
 
 prepare() {
     cd "papo-frontend-$pkgver"
-    cargo install patch-crate --version 0.1.13 --locked \
-        --root "$srcdir/patch-crate-tool" --target-dir "$srcdir/patch-crate-build"
-    PATH="$srcdir/patch-crate-tool/bin:$PATH" python3 scripts/prepare-winit.py
+    python3 scripts/prepare-winit.py
 }
 
 build() {

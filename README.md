@@ -38,7 +38,6 @@ Para rodar no Linux a partir do código-fonte:
 git clone https://github.com/chriexpe/papo-frontend.git
 cd papo-frontend
 ./scripts/deps.sh --install
-cargo install patch-crate --version 0.1.13 --locked
 python3 scripts/prepare-winit.py
 cargo run
 ```
@@ -48,7 +47,6 @@ Para desenvolvimento no Android:
 ```bash
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
-cargo install patch-crate --version 0.1.13 --locked
 scripts/android.sh --run
 ```
 
@@ -66,8 +64,8 @@ Sem ela o APK sai sem FCM, e as notificações com o app fechado ficam com a ver
 O projeto requer **Rust 1.98+**.
 
 A correção de visibilidade da janela no Wayland fica em um arquivo `.patch`.
-O preparo usa **Python 3.11+**, **Git** e `patch-crate 0.1.13`; repita
-`python3 scripts/prepare-winit.py` após limpar o `target` ou alterar o patch.
+O preparo usa **Python 3.11+**, **Git** e a checksum-pinned crate archive; repita
+`python3 scripts/prepare-winit.py` após alterar o patch.
 No Windows, use `python` no lugar de `python3`. O procedimento para atualizar
 ou remover a correção está em [docs/winit-patch.md](docs/winit-patch.md).
 
