@@ -1053,6 +1053,8 @@ pub struct UiState {
     pub mark_read_at_newest: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
+    /// Esc pediu o fim do canal, independentemente da âncora de não lidas.
+    scroll_latest_pending: Option<String>,
     /// Quantas páginas antigas a abertura já pediu em busca da âncora.
     open_history_requests: u8,
     open_history_retry_at: f64,
@@ -1222,6 +1224,7 @@ impl Default for UiState {
             open_at_newest: true,
             mark_read_at_newest: false,
             open_channel_pending: None,
+            scroll_latest_pending: None,
             open_history_requests: 0,
             open_history_retry_at: f64::NEG_INFINITY,
             read_span_break: false,
@@ -1249,6 +1252,87 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Um aperto fecha uma superfície, cancela o compositor ou volta ao fim.
+    pub fn handle_escape(&mut self, ctx: &egui::Context, store: &mut Store) {
+        if self.dismiss_floating(store) || self.cancel_composer_actions() {
+            return;
+        }
+        if !store.selected_channel.is_empty() {
+            self.jump = None;
+            self.open_channel_pending = None;
+            self.scroll_latest_pending = Some(store.selected_channel.clone());
+            self.read_span_break = true;
+            self.wheel_glide = WheelGlide::default();
+            self.history_scroll_anchor = None;
+            self.relayout_scroll_anchor = None;
+            self.forced_chat_scroll = None;
+            self.row_drift = 0.0;
+            ctx.input_mut(|input| {
+                input.smooth_scroll_delta = Vec2::ZERO;
+            });
+        }
+    }
+
+    fn dismiss_floating(&mut self, store: &mut Store) -> bool {
+        if self.viewer.take().is_some() {
+            self.media.pause_all();
+        } else if self.link_viewer.take().is_some() || self.external_link_prompt.take().is_some() {
+        } else if self.gif_picker_opened.take().is_some() {
+            self.gif_picker_anchor = None;
+        } else if self.popup.is_some() {
+            self.close_popup();
+        } else if self.profile.take().is_some() || self.server_card.take().is_some() {
+        } else if self.custom_embed_editor {
+            self.custom_embed_editor = false;
+        } else if self.panel.take().is_some() {
+        } else if self.suggest.take().is_some() {
+            self.suggest_muted = true;
+        } else if self.android_gallery_menu_open {
+            self.android_gallery_menu_open = false;
+        } else if self.mobile_surface != MobileSurface::Chat {
+            self.mobile_surface = MobileSurface::Chat;
+        } else if self.webembed_float_rect.is_some() && self.webembed.active_id().is_some() {
+            self.webembed.destroy_active();
+            self.webembed_float_rect = None;
+        } else if store.call.active()
+            && matches!(
+                store.call.stage(),
+                crate::state::Stage::Window | crate::state::Stage::Floating | crate::state::Stage::Sheet
+            )
+        {
+            store.call.popped_out = false;
+            store.call.floating = false;
+            store.call.collapsed = true;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn cancel_composer_actions(&mut self) -> bool {
+        let pending = self.replying.is_some()
+            || !self.attachments.is_empty()
+            || !self.custom_embeds.is_empty()
+            || self.editing.is_some()
+            || self.recorder.is_some();
+        if !pending {
+            return false;
+        }
+        self.replying = None;
+        self.reply_notify = self.reply_notify_default;
+        self.attachments.clear();
+        self.custom_embeds.clear();
+        self.editing = None;
+        self.editing_mentions.clear();
+        self.editing_custom_embeds = None;
+        self.edit_focus_pending = false;
+        if let Some(recorder) = self.recorder.take() {
+            recorder.cancel();
+        }
+        // O texto, o cursor e as menções do rascunho continuam intactos.
+        true
+    }
+
     pub fn draft_state(&self) -> DraftState {
         DraftState::from_ui(self)
     }
@@ -1287,6 +1371,28 @@ impl UiState {
         self.popup = None;
         self.emoji_query.clear();
     }
+}
+
+/// Consome Esc antes das views. Repetição por tecla segurada não cancela
+/// outras camadas: cada ação exige um novo aperto.
+pub(crate) fn take_escape(ctx: &egui::Context) -> bool {
+    ctx.input_mut(|input| {
+        let mut pressed = false;
+        input.events.retain(|event| {
+            if let egui::Event::Key {
+                key: egui::Key::Escape,
+                pressed: true,
+                repeat,
+                ..
+            } = event {
+                pressed |= !repeat;
+                false
+            } else {
+                true
+            }
+        });
+        pressed
+    })
 }
 
 fn preserve_chat_position_for_relayout(state: &mut UiState, ctx: &egui::Context) {
@@ -2408,6 +2514,9 @@ fn channel_row(
 ) -> egui::Response {
     let height = 30.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 
     if selected {
         ui.painter()
@@ -3158,14 +3267,18 @@ fn conversation(
             //
             // Se a fronteira durável ficou fora da página quente, trazemos
             // páginas antigas até encontrá-la antes de estabilizar a abertura.
-            let opening_pass =
-                state.open_channel_pending.as_deref() == Some(channel_id.as_str());
+            let latest_pass =
+                state.scroll_latest_pending.as_deref() == Some(channel_id.as_str());
+            let opening_pass = latest_pass
+                || state.open_channel_pending.as_deref() == Some(channel_id.as_str());
             if opening_pass {
                 state.read_span_break = true;
             }
             let mut opening_at_bottom = false;
             let mut opening_at_message = false;
-            if opening_pass && store.newest_loaded(&channel_id).is_some() {
+            if latest_pass {
+                opening_at_bottom = true;
+            } else if opening_pass && store.newest_loaded(&channel_id).is_some() {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
                 let anchor_missing = store.read_anchor_needs_history(&channel_id);
                 let now = ui.input(|input| input.time);
@@ -3291,6 +3404,7 @@ fn conversation(
                     (output.content_size.y - output.inner_rect.height()).max(0.0);
                 state.forced_chat_scroll = Some((channel_id.clone(), bottom));
                 state.open_channel_pending = None;
+                state.scroll_latest_pending = None;
                 ui.ctx()
                     .request_discard("posição inicial da conversa resolvida no head");
             } else if opening_at_message
@@ -6038,23 +6152,26 @@ fn reply_quote(
     reply_to: &str,
     width: f32,
 ) {
-    let (name, preview) = match store.message(reply_to) {
+    let (name, (preview, bindings)) = match store.message(reply_to) {
         Some(target) => (
             message_display_name(target, store).to_owned(),
             if target.content.is_empty() && !target.attachments.is_empty() {
-                format!("{} {}", icon::PAPERCLIP, target.attachments[0].name())
+                (format!("{} {}", icon::PAPERCLIP, target.attachments[0].name()), Vec::new())
             } else {
-                attachments::elide(&target.content, 80)
+                let (display, bindings) = store.display_mentions_with_bindings(&target.content);
+                (emoji::elide_preview(&display, &store.emojis, 80), bindings)
             },
         ),
         // Sem chave estrangeira no banco: a original pode ter sumido.
-        None => (String::new(), s.reply_missing.to_owned()),
+        None => (String::new(), (s.reply_missing.to_owned(), Vec::new())),
     };
 
     // A citação leva à original, como um resultado de busca ou uma fixada.
     // Ela some do banco quando a original é apagada; aí não há aonde ir.
     let exists = store.message(reply_to).is_some();
     let sense = if exists { Sense::click() } else { Sense::hover() };
+    let preview_font = text::footnote();
+    let preview_size = 14.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
     if exists && state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -6084,13 +6201,57 @@ fn reply_quote(
         );
         x += galley.size().x + space::SM;
     }
-    painter.text(
-        egui::pos2(x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        preview,
-        text::footnote(),
-        t.label_tertiary,
-    );
+    let preview_rect = Rect::from_min_max(egui::pos2(x.min(rect.max.x), rect.min.y), rect.max);
+    ui.scope(|ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(preview_rect));
+        let chars: Vec<char> = preview.chars().collect();
+        let mut cursor = 0;
+        let mut paint_text = |ui: &mut egui::Ui, x: &mut f32, start: usize, end: usize| {
+            if start == end { return; }
+            let chunk: String = chars[start..end].iter().collect();
+            for token in emoji::tokenize(&chunk, &store.emojis) {
+                if *x >= preview_rect.max.x { break; }
+                let art = Rect::from_center_size(
+                    egui::pos2(*x + preview_size / 2.0, rect.center().y),
+                    Vec2::splat(preview_size),
+                );
+                match token {
+                    emoji::Token::Text(text) => {
+                        let galley = ui.painter().layout_no_wrap(text, preview_font.clone(), t.label_tertiary);
+                        let width = galley.size().x;
+                        ui.painter().galley(
+                            egui::pos2(*x, rect.center().y - galley.size().y / 2.0),
+                            galley,
+                            t.label_tertiary,
+                        );
+                        *x += width;
+                    }
+                    emoji::Token::Unicode(glyph) => {
+                        emoji::draw_unicode(ui, t, &mut state.media, &glyph, art);
+                        *x += preview_size;
+                    }
+                    emoji::Token::Custom(id) => {
+                        emoji::draw_reaction(ui, t, &mut state.media, store, &Emoji::Custom(id), art);
+                        *x += preview_size;
+                    }
+                }
+            }
+        };
+        for binding in &bindings {
+            // A abreviação pode ter substituído até o próprio @ por ….
+            if binding.start >= chars.len() || chars[binding.start] != '@' { break; }
+            paint_text(ui, &mut x, cursor, binding.start);
+            let end = (binding.start + 1 + binding.label.chars().count()).min(chars.len());
+            let label: String = chars[binding.start + 1..end].iter().collect();
+            let pill = markdown_view::MentionPill::new(ui, &label, text::footnote().size / text::message().size);
+            let size = pill.size();
+            let pill_rect = Rect::from_min_size(egui::pos2(x, rect.center().y - size.y / 2.0), size);
+            pill.paint(ui, t, pill_rect, false);
+            x += size.x;
+            cursor = end;
+        }
+        paint_text(ui, &mut x, cursor, chars.len());
+    });
     ui.add_space(space::XXS);
 }
 
@@ -11011,16 +11172,9 @@ fn suggestions(ui: &mut egui::Ui, store: &Store, state: &mut UiState, t: &Tokens
                 let texture = state
                     .media
                     .emoji(&emoji.id, emoji.blob.as_deref())
-                    .and_then(|texture| texture.frame(&ctx))
-                    .map(|handle| handle.id());
+                    .and_then(|texture| texture.frame(&ctx));
                 if let Some(texture) = texture {
-                    let mut mesh = egui::Mesh::with_texture(texture);
-                    mesh.add_rect_with_uv(
-                        art,
-                        Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    overlay.painter().add(egui::Shape::mesh(mesh));
+                    emoji::paint_custom_image(overlay.painter(), texture, art, Color32::WHITE);
                 }
                 overlay.painter().text(
                     egui::pos2(art.max.x + space::MD, slot.center().y),
@@ -11683,6 +11837,218 @@ mod draft_tests {
 }
 
 #[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    fn render(ctx: &egui::Context, input: egui::RawInput, draw: impl FnMut(&mut egui::Ui)) {
+        let mut output = ctx.run_ui(input, draw);
+        output.textures_delta.clear();
+    }
+
+    fn key(pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers: Default::default(),
+        }
+    }
+
+    fn press(ctx: &egui::Context, state: &mut UiState, store: &mut Store) {
+        render(ctx, egui::RawInput {
+            events: vec![key(true, false), key(false, false)],
+            ..Default::default()
+        }, |ui| {
+            assert!(take_escape(ui.ctx()));
+            state.handle_escape(ui.ctx(), store);
+            assert!(!ui.input(|input| input.key_pressed(egui::Key::Escape)));
+            assert!(!take_escape(ui.ctx()));
+        });
+    }
+
+    #[test]
+    fn escape_needs_three_presses_for_card_composer_and_scroll() {
+        let ctx = egui::Context::default();
+        let mut store = Store::default();
+        store.selected_channel = "c1".into();
+        let mut state = UiState {
+            composer: "texto que deve continuar @Ana".into(),
+            replying: Some("m1".into()),
+            attachments: vec![Upload {
+                path: "/tmp/arquivo-do-usuario.png".into(),
+                name: "arquivo.png".into(),
+                mime: "image/png".into(),
+                size: 100,
+                spoiler: false,
+                anonymize: false,
+            }],
+            composer_mentions: vec![MentionBinding { start: 25, label: "Ana".into(), user_id: "u1".into() }],
+            jump: Some(Jump { message_id: "antiga".into(), found: None, since: 0.0 }),
+            ..Default::default()
+        };
+        super::super::server_card::toggle(&mut state, 0.0);
+        let draft = state.composer.clone();
+        let mentions = state.composer_mentions.clone();
+
+        press(&ctx, &mut state, &mut store);
+        assert!(state.server_card.is_none());
+        assert!(state.replying.is_some());
+        assert_eq!(state.attachments.len(), 1);
+        assert!(state.scroll_latest_pending.is_none());
+
+        press(&ctx, &mut state, &mut store);
+        assert!(state.replying.is_none());
+        assert!(state.attachments.is_empty());
+        assert!(state.jump.is_some());
+        assert!(state.scroll_latest_pending.is_none());
+
+        press(&ctx, &mut state, &mut store);
+        assert_eq!(state.scroll_latest_pending.as_deref(), Some("c1"));
+        assert!(state.jump.is_none());
+        assert!(state.read_span_break);
+        assert_eq!(state.composer, draft);
+        assert_eq!(state.composer_mentions, mentions);
+    }
+
+    #[test]
+    fn escape_closes_only_one_floating_surface() {
+        let ctx = egui::Context::default();
+        let mut store = Store::default();
+        store.selected_channel = "c1".into();
+        let mut state = UiState { viewer: Some(Viewer::new("m1".into(), 0)), replying: Some("m2".into()), ..Default::default() };
+        super::super::profile::open(&mut state, "u1", super::super::profile::Anchor::Beside(Rect::ZERO), 0.0);
+        press(&ctx, &mut state, &mut store);
+        assert!(state.viewer.is_none());
+        assert!(state.profile.is_some());
+        assert!(state.replying.is_some());
+        press(&ctx, &mut state, &mut store);
+        assert!(state.profile.is_none());
+        assert!(state.replying.is_some());
+    }
+
+    #[test]
+    fn escape_repeat_does_not_cancel_another_layer() {
+        let ctx = egui::Context::default();
+        render(&ctx, egui::RawInput { events: vec![key(true, false)], ..Default::default() }, |ui| {
+            assert!(take_escape(ui.ctx()));
+        });
+        render(&ctx, egui::RawInput { events: vec![key(true, true)], ..Default::default() }, |ui| {
+            assert!(!take_escape(ui.ctx()));
+            assert!(!ui.input(|input| input.key_pressed(egui::Key::Escape)));
+        });
+    }
+
+    #[test]
+    fn escape_is_not_replayed_when_egui_repeats_layout() {
+        let ctx = egui::Context::default();
+        let (mut passes, mut actions) = (0, 0);
+        render(&ctx, egui::RawInput {
+            events: vec![key(true, false), key(false, false)],
+            ..Default::default()
+        }, |ui| {
+            passes += 1;
+            if take_escape(ui.ctx()) { actions += 1; }
+            if passes == 1 { ui.ctx().request_discard("testar um novo passe de layout"); }
+        });
+        assert_eq!(passes, 2);
+        assert_eq!(actions, 1);
+    }
+
+    #[test]
+    fn escape_dismisses_suggestions_before_canceling_reply() {
+        let ctx = egui::Context::default();
+        let mut store = Store::default();
+        let mut state = UiState {
+            composer: "@Ana".into(),
+            replying: Some("m1".into()),
+            suggest: Some(Suggest { kind: SuggestKind::Mention, start: 0, end: 4, matches: vec!["u1".into()], index: 0 }),
+            ..Default::default()
+        };
+        press(&ctx, &mut state, &mut store);
+        assert!(state.suggest.is_none());
+        assert!(state.suggest_muted);
+        assert!(state.replying.is_some());
+        assert_eq!(state.composer, "@Ana");
+    }
+
+    #[test]
+    fn escape_collapses_floating_call_without_leaving_it() {
+        let ctx = egui::Context::default();
+        let mut store = Store::default();
+        store.call.joining("voz".into());
+        store.call.joined("voz", Vec::new(), Vec::new());
+        store.call.popped_out = true;
+        let mut state = UiState { replying: Some("m1".into()), ..Default::default() };
+        press(&ctx, &mut state, &mut store);
+        assert!(store.call.active());
+        assert!(!store.call.popped_out);
+        assert!(store.call.collapsed);
+        assert!(state.replying.is_some());
+    }
+
+    #[test]
+    fn escape_scrolls_to_latest_even_when_channel_opens_at_unread_anchor() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.selected_channel = "c1".into();
+        store.channels = vec![crate::state::Channel {
+                id: "c1".into(), name: "geral".into(), kind: ChannelKind::Text,
+                topic: None, position: 0, permissions: Vec::new(),
+                notification_settings: "only_mentions".into(), parent_id: None,
+                unread: true, mentions: 0,
+            }];
+        store.messages = (0..60).map(|index| Message {
+                id: format!("m{index:03}"), channel_id: "c1".into(), author_id: "u1".into(),
+                content: format!("Mensagem {index}: texto da conversa para testar a rolagem."),
+                at: chrono::Local::now(), edited: false, reply_to: None,
+                attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
+                pinned: false, pending: false,
+            }).collect();
+        let mut state = UiState {
+            last_channel: "c1".into(), open_at_newest: false,
+            forced_chat_scroll: Some(("c1".into(), 0.0)),
+            ..Default::default()
+        };
+        let frame = |state: &mut UiState, store: &mut Store, events| {
+            render(&ctx, egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0))),
+                events, ..Default::default()
+            }, |ui| {
+                if take_escape(ui.ctx()) { state.handle_escape(ui.ctx(), store); }
+                state.visible_message_ids.clear();
+                conversation(ui, store, state, None, &tokens, &crate::i18n::PT_BR, None);
+            });
+        };
+        frame(&mut state, &mut store, Vec::new());
+        frame(&mut state, &mut store, vec![
+            egui::Event::PointerMoved(egui::pos2(350.0, 150.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, 1500.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Default::default(),
+            },
+        ]);
+        for _ in 0..10 { frame(&mut state, &mut store, Vec::new()); }
+        let before = state.chat_scroll_metrics.as_ref().unwrap().1;
+        frame(&mut state, &mut store, vec![key(true, false), key(false, false)]);
+        frame(&mut state, &mut store, Vec::new());
+        assert!(state.scroll_latest_pending.is_none());
+        assert!(
+            state.chat_scroll_metrics.as_ref().unwrap().1 > before + 100.0,
+            "antes={before}, depois={:?}, visíveis={:?}",
+            state.chat_scroll_metrics,
+            state.visible_message_ids
+        );
+        assert!(state.visible_message_ids.iter().any(|id| id == "m059"));
+        assert!(!state.open_at_newest);
+    }
+}
+
+#[cfg(test)]
 mod modal_layer_tests {
     use super::*;
 
@@ -11971,6 +12337,151 @@ mod wheel_glide_tests {
         let total: f32 = steps.iter().sum();
         assert!(total.abs() < 100.0 && steps[..5].iter().all(|step| *step >= 0.0));
         assert!(steps[5..].iter().all(|step| *step <= 0.0), "{steps:?}");
+    }
+}
+
+#[cfg(test)]
+mod reply_quote_tests {
+    use super::*;
+
+    #[test]
+    fn reply_quote_renders_custom_emojis_around_styled_mentions() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        super::super::theme::apply(&ctx, &tokens, false, 1.0);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.emojis.push(crate::state::CustomEmoji {
+            id: "e-1".into(), name: "papo".into(), blob: None,
+        });
+        store.members.push(crate::state::Member {
+            id: "u1".into(), username: "Ana".into(), name: "Ana".into(), banned: false,
+            presence: Presence::Online, status_message: None, typing_label: None,
+            role_color: None, roles: Vec::new(),
+        });
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            content: ":papo:@mention(<@u1>):papo: :desconhecido: 👩‍💻👍🏽🇧🇷".into(),
+            at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
+            previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
+        });
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 400.0);
+        });
+        output.textures_delta.clear();
+        for glyph in ["👩‍💻", "👍🏽", "🇧🇷"] {
+            let drawn = match state.media.unicode_emoji(&ctx, glyph) {
+                Some(texture) => output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Mesh(mesh) if mesh.texture_id == texture.id()
+                )),
+                None => output.shapes.iter().any(|shape| matches!(&shape.shape,
+                    egui::Shape::Text(text) if text.galley.text() == glyph
+                )),
+            };
+            assert!(drawn, "emoji Unicode ausente: {glyph}");
+        }
+        let art: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == Color32::TRANSPARENT
+                && rect.stroke.color == tokens.separator => Some((rect.rect, shape.clip_rect)),
+            _ => None,
+        }).collect();
+        assert_eq!(art.len(), 2, "cada shortcode conhecido reserva uma imagem");
+        let mention = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill == tokens.accent.gamma_multiply(0.16) => Some(rect.rect),
+            _ => None,
+        }).expect("menção estilizada");
+        assert!(art[0].0.max.x <= mention.min.x && mention.max.x <= art[1].0.min.x);
+        for (rect, clip) in art {
+            assert!(clip.contains_rect(rect), "emoji cortado: {rect:?} {clip:?}");
+            assert!((rect.center().y - mention.center().y).abs() < 1.0);
+        }
+        let drawn: String = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some(text.galley.text()),
+            _ => None,
+        }).collect();
+        assert!(!drawn.contains(":papo:") && !drawn.contains("@mention("));
+        assert!(drawn.contains("@Ana") && drawn.contains(":desconhecido:"));
+    }
+
+    #[test]
+    fn reply_quote_resolves_mentions_before_shortening_the_preview() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        super::super::theme::apply(&ctx, &tokens, false, 1.0);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.members = [("author", "Autor"), ("u1", "Ána *_Silva_*"), ("u2", "Bia")]
+            .into_iter()
+            .map(|(id, name)| crate::state::Member {
+                id: id.into(), username: name.into(), name: name.into(), banned: false,
+                presence: crate::state::Presence::Online, status_message: None,
+                typing_label: None, role_color: None, roles: Vec::new(),
+            })
+            .collect();
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "author".into(),
+            content: String::new(), at: Local::now(), edited: false, reply_to: None,
+            attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
+            pinned: false, pending: false,
+        });
+        let cases = [
+            (
+                "Oi @mention(<@u1>) e @mention(<@u2>)!".to_owned(),
+                "Oi @Ána *_Silva_* e @Bia!".to_owned(),
+                2,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(75)),
+                format!("{}@Bia…", "a".repeat(75)),
+                1,
+            ),
+            (
+                "Oi @Bia e @mention(<@u2>)!".to_owned(),
+                "Oi @Bia e @Bia!".to_owned(),
+                1,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(77)),
+                format!("{}@B…", "a".repeat(77)),
+                1,
+            ),
+            (
+                format!("{}@mention(<@u2>) fim", "a".repeat(79)),
+                format!("{}…", "a".repeat(79)),
+                0,
+            ),
+        ];
+        for (content, expected, mention_count) in cases {
+            store.messages[0].content = content.clone();
+            let mut mention_color = Color32::TRANSPARENT;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                mention_color = ui.visuals().hyperlink_color;
+                reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 1200.0);
+            });
+            output.textures_delta.clear();
+            let drawn: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text()),
+                _ => None,
+            }).collect();
+            assert_eq!(drawn[2..].concat(), expected, "{content:?}: {drawn:?}");
+            assert!(drawn.iter().all(|text| !text.contains("@mention(")));
+            let pills = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Rect(rect) if rect.fill == tokens.accent.gamma_multiply(0.16)
+                    && rect.corner_radius == CornerRadius::same(5)
+            )).count();
+            assert_eq!(pills, mention_count);
+            let highlighted = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().starts_with('@')
+                    && text.galley.job.sections.iter().all(|section|
+                        section.format.color == mention_color
+                            && section.format.font_id.family == egui::FontFamily::Name("semibold".into())
+                    )
+            )).count();
+            assert_eq!(highlighted, mention_count);
+            assert_eq!(store.messages[0].content, content, "a prévia não altera a mensagem original");
+        }
     }
 }
 

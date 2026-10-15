@@ -835,8 +835,9 @@ pub struct PapoApp {
     blur: Option<BlurSurface>,
     #[cfg(target_os = "linux")]
     activator: Option<Activator>,
-    /// A janela está minimizada (o Wayland não deixa escondê-la de verdade).
-    minimized: bool,
+    /// A janela foi fechada para a bandeja; o processo continua ativo.
+    window_hidden: bool,
+    hidden_viewports: Vec<egui::ViewportId>,
     window_attached: bool,
     /// Servidor de mentira: a rede é ignorada.
     demo: bool,
@@ -1144,7 +1145,8 @@ impl PapoApp {
             blur: None,
             #[cfg(target_os = "linux")]
             activator: None,
-            minimized: false,
+            window_hidden: false,
+            hidden_viewports: Vec::new(),
             window_attached: false,
             demo,
             add_server_previous: None,
@@ -1213,22 +1215,23 @@ impl PapoApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    /// Traz a janela de volta. No Wayland o winit não sabe fazer isso, então
-    /// pedimos ao compositor pelo xdg-activation; no X11 os comandos abaixo
-    /// bastam.
+    /// Restaura as janelas preservadas na bandeja e pede foco ao compositor.
     #[cfg_attr(target_os = "android", allow(dead_code))]
     fn show_window(&mut self, ctx: &egui::Context) {
-        self.minimized = false;
+        self.window_hidden = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        for viewport in self.hidden_viewports.drain(..) {
+            ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Visible(true));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
         #[cfg(target_os = "linux")]
         {
             if let Some(activator) = &mut self.activator {
                 activator.request();
             }
-            // No Wayland o compositor ignora o pedido de desminimizar; o
-            // script do KWin é o que realmente traz a janela de volta.
+            // Também restaura minimizações feitas pelo botão do sistema.
             crate::platform::kwin::restore_window(crate::APP_ID);
         }
     }
@@ -1236,11 +1239,51 @@ impl PapoApp {
     /// Fechar não encerra: a janela recolhe e o Papo segue na bandeja.
     #[cfg_attr(target_os = "android", allow(dead_code))]
     fn hide_window(&mut self, ctx: &egui::Context) {
-        self.minimized = true;
-        #[cfg(target_os = "windows")]
+        self.window_hidden = true;
+        self.focused = false;
+        self.notification.set_foreground(false);
+        self.ui.webembed.suspend_active();
+        self.flush_all_drafts();
+        self.hidden_viewports = ctx.input(|input| {
+            input
+                .raw
+                .viewports
+                .iter()
+                .filter(|(id, info)| {
+                    **id != egui::ViewportId::ROOT && info.visible() != Some(false)
+                })
+                .map(|(id, _)| *id)
+                .collect()
+        });
+        for viewport in &self.hidden_viewports {
+            ctx.send_viewport_cmd_to(*viewport, egui::ViewportCommand::Visible(false));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        #[cfg(not(target_os = "windows"))]
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    }
+
+    /// Continua atendendo rede, cache e chamadas sem depender da pintura.
+    fn pump_runtime(&mut self, ctx: &egui::Context) {
+        self.rich_presence.pump();
+        self.project_local_activity();
+        self.pump_network(ctx);
+        for ws in &mut self.workspaces {
+            if let Some(expires_in) = ws.runtime.store.expire_typing() {
+                ctx.request_repaint_after(expires_in);
+            }
+        }
+        self.project_presence_activity(ctx);
+        self.pump_cache(ctx);
+        self.sync_active_portable_settings(ctx);
+        self.ensure_active_drafts_loaded();
+        self.sync_notification_contexts();
+
+        // A call segue viva com outro servidor na tela: o trilho troca a
+        // conversa, não quem está falando.
+        for ws in &mut self.workspaces {
+            pump_call(ws);
+        }
+
+        self.pump_files(ctx);
     }
 
     /// Fechar a janela só encerra quando a bandeja não está no caminho.
@@ -1248,11 +1291,7 @@ impl PapoApp {
     fn handle_window_lifecycle(&mut self, ctx: &egui::Context) {
         self.focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
 
-        if self
-            .tray
-            .as_ref()
-            .is_some_and(Tray::take_quit_requested)
-        {
+        if self.tray.as_ref().is_some_and(Tray::take_quit_requested) {
             self.quitting = true;
         }
 
@@ -1266,7 +1305,7 @@ impl PapoApp {
         while let Some(command) = self.tray.as_ref().and_then(Tray::try_recv) {
             match command {
                 TrayCommand::Toggle => {
-                    if self.minimized || !self.focused {
+                    if self.window_hidden || !self.focused {
                         self.show_window(ctx);
                     } else {
                         self.hide_window(ctx);
@@ -1283,31 +1322,51 @@ impl PapoApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(ctx);
         }
+    }
 
-        // Menção vira número; conversa nova sem menção só acende o ícone.
-        // O contador é de todos os servidores, não só do que está na tela —
-        // é justamente para isso que os outros seguem conectados.
-        let mentions = if self.settings.badge {
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn sync_desktop_badges(&self) {
+        // A bandeja usa notificações elegíveis, não o não lido genérico.
+        let pending = if self.settings.badge {
             self.workspaces
                 .iter()
-                .map(|ws| ws.runtime.store.mention_total())
+                .enumerate()
+                .filter(|(index, _)| self.notification_enabled_for(*index))
+                .map(|(_, ws)| ws.runtime.store.pending_notification_count())
                 .sum()
         } else {
             0
         };
-        let unread = self.settings.badge
-            && self.workspaces.iter().any(|ws| ws.runtime.store.has_unread());
-
         if let Some(tray) = &self.tray {
-            tray.set_badge(mentions, unread);
             tray.set_labels(tray_labels(&self.settings));
+            tray.set_badge(pending, pending > 0);
         }
+
         #[cfg(target_os = "linux")]
-        if let Some(launcher) = &self.launcher {
-            launcher.set(Badge {
-                count: mentions,
-                urgent: unread && mentions == 0,
-            });
+        {
+            // A barra de tarefas mantém o contador existente.
+            // O contador é de todos os servidores, não só do que está na tela —
+            // é justamente para isso que os outros seguem conectados.
+            let mentions = if self.settings.badge {
+                self.workspaces
+                    .iter()
+                    .map(|ws| ws.runtime.store.mention_total())
+                    .sum()
+            } else {
+                0
+            };
+            let unread = self.settings.badge
+                && self
+                    .workspaces
+                    .iter()
+                    .any(|ws| ws.runtime.store.has_unread());
+
+            if let Some(launcher) = &self.launcher {
+                launcher.set(Badge {
+                    count: mentions,
+                    urgent: unread && mentions == 0,
+                });
+            }
         }
     }
 
@@ -1835,7 +1894,7 @@ impl PapoApp {
         }
         // Só o servidor na tela: carregar mensagem de canal que ninguém está
         // olhando não ajuda ninguém, e os outros seguem recebendo os eventos.
-        let focused = self.focused && !self.minimized;
+        let focused = self.focused && !self.window_hidden;
         let typed = self.ui.typed;
         let ws = &mut self.workspaces[self.active];
 
@@ -2990,6 +3049,38 @@ impl PapoApp {
         ctx.request_repaint();
     }
 
+    /// Esc pertence a uma única camada; as views de baixo não recebem o
+    /// mesmo evento e o compositor só é cancelado depois dos flutuantes.
+    fn handle_escape(&mut self, ctx: &egui::Context) {
+        if !shell::take_escape(ctx) {
+            return;
+        }
+        ctx.request_repaint();
+        if egui::Popup::is_any_open(ctx) {
+            egui::Popup::close_all(ctx);
+            return;
+        }
+        if self.crop.take().is_some() {
+            return;
+        }
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        if self.update_prompt_visible {
+            self.update_prompt_visible = false;
+            return;
+        }
+        if self.sheet.open.take().is_some() {
+            return;
+        }
+        if self.add_server_previous.is_some() {
+            self.cancel_add_server(ctx);
+            return;
+        }
+        let store = &mut self.workspaces[self.active].runtime.store;
+        if store.screen == Screen::Chat {
+            self.ui.handle_escape(ctx, store);
+        }
+    }
+
     /// A call numa janela só dela. É uma viewport de verdade, não um
     /// diálogo dentro da janela: o pedido era poder jogá-la noutro monitor,
     /// e para isso ela precisa ser uma janela que o compositor conheça.
@@ -3005,6 +3096,7 @@ impl PapoApp {
         let interface = &mut self.ui;
         let ws = &mut self.workspaces[active];
         let mut closing = false;
+        let mut escape_close = false;
 
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("papo-call"),
@@ -3014,6 +3106,14 @@ impl PapoApp {
                 .with_inner_size([760.0, 520.0])
                 .with_min_inner_size([360.0, 280.0]),
             |ctx, _class| {
+                if shell::take_escape(ctx) {
+                    if egui::Popup::is_any_open(ctx) {
+                        egui::Popup::close_all(ctx);
+                    } else {
+                        closing = true;
+                        escape_close = true;
+                    }
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::new().fill(t.content_bg))
                     .show(ctx, |ui| {
@@ -3036,6 +3136,10 @@ impl PapoApp {
         // junto, como não morreria se você tivesse encolhido a folha.
         if closing {
             ws.runtime.store.call.popped_out = false;
+            if escape_close {
+                ws.runtime.store.call.floating = false;
+                ws.runtime.store.call.collapsed = true;
+            }
         }
     }
 
@@ -4286,8 +4390,41 @@ impl eframe::App for PapoApp {
         std::time::Duration::from_secs(5)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.attach_window(frame);
+        let was_hidden = self.window_hidden;
+        self.handle_window_lifecycle(ctx);
+        if self.window_hidden && !was_hidden
+            && let Some(storage) = frame.storage_mut()
+        {
+            eframe::App::save(self, storage);
+            storage.flush();
+        }
+        self.notification
+            .set_foreground(self.focused && !self.window_hidden);
+        self.sync_notification_contexts();
+        self.pump_runtime(ctx);
+        self.sync_notification_contexts();
+        self.sync_desktop_badges();
+        #[cfg(target_os = "windows")]
+        {
+            self.pump_updater(ctx);
+            self.project_update_pill();
+        }
+        if self
+            .workspaces
+            .iter()
+            .any(|ws| ws.runtime.store.call.active())
+        {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if self.window_hidden { return; }
         self.ui.webembed.set_context(&ctx);
         self.ui.webembed.begin_frame();
         self.ui.webembed.pump_events(&ctx);
@@ -4309,26 +4446,7 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
-        // Live system appearance refresh is shared across desktop platforms.
-        // Individual platforms only supply the OS-specific theme provider.
-        #[cfg(not(target_os = "android"))]
-        {
-            let fresh = SystemTheme::read();
-            if fresh.accent != self.system.accent
-                || fresh.prefers_dark != self.system.prefers_dark
-                || fresh.animation_factor != self.system.animation_factor
-            {
-                self.system = fresh;
-                self.retheme(&ctx);
-            }
-        }
-
-        self.rich_presence.pump();
-        // Project every frame, not only on activity changes: a workspace may
-        // finish authentication after the current activity was already found.
-        self.project_local_activity();
-
-        #[cfg(any(target_os = "windows", target_os = "android"))]
+        #[cfg(target_os = "android")]
         {
             self.pump_updater(&ctx);
             self.project_update_pill();
@@ -4369,25 +4487,10 @@ impl eframe::App for PapoApp {
             self.sync_menu();
             self.sync_blur_regions(&ctx);
         }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        {
-            self.handle_window_lifecycle(&ctx);
-            self.notification
-                .set_foreground(self.focused && !self.minimized);
-        }
 
-        self.pump_network(&ctx);
-        self.project_presence_activity(&ctx);
-        self.pump_cache(&ctx);
-        self.sync_active_portable_settings(&ctx);
-        self.ensure_active_drafts_loaded();
-        self.sync_notification_contexts();
-
-        // A call segue viva com outro servidor na tela: o trilho troca a
-        // conversa, não quem está falando.
-        for ws in &mut self.workspaces {
-            pump_call(ws);
-        }
+        #[cfg(target_os = "android")]
+        self.pump_runtime(&ctx);
+        self.handle_escape(&ctx);
 
         #[cfg(target_os = "android")]
         {
@@ -4626,7 +4729,6 @@ impl eframe::App for PapoApp {
         );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
-        self.pump_files(&ctx);
         #[cfg(not(target_os = "android"))]
         {
             let store = &self.workspaces[self.active].runtime.store;
@@ -4638,6 +4740,8 @@ impl eframe::App for PapoApp {
         for command in pending {
             self.handle(&ctx, command);
         }
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        self.sync_desktop_badges();
         // Captura seleção/toggles ocorridos durante este próprio quadro; a
         // thread de rede pode consultar o snapshot sem esperar outro repaint.
         self.sync_notification_contexts();

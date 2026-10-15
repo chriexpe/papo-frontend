@@ -446,6 +446,35 @@ fn code_chip(ui: &mut egui::Ui, v: &View, code: &str, scale: f32, column: f32) {
 
 /// Menção: pastilha com o nome, que abre o cartão da pessoa, igual à foto e ao
 /// nome do autor.
+pub(super) struct MentionPill {
+    galley: std::sync::Arc<egui::Galley>,
+    pad: Vec2,
+    color: Color32,
+}
+
+impl MentionPill {
+    pub(super) fn new(ui: &egui::Ui, label: &str, scale: f32) -> Self {
+        let size = em() * scale;
+        let pad = Vec2::new(0.3 * size, 0.06 * size);
+        let color = ui.visuals().hyperlink_color;
+        let galley = ui.painter().layout_no_wrap(format!("@{label}"), font(scale, true), color);
+        Self { galley, pad, color }
+    }
+
+    pub(super) fn size(&self) -> Vec2 {
+        self.galley.size() + self.pad * 2.0
+    }
+
+    pub(super) fn paint(self, ui: &egui::Ui, t: &Tokens, rect: egui::Rect, hovered: bool) {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(5),
+            t.accent.gamma_multiply(if hovered { 0.24 } else { 0.16 }),
+        );
+        ui.painter().galley(rect.min + self.pad, self.galley, self.color);
+    }
+}
+
 fn mention_pill(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -454,23 +483,13 @@ fn mention_pill(
     label: &str,
     scale: f32,
 ) {
-    let size = em() * scale;
-    let pad = Vec2::new(0.3 * size, 0.06 * size);
-    let color = ui.visuals().hyperlink_color;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(format!("@{label}"), font(scale, true), color);
-    let (rect, response) = ui.allocate_exact_size(galley.size() + pad * 2.0, Sense::click());
+    let pill = MentionPill::new(ui, label, scale);
+    let (rect, response) = ui.allocate_exact_size(pill.size(), Sense::click());
     let hovered = response.hovered();
     if hovered {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(5),
-        v.t.accent.gamma_multiply(if hovered { 0.24 } else { 0.16 }),
-    );
-    ui.painter().galley(rect.min + pad, galley, color);
+    pill.paint(ui, v.t, rect, hovered);
     if response.clicked() {
         let now = ui.input(|input| input.time);
         super::profile::open(state, user_id, super::profile::Anchor::Beside(rect), now);
@@ -947,6 +966,17 @@ mod tests {
     }
 
     #[test]
+    fn leading_plus_is_drawn_as_text_instead_of_a_bullet() {
+        for content in ["+ teste", "+ **teste**"] {
+            let mut harness = Harness::text(Appearance::Dark, content, 300.0);
+            let shapes = harness.settle();
+            assert!(text_rect(&shapes, "+").is_some());
+            assert!(text_rect(&shapes, "teste").is_some());
+            assert!(text_rect(&shapes, "•").is_none());
+        }
+    }
+
+    #[test]
     fn task_items_use_checkbox_glyphs_instead_of_bullets() {
         let mut harness = Harness::text(Appearance::Dark, "- [x] feito\n- [ ] falta", 300.0);
         let shapes = harness.settle();
@@ -1078,8 +1108,12 @@ mod tests {
     }
 
     #[test]
-    fn mailto_and_unsafe_links_do_nothing_on_click() {
-        for source in ["[escreva](mailto:a@b.c)", "[escreva](javascript:alert(1))"] {
+    fn mailto_requests_the_system_handler_and_unsafe_links_do_nothing() {
+        for (source, expected) in [
+            ("[escreva](mailto:a@b.c)", vec!["mailto:a@b.c".to_owned()]),
+            ("[escreva](javascript:alert(1))", Vec::new()),
+        ] {
+            crate::platform::links::take_launched_urls();
             let mut harness = Harness::text(Appearance::Dark, source, 320.0);
             let shapes = harness.settle();
             let word = text_rect(&shapes, "escreva").expect("palavra").center();
@@ -1087,6 +1121,7 @@ mod tests {
             harness.frame(pointer(word, Some(false)));
             assert!(harness.state.external_link_prompt.is_none(), "{source}");
             assert!(harness.state.profile.is_none());
+            assert_eq!(crate::platform::links::take_launched_urls(), expected);
         }
     }
 

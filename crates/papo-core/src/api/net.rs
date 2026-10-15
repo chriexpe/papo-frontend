@@ -2204,6 +2204,8 @@ async fn worker(
                         let notification_hook = hooks.notification.clone();
                         let id = id.clone();
                         let scope = storage_key.clone();
+                        let updates = updates.clone();
+                        let wake = wake.clone();
                         tokio::spawn(async move {
                             match api.notifications(&user_id).await {
                                 Ok(notifications) => {
@@ -2211,6 +2213,8 @@ async fn worker(
                                         notifications.into_iter().find(|item| item.id == id)
                                     {
                                         notification_hook.emit(&notification);
+                                        // Store also needs the resolved target for unread badges.
+                                        publish(&updates, &wake, Update::Notifications(vec![notification]));
                                     }
                                 }
                                 Err(error) => {

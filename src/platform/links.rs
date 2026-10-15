@@ -32,12 +32,29 @@ pub fn open_url(url: &str) -> bool {
     opened
 }
 
-#[cfg(target_os = "android")]
+// Unit tests must never launch the user's browser or mail application.
+#[cfg(test)]
+thread_local! {
+    static LAUNCHED_URLS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn launch(url: &str) -> bool {
+    LAUNCHED_URLS.with(|urls| urls.borrow_mut().push(url.to_owned()));
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn take_launched_urls() -> Vec<String> {
+    LAUNCHED_URLS.with(|urls| std::mem::take(&mut *urls.borrow_mut()))
+}
+
+#[cfg(all(not(test), target_os = "android"))]
 fn launch(url: &str) -> bool {
     super::jvm::call_activity("openUrl", "(Ljava/lang/String;)V", Some(url))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(not(test), target_os = "windows"))]
 fn launch(url: &str) -> bool {
     std::process::Command::new("rundll32")
         .args(["url.dll,FileProtocolHandler", url])
@@ -45,13 +62,7 @@ fn launch(url: &str) -> bool {
         .is_ok()
 }
 
-#[cfg(target_os = "macos")]
-fn launch(url: &str) -> bool {
-    // Launch Services via the standard macOS opener. Never pass through a shell.
-    std::process::Command::new("open").arg(url).spawn().is_ok()
-}
-
-#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
+#[cfg(all(not(test), unix, not(target_os = "android")))]
 fn launch(url: &str) -> bool {
     // Sem shell: o endereço vai como um único argumento. No Flatpak o
     // `xdg-open` fala com o portal.
@@ -61,7 +72,7 @@ fn launch(url: &str) -> bool {
         .is_ok()
 }
 
-#[cfg(not(any(unix, target_os = "windows")))]
+#[cfg(all(not(test), not(any(unix, target_os = "windows"))))]
 fn launch(_url: &str) -> bool {
     false
 }

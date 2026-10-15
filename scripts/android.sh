@@ -118,6 +118,7 @@ CARGO_ARGS=(-t "$ABI" --platform "$MIN_SDK" -o "$JNI_LIBS" build --lib)
 [ "$PROFILE" = release ] && CARGO_ARGS+=(--release)
 
 echo "==> cargo ndk ($PROFILE, $ABI, API $MIN_SDK)"
+python3 scripts/prepare-winit.py
 cargo ndk "${CARGO_ARGS[@]}"
 
 # Com os símbolos de depuração o `.so` passa de 380 MB e instalar demora

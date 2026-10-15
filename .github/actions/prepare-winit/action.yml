@@ -1,0 +1,28 @@
+name: Prepare the winit patch
+description: Install the pinned patch-crate CLI and prepare the local winit dependency
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - id: toolchain
+      shell: bash
+      run: |
+        echo "version=$(rustc --version | tr ' ' '-')-${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/papo-patch-crate
+        key: patch-crate-0.1.13-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.version }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cargo install patch-crate --version 0.1.13 --locked \
+          --root "$RUNNER_TEMP/papo-patch-crate" \
+          --target-dir "$RUNNER_TEMP/papo-patch-crate-build"
+    - shell: bash
+      run: echo "$RUNNER_TEMP/papo-patch-crate/bin" >> "$GITHUB_PATH"
+    - shell: bash
+      working-directory: ${{ github.workspace }}
+      run: python scripts/prepare-winit.py

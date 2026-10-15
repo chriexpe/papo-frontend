@@ -70,6 +70,7 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/papo/cargo
+    CARGO_TARGET_DIR: target
     # Release CI substitutes this placeholder from the repository secret.
     # Local Flatpak builds intentionally get a picker-disabled binary.
     PAPO_GIPHY_API_KEY: '@PAPO_GIPHY_API_KEY@'
@@ -101,7 +102,7 @@ modules:
     buildsystem: simple
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --verbose
-      - cargo --offline build --release --verbose
+      - cargo --offline build --release --locked --verbose
       - install -Dm755 target/release/papo /app/bin/papo
       - install -Dm644 packaging/io.github.chriexpe.Papo.desktop
         /app/share/applications/io.github.chriexpe.Papo.desktop
@@ -124,4 +125,22 @@ modules:
           - .flatpak-builder
           - build-dir
           - repo
+      # The sandbox uses the same diff as patch-crate, with no network or CLI installation.
+      - type: archive
+        archive-type: tar-gzip
+        url: https://static.crates.io/crates/winit/winit-0.30.13.crate
+        sha256: a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d
+        dest: target/patch/winit-0.30.13
+      - type: patch
+        path: ../patches/winit+0.30.13.patch
+        dest: target/patch/winit-0.30.13
+        use-git: true
+      - type: inline
+        contents: '{"package":"a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d","files":{}}'
+        dest: target/patch/winit-0.30.13
+        dest-filename: .cargo-checksum.json
+      - type: file
+        path: ../patches/winit+0.30.13.patch
+        dest: target/patch/winit-0.30.13
+        dest-filename: .papo-applied.patch
       - cargo-sources.json

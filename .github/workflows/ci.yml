@@ -6,6 +6,7 @@ on:
   pull_request:
 
 env:
+  CARGO_TARGET_DIR: target/ci
   # O clippy ganha lints novos a cada versão do Rust. Com `stable` o portão
   # vira uma bomba-relógio: a cada seis semanas um repositório em que
   # ninguém mexeu fica vermelho. A versão que barra o merge é fixa e sobe
@@ -19,11 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
       - name: Dependências de sistema
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/ci
+      - name: Test winit preparation
+        run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
       - run: cargo test --locked --workspace
 
   clippy:
@@ -34,13 +40,15 @@ jobs:
         with:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: clippy
       - name: Dependências de sistema
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/ci
+          key: clippy
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # Avisa dos lints que a próxima versão do Rust vai cobrar. Falhar aqui não
@@ -53,13 +61,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: clippy-stable
       - name: Dependências de sistema
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/ci
+          key: clippy-stable
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   # O `stable` do runner some por baixo dos pés: uma dependência que suba o
@@ -76,13 +86,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: msrv
       - name: Dependências de sistema
         run: |
           sudo apt-get update
           ./scripts/deps.sh --install
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target/ci
+          key: msrv
       - run: cargo build --locked --workspace
 
   # Os nomes de pacote em scripts/deps.sh são promessa feita a quem instala.
@@ -166,8 +178,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+      - uses: ./.github/actions/prepare-winit
+      - name: Test winit preparation on Windows
+        run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: . -> target/ci
           key: windows
       - name: Install GStreamer SDK
         shell: pwsh
@@ -210,7 +226,7 @@ jobs:
           cargo build --locked
           ./packaging/windows/bundle.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/debug/papo.exe `
+            -PapoExe target/ci/debug/papo.exe `
             -RsRpcExe rsrpc.exe `
             -OutputDir papo-windows-smoke
 
@@ -236,7 +252,7 @@ jobs:
         run: |
           ./packaging/windows/build-installer.ps1 `
             -GStreamerRoot $env:GSTREAMER_ROOT `
-            -PapoExe target/debug/papo.exe `
+            -PapoExe target/ci/debug/papo.exe `
             -RsRpcExe rsrpc.exe `
             -Version ci `
             -OutputDir installer-out

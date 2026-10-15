@@ -3,6 +3,7 @@
 
 pub mod call;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, Utc};
 use crate::api::models::{self, parse_hex_color, Attachment};
@@ -14,6 +15,10 @@ use crate::cache::{
 };
 
 pub use call::{CallState, Phase, Stage};
+
+/// O cliente renova a digitação a cada três segundos. Um evento de parada
+/// perdido não pode deixar o indicador preso até a próxima mensagem.
+const TYPING_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelKind {
@@ -495,8 +500,8 @@ pub struct Store {
     /// Mutações live recebidas durante refreshes REST.
     mutation_journals: HashMap<String, ChannelMutationJournal>,
     next_refresh_request_id: u64,
-    /// Quem está digitando, por canal.
-    typing: HashMap<String, HashSet<String>>,
+    /// Último sinal de digitação de cada pessoa, por canal (não persistido).
+    typing: HashMap<String, HashMap<String, Instant>>,
     /// Até quando cada canal foi visto; é o que define o não lido, já que o
     /// backend registra `last_read_message` mas nunca o escreve.
     pub read_marks: HashMap<String, DateTime<Utc>>,
@@ -965,6 +970,29 @@ impl Store {
             .filter(move |member| member.presence == presence)
     }
 
+    /// Remove sinais vencidos e devolve a espera até a próxima expiração.
+    /// A UI usa esse prazo para redesenhar mesmo sem novos eventos de rede.
+    pub fn expire_typing(&mut self) -> Option<Duration> {
+        self.expire_typing_at(Instant::now())
+    }
+
+    fn expire_typing_at(&mut self, now: Instant) -> Option<Duration> {
+        let mut next = None;
+        self.typing.retain(|_, users| {
+            users.retain(|_, last| {
+                let age = now.saturating_duration_since(*last);
+                if age >= TYPING_TTL {
+                    return false;
+                }
+                let remaining = TYPING_TTL - age;
+                next = Some(next.map_or(remaining, |earliest: Duration| earliest.min(remaining)));
+                true
+            });
+            !users.is_empty()
+        });
+        next
+    }
+
     /// Nomes de quem está digitando no canal aberto.
     pub fn typing_names(&self) -> Vec<String> {
         self.typing
@@ -972,8 +1000,8 @@ impl Store {
             .map(|users| {
                 users
                     .iter()
-                    .filter(|id| **id != self.me)
-                    .filter_map(|id| self.member(id).map(|member| member.name.clone()))
+                    .filter(|(id, last)| **id != self.me && last.elapsed() < TYPING_TTL)
+                    .filter_map(|(id, _)| self.member(id).map(|member| member.name.clone()))
                     .collect()
             })
             .unwrap_or_default()
@@ -984,7 +1012,10 @@ impl Store {
     /// texto padrão serve para o grupo.
     pub fn typing_phrase(&self) -> Option<&str> {
         let users = self.typing.get(&self.selected_channel)?;
-        let mut others = users.iter().filter(|id| **id != self.me);
+        let mut others = users
+            .iter()
+            .filter(|(id, last)| **id != self.me && last.elapsed() < TYPING_TTL)
+            .map(|(id, _)| id);
         let only = others.next()?;
         if others.next().is_some() {
             return None;
@@ -1199,6 +1230,8 @@ impl Store {
         self.pending_cache.clear();
         self.outgoing_states.clear();
         self.read_states.clear();
+        self.open_notifications.clear();
+        self.counted_notifications.clear();
         self.selected_channel.clear();
     }
 
@@ -1905,6 +1938,80 @@ impl Store {
         self.channels
             .iter()
             .any(|channel| channel.kind != ChannelKind::Direct && channel.unread)
+    }
+
+    /// The tray follows backend notification eligibility, including direct messages.
+    /// Generic unread messages and cached mention counts do not imply an alert.
+    pub fn pending_notification_count(&self) -> u32 {
+        if self.me.is_empty() {
+            return 0;
+        }
+        self.open_notifications
+            .iter()
+            .filter(|(channel_id, _)| {
+                self.channel(channel_id)
+                    .is_some_and(|channel| channel.notification_settings != "off")
+            })
+            .map(|(channel_id, entries)| {
+                entries
+                    .iter()
+                    .filter(|(_, message)| {
+                        message.as_ref().is_none_or(|id| {
+                            self.read_states
+                                .get(channel_id)
+                                .is_none_or(|state| state.unread_mentions.contains(id))
+                        })
+                    })
+                    .map(|(id, message)| message.as_ref().unwrap_or(id))
+                    .collect::<HashSet<_>>()
+                    .len() as u32
+            })
+            .sum()
+    }
+
+    fn confirm_notification_read(&mut self, notification: &models::Notification) {
+        let mut cleared = Vec::new();
+        for (channel_id, entries) in &mut self.open_notifications {
+            entries.retain(|(id, message_id)| {
+                if id == &notification.id {
+                    cleared.push((channel_id.clone(), message_id.clone()));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.open_notifications
+            .retain(|_, entries| !entries.is_empty());
+        for (channel_id, message_id) in cleared {
+            if let Some(message_id) = message_id {
+                let still_pending =
+                    self.open_notifications
+                        .get(&channel_id)
+                        .is_some_and(|entries| {
+                            entries
+                                .iter()
+                                .any(|(_, id)| id.as_deref() == Some(message_id.as_str()))
+                        });
+                if !still_pending {
+                    if let Some(state) = self.read_states.get_mut(&channel_id) {
+                        state.unread_mentions.retain(|id| id != &message_id);
+                    }
+                    let count = self
+                        .read_states
+                        .get(&channel_id)
+                        .map_or(0, |state| state.unread_mentions.len() as u32);
+                    if let Some(channel) = self
+                        .channels
+                        .iter_mut()
+                        .find(|channel| channel.id == channel_id)
+                    {
+                        channel.mentions = count;
+                    }
+                    self.persist_read_state(&channel_id);
+                }
+            }
+        }
     }
 
     fn message_key(&self, message_id: &str) -> Option<(DateTime<Utc>, String)> {
@@ -2999,8 +3106,10 @@ impl Store {
             Update::Notifications(notifications) => {
                 for notification in notifications {
                     if notification.read {
+                        self.confirm_notification_read(&notification);
                         continue;
                     }
+                    if notification.author_id.as_deref() == Some(self.me.as_str()) { continue; }
                     let Some(channel_id) = notification.channel_id.clone() else {
                         continue;
                     };
@@ -3056,6 +3165,11 @@ impl Store {
                 self.error = Some(message);
             }
             Update::Connection(connection) => {
+                if connection != Connection::Online {
+                    // Digitação é transitória; não pode atravessar uma queda
+                    // em que o evento de encerramento talvez tenha se perdido.
+                    self.typing.clear();
+                }
                 if self.connection == Connection::Online && connection != Connection::Online {
                     self.sync_generation = self.sync_generation.saturating_add(1);
                     self.loading_channels.clear();
@@ -3157,7 +3271,7 @@ impl Store {
             } => {
                 let users = self.typing.entry(channel_id).or_default();
                 if is_typing {
-                    users.insert(user_id);
+                    users.insert(user_id, Instant::now());
                 } else {
                     users.remove(&user_id);
                 }
@@ -3170,6 +3284,11 @@ impl Store {
                 nickname,
             } => {
                 let offline = status == "offline";
+                if offline {
+                    for users in self.typing.values_mut() {
+                        users.remove(&user_id);
+                    }
+                }
                 if let Some(member) = self
                     .members
                     .iter_mut()
@@ -3201,6 +3320,11 @@ impl Store {
                     .into_iter()
                     .map(|member| (member.user_id.clone(), member))
                     .collect();
+                for users in self.typing.values_mut() {
+                    users.retain(|id, _| {
+                        online.get(id).is_some_and(|member| member.status != "offline")
+                    });
+                }
                 for member in &mut self.members {
                     if let Some(live) = online.get(&member.id) {
                         member.presence = Presence::parse(&live.status);
@@ -3336,7 +3460,8 @@ impl Store {
             }
             // A sinalização é da thread da call, não do estado da tela.
             Event::VoiceAnswer { .. } | Event::VoiceOffer { .. } | Event::VoiceCandidate { .. } => {}
-            Event::Notification { id, message_id, .. } => {
+            Event::Notification { id, message_id, author_id, .. } => {
+                if author_id.as_deref() == Some(self.me.as_str()) { return; }
                 // O evento não traz o canal. Se a mensagem ainda não chegou,
                 // deixamos a listagem REST resolver depois em vez de consumir
                 // o id sem conseguir guardar o alvo.
@@ -3704,6 +3829,126 @@ mod channel_layout_tests {
         store.move_channel_local("a", 1, Some(String::new()));
         assert_eq!(store.channel("a").unwrap().parent_id, None);
         assert_eq!(store.channels[0].id, "a");
+    }
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store {
+            me: "me".into(),
+            selected_channel: "c1".into(),
+            connection: Connection::Online,
+            members: [("u1", "Ana"), ("u2", "Bia")].into_iter().map(|(id, name)| Member {
+                id: id.into(),
+                username: name.into(),
+                name: name.into(),
+                banned: false,
+                presence: Presence::Online,
+                status_message: None,
+                typing_label: Some("escrevendo…".into()),
+                role_color: None,
+                roles: Vec::new(),
+            }).collect(),
+            ..Store::default()
+        }
+    }
+
+    fn signal(store: &mut Store, channel: &str, user: &str, active: bool) {
+        store.apply(Update::Event(Box::new(Event::Typing {
+            channel_id: channel.into(),
+            user_id: user.into(),
+            is_typing: active,
+        })));
+    }
+
+    #[test]
+    fn typing_expires_when_stop_event_is_lost() {
+        let mut store = store();
+        signal(&mut store, "c1", "u1", true);
+        let started = store.typing["c1"]["u1"];
+        assert_eq!(store.typing_names(), vec!["Ana"]);
+        assert_eq!(store.typing_phrase(), Some("escrevendo…"));
+        assert_eq!(
+            store.expire_typing_at(started + TYPING_TTL - Duration::from_millis(1)),
+            Some(Duration::from_millis(1))
+        );
+        assert_eq!(store.expire_typing_at(started + TYPING_TTL), None);
+        assert!(store.typing_names().is_empty());
+        assert!(store.typing_phrase().is_none());
+        assert!(store.typing.is_empty());
+    }
+
+    #[test]
+    fn typing_views_ignore_expired_signals_before_cleanup() {
+        let mut store = store();
+        signal(&mut store, "c1", "u1", true);
+        store.typing.get_mut("c1").unwrap().insert("u1".into(), Instant::now() - TYPING_TTL);
+        assert!(store.typing_names().is_empty());
+        assert!(store.typing_phrase().is_none());
+    }
+
+    #[test]
+    fn typing_heartbeat_renews_expiration() {
+        let mut store = store();
+        signal(&mut store, "c1", "u1", true);
+        let old = Instant::now() - Duration::from_secs(5);
+        store.typing.get_mut("c1").unwrap().insert("u1".into(), old);
+        signal(&mut store, "c1", "u1", true);
+        let renewed = store.typing["c1"]["u1"];
+        assert!(store.expire_typing_at(old + TYPING_TTL).is_some());
+        assert_eq!(store.typing_names(), vec!["Ana"]);
+        assert_eq!(store.expire_typing_at(renewed + TYPING_TTL), None);
+    }
+
+    #[test]
+    fn typing_stop_is_scoped_to_person_and_channel() {
+        let mut store = store();
+        signal(&mut store, "c1", "u1", true);
+        signal(&mut store, "c1", "u2", true);
+        signal(&mut store, "c1", "me", true);
+        signal(&mut store, "c2", "u1", true);
+        signal(&mut store, "c1", "u1", false);
+        assert_eq!(store.typing_names(), vec!["Bia"]);
+        assert_eq!(store.typing_phrase(), Some("escrevendo…"));
+        store.selected_channel = "c2".into();
+        assert_eq!(store.typing_names(), vec!["Ana"]);
+    }
+
+    #[test]
+    fn typing_does_not_survive_disconnect_or_reconnect() {
+        for connection in [Connection::Connecting, Connection::Offline] {
+            let mut store = store();
+            signal(&mut store, "c1", "u1", true);
+            signal(&mut store, "c2", "u2", true);
+            store.apply(Update::Connection(connection));
+            assert!(store.typing.is_empty());
+            store.apply(Update::Connection(Connection::Online));
+            assert!(store.typing_names().is_empty());
+            assert_eq!(store.expire_typing(), None);
+        }
+    }
+
+    #[test]
+    fn typing_clears_when_person_goes_offline() {
+        let mut store = store();
+        signal(&mut store, "c1", "u1", true);
+        signal(&mut store, "c1", "u2", true);
+        signal(&mut store, "c2", "u1", true);
+        store.apply(Update::Event(Box::new(Event::Presence {
+            user_id: "u1".into(),
+            status: "offline".into(),
+            status_message: None,
+            typing: None,
+            nickname: None,
+        })));
+        assert_eq!(store.typing_names(), vec!["Bia"]);
+        store.selected_channel = "c2".into();
+        assert!(store.typing_names().is_empty());
+        store.apply(Update::Event(Box::new(Event::PresenceSync(Vec::new()))));
+        assert_eq!(store.expire_typing(), None);
     }
 }
 
@@ -5689,5 +5934,147 @@ mod tests {
             .filter(|op| matches!(op, CacheOp::UpsertReadState(_)))
             .count();
         assert_eq!(writes, 1);
+    }
+}
+
+#[cfg(test)]
+mod notification_badge_tests {
+    use super::*;
+
+    fn store() -> Store {
+        let mut store = Store {
+            me: "me".into(),
+            ..Store::default()
+        };
+        store.channels = [
+            ("all", "all"),
+            ("mentions", "only_mentions"),
+            ("off", "off"),
+            ("dm", "all"),
+        ]
+        .into_iter()
+        .map(|(id, mode)| Channel {
+            id: id.into(),
+            name: id.into(),
+            kind: if id == "dm" {
+                ChannelKind::Direct
+            } else {
+                ChannelKind::Text
+            },
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: mode.into(),
+            parent_id: None,
+            unread: true,
+            mentions: 0,
+        })
+        .collect();
+        store
+    }
+
+    fn notification(id: &str, message: &str, channel: &str) -> models::Notification {
+        models::Notification {
+            id: id.into(),
+            message_id: Some(message.into()),
+            channel_id: Some(channel.into()),
+            author_id: Some("other".into()),
+            message_content: Some("texto".into()),
+            read: false,
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn generic_unread_does_not_light_the_tray_and_muted_channels_are_excluded() {
+        let mut store = store();
+        assert!(store.has_unread());
+        assert_eq!(store.pending_notification_count(), 0);
+        store.apply(Update::Notifications(vec![notification("n1", "m1", "off")]));
+        assert_eq!(store.pending_notification_count(), 0);
+        store.apply(Update::Notifications(vec![notification(
+            "n2", "m2", "mentions",
+        )]));
+        assert_eq!(store.pending_notification_count(), 1);
+    }
+
+    #[test]
+    fn partial_read_keeps_the_badge_and_opening_a_channel_does_not_clear_it() {
+        let mut store = store();
+        let first = notification("n1", "m1", "all");
+        store.apply(Update::Notifications(vec![
+            first.clone(),
+            first,
+            notification("n2", "m2", "all"),
+        ]));
+        store.selected_channel = "all".into();
+        assert_eq!(store.pending_notification_count(), 2);
+        assert_eq!(store.take_seen_notifications("all", &["m1".into()]), ["n1"]);
+        assert_eq!(store.pending_notification_count(), 1);
+        assert_eq!(store.take_seen_notifications("all", &["m2".into()]), ["n2"]);
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn direct_messages_remote_read_and_explicit_mark_read_update_the_badge() {
+        let mut store = store();
+        let first = notification("n1", "m1", "dm");
+        store.apply(Update::Notifications(vec![
+            first.clone(),
+            notification("n2", "m2", "mentions"),
+        ]));
+        assert_eq!(store.pending_notification_count(), 2);
+        let mut read = first;
+        read.read = true;
+        store.apply(Update::Notifications(vec![read]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.take_all_open_notifications();
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn marking_skipped_history_read_at_newest_also_clears_the_tray() {
+        let mut store = store();
+        store.messages = (1..=2)
+            .map(|index| Message {
+                id: format!("m{index}"),
+                channel_id: "all".into(),
+                author_id: "other".into(),
+                content: "texto".into(),
+                at: Local::now() + chrono::Duration::seconds(index),
+                edited: false,
+                reply_to: None,
+                attachments: Vec::new(),
+                previews: Vec::new(),
+                reactions: Vec::new(),
+                pinned: false,
+                pending: false,
+            })
+            .collect();
+        store.apply(Update::Notifications(vec![notification("n1", "m1", "all")]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.observe_visible_messages_with_policy("all", &["m2".into()], false);
+        assert_eq!(
+            store.pending_notification_count(),
+            1,
+            "a jump alone is not reading"
+        );
+        store.observe_visible_messages_with_policy("all", &["m2".into()], true);
+        assert_eq!(store.pending_notification_count(), 0);
+    }
+
+    #[test]
+    fn duplicate_message_notifications_own_messages_and_account_switch_do_not_leave_a_badge() {
+        let mut store = store();
+        let mut own = notification("own", "own-message", "all");
+        own.author_id = Some("me".into());
+        store.apply(Update::Notifications(vec![
+            own,
+            notification("n1", "m1", "all"),
+            notification("n2", "m1", "all"),
+        ]));
+        assert_eq!(store.pending_notification_count(), 1);
+        store.clear_cached_state();
+        assert_eq!(store.pending_notification_count(), 0);
     }
 }

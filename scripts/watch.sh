@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 
 fingerprint() {
-    find src assets Cargo.toml Cargo.lock -type f -printf '%T@ %s %p\n' 2>/dev/null | sha1sum
+    find src assets patches Cargo.toml Cargo.lock -type f -printf '%T@ %s %p\n' 2>/dev/null | sha1sum
 }
 
 restart() {
@@ -20,6 +20,11 @@ while true; do
     if [ "$current" != "$last" ]; then
         last=$current
         echo "== compilando..."
+        if ! python3 scripts/prepare-winit.py; then
+            echo "== preparo do winit falhou; janela anterior mantida"
+            sleep 1
+            continue
+        fi
         if cargo build 2>&1 | grep -E "^(error|warning: unused)" -A 4; then
             echo "== compilado com avisos"
         fi

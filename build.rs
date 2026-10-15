@@ -3,46 +3,15 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=PAPO_GIPHY_API_KEY");
 
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        println!("cargo:rerun-if-changed=native/macos/webembed.m");
-        println!("cargo:rerun-if-changed=native/macos/notify.m");
-        println!("cargo:rerun-if-changed=native/macos/appearance.m");
-        let output = std::process::Command::new("xcrun")
-            .args(["--sdk", "macosx", "--show-sdk-path"])
-            .output().expect("macOS SDK path");
-        assert!(output.status.success(), "xcrun failed");
-        let sdk = String::from_utf8(output.stdout).expect("SDK path is UTF-8");
-        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
-        let object = out.join("papo-webembed.o");
-        let status = std::process::Command::new("xcrun")
-            .args(["clang", "-fobjc-arc", "-fmodules", "-mmacosx-version-min=12.0",
-                "-isysroot", sdk.trim(), "-c", "native/macos/webembed.m", "-o"])
-            .arg(&object).status().expect("compile WKWebView bridge");
-        assert!(status.success(), "WKWebView bridge compilation failed");
-        let notify_object = out.join("papo-notify.o");
-        let status = std::process::Command::new("xcrun")
-            .args(["clang", "-fobjc-arc", "-fmodules", "-mmacosx-version-min=12.0",
-                "-isysroot", sdk.trim(), "-c", "native/macos/notify.m", "-o"])
-            .arg(&notify_object).status().expect("compile macOS notifications bridge");
-        assert!(status.success(), "macOS notifications compilation failed");
-        let appearance_object = out.join("papo-appearance.o");
-        let status = std::process::Command::new("xcrun")
-            .args(["clang", "-fobjc-arc", "-fmodules", "-mmacosx-version-min=12.0",
-                "-isysroot", sdk.trim(), "-c", "native/macos/appearance.m", "-o"])
-            .arg(&appearance_object).status().expect("compile macOS appearance bridge");
-        assert!(status.success(), "macOS appearance compilation failed");
-        let archive = out.join("libpapo_webembed.a");
-        let status = std::process::Command::new("xcrun")
-            .args(["ar", "rcs"]).arg(&archive).arg(&object).arg(&notify_object).arg(&appearance_object)
-            .status().expect("archive WKWebView and notifications bridge");
-        assert!(status.success(), "archiving WKWebView bridge failed");
-        println!("cargo:rustc-link-search=native={}", out.display());
-        println!("cargo:rustc-link-lib=static=papo_webembed");
-        for framework in ["AppKit", "WebKit", "QuartzCore", "CoreFoundation", "UserNotifications"] {
-            println!("cargo:rustc-link-lib=framework={framework}");
-        }
-        return;
-    }
+    let patch = "patches/winit+0.30.13.patch";
+    let marker = "target/patch/winit-0.30.13/.papo-applied.patch";
+    println!("cargo:rerun-if-changed={patch}");
+    println!("cargo:rerun-if-changed={marker}");
+    let expected = std::fs::read(patch).expect("read the versioned winit patch");
+    assert!(
+        std::fs::read(marker).is_ok_and(|applied| applied == expected),
+        "winit patch is missing or outdated: run python3 scripts/prepare-winit.py before Cargo",
+    );
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;

@@ -4,6 +4,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_TARGET_DIR: target/ci
+
 jobs:
   android-java:
     runs-on: ubuntu-latest
@@ -24,6 +27,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+      - uses: ./.github/actions/prepare-winit
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
       - name: Ensure project NDK

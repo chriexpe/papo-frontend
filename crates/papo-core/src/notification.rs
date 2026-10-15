@@ -73,6 +73,8 @@ pub struct NotificationContext {
     /// Este aparelho está registrado para push neste servidor.
     pub push_registered: bool,
     pub channels: HashMap<String, String>,
+    /// Notification mode per channel; backend Notification records remain authoritative.
+    pub channel_notification_settings: HashMap<String, String>,
     pub members: HashMap<String, String>,
 }
 
@@ -196,6 +198,10 @@ impl NotificationCoordinator {
             return NotificationOutcome::Ignored;
         }
 
+        if !context.channel_notification_settings.get(&message.channel_id).is_some_and(|mode| mode != "off") {
+            return NotificationOutcome::Ignored;
+        }
+
         let body = message.content.as_deref().unwrap_or("");
         if !mentions_user(
             body,
@@ -239,6 +245,10 @@ impl NotificationCoordinator {
             return NotificationOutcome::Ignored;
         };
         if context.owner_user_id.is_empty() {
+            return NotificationOutcome::Ignored;
+        }
+
+        if context.channel_notification_settings.get(channel_id).is_some_and(|mode| mode == "off") {
             return NotificationOutcome::Ignored;
         }
 
@@ -558,6 +568,7 @@ mod tests {
             visible_server: visible,
             notifications_enabled: enabled,
             push_registered: false,
+            channel_notification_settings: [("geral".into(), "only_mentions".into()), ("outro".into(), "all".into())].into_iter().collect(),
             channels: [("geral".to_owned(), "Geral".to_owned()), ("outro".to_owned(), "Outro".to_owned())]
                 .into_iter()
                 .collect(),
@@ -675,6 +686,31 @@ mod tests {
             NotificationOutcome::Duplicate
         );
         assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn muted_channel_does_not_emit_even_a_direct_mention() {
+        let temp = TempDb::new("notification-muted-channel");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        let mut view = context("srv", "me", true, true);
+        view.channel_notification_settings.insert("geral".into(), "off".into());
+        coordinator.sync_context(view);
+        let msg = message("m1", "geral", "bia", "oi @mention(<@me>)");
+        assert_eq!(coordinator.handle_message("srv", &msg, CandidateSource::Live), NotificationOutcome::Ignored);
+        assert_eq!(coordinator.handle_notification("srv", &notification("n1", "m1", "geral", "bia"), CandidateSource::Live), NotificationOutcome::Ignored);
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn mentions_only_ignores_plain_messages_but_accepts_backend_reply_notifications() {
+        let temp = TempDb::new("notification-channel-modes");
+        let (coordinator, deliveries) = coordinator(temp.db(), false);
+        coordinator.sync_context(context("srv", "me", true, true));
+        assert_eq!(coordinator.handle_message("srv", &message("m1", "geral", "bia", "oi"), CandidateSource::Live), NotificationOutcome::Ignored);
+        assert_eq!(coordinator.handle_message("srv", &message("m2", "geral", "bia", "oi @mention(<@me>)"), CandidateSource::Live), NotificationOutcome::Delivered);
+        assert_eq!(coordinator.handle_notification("srv", &notification("n3", "m3", "geral", "bia"), CandidateSource::Live), NotificationOutcome::Delivered);
+        assert_eq!(coordinator.handle_notification("srv", &notification("n4", "m4", "outro", "bia"), CandidateSource::Live), NotificationOutcome::Delivered);
+        assert_eq!(deliveries.load(AtomicOrdering::SeqCst), 3);
     }
 
     #[test]

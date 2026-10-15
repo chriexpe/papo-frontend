@@ -1057,16 +1057,10 @@ fn actions_row(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Desenha a figurinha, ou o lugar dela enquanto não chega.
-fn draw_sticker(ui: &egui::Ui, t: &Tokens, rect: Rect, texture: Option<egui::TextureId>) {
+fn draw_sticker(ui: &egui::Ui, t: &Tokens, rect: Rect, texture: Option<&egui::TextureHandle>) {
     match texture {
         Some(texture) => {
-            let mut mesh = egui::Mesh::with_texture(texture);
-            mesh.add_rect_with_uv(
-                rect,
-                Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-            ui.painter().add(egui::Shape::mesh(mesh));
+            super::emoji::paint_custom_image(ui.painter(), texture, rect, egui::Color32::WHITE);
         }
         None => {
             ui.painter()
@@ -5132,8 +5126,7 @@ fn server_pane(
                     let texture = data
                         .media
                         .emoji(id, blob.as_deref())
-                        .and_then(|texture| texture.frame(&ctx))
-                        .map(|handle| handle.id());
+                        .and_then(|texture| texture.frame(&ctx));
                     let art = Rect::from_center_size(egui::pos2(rect.center().x, rect.min.y + 10.0 + 28.0), Vec2::splat(56.0));
                     ui.painter().rect_filled(art, CornerRadius::same(14), t.fill_soft);
                     draw_sticker(ui, t, art.shrink(8.0), texture);

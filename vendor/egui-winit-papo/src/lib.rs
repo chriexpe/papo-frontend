@@ -27,7 +27,7 @@ mod window_settings;
 
 pub use window_settings::WindowSettings;
 
-use raw_window_handle::HasDisplayHandle;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 use dropped_file::NativeFile;
 
@@ -1392,6 +1392,38 @@ pub fn update_viewport_info(
 
     viewport_info.fullscreen = Some(window.fullscreen().is_some());
     viewport_info.focused = Some(window.has_focus());
+
+    // eframe skips rendering occluded viewports but keeps App::logic ticking.
+    // Only explicit runtime commands participate; eframe must still paint its
+    // initial hidden frame before calling set_visible(true) itself.
+    let requested = egui_ctx.data_mut(|data| {
+        data.get_temp::<bool>(egui::Id::new(("papo-window-visible", window.id())))
+    });
+    if let Some(requested) = requested {
+        let key = egui::Id::new(("papo-hidden-window", window.id()));
+        let wayland = matches!(
+            window.window_handle().map(|handle| handle.as_raw()),
+            Ok(raw_window_handle::RawWindowHandle::Wayland(_))
+        );
+        let hidden = !requested || (wayland && window.is_visible() == Some(false));
+        match hidden {
+            true => {
+                egui_ctx.data_mut(|data| {
+                    if data.get_temp::<Option<bool>>(key).is_none() {
+                        data.insert_temp(key, viewport_info.occluded);
+                    }
+                });
+                viewport_info.occluded = Some(true);
+            }
+            false => {
+                if let Some(previous) =
+                    egui_ctx.data_mut(|data| data.remove_temp::<Option<bool>>(key))
+                {
+                    viewport_info.occluded = previous;
+                }
+            }
+        }
+    }
 }
 
 fn open_url_in_browser(_url: &str) {
@@ -1802,7 +1834,13 @@ fn process_viewport_command(
             window.set_title(&title);
         }
         ViewportCommand::Transparent(v) => window.set_transparent(v),
-        ViewportCommand::Visible(v) => window.set_visible(v),
+        ViewportCommand::Visible(v) => {
+            log::trace!("Visibility command {v}: window {:?}", window.id());
+            egui_ctx.data_mut(|data| {
+                data.insert_temp(egui::Id::new(("papo-window-visible", window.id())), v);
+            });
+            window.set_visible(v);
+        }
         ViewportCommand::OuterPosition(pos) => {
             window.set_outer_position(PhysicalPosition::new(
                 pixels_per_point * pos.x,
