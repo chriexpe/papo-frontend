@@ -796,6 +796,32 @@ pub enum UpdatePill {
     WaitingPermission,
 }
 
+/// Normal remote avatars are absolute HTTPS URLs. Incoming Papo webhooks
+/// instead return a server-local path, e.g. /webhooks/<uuid>/avatar.
+/// Resolve only that known API route against the *connected* server; never
+/// interpret arbitrary relative paths, scheme-relative URLs or user URLs.
+fn external_avatar_url(raw: &str, server_url: &str) -> Option<String> {
+    if papo_core::preview::safe_remote_url(raw) {
+        return Some(raw.to_owned());
+    }
+    let id = raw.strip_prefix("/webhooks/")?.strip_suffix("/avatar")?;
+    if id.len() != 36 || !id.bytes().enumerate().all(|(i, b)| {
+        if matches!(i, 8 | 13 | 18 | 23) {
+            b == b'-'
+        } else {
+            b.is_ascii_hexdigit()
+        }
+    }) {
+        return None;
+    }
+    let base = url::Url::parse(server_url).ok()?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return None;
+    }
+    let url = base.join(raw).ok()?.to_string();
+    papo_core::preview::safe_remote_url(&url).then_some(url)
+}
+
 /// An attributed identity is not a Papo user account, so it never opens the
 /// normal profile or triggers LoadProfile requests.
 #[derive(Clone, Debug)]
@@ -826,8 +852,9 @@ fn external_author_popup(ui: &mut egui::Ui, state: &mut UiState, t: &Tokens) {
                 .show(ui, |ui| {
                     ui.set_width(width - 28.0);
                     ui.horizontal(|ui| {
-                        let avatar = popup.author.avatar_url.as_deref()
-                            .filter(|url| papo_core::preview::safe_remote_url(url))
+                        let avatar_url = popup.author.avatar_url.as_deref()
+                            .and_then(|url| external_avatar_url(url, &state.server_url));
+                        let avatar = avatar_url.as_deref()
                             .and_then(|url| state.media.remote_image(
                                 &format!("external-card:{}:{}", popup.author.source, popup.author.id), url))
                             .and_then(|texture| texture.frame(ui.ctx()))
@@ -5718,7 +5745,8 @@ fn message_list(
                     // conta mostram; sem ela, sobram as iniciais.
                     let texture = if let Some(remote) = external {
                         remote.avatar_url.as_deref()
-                            .filter(|url| papo_core::preview::safe_remote_url(url))
+                            .and_then(|url| external_avatar_url(url, &state.server_url))
+                            .as_deref()
                             .and_then(|url| {
                                 if network_eligible {
                                     state.media.remote_image(&format!("external:{}:{}", remote.source, remote.id), url)
@@ -11981,5 +12009,41 @@ mod row_cache_tests {
         let mut edited = message("oi");
         edited.edited = true;
         assert_ne!(reference, sig(&edited, false, false, 600.0));
+    }
+}
+
+#[cfg(test)]
+mod external_avatar_url_tests {
+    use super::external_avatar_url;
+
+    const WEBHOOK_AVATAR: &str =
+        "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar";
+
+    #[test]
+    fn resolves_the_servers_own_webhook_avatar() {
+        assert_eq!(
+            external_avatar_url(WEBHOOK_AVATAR, "https://api.papo.example/v1/").as_deref(),
+            Some("https://api.papo.example/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar"),
+        );
+    }
+
+    #[test]
+    fn accepts_public_absolute_avatars() {
+        assert_eq!(
+            external_avatar_url("https://cdn.discordapp.com/avatars/123/photo.png", "https://api.papo.example/").as_deref(),
+            Some("https://cdn.discordapp.com/avatars/123/photo.png"),
+        );
+    }
+
+    #[test]
+    fn rejects_arbitrary_relative_and_cross_origin_paths() {
+        for raw in [
+            "//example.org/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar",
+            "/admin",
+            "/webhooks/../../admin/avatar",
+            "/webhooks/123e4567-e89b-12d3-a456-426614174000/avatar?redirect=x",
+        ] {
+            assert!(external_avatar_url(raw, "https://api.papo.example/").is_none(), "{raw}");
+        }
     }
 }
