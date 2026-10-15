@@ -4309,6 +4309,20 @@ impl eframe::App for PapoApp {
         }
         self.attach_window(frame);
 
+        // Live system appearance refresh is shared across desktop platforms.
+        // Individual platforms only supply the OS-specific theme provider.
+        #[cfg(not(target_os = "android"))]
+        {
+            let fresh = SystemTheme::read();
+            if fresh.accent != self.system.accent
+                || fresh.prefers_dark != self.system.prefers_dark
+                || fresh.animation_factor != self.system.animation_factor
+            {
+                self.system = fresh;
+                self.retheme(&ctx);
+            }
+        }
+
         self.rich_presence.pump();
         // Project every frame, not only on activity changes: a workspace may
         // finish authentication after the current activity was already found.

@@ -98,6 +98,10 @@ pub mod safe_area;
 #[path = "linux/wpe.rs"]
 pub mod linux_wpe;
 
+#[cfg(target_os = "macos")]
+#[path = "macos/appearance.rs"]
+pub mod macos_appearance;
+
 /// Native WKWebView browser surface for macOS WebEmbed.
 #[cfg(target_os = "macos")]
 #[path = "macos/webembed.rs"]
