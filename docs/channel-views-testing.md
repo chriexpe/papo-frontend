@@ -144,3 +144,49 @@ Actual BlueMap 5.11 at `https://map.chriexpe.com` rendered in the app channel. T
 confirmed noticeably better panning/zooming after bulk-copying GPU rows into RAM before
 colour conversion. Host CPU/readback remains a performance limitation; matching WPE to
 the host GPU alone did not fix it. Direct GPU import is a separate renderer follow-up.
+
+## C6: plan v7 app interactions (Linux, 2026-10-16)
+
+Frontend verification uses backend `feat/wasm-plugins` after C4/C5, including
+`71af671` (authorized launch metadata and bundled-poster consent validation).
+The reference WASM tic-tac-toe plugin runs against a disposable PostgreSQL database
+and two independent native Linux clients/accounts. Additional copies of its manifest
+exercise inline `click`, inline `visible`, and bundled SVG posters without changing
+the reference game module.
+
+Verified in the native production shell:
+
+- Member list hidden by default in app channels; header toggle and device-local,
+  per-channel persistence. Only other members receive the plugin's native action.
+  Actions sit in the member row as compact icons with the plugin label as tooltip.
+- Member action → invite notification → accept → both users play. A completed
+  X-winning game followed by the native **Revanche** button resets the board and
+  updates the message/buttons through `message_edit`.
+- Invite avatar/inviter/text, accept/decline, and mute. Mute persisted through the
+  backend user-settings endpoint; accepted/read invites stay hidden on reconnect.
+- Inline poster stays idle until click, payload proportions preserved, no nested
+  provider header/play decoration. `visible` waits 300 ms; the observed first launch
+  followed message delivery by approximately 559 ms, with no repeated idle launches.
+  Scrolling away or switching channels destroys the live surface.
+- Overlay opens from its card and `opens=` button, has a thin Papo header and channel
+  margins, and closes with close/Escape. Launch metadata also supports buttons whose
+  surface has no corresponding frame in the message.
+- Only the latest app activation remains live. Disabling the plugin during play
+  destroys both clients' surfaces, disables message buttons, and removes its channel.
+- Opening a member profile preserves the app texture behind the profile while
+  blocking app input. A loaded native YouTube player also remains visible behind
+  the profile; actual video playback was not part of this regression check.
+- Tickets enter only the `#papo_ticket=` fragment after authenticated native launch.
+  Native Papo credentials are never passed to the embedded page.
+
+Automated validation: 624 Rust tests passed (one existing integration test ignored),
+10 Python window-input tests passed, pinned Rust 1.98 workspace/all-targets Clippy
+with warnings denied passed. Backend full Go tests, services/handlers race tests,
+and `go vet ./...` passed. The WPE runtime was rebuilt with ABI 5 and strict C warnings.
+Unit tests cover visibility debounce, stale replies, revocation, timeout, ticket URL
+handling, invite hydration, and button edits including explicit empty components.
+
+Screenshots are in `docs/screenshots/app-interactions/`. Physical mobile back gestures
+and native Windows/macOS surfaces were not exercised in this Linux smoke; the platform
+isolation/fallback limitations described above still apply. The original `test/pr100`
+checkout and its two modified files were left untouched.
