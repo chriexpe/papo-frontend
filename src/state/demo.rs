@@ -114,6 +114,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
     let now = Local::now();
     let mut messages = vec![
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-1".into(),
             channel_id: "c-geral".into(),
             author_id: "u-ana".into(),
@@ -133,6 +135,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-2".into(),
             channel_id: "c-geral".into(),
             author_id: "u-ana".into(),
@@ -159,6 +163,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-3".into(),
             channel_id: "c-geral".into(),
             author_id: "u-bruno".into(),
@@ -174,6 +180,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-4".into(),
             channel_id: "c-geral".into(),
             author_id: "u-dora".into(),
@@ -193,6 +201,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-5".into(),
             channel_id: "c-geral".into(),
             author_id: "u-dora".into(),
@@ -208,6 +218,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-5b".into(),
             channel_id: "c-geral".into(),
             author_id: "u-eu".into(),
@@ -227,6 +239,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-5c".into(),
             channel_id: "c-geral".into(),
             author_id: "u-ana".into(),
@@ -242,6 +256,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-6".into(),
             channel_id: "c-geral".into(),
             author_id: "u-bruno".into(),
@@ -257,6 +273,8 @@ pub fn seed(store: &mut Store, server_key: &str) {
             pending: false,
         },
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: "m-7".into(),
             channel_id: "c-dev".into(),
             author_id: "u-bruno".into(),

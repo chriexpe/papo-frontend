@@ -83,7 +83,11 @@ impl ChannelViewSurface {
             self.owner = (server.to_owned(), channel.to_owned());
         }
     }
+    #[cfg(test)]
     pub fn activate(&mut self, id: String, app: AppSurface, server: &str) {
+        self.activate_ticket(id, app, server, "test");
+    }
+    pub fn activate_ticket(&mut self, id: String, app: AppSurface, server: &str, ticket: &str) {
         if self
             .selected
             .as_ref()
@@ -94,7 +98,16 @@ impl ChannelViewSurface {
         self.destroy();
         let url = surface_url(&app, server);
         self.failed = url.is_none() || !app.available;
-        let url = url.unwrap_or_default();
+        let mut url = url.unwrap_or_default();
+        if !self.failed
+            && let Ok(mut parsed) = url::Url::parse(&url)
+        {
+            parsed.set_fragment(Some(&format!(
+                "papo_ticket={}",
+                url::form_urlencoded::byte_serialize(ticket.as_bytes()).collect::<String>()
+            )));
+            url = parsed.to_string();
+        }
         if !self.failed {
             self.failed = match self.backend.as_mut() {
                 Some(b) => b
@@ -206,7 +219,7 @@ impl ChannelViewSurface {
         if !self.presented {
             if self
                 .selected_id()
-                .is_some_and(|id| id.starts_with("inline-app:"))
+                .is_some_and(|id| id.starts_with("inline-app:") || id.starts_with("button-app:"))
                 && !self.inline_seen
             {
                 self.destroy();
@@ -365,6 +378,7 @@ mod tests {
     use super::*;
     fn fixture() -> AppSurface {
         AppSurface {
+            user_actions: vec![],
             app_installation_id: "11111111-1111-4111-8111-111111111111".into(),
             surface_id: "test".into(),
             source: "remote".into(),
@@ -392,6 +406,28 @@ mod tests {
         assert!(surface.selected_id().is_none());
     }
     #[test]
+    fn launch_ticket_is_encoded_only_in_the_fragment() {
+        let mut surface = ChannelViewSurface::default();
+        let _ = surface.backend.take();
+        surface.activate_ticket(
+            "inline-app:m:e".into(),
+            fixture(),
+            "https://papo.example",
+            "ticket?private=1&x#y",
+        );
+        let url = url::Url::parse(surface.url().unwrap()).unwrap();
+        assert!(url.query().is_none());
+        assert_eq!(
+            url.fragment(),
+            Some("papo_ticket=ticket%3Fprivate%3D1%26x%23y")
+        );
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(100.0));
+        surface.observe_inline(rect, rect);
+        surface.hide();
+        surface.end_frame();
+        assert_eq!(surface.selected_id(), Some("inline-app:m:e"));
+    }
+    #[test]
     fn unavailable_and_timeout_fail_closed() {
         let mut surface = ChannelViewSurface::default();
         let _ = surface.backend.take();
@@ -410,6 +446,7 @@ mod tests {
     #[test]
     fn payload_path_exception_is_narrow() {
         let mut app = AppSurface {
+            user_actions: vec![],
             app_installation_id: "11111111-1111-4111-8111-111111111111".into(),
             surface_id: "test".into(),
             source: "bundled".into(),

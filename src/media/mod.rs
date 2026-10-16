@@ -107,6 +107,7 @@ const BANNER_MAX: u32 = 1024;
 #[derive(Debug, Clone)]
 pub enum Request {
     AppAvatar { id:String },
+    AppPoster { path:String },
     /// Miniatura do servidor. Só existe quando a listagem anuncia um
     /// `thumbnail_id`; sem ele o cartão nem chega aqui, e o arquivo inteiro
     /// nunca é baixado só para virar capa.
@@ -175,6 +176,7 @@ impl Request {
     fn kind(&self) -> &'static str {
         match self {
             Self::AppAvatar{..}=>"app-avatar",
+            Self::AppPoster{..}=>"app-poster",
             Self::Thumb { .. } => "thumb",
             Self::Full { .. } => "full",
             Self::File { .. } => "file",
@@ -344,6 +346,23 @@ async fn run(
     request: Request,
 ) -> Loaded {
     match request {
+        Request::AppPoster{path}=>{
+            let _slot = fetch_gate.acquire().await;
+            let key = format!("app-poster:{path}");
+            match api.fetch_bytes(&path).await {
+                Ok((bytes,_)) => {
+                    if path.to_ascii_lowercase().ends_with(".svg") {
+                        let mut options = resvg::usvg::Options::default();
+                        options.image_href_resolver.resolve_string = Box::new(|_, _| None);
+                        match egui_extras::image::load_svg_bytes_with_size(&bytes,egui::load::SizeHint::Size {width:1024,height:1024,maintain_aspect_ratio:true},&options) {
+                            Ok(image) => Loaded::Image{key,image:Box::new(image)},
+                            Err(error) => Loaded::Failed{key,error},
+                        }
+                    } else { decode(key,&bytes,1024) }
+                },
+                Err(error) => Loaded::Failed{key,error:error.to_string()},
+            }
+        }
         Request::AppAvatar{id}=>{
             let _slot=fetch_gate.acquire().await;
             let key=format!("app-avatar:{id}");
@@ -1896,6 +1915,13 @@ impl MediaStore {
         self.textures.get(&remote_image_key(&id))
     }
 
+    pub fn app_poster(&mut self, installation: &str, path: &str) -> Option<&Texture> {
+        let prefix = format!("/apps/{installation}/ui/");
+        if !path.starts_with(&prefix) || path.contains("..") || path.contains(['%', '?', '#', '\\']) {return None;}
+        let key = format!("app-poster:{path}");
+        if !self.textures.contains_key(&key) {self.textures.insert(key.clone(),Texture::Loading);self.ask(Request::AppPoster{path:path.into()});}
+        self.touch(&key); self.textures.get(&key)
+    }
     pub fn app_avatar(&mut self,id:&str)->Option<&Texture> {
         if id.len()!=36 || !id.bytes().all(|c|c.is_ascii_hexdigit() || c==b'-'){return None;}
         let key=format!("app-avatar:{id}");

@@ -583,6 +583,7 @@ mod tests {
 
     fn message(id: &str, channel: &str, author: &str, content: &str) -> Message {
         Message {
+            components: Default::default(),
             id: id.to_owned(),
             channel_id: channel.to_owned(),
             author_id: author.to_owned(),
@@ -601,6 +602,8 @@ mod tests {
 
     fn notification(id: &str, message_id: &str, channel: &str, author: &str) -> Notification {
         Notification {
+            kind: String::new(),
+            payload: None,
             id: id.to_owned(),
             message_id: Some(message_id.to_owned()),
             channel_id: Some(channel.to_owned()),

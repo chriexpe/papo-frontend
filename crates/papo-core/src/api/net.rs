@@ -2215,6 +2215,8 @@ async fn worker(
                         .cloned()
                     {
                         hooks.notification.emit(&Notification {
+                            kind: String::new(),
+                            payload: None,
                             id: id.clone(),
                             message_id: message_id.clone(),
                             channel_id: Some(channel_id),
@@ -3087,7 +3089,10 @@ async fn handle(
 ) {
     match command {
         Command::Plugin{ticket,id,action,body}=>{
-            let result=api.plugin_action(&id,&action,body).await.map_err(|e|e.to_string());
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(10), api.plugin_action(&id,&action,body)).await {
+                Ok(result) => result.map_err(|e| e.to_string()),
+                Err(_) => Err("app-timeout".into()),
+            };
             publish(updates,wake,Update::Plugin{ticket,action,result});
         }
         Command::Login { username, password } => match api.login(&username, &password).await {
@@ -4127,6 +4132,7 @@ mod network_hint_tests {
 
     fn server_message(content: &str) -> Message {
         Message {
+            components: Default::default(),
             id: "server-message".to_owned(),
             channel_id: "general".to_owned(),
             author_id: "me".to_owned(),

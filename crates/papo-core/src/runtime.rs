@@ -845,6 +845,8 @@ mod tests {
 
         runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
         runtime.process_update(Update::Notifications(vec![Notification {
+            kind: String::new(),
+            payload: None,
             id: "n1".to_owned(),
             message_id: Some("m1".to_owned()),
             channel_id: Some("general".to_owned()),

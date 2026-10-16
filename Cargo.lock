@@ -4145,6 +4145,7 @@ dependencies = [
  "pulldown-cmark",
  "raw-window-handle",
  "reqwest",
+ "resvg",
  "rfd",
  "ring",
  "semver",

@@ -31,12 +31,17 @@ fn main() -> eframe::Result<()> {
     };
     let mut seed = Seed::default();
     eframe::set_value(&mut seed, eframe::APP_KEY, &settings);
-    let path = std::env::temp_dir().join(format!(
-        "papo-app-surfaces-smoke-{}.ron",
-        std::process::id()
-    ));
-    std::fs::write(&path, serde_json::to_string(&seed.0).expect("preferences"))
-        .expect("smoke preferences");
+    let configured_path = std::env::var_os("PAPO_SMOKE_PREFERENCES").map(std::path::PathBuf::from);
+    let path = configured_path.clone().unwrap_or_else(|| {
+        std::env::temp_dir().join(format!(
+            "papo-app-surfaces-smoke-{}.ron",
+            std::process::id()
+        ))
+    });
+    if !path.exists() {
+        std::fs::write(&path, serde_json::to_string(&seed.0).expect("preferences"))
+            .expect("smoke preferences");
+    }
     let result = eframe::run_native(
         "Papo app surfaces smoke",
         eframe::NativeOptions {
@@ -49,6 +54,8 @@ fn main() -> eframe::Result<()> {
         },
         Box::new(|cc| Ok(Box::new(papo::app::PapoApp::new(cc)))),
     );
-    let _ = std::fs::remove_file(path);
+    if configured_path.is_none() {
+        let _ = std::fs::remove_file(path);
+    }
     result
 }

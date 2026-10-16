@@ -27,3 +27,5 @@ pub mod viewer;
 pub mod widgets;
 
 pub mod plugins;
+
+pub mod app_surfaces;

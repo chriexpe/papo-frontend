@@ -1254,6 +1254,11 @@ impl Api {
     pub async fn plugin_action(&self,id:&str,action:&str,body:serde_json::Value)->ApiResult<serde_json::Value> {
         let encoded: String=url::form_urlencoded::byte_serialize(id.as_bytes()).collect();
         match action {
+            "app:interact" => self.post("/interactions", &body).await,
+            "app:launch" => self.post(&format!("/apps/{encoded}/launch"), &body).await,
+            "app:accept" => self.post(&format!("/notifications/{encoded}/accept"), &body).await,
+            "app:decline" => self.post(&format!("/notifications/{encoded}/decline"), &body).await,
+            "app:mute" => { self.patch::<_, serde_json::Value>(&format!("/apps/{encoded}/user-settings"), &body).await },
             "list"=>self.get("/plugins").await,
             "rescan"=>self.post("/plugins/rescan",&body).await,
             "preview"|"enable"|"disable"=>self.post(&format!("/plugins/{encoded}/{action}"),&body).await,

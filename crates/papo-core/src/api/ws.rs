@@ -36,6 +36,7 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 pub enum Event {
     Message(Box<Message>),
     MessageEdited {
+        components: Option<Vec<Vec<super::models::AppButton>>>,
         id: String,
         channel_id: String,
         content: String,
@@ -167,6 +168,7 @@ pub enum Event {
     },
     /// O evento é unicast e não traz o canal: só o id da mensagem e um
     /// trecho do conteúdo.
+    AppInvite(super::models::AppInvite),
     Notification {
         id: String,
         message_id: Option<String>,
@@ -470,6 +472,7 @@ fn parse(text: &str) -> Option<Event> {
             id: string("id")?,
             channel_id: string("channel_id")?,
             content: string("content").unwrap_or_default(),
+            components: value.get("components").and_then(|v| serde_json::from_value(v.clone()).ok()),
         }),
         "message_delete" => Some(Event::MessageDeleted {
             id: string("id")?,
@@ -613,6 +616,8 @@ fn parse(text: &str) -> Option<Event> {
             message: string("message").unwrap_or_default(),
             code: string("code"),
         }),
+        "new_notification" if string("kind").as_deref() == Some("app_invite") =>
+            serde_json::from_value(value.get("payload")?.clone()).ok().map(Event::AppInvite),
         "new_notification" => Some(Event::Notification {
             id: string("id").unwrap_or_default(),
             message_id: string("message_id"),
@@ -628,6 +633,19 @@ fn parse(text: &str) -> Option<Event> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn c5_component_snapshots_distinguish_omission_and_empty() {
+        for (extra, expected) in [("",None),(r#", "components":[]"#,Some(vec![]))] {
+            let raw = format!(r#"{{"type":"message_edit","id":"m","channel_id":"c","content":"x"{extra}}}"#);
+            let Some(Event::MessageEdited {components,..}) = parse(&raw) else {panic!("edit");};
+            assert_eq!(components,expected);
+        }
+    }
+    #[test]
+    fn c5_app_invite_event_keeps_the_verified_payload() {
+        let raw = r#"{"type":"new_notification","id":"invite","kind":"app_invite","message_id":null,"payload":{"id":"invite","app_installation_id":"app","inviter_id":"u","channel_id":"c","text":"Play?","status":"pending","expires_at":"2099-01-01T00:00:00Z"}}"#;
+        assert!(matches!(parse(raw),Some(Event::AppInvite(v)) if v.id == "invite" && v.text == "Play?"));
+    }
     #[test]
     fn app_invalidation_requires_installation_identity() {
         assert!(matches!(parse(r#"{"type":"app_invalidate","app_installation_id":"install"}"#), Some(Event::AppInvalidated {installation_id}) if installation_id=="install"));

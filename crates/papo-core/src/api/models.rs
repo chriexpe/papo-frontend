@@ -227,6 +227,7 @@ pub struct Channel {
 /// Superfície fornecida por um payload autorizado do backend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AppSurface {
+    #[serde(default)] pub user_actions: Vec<AppUserAction>,
     pub app_installation_id: String,
     pub surface_id: String,
     #[serde(default)] pub source: String,
@@ -234,6 +235,17 @@ pub struct AppSurface {
     #[serde(default)] pub avatar_url: String,
     #[serde(default)] pub available: bool,
 }
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUserAction { pub id: String, pub label: String, #[serde(default)] pub icon: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppButton { pub id: String, pub label: String, #[serde(default)] pub style: String, #[serde(default)] pub disabled: bool, #[serde(default)] pub opens: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppFrameSize { pub width: i32, pub height: i32 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppFrameReference { pub app_installation_id: String, pub id: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppInvite { pub id: String, pub app_installation_id: String, pub inviter_id: String, pub channel_id: String, #[serde(default)] pub surface_id: String, pub text: String, pub status: String, pub expires_at: DateTime<Utc> }
 
 fn default_channel_notification_setting() -> String {
     "only_mentions".to_owned()
@@ -713,6 +725,7 @@ pub struct ExternalAuthor {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Message {
+    #[serde(default)] pub components: Vec<Vec<AppButton>>,
     pub id: String,
     pub channel_id: String,
     // Webhook messages have no Papo user author; retain an empty identifier
@@ -780,6 +793,12 @@ impl Attachment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
+    #[serde(default)] pub surface: Option<AppFrameReference>,
+    #[serde(default)] pub entry: String,
+    #[serde(default)] pub size: Option<AppFrameSize>,
+    #[serde(default)] pub load: String,
+    #[serde(default)] pub display: String,
+    #[serde(default)] pub poster: String,
     #[serde(default)] pub app: Option<AppSurface>,
     #[serde(default)] pub frame_width: Option<i32>,
     #[serde(default)] pub frame_height: Option<i32>,
@@ -1076,6 +1095,8 @@ pub struct EmojiList {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Notification {
+    #[serde(default)] pub kind: String,
+    #[serde(default)] pub payload: Option<AppInvite>,
     pub id: String,
     pub message_id: Option<String>,
     pub channel_id: Option<String>,
