@@ -149,7 +149,7 @@ android {
 }
 
 dependencies {
-    implementation("androidx.webkit:webkit:1.12.1")
+    implementation("androidx.webkit:webkit:1.13.0")
     implementation(libs.games.activity)
     implementation(libs.appcompat)
     implementation(libs.work.runtime)

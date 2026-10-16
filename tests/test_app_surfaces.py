@@ -60,6 +60,8 @@ public class HeaderTest {
       if (path.equals("/head400") && method.equals("HEAD")) status = 400;
       if (path.equals("/stream")) {
         exchange.sendResponseHeaders(200, 1024 * 1024);
+        exchange.getResponseBody().write(0);
+        exchange.getResponseBody().flush();
         try { Thread.sleep(2000); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
         exchange.close();
         return;

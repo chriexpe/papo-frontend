@@ -5,6 +5,7 @@ import android.webkit.*;
 import androidx.webkit.ProfileStore;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
+import androidx.webkit.WebStorageCompat;
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -18,6 +19,8 @@ final class AppSurfaceClient extends WebViewClient {
     private final boolean bundled;
     private final Events events;
     private final String profile;
+    private WebStorage storage;
+    private static final Set<String> LOADED = new HashSet<>();
     private volatile boolean closed;
     private volatile boolean failed;
 
@@ -25,18 +28,21 @@ final class AppSurfaceClient extends WebViewClient {
         this.entry = entry; this.bundled = bundled; this.events = events; this.profile = profile;
     }
     static AppSurfaceClient attach(WebView view, String entry, boolean bundled, Events events) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-            throw new UnsupportedOperationException("MULTI_PROFILE unavailable");
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)
+                || !WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+            throw new UnsupportedOperationException("Isolated profiles/data deletion unavailable");
         }
-        // Never load Profile objects with getProfile/getOrCreateProfile: those
-        // retain profiles in memory and make deletion illegal until process exit.
+        // Chromium retains loaded profiles until process exit. Empty profile
+        // records are deleted before loading any new surface after restart.
         ProfileStore store = ProfileStore.getInstance();
         for (String name : store.getAllProfileNames()) {
-            if (name.startsWith(PREFIX)) deleteProfileLater(name, 0);
+            if (name.startsWith(PREFIX) && !LOADED.contains(name)) deleteProfileRecord(name);
         }
         String profile = PREFIX + UUID.randomUUID();
         WebViewCompat.setProfile(view, profile); // before any load or settings access
+        LOADED.add(profile);
         AppSurfaceClient client = new AppSurfaceClient(entry, bundled, events, profile);
+        client.storage = WebViewCompat.getProfile(view).getWebStorage();
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -67,18 +73,19 @@ final class AppSurfaceClient extends WebViewClient {
     // Called only after the associated WebView has been destroyed, on the UI thread.
     void destroy() {
         closed = true;
-        deleteProfileLater(profile, 0);
+        WebStorage data = storage;
+        storage = null;
+        WebStorageCompat.deleteBrowsingData(data, () -> {
+            android.util.Log.i("PapoAppSurface", "Cleared cookies/cache/storage for " + profile);
+            deleteProfileRecord(profile);
+        });
     }
-    private static void deleteProfileLater(String profile, int attempt) {
+    private static void deleteProfileRecord(String profile) {
         try {
             ProfileStore.getInstance().deleteProfile(profile);
             android.util.Log.i("PapoAppSurface", "Deleted isolated profile " + profile);
-        } catch (IllegalStateException busy) {
-            // Chromium releases the destroyed WebView asynchronously. Never
-            // reuse this profile; retry after its outstanding tasks have drained.
-            if (attempt < 20) new android.os.Handler(android.os.Looper.getMainLooper())
-                .postDelayed(() -> deleteProfileLater(profile, attempt + 1), 250);
-            else android.util.Log.e("PapoAppSurface", "Profile pending cleanup after process exit: " + profile, busy);
+        } catch (IllegalStateException loaded) {
+            android.util.Log.i("PapoAppSurface", "Empty profile record retained until next process: " + profile);
         }
     }
     private void emit(int kind, String url) { if (!closed) events.emit(kind, url); }

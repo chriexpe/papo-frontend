@@ -108,6 +108,9 @@ fn call_strings(method: &str, id: &str, second: Option<&str>) -> Result<(), Stri
 }
 
 fn call_present(id: &str, viewport: &EmbedViewport) {
+    call_viewport("presentWebEmbed", id, viewport);
+}
+fn call_viewport(method: &str, id: &str, viewport: &EmbedViewport) {
     let ppp = viewport.pixels_per_point.max(0.1);
     let visible = viewport.rect.intersect(viewport.clip_rect);
 
@@ -124,7 +127,7 @@ fn call_present(id: &str, viewport: &EmbedViewport) {
         let id = env.new_string(id).map_err(|error| error.to_string())?;
         env.call_method(
             &activity,
-            "presentWebEmbed",
+            method,
             "(Ljava/lang/String;IIIIIIII)V",
             &[
                 jni::objects::JValue::Object(&id),
@@ -232,6 +235,11 @@ impl crate::channel_view::ViewBackend for AndroidAppSurface {
         Ok(())
     }
     fn prepare(&mut self, _frame: &mut eframe::Frame, _ctx: &egui::Context) {}
+    fn resize_loading(&mut self, viewport: &EmbedViewport) {
+        if let Some(id) = &self.id {
+            call_viewport("layoutAppSurface", id, viewport);
+        }
+    }
     fn present(&mut self, viewport: &EmbedViewport) {
         if let Some(id) = &self.id {
             let visible = viewport.rect.intersect(viewport.clip_rect);
