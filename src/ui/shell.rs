@@ -10715,7 +10715,7 @@ fn composer(
     }
 
     #[cfg(target_os = "android")]
-    let android_chat_editor_visible = !blocking_modal_open(state)
+    let android_chat_editor_visible = state.apps.overlay.is_none() && !blocking_modal_open(state)
         && (!state.compact
             || (state.mobile_surface == MobileSurface::Chat
                 && state.drawer.shown <= 0.0

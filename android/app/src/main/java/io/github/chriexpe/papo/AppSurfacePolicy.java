@@ -46,16 +46,11 @@ final class AppSurfacePolicy {
         if (status < 200 || status >= 300) throw new IOException("HTTP " + status);
     }
     static void preflight(String url) throws IOException {
-        HttpURLConnection connection = connect(url, "HEAD");
+        HttpURLConnection connection = connect(url, "GET");
         try {
-            int status = connection.getResponseCode();
-            if (status == 405 || status == 501) {
-                connection.disconnect();
-                connection = connect(url, "GET");
-            }
             checkStatus(connection);
             if (refuses(header(connection, "X-Frame-Options"), header(connection, "Content-Security-Policy"))) throw new IOException("Frame refused");
-            // Abort GET fallback after headers, without consuming its body.
+            // Abort GET after headers, without consuming its body.
         } finally { connection.disconnect(); }
     }
 }

@@ -57,7 +57,13 @@ public class HeaderTest {
       for (String key : List.of("Cookie", "Authorization", "Referer")) require(exchange.getRequestHeaders().getFirst(key) == null);
       require(exchange.getRequestURI().getFragment() == null);
       int status = 200;
-      if ((path.equals("/405") || path.equals("/501")) && method.equals("HEAD")) status = Integer.parseInt(path.substring(1));
+      if (path.equals("/head400") && method.equals("HEAD")) status = 400;
+      if (path.equals("/stream")) {
+        exchange.sendResponseHeaders(200, 1024 * 1024);
+        try { Thread.sleep(2000); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        exchange.close();
+        return;
+      }
       if (path.equals("/redirect")) { status = 302; exchange.getResponseHeaders().set("Location", "/ok"); }
       if (path.equals("/error")) status = 500;
       if (path.equals("/deny")) exchange.getResponseHeaders().set("X-Frame-Options", "DENY");
@@ -71,14 +77,17 @@ public class HeaderTest {
     server.start();
     try {
       String base = "http://127.0.0.1:" + server.getAddress().getPort();
-      for (String path : List.of("/ok", "/405", "/501")) AppSurfacePolicy.preflight(base + path + "#papo_ticket=not-a-credential");
-      require(requests.equals(List.of("/ok:HEAD", "/405:HEAD", "/405:GET", "/501:HEAD", "/501:GET")));
+      for (String path : List.of("/ok", "/head400")) AppSurfacePolicy.preflight(base + path + "#papo_ticket=not-a-credential");
+      require(requests.equals(List.of("/ok:GET", "/head400:GET")));
       for (String path : List.of("/redirect", "/error", "/deny", "/csp")) {
         boolean rejected = false;
         try { AppSurfacePolicy.preflight(base + path); } catch (IOException expected) { rejected = true; }
         require(rejected);
       }
-      require(!requests.contains("/ok:GET"));
+      long start = System.nanoTime();
+      AppSurfacePolicy.preflight(base + "/stream");
+      require((System.nanoTime() - start) / 1_000_000 < 1000); // never wait for body
+      require(requests.stream().noneMatch(value -> value.endsWith(":HEAD")));
     } finally { server.stop(0); }
   }
 }
