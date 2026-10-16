@@ -298,6 +298,8 @@ pub struct Settings {
     /// Vidro fosco nas barras; desligado usa fundos opacos.
     pub translucency: bool,
     pub show_members: bool,
+    #[serde(default)]
+    pub app_channel_members: std::collections::HashMap<String, bool>,
     /// Fechar a janela esconde na bandeja em vez de encerrar.
     #[serde(default = "enabled")]
     pub close_to_tray: bool,
@@ -419,6 +421,7 @@ impl Default for Settings {
             ui_scale: default_ui_scale(),
             translucency: true,
             show_members: true,
+            app_channel_members: Default::default(),
             close_to_tray: true,
             notifications: true,
             reply_notifications: true,
@@ -1242,6 +1245,7 @@ impl PapoApp {
         self.window_hidden = true;
         self.focused = false;
         self.notification.set_foreground(false);
+        self.ui.channel_view.hide();
         self.ui.webembed.suspend_active();
         self.flush_all_drafts();
         self.hidden_viewports = ctx.input(|input| {
@@ -1753,6 +1757,9 @@ impl PapoApp {
         // Unlike the channel sidebar, the DM surface belongs to the window.
         let was_inbox = self.ui.dm_surface;
         self.persist_active_drafts(true);
+        self.ui.channel_view.destroy();
+        self.ui.app_pane = false;
+        self.sheet.plugins=Default::default();
         if self.settings.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
             self.ui.webembed.destroy_active();
         }
@@ -2524,6 +2531,7 @@ impl PapoApp {
                 let position = ws.runtime.store.channels.len() as i32;
                 let id = format!("demo-channel-{position}");
                 ws.runtime.store.channels.push(Channel {
+                    app: None,
                     id: id.clone(),
                     name,
                     kind,
@@ -2870,6 +2878,24 @@ impl PapoApp {
                 for effect in effects {
                     let ws = &mut self.workspaces[index];
                     match effect {
+                        RuntimeEffect::Plugin{ticket,action,result}=>{if index==self.active { if action.starts_with("app:") { self.ui.apps.receive(ticket,result,&mut ws.runtime.store,&mut self.ui.channel_view,&mut self.ui.webembed,&ws.runtime.url); } else {self.sheet.plugins.receive(ticket,&action,result);} }},
+                        RuntimeEffect::AppInlineInvalidated{message_id}=>{
+                            if index==self.active {self.ui.apps.invalidate_message(&message_id);}
+                            if index==self.active && self.ui.channel_view.selected_id().is_some_and(|id|id.starts_with(&format!("inline-app:{message_id}:"))) {self.ui.channel_view.destroy();}
+                        }
+                        RuntimeEffect::AppInstallationInvalidated{installation_id}=>{
+                            if index==self.active { self.ui.apps.invalidate(&installation_id); }
+                            if index==self.active && self.ui.channel_view.installation_id()==Some(installation_id.as_str()) {self.ui.apps.close(); self.ui.channel_view.destroy();}
+                        }
+                        RuntimeEffect::AppSurfaceInvalidated { channel_id } => {
+                            if index == self.active
+                                && self.ui.channel_view.owns(&ws.runtime.url, &channel_id)
+                            {
+                                self.ui.apps.close(); self.ui.channel_view.destroy();
+                                self.ui.app_pane = false;
+                            }
+                        }
+
                         RuntimeEffect::ServerUnlocked => {
                             // O formulário continua sendo apresentação; o
                             // runtime só avisa que a senha do servidor abriu.
@@ -3056,6 +3082,7 @@ impl PapoApp {
             return;
         }
         ctx.request_repaint();
+        if self.ui.apps.overlay.is_some() { self.ui.apps.close(); self.ui.channel_view.destroy(); return; }
         if egui::Popup::is_any_open(ctx) {
             egui::Popup::close_all(ctx);
             return;
@@ -3483,8 +3510,15 @@ impl PapoApp {
     fn handle(&mut self, ctx: &egui::Context, command: MenuCommand) {
         match command {
             MenuCommand::ToggleMembers => {
-                self.settings.show_members = !self.settings.show_members;
-                self.ui.show_members = self.settings.show_members;
+                let store = &self.workspaces[self.active].runtime.store;
+                if store.channel(&store.selected_channel).is_some_and(|c|c.kind == crate::state::ChannelKind::App) {
+                    let key = format!("{}:{}",self.workspaces[self.active].runtime.url,store.selected_channel);
+                    self.settings.app_channel_members.insert(key,!self.ui.show_members);
+                    self.ui.show_members = !self.ui.show_members;
+                } else {
+                    self.settings.show_members = !self.settings.show_members;
+                    self.ui.show_members = self.settings.show_members;
+                }
             }
             MenuCommand::ToggleTranslucency => {
                 self.settings.translucency = !self.settings.translucency;
@@ -3919,6 +3953,7 @@ impl PapoApp {
 
         for action in actions {
             match action {
+                SettingsAction::Plugin(command)=>self.workspaces[self.active].runtime.net.send(command),
                 SettingsAction::Menu(command) => self.ui.pending.push(command),
                 SettingsAction::RestartRichPresence => self.rich_presence.restart(),
                 SettingsAction::PickActivityImage => {
@@ -4424,7 +4459,12 @@ impl eframe::App for PapoApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         #[cfg(any(target_os = "linux", target_os = "windows"))]
-        if self.window_hidden { return; }
+        if self.window_hidden {
+            return;
+        }
+        if self.ui.apps.overlay.is_some() && shell::take_escape(&ctx) { self.ui.apps.close(); self.ui.channel_view.destroy(); }
+        self.ui.app_input_focused=false;
+        self.ui.channel_view.begin_frame(frame, &ctx);
         self.ui.webembed.set_context(&ctx);
         self.ui.webembed.begin_frame();
         self.ui.webembed.pump_events(&ctx);
@@ -4485,6 +4525,7 @@ impl eframe::App for PapoApp {
                 // justamente atrás que o sistema quer que a gente largue o
                 // que é reconstruível. A política é a mesma (Moderate, que
                 // preserva quem está tocando), só aplicada antes da suspensão.
+                self.ui.channel_view.hide();
                 self.ui.webembed.suspend_active();
                 self.trim_all_media(crate::media::TrimLevel::Moderate);
                 if let Some(storage) = frame.storage_mut() {
@@ -4562,6 +4603,7 @@ impl eframe::App for PapoApp {
             );
 
             if crate::platform::android_call::is_in_pip() {
+                self.ui.channel_view.hide();
                 self.ui.webembed.suspend_active();
                 ctx.request_repaint();
                 if let Some(index) = call_index {
@@ -4660,6 +4702,12 @@ impl eframe::App for PapoApp {
                 self.ui.webembed_blocked = self.sheet.open.is_some()
                     || self.ui.profile.is_some()
                     || self.ui.server_card.is_some();
+                self.ui.app_channel_members.clone_from(&self.settings.app_channel_members);
+                let selected = &self.workspaces[active].runtime.store.selected_channel;
+                self.ui.show_members = if self.workspaces[active].runtime.store.channel(selected).is_some_and(|c|c.kind == crate::state::ChannelKind::App) {
+                    self.settings.app_channel_members.get(&format!("{}:{}",self.workspaces[active].runtime.url,selected)).copied().unwrap_or(false)
+                } else { self.settings.show_members };
+                self.ui.apps.sender = Some(self.workspaces[active].runtime.net.sender());
                 self.ui.server_url = self.workspaces[active].runtime.url.clone();
                 self.ui.server_count = self.workspaces.len();
                 self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
@@ -4738,20 +4786,29 @@ impl eframe::App for PapoApp {
             self.crop.is_some()
                 || self.sheet.open.is_some()
                 || self.ui.profile.is_some()
-                || self.ui.server_card.is_some(),
+                || self.ui.server_card.is_some()
+                || self.ui.apps.overlay.is_some(),
         );
         #[cfg(any(target_os = "windows", target_os = "android"))]
         self.update_prompt(&ctx);
         #[cfg(not(target_os = "android"))]
         {
             let store = &self.workspaces[self.active].runtime.store;
-            let shortcuts = shortcut_commands(&ctx, store);
-            self.ui.pending.extend(shortcuts);
+            if !self.ui.app_input_focused {
+                let shortcuts = shortcut_commands(&ctx, store);
+                self.ui.pending.extend(shortcuts);
+            }
         }
 
         let pending = std::mem::take(&mut self.ui.pending);
         for command in pending {
             self.handle(&ctx, command);
+        }
+        let store = &self.workspaces[self.active].runtime.store;
+        if self.ui.compact && self.ui.last_channel == store.selected_channel && store.channel(&store.selected_channel).is_some_and(|c|c.kind == crate::state::ChannelKind::App) {
+            let shown = self.ui.mobile_surface == shell::MobileSurface::People;
+            self.settings.app_channel_members.insert(format!("{}:{}",self.workspaces[self.active].runtime.url,store.selected_channel),shown);
+            self.ui.show_members = shown;
         }
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         self.sync_desktop_badges();
@@ -4761,6 +4818,7 @@ impl eframe::App for PapoApp {
 
         // O browser é uma superfície nativa: qualquer frame que não declare
         // um dono/retângulo válido precisa suspendê-lo ou destruí-lo.
+        self.ui.channel_view.end_frame();
         self.ui.webembed.end_frame(
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
@@ -4777,6 +4835,7 @@ impl eframe::App for PapoApp {
     #[cfg(target_os = "android")]
     fn on_exit(&mut self, gl: Option<&eframe::glow::Context>) {
         self.flush_all_drafts();
+        self.ui.channel_view.destroy();
         self.ui.webembed.destroy_active();
         if let (Some(gl), Some(glass)) = (gl, &self.ui.glass)
             && let Ok(glass) = glass.lock()
@@ -4788,6 +4847,7 @@ impl eframe::App for PapoApp {
     #[cfg(not(target_os = "android"))]
     fn on_exit(&mut self) {
         self.flush_all_drafts();
+        self.ui.channel_view.destroy();
         self.ui.webembed.destroy_active();
     }
 

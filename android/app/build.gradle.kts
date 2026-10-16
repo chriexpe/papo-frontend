@@ -114,6 +114,9 @@ android {
 
     buildTypes {
         debug {
+            // Optional separate install for device smoke; preserves the user's app data.
+            applicationIdSuffix = providers.gradleProperty("papoDebugSuffix").orNull
+            if (applicationIdSuffix != null) resValue("string", "app_name", "Papo surfaces test")
             isJniDebuggable = true
         }
         release {
@@ -146,6 +149,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.webkit:webkit:1.13.0")
     implementation(libs.games.activity)
     implementation(libs.appcompat)
     implementation(libs.work.runtime)

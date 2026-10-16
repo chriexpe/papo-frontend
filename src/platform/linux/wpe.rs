@@ -1,7 +1,7 @@
 //! Toolkit-free WPE WebKit bridge used by Linux WebEmbed.
 //!
 //! This is intentionally a narrow consumer of the ABI shipped by
-//! \`waterui-browser-wpe\` (ABI v3, MIT/Apache-2.0). Papo does not pull in
+//! \`waterui-browser-wpe\` (ABI v5, MIT/Apache-2.0). Papo does not pull in
 //! WaterUI/wgpu and does not link GTK/WebKit at build time.
 //!
 //! Runtime layout:
@@ -18,7 +18,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 5;
 pub const RUNTIME_ENV: &str = "PAPO_WPE_RUNTIME";
 
 #[repr(C)]
@@ -59,8 +59,7 @@ type DestroyNotify = unsafe extern "C" fn(*mut c_void);
 type EventCallback =
     unsafe extern "C" fn(*mut c_void, c_uint, *const c_char, *const c_char, c_double);
 type FrameCallback = unsafe extern "C" fn(*mut c_void, *const RawFrame);
-type MessageCallback =
-    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> RawBytes;
+type MessageCallback = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char) -> RawBytes;
 
 struct Api {
     abi_version: unsafe extern "C" fn() -> c_uint,
@@ -77,8 +76,19 @@ struct Api {
         DestroyNotify,
         *mut *mut c_char,
     ) -> *mut WaterWpePage,
+    page_new_isolated: unsafe extern "C" fn(
+        *mut WaterWpeRuntime,
+        EventCallback,
+        FrameCallback,
+        MessageCallback,
+        *mut c_void,
+        DestroyNotify,
+        *mut *mut c_char,
+        bool,
+    ) -> *mut WaterWpePage,
     page_free: unsafe extern "C" fn(*mut WaterWpePage),
     page_load_uri: unsafe extern "C" fn(*mut WaterWpePage, *const c_char),
+    page_key: unsafe extern "C" fn(*mut WaterWpePage, bool, c_uint, c_uint, c_uint),
     page_stop: unsafe extern "C" fn(*mut WaterWpePage),
     page_resize: unsafe extern "C" fn(*mut WaterWpePage, c_uint, c_uint, c_double),
     page_set_focus: unsafe extern "C" fn(*mut WaterWpePage, bool),
@@ -111,11 +121,8 @@ struct Api {
 
 impl Api {
     unsafe fn load(library: &libloading::Library) -> Result<Self, String> {
-        unsafe fn symbol<T: Copy>(
-            library: &libloading::Library,
-            name: &[u8],
-        ) -> Result<T, String> {
-            // SAFETY: signatures below are the pinned ABI-v3 contract and the
+        unsafe fn symbol<T: Copy>(library: &libloading::Library, name: &[u8]) -> Result<T, String> {
+            // SAFETY: signatures below are the pinned ABI-v5 contract and the
             // Library is retained for as long as these pointers exist.
             unsafe { library.get::<T>(name) }
                 .map(|value| *value)
@@ -131,9 +138,11 @@ impl Api {
                 runtime_iteration: symbol(library, b"water_wpe_runtime_iteration\0")?,
                 string_free: symbol(library, b"water_wpe_string_free\0")?,
                 page_new: symbol(library, b"water_wpe_page_new\0")?,
+                page_new_isolated: symbol(library, b"water_wpe_page_new_isolated\0")?,
                 page_free: symbol(library, b"water_wpe_page_free\0")?,
                 page_load_uri: symbol(library, b"water_wpe_page_load_uri\0")?,
                 page_stop: symbol(library, b"water_wpe_page_stop\0")?,
+                page_key: symbol(library, b"water_wpe_page_key\0")?,
                 page_resize: symbol(library, b"water_wpe_page_resize\0")?,
                 page_set_focus: symbol(library, b"water_wpe_page_set_focus\0")?,
                 page_is_playing_audio: symbol(library, b"water_wpe_page_is_playing_audio\0")?,
@@ -261,6 +270,7 @@ impl Runtime {
 pub enum PageEvent {
     NavigationStarted(String),
     Loaded,
+    External(String),
     LoadFailed(String),
 }
 
@@ -292,6 +302,12 @@ pub struct Page {
 
 impl Page {
     pub fn new(runtime: Runtime) -> Result<Self, String> {
+        Self::create(runtime, None)
+    }
+    pub fn isolated(runtime: Runtime, bundled: bool) -> Result<Self, String> {
+        Self::create(runtime, Some(bundled))
+    }
+    fn create(runtime: Runtime, isolated: Option<bool>) -> Result<Self, String> {
         let state = Rc::new(PageState {
             api: Arc::clone(&runtime.inner.api),
             events: RefCell::new(Vec::new()),
@@ -304,15 +320,28 @@ impl Page {
         // SAFETY: callbacks and context stay valid until destroy_state is called
         // by page_free.
         let raw = unsafe {
-            (runtime.inner.api.api.page_new)(
-                runtime.inner.raw.as_ptr(),
-                event_callback,
-                frame_callback,
-                message_callback,
-                context.cast(),
-                destroy_state,
-                &raw mut error,
-            )
+            if let Some(bundled) = isolated {
+                (runtime.inner.api.api.page_new_isolated)(
+                    runtime.inner.raw.as_ptr(),
+                    event_callback,
+                    frame_callback,
+                    message_callback,
+                    context.cast(),
+                    destroy_state,
+                    &raw mut error,
+                    bundled,
+                )
+            } else {
+                (runtime.inner.api.api.page_new)(
+                    runtime.inner.raw.as_ptr(),
+                    event_callback,
+                    frame_callback,
+                    message_callback,
+                    context.cast(),
+                    destroy_state,
+                    &raw mut error,
+                )
+            }
         };
         let Some(raw) = NonNull::new(raw) else {
             // page_new owns/destroys context on failure according to ABI.
@@ -337,6 +366,18 @@ impl Page {
         Ok(())
     }
 
+    pub fn key(&self, pressed: bool, keyval: u32, keycode: u32, modifiers: u32) {
+        // SAFETY: live page, native keyboard event with a Unicode/XKB keysym.
+        unsafe {
+            (self.inner.state.api.api.page_key)(
+                self.inner.raw.as_ptr(),
+                pressed,
+                keyval,
+                keycode,
+                modifiers,
+            )
+        }
+    }
     pub fn stop(&self) {
         // SAFETY: live page.
         unsafe { (self.inner.state.api.api.page_stop)(self.inner.raw.as_ptr()) };
@@ -369,14 +410,7 @@ impl Page {
         unsafe { (self.inner.state.api.api.page_is_playing_audio)(self.inner.raw.as_ptr()) }
     }
 
-    pub fn pointer_button(
-        &self,
-        pressed: bool,
-        x: f64,
-        y: f64,
-        modifiers: u32,
-        time_ms: u32,
-    ) {
+    pub fn pointer_button(&self, pressed: bool, x: f64, y: f64, modifiers: u32, time_ms: u32) {
         // WPEPlatform button 1 is primary/left.
         // SAFETY: live page.
         unsafe {
@@ -392,15 +426,7 @@ impl Page {
         };
     }
 
-    pub fn pointer_move(
-        &self,
-        x: f64,
-        y: f64,
-        dx: f64,
-        dy: f64,
-        modifiers: u32,
-        time_ms: u32,
-    ) {
+    pub fn pointer_move(&self, x: f64, y: f64, dx: f64, dy: f64, modifiers: u32, time_ms: u32) {
         // SAFETY: live page.
         unsafe {
             (self.inner.state.api.api.page_pointer_move)(
@@ -415,15 +441,7 @@ impl Page {
         };
     }
 
-    pub fn scroll(
-        &self,
-        x: f64,
-        y: f64,
-        dx: f64,
-        dy: f64,
-        modifiers: u32,
-        time_ms: u32,
-    ) {
+    pub fn scroll(&self, x: f64, y: f64, dx: f64, dy: f64, modifiers: u32, time_ms: u32) {
         // SAFETY: live page.
         unsafe {
             (self.inner.state.api.api.page_scroll)(
@@ -518,6 +536,7 @@ unsafe extern "C" fn event_callback(
     let event = match kind {
         1 => first.map(PageEvent::NavigationStarted),
         3 => Some(PageEvent::Loaded),
+        7 => first.map(PageEvent::External),
         5 | 6 => Some(PageEvent::LoadFailed(
             first.unwrap_or_else(|| "falha ao carregar WebEmbed".to_owned()),
         )),
@@ -541,8 +560,8 @@ unsafe extern "C" fn frame_callback(context: *mut c_void, frame: *const RawFrame
 
     // SAFETY: the bridge transfers these duplicated descriptors to the consumer.
     let plane = unsafe { OwnedFd::from_raw_fd(frame.fds[0]) };
-    let rendering_fence =
-        (frame.rendering_fence_fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(frame.rendering_fence_fd) });
+    let rendering_fence = (frame.rendering_fence_fd >= 0)
+        .then(|| unsafe { OwnedFd::from_raw_fd(frame.rendering_fence_fd) });
 
     state.frame.replace(Some(Frame {
         api: Arc::clone(&state.api),
@@ -612,7 +631,10 @@ mod tests {
     #[test]
     fn runtime_path_defaults_next_to_executable() {
         let paths = RuntimePaths::discover().expect("current executable should resolve");
-        assert!(paths.root().ends_with("waterui-browser/wpe") || std::env::var_os(RUNTIME_ENV).is_some());
+        assert!(
+            paths.root().ends_with("waterui-browser/wpe")
+                || std::env::var_os(RUNTIME_ENV).is_some()
+        );
     }
 
     #[test]

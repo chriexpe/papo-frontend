@@ -133,19 +133,19 @@ public class PapoActivity extends GameActivity {
     private boolean rustWantsBack = false;
 
     /**
-     * O voltar só é nosso enquanto há algo para fechar. Com o callback
-     * desligado o sistema faz o de sempre, inclusive a animação preditiva do
-     * Android 16 — que, para apps com targetSdk 36+, nem chama mais o
-     * onBackPressed.
+     * Fecha primeiro a superfície/modal do Rust. Na raiz, coloca a tarefa
+     * em segundo plano, preservando a Activity nativa e o event loop do Rust
+     * para a retomada (inclusive no Android 16 com voltar preditivo).
      */
-    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(false) {
+    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(true) {
         @Override
         public void handleOnBackPressed() {
             if (webEmbedFullscreenView != null) {
                 hideWebEmbedFullscreen();
                 return;
             }
-            nativeBackPressed();
+            if (rustWantsBack) nativeBackPressed();
+            else moveTaskToBack(true); // Root Back backgrounds the task; preserve the Rust Activity.
         }
     };
 
@@ -158,7 +158,7 @@ public class PapoActivity extends GameActivity {
     }
 
     private void refreshBackCallback() {
-        backCallback.setEnabled(rustWantsBack || webEmbedFullscreenView != null);
+        backCallback.setEnabled(true);
     }
 
     /** Pressão de memória do sistema. Em `src/platform/memory_pressure.rs`. */
@@ -191,6 +191,7 @@ public class PapoActivity extends GameActivity {
     /** Eventos estreitos do browser embed. Não existe ponte JS para o Papo. */
     private static native void nativeWebEmbedExternal(String id, String url);
     private static native void nativeWebEmbedFailed(String id);
+    private static native void nativeAppSurfaceEvent(String id, int kind, String url);
     private static native void nativeWebEmbedScroll(String id, float deltaYPx);
 
     private static final String EXTRA_MESSAGE_SERVER = MessageNotifications.EXTRA_SERVER;
@@ -221,9 +222,11 @@ public class PapoActivity extends GameActivity {
 
     // Browser rico: uma única superfície viva. O Rust decide identidade,
     // geometria, floating/stop e ciclo de vida; a Activity só hospeda a View.
+    private AppSurfaceClient appSurfaceClient;
+    private String appSurfacePendingUrl;
     private FrameLayout webEmbedLayer;
-    private FrameLayout webEmbedClip;
-    private TimelineWebView webEmbedView;
+    private EmbedClip webEmbedClip;
+    private WebView webEmbedView;
     private String webEmbedId;
     private String webEmbedInitialUrl;
     private FrameLayout webEmbedFullscreenLayer;
@@ -341,6 +344,26 @@ public class PapoActivity extends GameActivity {
     }
 
 
+    /** Cut egui chrome out of both native drawing and native hit testing. */
+    private static final class EmbedClip extends FrameLayout {
+        int[] holes = new int[0];
+        EmbedClip(Context context) { super(context); }
+        void setHoles(int[] rects) { holes = rects == null ? new int[0] : rects.clone(); invalidate(); }
+        @Override protected void dispatchDraw(Canvas canvas) {
+            int saved = canvas.save();
+            for (int i = 0; i + 3 < holes.length; i += 4) canvas.clipOutRect(holes[i], holes[i+1], holes[i+2], holes[i+3]);
+            super.dispatchDraw(canvas);
+            canvas.restoreToCount(saved);
+        }
+        @Override public boolean dispatchTouchEvent(MotionEvent event) {
+            float x = event.getX(), y = event.getY();
+            for (int i = 0; i + 3 < holes.length; i += 4) {
+                if (x >= holes[i] && x < holes[i+2] && y >= holes[i+1] && y < holes[i+3]) return false;
+            }
+            return super.dispatchTouchEvent(event);
+        }
+    }
+
     private final class TimelineWebView extends WebView {
         private final int touchSlop;
         private float downX;
@@ -414,7 +437,7 @@ public class PapoActivity extends GameActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
-        webEmbedClip = new FrameLayout(this);
+        webEmbedClip = new EmbedClip(this);
         webEmbedClip.setClipChildren(true);
         webEmbedClip.setClipToPadding(true);
         webEmbedClip.setClickable(false);
@@ -444,7 +467,13 @@ public class PapoActivity extends GameActivity {
                 // Redirects/player navigation stay in the isolated browser.
                 // A main-frame navigation caused by an actual user gesture is
                 // a request to leave the player and belongs in the system browser.
-                if (request.isForMainFrame() && request.hasGesture()) {
+                Uri locked = Uri.parse(webEmbedInitialUrl);
+                int port = uri.getPort() == -1 ? 443 : uri.getPort();
+                int lockedPort = locked.getPort() == -1 ? 443 : locked.getPort();
+                boolean sameOrigin = uri.getScheme().equalsIgnoreCase(locked.getScheme())
+                        && uri.getHost() != null && uri.getHost().equalsIgnoreCase(locked.getHost())
+                        && port == lockedPort;
+                if (request.isForMainFrame() && !sameOrigin) {
                     nativeWebEmbedExternal(id, url);
                     return true;
                 }
@@ -504,7 +533,7 @@ public class PapoActivity extends GameActivity {
         };
     }
 
-    private void configureWebEmbed(TimelineWebView view, String id) {
+    private void configureWebEmbed(WebView view, String id) {
         final WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -544,6 +573,7 @@ public class PapoActivity extends GameActivity {
             }
 
             webEmbedId = id;
+            webEmbedClip.setHoles(null);
             webEmbedInitialUrl = url;
             webEmbedView = new TimelineWebView(this);
             configureWebEmbed(webEmbedView, id);
@@ -552,6 +582,37 @@ public class PapoActivity extends GameActivity {
             headers.put("Referer", webEmbedReferrer());
             webEmbedView.loadUrl(url, headers);
             webEmbedLayer.setVisibility(View.GONE);
+        });
+    }
+
+    public void createAppSurface(String id, String url, boolean bundled) {
+        runOnUiThread(() -> {
+            ensureWebEmbedLayer();
+            destroyWebEmbedNow();
+            webEmbedId = id;
+            webEmbedClip.setHoles(null);
+            webEmbedInitialUrl = url;
+            try {
+                webEmbedView = new WebView(this);
+                appSurfaceClient = AppSurfaceClient.attach(webEmbedView, url, bundled,
+                    (kind, external) -> nativeAppSurfaceEvent(id, kind, external));
+                webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
+                // Delay navigation until the real viewport has been laid out.
+                // A 1x1/zero-height initial viewport breaks WebGL camera math.
+                appSurfacePendingUrl = url;
+                webEmbedView.addOnLayoutChangeListener((view, l, t, r, b, ol, ot, or, ob) -> {
+                    if (view == webEmbedView && appSurfacePendingUrl != null && r - l > 1 && b - t > 1) {
+                        String entry = appSurfacePendingUrl;
+                        appSurfacePendingUrl = null;
+                        webEmbedView.loadUrl(entry); // no native credentials or Referer
+                    }
+                });
+                webEmbedLayer.setVisibility(View.GONE);
+            } catch (RuntimeException error) {
+                Log.w("PapoAppSurface", "Isolated WebView unavailable", error);
+                destroyWebEmbedNow();
+                nativeAppSurfaceEvent(id, 2, "");
+            }
         });
     }
 
@@ -565,6 +626,53 @@ public class PapoActivity extends GameActivity {
             int clipTop,
             int clipWidth,
             int clipHeight) {
+        applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, true);
+    }
+
+    public void layoutAppSurface(
+            String id,
+            int left,
+            int top,
+            int width,
+            int height,
+            int clipLeft,
+            int clipTop,
+            int clipWidth,
+            int clipHeight, int[] holes) {
+        runOnUiThread(() -> {
+            if (webEmbedId == null || !webEmbedId.equals(id)) return;
+            webEmbedClip.setHoles(holes);
+            applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, false);
+        });
+    }
+
+    public void presentAppSurface(
+            String id,
+            int left,
+            int top,
+            int width,
+            int height,
+            int clipLeft,
+            int clipTop,
+            int clipWidth,
+            int clipHeight, int[] holes) {
+        runOnUiThread(() -> {
+            if (webEmbedId == null || !webEmbedId.equals(id)) return;
+            webEmbedClip.setHoles(holes);
+            applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, true);
+        });
+    }
+
+    private void applyWebEmbedGeometry(
+            String id,
+            int left,
+            int top,
+            int width,
+            int height,
+            int clipLeft,
+            int clipTop,
+            int clipWidth,
+            int clipHeight, boolean show) {
         runOnUiThread(() -> {
             if (webEmbedView == null || webEmbedId == null || !webEmbedId.equals(id)) {
                 return;
@@ -586,8 +694,8 @@ public class PapoActivity extends GameActivity {
             viewParams.topMargin = top - clipTop;
             webEmbedView.setLayoutParams(viewParams);
 
-            webEmbedView.onResume();
-            webEmbedView.setVisibility(View.VISIBLE);
+            if (webEmbedLayer.getVisibility() != View.VISIBLE) webEmbedView.onResume();
+            webEmbedView.setVisibility(show ? View.VISIBLE : View.INVISIBLE);
             webEmbedClip.setVisibility(View.VISIBLE);
             webEmbedLayer.setVisibility(View.VISIBLE);
             webEmbedLayer.bringToFront();
@@ -638,6 +746,7 @@ public class PapoActivity extends GameActivity {
 
     private void destroyWebEmbedNow() {
         hideWebEmbedFullscreen();
+        appSurfacePendingUrl = null;
         if (webEmbedView != null) {
             webEmbedView.stopLoading();
             webEmbedView.onPause();
@@ -645,6 +754,11 @@ public class PapoActivity extends GameActivity {
                 webEmbedClip.removeView(webEmbedView);
             }
             webEmbedView.destroy();
+        }
+        if (appSurfaceClient != null) {
+            try { appSurfaceClient.destroy(); }
+            catch (RuntimeException error) { Log.w("PapoAppSurface", "Profile cleanup deferred to next create", error); }
+            appSurfaceClient = null;
         }
         webEmbedView = null;
         webEmbedId = null;

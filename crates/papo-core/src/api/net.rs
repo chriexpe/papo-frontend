@@ -229,6 +229,7 @@ impl NetworkGate {
 
 #[derive(Debug, Clone)]
 pub enum Command {
+    Plugin { ticket:u64, id:String, action:String, body:serde_json::Value },
     Login { username: String, password: String },
     Register { username: String, password: String },
     RecoverPassword { token: String, password: String },
@@ -476,6 +477,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Update {
+    Plugin { ticket:u64, action:String, result:Result<serde_json::Value,String> },
     /// Sessão válida (`Some`) ou encerrada (`None`).
     Session(Option<Box<Whoami>>),
     AuthFailed(String),
@@ -2135,11 +2137,35 @@ async fn worker(
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
                 hooks.event.emit(&event);
+                if matches!(&event, Event::ChannelUpdated { .. } | Event::AppInvalidated { .. }) && session.is_authenticated() {
+                    let user_id = me.lock().ok().and_then(|slot| slot.clone());
+                    // Uma resposta anterior à revogação não pode restaurar superfícies.
+                    // Invalida também progressos/completions já enfileirados desse run.
+                    abort_reconciles(
+                        reconcile_scheduler.cancel_key(&ReconcileKey::ServerMetadata),
+                        &mut reconcile_aborts,
+                    );
+                    metadata_live_events.clear();
+                    let result = reconcile_scheduler.submit(
+                        ReconcileRequest {
+                            owner: TaskOwner {
+                                generation: runtime_generation,
+                                session_epoch,
+                            },
+                            priority: ReconcilePriority::ActiveServer,
+                            kind: ReconcileKind::ServerMetadata { user_id },
+                        },
+                        std::time::Instant::now(),
+                    );
+                    abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                    diagnostics_dirty = true;
+                }
 
                 if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
                     && matches!(
                         &event,
-                        Event::ChannelCreated { .. }
+                        Event::AppInvalidated { .. }
+                            | Event::ChannelCreated { .. }
                             | Event::ChannelUpdated { .. }
                             | Event::ChannelDeleted { .. }
                             | Event::DirectMessageUpdated(_)
@@ -2189,6 +2215,8 @@ async fn worker(
                         .cloned()
                     {
                         hooks.notification.emit(&Notification {
+                            kind: String::new(),
+                            payload: None,
                             id: id.clone(),
                             message_id: message_id.clone(),
                             channel_id: Some(channel_id),
@@ -3060,6 +3088,13 @@ async fn handle(
     command: Command,
 ) {
     match command {
+        Command::Plugin{ticket,id,action,body}=>{
+            let result = match tokio::time::timeout(std::time::Duration::from_secs(10), api.plugin_action(&id,&action,body)).await {
+                Ok(result) => result.map_err(|e| e.to_string()),
+                Err(_) => Err("app-timeout".into()),
+            };
+            publish(updates,wake,Update::Plugin{ticket,action,result});
+        }
         Command::Login { username, password } => match api.login(&username, &password).await {
             Ok(login) => {
                 store_optional_secret(
@@ -4097,10 +4132,12 @@ mod network_hint_tests {
 
     fn server_message(content: &str) -> Message {
         Message {
+            components: Default::default(),
             id: "server-message".to_owned(),
             channel_id: "general".to_owned(),
             author_id: "me".to_owned(),
             external_author: None,
+            app_installation_id: None,
             content: Some(content.to_owned()),
             created_at: chrono::Utc::now(),
             edited_at: None,

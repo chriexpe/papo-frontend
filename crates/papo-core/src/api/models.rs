@@ -203,6 +203,8 @@ pub struct CreateServerRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Channel {
+    #[serde(default)]
+    pub app: Option<AppSurface>,
     pub id: String,
     pub name: String,
     #[serde(rename = "type")]
@@ -221,6 +223,29 @@ pub struct Channel {
     pub last_read_message: Option<String>,
     pub last_message: Option<ChannelLastMessage>,
 }
+
+/// Superfície fornecida por um payload autorizado do backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppSurface {
+    #[serde(default)] pub user_actions: Vec<AppUserAction>,
+    pub app_installation_id: String,
+    pub surface_id: String,
+    #[serde(default)] pub source: String,
+    #[serde(default)] pub entry: String,
+    #[serde(default)] pub avatar_url: String,
+    #[serde(default)] pub available: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppUserAction { pub id: String, pub label: String, #[serde(default)] pub icon: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppButton { pub id: String, pub label: String, #[serde(default)] pub style: String, #[serde(default)] pub disabled: bool, #[serde(default)] pub opens: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppFrameSize { pub width: i32, pub height: i32 }
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppFrameReference { pub app_installation_id: String, pub id: String }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AppInvite { pub id: String, pub app_installation_id: String, pub inviter_id: String, pub channel_id: String, #[serde(default)] pub surface_id: String, pub text: String, pub status: String, pub expires_at: DateTime<Utc> }
 
 fn default_channel_notification_setting() -> String {
     "only_mentions".to_owned()
@@ -547,6 +572,8 @@ pub struct RolePermissions {
     #[serde(default)]
     pub manage_server: bool,
     #[serde(default)]
+    pub manage_apps: bool,
+    #[serde(default)]
     pub manage_channels: bool,
     #[serde(default)]
     pub manage_roles: bool,
@@ -698,6 +725,7 @@ pub struct ExternalAuthor {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Message {
+    #[serde(default)] pub components: Vec<Vec<AppButton>>,
     pub id: String,
     pub channel_id: String,
     // Webhook messages have no Papo user author; retain an empty identifier
@@ -706,6 +734,8 @@ pub struct Message {
     pub author_id: String,
     #[serde(default)]
     pub external_author: Option<ExternalAuthor>,
+    #[serde(default)]
+    pub app_installation_id: Option<String>,
     pub content: Option<String>,
     pub created_at: DateTime<Utc>,
     pub edited_at: Option<DateTime<Utc>>,
@@ -763,6 +793,15 @@ impl Attachment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
+    #[serde(default)] pub surface: Option<AppFrameReference>,
+    #[serde(default)] pub entry: String,
+    #[serde(default)] pub size: Option<AppFrameSize>,
+    #[serde(default)] pub load: String,
+    #[serde(default)] pub display: String,
+    #[serde(default)] pub poster: String,
+    #[serde(default)] pub app: Option<AppSurface>,
+    #[serde(default)] pub frame_width: Option<i32>,
+    #[serde(default)] pub frame_height: Option<i32>,
     pub id: String,
     /// `link` ou `custom`.
     #[serde(default)]
@@ -1056,6 +1095,8 @@ pub struct EmojiList {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Notification {
+    #[serde(default)] pub kind: String,
+    #[serde(default)] pub payload: Option<AppInvite>,
     pub id: String,
     pub message_id: Option<String>,
     pub channel_id: Option<String>,
@@ -1213,6 +1254,31 @@ impl Kind {
 mod tests {
     use super::*;
 
+    #[test]
+    fn message_accepts_optional_app_installation_id() {
+        let mut payload = serde_json::json!({
+            "id": "message", "channel_id": "channel", "author_id": null,
+            "created_at": "2026-10-15T00:00:00Z",
+            "external_author": {"source": "app", "id": "app", "name": "Bot"}
+        });
+        for value in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("installation")),
+        ] {
+            payload.as_object_mut().unwrap().remove("app_installation_id");
+            if let Some(value) = value {
+                payload["app_installation_id"] = value;
+            }
+            let message: Message = serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(
+                message.app_installation_id.as_deref(),
+                payload["app_installation_id"].as_str()
+            );
+            assert_eq!(message.external_author.unwrap().name, "Bot");
+        }
+    }
+
     /// As sete permissões vão todas no corpo, inclusive as falsas: o
     /// `RolePermissions` do backend não tem `omitempty`, e mandar só as
     /// verdadeiras deixaria as outras no que já estavam.
@@ -1230,7 +1296,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             body,
-            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
+            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_apps":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
         );
     }
 

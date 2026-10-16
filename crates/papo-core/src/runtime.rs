@@ -47,6 +47,12 @@ pub enum CallRuntimeEffect {
 
 #[derive(Clone, Debug)]
 pub enum RuntimeEffect {
+    Plugin {ticket:u64,action:String,result:Result<serde_json::Value,String>},
+    AppInlineInvalidated {message_id:String},
+    AppInstallationInvalidated { installation_id:String },
+    AppSurfaceInvalidated {
+        channel_id: String,
+    },
     ServerUnlocked,
     ServerLabelChanged(String),
     OutgoingRejected {
@@ -521,6 +527,30 @@ impl ServerRuntime {
     fn presentation_effects(&self, update: &Update) -> Vec<RuntimeEffect> {
         let mut effects = Vec::new();
         match update {
+            Update::Plugin{ticket,action,result}=>effects.push(RuntimeEffect::Plugin{ticket:*ticket,action:action.clone(),result:result.clone()}),
+            Update::Event(event) if matches!(&**event, Event::AppInvalidated { .. }) => {
+                if let Event::AppInvalidated { installation_id } = &**event {
+                    effects.push(RuntimeEffect::AppInstallationInvalidated { installation_id: installation_id.clone() });
+                }
+            }
+            Update::Event(event) if matches!(&**event,Event::MessageEmbedsUpdated{..})=>{
+                if let Event::MessageEmbedsUpdated{message_id,..}=&**event {effects.push(RuntimeEffect::AppInlineInvalidated{message_id:message_id.clone()});}
+            }
+            Update::Event(event)
+                if matches!(
+                    &**event,
+                    Event::ChannelUpdated { .. } | Event::ChannelDeleted { .. }
+                ) =>
+            {
+                if let Event::ChannelUpdated { id, .. } | Event::ChannelDeleted { id } = &**event {
+                    if let Some(installation_id)=self.store.channel(id).and_then(|c|c.app.as_ref()).map(|a|a.app_installation_id.clone()) {
+                        effects.push(RuntimeEffect::AppInstallationInvalidated { installation_id });
+                    }
+                    effects.push(RuntimeEffect::AppSurfaceInvalidated {
+                        channel_id: id.clone(),
+                    });
+                }
+            }
             Update::ServerUnlocked => effects.push(RuntimeEffect::ServerUnlocked),
             Update::PushDevice { token, registered } => {
                 effects.push(RuntimeEffect::PushDevice {
@@ -815,6 +845,8 @@ mod tests {
 
         runtime.process_update(Update::Session(Some(Box::new(whoami("me")))));
         runtime.process_update(Update::Notifications(vec![Notification {
+            kind: String::new(),
+            payload: None,
             id: "n1".to_owned(),
             message_id: Some("m1".to_owned()),
             channel_id: Some("general".to_owned()),

@@ -11,6 +11,8 @@
 
 use std::os::fd::AsRawFd as _;
 use std::time::Instant;
+#[path = "app_keyboard.rs"]
+mod app_keyboard;
 
 use eframe::wgpu;
 
@@ -41,6 +43,30 @@ fn fence_ready(frame: &WpeFrame) -> bool {
     };
     // SAFETY: one valid pollfd and zero timeout.
     unsafe { libc::poll(&mut pollfd, 1, 0) > 0 }
+}
+
+fn copy_frame_row(source: &[u8], destination: &mut [u8], format: u32) -> Result<(), String> {
+    // Device mappings can be uncached. Bulk-copy first, then swizzle in RAM.
+    destination.copy_from_slice(source);
+    match format {
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => {
+            for pixel in destination.as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+                if format == DRM_FORMAT_XRGB8888 {
+                    pixel[3] = 0xff;
+                }
+            }
+        }
+        DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => {
+            if format == DRM_FORMAT_XBGR8888 {
+                for pixel in destination.as_chunks_mut::<4>().0 {
+                    pixel[3] = 0xff;
+                }
+            }
+        }
+        other => return Err(format!("formato DRM WPE não suportado: 0x{other:08x}")),
+    }
+    Ok(())
 }
 
 fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
@@ -126,39 +152,7 @@ fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
             .ok_or_else(|| "linha WPE fora do DMA-BUF mapeado".to_owned())?;
         let destination = &mut rgba[y * row_bytes..(y + 1) * row_bytes];
 
-        match frame.format {
-            // Little-endian DRM XRGB/ARGB memory is B,G,R,X/A.
-            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 => {
-                for pixel in 0..frame.width as usize {
-                    let offset = pixel * 4;
-                    destination[offset] = source[offset + 2];
-                    destination[offset + 1] = source[offset + 1];
-                    destination[offset + 2] = source[offset];
-                    destination[offset + 3] = if frame.format == DRM_FORMAT_ARGB8888 {
-                        source[offset + 3]
-                    } else {
-                        0xff
-                    };
-                }
-            }
-            // Little-endian DRM XBGR/ABGR memory is R,G,B,X/A.
-            DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => {
-                for pixel in 0..frame.width as usize {
-                    let offset = pixel * 4;
-                    destination[offset] = source[offset];
-                    destination[offset + 1] = source[offset + 1];
-                    destination[offset + 2] = source[offset + 2];
-                    destination[offset + 3] = if frame.format == DRM_FORMAT_ABGR8888 {
-                        source[offset + 3]
-                    } else {
-                        0xff
-                    };
-                }
-            }
-            other => {
-                return Err(format!("formato DRM WPE não suportado: 0x{other:08x}"));
-            }
-        }
+        copy_frame_row(source, destination, frame.format)?;
     }
 
     Ok(rgba)
@@ -166,6 +160,7 @@ fn map_frame_rgba(frame: &WpeFrame) -> Result<Vec<u8>, String> {
 
 pub struct LinuxWebEmbedBackend {
     runtime: Option<Runtime>,
+    app_events: Option<Vec<crate::channel_view::ViewEvent>>,
     page: Option<Page>,
     current_id: Option<String>,
     events: Vec<WebEmbedEvent>,
@@ -183,6 +178,7 @@ impl LinuxWebEmbedBackend {
     pub fn new() -> Self {
         Self {
             runtime: None,
+            app_events: None,
             page: None,
             current_id: None,
             events: Vec::new(),
@@ -217,11 +213,24 @@ impl LinuxWebEmbedBackend {
             return;
         };
         for event in page.take_events() {
+            if let Some(events) = &mut self.app_events {
+                events.push(match event {
+                    PageEvent::Loaded => crate::channel_view::ViewEvent::Ready,
+                    PageEvent::NavigationStarted(_) => crate::channel_view::ViewEvent::Loading,
+                    PageEvent::LoadFailed(_) => crate::channel_view::ViewEvent::Failed,
+                    PageEvent::External(url) => crate::channel_view::ViewEvent::External(url),
+                });
+                continue;
+            }
             match event {
                 PageEvent::LoadFailed(message) => {
                     log::warn!("webembed(wpe): load falhou: {message}");
                     self.events.push(WebEmbedEvent::Failed { id: id.clone() });
                 }
+                PageEvent::External(url) => self.events.push(WebEmbedEvent::OpenExternal {
+                    id: id.clone(),
+                    url,
+                }),
                 PageEvent::NavigationStarted(url) => {
                     log::debug!("webembed(wpe): navegação {url}");
                 }
@@ -272,11 +281,7 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
         };
         let width = viewport.rect.width().round().max(1.0) as u32;
         let height = viewport.rect.height().round().max(1.0) as u32;
-        page.resize(
-            width,
-            height,
-            f64::from(viewport.pixels_per_point.max(0.1)),
-        );
+        page.resize(width, height, f64::from(viewport.pixels_per_point.max(0.1)));
         self.pump_page();
         if let Some(ctx) = &self.egui {
             ctx.request_repaint();
@@ -353,20 +358,22 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
 
         let size_changed = self.texture_size != (pending.width, pending.height);
         if self.native_texture.is_none() || size_changed {
-            let texture = render_state.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("papo_wpe_webembed"),
-                size: wgpu::Extent3d {
-                    width: pending.width,
-                    height: pending.height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-            });
+            let texture = render_state
+                .device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some("papo_wpe_webembed"),
+                    size: wgpu::Extent3d {
+                        width: pending.width,
+                        height: pending.height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+                });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let mut renderer = render_state.renderer.write();
             if let Some(texture_id) = self.texture_id {
@@ -455,7 +462,11 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                     time,
                 );
             }
-            WebEmbedInput::Down { x, y, button: WebEmbedButton::Left } => {
+            WebEmbedInput::Down {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            } => {
                 page.set_focus(true);
                 self.pointer_modifiers |= 1 << 8;
                 page.pointer_button(
@@ -466,7 +477,11 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
                     time,
                 );
             }
-            WebEmbedInput::Up { x, y, button: WebEmbedButton::Left } => {
+            WebEmbedInput::Up {
+                x,
+                y,
+                button: WebEmbedButton::Left,
+            } => {
                 self.pointer_modifiers &= !(1 << 8);
                 page.pointer_button(
                     false,
@@ -491,5 +506,86 @@ impl WebEmbedBackend for LinuxWebEmbedBackend {
             }
         }
         page.pump();
+    }
+}
+
+#[derive(Default)]
+pub struct LinuxAppSurface {
+    inner: LinuxWebEmbedBackend,
+    keyboard: app_keyboard::Keyboard,
+}
+impl crate::channel_view::ViewBackend for LinuxAppSurface {
+    fn create(&mut self, url: &str, bundled: bool) -> Result<(), String> {
+        self.inner.app_events = Some(Vec::new());
+        let runtime = self.inner.ensure_runtime()?;
+        let page = Page::isolated(runtime, bundled)?;
+        page.resize(16, 16, 1.0);
+        page.load(url)?;
+        self.inner.current_id = Some("app".into());
+        self.inner.page = Some(page);
+        Ok(())
+    }
+    fn prepare(&mut self, frame: &mut eframe::Frame, ctx: &egui::Context) {
+        self.inner.set_context(ctx);
+        self.inner.prepare_render(frame);
+    }
+    fn resize_loading(&mut self, v: &EmbedViewport) {
+        self.inner.present("app", v);
+    }
+    fn present(&mut self, v: &EmbedViewport) {
+        self.inner.present("app", v);
+    }
+    fn hide(&mut self) {
+        self.keyboard(&[], egui::Modifiers::NONE, false);
+        self.inner.suspend("app");
+    }
+    fn destroy(&mut self) {
+        self.keyboard(&[], egui::Modifiers::NONE, false);
+        self.inner.destroy("app");
+        self.inner.app_events = None;
+    }
+    fn poll(&mut self) -> Vec<crate::channel_view::ViewEvent> {
+        self.inner
+            .app_events
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
+    }
+    fn texture_id(&self) -> Option<egui::TextureId> {
+        self.inner.texture_id()
+    }
+    fn texture_size(&self) -> Option<(u32, u32)> {
+        self.inner.texture_size()
+    }
+    fn keyboard(&mut self, events: &[egui::Event], modifiers: egui::Modifiers, focused: bool) {
+        let translated = self.keyboard.translate(events, modifiers, focused);
+        if let Some(page) = &self.inner.page {
+            page.set_focus(focused);
+            for key in translated {
+                page.key(key.pressed, key.symbol, key.code, key.modifiers);
+            }
+        }
+    }
+    fn input(&mut self, i: WebEmbedInput) {
+        self.inner.input("app", i);
+    }
+}
+
+#[cfg(test)]
+mod pixel_tests {
+    use super::*;
+    #[test]
+    fn dma_rows_preserve_color_and_alpha_for_each_supported_layout() {
+        for (format, expected) in [
+            (DRM_FORMAT_ARGB8888, [3, 2, 1, 4, 7, 6, 5, 8]),
+            (DRM_FORMAT_XRGB8888, [3, 2, 1, 255, 7, 6, 5, 255]),
+            (DRM_FORMAT_ABGR8888, [1, 2, 3, 4, 5, 6, 7, 8]),
+            (DRM_FORMAT_XBGR8888, [1, 2, 3, 255, 5, 6, 7, 255]),
+        ] {
+            let mut actual = [0; 8];
+            copy_frame_row(&[1, 2, 3, 4, 5, 6, 7, 8], &mut actual, format).unwrap();
+            assert_eq!(actual, expected);
+        }
+        assert!(copy_frame_row(&[0; 4], &mut [0; 4], 0).is_err());
     }
 }

@@ -7,32 +7,14 @@
 
 use egui::Rect;
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OffscreenBehavior {
     Stop,
     #[default]
     Float,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FloatScope {
     #[default]
     CurrentChannel,
@@ -64,11 +46,42 @@ pub enum WebEmbedButton {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WebEmbedInput {
-    Move { x: f32, y: f32 },
-    Down { x: f32, y: f32, button: WebEmbedButton },
-    Up { x: f32, y: f32, button: WebEmbedButton },
-    Wheel { x: f32, y: f32, delta_y: f32 },
+    Move {
+        x: f32,
+        y: f32,
+    },
+    Down {
+        x: f32,
+        y: f32,
+        button: WebEmbedButton,
+    },
+    Up {
+        x: f32,
+        y: f32,
+        button: WebEmbedButton,
+    },
+    Wheel {
+        x: f32,
+        y: f32,
+        delta_y: f32,
+    },
     Leave,
+}
+
+pub fn inline_viewport(
+    rect: Rect,
+    clip_rect: Rect,
+    pixels_per_point: f32,
+    occlusions: &[Rect],
+    allowed: bool,
+) -> Option<EmbedViewport> {
+    let clipped = rect.intersect(clip_rect);
+    (allowed && clipped.width() > 0.5 && clipped.height() > 0.5).then(|| EmbedViewport {
+        rect,
+        clip_rect,
+        pixels_per_point: pixels_per_point.max(0.1),
+        occlusions: occlusions.to_vec(),
+    })
 }
 
 pub trait WebEmbedBackend {
@@ -196,27 +209,18 @@ impl WebEmbedManager {
         }
         self.owner_seen = true;
 
-        let clipped = rect.intersect(clip_rect);
-        let visible = allowed && clipped.width() > 0.5 && clipped.height() > 0.5;
-        self.inline_visible = visible;
-        if !visible {
+        let viewport = inline_viewport(rect, clip_rect, pixels_per_point, occlusions, allowed);
+        self.inline_visible = viewport.is_some();
+        let Some(viewport) = viewport else {
             return;
-        }
+        };
         self.floating = false;
 
         if active.suspended {
             self.backend.resume(id);
             active.suspended = false;
         }
-        self.backend.present(
-            id,
-            &EmbedViewport {
-                rect,
-                clip_rect,
-                occlusions: occlusions.to_vec(),
-                pixels_per_point: pixels_per_point.max(0.1),
-            },
-        );
+        self.backend.present(id, &viewport);
         self.presented = true;
     }
 
@@ -274,12 +278,7 @@ impl WebEmbedManager {
     }
 
     /// Called after egui has had a chance to draw the floating slot.
-    pub fn end_frame(
-        &mut self,
-        behavior: OffscreenBehavior,
-        scope: FloatScope,
-        occluded: bool,
-    ) {
+    pub fn end_frame(&mut self, behavior: OffscreenBehavior, scope: FloatScope, occluded: bool) {
         if self.active.is_none() {
             return;
         }
@@ -493,16 +492,25 @@ mod tests {
             Ok(())
         }
         fn present(&mut self, id: &str, _viewport: &EmbedViewport) {
-            self.calls.lock().unwrap().push(Call::Present(id.to_owned()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Present(id.to_owned()));
         }
         fn suspend(&mut self, id: &str) {
-            self.calls.lock().unwrap().push(Call::Suspend(id.to_owned()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Suspend(id.to_owned()));
         }
         fn resume(&mut self, id: &str) {
             self.calls.lock().unwrap().push(Call::Resume(id.to_owned()));
         }
         fn destroy(&mut self, id: &str) {
-            self.calls.lock().unwrap().push(Call::Destroy(id.to_owned()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(Call::Destroy(id.to_owned()));
         }
         fn poll_events(&mut self) -> Vec<WebEmbedEvent> {
             Vec::new()
@@ -591,11 +599,7 @@ mod tests {
         let (mut manager, calls) = manager();
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
-        manager.end_frame(
-            OffscreenBehavior::Float,
-            FloatScope::CurrentChannel,
-            false,
-        );
+        manager.end_frame(OffscreenBehavior::Float, FloatScope::CurrentChannel, false);
         assert_eq!(
             calls.lock().unwrap().last(),
             Some(&Call::Destroy("a".into()))
@@ -610,7 +614,10 @@ mod tests {
         assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::Global));
         manager.present_floating(rect(), rect(), 1.0, &[], true);
         manager.end_frame(OffscreenBehavior::Float, FloatScope::Global, false);
-        assert!(!matches!(calls.lock().unwrap().last(), Some(Call::Destroy(_))));
+        assert!(!matches!(
+            calls.lock().unwrap().last(),
+            Some(Call::Destroy(_))
+        ));
     }
 
     #[test]
@@ -620,10 +627,7 @@ mod tests {
         manager.begin_frame();
         manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
 
-        assert!(!manager.should_float(
-            OffscreenBehavior::Float,
-            FloatScope::CurrentChannel,
-        ));
+        assert!(!manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel,));
     }
 
     #[test]
@@ -632,17 +636,11 @@ mod tests {
         manager.activate("a".into(), "https://example.com/a".into());
         manager.begin_frame();
         manager.present_inline("a", rect(), Rect::NOTHING, 1.0, &[], true);
-        assert!(manager.should_float(
-            OffscreenBehavior::Float,
-            FloatScope::CurrentChannel,
-        ));
+        assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel,));
         manager.present_floating(rect(), rect(), 1.0, &[], true);
 
         *playing.lock().unwrap() = Some(false);
-        assert!(manager.should_float(
-            OffscreenBehavior::Float,
-            FloatScope::CurrentChannel,
-        ));
+        assert!(manager.should_float(OffscreenBehavior::Float, FloatScope::CurrentChannel,));
     }
 
     #[test]

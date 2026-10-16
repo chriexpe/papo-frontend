@@ -65,6 +65,13 @@ cc \
     -o "$output" \
     $(pkg-config --cflags --libs "${packages[@]}")
 
+# Isolated app sessions require the native send-request policy module.
+mkdir -p "$destination/lib/extensions"
+cc -std=c11 -O2 -fPIC -shared -Wall -Wextra -Werror -Wpedantic \
+    "$repo_root/native/wpe/app_requests.c" \
+    -o "$destination/lib/extensions/libpapo_app_requests.so" \
+    $(pkg-config --cflags --libs wpe-web-process-extension-2.0 libsoup-3.0)
+
 echo "Papo WPE bridge staged at $output"
 echo "Papo will use the distro WPE runtime through this bridge."
 echo "If Papo is elsewhere: export PAPO_WPE_RUNTIME=$(realpath "$destination")"

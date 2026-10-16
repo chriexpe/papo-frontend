@@ -23,6 +23,7 @@ const TYPING_TTL: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelKind {
     Text,
+    App,
     Voice,
     Category,
     /// Canal interno que sustenta uma conversa direta 1:1.
@@ -33,6 +34,7 @@ impl ChannelKind {
     fn parse(kind: &str) -> Self {
         match kind {
             "voice" => Self::Voice,
+            "app" => Self::App,
             "category" => Self::Category,
             "dm" => Self::Direct,
             _ => Self::Text,
@@ -42,6 +44,7 @@ impl ChannelKind {
 
 #[derive(Clone, Debug)]
 pub struct Channel {
+    pub app: Option<models::AppSurface>,
     pub id: String,
     pub name: String,
     pub kind: ChannelKind,
@@ -249,6 +252,8 @@ pub struct CustomEmoji {
 
 #[derive(Clone, Debug)]
 pub struct Message {
+    pub components: Vec<Vec<models::AppButton>>,
+    pub app_installation_id: Option<String>,
     pub id: String,
     pub channel_id: String,
     pub author_id: String,
@@ -350,6 +355,7 @@ pub struct StoreDiagnostics {
 enum TimelineMutation {
     MessageUpsert(Message),
     MessageEdit {
+        components: Option<Vec<Vec<models::AppButton>>>,
         id: String,
         content: String,
     },
@@ -445,6 +451,7 @@ pub struct Store {
     pub screen: Screen,
     pub connection: Connection,
     pub server: Option<Server>,
+    pub app_invites: Vec<models::AppInvite>,
     pub channels: Vec<Channel>,
     /// Conversas 1:1 visíveis para esta conta. O id de cada uma também vive
     /// em `channels` como `ChannelKind::Direct`, para reaproveitar a timeline.
@@ -551,6 +558,7 @@ impl Default for Store {
             screen: Screen::Starting,
             connection: Connection::Offline,
             server: None,
+            app_invites: Vec::new(),
             channels: Vec::new(),
             direct_messages: Vec::new(),
             blocked_users: HashSet::new(),
@@ -672,6 +680,7 @@ impl Store {
             channel.kind = ChannelKind::Direct;
         } else {
             self.channels.push(Channel {
+                app: None,
                 id,
                 name,
                 kind: ChannelKind::Direct,
@@ -1069,6 +1078,7 @@ impl Store {
             .channels
             .into_iter()
             .map(|channel| Channel {
+                app: None,
                 id: channel.id,
                 name: channel.name,
                 kind: ChannelKind::parse(&channel.kind),
@@ -1350,7 +1360,7 @@ impl Store {
             || !self.cached_channels.contains(id)
             || self.hydrated_channels.contains(id)
             || self.cache_loading.contains(id)
-            || self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice)
+            || self.channel(id).is_some_and(|channel| matches!(channel.kind,ChannelKind::Voice|ChannelKind::App))
         {
             return None;
         }
@@ -1499,7 +1509,7 @@ impl Store {
         {
             return None;
         }
-        if self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice) {
+        if self.channel(id).is_some_and(|channel| matches!(channel.kind,ChannelKind::Voice|ChannelKind::App)) {
             return None;
         }
         Some(id.clone())
@@ -1795,8 +1805,9 @@ impl Store {
                 self.upsert_message(message);
                 self.sort_messages();
             }
-            TimelineMutation::MessageEdit { id, content } => {
+            TimelineMutation::MessageEdit { id, content, components } => {
                 if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
+                    if let Some(components) = components { message.components = components; }
                     message.content = content;
                     message.edited = true;
                 }
@@ -2414,6 +2425,7 @@ impl Store {
         {
             let p = role.permissions;
             combined.manage_server |= p.manage_server;
+            combined.manage_apps |= p.manage_apps;
             combined.manage_channels |= p.manage_channels;
             combined.manage_roles |= p.manage_roles;
             combined.ban_members |= p.ban_members;
@@ -2455,6 +2467,10 @@ impl Store {
         self.is_server_owner() || self.my_role_permissions().manage_server
     }
 
+    pub fn can_manage_apps(&self) -> bool {
+        self.is_server_owner() || self.my_role_permissions().manage_apps
+    }
+
     pub fn can_manage_channels(&self) -> bool {
         self.is_server_owner() || self.my_role_permissions().manage_channels
     }
@@ -2464,7 +2480,7 @@ impl Store {
     }
 
     pub fn can_open_server_admin(&self) -> bool {
-        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles()
+        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles() || self.can_manage_apps()
     }
 
     // -- Atualizações ------------------------------------------------------
@@ -2584,6 +2600,7 @@ impl Store {
                             .map(|(at, mark)| at > mark)
                             .unwrap_or(false);
                         Channel {
+                            app: channel.app,
                             unread: unread || fresh,
                             id: channel.id,
                             name: channel.name,
@@ -3105,6 +3122,13 @@ impl Store {
             }
             Update::Notifications(notifications) => {
                 for notification in notifications {
+                    if notification.kind == "app_invite" {
+                        if let Some(invite) = notification.payload {
+                            self.app_invites.retain(|v| v.id != invite.id);
+                            if !notification.read && invite.status == "pending" { self.app_invites.push(invite); }
+                        }
+                        continue;
+                    }
                     if notification.read {
                         self.confirm_notification_read(&notification);
                         continue;
@@ -3180,7 +3204,7 @@ impl Store {
                 self.error = Some(message);
                 self.busy = false;
             }
-            Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
+            Update::Plugin { .. } | Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
         }
     }
 
@@ -3198,16 +3222,21 @@ impl Store {
                     },
                 );
             }
+            Event::AppInvite(invite) => {
+                self.app_invites.retain(|v| v.id != invite.id);
+                if invite.status == "pending" { self.app_invites.push(invite); }
+            }
             Event::MessageEdited {
                 id,
                 channel_id,
                 content,
+                components,
             } => {
                 self.apply_mutation(
                     MutationSource::Live,
                     StoreMutation::Timeline {
                         channel_id: Some(channel_id),
-                        mutation: TimelineMutation::MessageEdit { id, content },
+                        mutation: TimelineMutation::MessageEdit { id, content, components },
                     },
                 );
             }
@@ -3369,6 +3398,7 @@ impl Store {
                 name,
                 kind,
                 topic,
+                app,
             } => {
                 // Quem criou o canal já o recebeu pela lista relida logo
                 // depois do POST; o evento chega em seguida e duplicaria a
@@ -3378,6 +3408,7 @@ impl Store {
                 }
                 let position = self.channels.len() as i32 + 1;
                 self.channels.push(Channel {
+                    app,
                     id,
                     name,
                     kind: ChannelKind::parse(&kind),
@@ -3390,13 +3421,46 @@ impl Store {
                     mentions: 0,
                 });
             }
-            Event::ChannelUpdated { id, name, topic } => {
+            Event::ChannelUpdated {
+                id,
+                name,
+                topic,
+                app,
+            } => {
                 if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == id) {
-                    channel.name = name;
-                    channel.topic = topic;
+                    if let Some(name) = name {
+                        channel.name = name;
+                    }
+                    if let Some(topic) = topic {
+                        channel.topic = topic;
+                    }
+                    // Sem snapshot no evento, invalida imediatamente até o REST autoritativo.
+                    channel.app = app;
                 }
             }
+            Event::AppInvalidated { installation_id } => {
+                self.app_invites.retain(|v| v.app_installation_id != installation_id);
+                for message in &mut self.messages {
+                    if message.app_installation_id.as_deref() == Some(&installation_id) {
+                        for button in message.components.iter_mut().flatten() { button.disabled = true; }
+                    }
+                    for preview in &mut message.previews {
+                        if preview.surface.as_ref().is_some_and(|v| v.app_installation_id == installation_id) { preview.entry.clear(); }
+                    }
+                }
+                for channel in &mut self.channels {
+                    if let Some(app) = &mut channel.app && app.app_installation_id == installation_id { app.available = false; }
+                }
+                for message in &mut self.messages { for preview in &mut message.previews {
+                    if let Some(app) = &mut preview.app && app.app_installation_id == installation_id { app.available = false; }
+                }}
+            }
             Event::ChannelDeleted { id } => {
+                if let Some(installation)=self.channel(&id).and_then(|c|c.app.as_ref()).map(|a|a.app_installation_id.clone()) {
+                    for message in &mut self.messages {for preview in &mut message.previews {
+                        if let Some(app)=&mut preview.app && app.app_installation_id==installation {app.available=false;}
+                    }}
+                }
                 self.channels.retain(|channel| channel.id != id);
                 self.messages.retain(|message| message.channel_id != id);
                 self.loading_channels.remove(&id);
@@ -3559,6 +3623,8 @@ impl Store {
         let local_id = outgoing.local_id.clone();
         let state = outgoing.state;
         let message = Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: local_id.clone(),
             channel_id: outgoing.channel_id.clone(),
             author_id: outgoing.owner_user_id,
@@ -3636,6 +3702,7 @@ impl Store {
             StoreMutation::Timeline {
                 channel_id,
                 mutation: TimelineMutation::MessageEdit {
+                    components: None,
                     id: message_id.to_owned(),
                     content,
                 },
@@ -3692,6 +3759,8 @@ fn convert(message: models::Message, me: &str) -> Message {
     let _ = me;
 
     Message {
+        components: message.components,
+        app_installation_id: message.app_installation_id,
         id: message.id,
         channel_id: message.channel_id,
         author_id: message.author_id,
@@ -3735,6 +3804,7 @@ mod channel_layout_tests {
 
     fn channel(id: &str, kind: ChannelKind, position: i32, parent: Option<&str>) -> Channel {
         Channel {
+            app: None,
             id: id.into(),
             name: id.into(),
             kind,
@@ -4041,6 +4111,7 @@ mod tests {
         store.restore_cached_metadata(CachedServerMetadata {
             owner_user_id: None,
             server: None,
+
             channels: Vec::new(),
             members: vec![CachedMember {
                 id: "u1".to_owned(),
@@ -4156,10 +4227,12 @@ mod tests {
 
     fn wire_message(id: &str, channel_id: &str, content: &str) -> models::Message {
         models::Message {
+            components: Default::default(),
             id: id.to_owned(),
             channel_id: channel_id.to_owned(),
             author_id: "outro".to_owned(),
             external_author: None,
+            app_installation_id: None,
             content: Some(content.to_owned()),
             created_at: Utc::now(),
             edited_at: None,
@@ -4523,12 +4596,47 @@ mod tests {
     }
 
     #[test]
+    fn invalidate_revokes_c5_frames_and_buttons() {
+        let mut store = store_com_mensagem("geral","m","app");
+        let message = store.messages.iter_mut().find(|m|m.id == "m").unwrap();
+        message.app_installation_id = Some("app".into());
+        message.components = vec![vec![models::AppButton {id:"play".into(),label:"Play".into(),..Default::default()}]];
+        message.previews = vec![serde_json::from_value(serde_json::json!({"id":"frame","surface":{"app_installation_id":"app","id":"result"},"entry":"/apps/app/ui/result.html","load":"visible","display":"inline","size":{"width":480,"height":320}})).unwrap()];
+        let cached = crate::cache::CachedMessage::from_store(message).to_store();
+        assert!(cached.previews[0].entry.is_empty());
+        store.apply_event(Event::AppInvalidated {installation_id:"app".into()});
+        assert!(store.message("m").unwrap().components[0][0].disabled);
+        assert!(store.message("m").unwrap().previews[0].entry.is_empty());
+    }
+    #[test]
+    fn component_edits_survive_snapshot_and_empty_rows_clear_buttons() {
+        let mut store = store_com_mensagem("geral", "m1", "antes");
+        perder_continuidade(&mut store);
+        let ticket = store.mark_loading("geral");
+        let button = models::AppButton { id:"revanche".into(),label:"Revanche".into(),style:"primary".into(),..Default::default() };
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id:"m1".into(),channel_id:"geral".into(),content:"depois".into(),components:Some(vec![vec![button.clone()]]),
+        })));
+        finish_snapshot(&mut store,ticket,vec![wire_message("m1","geral","antes")]);
+        assert_eq!(store.message("m1").unwrap().components,vec![vec![button]]);
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id:"m1".into(),channel_id:"geral".into(),content:"depois".into(),components:None,
+        })));
+        assert_eq!(store.message("m1").unwrap().components.len(),1);
+        store.apply(Update::Event(Box::new(Event::MessageEdited {
+            id:"m1".into(),channel_id:"geral".into(),content:"depois".into(),components:Some(vec![]),
+        })));
+        assert!(store.message("m1").unwrap().components.is_empty());
+    }
+
+    #[test]
     fn edicao_live_durante_refresh_nao_e_revertida() {
         let mut store = store_com_mensagem("geral", "m1", "velho");
         perder_continuidade(&mut store);
         let ticket = store.mark_loading("geral");
 
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "novo".to_owned(),
@@ -4591,6 +4699,7 @@ mod tests {
         perder_continuidade(&mut store);
         let antiga = store.mark_loading("geral");
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "geracao-antiga".to_owned(),
@@ -4599,6 +4708,7 @@ mod tests {
         perder_continuidade(&mut store);
         let atual = store.mark_loading("geral");
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "geracao-atual".to_owned(),
@@ -4628,6 +4738,7 @@ mod tests {
         perder_continuidade(&mut store);
         let primeira = store.mark_loading("geral");
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "entre-a-e-b".to_owned(),
@@ -4635,6 +4746,7 @@ mod tests {
 
         let segunda = store.mark_loading("geral");
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "depois-de-b".to_owned(),
@@ -4664,6 +4776,7 @@ mod tests {
         perder_continuidade(&mut store);
         let ticket = store.mark_loading("geral");
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "live".to_owned(),
@@ -4705,6 +4818,7 @@ mod tests {
         perder_continuidade(&mut primeiro);
         let ticket = primeiro.mark_loading("a");
         primeiro.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m-a".to_owned(),
             channel_id: "a".to_owned(),
             content: "live-a".to_owned(),
@@ -4771,6 +4885,7 @@ mod tests {
         };
         store.channels = vec![
             Channel {
+                app: None,
                 id: "aberto".to_owned(),
                 name: "Aberto".to_owned(),
                 kind: ChannelKind::Text,
@@ -4783,6 +4898,7 @@ mod tests {
                 mentions: 0,
             },
             Channel {
+                app: None,
                 id: "outro".to_owned(),
                 name: "Outro".to_owned(),
                 kind: ChannelKind::Text,
@@ -4909,6 +5025,7 @@ mod tests {
             .barrier_revision;
 
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "live".to_owned(),
@@ -4957,6 +5074,7 @@ mod tests {
                 StoreMutation::Timeline {
                     channel_id: Some("geral".to_owned()),
                     mutation: TimelineMutation::MessageEdit {
+                        components: None,
                         id: "m1".to_owned(),
                         content: "editado".to_owned(),
                     },
@@ -5358,6 +5476,7 @@ mod tests {
         )));
 
         store.apply(Update::Event(Box::new(Event::MessageEdited {
+            components: None,
             id: "m1".to_owned(),
             channel_id: "geral".to_owned(),
             content: "editada".to_owned(),
@@ -5689,6 +5808,8 @@ mod tests {
 
     fn navigation_message(id: &str, second: i64) -> Message {
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: id.to_owned(),
             channel_id: "geral".to_owned(),
             author_id: "outro".to_owned(),
@@ -5710,6 +5831,7 @@ mod tests {
             me: "eu".to_owned(),
             selected_channel: "geral".to_owned(),
             channels: vec![Channel {
+                app: None,
                 id: "geral".to_owned(),
                 name: "Geral".to_owned(),
                 kind: ChannelKind::Text,
@@ -5954,6 +6076,7 @@ mod notification_badge_tests {
         ]
         .into_iter()
         .map(|(id, mode)| Channel {
+            app: None,
             id: id.into(),
             name: id.into(),
             kind: if id == "dm" {
@@ -5975,6 +6098,8 @@ mod notification_badge_tests {
 
     fn notification(id: &str, message: &str, channel: &str) -> models::Notification {
         models::Notification {
+            kind: String::new(),
+            payload: None,
             id: id.into(),
             message_id: Some(message.into()),
             channel_id: Some(channel.into()),
@@ -5985,6 +6110,17 @@ mod notification_badge_tests {
         }
     }
 
+    #[test]
+    fn app_invites_read_on_reconnect_do_not_reappear() {
+        let invite: models::AppInvite = serde_json::from_value(serde_json::json!({"id":"invite","app_installation_id":"app","inviter_id":"u","channel_id":"c","text":"Play","status":"pending","expires_at":"2099-01-01T00:00:00Z"})).unwrap();
+        let mut store = Store::default();
+        store.apply_event(Event::AppInvite(invite.clone()));
+        assert_eq!(store.app_invites.len(),1);
+        let mut notification = notification("invite","","c");
+        notification.kind = "app_invite".into(); notification.payload = Some(invite); notification.read = true;
+        store.apply(Update::Notifications(vec![notification]));
+        assert!(store.app_invites.is_empty());
+    }
     #[test]
     fn generic_unread_does_not_light_the_tray_and_muted_channels_are_excluded() {
         let mut store = store();
@@ -6037,9 +6173,12 @@ mod notification_badge_tests {
         let mut store = store();
         store.messages = (1..=2)
             .map(|index| Message {
+                app_installation_id: None,
+                components: Default::default(),
                 id: format!("m{index}"),
                 channel_id: "all".into(),
                 author_id: "other".into(),
+                external_author: None,
                 content: "texto".into(),
                 at: Local::now() + chrono::Duration::seconds(index),
                 edited: false,
@@ -6076,5 +6215,48 @@ mod notification_badge_tests {
         assert_eq!(store.pending_notification_count(), 1);
         store.clear_cached_state();
         assert_eq!(store.pending_notification_count(), 0);
+    }
+}
+
+
+#[cfg(test)]
+mod app_channel_contract_tests {
+    use super::*;
+    #[test]
+    fn app_channel_payload_and_live_removal() {
+        let app=models::AppSurface{user_actions: vec![], app_installation_id:"install".into(),surface_id:"home".into(),source:"bundled".into(),entry:"/apps/install/ui/index.html".into(),avatar_url:String::new(),available:true};
+        let mut store=Store::default();
+        store.apply_event(Event::ChannelCreated{id:"app".into(),name:"Map".into(),kind:"app".into(),topic:None,app:Some(app.clone())});
+        store.selected_channel="app".into();
+        assert_eq!(store.channel("app").unwrap().kind,ChannelKind::App);
+        assert_eq!(store.channel("app").unwrap().app,Some(app));
+        assert!(store.channel_needing_messages().is_none());
+        assert!(store.channel_needing_cache().is_none());
+        store.apply_event(Event::ChannelUpdated{id:"app".into(),name:Some("Renamed".into()),topic:None,app:None});
+        assert_eq!(store.channel("app").unwrap().name,"Renamed");
+        assert!(store.channel("app").unwrap().app.is_none());
+        store.apply_event(Event::ChannelDeleted{id:"app".into()});
+        assert!(store.channel("app").is_none());
+    }
+    #[test]
+    fn inline_only_revocation_does_not_need_a_channel_event() {
+        let app = models::AppSurface {user_actions: vec![], app_installation_id:"install".into(),surface_id:"result".into(),source:"bundled".into(),entry:"/apps/install/ui/result.html".into(),avatar_url:String::new(),available:true};
+        let preview: models::LinkPreview = serde_json::from_value(serde_json::json!({"id":"embed","title":"Result","description":null,"app":app})).unwrap();
+        let mut store = Store::default();
+        store.messages.push(Message {app_installation_id: None, components: Default::default(), id:"message".into(),channel_id:"chat".into(),author_id:"app".into(),external_author:None,content:String::new(),at:Local::now(),edited:false,reply_to:None,attachments:vec![],previews:vec![preview],reactions:vec![],pinned:false,pending:false});
+        let cached = crate::cache::CachedMessage::from_store(&store.messages[0]);
+        assert!(!cached.to_store().previews[0].app.as_ref().unwrap().available);
+        store.apply_event(Event::AppInvalidated {installation_id:"other".into()});
+        assert!(store.messages[0].previews[0].app.as_ref().unwrap().available);
+        store.apply_event(Event::AppInvalidated {installation_id:"install".into()});
+        assert!(!store.messages[0].previews[0].app.as_ref().unwrap().available);
+        assert_eq!(store.messages.len(),1);
+    }
+    #[test]
+    fn owner_can_manage_apps() {
+        let mut store=Store{me:"member".into(),..Default::default()};
+        assert!(!store.can_manage_apps());
+        store.server=Some(Server{name:"Server".into(),description:None,public:true,owner_id:Some("member".into()),icon:None});
+        assert!(store.can_manage_apps());
     }
 }

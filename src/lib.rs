@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod app;
+pub mod channel_view;
 pub mod i18n;
 pub mod giphy;
 pub mod media;

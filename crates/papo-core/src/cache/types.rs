@@ -255,6 +255,7 @@ impl From<&Channel> for CachedChannel {
                 ChannelKind::Voice => "voice",
                 ChannelKind::Category => "category",
                 ChannelKind::Direct => "dm",
+                ChannelKind::App => "app",
             }
             .to_owned(),
             topic: channel.topic.clone(),
@@ -431,6 +432,8 @@ impl CachedMessage {
     /// Restaura os embeds persistidos imediatamente, antes da reconciliação.
     pub fn to_store(&self) -> Message {
         Message {
+            app_installation_id: None,
+            components: Default::default(),
             id: self.id.clone(),
             channel_id: self.channel_id.clone(),
             author_id: self.author_id.clone(),
@@ -454,7 +457,12 @@ impl CachedMessage {
                     moderation_status: attachment.moderation_status.clone(),
                 })
                 .collect(),
-            previews: self.embeds.clone(),
+            // Cached availability is never authority to execute an app surface.
+            previews: self.embeds.iter().cloned().map(|mut preview| {
+                if let Some(app) = &mut preview.app { app.available = false; }
+                if preview.surface.is_some() { preview.entry.clear(); }
+                preview
+            }).collect(),
             reactions: self
                 .reactions
                 .iter()

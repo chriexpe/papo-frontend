@@ -13,41 +13,32 @@ use std::rc::{Rc, Weak};
 use std::sync::mpsc;
 
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-use windows::{
-    Win32::{
-        Foundation::{E_POINTER, HWND, RECT},
-        Graphics::Gdi::{
-            CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF, SetWindowRgn,
-        },
-        System::Com::{
-            COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream,
-        },
-        UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW,
-            SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD,
-            WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-        },
-    },
-    core::{BOOL, Interface as _, PWSTR, w},
-};
 use webview2_com::{
-    CoTaskMemPWSTR, CoreWebView2EnvironmentOptions,
-    CreateCoreWebView2ControllerCompletedHandler,
-    ContainsFullScreenElementChangedEventHandler, DownloadStartingEventHandler,
-    CreateCoreWebView2EnvironmentCompletedHandler, NavigationCompletedEventHandler,
-    NavigationStartingEventHandler, NewWindowRequestedEventHandler,
-    PermissionRequestedEventHandler, ProcessFailedEventHandler,
-    WebResourceRequestedEventHandler,
-    TrySuspendCompletedHandler,
+    CoTaskMemPWSTR, ContainsFullScreenElementChangedEventHandler, CoreWebView2EnvironmentOptions,
+    CreateCoreWebView2ControllerCompletedHandler, CreateCoreWebView2EnvironmentCompletedHandler,
+    DownloadStartingEventHandler,
     Microsoft::Web::WebView2::Win32::{
         COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS, COREWEBVIEW2_PERMISSION_STATE_DENY,
         COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL, CreateCoreWebView2EnvironmentWithOptions,
-        ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Controller3,
-        ICoreWebView2Environment,
-        ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
-        ICoreWebView2Environment2, ICoreWebView2_2, ICoreWebView2_3,
-        ICoreWebView2_4, ICoreWebView2_8,
+        ICoreWebView2, ICoreWebView2_2, ICoreWebView2_3, ICoreWebView2_4, ICoreWebView2_8,
+        ICoreWebView2Controller, ICoreWebView2Controller3, ICoreWebView2Environment,
+        ICoreWebView2Environment2, ICoreWebView2EnvironmentOptions, ICoreWebView2Settings4,
     },
+    NavigationCompletedEventHandler, NavigationStartingEventHandler,
+    NewWindowRequestedEventHandler, PermissionRequestedEventHandler, ProcessFailedEventHandler,
+    TrySuspendCompletedHandler, WebResourceRequestedEventHandler,
+};
+use windows::{
+    Win32::{
+        Foundation::{E_POINTER, HWND, RECT},
+        Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, HGDIOBJ, RGN_DIFF, SetWindowRgn},
+        System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IStream},
+        UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, GetClientRect, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
+            SWP_NOZORDER, SetWindowPos, ShowWindow, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+        },
+    },
+    core::{BOOL, Interface as _, PWSTR, w},
 };
 
 use crate::webembed::{EmbedViewport, WebEmbedBackend, WebEmbedEvent};
@@ -139,12 +130,7 @@ struct LiveWebView {
 }
 
 impl LiveWebView {
-    fn new(
-        parent: HWND,
-        id: &str,
-        url: &str,
-        events: &EventQueue,
-    ) -> Result<Self, String> {
+    fn new(parent: HWND, id: &str, url: &str, events: &EventQueue) -> Result<Self, String> {
         let host = create_clip_host(parent)?;
         let environment = create_environment()?;
 
@@ -210,7 +196,7 @@ impl LiveWebView {
         }
 
         let fullscreen = Rc::new(Cell::new(false));
-        install_security_and_navigation_handlers(&webview, id, events, &fullscreen)?;
+        install_security_and_navigation_handlers(&webview, id, events, &fullscreen, url)?;
         navigate_with_referer(&environment, &webview, url)?;
 
         Ok(Self {
@@ -293,7 +279,12 @@ impl LiveWebView {
             }
             let cut_region = unsafe { CreateRectRgn(left, top, right, bottom) };
             unsafe {
-                CombineRgn(Some(host_region), Some(host_region), Some(cut_region), RGN_DIFF);
+                CombineRgn(
+                    Some(host_region),
+                    Some(host_region),
+                    Some(cut_region),
+                    RGN_DIFF,
+                );
                 let _ = DeleteObject(HGDIOBJ(cut_region.0));
             }
         }
@@ -370,9 +361,8 @@ impl LiveWebView {
         let Ok(webview) = self.webview.cast::<ICoreWebView2_3>() else {
             return;
         };
-        let handler = TrySuspendCompletedHandler::create(Box::new(
-            |_error_code, _successful| Ok(()),
-        ));
+        let handler =
+            TrySuspendCompletedHandler::create(Box::new(|_error_code, _successful| Ok(())));
         // SAFETY: controller visibility was set false above, which WebView2
         // requires before TrySuspend. This is best-effort by design.
         if let Err(error) = unsafe { webview.TrySuspend(&handler) } {
@@ -438,8 +428,7 @@ fn create_environment() -> Result<ICoreWebView2Environment, String> {
         .ok_or_else(|| "perfil WebView2 não é UTF-8".to_owned())?
         .to_owned();
 
-    let options: ICoreWebView2EnvironmentOptions =
-        CoreWebView2EnvironmentOptions::default().into();
+    let options: ICoreWebView2EnvironmentOptions = CoreWebView2EnvironmentOptions::default().into();
     unsafe {
         options
             .SetAllowSingleSignOnUsingOSPrimaryAccount(false)
@@ -535,12 +524,13 @@ fn install_security_and_navigation_handlers(
     id: &str,
     events: &EventQueue,
     fullscreen: &Rc<Cell<bool>>,
+    initial_url: &str,
 ) -> Result<(), String> {
     let initial_navigation_done = Rc::new(Cell::new(false));
 
     let navigation_events = Rc::clone(events);
     let navigation_id = id.to_owned();
-    let navigation_done = Rc::clone(&initial_navigation_done);
+    let locked_origin = initial_url.to_owned();
     let navigation = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
         let Some(args) = args else {
             return Ok(());
@@ -560,7 +550,7 @@ fn install_security_and_navigation_handlers(
         // initiated too, so do not externalize until the initial document has
         // completed. Afterwards, a user gesture that wants to replace the
         // top-level embed becomes an ordinary external link.
-        if navigation_done.get() && user_initiated.as_bool() {
+        if !crate::channel_view::same_origin(&locked_origin, &url) {
             unsafe { args.SetCancel(true)? };
             if papo_core::preview::safe_remote_url(&url) {
                 navigation_events.push(WebEmbedEvent::OpenExternal {
@@ -885,3 +875,7 @@ impl Drop for WindowsWebEmbedBackend {
         }
     }
 }
+
+// Separate passive-view construction; rich-link creation and policy stay intact.
+#[path = "channel_view.rs"]
+pub mod channel_view;

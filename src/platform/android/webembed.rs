@@ -63,10 +63,14 @@ impl WebEmbedBackend for AndroidWebEmbedBackend {
 fn with_env<T>(
     f: impl FnOnce(&mut jni::JNIEnv<'_>, jni::objects::JObject<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let app = APP.get().ok_or_else(|| "Activity não instalada".to_owned())?;
+    let app = APP
+        .get()
+        .ok_or_else(|| "Activity não instalada".to_owned())?;
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }
         .map_err(|error| error.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|error| error.to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
     let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
     let result = f(&mut env, activity);
     if result.is_err() {
@@ -104,6 +108,9 @@ fn call_strings(method: &str, id: &str, second: Option<&str>) -> Result<(), Stri
 }
 
 fn call_present(id: &str, viewport: &EmbedViewport) {
+    call_viewport("presentWebEmbed", id, viewport);
+}
+fn call_viewport(method: &str, id: &str, viewport: &EmbedViewport) {
     let ppp = viewport.pixels_per_point.max(0.1);
     let visible = viewport.rect.intersect(viewport.clip_rect);
 
@@ -118,23 +125,46 @@ fn call_present(id: &str, viewport: &EmbedViewport) {
 
     let result = with_env(|env, activity| {
         let id = env.new_string(id).map_err(|error| error.to_string())?;
-        env.call_method(
-            &activity,
-            "presentWebEmbed",
-            "(Ljava/lang/String;IIIIIIII)V",
-            &[
-                jni::objects::JValue::Object(&id),
-                jni::objects::JValue::Int(left),
-                jni::objects::JValue::Int(top),
-                jni::objects::JValue::Int(width),
-                jni::objects::JValue::Int(height),
-                jni::objects::JValue::Int(clip_left),
-                jni::objects::JValue::Int(clip_top),
-                jni::objects::JValue::Int(clip_width),
-                jni::objects::JValue::Int(clip_height),
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+        let ppp = viewport.pixels_per_point.max(0.1);
+        let visible = viewport.rect.intersect(viewport.clip_rect);
+        let holes: Vec<i32> = viewport
+            .occlusions
+            .iter()
+            .map(|rect| rect.intersect(visible))
+            .filter(|rect| rect.is_positive())
+            .flat_map(|rect| {
+                [
+                    ((rect.min.x - visible.min.x) * ppp).floor() as i32,
+                    ((rect.min.y - visible.min.y) * ppp).floor() as i32,
+                    ((rect.max.x - visible.min.x) * ppp).ceil() as i32,
+                    ((rect.max.y - visible.min.y) * ppp).ceil() as i32,
+                ]
+            })
+            .collect();
+        let java_holes = env
+            .new_int_array(holes.len() as i32)
+            .map_err(|e| e.to_string())?;
+        env.set_int_array_region(&java_holes, 0, &holes)
+            .map_err(|e| e.to_string())?;
+        let mut args = vec![
+            jni::objects::JValue::Object(&id),
+            jni::objects::JValue::Int(left),
+            jni::objects::JValue::Int(top),
+            jni::objects::JValue::Int(width),
+            jni::objects::JValue::Int(height),
+            jni::objects::JValue::Int(clip_left),
+            jni::objects::JValue::Int(clip_top),
+            jni::objects::JValue::Int(clip_width),
+            jni::objects::JValue::Int(clip_height),
+        ];
+        let signature = if method == "presentWebEmbed" {
+            "(Ljava/lang/String;IIIIIIII)V"
+        } else {
+            args.push(jni::objects::JValue::Object(&java_holes));
+            "(Ljava/lang/String;IIIIIIII[I)V"
+        };
+        env.call_method(&activity, method, signature, &args)
+            .map_err(|error| error.to_string())?;
         Ok(())
     });
     if let Err(error) = result {
@@ -188,8 +218,113 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeWebEmbedS
     let Some(id) = string(&mut env, id) else {
         return;
     };
-    push(WebEmbedEvent::ScrollTimeline {
-        id,
-        delta_y_px,
-    });
+    push(WebEmbedEvent::ScrollTimeline { id, delta_y_px });
+}
+
+static APP_EVENTS: OnceLock<Mutex<VecDeque<(String, crate::channel_view::ViewEvent)>>> =
+    OnceLock::new();
+fn app_events() -> &'static Mutex<VecDeque<(String, crate::channel_view::ViewEvent)>> {
+    APP_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+#[derive(Default)]
+pub struct AndroidAppSurface {
+    id: Option<String>,
+}
+impl crate::channel_view::ViewBackend for AndroidAppSurface {
+    fn create(&mut self, url: &str, bundled: bool) -> Result<(), String> {
+        self.destroy();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!(
+            "app-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        with_env(|env, activity| {
+            let java_id = env.new_string(&id).map_err(|e| e.to_string())?;
+            let java_url = env.new_string(url).map_err(|e| e.to_string())?;
+            env.call_method(
+                &activity,
+                "createAppSurface",
+                "(Ljava/lang/String;Ljava/lang/String;Z)V",
+                &[
+                    jni::objects::JValue::Object(&java_id),
+                    jni::objects::JValue::Object(&java_url),
+                    jni::objects::JValue::Bool(u8::from(bundled)),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        self.id = Some(id);
+        Ok(())
+    }
+    fn prepare(&mut self, _frame: &mut eframe::Frame, _ctx: &egui::Context) {}
+    fn resize_loading(&mut self, viewport: &EmbedViewport) {
+        if let Some(id) = &self.id {
+            call_viewport("layoutAppSurface", id, viewport);
+        }
+    }
+    fn present(&mut self, viewport: &EmbedViewport) {
+        if let Some(id) = &self.id {
+            if !viewport.rect.intersect(viewport.clip_rect).is_positive() {
+                let _ = call_strings("suspendWebEmbed", id, None);
+            } else {
+                call_viewport("presentAppSurface", id, viewport);
+            }
+        }
+    }
+    fn hide(&mut self) {
+        if let Some(id) = &self.id {
+            let _ = call_strings("suspendWebEmbed", id, None);
+        }
+    }
+    fn destroy(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = call_strings("destroyWebEmbed", &id, None);
+        }
+        if let Ok(mut queue) = app_events().lock() {
+            queue.clear();
+        }
+    }
+    fn poll(&mut self) -> Vec<crate::channel_view::ViewEvent> {
+        let Ok(mut queue) = app_events().lock() else {
+            return vec![];
+        };
+        queue
+            .drain(..)
+            .filter_map(|(id, event)| (self.id.as_deref() == Some(&id)).then_some(event))
+            .collect()
+    }
+}
+impl Drop for AndroidAppSurface {
+    fn drop(&mut self) {
+        crate::channel_view::ViewBackend::destroy(self);
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeAppSurfaceEvent(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    id: jni::objects::JString,
+    kind: jni::sys::jint,
+    url: jni::objects::JString,
+) {
+    use crate::channel_view::ViewEvent;
+    let Some(id) = string(&mut env, id) else {
+        return;
+    };
+    let event = match kind {
+        1 => {
+            let Some(url) = string(&mut env, url) else {
+                return;
+            };
+            ViewEvent::External(url)
+        }
+        2 => ViewEvent::Failed,
+        3 => ViewEvent::Ready,
+        _ => return,
+    };
+    if let Ok(mut queue) = app_events().lock() {
+        queue.push_back((id, event));
+    }
+    crate::platform::wake::request();
 }

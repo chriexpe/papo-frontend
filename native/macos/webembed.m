@@ -11,7 +11,7 @@ typedef struct {
 
 typedef void (*PapoEventFn)(void *context, int kind, const char *url);
 
-enum { PapoOpenExternal = 1, PapoFailed = 2 };
+enum { PapoOpenExternal = 1, PapoFailed = 2, PapoReady = 3 };
 static NSString *const PapoReferer = @"https://io.github.chriexpe.papo/";
 
 static BOOL papo_safe_url(NSURL *url) {
@@ -37,10 +37,13 @@ static BOOL papo_safe_url(NSURL *url) {
 }
 @end
 
-@interface PapoNavigation : NSObject <WKNavigationDelegate, WKUIDelegate>
+@interface PapoNavigation : NSObject <WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate>
 @property(nonatomic, assign) void *context;
 @property(nonatomic, assign) PapoEventFn callback;
 @property(nonatomic, assign) BOOL firstDocumentLoaded;
+@property(nonatomic, strong) NSURL *lockedURL;
+@property(nonatomic) BOOL appSurface;
+@property(nonatomic) BOOL bundled;
 @end
 
 @implementation PapoNavigation
@@ -66,8 +69,16 @@ static BOOL papo_safe_url(NSURL *url) {
     }
 
     BOOL topLevel = action.targetFrame == nil || action.targetFrame.isMainFrame;
-    BOOL clicked = action.navigationType == WKNavigationTypeLinkActivated;
-    if (topLevel && clicked && self.firstDocumentLoaded) {
+    NSNumber *port=url.port ?: @([url.scheme.lowercaseString isEqualToString:@"https"] ? 443 : 80);
+    NSNumber *lockedPort=self.lockedURL.port ?: @([self.lockedURL.scheme.lowercaseString isEqualToString:@"https"] ? 443 : 80);
+    BOOL same=[url.scheme.lowercaseString isEqualToString:self.lockedURL.scheme.lowercaseString] && [url.host.lowercaseString isEqualToString:self.lockedURL.host.lowercaseString] && [port isEqualToNumber:lockedPort];
+    if (self.appSurface && self.bundled && same) {
+        NSString *path = self.lockedURL.path;
+        NSRange ui = [path rangeOfString:@"/ui/"];
+        same = ui.location != NSNotFound && [url.path hasPrefix:[path substringToIndex:NSMaxRange(ui)]]
+            && ![url.pathComponents containsObject:@".."] && ![url.pathComponents containsObject:@"."];
+    }
+    if ((self.appSurface || topLevel) && (!same || action.targetFrame==nil)) {
         [self emit:PapoOpenExternal url:url];
         decisionHandler(WKNavigationActionPolicyCancel);
         return;
@@ -75,14 +86,50 @@ static BOOL papo_safe_url(NSURL *url) {
     // In-frame navigation (including scripted redirects) remains in WebKit.
     decisionHandler(WKNavigationActionPolicyAllow);
 }
+- (void)webView:(WKWebView *)webView didReceiveAuthenticationChallenge:(NSURLAuthenticationChallenge *)challenge
+    completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential *))completionHandler {
+    (void)webView;
+    if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+    } else {
+        completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+    }
+}
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
     (void)webView; (void)navigation;
     self.firstDocumentLoaded = YES;
+    if (self.appSurface) [self emit:PapoReady url:nil];
 }
 - (void)webView:(WKWebView *)webView
     didFailProvisionalNavigation:(WKNavigation *)navigation withError:(NSError *)error {
     (void)webView; (void)navigation;
     if (error.code != NSURLErrorCancelled) [self emit:PapoFailed url:nil];
+}
+- (void)webView:(WKWebView *)webView didFailNavigation:(WKNavigation *)navigation withError:(NSError *)error {
+    (void)webView; (void)navigation;
+    if (error.code != NSURLErrorCancelled) [self emit:PapoFailed url:nil];
+}
+- (void)webView:(WKWebView *)webView navigationAction:(WKNavigationAction *)action
+    didBecomeDownload:(WKDownload *)download API_AVAILABLE(macos(11.3)) {
+    (void)webView; (void)action;
+    download.delegate = self;
+    [download cancel:nil];
+}
+- (void)webView:(WKWebView *)webView navigationResponse:(WKNavigationResponse *)response
+    didBecomeDownload:(WKDownload *)download API_AVAILABLE(macos(11.3)) {
+    (void)webView; (void)response;
+    download.delegate = self;
+    [download cancel:nil];
+}
+- (void)download:(WKDownload *)download decideDestinationUsingResponse:(NSURLResponse *)response
+    suggestedFilename:(NSString *)filename completionHandler:(void (^)(NSURL *))completionHandler API_AVAILABLE(macos(11.3)) {
+    (void)download; (void)response; (void)filename;
+    completionHandler(nil);
+}
+- (void)webView:(WKWebView *)webView runOpenPanelWithParameters:(WKOpenPanelParameters *)parameters
+    initiatedByFrame:(WKFrameInfo *)frame completionHandler:(void (^)(NSArray<NSURL *> *))completionHandler {
+    (void)webView; (void)parameters; (void)frame;
+    completionHandler(nil);
 }
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     (void)webView;
@@ -103,7 +150,42 @@ static BOOL papo_safe_url(NSURL *url) {
     decidePolicyForNavigationResponse:(WKNavigationResponse *)response
     decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler {
     (void)webView;
-    // Third-party embeds may display media, but never initiate downloads.
+    if (self.appSurface && response.isForMainFrame) {
+        NSHTTPURLResponse *http = [response.response isKindOfClass:NSHTTPURLResponse.class]
+            ? (NSHTTPURLResponse *)response.response : nil;
+        NSString *xfo = [http valueForHTTPHeaderField:@"X-Frame-Options"] ?: @"";
+        NSString *csp = [http valueForHTTPHeaderField:@"Content-Security-Policy"] ?: @"";
+        BOOL refused = !http || http.statusCode >= 400;
+        if (!self.bundled) {
+            for (NSString *value in [xfo.lowercaseString componentsSeparatedByString:@","]) {
+                NSString *v = [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if ([v isEqualToString:@"deny"] || [v isEqualToString:@"sameorigin"]) refused = YES;
+            }
+            for (NSString *policy in [csp.lowercaseString componentsSeparatedByString:@","]) {
+                for (NSString *directive in [policy componentsSeparatedByString:@";"]) {
+                    NSArray *words = [[directive componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                        filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+                    if (words.count && [words[0] isEqualToString:@"frame-ancestors"] &&
+                        !(words.count == 2 && [words[1] isEqualToString:@"*"])) refused = YES;
+                }
+            }
+        } else {
+            BOOL sandbox = NO;
+            for (NSString *directive in [csp.lowercaseString componentsSeparatedByString:@";"]) {
+                NSArray *words = [[directive componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]
+                    filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"length > 0"]];
+                if (words.count && [words[0] isEqualToString:@"sandbox"] &&
+                    ![words containsObject:@"allow-same-origin"]) sandbox = YES;
+            }
+            if (!sandbox) refused = YES;
+        }
+        if (refused) {
+            [self emit:PapoFailed url:nil];
+            decisionHandler(WKNavigationResponsePolicyCancel);
+            return;
+        }
+    }
+    if (!response.canShowMIMEType && self.appSurface) [self emit:PapoFailed url:nil];
     decisionHandler(response.canShowMIMEType
         ? WKNavigationResponsePolicyAllow : WKNavigationResponsePolicyCancel);
 }
@@ -122,14 +204,24 @@ static BOOL papo_safe_url(NSURL *url) {
 @property(nonatomic, strong) WKWebView *webview;
 @property(nonatomic, strong) PapoNavigation *navigation;
 @property(nonatomic, weak) NSView *parent;
+@property(nonatomic, strong) NSURLRequest *pendingRequest;
 @end
 @implementation PapoWebHost
 @end
 
 // The parent is a live winit NSView, captured from the raw AppKit handle.
-void *papo_wk_create(void *parentView, const char *urlText,
-                     void *context, PapoEventFn eventCallback) {
+static void *papo_wk_create_impl(void *parentView, const char *urlText,
+                     void *context, PapoEventFn eventCallback, BOOL appSurface, BOOL bundled) {
     @autoreleasepool {
+        if (appSurface) {
+            if (@available(macOS 12.0, *)) {} else { return NULL; }
+            // Rule 5: the packaged app must never request location authorization.
+            // Camera/microphone are denied by the public delegate. Clipboard uses
+            // WebKit's user gesture/paste confirmation; no native clipboard bridge.
+            for (NSString *key in NSBundle.mainBundle.infoDictionary) {
+                if ([key hasPrefix:@"NSLocation"]) return NULL;
+            }
+        }
         if (![NSThread isMainThread] || !parentView || !urlText) return NULL;
         NSView *view = (__bridge NSView *)parentView;
         NSView *parent = view.window.contentView;
@@ -155,6 +247,9 @@ void *papo_wk_create(void *parentView, const char *urlText,
         host.navigation = [PapoNavigation new];
         host.navigation.context = context;
         host.navigation.callback = eventCallback;
+        host.navigation.lockedURL = url;
+        host.navigation.appSurface = appSurface;
+        host.navigation.bundled = bundled;
         host.webview.navigationDelegate = host.navigation;
         host.webview.UIDelegate = host.navigation;
         host.webview.allowsBackForwardNavigationGestures = NO;
@@ -164,10 +259,18 @@ void *papo_wk_create(void *parentView, const char *urlText,
         [parent addSubview:host.clip positioned:NSWindowAbove relativeTo:nil];
 
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-        [request setValue:PapoReferer forHTTPHeaderField:@"Referer"];
-        [host.webview loadRequest:request];
+        if (!appSurface) [request setValue:PapoReferer forHTTPHeaderField:@"Referer"];
+        if (appSurface) host.pendingRequest = request;
+        else [host.webview loadRequest:request];
         return (__bridge_retained void *)host;
     }
+}
+
+void *papo_wk_create(void *parentView, const char *urlText, void *context, PapoEventFn callback) {
+    return papo_wk_create_impl(parentView, urlText, context, callback, NO, NO);
+}
+void *papo_wk_create_app(void *parentView, const char *urlText, void *context, PapoEventFn callback, int bundled) {
+    return papo_wk_create_impl(parentView, urlText, context, callback, YES, bundled != 0);
 }
 
 void papo_wk_present(void *opaque, PapoRect full, PapoRect visible,
@@ -221,7 +324,13 @@ void papo_wk_present(void *opaque, PapoRect full, PapoRect visible,
         host.clip.layer.mask = mask;
         CGPathRelease(shapePath);
 
-        host.clip.hidden = NO;
+        [host.webview layoutSubtreeIfNeeded];
+        if (host.pendingRequest) {
+            NSURLRequest *request = host.pendingRequest;
+            host.pendingRequest = nil;
+            [host.webview loadRequest:request];
+        }
+        host.clip.hidden = host.navigation.appSurface && !host.navigation.firstDocumentLoaded;
     }
 }
 
@@ -243,6 +352,7 @@ void papo_wk_destroy(void *opaque) {
     @autoreleasepool {
         if (!opaque) return;
         PapoWebHost *host = CFBridgingRelease(opaque);
+        host.pendingRequest = nil;
         [host.webview stopLoading];
         host.webview.navigationDelegate = nil;
         host.webview.UIDelegate = nil;
