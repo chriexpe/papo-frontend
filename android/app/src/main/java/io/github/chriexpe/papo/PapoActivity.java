@@ -225,7 +225,7 @@ public class PapoActivity extends GameActivity {
     private AppSurfaceClient appSurfaceClient;
     private String appSurfacePendingUrl;
     private FrameLayout webEmbedLayer;
-    private FrameLayout webEmbedClip;
+    private EmbedClip webEmbedClip;
     private WebView webEmbedView;
     private String webEmbedId;
     private String webEmbedInitialUrl;
@@ -344,6 +344,26 @@ public class PapoActivity extends GameActivity {
     }
 
 
+    /** Cut egui chrome out of both native drawing and native hit testing. */
+    private static final class EmbedClip extends FrameLayout {
+        int[] holes = new int[0];
+        EmbedClip(Context context) { super(context); }
+        void setHoles(int[] rects) { holes = rects == null ? new int[0] : rects.clone(); invalidate(); }
+        @Override protected void dispatchDraw(Canvas canvas) {
+            int saved = canvas.save();
+            for (int i = 0; i + 3 < holes.length; i += 4) canvas.clipOutRect(holes[i], holes[i+1], holes[i+2], holes[i+3]);
+            super.dispatchDraw(canvas);
+            canvas.restoreToCount(saved);
+        }
+        @Override public boolean dispatchTouchEvent(MotionEvent event) {
+            float x = event.getX(), y = event.getY();
+            for (int i = 0; i + 3 < holes.length; i += 4) {
+                if (x >= holes[i] && x < holes[i+2] && y >= holes[i+1] && y < holes[i+3]) return false;
+            }
+            return super.dispatchTouchEvent(event);
+        }
+    }
+
     private final class TimelineWebView extends WebView {
         private final int touchSlop;
         private float downX;
@@ -417,7 +437,7 @@ public class PapoActivity extends GameActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT));
 
-        webEmbedClip = new FrameLayout(this);
+        webEmbedClip = new EmbedClip(this);
         webEmbedClip.setClipChildren(true);
         webEmbedClip.setClipToPadding(true);
         webEmbedClip.setClickable(false);
@@ -553,6 +573,7 @@ public class PapoActivity extends GameActivity {
             }
 
             webEmbedId = id;
+            webEmbedClip.setHoles(null);
             webEmbedInitialUrl = url;
             webEmbedView = new TimelineWebView(this);
             configureWebEmbed(webEmbedView, id);
@@ -569,6 +590,7 @@ public class PapoActivity extends GameActivity {
             ensureWebEmbedLayer();
             destroyWebEmbedNow();
             webEmbedId = id;
+            webEmbedClip.setHoles(null);
             webEmbedInitialUrl = url;
             try {
                 webEmbedView = new WebView(this);
@@ -616,8 +638,29 @@ public class PapoActivity extends GameActivity {
             int clipLeft,
             int clipTop,
             int clipWidth,
-            int clipHeight) {
-        applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, false);
+            int clipHeight, int[] holes) {
+        runOnUiThread(() -> {
+            if (webEmbedId == null || !webEmbedId.equals(id)) return;
+            webEmbedClip.setHoles(holes);
+            applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, false);
+        });
+    }
+
+    public void presentAppSurface(
+            String id,
+            int left,
+            int top,
+            int width,
+            int height,
+            int clipLeft,
+            int clipTop,
+            int clipWidth,
+            int clipHeight, int[] holes) {
+        runOnUiThread(() -> {
+            if (webEmbedId == null || !webEmbedId.equals(id)) return;
+            webEmbedClip.setHoles(holes);
+            applyWebEmbedGeometry(id, left, top, width, height, clipLeft, clipTop, clipWidth, clipHeight, true);
+        });
     }
 
     private void applyWebEmbedGeometry(

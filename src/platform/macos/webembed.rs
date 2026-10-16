@@ -375,6 +375,9 @@ impl crate::channel_view::ViewBackend for MacosAppSurface {
             }));
         }
     }
+    fn resize_loading(&mut self, viewport: &EmbedViewport) {
+        self.0.present("app", viewport);
+    }
     fn present(&mut self, viewport: &EmbedViewport) {
         self.0.present("app", viewport);
     }

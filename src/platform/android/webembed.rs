@@ -125,23 +125,46 @@ fn call_viewport(method: &str, id: &str, viewport: &EmbedViewport) {
 
     let result = with_env(|env, activity| {
         let id = env.new_string(id).map_err(|error| error.to_string())?;
-        env.call_method(
-            &activity,
-            method,
-            "(Ljava/lang/String;IIIIIIII)V",
-            &[
-                jni::objects::JValue::Object(&id),
-                jni::objects::JValue::Int(left),
-                jni::objects::JValue::Int(top),
-                jni::objects::JValue::Int(width),
-                jni::objects::JValue::Int(height),
-                jni::objects::JValue::Int(clip_left),
-                jni::objects::JValue::Int(clip_top),
-                jni::objects::JValue::Int(clip_width),
-                jni::objects::JValue::Int(clip_height),
-            ],
-        )
-        .map_err(|error| error.to_string())?;
+        let ppp = viewport.pixels_per_point.max(0.1);
+        let visible = viewport.rect.intersect(viewport.clip_rect);
+        let holes: Vec<i32> = viewport
+            .occlusions
+            .iter()
+            .map(|rect| rect.intersect(visible))
+            .filter(|rect| rect.is_positive())
+            .flat_map(|rect| {
+                [
+                    ((rect.min.x - visible.min.x) * ppp).floor() as i32,
+                    ((rect.min.y - visible.min.y) * ppp).floor() as i32,
+                    ((rect.max.x - visible.min.x) * ppp).ceil() as i32,
+                    ((rect.max.y - visible.min.y) * ppp).ceil() as i32,
+                ]
+            })
+            .collect();
+        let java_holes = env
+            .new_int_array(holes.len() as i32)
+            .map_err(|e| e.to_string())?;
+        env.set_int_array_region(&java_holes, 0, &holes)
+            .map_err(|e| e.to_string())?;
+        let mut args = vec![
+            jni::objects::JValue::Object(&id),
+            jni::objects::JValue::Int(left),
+            jni::objects::JValue::Int(top),
+            jni::objects::JValue::Int(width),
+            jni::objects::JValue::Int(height),
+            jni::objects::JValue::Int(clip_left),
+            jni::objects::JValue::Int(clip_top),
+            jni::objects::JValue::Int(clip_width),
+            jni::objects::JValue::Int(clip_height),
+        ];
+        let signature = if method == "presentWebEmbed" {
+            "(Ljava/lang/String;IIIIIIII)V"
+        } else {
+            args.push(jni::objects::JValue::Object(&java_holes));
+            "(Ljava/lang/String;IIIIIIII[I)V"
+        };
+        env.call_method(&activity, method, signature, &args)
+            .map_err(|error| error.to_string())?;
         Ok(())
     });
     if let Err(error) = result {
@@ -242,13 +265,10 @@ impl crate::channel_view::ViewBackend for AndroidAppSurface {
     }
     fn present(&mut self, viewport: &EmbedViewport) {
         if let Some(id) = &self.id {
-            let visible = viewport.rect.intersect(viewport.clip_rect);
-            // Android's View hierarchy cannot punch arbitrary holes. Hide the
-            // native surface while egui chrome overlaps it, preventing input leaks.
-            if !visible.is_positive() || viewport.occlusions.iter().any(|r| r.intersects(visible)) {
+            if !viewport.rect.intersect(viewport.clip_rect).is_positive() {
                 let _ = call_strings("suspendWebEmbed", id, None);
             } else {
-                call_present(id, viewport);
+                call_viewport("presentAppSurface", id, viewport);
             }
         }
     }

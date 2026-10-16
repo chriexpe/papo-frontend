@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 def check(keys):
-    forbidden = [key for key in keys if key.startswith("NSLocation") and key.endswith("UsageDescription")]
+    forbidden = [key for key in keys if key.startswith("NSLocation")]
     if forbidden:
         raise ValueError("App-surface isolation forbids location usage keys: " + ", ".join(forbidden))
 

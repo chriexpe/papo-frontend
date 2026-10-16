@@ -103,22 +103,29 @@ shutdown, frame/TLS/timeout handling, native focus/DPI, and permission/download 
 remain unverified at runtime. Closing-browser events use a separate queue from the next
 surface, so late callbacks cannot approve a newer surface.
 
-macOS: app surfaces use the explicit cfg fallback. Nonpersistent WKWebsiteDataStore
-exists from 10.11; native response-policy inspection is available from 10.10;
-camera/microphone denial is public from 12.0. The public geolocation-denial delegate
-is declared for **27.0**, and orientation/motion permission is unavailable on macOS.
-Header modification in WKContentRuleList has SPI requirements; this PR does not use
-private selectors or inject scripts to compensate. No supported/verified public
-combination currently enforces the complete policy, so no app WKWebView is created.
-Native macOS compilation/runtime and any future SDK combination remain unverified.
-Sources: [WKUIDelegate declarations](https://github.com/WebKit/WebKit/blob/main/Source/WebKit/UIProcess/API/Cocoa/WKUIDelegate.h),
-[modify-headers SPI](https://bugs.webkit.org/show_bug.cgi?id=237784).
+macOS 12+: app surfaces use a separate `WKWebsiteDataStore.nonPersistent()` and no
+script injection or `WKScriptMessageHandler`. Navigation actions are origin locked;
+main response headers enforce frame refusal and bundled sandbox policy. Camera and
+microphone requests are denied by `WKUIDelegate`, downloads are cancelled, and popups
+are denied/external. Location authorization is prevented by the absence of every
+`NSLocation*` Info.plist key: packaging, CI, regression tests and the runtime guard
+reject those keys. Clipboard remains mediated by WebKit's user gesture/paste
+confirmation. Below macOS 12, use fallback. The macos-15 CI job has compiled and
+packaged the native implementation; **no Mac was available for runtime/UI testing**.
 
-Android: browser-only fallback. Follow-up (outside this PR): verify availability of
-`WebViewFeature.MULTI_PROFILE` and AndroidX WebKit
-[ProfileStore](https://developer.android.com/reference/androidx/webkit/ProfileStore),
-then prove ephemeral storage/cleanup and the remaining controls. No Android device
-was connected; rules 1–5 are not claimed as enforced by an embedded Android surface.
+Android: real embedding requires runtime support for both
+`WebViewFeature.MULTI_PROFILE` and `DELETE_BROWSING_DATA` (AndroidX WebKit 1.13.0).
+Each surface gets a unique profile, never reused. On destroy its WebView is destroyed
+and all cookies, cache and site storage are erased asynchronously. Chromium cannot
+delete a profile record loaded in the current process; the empty record is removed
+at the next process startup. This lifecycle adjustment was explicitly approved after
+testing the device limitation. Otherwise use fallback.
+No JavaScript interface is installed. Navigation/resources are origin locked;
+permissions, geolocation, file selection, downloads and popups are denied. Remote
+frame headers are probed with a credential-less GET, disconnected after headers;
+this replaces HEAD because the real BlueMap server returns HEAD 400 but GET 200.
+Redirects, errors, timeouts and embedding-refusal headers cause fallback. Bundled
+surfaces skip this probe and validate the actual document's sandbox response.
 
 An unrelated, pre-existing UTF-8 slicing panic in the rich-preview fetcher was observed
 while fetching YouTube metadata. It did not prevent native YouTube activation or the
@@ -190,3 +197,55 @@ Screenshots are in `docs/screenshots/app-interactions/`. Physical mobile back ge
 and native Windows/macOS surfaces were not exercised in this Linux smoke; the platform
 isolation/fallback limitations described above still apply. The original `test/pr100`
 checkout and its two modified files were left untouched.
+
+## C7: Android and macOS embedding (2026-10-16)
+
+| Platform | Implementation | Verification |
+|---|---|---|
+| Android 16 / GM1910 / System WebView 154.0.8037.106 | Isolated profiles, origin lock, no JS bridge, permission/download denial, frame refusal and fallback | Debug APK built and installed on the user's phone; real embedding exercised. Full security/permission matrix remains unverified. |
+| macOS 12+ | Ephemeral WKWebView, navigation/response delegates, no JS bridge, media/download denial, location packaging guard, user-mediated clipboard | macos-15 CI native build and packaging passed; see PR checks for the latest revision. Runtime/UI **unverified**: no Mac available. |
+| macOS <12 / Android missing required WebView features | External fallback | Runtime checks implemented; older devices unavailable. |
+
+Phone smoke used the same disposable backend `feat/wasm-plugins` as C6 and separate
+Alice/Bruno accounts on Android and Linux. Inviting from the member row, accepting the
+notification and exchanging game moves worked. Native inline and overlay reference
+surfaces rendered; card and `opens=` activation were exercised, along with keyboard
+Tab/Enter input, background/resume and the overlay Back path. Revanche and plugin-disable destruction were verified in the C6 Linux smoke; repeat
+those steps on Android when checking lifecycle variants.
+
+The user confirmed BlueMap panning works after the viewport fix. Navigation now waits
+until the native view has real dimensions, avoiding BlueMap camera NaN/Infinity from
+an initial 1x1 viewport. App WebViews keep page gestures. Native occlusion rectangles
+clip both drawing and hit testing, so the timeline jump button no longer hides the
+whole inline surface. Profile cleanup callbacks reported data erasure; subsequent
+process startup removed stale profile records. Storage isolation across every browser
+API and all permission variants were not exhaustively probed.
+
+Screenshots: [BlueMap](screenshots/app-platforms/android-bluemap.png),
+[inline reference](screenshots/app-platforms/android-inline.png),
+[overlay reference](screenshots/app-platforms/android-overlay.png).
+
+### Reproduce on Android
+
+1. Build with `bash scripts/android.sh`, then
+   `android/gradlew -p android :app:assembleDebug -PpapoDebugSuffix=.appsurfaces`.
+   Install `android/app/build/outputs/apk/debug/app-debug.apk`. The separate
+   **Papo surfaces test** application preserves the normal Papo install and its data.
+2. For a local development backend, use `adb reverse tcp:18096 tcp:18096` and set
+   `http://127.0.0.1:18096` in the debug application. Production remote surfaces still
+   require HTTPS. Sign into two independent accounts on the phone and a second client.
+3. Enable the reference plugin and BlueMap, open BlueMap, then pan/zoom, background
+   and resume. Check keyboard focus/input and that switching channels destroys the map.
+4. Show members with the header button, invite the other user using the row action,
+   accept their notification, play from both clients, then press Revanche.
+5. Exercise inline click and visible variants (visible launch waits about 300 ms),
+   overlay from its card and from an `opens=` button. Back/close must dismiss the
+   overlay without leaving the channel; switch channels and verify it is destroyed.
+6. Disable the plugin while playing: surfaces must be destroyed and message buttons
+   disabled. Re-enable and verify a fresh launch. Repeat on a WebView without the two
+   required features to verify external fallback.
+
+Automated regression checks: `python3 -m unittest discover -s tests -p
+"test_app_surfaces.py"` checks forbidden location keys and runs the pure Java
+HTTP/header policy against a local server (no cookies/auth/referrer/fragment,
+redirect/status/header refusal, and disconnecting without consuming a streamed body).

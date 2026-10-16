@@ -19,7 +19,7 @@ class LocationPolicy(unittest.TestCase):
 
     def test_adding_location_usage_keys_is_rejected(self):
         for key in ("NSLocationUsageDescription", "NSLocationWhenInUseUsageDescription",
-                    "NSLocationAlwaysAndWhenInUseUsageDescription"):
+                    "NSLocationAlwaysAndWhenInUseUsageDescription", "NSLocationTemporaryUsageDescriptionDictionary"):
             with self.assertRaises(ValueError):
                 policy.check(["NSCameraUsageDescription", key])
         policy.check(["NSCameraUsageDescription", "NSMicrophoneUsageDescription"])

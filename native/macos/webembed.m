@@ -204,6 +204,7 @@ static BOOL papo_safe_url(NSURL *url) {
 @property(nonatomic, strong) WKWebView *webview;
 @property(nonatomic, strong) PapoNavigation *navigation;
 @property(nonatomic, weak) NSView *parent;
+@property(nonatomic, strong) NSURLRequest *pendingRequest;
 @end
 @implementation PapoWebHost
 @end
@@ -218,7 +219,7 @@ static void *papo_wk_create_impl(void *parentView, const char *urlText,
             // Camera/microphone are denied by the public delegate. Clipboard uses
             // WebKit's user gesture/paste confirmation; no native clipboard bridge.
             for (NSString *key in NSBundle.mainBundle.infoDictionary) {
-                if ([key hasPrefix:@"NSLocation"] && [key hasSuffix:@"UsageDescription"]) return NULL;
+                if ([key hasPrefix:@"NSLocation"]) return NULL;
             }
         }
         if (![NSThread isMainThread] || !parentView || !urlText) return NULL;
@@ -259,7 +260,8 @@ static void *papo_wk_create_impl(void *parentView, const char *urlText,
 
         NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
         if (!appSurface) [request setValue:PapoReferer forHTTPHeaderField:@"Referer"];
-        [host.webview loadRequest:request];
+        if (appSurface) host.pendingRequest = request;
+        else [host.webview loadRequest:request];
         return (__bridge_retained void *)host;
     }
 }
@@ -322,7 +324,13 @@ void papo_wk_present(void *opaque, PapoRect full, PapoRect visible,
         host.clip.layer.mask = mask;
         CGPathRelease(shapePath);
 
-        host.clip.hidden = NO;
+        [host.webview layoutSubtreeIfNeeded];
+        if (host.pendingRequest) {
+            NSURLRequest *request = host.pendingRequest;
+            host.pendingRequest = nil;
+            [host.webview loadRequest:request];
+        }
+        host.clip.hidden = host.navigation.appSurface && !host.navigation.firstDocumentLoaded;
     }
 }
 
@@ -344,6 +352,7 @@ void papo_wk_destroy(void *opaque) {
     @autoreleasepool {
         if (!opaque) return;
         PapoWebHost *host = CFBridgingRelease(opaque);
+        host.pendingRequest = nil;
         [host.webview stopLoading];
         host.webview.navigationDelegate = nil;
         host.webview.UIDelegate = nil;
