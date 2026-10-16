@@ -32,7 +32,7 @@ final class AppSurfaceClient extends WebViewClient {
         // retain profiles in memory and make deletion illegal until process exit.
         ProfileStore store = ProfileStore.getInstance();
         for (String name : store.getAllProfileNames()) {
-            if (name.startsWith(PREFIX)) store.deleteProfile(name);
+            if (name.startsWith(PREFIX)) deleteProfileLater(name, 0);
         }
         String profile = PREFIX + UUID.randomUUID();
         WebViewCompat.setProfile(view, profile); // before any load or settings access
@@ -61,12 +61,25 @@ final class AppSurfaceClient extends WebViewClient {
             }
             @Override public boolean onCreateWindow(WebView view, boolean dialog, boolean gesture, android.os.Message result) { return false; }
         });
+        android.util.Log.i("PapoAppSurface", "Created isolated profile " + profile);
         return client;
     }
     // Called only after the associated WebView has been destroyed, on the UI thread.
     void destroy() {
         closed = true;
-        ProfileStore.getInstance().deleteProfile(profile);
+        deleteProfileLater(profile, 0);
+    }
+    private static void deleteProfileLater(String profile, int attempt) {
+        try {
+            ProfileStore.getInstance().deleteProfile(profile);
+            android.util.Log.i("PapoAppSurface", "Deleted isolated profile " + profile);
+        } catch (IllegalStateException busy) {
+            // Chromium releases the destroyed WebView asynchronously. Never
+            // reuse this profile; retry after its outstanding tasks have drained.
+            if (attempt < 20) new android.os.Handler(android.os.Looper.getMainLooper())
+                .postDelayed(() -> deleteProfileLater(profile, attempt + 1), 250);
+            else android.util.Log.e("PapoAppSurface", "Profile pending cleanup after process exit: " + profile, busy);
+        }
     }
     private void emit(int kind, String url) { if (!closed) events.emit(kind, url); }
     private void fail() { failed = true; emit(2, ""); }
@@ -130,6 +143,7 @@ final class AppSurfaceClient extends WebViewClient {
             connection = null; // response stream now owns the connection
             return new WebResourceResponse(contentType.split(";")[0], "UTF-8", 200, "OK", headers, stream);
         } catch (Exception error) {
+            android.util.Log.w("PapoAppSurface", "Main document policy/load failed", error);
             fail(); return blocked();
         } finally { if (connection != null) connection.disconnect(); }
     }

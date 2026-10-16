@@ -3272,7 +3272,7 @@ fn conversation(
             state.webembed_chat_clip=None;
             let header=channel_pill(ui,store,state,t,s,full);
             let members_pill=actions_pill(ui,store,state,t,s,full);
-            let update=update_pill(ui,state,t,s,full,header,None);
+            let update=update_pill(ui,state,t,s,full,header,Some(members_pill));
             let edge=if state.compact {24.0}else{0.0};
             let content=Rect::from_min_max(egui::pos2(full.min.x+edge,full.min.y+PILL_MARGIN*2.0+PILL_HEIGHT),egui::pos2(full.max.x-edge,full.max.y));
             if let Some(app)=channel.app.as_ref() {
@@ -4336,10 +4336,12 @@ fn channel_pill(
 
     let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
     let response = ui.interact(header, Id::new("channel-topic-pill"), Sense::click());
-    if topic_text.is_some() && response.clicked() {
+    if state.compact && channel.kind == ChannelKind::App && response.clicked() {
+        state.mobile_surface = MobileSurface::Navigation;
+    } else if topic_text.is_some() && response.clicked() {
         toggle_panel(state, PanelKind::Topic);
     }
-    if topic_text.is_some() && response.hovered() {
+    if (topic_text.is_some() || (state.compact && channel.kind == ChannelKind::App)) && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 

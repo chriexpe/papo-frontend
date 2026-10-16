@@ -133,19 +133,19 @@ public class PapoActivity extends GameActivity {
     private boolean rustWantsBack = false;
 
     /**
-     * O voltar só é nosso enquanto há algo para fechar. Com o callback
-     * desligado o sistema faz o de sempre, inclusive a animação preditiva do
-     * Android 16 — que, para apps com targetSdk 36+, nem chama mais o
-     * onBackPressed.
+     * Fecha primeiro a superfície/modal do Rust. Na raiz, coloca a tarefa
+     * em segundo plano, preservando a Activity nativa e o event loop do Rust
+     * para a retomada (inclusive no Android 16 com voltar preditivo).
      */
-    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(false) {
+    private final OnBackPressedCallback backCallback = new OnBackPressedCallback(true) {
         @Override
         public void handleOnBackPressed() {
             if (webEmbedFullscreenView != null) {
                 hideWebEmbedFullscreen();
                 return;
             }
-            nativeBackPressed();
+            if (rustWantsBack) nativeBackPressed();
+            else moveTaskToBack(true); // Root Back backgrounds the task; preserve the Rust Activity.
         }
     };
 
@@ -158,7 +158,7 @@ public class PapoActivity extends GameActivity {
     }
 
     private void refreshBackCallback() {
-        backCallback.setEnabled(rustWantsBack || webEmbedFullscreenView != null);
+        backCallback.setEnabled(true);
     }
 
     /** Pressão de memória do sistema. Em `src/platform/memory_pressure.rs`. */
@@ -225,7 +225,7 @@ public class PapoActivity extends GameActivity {
     private AppSurfaceClient appSurfaceClient;
     private FrameLayout webEmbedLayer;
     private FrameLayout webEmbedClip;
-    private TimelineWebView webEmbedView;
+    private WebView webEmbedView;
     private String webEmbedId;
     private String webEmbedInitialUrl;
     private FrameLayout webEmbedFullscreenLayer;
@@ -512,7 +512,7 @@ public class PapoActivity extends GameActivity {
         };
     }
 
-    private void configureWebEmbed(TimelineWebView view, String id) {
+    private void configureWebEmbed(WebView view, String id) {
         final WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -570,7 +570,7 @@ public class PapoActivity extends GameActivity {
             webEmbedId = id;
             webEmbedInitialUrl = url;
             try {
-                webEmbedView = new TimelineWebView(this);
+                webEmbedView = new WebView(this);
                 appSurfaceClient = AppSurfaceClient.attach(webEmbedView, url, bundled,
                     (kind, external) -> nativeAppSurfaceEvent(id, kind, external));
                 webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
