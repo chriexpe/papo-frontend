@@ -350,14 +350,24 @@ fn platform_backend() -> Option<Box<dyn ViewBackend>> {
         crate::platform::linux_webembed::LinuxAppSurface::default(),
     ))
 }
-// macOS <=26 lacks a public geolocation-denial delegate (WKUIDelegate declares
-// it only in 27.0). WKWebView also has no public all-request Referer filter.
-// Neither private selectors nor script injection can substitute for these controls.
 #[cfg(target_os = "macos")]
 fn platform_backend() -> Option<Box<dyn ViewBackend>> {
-    None
+    Some(Box::new(
+        crate::platform::macos_webembed::MacosAppSurface::default(),
+    ))
 }
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+#[cfg(target_os = "android")]
+fn platform_backend() -> Option<Box<dyn ViewBackend>> {
+    Some(Box::new(
+        crate::platform::android_webembed::AndroidAppSurface::default(),
+    ))
+}
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "windows",
+    target_os = "macos",
+    target_os = "android"
+)))]
 fn platform_backend() -> Option<Box<dyn ViewBackend>> {
     None
 }

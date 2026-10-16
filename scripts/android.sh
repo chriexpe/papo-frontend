@@ -18,7 +18,7 @@ ABI="arm64-v8a"
 # A versão do SDK do GStreamer que casa com a da área de trabalho.
 GST_VERSION="1.28.7"
 # O piso de API do `cargo ndk` tem de bater com o `minSdk` do Gradle.
-MIN_SDK=24
+MIN_SDK=$(sed -n 's/.*minSdk *= *\([0-9]*\).*/\1/p' android/app/build.gradle.kts)
 
 PROFILE=dev
 DO_INSTALL=0

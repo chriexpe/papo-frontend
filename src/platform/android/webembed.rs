@@ -63,10 +63,14 @@ impl WebEmbedBackend for AndroidWebEmbedBackend {
 fn with_env<T>(
     f: impl FnOnce(&mut jni::JNIEnv<'_>, jni::objects::JObject<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let app = APP.get().ok_or_else(|| "Activity não instalada".to_owned())?;
+    let app = APP
+        .get()
+        .ok_or_else(|| "Activity não instalada".to_owned())?;
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }
         .map_err(|error| error.to_string())?;
-    let mut env = vm.attach_current_thread().map_err(|error| error.to_string())?;
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|error| error.to_string())?;
     let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
     let result = f(&mut env, activity);
     if result.is_err() {
@@ -188,8 +192,111 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeWebEmbedS
     let Some(id) = string(&mut env, id) else {
         return;
     };
-    push(WebEmbedEvent::ScrollTimeline {
-        id,
-        delta_y_px,
-    });
+    push(WebEmbedEvent::ScrollTimeline { id, delta_y_px });
+}
+
+static APP_EVENTS: OnceLock<Mutex<VecDeque<(String, crate::channel_view::ViewEvent)>>> =
+    OnceLock::new();
+fn app_events() -> &'static Mutex<VecDeque<(String, crate::channel_view::ViewEvent)>> {
+    APP_EVENTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+#[derive(Default)]
+pub struct AndroidAppSurface {
+    id: Option<String>,
+}
+impl crate::channel_view::ViewBackend for AndroidAppSurface {
+    fn create(&mut self, url: &str, bundled: bool) -> Result<(), String> {
+        self.destroy();
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = format!(
+            "app-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        with_env(|env, activity| {
+            let java_id = env.new_string(&id).map_err(|e| e.to_string())?;
+            let java_url = env.new_string(url).map_err(|e| e.to_string())?;
+            env.call_method(
+                &activity,
+                "createAppSurface",
+                "(Ljava/lang/String;Ljava/lang/String;Z)V",
+                &[
+                    jni::objects::JValue::Object(&java_id),
+                    jni::objects::JValue::Object(&java_url),
+                    jni::objects::JValue::Bool(u8::from(bundled)),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        })?;
+        self.id = Some(id);
+        Ok(())
+    }
+    fn prepare(&mut self, _frame: &mut eframe::Frame, _ctx: &egui::Context) {}
+    fn present(&mut self, viewport: &EmbedViewport) {
+        if let Some(id) = &self.id {
+            let visible = viewport.rect.intersect(viewport.clip_rect);
+            // Android's View hierarchy cannot punch arbitrary holes. Hide the
+            // native surface while egui chrome overlaps it, preventing input leaks.
+            if !visible.is_positive() || viewport.occlusions.iter().any(|r| r.intersects(visible)) {
+                let _ = call_strings("suspendWebEmbed", id, None);
+            } else {
+                call_present(id, viewport);
+            }
+        }
+    }
+    fn hide(&mut self) {
+        if let Some(id) = &self.id {
+            let _ = call_strings("suspendWebEmbed", id, None);
+        }
+    }
+    fn destroy(&mut self) {
+        if let Some(id) = self.id.take() {
+            let _ = call_strings("destroyWebEmbed", &id, None);
+        }
+        if let Ok(mut queue) = app_events().lock() {
+            queue.clear();
+        }
+    }
+    fn poll(&mut self) -> Vec<crate::channel_view::ViewEvent> {
+        let Ok(mut queue) = app_events().lock() else {
+            return vec![];
+        };
+        queue
+            .drain(..)
+            .filter_map(|(id, event)| (self.id.as_deref() == Some(&id)).then_some(event))
+            .collect()
+    }
+}
+impl Drop for AndroidAppSurface {
+    fn drop(&mut self) {
+        crate::channel_view::ViewBackend::destroy(self);
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeAppSurfaceEvent(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    id: jni::objects::JString,
+    kind: jni::sys::jint,
+    url: jni::objects::JString,
+) {
+    use crate::channel_view::ViewEvent;
+    let Some(id) = string(&mut env, id) else {
+        return;
+    };
+    let event = match kind {
+        1 => {
+            let Some(url) = string(&mut env, url) else {
+                return;
+            };
+            ViewEvent::External(url)
+        }
+        2 => ViewEvent::Failed,
+        3 => ViewEvent::Ready,
+        _ => return,
+    };
+    if let Ok(mut queue) = app_events().lock() {
+        queue.push_back((id, event));
+    }
+    crate::platform::wake::request();
 }

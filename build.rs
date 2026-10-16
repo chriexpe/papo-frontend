@@ -13,22 +13,45 @@ fn main() {
         "winit patch is missing or outdated: run python3 scripts/prepare-winit.py before Cargo",
     );
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let files = [
+            "native/macos/webembed.m",
+            "native/macos/notify.m",
+            "native/macos/appearance.m",
+        ];
+        for file in files {
+            println!("cargo:rerun-if-changed={file}");
+        }
+        cc::Build::new()
+            .files(files)
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .flag("-mmacosx-version-min=11.0")
+            .compile("papo_macos");
+        for framework in ["AppKit", "WebKit", "QuartzCore", "UserNotifications"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+        return;
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
 
-    let manifest = std::path::PathBuf::from(
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"),
-    );
+    let manifest =
+        std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let ico = out.join("papo.ico");
 
     let sizes = [16u16, 22, 24, 32, 48, 64, 128, 256];
     let mut images = Vec::new();
     for size in sizes {
-        let path = manifest.join("assets").join("icons").join(format!("{size}.png"));
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let path = manifest
+            .join("assets")
+            .join("icons")
+            .join(format!("{size}.png"));
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
         images.push((size, bytes));
     }
 

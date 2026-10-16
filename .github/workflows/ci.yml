@@ -26,7 +26,9 @@ jobs:
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
       - name: Test winit preparation
-        run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
+        run: |
+          python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
+          python -B -m unittest discover -s tests -p 'test_app_surfaces.py'
       - run: cargo test --locked --workspace
 
   clippy:
@@ -106,6 +108,7 @@ jobs:
           bash -n scripts/deps.sh
           bash -n scripts/wpe-runtime.sh
           bash -n packaging/macos/build-app.sh
+          python3 scripts/check-macos-location-policy.py packaging/macos/build-app.sh
           python3 -m py_compile packaging/macos/bundle-gstreamer.py
 
   # Build natively on an Apple Silicon runner. This is a compile/runtime

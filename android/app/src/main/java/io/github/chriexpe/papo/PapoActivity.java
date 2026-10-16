@@ -191,6 +191,7 @@ public class PapoActivity extends GameActivity {
     /** Eventos estreitos do browser embed. Não existe ponte JS para o Papo. */
     private static native void nativeWebEmbedExternal(String id, String url);
     private static native void nativeWebEmbedFailed(String id);
+    private static native void nativeAppSurfaceEvent(String id, int kind, String url);
     private static native void nativeWebEmbedScroll(String id, float deltaYPx);
 
     private static final String EXTRA_MESSAGE_SERVER = MessageNotifications.EXTRA_SERVER;
@@ -221,6 +222,7 @@ public class PapoActivity extends GameActivity {
 
     // Browser rico: uma única superfície viva. O Rust decide identidade,
     // geometria, floating/stop e ciclo de vida; a Activity só hospeda a View.
+    private AppSurfaceClient appSurfaceClient;
     private FrameLayout webEmbedLayer;
     private FrameLayout webEmbedClip;
     private TimelineWebView webEmbedView;
@@ -561,6 +563,27 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    public void createAppSurface(String id, String url, boolean bundled) {
+        runOnUiThread(() -> {
+            ensureWebEmbedLayer();
+            destroyWebEmbedNow();
+            webEmbedId = id;
+            webEmbedInitialUrl = url;
+            try {
+                webEmbedView = new TimelineWebView(this);
+                appSurfaceClient = AppSurfaceClient.attach(webEmbedView, url, bundled,
+                    (kind, external) -> nativeAppSurfaceEvent(id, kind, external));
+                webEmbedClip.addView(webEmbedView, new FrameLayout.LayoutParams(1, 1));
+                webEmbedView.loadUrl(url); // no native credentials or Referer
+                webEmbedLayer.setVisibility(View.GONE);
+            } catch (RuntimeException error) {
+                Log.w("PapoAppSurface", "Isolated WebView unavailable", error);
+                destroyWebEmbedNow();
+                nativeAppSurfaceEvent(id, 2, "");
+            }
+        });
+    }
+
     public void presentWebEmbed(
             String id,
             int left,
@@ -651,6 +674,11 @@ public class PapoActivity extends GameActivity {
                 webEmbedClip.removeView(webEmbedView);
             }
             webEmbedView.destroy();
+        }
+        if (appSurfaceClient != null) {
+            try { appSurfaceClient.destroy(); }
+            catch (RuntimeException error) { Log.w("PapoAppSurface", "Profile cleanup deferred to next create", error); }
+            appSurfaceClient = null;
         }
         webEmbedView = null;
         webEmbedId = null;

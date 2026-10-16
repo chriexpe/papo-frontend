@@ -158,6 +158,7 @@ gstreamer-rtp = { version = "0.24", features = ["v1_20"] }
 jni = "0.21"
 
 [build-dependencies]
+cc = "1"
 embed-resource = "3"
 
 [package.metadata.patch]

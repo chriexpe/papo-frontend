@@ -75,6 +75,7 @@ for size in 16 32 128 256 512; do
 done
 iconutil --convert icns --output "$contents/Resources/Papo.icns" "$iconset"
 
+python3 "$(dirname "$0")/../../scripts/check-macos-location-policy.py" "$contents/Info.plist"
 plutil -lint "$contents/Info.plist"
 python3 packaging/macos/bundle-gstreamer.py "$app"
 # Apple Silicon requires valid code signatures. This local ad-hoc signature
