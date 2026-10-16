@@ -229,6 +229,7 @@ impl NetworkGate {
 
 #[derive(Debug, Clone)]
 pub enum Command {
+    Plugin { ticket:u64, id:String, action:String, body:serde_json::Value },
     Login { username: String, password: String },
     Register { username: String, password: String },
     RecoverPassword { token: String, password: String },
@@ -476,6 +477,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Update {
+    Plugin { ticket:u64, action:String, result:Result<serde_json::Value,String> },
     /// Sessão válida (`Some`) ou encerrada (`None`).
     Session(Option<Box<Whoami>>),
     AuthFailed(String),
@@ -2135,9 +2137,9 @@ async fn worker(
             event = events_rx.recv() => {
                 let Some(event) = event else { continue };
                 hooks.event.emit(&event);
-                if matches!(&event, Event::ChannelUpdated { .. }) && session.is_authenticated() {
+                if matches!(&event, Event::ChannelUpdated { .. } | Event::AppInvalidated { .. }) && session.is_authenticated() {
                     let user_id = me.lock().ok().and_then(|slot| slot.clone());
-                    // Uma resposta anterior à revogação não pode recriar as abas.
+                    // Uma resposta anterior à revogação não pode restaurar superfícies.
                     // Invalida também progressos/completions já enfileirados desse run.
                     abort_reconciles(
                         reconcile_scheduler.cancel_key(&ReconcileKey::ServerMetadata),
@@ -2162,7 +2164,8 @@ async fn worker(
                 if reconcile_scheduler.is_running_key(&ReconcileKey::ServerMetadata)
                     && matches!(
                         &event,
-                        Event::ChannelCreated { .. }
+                        Event::AppInvalidated { .. }
+                            | Event::ChannelCreated { .. }
                             | Event::ChannelUpdated { .. }
                             | Event::ChannelDeleted { .. }
                             | Event::DirectMessageUpdated(_)
@@ -3083,6 +3086,10 @@ async fn handle(
     command: Command,
 ) {
     match command {
+        Command::Plugin{ticket,id,action,body}=>{
+            let result=api.plugin_action(&id,&action,body).await.map_err(|e|e.to_string());
+            publish(updates,wake,Update::Plugin{ticket,action,result});
+        }
         Command::Login { username, password } => match api.login(&username, &password).await {
             Ok(login) => {
                 store_optional_secret(

@@ -255,6 +255,7 @@ impl From<&Channel> for CachedChannel {
                 ChannelKind::Voice => "voice",
                 ChannelKind::Category => "category",
                 ChannelKind::Direct => "dm",
+                ChannelKind::App => "app",
             }
             .to_owned(),
             topic: channel.topic.clone(),
@@ -454,7 +455,11 @@ impl CachedMessage {
                     moderation_status: attachment.moderation_status.clone(),
                 })
                 .collect(),
-            previews: self.embeds.clone(),
+            // Cached availability is never authority to execute an app surface.
+            previews: self.embeds.iter().cloned().map(|mut preview| {
+                if let Some(app) = &mut preview.app { app.available = false; }
+                preview
+            }).collect(),
             reactions: self
                 .reactions
                 .iter()

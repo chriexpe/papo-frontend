@@ -72,23 +72,23 @@ pub fn seed(store: &mut Store, server_key: &str) {
         channel("c-geral", "geral", "Onde tudo começa — avisos e conversa solta", 1),
         // Uma categoria de verdade, para ver o arrastar entre categorias.
         Channel {
-            views: Vec::new(),
+            app: None,
             kind: ChannelKind::Category,
             topic: None,
             ..channel("c-projetos", "Projetos", "", 2)
         },
         Channel {
-            views: Vec::new(),
+            app: None,
             parent_id: Some("c-projetos".into()),
             ..channel("c-dev", "dev", "Código, revisões e o que quebrou hoje", 3)
         },
         Channel {
-            views: Vec::new(),
+            app: None,
             parent_id: Some("c-projetos".into()),
             ..channel("c-design", "design", "Telas, protótipos e discussões de cor", 4)
         },
         Channel {
-            views: Vec::new(),
+            app: None,
             id: "c-voz".into(),
             name: "sala de voz".into(),
             kind: ChannelKind::Voice,
@@ -550,6 +550,7 @@ fn profiles(store: &mut Store) {
     // Os mesmos cargos na lista do servidor, para a tela de Cargos ter o
     // que mostrar (com permissões de exemplo).
     let permissions = |manage: bool| crate::api::models::RolePermissions {
+        manage_apps: manage,
         manage_server: manage,
         manage_channels: manage,
         manage_roles: manage,
@@ -673,7 +674,7 @@ fn member(id: &str, name: &str, presence: Presence, color: Option<(u8, u8, u8)>)
 
 fn channel(id: &str, name: &str, topic: &str, position: i32) -> Channel {
     Channel {
-        views: Vec::new(),
+        app: None,
         id: id.into(),
         name: name.into(),
         kind: ChannelKind::Text,

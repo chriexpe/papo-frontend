@@ -940,7 +940,9 @@ pub struct UiState {
     /// Browser rico é estado da janela/processo, nunca entra no Stash de servidor.
     pub webembed: crate::webembed::WebEmbedManager,
     pub channel_view: crate::channel_view::ChannelViewSurface,
-    pub channel_view_tab: bool,
+    pub app_pane: bool,
+    pub app_input_focused: bool,
+    pub surface_strings: (&'static str,&'static str,&'static str,&'static str),
     /// O que fazer quando o cartão dono sai da viewport.
     pub webembed_behavior: crate::webembed::OffscreenBehavior,
     /// Até onde um WebEmbed flutuante acompanha a navegação.
@@ -1173,7 +1175,9 @@ impl Default for UiState {
             media: MediaStore::new(None),
             webembed: crate::webembed::WebEmbedManager::default(),
             channel_view: Default::default(),
-            channel_view_tab: false,
+            app_pane: false,
+            app_input_focused: false,
+            surface_strings: (crate::i18n::EN.app_loading,crate::i18n::EN.app_unavailable,crate::i18n::EN.app_unsupported,crate::i18n::EN.app_open_browser),
             webembed_behavior: crate::webembed::OffscreenBehavior::default(),
             webembed_scope: crate::webembed::FloatScope::default(),
             webembed_float_width: 360.0,
@@ -1465,7 +1469,7 @@ pub fn draw(
     // para, porque ela já saiu da tela.
     if state.last_channel != store.selected_channel {
         state.channel_view.destroy();
-        state.channel_view_tab = false;
+        state.app_pane = false;
         let next_channel = store.selected_channel.clone();
         let previous_channel = state.last_channel.clone();
         state.switch_draft_channel(&next_channel);
@@ -1905,7 +1909,7 @@ fn channels_sidebar(
                                 section_caption(ui, t, s.text_channels);
                                 for (channel, _) in layout
                                     .iter()
-                                    .filter(|(c, parent)| parent.is_none() && c.kind == ChannelKind::Text)
+                                    .filter(|(c, parent)| parent.is_none() && matches!(c.kind,ChannelKind::Text|ChannelKind::App))
                                 {
                                     sidebar_channel(ui, store, state, t, s, channel, width);
                                 }
@@ -2422,13 +2426,20 @@ fn sidebar_channel(
         store,
         state,
         t,
-        if voice { icon::SPEAKER_HIGH } else { icon::HASH },
+        if voice { icon::SPEAKER_HIGH } else if channel.kind==ChannelKind::App {icon::APP_WINDOW} else { icon::HASH },
         &channel.name,
         if voice { here } else { store.selected_channel == channel.id },
         !voice && channel.unread,
         if voice { 0 } else { channel.mentions },
         width,
     );
+    if let Some(app)=&channel.app {
+        let rect=Rect::from_center_size(egui::pos2(row.rect.min.x+space::MD+7.0,row.rect.center().y),Vec2::splat(20.0));
+        if let Some(texture)=state.media.app_avatar(&app.app_installation_id).and_then(|v|v.frame(ui.ctx())).cloned() {
+            ui.painter().rect_filled(rect,CornerRadius::ZERO,t.content_bg);
+            round_photo(ui.painter(),rect,texture.id(),Color32::WHITE);
+        }
+    }
     if row.clicked() {
         if voice {
             // Um clique entra, como se espera de uma sala de voz: ela não é
@@ -2670,7 +2681,7 @@ fn channel_menu(
                 state.actions.push(ChatAction::EditChannel(channel.id.clone()));
                 ui.close();
             }
-            if channel_context_row(ui, t, icon::TRASH, s.delete_channel, false, true) {
+            if channel.kind != ChannelKind::App && channel_context_row(ui, t, icon::TRASH, s.delete_channel, false, true) {
                 state
                     .actions
                     .push(ChatAction::RequestDeleteChannel(channel.id.clone()));
@@ -3170,22 +3181,11 @@ fn conversation(
 ) {
     use crate::state::Stage;
 
-    let mut views = if state.dm_surface {
-        Vec::new()
-    } else {
-        store
-            .channel(&store.selected_channel)
-            .map(|c| c.views.clone())
-            .unwrap_or_default()
-    };
-    views.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-    state
-        .channel_view
-        .sync(&state.server_url, &store.selected_channel, &views);
-    if state.channel_view.selected_id().is_none() {
-        state.channel_view_tab = false;
-    }
-
+    state.surface_strings=(s.app_loading,s.app_unavailable,s.app_unsupported,s.app_open_browser);
+    state.channel_view.sync(&state.server_url,&store.selected_channel);
+    let app_channel=store.channel(&store.selected_channel).filter(|c|c.kind==ChannelKind::App).cloned();
+    state.app_pane=app_channel.is_some();
+    for url in state.channel_view.take_external() {state.request_external_url(root.ctx(),url);}
     let voice = store
         .channel(&store.selected_channel)
         .is_some_and(|channel| channel.kind == ChannelKind::Voice);
@@ -3224,68 +3224,30 @@ fn conversation(
             return;
         }
 
-        if state.channel_view_tab {
-            channel_view_tabs(ui, state, &views, full);
-            // A view owns this content rectangle only. Chat input handlers and
-            // composer are not rendered while its tab is selected.
-            state.webembed.suspend_active();
-            let channel_rect = channel_pill(ui, store, state, t, s, full);
-            let update = update_pill(ui, state, t, s, full, channel_rect, None);
-            let content = Rect::from_min_max(
-                egui::pos2(
-                    full.min.x,
-                    full.min.y + PILL_MARGIN * 2.0 + PILL_HEIGHT + 36.0,
-                ),
-                full.max,
-            );
-            if state.channel_view.is_fallback() {
-                ui.scope_builder(UiBuilder::new().max_rect(content), |ui| {
-                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        ui.add_space((content.height() * 0.5 - 16.0).max(0.0));
-                        let url = state.channel_view.url().map(str::to_owned);
-                        if ui
-                            .add_enabled(url.is_some(), egui::Button::new("Open in browser"))
-                            .clicked()
-                            && let Some(url) = url
-                        {
-                            state.request_external_url(ui.ctx(), url);
-                        }
-                    });
-                });
-            } else if webembed_inline_allowed(state) && stage.is_none() {
-                let occlusions = update
-                    .map(|placement| vec![placement.rect])
-                    .unwrap_or_default();
-                state.channel_view.present(&crate::webembed::EmbedViewport {
-                    rect: content,
-                    clip_rect: content,
-                    occlusions,
-                    pixels_per_point: ui.ctx().pixels_per_point(),
-                });
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(100));
+        if let Some(channel)=app_channel {
+            state.webembed.destroy_active();
+            state.webembed_chat_clip=None;
+            let header=channel_pill(ui,store,state,t,s,full);
+            let update=update_pill(ui,state,t,s,full,header,None);
+            let edge=if state.compact {24.0}else{0.0};
+            let content=Rect::from_min_max(egui::pos2(full.min.x+edge,full.min.y+PILL_MARGIN*2.0+PILL_HEIGHT),egui::pos2(full.max.x-edge,full.max.y));
+            if let Some(app)=channel.app.as_ref() {
+                if app.available {
+                    let server=state.server_url.clone();
+                    state.channel_view.activate(format!("channel-app:{}",channel.id),app.clone(),&server);
+                } else {state.channel_view.destroy();}
+                app_surface_content(ui,state,t,app,&channel.name,content,content,update.map(|v|vec![v.rect]).unwrap_or_default(),true);
+            } else {
+                state.channel_view.destroy();
+                ui.scope_builder(UiBuilder::new().max_rect(content),|ui|{ui.centered_and_justified(|ui|{ui.label(s.app_unavailable);});});
             }
-            call_layers(
-                ui,
-                store,
-                state,
-                call,
-                t,
-                s,
-                full,
-                stage,
-                channel_rect,
-                update
-                    .filter(|placement| placement.reserves_call_space)
-                    .map(|placement| placement.rect),
-            );
+            if state.compact {handle_mobile_gesture(ui,store,state,full,PILL_MARGIN*2.0+PILL_HEIGHT,0.0);}
             return;
         }
 
         // Canal de voz na tela: a conversa dá lugar à sala. Dentro da call,
         // a grade; fora, quem está lá e o caminho para entrar.
         if voice {
-            channel_view_tabs(ui, state, &views, full);
             state.webembed_chat_clip = None;
             state.webembed_occlusions.clear();
             if stage == Some(Stage::Docked) && store.call.channel_id == store.selected_channel {
@@ -3324,7 +3286,7 @@ fn conversation(
         }
 
         let composer_height = composer_height(ui, state, full);
-        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT + if views.is_empty() { 0.0 } else { 36.0 };
+        let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
         #[cfg(target_os = "android")]
         {
@@ -3605,7 +3567,6 @@ fn conversation(
         );
 
         // Camada funcional: tudo flutua.
-        channel_view_tabs(ui, state, &views, full);
         connection_pill(ui, store, state, t, s, full);
         let channel_rect = channel_pill(ui, store, state, t, s, full);
         let actions_rect = actions_pill(ui, store, state, t, s, full);
@@ -3630,13 +3591,6 @@ fn conversation(
             channel_rect,
             actions_rect,
         );
-        if !views.is_empty() {
-            // Native rich-link surfaces must also leave the new tab row clickable.
-            state.webembed_occlusions.push(Rect::from_min_max(
-                egui::pos2(full.min.x, full.min.y + top_inset - 36.0),
-                egui::pos2(full.max.x, full.min.y + top_inset),
-            ));
-        }
         state.webembed_occlusions.extend(nav_rects);
         if let Some(update) = update {
             state.webembed_occlusions.push(update.rect);
@@ -3665,64 +3619,6 @@ fn conversation(
 }
 
 /// Abas de conteúdo ficam acima da timeline e fora da área nativa.
-fn channel_view_tabs(
-    ui: &mut egui::Ui,
-    state: &mut UiState,
-    views: &[papo_core::api::models::ChannelView],
-    full: Rect,
-) {
-    if views.is_empty() {
-        return;
-    }
-    let tabs = Rect::from_min_size(
-        egui::pos2(
-            full.min.x + PILL_MARGIN,
-            full.min.y + PILL_MARGIN * 2.0 + PILL_HEIGHT,
-        ),
-        Vec2::new((full.width() - PILL_MARGIN * 2.0).max(1.0), 32.0),
-    );
-    ui.scope_builder(UiBuilder::new().max_rect(tabs), |ui| {
-        egui::ScrollArea::horizontal()
-            .id_salt("channel-view-tabs")
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(!state.channel_view_tab, "Chat")
-                        .clicked()
-                    {
-                        state.channel_view_tab = false;
-                        state.channel_view.hide();
-                    }
-                    for view in views {
-                        let label = view
-                            .name
-                            .clone()
-                            .filter(|s| !s.trim().is_empty())
-                            .unwrap_or_else(|| {
-                                url::Url::parse(&view.url)
-                                    .ok()
-                                    .and_then(|u| u.host_str().map(str::to_owned))
-                                    .unwrap_or_else(|| "View".into())
-                            });
-                        let selected = state.channel_view_tab
-                            && state.channel_view.selected_id() == Some(&view.id);
-                        if ui.selectable_label(selected, label).clicked() {
-                            state
-                                .channel_view
-                                .select(Some(view.clone()), &state.server_url);
-                            state.channel_view_tab = true;
-                            ui.memory_mut(|memory| {
-                                if let Some(id) = memory.focused() {
-                                    memory.surrender_focus(id);
-                                }
-                            });
-                        }
-                    }
-                });
-            });
-    });
-}
-
 /// Largura que a gaveta ocupa. A mesma conta de `mobile_drawers`: o gesto
 /// precisa saber de quanto é o caminho inteiro para dizer que fração dele já
 /// foi andada.
@@ -4286,7 +4182,7 @@ fn channel_pill(
 
     let painter = ui.painter();
     let glyph =
-        painter.layout_no_wrap(icon::HASH.to_owned(), text::icon(15.0), t.label_tertiary);
+        painter.layout_no_wrap((if channel.kind==ChannelKind::App {icon::APP_WINDOW}else{icon::HASH}).to_owned(), text::icon(15.0), t.label_tertiary);
     let (channel_name_emojis, channel_name_text) =
         emoji::channel_name_leading(&channel.name, &store.emojis);
     let name =
@@ -6761,6 +6657,7 @@ fn message_body(
             &message.previews,
             width,
             allow_network,
+            message.external_author.as_ref().map(|a|a.name.as_str()),
         );
     }
     rich_links_from_message(
@@ -7013,6 +6910,7 @@ fn link_previews(
     previews: &[crate::api::models::LinkPreview],
     width: f32,
     allow_network: bool,
+    app_name: Option<&str>,
 ) {
     let content_urls = papo_core::preview::extract_https_urls(content);
     let automatic_count = previews
@@ -7021,6 +6919,37 @@ fn link_previews(
         .count();
     for preview in previews {
         let embed_id = format!("embed:{message_id}:backend:{}", preview.id);
+        if let Some(app)=&preview.app {
+            let id=format!("inline-app:{message_id}:{}",preview.id);
+            let size=Vec2::new((preview.frame_width.unwrap_or(480) as f32).clamp(160.0,width.max(160.0)).min(width), (preview.frame_height.unwrap_or(320) as f32).clamp(100.0,640.0));
+            let name=preview.site_name.as_deref().or(preview.provider.as_deref()).or(preview.title.as_deref()).unwrap_or(&app.surface_id);
+            ui.horizontal(|ui|{
+                let (avatar,_)=ui.allocate_exact_size(Vec2::splat(20.0),Sense::hover());
+                if let Some(texture)=state.media.app_avatar(&app.app_installation_id).and_then(|v|v.frame(ui.ctx())).cloned(){round_photo(ui.painter(),avatar,texture.id(),Color32::WHITE);}else{ui.painter().text(avatar.center(),Align2::CENTER_CENTER,icon::APP_WINDOW,text::icon(16.0),t.label_secondary);}
+                ui.label(app_name.unwrap_or(name));
+            });
+            if app_name!=Some(name) {ui.label(name);}
+            if app.source=="remote" && let Ok(url)=url::Url::parse(&app.entry) {ui.label(url.host_str().unwrap_or_default());}
+            let (rect,response)=ui.allocate_exact_size(size,Sense::click());
+            let active=state.channel_view.selected_id()==Some(id.as_str());
+            if active && !app.available {state.channel_view.destroy();}
+            if !active && app.available {
+                ui.painter().rect_filled(rect,CornerRadius::same(12),t.fill_soft);
+                if allow_network && let Some(texture)=state.media.preview(preview).and_then(|v|v.frame(ui.ctx())).cloned(){ui.painter().image(texture.id(),rect,Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0)),Color32::WHITE);}
+                ui.painter().text(rect.center(),Align2::CENTER_CENTER,icon::PLAY,text::icon(24.0),t.label);
+                if response.clicked() {
+                    state.webembed.destroy_active();state.media.pause_all();
+                    let server=state.server_url.clone();state.channel_view.activate(id.clone(),app.clone(),&server);
+                    ui.memory_mut(|m|{if let Some(id)=m.focused(){m.surrender_focus(id);}});
+                }
+            }
+            if state.channel_view.selected_id()==Some(id.as_str()) || !app.available {
+                let clip=state.webembed_chat_clip.unwrap_or(ui.clip_rect()).intersect(ui.clip_rect());
+                app_surface_content(ui,state,t,app,name,rect,clip,state.webembed_occlusions.clone(),false);
+            }
+            continue;
+        }
+
         if preview.source_type.as_deref() == Some("custom") {
             let source_url = if content_urls.len() == 1 && previews.len() == 1 {
                 content_urls[0].as_str()
@@ -7535,8 +7464,9 @@ fn render_embed_media(
                 && (!policy.webembed || !state.webembed.is_active(embed_id))
             {
                 if policy.webembed
-                    && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+                    && activate_rich_surface(state,embed_id.to_owned(),embed.to_owned())
                 {
+                    state.channel_view.destroy();
                     state.media.pause_all();
                     ui.ctx().request_repaint();
                 } else {
@@ -7601,8 +7531,9 @@ fn render_embed_media(
             && (!policy.webembed || !state.webembed.is_active(embed_id))
         {
             if policy.webembed
-                && state.webembed.activate(embed_id.to_owned(), embed.to_owned())
+                && activate_rich_surface(state,embed_id.to_owned(),embed.to_owned())
             {
+                state.channel_view.destroy();
                 state.media.pause_all();
                 ui.ctx().request_repaint();
             } else {
@@ -8304,7 +8235,7 @@ fn webembed_inline_allowed(state: &UiState) -> bool {
 /// Only a full-screen modal (preferences sheet, a viewer) or an explicit block
 /// takes it away, and even then it is suspended, not destroyed.
 fn webembed_floating_allowed(state: &UiState) -> bool {
-    if state.channel_view_tab {
+    if state.app_pane {
         return false;
     }
     !state.webembed_blocked
@@ -8324,14 +8255,15 @@ fn webembed_paint_and_input(
 ) {
     use crate::webembed::{WebEmbedButton, WebEmbedInput};
 
-    let Some(texture) = state.webembed.texture_id() else {
+    let app=state.channel_view.selected_id()==Some(embed_id);
+    let Some(texture) = (if app {state.channel_view.texture_id()}else{state.webembed.texture_id()}) else {
         return;
     };
 
     // A resize/floating transition can leave one old WPE frame in flight.
     // Never stretch that frame to the new browser rectangle: preserve its
     // actual aspect until WebKit hands us a frame at the requested size.
-    let painted = state.webembed.texture_size().map_or(rect, |(width, height)| {
+    let painted = (if app {state.channel_view.texture_size()}else{state.webembed.texture_size()}).map_or(rect, |(width, height)| {
         let source = Vec2::new(width as f32, height as f32);
         if source.x <= 0.0 || source.y <= 0.0 {
             return rect;
@@ -8371,25 +8303,34 @@ fn webembed_paint_and_input(
         )
     };
 
+    let app_pointer_focus = app && (response.clicked() || response.is_pointer_button_down_on() || response.drag_started());
+    if app_pointer_focus {response.request_focus();}
+    if app {
+        let focused = response.has_focus() || app_pointer_focus;
+        if focused {
+            ui.memory_mut(|m| m.set_focus_lock_filter(response.id, egui::EventFilter { tab:true, horizontal_arrows:true, vertical_arrows:true, escape:true }));
+            state.app_input_focused=true;
+        }
+        let (events, modifiers) = ui.input(|i| (i.events.clone(), i.modifiers));
+        state.channel_view.keyboard(&events, modifiers, focused);
+    }
     // A press that started on the browser keeps owning the pointer until it
     // is released, so dragging the seek/volume slider past the edge still
     // moves it and the page always receives the matching button-up.
     let captured = response.dragged() || response.drag_stopped();
     let pointer = ui.input(|input| input.pointer.interact_pos());
-    if let Some(position) = pointer.filter(|position| captured || painted.contains(*position)) {
+    if let Some(position) = pointer.filter(|position| captured || (painted.intersect(ui.clip_rect()).contains(*position) && !state.webembed_occlusions.iter().any(|r|r.contains(*position)))) {
         let (x, y) = local(position);
-        state.webembed.input(WebEmbedInput::Move { x, y });
+        live_surface_input(state,app,WebEmbedInput::Move { x, y });
 
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > 0.5 {
-            state
-                .webembed
-                .input(WebEmbedInput::Wheel { x, y, delta_y: scroll });
+            live_surface_input(state,app,WebEmbedInput::Wheel { x, y, delta_y: scroll });
         }
 
         let pressed = ui.input(|input| input.pointer.primary_pressed());
         if pressed {
-            state.webembed.input(WebEmbedInput::Down {
+            live_surface_input(state,app,WebEmbedInput::Down {
                 x,
                 y,
                 button: WebEmbedButton::Left,
@@ -8397,14 +8338,48 @@ fn webembed_paint_and_input(
         }
         let released = ui.input(|input| input.pointer.primary_released());
         if released {
-            state.webembed.input(WebEmbedInput::Up {
+            live_surface_input(state,app,WebEmbedInput::Up {
                 x,
                 y,
                 button: WebEmbedButton::Left,
             });
         }
     } else if !response.dragged() {
-        state.webembed.input(WebEmbedInput::Leave);
+        live_surface_input(state,app,WebEmbedInput::Leave);
+    }
+}
+
+fn activate_rich_surface(state:&mut UiState,id:String,url:String)->bool {
+    state.channel_view.destroy();state.webembed.activate(id,url)
+}
+fn live_surface_input(state:&mut UiState,app:bool,input:crate::webembed::WebEmbedInput) {
+    if app {state.channel_view.input(input);}else{state.webembed.input(input);}
+}
+#[allow(clippy::too_many_arguments)]
+fn app_surface_content(ui:&mut egui::Ui,state:&mut UiState,t:&Tokens,app:&crate::api::models::AppSurface,name:&str,rect:Rect,clip:Rect,occlusions:Vec<Rect>,pane:bool) {
+    let strings=state.surface_strings;
+    if !pane {state.channel_view.observe_inline(rect,clip);}
+    if !app.available || state.channel_view.is_fallback() || !state.channel_view.is_ready() {
+        ui.scope_builder(UiBuilder::new().max_rect(rect),|ui|{
+            ui.with_layout(egui::Layout::top_down(egui::Align::Center),|ui|{
+                ui.add_space((rect.height()*0.5-45.0).max(0.0));ui.label(name);
+                if !app.available {ui.label(strings.1);} else if state.channel_view.is_fallback() {
+                    if app.source=="remote" {
+                        if let Ok(url)=url::Url::parse(&app.entry){ui.label(url.host_str().unwrap_or_default());}
+                        ui.label(strings.1);
+                        if ui.button(strings.3).clicked() && let Some(url)=state.channel_view.url().map(str::to_owned){state.request_external_url(ui.ctx(),url);}
+                    } else {ui.label(strings.2);}
+                } else {ui.spinner();ui.label(strings.0);}
+            });
+        });
+    }
+    if app.available && !state.channel_view.is_fallback() {
+        let allowed=webembed_inline_allowed(state);
+        if !allowed {state.channel_view.hide();return;}
+        if pane {if allowed {state.channel_view.present(&crate::webembed::EmbedViewport{rect,clip_rect:clip,occlusions,pixels_per_point:ui.ctx().pixels_per_point()});}}
+        else {state.channel_view.present_inline(rect,clip,ui.ctx().pixels_per_point(),&occlusions,allowed);}
+        if let Some(id)=state.channel_view.selected_id().map(str::to_owned){webembed_paint_and_input(ui,state,&id,rect,"inline-app");}
+        let _=t;
     }
 }
 
@@ -12160,7 +12135,7 @@ mod escape_tests {
         let mut store = Store::default();
         store.selected_channel = "c1".into();
         store.channels = vec![crate::state::Channel {
-            views: Vec::new(),
+            app: None,
             id: "c1".into(),
             name: "geral".into(),
             kind: ChannelKind::Text,

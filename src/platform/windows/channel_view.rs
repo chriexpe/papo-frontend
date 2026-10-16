@@ -146,7 +146,7 @@ impl WindowsChannelView {
             cleanup_jobs: Default::default(),
         }
     }
-    fn build(&mut self, url: &str) -> Result<StrictLive, String> {
+    fn build(&mut self, url: &str, bundled: bool) -> Result<StrictLive, String> {
         let parent = self.parent.ok_or("janela Win32 indisponível")?;
         let mut profile = Profile::new(self.cleanup_jobs.clone())?;
         let directory = profile
@@ -252,7 +252,7 @@ impl WindowsChannelView {
                     settings4.SetIsPasswordAutosaveEnabled(false)?;
                     settings4.SetIsGeneralAutofillEnabled(false)?;
                 }
-                install_handlers(&webview, &controller, url, &self.events)?;
+                install_handlers(&webview, &controller, url, &self.events, bundled)?;
                 let uri = CoTaskMemPWSTR::from(url);
                 // Ordinary Navigate: no Referer and no custom request headers.
                 unsafe {
@@ -286,14 +286,21 @@ impl WindowsChannelView {
     }
 }
 impl ViewBackend for WindowsChannelView {
-    fn create(&mut self, url: &str) -> Result<(), String> {
+    fn create(&mut self, url: &str, bundled: bool) -> Result<(), String> {
         self.destroy();
+        // COM callbacks from the closing browser keep their old queue. They
+        // cannot approve/fail the next surface while its own checks are pending.
+        let ctx = self.events.ctx.borrow().clone();
+        self.events = Rc::new(ViewEvents {
+            queue: RefCell::new(Vec::new()),
+            ctx: RefCell::new(ctx),
+        });
         if !self.initialized {
             unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok() }
                 .map_err(|e| e.to_string())?;
             self.initialized = true;
         }
-        self.live = Some(self.build(url)?);
+        self.live = Some(self.build(url, bundled)?);
         Ok(())
     }
     fn prepare(&mut self, frame: &mut eframe::Frame, ctx: &egui::Context) {
@@ -371,6 +378,7 @@ fn install_handlers(
     controller: &ICoreWebView2Controller,
     origin: &str,
     events: &Rc<ViewEvents>,
+    bundled: bool,
 ) -> windows::core::Result<()> {
     let pending = Rc::new(RefCell::new(origin.to_owned()));
     let checked = Rc::new(Cell::new(false));
@@ -384,7 +392,6 @@ fn install_handlers(
             let args = args.ok_or_else(|| windows::core::Error::from(E_POINTER))?;
             let mut raw = PWSTR::null();
             unsafe {
-                navigation_controller.SetIsVisible(false)?;
                 args.Uri(&mut raw)?;
             }
             let uri = pwstr_string(raw).ok_or_else(|| windows::core::Error::from(E_POINTER))?;
@@ -392,8 +399,11 @@ fn install_handlers(
                 unsafe {
                     args.SetCancel(true)?;
                 }
-                navigation_events.push(ViewEvent::Failed);
+                navigation_events.push(ViewEvent::External(uri));
             } else {
+                unsafe {
+                    navigation_controller.SetIsVisible(false)?;
+                }
                 *navigation_uri.borrow_mut() = uri;
                 navigation_checked.set(false);
                 navigation_events.push(ViewEvent::Loading);
@@ -440,7 +450,12 @@ fn install_handlers(
                 unsafe {
                     response.StatusCode(&mut status)?;
                 }
-                if refuses_framing(&xfo, &csp) || status >= 400 {
+                if refuses_framing(&xfo, &csp)
+                    || status >= 400
+                    || (bundled
+                        && (!csp.contains("sandbox allow-scripts allow-forms")
+                            || csp.contains("allow-same-origin")))
+                {
                     if let Some(sender) = sender {
                         unsafe {
                             sender.Stop()?;

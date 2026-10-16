@@ -106,6 +106,7 @@ const BANNER_MAX: u32 = 1024;
 
 #[derive(Debug, Clone)]
 pub enum Request {
+    AppAvatar { id:String },
     /// Miniatura do servidor. Só existe quando a listagem anuncia um
     /// `thumbnail_id`; sem ele o cartão nem chega aqui, e o arquivo inteiro
     /// nunca é baixado só para virar capa.
@@ -173,6 +174,7 @@ impl Request {
     /// Rótulo curto, para o log de diagnóstico saber o que foi pedido.
     fn kind(&self) -> &'static str {
         match self {
+            Self::AppAvatar{..}=>"app-avatar",
             Self::Thumb { .. } => "thumb",
             Self::Full { .. } => "full",
             Self::File { .. } => "file",
@@ -342,6 +344,14 @@ async fn run(
     request: Request,
 ) -> Loaded {
     match request {
+        Request::AppAvatar{id}=>{
+            let _slot=fetch_gate.acquire().await;
+            let key=format!("app-avatar:{id}");
+            match api.fetch_bytes(&format!("/apps/{id}/avatar")).await {
+                Ok((bytes,_))=>decode(key,&bytes,128),
+                Err(error)=>Loaded::Failed{key,error:error.to_string()},
+            }
+        }
         Request::Thumb { id } => {
             let _slot = fetch_gate.acquire().await;
             let key = thumb_key(&id);
@@ -1886,6 +1896,12 @@ impl MediaStore {
         self.textures.get(&remote_image_key(&id))
     }
 
+    pub fn app_avatar(&mut self,id:&str)->Option<&Texture> {
+        if id.len()!=36 || !id.bytes().all(|c|c.is_ascii_hexdigit() || c==b'-'){return None;}
+        let key=format!("app-avatar:{id}");
+        if !self.textures.contains_key(&key){self.textures.insert(key.clone(),Texture::Loading);self.ask(Request::AppAvatar{id:id.to_owned()});}
+        self.touch(&key);self.textures.get(&key)
+    }
     pub fn remote_image(&mut self, _id: &str, url: &str) -> Option<&Texture> {
         let canonical = papo_core::preview::canonical_url(url)?;
         let id = remote_resource_id(&canonical);

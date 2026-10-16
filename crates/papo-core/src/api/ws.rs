@@ -96,13 +96,15 @@ pub enum Event {
         name: String,
         kind: String,
         topic: Option<String>,
+        app: Option<super::models::AppSurface>,
     },
     ChannelUpdated {
         id: String,
         name: Option<String>,
         topic: Option<Option<String>>,
-        views: Option<Vec<super::models::ChannelView>>,
+        app: Option<super::models::AppSurface>,
     },
+    AppInvalidated { installation_id: String },
     ChannelDeleted {
         id: String,
     },
@@ -516,15 +518,15 @@ fn parse(text: &str) -> Option<Event> {
             name: string("name").unwrap_or_default(),
             kind: string("channel_type").unwrap_or_else(|| "text".to_owned()),
             topic: string("topic"),
+            app: value.get("app").and_then(|v| serde_json::from_value(v.clone()).ok()),
         }),
         "channel_update" => Some(Event::ChannelUpdated {
             id: string("channel_id")?,
             name: string("name"),
             topic: value.get("topic").map(|_| string("topic")),
-            views: value
-                .get("views")
-                .and_then(|views| serde_json::from_value(views.clone()).ok()),
+            app: value.get("app").and_then(|v| serde_json::from_value(v.clone()).ok()),
         }),
+        "app_invalidate" => Some(Event::AppInvalidated { installation_id: string("app_installation_id")? }),
         "channel_delete" => Some(Event::ChannelDeleted {
             id: string("channel_id")?,
         }),
@@ -626,6 +628,11 @@ fn parse(text: &str) -> Option<Event> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn app_invalidation_requires_installation_identity() {
+        assert!(matches!(parse(r#"{"type":"app_invalidate","app_installation_id":"install"}"#), Some(Event::AppInvalidated {installation_id}) if installation_id=="install"));
+        assert!(parse(r#"{"type":"app_invalidate"}"#).is_none());
+    }
     #[test]
     fn snapshot_de_embeds_pode_substituir_e_limpar() {
         let event = parse(r#"{"type":"message_embeds_update","channel_id":"c1",
@@ -800,30 +807,5 @@ mod tests {
                 ..
             })
         ));
-    }
-}
-
-#[cfg(test)]
-mod channel_view_tests {
-    use super::*;
-    #[test]
-    fn partial_view_update_and_explicit_empty_snapshot_are_distinct() {
-        for (json, expected) in [
-            (r#"{"type":"channel_update","channel_id":"a"}"#, None),
-            (
-                r#"{"type":"channel_update","channel_id":"a","views":[]}"#,
-                Some(Vec::new()),
-            ),
-        ] {
-            let Event::ChannelUpdated {
-                name, topic, views, ..
-            } = parse(json).unwrap()
-            else {
-                panic!("wrong event");
-            };
-            assert_eq!(name, None);
-            assert_eq!(topic, None);
-            assert_eq!(views, expected);
-        }
     }
 }

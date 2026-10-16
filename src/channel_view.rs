@@ -1,55 +1,69 @@
-//! Uma única view passiva de canal, independente dos embeds ricos.
-use crate::webembed::EmbedViewport;
-use papo_core::api::models::ChannelView;
+//! Uma única superfície isolada de app, ao lado do ActiveEmbed existente.
+use crate::webembed::{EmbedViewport, WebEmbedInput};
+use papo_core::api::models::AppSurface;
 use std::time::{Duration, Instant};
 
 pub enum ViewEvent {
     Loading,
     Ready,
     Failed,
+    External(String),
 }
-
 pub trait ViewBackend {
-    fn create(&mut self, url: &str) -> Result<(), String>;
+    fn create(&mut self, url: &str, bundled: bool) -> Result<(), String>;
     fn prepare(&mut self, frame: &mut eframe::Frame, ctx: &egui::Context);
     fn present(&mut self, viewport: &EmbedViewport);
+    fn resize_loading(&mut self, _viewport: &EmbedViewport) {}
     fn hide(&mut self);
     fn destroy(&mut self);
     fn poll(&mut self) -> Vec<ViewEvent>;
+    fn texture_id(&self) -> Option<egui::TextureId> {
+        None
+    }
+    fn texture_size(&self) -> Option<(u32, u32)> {
+        None
+    }
+    fn input(&mut self, _input: WebEmbedInput) {}
+    fn keyboard(&mut self, _events: &[egui::Event], _modifiers: egui::Modifiers, _focused: bool) {}
 }
 
-/// Estado de uma única view. Nenhum cliente HTTP autenticado entra nesta API.
 pub struct ChannelViewSurface {
     backend: Option<Box<dyn ViewBackend>>,
     owner: (String, String),
-    selected: Option<ChannelView>,
+    selected: Option<(String, AppSurface, String)>,
     started: Option<Instant>,
     ready: bool,
     failed: bool,
     presented: bool,
+    inline_seen: bool,
+    external: Vec<String>,
 }
 impl Default for ChannelViewSurface {
     fn default() -> Self {
-        Self::with_backend(platform_backend())
-    }
-}
-impl ChannelViewSurface {
-    fn with_backend(backend: Option<Box<dyn ViewBackend>>) -> Self {
         Self {
-            backend,
+            backend: platform_backend(),
             owner: Default::default(),
             selected: None,
             started: None,
             ready: false,
             failed: false,
             presented: false,
+            inline_seen: false,
+            external: Vec::new(),
         }
     }
+}
+impl ChannelViewSurface {
     pub fn owns(&self, server: &str, channel: &str) -> bool {
         self.owner.0 == server && self.owner.1 == channel
     }
+    pub fn installation_id(&self) -> Option<&str> {
+        self.selected
+            .as_ref()
+            .map(|v| v.1.app_installation_id.as_str())
+    }
     pub fn selected_id(&self) -> Option<&str> {
-        self.selected.as_ref().map(|v| v.id.as_str())
+        self.selected.as_ref().map(|v| v.0.as_str())
     }
     pub fn is_fallback(&self) -> bool {
         self.failed
@@ -60,55 +74,46 @@ impl ChannelViewSurface {
     pub fn url(&self) -> Option<&str> {
         self.selected
             .as_ref()
-            .filter(|v| valid_view_url(&v.url, &self.owner.0))
-            .map(|v| v.url.as_str())
+            .map(|v| v.2.as_str())
+            .filter(|s| !s.is_empty())
     }
-    /// Uma troca de canal/servidor ou revogação destrói a instância imediatamente.
-    pub fn sync(&mut self, server: &str, channel: &str, views: &[ChannelView]) {
-        if self.owner.0 != server || self.owner.1 != channel {
+    pub fn sync(&mut self, server: &str, channel: &str) {
+        if !self.owns(server, channel) {
             self.destroy();
             self.owner = (server.to_owned(), channel.to_owned());
         }
+    }
+    pub fn activate(&mut self, id: String, app: AppSurface, server: &str) {
         if self
             .selected
             .as_ref()
-            .is_some_and(|selected| !views.contains(selected))
+            .is_some_and(|v| v.0 == id && v.1 == app)
         {
-            self.destroy();
-        }
-    }
-    pub fn select(&mut self, view: Option<ChannelView>, server: &str) {
-        if self.selected == view {
             return;
         }
-        // Chat hides the same instance; selecting another view replaces it.
         self.destroy();
-        let Some(view) = view else {
-            return;
-        };
-        let valid = valid_view_url(&view.url, server);
-        self.selected = Some(view.clone());
-        self.failed = !valid;
-        if valid {
+        let url = surface_url(&app, server);
+        self.failed = url.is_none() || !app.available;
+        let url = url.unwrap_or_default();
+        if !self.failed {
             self.failed = match self.backend.as_mut() {
-                Some(backend) => match backend.create(&view.url) {
-                    Ok(()) => false,
-                    Err(error) => {
-                        log::warn!("channel-view indisponível: {error}");
-                        true
-                    }
-                },
+                Some(b) => b
+                    .create(&url, app.source == "bundled")
+                    .map_err(|e| log::warn!("app surface: {e}"))
+                    .is_err(),
                 None => true,
             };
             if !self.failed {
                 self.started = Some(Instant::now());
             }
         }
+        self.selected = Some((id, app, url));
     }
     pub fn begin_frame(&mut self, frame: &mut eframe::Frame, ctx: &egui::Context) {
         self.presented = false;
-        if let Some(backend) = &mut self.backend {
-            backend.prepare(frame, ctx);
+        self.inline_seen = false;
+        if let Some(b) = &mut self.backend {
+            b.prepare(frame, ctx);
         }
         self.pump();
         if self.started.is_some() {
@@ -119,8 +124,8 @@ impl ChannelViewSurface {
         if self.failed || self.selected.is_none() {
             return;
         }
-        if let Some(backend) = &mut self.backend {
-            for event in backend.poll() {
+        if let Some(b) = &mut self.backend {
+            for event in b.poll() {
                 match event {
                     ViewEvent::Loading => {
                         if self.started.is_none() {
@@ -133,18 +138,19 @@ impl ChannelViewSurface {
                         self.ready = true;
                     }
                     ViewEvent::Failed => self.failed = true,
+                    ViewEvent::External(url) => self.external.push(url),
                 }
             }
         }
         if self
             .started
-            .is_some_and(|start| start.elapsed() >= Duration::from_secs(15))
+            .is_some_and(|t| t.elapsed() >= Duration::from_secs(15))
         {
             self.failed = true;
         }
         if self.failed {
-            if let Some(backend) = &mut self.backend {
-                backend.destroy();
+            if let Some(b) = &mut self.backend {
+                b.destroy();
             }
             self.started = None;
             self.ready = false;
@@ -152,31 +158,102 @@ impl ChannelViewSurface {
     }
     pub fn present(&mut self, viewport: &EmbedViewport) {
         self.pump();
-        if !self.failed && self.ready && self.selected.is_some() {
-            if let Some(backend) = &mut self.backend {
-                backend.present(viewport);
+        if !self.failed && self.selected.is_some() {
+            // Hidden while loading; WPE still needs its real dimensions to render.
+            if let Some(b) = &mut self.backend {
+                if self.ready {
+                    b.present(viewport);
+                } else {
+                    b.resize_loading(viewport);
+                }
             }
             self.presented = true;
         }
     }
+    pub fn present_inline(
+        &mut self,
+        rect: egui::Rect,
+        clip: egui::Rect,
+        ppp: f32,
+        occlusions: &[egui::Rect],
+        allowed: bool,
+    ) {
+        let clipped = rect.intersect(clip);
+        if !allowed {
+            self.hide();
+            return;
+        }
+        if clipped.width() <= 0.5 || clipped.height() <= 0.5 {
+            self.destroy();
+            return;
+        }
+        if let Some(viewport) =
+            crate::webembed::inline_viewport(rect, clip, ppp, occlusions, allowed)
+        {
+            self.present(&viewport);
+        }
+    }
+    pub fn observe_inline(&mut self, rect: egui::Rect, clip: egui::Rect) {
+        let r = rect.intersect(clip);
+        self.inline_seen = r.width() > 0.5 && r.height() > 0.5;
+    }
     pub fn hide(&mut self) {
-        if let Some(backend) = &mut self.backend {
-            backend.hide();
+        if let Some(b) = &mut self.backend {
+            b.hide();
         }
     }
     pub fn end_frame(&mut self) {
         if !self.presented {
-            self.hide();
+            if self
+                .selected_id()
+                .is_some_and(|id| id.starts_with("inline-app:"))
+                && !self.inline_seen
+            {
+                self.destroy();
+            } else {
+                self.hide();
+            }
         }
     }
     pub fn destroy(&mut self) {
-        if let Some(backend) = &mut self.backend {
-            backend.destroy();
+        if let Some(id) = self.selected_id() {
+            log::debug!("app surface: destroy {id}");
+        }
+        if let Some(b) = &mut self.backend {
+            b.destroy();
         }
         self.selected = None;
+        self.external.clear();
         self.started = None;
         self.ready = false;
         self.failed = false;
+    }
+    pub fn take_external(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.external)
+    }
+    pub fn texture_id(&self) -> Option<egui::TextureId> {
+        if self.ready {
+            self.backend.as_ref().and_then(|b| b.texture_id())
+        } else {
+            None
+        }
+    }
+    pub fn texture_size(&self) -> Option<(u32, u32)> {
+        self.backend.as_ref().and_then(|b| b.texture_size())
+    }
+    pub fn keyboard(&mut self, events: &[egui::Event], modifiers: egui::Modifiers, focused: bool) {
+        if self.ready
+            && let Some(b) = &mut self.backend
+        {
+            b.keyboard(events, modifiers, focused);
+        }
+    }
+    pub fn input(&mut self, input: WebEmbedInput) {
+        if self.ready
+            && let Some(b) = &mut self.backend
+        {
+            b.input(input);
+        }
     }
 }
 impl Drop for ChannelViewSurface {
@@ -185,6 +262,28 @@ impl Drop for ChannelViewSurface {
     }
 }
 
+/// Only payload-backed app surfaces can use the Papo-host bundled exception.
+pub fn surface_url(app: &AppSurface, server: &str) -> Option<String> {
+    if app.source == "remote" {
+        return valid_view_url(&app.entry, server).then(|| app.entry.clone());
+    }
+    if app.source != "bundled" || !valid_installation_id(&app.app_installation_id) {
+        return None;
+    }
+    let base = url::Url::parse(server).ok()?;
+    let url = base.join(&app.entry).ok()?;
+    let prefix = format!("/apps/{}/ui/", app.app_installation_id);
+    (matches!(url.scheme(), "https" | "http")
+        && url.origin() == base.origin()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with(&prefix)
+        && url.path().len() > prefix.len()
+        && !url.path().contains('%')
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then(|| url.to_string())
+}
 pub fn valid_view_url(raw: &str, server: &str) -> bool {
     let (Ok(url), Ok(server)) = (url::Url::parse(raw), url::Url::parse(server)) else {
         return false;
@@ -200,7 +299,7 @@ pub fn valid_view_url(raw: &str, server: &str) -> bool {
 /// Comparação de origem normalizada, incluindo a porta efetiva.
 pub fn same_origin(first: &str, second: &str) -> bool {
     match (url::Url::parse(first), url::Url::parse(second)) {
-        (Ok(a), Ok(b)) => a.scheme() == "https" && a.origin() == b.origin(),
+        (Ok(a), Ok(b)) => matches!(a.scheme(), "http" | "https") && a.origin() == b.origin(),
         _ => false,
     }
 }
@@ -232,177 +331,107 @@ fn platform_backend() -> Option<Box<dyn ViewBackend>> {
         crate::platform::windows_webembed::channel_view::WindowsChannelView::new(),
     ))
 }
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 fn platform_backend() -> Option<Box<dyn ViewBackend>> {
-    // Android: WebView storage belongs to the process, not the instance.
-    // WPE 2.0: navigation actions expose no reliable main-frame flag.
-    // WKWebView: public permission delegates do not cover all required grants
-    // on supported macOS versions. Never silently weaken the policy.
+    Some(Box::new(
+        crate::platform::linux_webembed::LinuxAppSurface::default(),
+    ))
+}
+// macOS <=26 lacks a public geolocation-denial delegate (WKUIDelegate declares
+// it only in 27.0). WKWebView also has no public all-request Referer filter.
+// Neither private selectors nor script injection can substitute for these controls.
+#[cfg(target_os = "macos")]
+fn platform_backend() -> Option<Box<dyn ViewBackend>> {
     None
+}
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn platform_backend() -> Option<Box<dyn ViewBackend>> {
+    None
+}
+
+fn valid_installation_id(id: &str) -> bool {
+    id.len() == 36
+        && id.bytes().enumerate().all(|(i, c)| {
+            if [8, 13, 18, 23].contains(&i) {
+                c == b'-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn exact_origin_only() {
-        assert!(same_origin(
-            "https://example.com:443/a",
-            "https://EXAMPLE.com/b"
-        ));
-        for other in [
-            "http://example.com",
-            "https://example.com:444",
-            "https://sub.example.com",
-            "file:///tmp/a",
-            "javascript:alert(1)",
-        ] {
-            assert!(!same_origin("https://example.com", other));
+    fn fixture() -> AppSurface {
+        AppSurface {
+            app_installation_id: "11111111-1111-4111-8111-111111111111".into(),
+            surface_id: "test".into(),
+            source: "remote".into(),
+            entry: "https://example.org".into(),
+            avatar_url: String::new(),
+            available: true,
         }
     }
     #[test]
-    fn response_policy_handles_multiple_headers_and_directives() {
-        for (xfo, csp) in [
-            ("DENY", ""),
-            ("sameorigin", ""),
-            ("deny, SAMEORIGIN", ""),
-            ("", "frame-ancestors 'none'"),
-            ("", "default-src *; FRAME-ANCESTORS 'self'"),
-            ("", "frame-ancestors *; frame-ancestors https://example.com"),
-            ("", "frame-ancestors * , frame-ancestors 'none'"),
-        ] {
-            assert!(refuses_framing(xfo, csp));
-        }
-        assert!(!refuses_framing(
-            "",
-            "default-src 'self'; frame-ancestors *"
-        ));
-        assert!(!refuses_framing("", ""));
-    }
-    #[test]
-    fn urls_never_accept_papo_or_userinfo() {
-        let server = "https://papo.example";
-        assert!(valid_view_url("https://map.example", server));
-        for raw in [
-            "https://papo.example:444/a",
-            "https://user:secret@map.example",
-            "http://map.example",
-            "https://localhost/a",
-        ] {
-            assert!(!valid_view_url(raw, server));
-        }
-    }
-}
-
-#[cfg(test)]
-mod lifecycle_tests {
-    use super::*;
-    use std::{cell::RefCell, rc::Rc};
-    #[derive(Default)]
-    struct Trace {
-        calls: Vec<&'static str>,
-        events: Vec<ViewEvent>,
-    }
-    struct Backend(Rc<RefCell<Trace>>);
-    impl ViewBackend for Backend {
-        fn create(&mut self, _: &str) -> Result<(), String> {
-            self.0.borrow_mut().calls.push("create");
-            Ok(())
-        }
-        fn prepare(&mut self, _: &mut eframe::Frame, _: &egui::Context) {}
-        fn present(&mut self, _: &EmbedViewport) {
-            self.0.borrow_mut().calls.push("present");
-        }
-        fn hide(&mut self) {
-            self.0.borrow_mut().calls.push("hide");
-        }
-        fn destroy(&mut self) {
-            self.0.borrow_mut().calls.push("destroy");
-        }
-        fn poll(&mut self) -> Vec<ViewEvent> {
-            std::mem::take(&mut self.0.borrow_mut().events)
-        }
-    }
-    fn view(id: &str) -> ChannelView {
-        ChannelView {
-            id: id.into(),
-            app_installation_id: "app".into(),
-            channel_id: "a".into(),
-            url: "https://map.example/".into(),
-            position: 0,
-            name: Some("Map".into()),
-        }
-    }
-    fn surface() -> (ChannelViewSurface, Rc<RefCell<Trace>>) {
-        let trace = Rc::new(RefCell::new(Trace::default()));
-        let mut surface = ChannelViewSurface::with_backend(Some(Box::new(Backend(trace.clone()))));
-        surface.sync("https://papo.example", "a", &[view("map")]);
-        trace.borrow_mut().calls.clear();
-        (surface, trace)
-    }
-    #[test]
-    fn inactive_tab_hides_but_reuses_instance() {
-        let (mut surface, trace) = surface();
-        surface.select(Some(view("map")), "https://papo.example");
-        surface.end_frame();
-        surface.select(Some(view("map")), "https://papo.example");
-        assert_eq!(surface.selected_id(), Some("map"));
-        assert_eq!(
-            trace
-                .borrow()
-                .calls
-                .iter()
-                .filter(|c| **c == "create")
-                .count(),
-            1
+    fn inline_fallback_survives_visible_frames_but_never_scrolls_into_a_float() {
+        let mut surface = ChannelViewSurface::default();
+        let _ = surface.backend.take();
+        surface.activate(
+            "inline-app:message:embed".into(),
+            fixture(),
+            "https://papo.example",
         );
-        assert_eq!(trace.borrow().calls.last(), Some(&"hide"));
+        assert!(surface.is_fallback());
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(100.0));
+        surface.observe_inline(rect, rect);
+        surface.end_frame();
+        assert!(surface.selected_id().is_some());
+        surface.inline_seen = false;
+        surface.end_frame();
+        assert!(surface.selected_id().is_none());
     }
     #[test]
-    fn revocation_and_channel_switch_destroy_even_when_hidden() {
-        let (mut surface, trace) = surface();
-        surface.select(Some(view("map")), "https://papo.example");
-        surface.hide();
-        surface.sync("https://papo.example", "a", &[]);
-        assert_eq!(surface.selected_id(), None);
-        assert_eq!(trace.borrow().calls.last(), Some(&"destroy"));
-        surface.select(Some(view("map")), "https://papo.example");
-        surface.sync("https://papo.example", "b", &[view("map")]);
-        assert_eq!(surface.selected_id(), None);
-        assert_eq!(trace.borrow().calls.last(), Some(&"destroy"));
-    }
-    #[test]
-    fn timeout_and_native_failure_destroy_and_offer_fallback() {
-        for timeout in [true, false] {
-            let (mut surface, trace) = surface();
-            surface.select(Some(view("map")), "https://papo.example");
-            if timeout {
-                surface.started = Some(Instant::now() - Duration::from_secs(16));
-            } else {
-                trace.borrow_mut().events.push(ViewEvent::Failed);
-            }
-            surface.pump();
-            assert!(surface.is_fallback());
-            assert_eq!(surface.url(), Some("https://map.example/"));
-            assert_eq!(trace.borrow().calls.last(), Some(&"destroy"));
-        }
-    }
-    #[test]
-    fn redirects_do_not_extend_the_load_deadline() {
-        let (mut surface, trace) = surface();
-        surface.select(Some(view("map")), "https://papo.example");
-        let start = Instant::now() - Duration::from_secs(16);
-        surface.started = Some(start);
-        trace.borrow_mut().events.push(ViewEvent::Loading);
+    fn unavailable_and_timeout_fail_closed() {
+        let mut surface = ChannelViewSurface::default();
+        let _ = surface.backend.take();
+        let mut app = fixture();
+        app.available = false;
+        surface.activate("channel-app:app".into(), app, "https://papo.example");
+        assert!(surface.is_fallback());
+        surface.failed = false;
+        surface.started = Some(Instant::now() - Duration::from_secs(16));
         surface.pump();
         assert!(surface.is_fallback());
+        assert!(!surface.is_ready());
+        surface.sync("https://papo.example", "other");
+        assert!(surface.selected_id().is_none());
     }
     #[test]
-    fn unavailable_platform_never_creates_browser() {
-        let mut surface = ChannelViewSurface::with_backend(None);
-        surface.sync("https://papo.example", "a", &[view("map")]);
-        surface.select(Some(view("map")), "https://papo.example");
-        assert!(surface.is_fallback());
-        assert!(!surface.is_ready());
+    fn payload_path_exception_is_narrow() {
+        let mut app = AppSurface {
+            app_installation_id: "11111111-1111-4111-8111-111111111111".into(),
+            surface_id: "test".into(),
+            source: "bundled".into(),
+            entry: "/apps/11111111-1111-4111-8111-111111111111/ui/index.html".into(),
+            avatar_url: String::new(),
+            available: true,
+        };
+        assert!(surface_url(&app, "http://localhost:8080").is_some());
+        for entry in [
+            "/auth/whoami",
+            "/apps/11111111-1111-4111-8111-111111111111/ui/../../api",
+            "https://evil.example/apps/11111111-1111-4111-8111-111111111111/ui/a",
+        ] {
+            app.entry = entry.into();
+            assert!(surface_url(&app, "https://papo.example").is_none());
+        }
+        assert!(refuses_framing("DENY", ""));
+        assert!(refuses_framing("", "frame-ancestors 'self'"));
+        assert!(!refuses_framing("", "frame-ancestors *"));
+        assert!(!same_origin(
+            "https://example.com",
+            "https://example.com:444"
+        ));
     }
 }

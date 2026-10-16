@@ -41,6 +41,7 @@ static BOOL papo_safe_url(NSURL *url) {
 @property(nonatomic, assign) void *context;
 @property(nonatomic, assign) PapoEventFn callback;
 @property(nonatomic, assign) BOOL firstDocumentLoaded;
+@property(nonatomic, strong) NSURL *lockedURL;
 @end
 
 @implementation PapoNavigation
@@ -66,8 +67,10 @@ static BOOL papo_safe_url(NSURL *url) {
     }
 
     BOOL topLevel = action.targetFrame == nil || action.targetFrame.isMainFrame;
-    BOOL clicked = action.navigationType == WKNavigationTypeLinkActivated;
-    if (topLevel && clicked && self.firstDocumentLoaded) {
+    NSNumber *port=url.port ?: @([url.scheme.lowercaseString isEqualToString:@"https"] ? 443 : 80);
+    NSNumber *lockedPort=self.lockedURL.port ?: @([self.lockedURL.scheme.lowercaseString isEqualToString:@"https"] ? 443 : 80);
+    BOOL same=[url.scheme.lowercaseString isEqualToString:self.lockedURL.scheme.lowercaseString] && [url.host.lowercaseString isEqualToString:self.lockedURL.host.lowercaseString] && [port isEqualToNumber:lockedPort];
+    if (topLevel && (!same || action.targetFrame==nil)) {
         [self emit:PapoOpenExternal url:url];
         decisionHandler(WKNavigationActionPolicyCancel);
         return;
@@ -155,6 +158,7 @@ void *papo_wk_create(void *parentView, const char *urlText,
         host.navigation = [PapoNavigation new];
         host.navigation.context = context;
         host.navigation.callback = eventCallback;
+        host.navigation.lockedURL = url;
         host.webview.navigationDelegate = host.navigation;
         host.webview.UIDelegate = host.navigation;
         host.webview.allowsBackForwardNavigationGestures = NO;

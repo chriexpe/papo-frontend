@@ -49,6 +49,7 @@ pub enum AppPane {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerPane {
+    Plugins,
     General,
     Channels,
     Roles,
@@ -125,12 +126,13 @@ impl AppPane {
 }
 
 impl ServerPane {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::General,
         Self::Channels,
         Self::Roles,
         Self::Emojis,
         Self::Audit,
+        Self::Plugins,
     ];
 
     fn glyph(self) -> &'static str {
@@ -141,6 +143,7 @@ impl ServerPane {
             Self::Roles => icon::SHIELD,
             Self::Emojis => icon::SMILEY,
             Self::Audit => icon::CLOCK_COUNTER_CLOCKWISE,
+            Self::Plugins => icon::PUZZLE_PIECE,
         }
     }
 
@@ -153,6 +156,7 @@ impl ServerPane {
             Self::Roles => s.roles,
             Self::Emojis => s.pane_emojis,
             Self::Audit => s.pane_audit,
+            Self::Plugins => s.plugins,
         }
     }
 }
@@ -160,6 +164,7 @@ impl ServerPane {
 /// Estado da folha. O painel aberto é lembrado por superfície: quem ajusta
 /// uma coisa costuma voltar para ajustar a vizinha.
 pub struct SettingsState {
+    pub plugins: super::plugins::PluginAdmin,
     pub open: Option<Surface>,
     /// Há um modal por cima da folha (o editor de recorte): clique e Esc
     /// são dele, e não podem fechar a folha que ficou embaixo.
@@ -197,6 +202,7 @@ pub struct SettingsState {
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
+            plugins: Default::default(),
             open: None,
             modal_above: false,
             opened_by_click: false,
@@ -275,6 +281,7 @@ impl ChannelDraft {
                 // DMs are not server-admin channels and never appear in this
                 // settings projection.
                 ChannelKind::Direct => "dm".to_owned(),
+                ChannelKind::App => "app".to_owned(),
             },
             parent: channel.parent_id.clone(),
             original_parent: channel.parent_id.clone(),
@@ -356,6 +363,7 @@ impl SettingsState {
     }
 
     pub fn open_delete_channel(&mut self, channel: &crate::state::Channel) {
+        if channel.kind==crate::state::ChannelKind::App {return;}
         self.open = Some(Surface::Server);
         self.server_pane = ServerPane::Channels;
         self.mobile_page = true;
@@ -386,6 +394,8 @@ impl SettingsState {
             ServerPane::Channels
         } else if store.can_manage_roles() {
             ServerPane::Roles
+        } else if store.can_manage_apps() {
+            ServerPane::Plugins
         } else {
             return false;
         };
@@ -1306,6 +1316,7 @@ const HEADER_H: f32 = 54.0;
 /// são só locais ela mesma já escreveu em `Settings`.
 #[derive(Clone, Debug)]
 pub enum SettingsAction {
+    Plugin(crate::api::net::Command),
     Admin(super::admin::AdminAction),
     Role(super::roles::RoleAction),
     Chat(super::shell::ChatAction),
@@ -2314,6 +2325,7 @@ fn role_detail(ui: &mut egui::Ui, data: &mut Context<'_>, t: &Tokens, s: &String
         card.section(s.role_tab_permissions, |ui| {
             let list = [
                 (s.perm_manage_server, &mut draft.permissions.manage_server),
+                (s.perm_manage_apps, &mut draft.permissions.manage_apps),
                 (s.perm_manage_channels, &mut draft.permissions.manage_channels),
                 (s.perm_manage_roles, &mut draft.permissions.manage_roles),
                 (s.perm_ban_members, &mut draft.permissions.ban_members),
@@ -2501,6 +2513,7 @@ fn row_tools(
     can_up: bool,
     can_down: bool,
     show: bool,
+    can_delete: bool,
 ) -> Option<usize> {
     use egui_phosphor::regular as icon;
     let side = 28.0;
@@ -2513,6 +2526,7 @@ fn row_tools(
         (icon::ARROW_DOWN, false, 1),
         (icon::ARROW_UP, false, 0),
     ] {
+        if which==3 && !can_delete {continue;}
         let enabled = match which {
             0 => can_up,
             1 => can_down,
@@ -2614,7 +2628,7 @@ fn channel_tree(
                 false,
             );
             let show = (response.hovered() || ui.rect_contains_pointer(rect) || touch) && dragging.is_none();
-            if let Some(which) = row_tools(ui, t, &channel.id, rect, index > 0, index < last, show) {
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, index > 0, index < last, show, channel.kind != crate::state::ChannelKind::App) {
                 action = match which {
                     0 => move_action(&items, index, index - 1, total),
                     1 => move_action(&items, index, index + 2, total),
@@ -2713,7 +2727,7 @@ fn channel_tree(
                 crate::ui::widgets::text_fit(ui.painter(), egui::pos2(left, rect.center().y + 9.0), egui::Align2::LEFT_CENTER, topic, px(11.5, "regular"), t.label_secondary.gamma_multiply(alpha), room);
             }
             let show = (hovered || touch) && dragging.is_none();
-            if let Some(which) = row_tools(ui, t, &channel.id, rect, row > 0, row < last, show) {
+            if let Some(which) = row_tools(ui, t, &channel.id, rect, row > 0, row < last, show, channel.kind != crate::state::ChannelKind::App) {
                 action = match which {
                     0 => move_action(&items, row, row - 1, total),
                     1 => move_action(&items, row, row + 2, total),
@@ -4602,6 +4616,7 @@ fn server_pane_allowed(store: &Store, pane: ServerPane) -> bool {
         ServerPane::General | ServerPane::Emojis | ServerPane::Audit => store.can_manage_server(),
         ServerPane::Channels => store.can_manage_channels(),
         ServerPane::Roles => store.can_manage_roles(),
+        ServerPane::Plugins => store.can_manage_apps(),
     }
 }
 
@@ -4617,6 +4632,7 @@ fn server_pane(
     use super::shell::ChatAction;
 
     match state.server_pane {
+        ServerPane::Plugins => state.plugins.show(ui,data.store,s,actions),
         ServerPane::General => {
             if !state.draft.loaded_server {
                 state.draft.loaded_server = true;
@@ -4830,6 +4846,7 @@ fn server_pane(
                         channel_name_input(ui, t, editor, store, data.media, s);
                     });
                     card.section(s.channel_kind, |ui| {
+                        if editor.kind=="app" {ui.label(s.app_channel_kind);return;}
                         let locked = existing.is_some();
                         ui.add_enabled_ui(!locked, |ui| {
                             let mut kind: &'static str = match editor.kind.as_str() {

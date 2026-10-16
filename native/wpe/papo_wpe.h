@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define WATER_WPE_ABI_VERSION 3
+#define WATER_WPE_ABI_VERSION 5
 #define WATER_WPE_MAX_PLANES 4
 
 typedef struct WaterWpeRuntime WaterWpeRuntime;
@@ -72,8 +72,17 @@ WaterWpePage *water_wpe_page_new(
     void *user_data,
     WaterWpeDestroyNotify destroy_user_data,
     char **error);
+WaterWpePage *water_wpe_page_new_isolated(
+    WaterWpeRuntime *runtime,
+    WaterWpeEventCallback event_callback,
+    WaterWpeFrameCallback frame_callback,
+    WaterWpeMessageCallback message_callback,
+    void *user_data,
+    WaterWpeDestroyNotify destroy_user_data,
+    char **error, bool bundled);
 void water_wpe_page_free(WaterWpePage *page);
 void water_wpe_page_load_uri(WaterWpePage *page, const char *uri);
+void water_wpe_page_key(WaterWpePage *page, bool pressed, uint32_t keyval, uint32_t keycode, uint32_t modifiers);
 void water_wpe_page_stop(WaterWpePage *page);
 void water_wpe_page_resize(
     WaterWpePage *page,

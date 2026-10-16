@@ -204,7 +204,7 @@ pub struct CreateServerRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Channel {
     #[serde(default)]
-    pub views: Vec<ChannelView>,
+    pub app: Option<AppSurface>,
     pub id: String,
     pub name: String,
     #[serde(rename = "type")]
@@ -224,17 +224,15 @@ pub struct Channel {
     pub last_message: Option<ChannelLastMessage>,
 }
 
-/// View passiva externa, sem credenciais ou ponte nativa.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct ChannelView {
-    pub id: String,
+/// Superfície fornecida por um payload autorizado do backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppSurface {
     pub app_installation_id: String,
-    pub channel_id: String,
-    pub url: String,
-    #[serde(default)]
-    pub position: i32,
-    #[serde(default)]
-    pub name: Option<String>,
+    pub surface_id: String,
+    #[serde(default)] pub source: String,
+    #[serde(default)] pub entry: String,
+    #[serde(default)] pub avatar_url: String,
+    #[serde(default)] pub available: bool,
 }
 
 fn default_channel_notification_setting() -> String {
@@ -562,6 +560,8 @@ pub struct RolePermissions {
     #[serde(default)]
     pub manage_server: bool,
     #[serde(default)]
+    pub manage_apps: bool,
+    #[serde(default)]
     pub manage_channels: bool,
     #[serde(default)]
     pub manage_roles: bool,
@@ -780,6 +780,9 @@ impl Attachment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkPreview {
+    #[serde(default)] pub app: Option<AppSurface>,
+    #[serde(default)] pub frame_width: Option<i32>,
+    #[serde(default)] pub frame_height: Option<i32>,
     pub id: String,
     /// `link` ou `custom`.
     #[serde(default)]
@@ -1272,7 +1275,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             body,
-            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
+            r##"{"name":"membro","color":"#FF0000","permissions":{"manage_server":false,"manage_apps":false,"manage_channels":false,"manage_roles":false,"ban_members":false,"pin_message":false,"everyone_message":false,"send_attachment":true}}"##
         );
     }
 

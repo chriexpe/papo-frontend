@@ -1250,6 +1250,18 @@ impl Api {
 
     // -- Cargos ------------------------------------------------------------
 
+    /// Plugin management stays on the authenticated API client, never a surface browser.
+    pub async fn plugin_action(&self,id:&str,action:&str,body:serde_json::Value)->ApiResult<serde_json::Value> {
+        let encoded: String=url::form_urlencoded::byte_serialize(id.as_bytes()).collect();
+        match action {
+            "list"=>self.get("/plugins").await,
+            "rescan"=>self.post("/plugins/rescan",&body).await,
+            "preview"|"enable"|"disable"=>self.post(&format!("/plugins/{encoded}/{action}"),&body).await,
+            "patch"=>self.patch(&format!("/plugins/{encoded}"),&body).await,
+            _=>Err(ApiError::Decode("invalid plugin action".into())),
+        }
+    }
+
     pub async fn roles(&self) -> ApiResult<Vec<Role>> {
         let list: RoleList = self.get("/roles").await?;
         Ok(list.roles)

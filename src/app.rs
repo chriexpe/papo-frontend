@@ -1755,7 +1755,8 @@ impl PapoApp {
         let was_inbox = self.ui.dm_surface;
         self.persist_active_drafts(true);
         self.ui.channel_view.destroy();
-        self.ui.channel_view_tab = false;
+        self.ui.app_pane = false;
+        self.sheet.plugins=Default::default();
         if self.settings.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
             self.ui.webembed.destroy_active();
         }
@@ -2527,7 +2528,7 @@ impl PapoApp {
                 let position = ws.runtime.store.channels.len() as i32;
                 let id = format!("demo-channel-{position}");
                 ws.runtime.store.channels.push(Channel {
-                    views: Vec::new(),
+                    app: None,
                     id: id.clone(),
                     name,
                     kind,
@@ -2874,12 +2875,19 @@ impl PapoApp {
                 for effect in effects {
                     let ws = &mut self.workspaces[index];
                     match effect {
-                        RuntimeEffect::ChannelViewsInvalidated { channel_id } => {
+                        RuntimeEffect::Plugin{ticket,action,result}=>{if index==self.active {self.sheet.plugins.receive(ticket,&action,result);}},
+                        RuntimeEffect::AppInlineInvalidated{message_id}=>{
+                            if index==self.active && self.ui.channel_view.selected_id().is_some_and(|id|id.starts_with(&format!("inline-app:{message_id}:"))) {self.ui.channel_view.destroy();}
+                        }
+                        RuntimeEffect::AppInstallationInvalidated{installation_id}=>{
+                            if index==self.active && self.ui.channel_view.installation_id()==Some(installation_id.as_str()) {self.ui.channel_view.destroy();}
+                        }
+                        RuntimeEffect::AppSurfaceInvalidated { channel_id } => {
                             if index == self.active
                                 && self.ui.channel_view.owns(&ws.runtime.url, &channel_id)
                             {
                                 self.ui.channel_view.destroy();
-                                self.ui.channel_view_tab = false;
+                                self.ui.app_pane = false;
                             }
                         }
 
@@ -3932,6 +3940,7 @@ impl PapoApp {
 
         for action in actions {
             match action {
+                SettingsAction::Plugin(command)=>self.workspaces[self.active].runtime.net.send(command),
                 SettingsAction::Menu(command) => self.ui.pending.push(command),
                 SettingsAction::RestartRichPresence => self.rich_presence.restart(),
                 SettingsAction::PickActivityImage => {
@@ -4440,6 +4449,7 @@ impl eframe::App for PapoApp {
         if self.window_hidden {
             return;
         }
+        self.ui.app_input_focused=false;
         self.ui.channel_view.begin_frame(frame, &ctx);
         self.ui.webembed.set_context(&ctx);
         self.ui.webembed.begin_frame();
@@ -4763,7 +4773,7 @@ impl eframe::App for PapoApp {
         #[cfg(not(target_os = "android"))]
         {
             let store = &self.workspaces[self.active].runtime.store;
-            if !self.ui.channel_view_tab {
+            if !self.ui.app_input_focused {
                 let shortcuts = shortcut_commands(&ctx, store);
                 self.ui.pending.extend(shortcuts);
             }

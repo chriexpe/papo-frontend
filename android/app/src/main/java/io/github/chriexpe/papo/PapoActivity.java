@@ -444,7 +444,13 @@ public class PapoActivity extends GameActivity {
                 // Redirects/player navigation stay in the isolated browser.
                 // A main-frame navigation caused by an actual user gesture is
                 // a request to leave the player and belongs in the system browser.
-                if (request.isForMainFrame() && request.hasGesture()) {
+                Uri locked = Uri.parse(webEmbedInitialUrl);
+                int port = uri.getPort() == -1 ? 443 : uri.getPort();
+                int lockedPort = locked.getPort() == -1 ? 443 : locked.getPort();
+                boolean sameOrigin = uri.getScheme().equalsIgnoreCase(locked.getScheme())
+                        && uri.getHost() != null && uri.getHost().equalsIgnoreCase(locked.getHost())
+                        && port == lockedPort;
+                if (request.isForMainFrame() && !sameOrigin) {
                     nativeWebEmbedExternal(id, url);
                     return true;
                 }

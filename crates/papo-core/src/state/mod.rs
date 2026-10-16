@@ -23,6 +23,7 @@ const TYPING_TTL: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelKind {
     Text,
+    App,
     Voice,
     Category,
     /// Canal interno que sustenta uma conversa direta 1:1.
@@ -33,6 +34,7 @@ impl ChannelKind {
     fn parse(kind: &str) -> Self {
         match kind {
             "voice" => Self::Voice,
+            "app" => Self::App,
             "category" => Self::Category,
             "dm" => Self::Direct,
             _ => Self::Text,
@@ -42,7 +44,7 @@ impl ChannelKind {
 
 #[derive(Clone, Debug)]
 pub struct Channel {
-    pub views: Vec<models::ChannelView>,
+    pub app: Option<models::AppSurface>,
     pub id: String,
     pub name: String,
     pub kind: ChannelKind,
@@ -673,7 +675,7 @@ impl Store {
             channel.kind = ChannelKind::Direct;
         } else {
             self.channels.push(Channel {
-                views: Vec::new(),
+                app: None,
                 id,
                 name,
                 kind: ChannelKind::Direct,
@@ -1071,7 +1073,7 @@ impl Store {
             .channels
             .into_iter()
             .map(|channel| Channel {
-                views: Vec::new(),
+                app: None,
                 id: channel.id,
                 name: channel.name,
                 kind: ChannelKind::parse(&channel.kind),
@@ -1353,7 +1355,7 @@ impl Store {
             || !self.cached_channels.contains(id)
             || self.hydrated_channels.contains(id)
             || self.cache_loading.contains(id)
-            || self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice)
+            || self.channel(id).is_some_and(|channel| matches!(channel.kind,ChannelKind::Voice|ChannelKind::App))
         {
             return None;
         }
@@ -1502,7 +1504,7 @@ impl Store {
         {
             return None;
         }
-        if self.channel(id).is_some_and(|channel| channel.kind == ChannelKind::Voice) {
+        if self.channel(id).is_some_and(|channel| matches!(channel.kind,ChannelKind::Voice|ChannelKind::App)) {
             return None;
         }
         Some(id.clone())
@@ -2417,6 +2419,7 @@ impl Store {
         {
             let p = role.permissions;
             combined.manage_server |= p.manage_server;
+            combined.manage_apps |= p.manage_apps;
             combined.manage_channels |= p.manage_channels;
             combined.manage_roles |= p.manage_roles;
             combined.ban_members |= p.ban_members;
@@ -2458,6 +2461,10 @@ impl Store {
         self.is_server_owner() || self.my_role_permissions().manage_server
     }
 
+    pub fn can_manage_apps(&self) -> bool {
+        self.is_server_owner() || self.my_role_permissions().manage_apps
+    }
+
     pub fn can_manage_channels(&self) -> bool {
         self.is_server_owner() || self.my_role_permissions().manage_channels
     }
@@ -2467,7 +2474,7 @@ impl Store {
     }
 
     pub fn can_open_server_admin(&self) -> bool {
-        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles()
+        self.can_manage_server() || self.can_manage_channels() || self.can_manage_roles() || self.can_manage_apps()
     }
 
     // -- Atualizações ------------------------------------------------------
@@ -2587,7 +2594,7 @@ impl Store {
                             .map(|(at, mark)| at > mark)
                             .unwrap_or(false);
                         Channel {
-                            views: channel.views,
+                            app: channel.app,
                             unread: unread || fresh,
                             id: channel.id,
                             name: channel.name,
@@ -3184,7 +3191,7 @@ impl Store {
                 self.error = Some(message);
                 self.busy = false;
             }
-            Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
+            Update::Plugin { .. } | Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
         }
     }
 
@@ -3373,6 +3380,7 @@ impl Store {
                 name,
                 kind,
                 topic,
+                app,
             } => {
                 // Quem criou o canal já o recebeu pela lista relida logo
                 // depois do POST; o evento chega em seguida e duplicaria a
@@ -3382,7 +3390,7 @@ impl Store {
                 }
                 let position = self.channels.len() as i32 + 1;
                 self.channels.push(Channel {
-                    views: Vec::new(),
+                    app,
                     id,
                     name,
                     kind: ChannelKind::parse(&kind),
@@ -3399,7 +3407,7 @@ impl Store {
                 id,
                 name,
                 topic,
-                views,
+                app,
             } => {
                 if let Some(channel) = self.channels.iter_mut().find(|channel| channel.id == id) {
                     if let Some(name) = name {
@@ -3409,10 +3417,23 @@ impl Store {
                         channel.topic = topic;
                     }
                     // Sem snapshot no evento, invalida imediatamente até o REST autoritativo.
-                    channel.views = views.unwrap_or_default();
+                    channel.app = app;
                 }
             }
+            Event::AppInvalidated { installation_id } => {
+                for channel in &mut self.channels {
+                    if let Some(app) = &mut channel.app && app.app_installation_id == installation_id { app.available = false; }
+                }
+                for message in &mut self.messages { for preview in &mut message.previews {
+                    if let Some(app) = &mut preview.app && app.app_installation_id == installation_id { app.available = false; }
+                }}
+            }
             Event::ChannelDeleted { id } => {
+                if let Some(installation)=self.channel(&id).and_then(|c|c.app.as_ref()).map(|a|a.app_installation_id.clone()) {
+                    for message in &mut self.messages {for preview in &mut message.previews {
+                        if let Some(app)=&mut preview.app && app.app_installation_id==installation {app.available=false;}
+                    }}
+                }
                 self.channels.retain(|channel| channel.id != id);
                 self.messages.retain(|message| message.channel_id != id);
                 self.loading_channels.remove(&id);
@@ -3751,7 +3772,7 @@ mod channel_layout_tests {
 
     fn channel(id: &str, kind: ChannelKind, position: i32, parent: Option<&str>) -> Channel {
         Channel {
-            views: Vec::new(),
+            app: None,
             id: id.into(),
             name: id.into(),
             kind,
@@ -4789,7 +4810,7 @@ mod tests {
         };
         store.channels = vec![
             Channel {
-                views: Vec::new(),
+                app: None,
                 id: "aberto".to_owned(),
                 name: "Aberto".to_owned(),
                 kind: ChannelKind::Text,
@@ -4802,7 +4823,7 @@ mod tests {
                 mentions: 0,
             },
             Channel {
-                views: Vec::new(),
+                app: None,
                 id: "outro".to_owned(),
                 name: "Outro".to_owned(),
                 kind: ChannelKind::Text,
@@ -5730,7 +5751,7 @@ mod tests {
             me: "eu".to_owned(),
             selected_channel: "geral".to_owned(),
             channels: vec![Channel {
-                views: Vec::new(),
+                app: None,
                 id: "geral".to_owned(),
                 name: "Geral".to_owned(),
                 kind: ChannelKind::Text,
@@ -5975,7 +5996,7 @@ mod notification_badge_tests {
         ]
         .into_iter()
         .map(|(id, mode)| Channel {
-            views: Vec::new(),
+            app: None,
             id: id.into(),
             name: id.into(),
             kind: if id == "dm" {
@@ -6102,54 +6123,45 @@ mod notification_badge_tests {
     }
 }
 
-#[cfg(test)]
-mod channel_view_tests {
-    use super::*;
 
-    fn payload(views: serde_json::Value) -> models::Channel {
-        serde_json::from_value(serde_json::json!({
-            "id": "a", "name": "private-channel", "type": "text", "topic": "Keep topic",
-            "views": views,
-        }))
-        .unwrap()
-    }
-    fn views() -> serde_json::Value {
-        serde_json::json!([{"id":"map", "app_installation_id":"app", "channel_id":"a",
-            "url":"https://example.com/", "position":0, "name":"Map"}])
+#[cfg(test)]
+mod app_channel_contract_tests {
+    use super::*;
+    #[test]
+    fn app_channel_payload_and_live_removal() {
+        let app=models::AppSurface{app_installation_id:"install".into(),surface_id:"home".into(),source:"bundled".into(),entry:"/apps/install/ui/index.html".into(),avatar_url:String::new(),available:true};
+        let mut store=Store::default();
+        store.apply_event(Event::ChannelCreated{id:"app".into(),name:"Map".into(),kind:"app".into(),topic:None,app:Some(app.clone())});
+        store.selected_channel="app".into();
+        assert_eq!(store.channel("app").unwrap().kind,ChannelKind::App);
+        assert_eq!(store.channel("app").unwrap().app,Some(app));
+        assert!(store.channel_needing_messages().is_none());
+        assert!(store.channel_needing_cache().is_none());
+        store.apply_event(Event::ChannelUpdated{id:"app".into(),name:Some("Renamed".into()),topic:None,app:None});
+        assert_eq!(store.channel("app").unwrap().name,"Renamed");
+        assert!(store.channel("app").unwrap().app.is_none());
+        store.apply_event(Event::ChannelDeleted{id:"app".into()});
+        assert!(store.channel("app").is_none());
     }
     #[test]
-    fn channel_payload_carries_views_and_refresh_removes_revoked_entries() {
+    fn inline_only_revocation_does_not_need_a_channel_event() {
+        let app = models::AppSurface {app_installation_id:"install".into(),surface_id:"result".into(),source:"bundled".into(),entry:"/apps/install/ui/result.html".into(),avatar_url:String::new(),available:true};
+        let preview: models::LinkPreview = serde_json::from_value(serde_json::json!({"id":"embed","title":"Result","description":null,"app":app})).unwrap();
         let mut store = Store::default();
-        store.apply(Update::Channels(vec![payload(views())]));
-        assert_eq!(store.channels[0].views[0].name.as_deref(), Some("Map"));
-        store.apply(Update::Channels(vec![payload(serde_json::json!([]))]));
-        assert!(store.channels[0].views.is_empty());
+        store.messages.push(Message {id:"message".into(),channel_id:"chat".into(),author_id:"app".into(),external_author:None,content:String::new(),at:Local::now(),edited:false,reply_to:None,attachments:vec![],previews:vec![preview],reactions:vec![],pinned:false,pending:false});
+        let cached = crate::cache::CachedMessage::from_store(&store.messages[0]);
+        assert!(!cached.to_store().previews[0].app.as_ref().unwrap().available);
+        store.apply_event(Event::AppInvalidated {installation_id:"other".into()});
+        assert!(store.messages[0].previews[0].app.as_ref().unwrap().available);
+        store.apply_event(Event::AppInvalidated {installation_id:"install".into()});
+        assert!(!store.messages[0].previews[0].app.as_ref().unwrap().available);
+        assert_eq!(store.messages.len(),1);
     }
     #[test]
-    fn partial_channel_update_invalidates_views_without_erasing_channel_identity() {
-        let mut store = Store::default();
-        store.apply(Update::Channels(vec![payload(views())]));
-        store.apply(Update::Event(Box::new(Event::ChannelUpdated {
-            id: "a".into(),
-            name: None,
-            topic: None,
-            views: None,
-        })));
-        assert!(store.channels[0].views.is_empty());
-        assert_eq!(store.channels[0].name, "private-channel");
-        assert_eq!(store.channels[0].topic.as_deref(), Some("Keep topic"));
-    }
-    #[test]
-    fn channel_update_snapshot_replaces_view_tabs() {
-        let mut store = Store::default();
-        store.apply(Update::Channels(vec![payload(views())]));
-        store.apply(Update::Event(Box::new(Event::ChannelUpdated {
-            id: "a".into(),
-            name: None,
-            topic: Some(None),
-            views: Some(Vec::new()),
-        })));
-        assert!(store.channels[0].views.is_empty());
-        assert_eq!(store.channels[0].topic, None);
+    fn owner_can_manage_apps() {
+        let mut store=Store{me:"member".into(),..Default::default()};
+        assert!(!store.can_manage_apps());
+        store.server=Some(Server{name:"Server".into(),description:None,public:true,owner_id:Some("member".into()),icon:None});
+        assert!(store.can_manage_apps());
     }
 }
