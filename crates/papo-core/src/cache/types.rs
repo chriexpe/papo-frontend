@@ -278,6 +278,8 @@ pub struct CachedReadState {
     pub read_message_id: Option<String>,
     pub seen_to_at: Option<i64>,
     pub seen_to_message_id: Option<String>,
+    pub gap_end_at: Option<i64>,
+    pub gap_end_message_id: Option<String>,
     pub unread_mentions: Vec<String>,
     pub updated_at: i64,
 }
@@ -584,7 +586,7 @@ pub enum CacheOp {
         /// buraco entre as duas, e as linhas antigas são descartadas para que
         /// o histórico volte a ser buscado no servidor em vez de pular o
         /// trecho que faltou.
-        anchor_id: Option<String>,
+        overlap_ids: Vec<String>,
     },
     UpsertMessage(CachedMessage),
     DeleteMessage { message_id: String },
