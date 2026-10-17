@@ -201,13 +201,16 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
         CacheOp::UpsertReadState(state) => vec![Stmt {
             sql: "INSERT INTO channel_read_state (
                       server_key, owner_user_id, channel_id, read_at, read_message_id,
-                      seen_to_at, seen_to_message_id, unread_mentions, updated_at
-                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                      seen_to_at, seen_to_message_id, gap_end_at,
+                      gap_end_message_id, unread_mentions, updated_at
+                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
                   ON CONFLICT(server_key, owner_user_id, channel_id) DO UPDATE SET
                       read_at = excluded.read_at,
                       read_message_id = excluded.read_message_id,
                       seen_to_at = excluded.seen_to_at,
                       seen_to_message_id = excluded.seen_to_message_id,
+                      gap_end_at = excluded.gap_end_at,
+                      gap_end_message_id = excluded.gap_end_message_id,
                       unread_mentions = excluded.unread_mentions,
                       updated_at = excluded.updated_at",
             params: vec![
@@ -218,6 +221,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 opt_text(state.read_message_id.as_deref()),
                 state.seen_to_at.map(Value::Integer).unwrap_or(Value::Null),
                 opt_text(state.seen_to_message_id.as_deref()),
+                state.gap_end_at.map(Value::Integer).unwrap_or(Value::Null),
+                opt_text(state.gap_end_message_id.as_deref()),
                 text(&encode_json(&state.unread_mentions)),
                 integer(state.updated_at),
             ],
@@ -411,8 +416,35 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             messages,
             deleted_ids,
             cached_at,
+            overlap_ids,
         } => {
-            let mut statements = Vec::with_capacity(deleted_ids.len() + messages.len() + 1);
+            let mut statements = Vec::with_capacity(deleted_ids.len() + messages.len() + 2);
+            let mut params = vec![text(server_key), text(channel_id)];
+            let overlap_guard = if overlap_ids.is_empty() {
+                String::new()
+            } else {
+                let placeholders = (0..overlap_ids.len())
+                    .map(|i| format!("?{}", i + 3))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                params.extend(overlap_ids.iter().map(|id| text(id)));
+                format!(
+                    " AND NOT EXISTS (SELECT 1 FROM messages
+                         WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                           AND message_id IN ({placeholders}))"
+                )
+            };
+            // No eligible witness (e.g. an all-own-message window) does
+            // not prove disjointness: preserve the older cache instead.
+            if !overlap_ids.is_empty() {
+                statements.push(Stmt {
+                    sql: format!(
+                        "DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                         AND pinned = 0{overlap_guard}"
+                    ),
+                    params,
+                });
+            }
             for message_id in deleted_ids {
                 statements.push(Stmt {
                     sql: "DELETE FROM messages
@@ -1204,14 +1236,15 @@ impl TursoCache {
                 .conn
                 .query(
                     "SELECT channel_id, read_at, read_message_id, seen_to_at,
-                            seen_to_message_id, unread_mentions, updated_at
+                            seen_to_message_id, gap_end_at, gap_end_message_id,
+                            unread_mentions, updated_at
                      FROM channel_read_state
                      WHERE server_key = ?1 AND owner_user_id = ?2",
                     [server_key, owner],
                 )
                 .await?;
             while let Some(row) = rows.next().await? {
-                let mentions: String = row.get(5)?;
+                let mentions: String = row.get(7)?;
                 metadata.read_states.push(CachedReadState {
                     owner_user_id: owner.to_owned(),
                     channel_id: row.get(0)?,
@@ -1219,8 +1252,10 @@ impl TursoCache {
                     read_message_id: row.get(2)?,
                     seen_to_at: row.get(3)?,
                     seen_to_message_id: row.get(4)?,
+                    gap_end_at: row.get(5)?,
+                    gap_end_message_id: row.get(6)?,
                     unread_mentions: serde_json::from_str(&mentions).unwrap_or_default(),
-                    updated_at: row.get(6)?,
+                    updated_at: row.get(8)?,
                 });
             }
         }

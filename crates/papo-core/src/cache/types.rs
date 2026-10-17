@@ -278,6 +278,8 @@ pub struct CachedReadState {
     pub read_message_id: Option<String>,
     pub seen_to_at: Option<i64>,
     pub seen_to_message_id: Option<String>,
+    pub gap_end_at: Option<i64>,
+    pub gap_end_message_id: Option<String>,
     pub unread_mentions: Vec<String>,
     pub updated_at: i64,
 }
@@ -572,12 +574,19 @@ pub enum CacheOp {
         cached_at: i64,
     },
     /// Reconcilia somente a janela mais recente que o backend declarou
-    /// autoritativa. Mensagens mais antigas continuam no cache.
+    /// autoritativa. Mensagens mais antigas continuam no cache — desde que
+    /// sejam contíguas com essa janela.
     MergeChannelHead {
         channel_id: String,
         messages: Vec<CachedMessage>,
         deleted_ids: Vec<String>,
         cached_at: i64,
+        /// Mensagem mais antiga da janela (não fixada, de outra pessoa). Se o
+        /// cache não a tem, a região gravada termina antes da janela: há um
+        /// buraco entre as duas, e as linhas antigas são descartadas para que
+        /// o histórico volte a ser buscado no servidor em vez de pular o
+        /// trecho que faltou.
+        overlap_ids: Vec<String>,
     },
     UpsertMessage(CachedMessage),
     DeleteMessage { message_id: String },

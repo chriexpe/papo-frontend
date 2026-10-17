@@ -97,13 +97,11 @@ impl ksni::Tray for PapoTray {
         }
     }
 
-    /// Com menção ou conversa nova, o painel destaca o ícone.
+    /// Mantém o ícone estático mesmo com mensagens não lidas. No Plasma,
+    /// NeedsAttention faz a bandeja pulsar; a bolinha vermelha já é desenhada
+    /// por icon_pixmap e continua visível enquanto houver pendências.
     fn status(&self) -> Status {
-        if self.mentions > 0 || self.unread {
-            Status::NeedsAttention
-        } else {
-            Status::Active
-        }
+        Status::Active
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
@@ -213,6 +211,42 @@ impl Tray {
                 tray.labels = labels;
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unread_badge_does_not_request_panel_animation() {
+        let (commands, _) = mpsc::channel();
+        let quit_requested = Arc::new(AtomicBool::new(false));
+        let mut tray = PapoTray {
+            icons: vec![Icon { width: 1, height: 1, data: vec![255, 1, 1, 1] }],
+            badged_icons: vec![Icon { width: 1, height: 1, data: vec![255, 229, 57, 53] }],
+            labels: TrayLabels {
+                open: String::new(),
+                restart_rich_presence: String::new(),
+                quit: String::new(),
+                tooltip: String::new(),
+            },
+            mentions: 0,
+            unread: false,
+            commands,
+            repaint: egui::Context::default(),
+            quit_requested,
+        };
+        assert!(matches!(ksni::Tray::status(&tray), Status::Active));
+        assert_eq!(ksni::Tray::icon_pixmap(&tray)[0].data, vec![255, 1, 1, 1]);
+
+        tray.unread = true;
+        assert!(matches!(ksni::Tray::status(&tray), Status::Active));
+        assert_eq!(ksni::Tray::icon_pixmap(&tray)[0].data, vec![255, 229, 57, 53]);
+
+        tray.mentions = 2;
+        assert!(matches!(ksni::Tray::status(&tray), Status::Active));
+        assert_eq!(ksni::Tray::icon_pixmap(&tray)[0].data, vec![255, 229, 57, 53]);
     }
 }
 
