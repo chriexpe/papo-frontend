@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -248,6 +248,12 @@ const MIGRATIONS: &[Migration] = &[Migration {
     statements: &[
         "DELETE FROM messages",
         "DELETE FROM channel_cache_state",
+    ],
+}, Migration {
+    version: 18,
+    statements: &[
+        "ALTER TABLE channel_read_state ADD COLUMN gap_end_at INTEGER",
+        "ALTER TABLE channel_read_state ADD COLUMN gap_end_message_id TEXT",
     ],
 }];
 
