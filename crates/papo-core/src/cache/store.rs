@@ -411,8 +411,22 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             messages,
             deleted_ids,
             cached_at,
+            anchor_id,
         } => {
-            let mut statements = Vec::with_capacity(deleted_ids.len() + messages.len() + 1);
+            let mut statements = Vec::with_capacity(deleted_ids.len() + messages.len() + 2);
+            if let Some(anchor_id) = anchor_id {
+                // Sem a âncora, o que está gravado termina antes da janela
+                // nova. Manter essas linhas faria a paginação local saltar o
+                // buraco para sempre; sem elas, o histórico vem do servidor.
+                statements.push(Stmt {
+                    sql: "DELETE FROM messages
+                          WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                            AND (SELECT COUNT(*) FROM messages
+                                 WHERE server_key = ?1 AND channel_id = ?2
+                                   AND pinned = 0 AND message_id = ?3) = 0",
+                    params: vec![text(server_key), text(channel_id), text(anchor_id)],
+                });
+            }
             for message_id in deleted_ids {
                 statements.push(Stmt {
                     sql: "DELETE FROM messages

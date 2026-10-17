@@ -785,6 +785,8 @@ impl Stash {
         std::mem::swap(&mut self.last_server_channel, &mut ui.last_server_channel);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
+        ui.unread_marker = None;
+        ui.unread_marker_baseline = None;
     }
 }
 
@@ -1055,6 +1057,11 @@ pub struct UiState {
     open_channel_pending: Option<String>,
     /// Esc pediu o fim do canal, independentemente da âncora de não lidas.
     scroll_latest_pending: Option<String>,
+    /// Primeira mensagem não lida fixada na conversa atual (`(channel_id, message_id)`).
+    pub unread_marker: Option<(String, String)>,
+    /// Estado de referência do marcador neste canal (`(channel_id, Option<newest_id>)`),
+    /// para manter a linha fixa durante a leitura e só reabrir para mensagens novas.
+    unread_marker_baseline: Option<(String, Option<String>)>,
     /// Quantas páginas antigas a abertura já pediu em busca da âncora.
     open_history_requests: u8,
     open_history_retry_at: f64,
@@ -1225,6 +1232,8 @@ impl Default for UiState {
             mark_read_at_newest: false,
             open_channel_pending: None,
             scroll_latest_pending: None,
+            unread_marker: None,
+            unread_marker_baseline: None,
             open_history_requests: 0,
             open_history_retry_at: f64::NEG_INFINITY,
             read_span_break: false,
@@ -1252,6 +1261,16 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn clear_unread_marker(&mut self, store: &Store) {
+        self.unread_marker = None;
+        if !store.selected_channel.is_empty() {
+            self.unread_marker_baseline = Some((
+                store.selected_channel.clone(),
+                store.newest_loaded(&store.selected_channel),
+            ));
+        }
+    }
+
     /// Um aperto fecha uma superfície, cancela o compositor ou volta ao fim.
     pub fn handle_escape(&mut self, ctx: &egui::Context, store: &mut Store) {
         if self.dismiss_floating(store) || self.cancel_composer_actions() {
@@ -1261,6 +1280,7 @@ impl UiState {
             self.jump = None;
             self.open_channel_pending = None;
             self.scroll_latest_pending = Some(store.selected_channel.clone());
+            self.clear_unread_marker(store);
             self.read_span_break = true;
             self.wheel_glide = WheelGlide::default();
             self.history_scroll_anchor = None;
@@ -1474,6 +1494,8 @@ pub fn draw(
         state.forced_chat_scroll = None;
         state.relayout_scroll_anchor = None;
         state.open_channel_pending = Some(next_channel.clone());
+        state.unread_marker = None;
+        state.unread_marker_baseline = None;
         state.open_history_requests = 0;
         state.open_history_retry_at = f64::NEG_INFINITY;
         store.reset_read_span(&previous_channel);
@@ -5685,13 +5707,25 @@ const CHAT_LOAD_BELOW: f32 = 320.0;
 
 /// Resumo do que decide a altura de uma linha da conversa. Se mudar, a
 /// altura guardada vale nada e a linha é montada de novo.
-fn row_signature(message: &Message, grouped: bool, new_day: bool, width: f32, ppp: f32) -> u64 {
+fn row_signature(
+    message: &Message,
+    grouped: bool,
+    new_day: bool,
+    unread_divider: bool,
+    hourglass_start: bool,
+    hourglass_end: bool,
+    width: f32,
+    ppp: f32,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     width.to_bits().hash(&mut hasher);
     ppp.to_bits().hash(&mut hasher);
     grouped.hash(&mut hasher);
     new_day.hash(&mut hasher);
+    unread_divider.hash(&mut hasher);
+    hourglass_start.hash(&mut hasher);
+    hourglass_end.hash(&mut hasher);
     message.content.hash(&mut hasher);
     message.external_author.hash(&mut hasher);
     message.edited.hash(&mut hasher);
@@ -5709,6 +5743,145 @@ fn row_signature(message: &Message, grouped: bool, new_day: bool, width: f32, pp
     hasher.finish()
 }
 
+fn message_sort_key(message: &Message) -> (chrono::DateTime<chrono::Utc>, &str) {
+    (message.at.with_timezone(&chrono::Utc), message.id.as_str())
+}
+
+fn first_unread_after_baseline(
+    store: &Store,
+    state: &UiState,
+    channel_id: &str,
+) -> Option<String> {
+    let base_msg = state
+        .unread_marker_baseline
+        .as_ref()
+        .filter(|(ch, _)| ch == channel_id)
+        .and_then(|(_, base)| base.as_deref())
+        .and_then(|id| store.message(id));
+    let first_id = store.first_unread_loaded(channel_id)?;
+    let first_msg = store.message(&first_id)?;
+    if let Some(base) = base_msg {
+        if message_sort_key(first_msg) > message_sort_key(base) {
+            return Some(first_id);
+        }
+        store
+            .messages_in(channel_id)
+            .filter(|m| !m.pending && m.author_id != store.me)
+            .filter(|m| message_sort_key(m) > message_sort_key(base))
+            .min_by(|a, b| message_sort_key(a).cmp(&message_sort_key(b)))
+            .map(|m| m.id.clone())
+    } else {
+        Some(first_id)
+    }
+}
+
+fn sync_unread_marker(
+    store: &Store,
+    state: &mut UiState,
+    channel_id: &str,
+    channel_open_pass: bool,
+    focused: bool,
+) -> Option<String> {
+    if channel_id.is_empty() {
+        state.unread_marker = None;
+        state.unread_marker_baseline = None;
+        return None;
+    }
+    if state
+        .unread_marker
+        .as_ref()
+        .is_some_and(|(ch, _)| ch != channel_id)
+    {
+        state.unread_marker = None;
+    }
+    if state
+        .unread_marker_baseline
+        .as_ref()
+        .is_some_and(|(ch, _)| ch != channel_id)
+    {
+        state.unread_marker_baseline = None;
+    }
+
+    let hourglass_range = store.hourglass_range(channel_id);
+    if let Some((_, ref gap_end_id)) = hourglass_range
+        && let Some(gap_end_msg) = store.message(gap_end_id)
+    {
+        let advance_baseline = state
+            .unread_marker_baseline
+            .as_ref()
+            .filter(|(ch, _)| ch == channel_id)
+            .and_then(|(_, base)| base.as_deref())
+            .and_then(|base_id| store.message(base_id))
+            .is_none_or(|base_msg| message_sort_key(gap_end_msg) > message_sort_key(base_msg));
+        if advance_baseline {
+            state.unread_marker_baseline =
+                Some((channel_id.to_owned(), Some(gap_end_id.clone())));
+        }
+        let covered_by_gap = state
+            .unread_marker
+            .as_ref()
+            .and_then(|(_, id)| store.message(id))
+            .is_some_and(|latched_msg| {
+                let bound = state
+                    .unread_marker_baseline
+                    .as_ref()
+                    .and_then(|(_, base)| base.as_deref())
+                    .and_then(|base_id| store.message(base_id))
+                    .unwrap_or(gap_end_msg);
+                message_sort_key(latched_msg) <= message_sort_key(bound)
+            });
+        if covered_by_gap {
+            state.unread_marker = None;
+        }
+    }
+
+    let has_unread = store
+        .channel(channel_id)
+        .is_some_and(|channel| channel.unread)
+        || store.has_unread_loaded(channel_id)
+        || hourglass_range.is_some();
+
+    if let Some((_, latched_id)) = state.unread_marker.clone() {
+        let Some(latched_msg) = store.message(&latched_id) else {
+            let fallback = has_unread
+                .then(|| store.first_unread_loaded(channel_id))
+                .flatten();
+            state.unread_marker = fallback.map(|id| (channel_id.to_owned(), id));
+            return state.unread_marker.as_ref().map(|(_, id)| id.clone());
+        };
+        if has_unread
+            && hourglass_range.is_none()
+            && let Some(first_id) = store.first_unread_loaded(channel_id)
+            && let Some(first_msg) = store.message(&first_id)
+            && message_sort_key(first_msg) < message_sort_key(latched_msg)
+            && state
+                .unread_marker_baseline
+                .as_ref()
+                .and_then(|(_, base)| base.as_deref())
+                .and_then(|base_id| store.message(base_id))
+                .is_none_or(|base_msg| message_sort_key(first_msg) > message_sort_key(base_msg))
+        {
+            state.unread_marker = Some((channel_id.to_owned(), first_id));
+        }
+        return state.unread_marker.as_ref().map(|(_, id)| id.clone());
+    }
+
+    let initial_open = channel_open_pass || state.unread_marker_baseline.is_none();
+    if initial_open && hourglass_range.is_none() {
+        if has_unread
+            && let Some(first_id) = store.first_unread_loaded(channel_id)
+        {
+            state.unread_marker = Some((channel_id.to_owned(), first_id));
+        }
+    } else if !focused && has_unread {
+        if let Some(first_id) = first_unread_after_baseline(store, state, channel_id) {
+            state.unread_marker = Some((channel_id.to_owned(), first_id));
+        }
+    }
+
+    state.unread_marker.as_ref().map(|(_, id)| id.clone())
+}
+
 fn message_list(
     ui: &mut egui::Ui,
     store: &Store,
@@ -5718,11 +5891,30 @@ fn message_list(
     area: Rect,
     readable: Rect,
 ) {
-    let mut messages = store.messages_in(&store.selected_channel);
+    let channel_id = store.selected_channel.clone();
+    let channel_open_pass = state.open_channel_pending.as_deref() == Some(channel_id.as_str());
+    let opening_pass = channel_open_pass
+        || state.scroll_latest_pending.as_deref() == Some(channel_id.as_str());
+    let mut messages = store.messages_in(&channel_id);
     let Some(first_message) = messages.next() else {
+        state.unread_marker = None;
+        if !opening_pass
+            && store.timeline_status(&channel_id) == crate::state::TimelineStatus::Fresh
+        {
+            state.unread_marker_baseline = Some((channel_id.clone(), None));
+        }
         empty_state(ui, store, state, t, s);
         return;
     };
+
+    let hourglass_range = store.hourglass_range(&channel_id);
+    let unread_marker_id = sync_unread_marker(
+        store,
+        state,
+        &channel_id,
+        channel_open_pass,
+        ui.input(|input| input.focused),
+    );
 
     let ctx = ui.ctx().clone();
     let width = area.width();
@@ -5758,10 +5950,29 @@ fn message_list(
         let y_start = ui.cursor().top();
         let day = message.at.day();
         let new_day = last_day != Some(day);
+        let hourglass_start = hourglass_range
+            .as_ref()
+            .is_some_and(|(start, _)| start == &message.id);
+        let hourglass_end = hourglass_range
+            .as_ref()
+            .is_some_and(|(_, end)| end == &message.id);
+        let unread_start = !hourglass_start
+            && unread_marker_id.as_deref() == Some(message.id.as_str());
         let will_group = !new_day
+            && !unread_start
+            && !hourglass_start
             && last_author.as_deref() == Some(author_key.as_str())
             && last_at.is_some_and(|prev| (message.at - prev).num_minutes() < GROUP_GAP_MINUTES);
-        let signature = row_signature(message, will_group, new_day, width, ui.pixels_per_point());
+        let signature = row_signature(
+            message,
+            will_group,
+            new_day,
+            unread_start,
+            hourglass_start,
+            hourglass_end,
+            width,
+            ui.pixels_per_point(),
+        );
         if can_cull
             && !message.pending
             && focused_message.as_deref() != Some(message.id.as_str())
@@ -5777,13 +5988,21 @@ fn message_list(
             );
             culled_now.insert(message.id.clone());
             last_day = Some(day);
-            last_author = Some(author_key.clone());
+            last_author = (!hourglass_end).then(|| author_key.clone());
             last_at = Some(message.at);
             continue;
         }
         if last_day != Some(day) {
             day_divider(ui, t, s, message.at, width);
             last_day = Some(day);
+            last_author = None;
+        }
+        if hourglass_start {
+            hourglass_divider(ui, t, s.unread_gap_start, width);
+            last_author = None;
+        }
+        if unread_start {
+            unread_divider(ui, t, s, width);
             last_author = None;
         }
 
@@ -6120,7 +6339,12 @@ fn message_list(
             }
         }
 
-        last_author = Some(author_key);
+        if hourglass_end {
+            hourglass_divider(ui, t, s.unread_gap_end, width);
+            last_author = None;
+        } else {
+            last_author = Some(author_key);
+        }
         last_at = Some(message.at);
         let height = ui.cursor().top() - y_start;
         // Uma linha acima da tela que vinha sendo pulada e agora tem outra
@@ -6136,6 +6360,30 @@ fn message_list(
         state.row_heights.insert(message.id.clone(), (signature, height));
     }
     state.culled_rows = culled_now;
+
+    let timeline_fresh = store.connection != crate::api::ws::Connection::Online
+        || store.timeline_status(&channel_id) == crate::state::TimelineStatus::Fresh;
+
+    if !opening_pass && timeline_fresh && !state.visible_message_ids.is_empty() {
+        if state.unread_marker.is_none() {
+            let has_unread = store
+                .channel(&channel_id)
+                .is_some_and(|channel| channel.unread)
+                || store.has_unread_loaded(&channel_id)
+                || hourglass_range.is_some();
+            if has_unread
+                && let Some(first_id) = first_unread_after_baseline(store, state, &channel_id)
+                && !state.visible_message_ids.iter().any(|id| id == &first_id)
+            {
+                state.unread_marker = Some((channel_id.clone(), first_id));
+            } else if hourglass_range.is_none() {
+                state.unread_marker_baseline =
+                    Some((channel_id.clone(), store.newest_loaded(&channel_id)));
+            }
+        } else if state.unread_marker_baseline.is_none() {
+            state.unread_marker_baseline = Some((channel_id.clone(), None));
+        }
+    }
 
     if ui.ctx().pointer_hover_pos().is_none() {
         state.hover_actions = None;
@@ -9321,6 +9569,55 @@ fn day_divider(
     ui.add_space(space::XS);
 }
 
+fn unread_divider(ui: &mut egui::Ui, t: &Tokens, s: &Strings, width: f32) {
+    timeline_status_divider(ui, width, s.unread_divider, t.danger, Color32::WHITE);
+}
+
+fn hourglass_divider(ui: &mut egui::Ui, t: &Tokens, label: &str, width: f32) {
+    timeline_status_divider(
+        ui,
+        width,
+        label,
+        t.away,
+        Color32::from_rgb(0x16, 0x16, 0x18),
+    );
+}
+
+fn timeline_status_divider(
+    ui: &mut egui::Ui,
+    width: f32,
+    label: &str,
+    color: Color32,
+    text_color: Color32,
+) {
+    const HEIGHT: f32 = 16.0;
+    const PILL_RADIUS: u8 = 8;
+
+    ui.add_space(space::LG);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, HEIGHT), Sense::hover());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), text::caption(), text_color);
+    let pill_width = (galley.size().x + space::SM * 2.0).max(HEIGHT);
+    let left = rect.min.x + space::XL;
+    let right = (rect.max.x - space::XL).max(left + pill_width);
+    let mid_y = rect.center().y;
+    let pill = Rect::from_min_max(
+        egui::pos2(right - pill_width, mid_y - HEIGHT / 2.0),
+        egui::pos2(right, mid_y + HEIGHT / 2.0),
+    );
+    let painter = ui.painter();
+    if pill.min.x > left {
+        painter.line_segment(
+            [egui::pos2(left, mid_y), egui::pos2(pill.min.x, mid_y)],
+            Stroke::new(1.0, color),
+        );
+    }
+    painter.rect_filled(pill, CornerRadius::same(PILL_RADIUS), color);
+    painter.galley(pill.center() - galley.size() / 2.0, galley, text_color);
+    ui.add_space(space::XS);
+}
+
 /// Conversa vazia. Um servidor sem canal nenhum é um caso diferente de um
 /// canal sem mensagens: ali não há o que dizer até existir um canal, então a
 /// tela oferece a saída em vez de convidar a falar sozinho.
@@ -9425,6 +9722,7 @@ fn submit(store: &Store, state: &mut UiState) {
         return;
     }
     state.custom_embed_editor = false;
+    state.clear_unread_marker(store);
     let content = store.encode_mentions(&visible, &state.composer_mentions);
     state.composer.clear();
     state.composer_mentions.clear();
@@ -12002,6 +12300,7 @@ mod escape_tests {
             }];
         store.messages = (0..60).map(|index| Message {
                 id: format!("m{index:03}"), channel_id: "c1".into(), author_id: "u1".into(),
+                external_author: None,
                 content: format!("Mensagem {index}: texto da conversa para testar a rolagem."),
                 at: chrono::Local::now(), edited: false, reply_to: None,
                 attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
@@ -12362,6 +12661,7 @@ mod reply_quote_tests {
         });
         store.messages.push(Message {
             id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            external_author: None,
             content: ":papo:@mention(<@u1>):papo: :desconhecido: 👩‍💻👍🏽🇧🇷".into(),
             at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
             previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
@@ -12422,6 +12722,7 @@ mod reply_quote_tests {
             .collect();
         store.messages.push(Message {
             id: "original".into(), channel_id: "c".into(), author_id: "author".into(),
+            external_author: None,
             content: String::new(), at: Local::now(), edited: false, reply_to: None,
             attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
             pinned: false, pending: false,
@@ -12510,16 +12811,302 @@ mod row_cache_tests {
     #[test]
     fn row_signature_changes_with_whatever_changes_the_height() {
         let base = message("oi");
-        let sig = |m: &Message, grouped, new_day, width| row_signature(m, grouped, new_day, width, 1.0);
-        let reference = sig(&base, false, false, 600.0);
-        assert_eq!(reference, sig(&message("oi"), false, false, 600.0));
-        assert_ne!(reference, sig(&message("oi, tudo bem?"), false, false, 600.0));
-        assert_ne!(reference, sig(&base, true, false, 600.0));
-        assert_ne!(reference, sig(&base, false, true, 600.0));
-        assert_ne!(reference, sig(&base, false, false, 601.0));
+        let sig = |m: &Message, grouped, new_day, unread_divider, hg_start, hg_end, width| {
+            row_signature(
+                m,
+                grouped,
+                new_day,
+                unread_divider,
+                hg_start,
+                hg_end,
+                width,
+                1.0,
+            )
+        };
+        let reference = sig(&base, false, false, false, false, false, 600.0);
+        assert_eq!(
+            reference,
+            sig(&message("oi"), false, false, false, false, false, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&message("oi, tudo bem?"), false, false, false, false, false, 600.0)
+        );
+        assert_ne!(reference, sig(&base, true, false, false, false, false, 600.0));
+        assert_ne!(reference, sig(&base, false, true, false, false, false, 600.0));
+        assert_ne!(reference, sig(&base, false, false, true, false, false, 600.0));
+        assert_ne!(reference, sig(&base, false, false, false, true, false, 600.0));
+        assert_ne!(reference, sig(&base, false, false, false, false, true, 600.0));
+        assert_ne!(reference, sig(&base, false, false, false, false, false, 601.0));
         let mut edited = message("oi");
         edited.edited = true;
-        assert_ne!(reference, sig(&edited, false, false, 600.0));
+        assert_ne!(reference, sig(&edited, false, false, false, false, false, 600.0));
+    }
+}
+
+#[cfg(test)]
+mod unread_divider_tests {
+    use super::*;
+
+    fn sample_message(id: &str, author_id: &str, minutes_offset: i64) -> Message {
+        let base = chrono::DateTime::from_timestamp(1_760_000_000 + minutes_offset * 60, 0)
+            .unwrap()
+            .with_timezone(&Local);
+        Message {
+            id: id.into(),
+            channel_id: "c1".into(),
+            author_id: author_id.into(),
+            external_author: None,
+            content: format!("Mensagem {id}"),
+            at: base,
+            edited: false,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
+            pending: false,
+        }
+    }
+
+    #[test]
+    fn unread_divider_draws_thin_red_line_and_right_aligned_pill() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            unread_divider(ui, &tokens, &crate::i18n::PT_BR, 600.0);
+        });
+        output.textures_delta.clear();
+
+        let line = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke }
+                    if stroke.color == tokens.danger && (stroke.width - 1.0).abs() < f32::EPSILON =>
+                {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .expect("linha vermelha fina do marcador");
+        let pill = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == tokens.danger && rect.corner_radius == CornerRadius::same(8) =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("pill vermelha do marcador");
+        let text = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .expect("texto da pill");
+
+        assert_eq!(text, "Novo");
+        assert!((line[1].x - pill.min.x).abs() < 1.0);
+        assert!(pill.min.x > line[0].x + 200.0, "pill fica na lateral direita");
+    }
+
+    #[test]
+    fn unread_marker_latches_on_open_persists_after_read_and_clears_on_actions() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.me = "me".into();
+        store.selected_channel = "c1".into();
+        store.channels = vec![crate::state::Channel {
+            id: "c1".into(),
+            name: "geral".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: "all".into(),
+            parent_id: None,
+            unread: true,
+            mentions: 0,
+        }];
+        let m1 = sample_message("m1", "u1", 1);
+        let m2 = sample_message("m2", "u1", 2);
+        let m3 = sample_message("m3", "u1", 3);
+        store.read_states.insert(
+            "c1".into(),
+            crate::state::ChannelReadState {
+                read_at: Some(m1.at.with_timezone(&chrono::Utc)),
+                read_message_id: Some("m1".into()),
+                seen_to_at: Some(m1.at.with_timezone(&chrono::Utc)),
+                seen_to_id: Some("m1".into()),
+                unread_mentions: Default::default(),
+            },
+        );
+        store.messages = vec![m1, m2, m3];
+
+        let mut state = UiState {
+            last_channel: "c1".into(),
+            open_channel_pending: Some("c1".into()),
+            ..Default::default()
+        };
+
+        let run_frame = |state: &mut UiState, store: &mut Store, focused: bool| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0))),
+                focused,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                state.visible_message_ids.clear();
+                conversation(ui, store, state, None, &tokens, &crate::i18n::PT_BR, None);
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+
+        // Quadro de abertura e primeiro quadro visível: fixa em m2.
+        run_frame(&mut state, &mut store, true);
+        run_frame(&mut state, &mut store, true);
+        assert_eq!(
+            state.unread_marker.as_ref().map(|(ch, id)| (ch.as_str(), id.as_str())),
+            Some(("c1", "m2"))
+        );
+
+        // Mesmo depois que a viewport confirma a leitura no Store, a linha continua fixa em m2.
+        let visible = state.visible_message_ids.clone();
+        store.observe_visible_messages_with_policy("c1", &visible, true);
+        assert!(!store.channel("c1").unwrap().unread);
+        let shapes = run_frame(&mut state, &mut store, true);
+        assert_eq!(
+            state.unread_marker.as_ref().map(|(ch, id)| (ch.as_str(), id.as_str())),
+            Some(("c1", "m2"))
+        );
+        assert!(shapes.iter().any(|s| matches!(
+            &s.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Novo"
+        )));
+
+        // Apertar Esc limpa o marcador e ele não volta para as mensagens já vistas.
+        state.handle_escape(&ctx, &mut store);
+        assert!(state.unread_marker.is_none());
+        run_frame(&mut state, &mut store, true);
+        run_frame(&mut state, &mut store, true);
+        assert!(state.unread_marker.is_none());
+
+        // Uma mensagem nova chegando com a janela sem foco fixa o marcador na nova mensagem.
+        let m4 = sample_message("m4", "u1", 4);
+        store.messages.push(m4);
+        store.channels[0].unread = true;
+        run_frame(&mut state, &mut store, false);
+        assert_eq!(
+            state.unread_marker.as_ref().map(|(ch, id)| (ch.as_str(), id.as_str())),
+            Some(("c1", "m4"))
+        );
+
+        // Enviar uma mensagem limpa o marcador novamente.
+        state.composer = "oi".into();
+        submit(&store, &mut state);
+        assert!(state.unread_marker.is_none());
+    }
+
+    #[test]
+    fn hourglass_dividers_mark_start_and_end_and_update_on_scroll() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.me = "me".into();
+        store.selected_channel = "c1".into();
+        store.channels = vec![crate::state::Channel {
+            id: "c1".into(),
+            name: "geral".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: "all".into(),
+            parent_id: None,
+            unread: true,
+            mentions: 0,
+        }];
+        let m1 = sample_message("m1", "u1", 1);
+        let m2 = sample_message("m2", "u1", 2);
+        let m3 = sample_message("m3", "u1", 3);
+        let m4 = sample_message("m4", "u1", 4);
+        store.read_states.insert(
+            "c1".into(),
+            crate::state::ChannelReadState {
+                read_at: Some(m1.at.with_timezone(&chrono::Utc)),
+                read_message_id: Some("m1".into()),
+                seen_to_at: None,
+                seen_to_id: None,
+                unread_mentions: Default::default(),
+            },
+        );
+        store.messages = vec![m1, m2, m3, m4];
+
+        // Simula abertura no fundo (`m4`) sem `mark_read_at_newest`: abre lacuna `m2..=m4`.
+        store.observe_visible_messages_with_policy("c1", &["m4".to_owned()], false);
+        assert_eq!(
+            store.hourglass_range("c1"),
+            Some(("m2".to_owned(), "m4".to_owned()))
+        );
+
+        let mut state = UiState {
+            last_channel: "c1".into(),
+            ..Default::default()
+        };
+        let render = |state: &mut UiState, store: &mut Store| {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 600.0))),
+                focused: true,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                state.visible_message_ids.clear();
+                conversation(ui, store, state, None, &tokens, &crate::i18n::PT_BR, None);
+            });
+            out.textures_delta.clear();
+            out.shapes
+        };
+
+        let shapes = render(&mut state, &mut store);
+        assert!(
+            state.unread_marker.is_none(),
+            "quando há bloco da ampulheta, usa os marcadores âmbar em vez do vermelho"
+        );
+        assert!(shapes.iter().any(|s| matches!(
+            &s.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Não lidas ↓"
+        )));
+        assert!(shapes.iter().any(|s| matches!(
+            &s.shape,
+            egui::Shape::Text(t) if t.galley.text() == "Não lidas ↑"
+        )));
+
+        // Quando todo o bloco é lido, os dois marcadores da ampulheta somem e não sobra "Novo".
+        store.observe_visible_messages_with_policy(
+            "c1",
+            &["m2".to_owned(), "m3".to_owned(), "m4".to_owned()],
+            false,
+        );
+        assert_eq!(store.hourglass_range("c1"), None);
+        let shapes = render(&mut state, &mut store);
+        assert!(!shapes.iter().any(|s| matches!(
+            &s.shape,
+            egui::Shape::Text(t)
+                if t.galley.text() == "Não lidas ↓"
+                    || t.galley.text() == "Não lidas ↑"
+                    || t.galley.text() == "Novo"
+        )));
     }
 }
 

@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -239,6 +239,16 @@ const MIGRATIONS: &[Migration] = &[Migration {
 }, Migration {
     version: 16,
     statements: &["ALTER TABLE messages ADD COLUMN external_author TEXT"],
+}, Migration {
+    // Versões anteriores juntavam a janela nova do servidor por cima de
+    // linhas velhas sem checar continuidade, e o cache pode ter buracos
+    // silenciosos no meio do histórico. As timelines se reconstroem pelo
+    // servidor; estado de leitura, rascunhos e fila de envio ficam.
+    version: 17,
+    statements: &[
+        "DELETE FROM messages",
+        "DELETE FROM channel_cache_state",
+    ],
 }];
 
 /// Lê a versão atual do esquema (0 quando ainda não há nada).

@@ -551,6 +551,7 @@ fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
                 message("head-new", "geral", "new", 10_000),
             ],
             deleted_ids: vec!["head-stale".to_owned()],
+            anchor_id: Some("head-keep".to_owned()),
         }],
     );
     db.flush();
@@ -566,6 +567,45 @@ fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
             .map(|m| m.content.as_str()),
         Some("new value")
     );
+}
+
+#[test]
+fn merge_channel_head_purges_disjoint_history_when_anchor_missing() {
+    let temp = TempDb::new("merge-disjoint");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("old-1", "geral", "old", 1_000),
+                message("old-2", "geral", "old", 2_000),
+            ],
+        }],
+    );
+    db.flush();
+
+    // The server window does not overlap; anchor_id points to a message not in SQLite
+    db.submit(
+        "srv",
+        vec![CacheOp::MergeChannelHead {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("head-100", "geral", "new 100", 100_000),
+                message("head-101", "geral", "new 101", 101_000),
+            ],
+            deleted_ids: vec![],
+            anchor_id: Some("head-100".to_owned()),
+        }],
+    );
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    let ids: Vec<&str> = snapshot.messages.iter().map(|m| m.id.as_str()).collect();
+    // old-1 and old-2 must have been purged because head-100 was not in local cache
+    assert_eq!(ids, vec!["head-100", "head-101"]);
 }
 
 #[test]
