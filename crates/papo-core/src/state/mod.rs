@@ -98,6 +98,8 @@ impl ChannelReadState {
             read_message_id: self.read_message_id.clone(),
             seen_to_at: self.seen_to_at.map(|at| at.timestamp_millis()),
             seen_to_message_id: self.seen_to_id.clone(),
+            gap_end_at: None,
+            gap_end_message_id: None,
             unread_mentions: self.unread_mentions.iter().cloned().collect(),
             updated_at: now_millis(),
         }
@@ -617,15 +619,14 @@ fn mention_boundary(c: char) -> bool {
     c.is_whitespace() || (!c.is_alphanumeric() && c != '_')
 }
 
-/// Mensagem mais antiga de uma janela do servidor que serve de prova de
-/// continuidade: não fixada (fixadas antigas ficam retidas fora da região) e
-/// de outra pessoa (as próprias podem ter sido gravadas no topo fora de ordem).
-fn continuity_anchor(window: &[Message], me: &str) -> Option<String> {
+/// Eligible overlap witnesses from the authoritative server window.
+/// Own and pinned messages cannot establish continuity of the history.
+fn continuity_ids(window: &[Message], me: &str) -> Vec<String> {
     window
         .iter()
         .filter(|message| !message.pending && !message.pinned && message.author_id != me)
-        .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
         .map(|message| message.id.clone())
+        .collect()
 }
 
 
@@ -1126,11 +1127,19 @@ impl Store {
             .collect();
 
         self.messages.clear();
+        self.gap_ends.clear();
         self.read_states = metadata
             .read_states
             .into_iter()
             .map(|state| {
                 let channel_id = state.channel_id.clone();
+                if let Some((at, id)) = state
+                    .gap_end_at
+                    .and_then(DateTime::from_timestamp_millis)
+                    .zip(state.gap_end_message_id.clone())
+                {
+                    self.gap_ends.insert(channel_id.clone(), (at, id));
+                }
                 let restored = ChannelReadState::from_cached(state);
                 if let Some(read_at) = restored.read_at {
                     self.read_marks
@@ -1703,7 +1712,7 @@ impl Store {
                 // um buraco entre os dois, e paginar pelo cache pularia esse
                 // trecho para sempre.
                 let mut deleted_ids = Vec::new();
-                let mut anchor_id = None;
+                let mut overlap_ids = Vec::new();
                 if complete {
                     deleted_ids.extend(
                         self.messages
@@ -1718,7 +1727,7 @@ impl Store {
                     self.messages
                         .retain(|message| message.channel_id != channel_id || message.pending);
                 } else if let Some((oldest_at, oldest_id)) = oldest_returned.as_ref() {
-                    anchor_id = continuity_anchor(&messages, &self.me);
+                    overlap_ids = continuity_ids(&messages, &self.me);
                     let local_below = self.messages.iter().any(|message| {
                         message.channel_id == channel_id
                             && !message.pending
@@ -1781,7 +1790,7 @@ impl Store {
                             messages: messages.iter().map(CachedMessage::from_store).collect(),
                             deleted_ids,
                             cached_at: now_millis(),
-                            anchor_id,
+                            overlap_ids,
                         });
                     }
                 }
@@ -2108,9 +2117,12 @@ impl Store {
         let Some(state) = self.read_states.get(channel_id) else {
             return;
         };
-        self.pending_cache.push(CacheOp::UpsertReadState(
-            state.to_cached(&self.me, channel_id),
-        ));
+        let mut cached = state.to_cached(&self.me, channel_id);
+        if let Some((at, id)) = self.gap_ends.get(channel_id) {
+            cached.gap_end_at = Some(at.timestamp_millis());
+            cached.gap_end_message_id = Some(id.clone());
+        }
+        self.pending_cache.push(CacheOp::UpsertReadState(cached));
     }
 
     fn refresh_channel_read_badge(&mut self, channel_id: &str) {
@@ -2209,6 +2221,14 @@ impl Store {
         };
         let (lo, hi) = (lo.clone(), hi.clone());
 
+        // A cursor before an unloaded history window is not proof that
+        // the intervening messages were read. Wait for older pages.
+        let unresolved_prefix = self.read_states.get(channel_id)
+            .and_then(|state| state.read_message_id.as_deref())
+            .is_some_and(|id| self.message(id).is_none())
+            && (self.history_has_more.get(channel_id).copied().unwrap_or(false)
+                || self.cache_history_has_more.get(channel_id).copied().unwrap_or(false));
+
         let previous_span = self.read_spans.get(channel_id).cloned();
         let (from, to) = match &previous_span {
             Some((previous_lo, previous_hi)) => (
@@ -2239,24 +2259,27 @@ impl Store {
         // para cima a partir do fim da lacuna, o teto recua junto com a base
         // da viewport (`hi`), consumindo o bloco pelo fim.
         let before_gap_end = self.gap_ends.get(channel_id).cloned();
-        let mut gap_end = match (&before_gap_end, &seen_to) {
-            (Some(end), _) if previous_span.is_none() => {
-                if hi > *end {
-                    Some(hi.clone())
-                } else {
-                    Some(end.clone())
-                }
-            }
-            (Some(end), _) => Some(end.clone()),
-            (None, Some(seen)) => Some(seen.clone()),
-            (None, None) => None,
-        };
+        // A jump or viewport reopening must not re-expand a tail that has
+        // already been consumed. The seen_to watermark is independent.
+        let mut gap_end = before_gap_end.clone().or(seen_to.clone());
         if previous_span.is_some()
             && let Some(end) = &gap_end
             && to >= *end
             && hi < *end
         {
             gap_end = Some(hi.clone());
+        }
+
+        if unresolved_prefix {
+            // Retain a loaded navigation target until pagination proves that
+            // the prefix between the persisted anchor and the window is whole.
+            if let Some(first) = ordered.iter()
+                .map(|(key, _)| key)
+                .find(|key| self.frontier_key(channel_id).as_ref().is_none_or(|mark| *key > mark))
+                && gap_end.as_ref().is_some_and(|end| end < first)
+            {
+                gap_end = Some(first.clone());
+            }
         }
 
         // Fronteira. Enquanto a viewport percorre a timeline, só o trecho
@@ -2276,14 +2299,14 @@ impl Store {
                 .as_ref()
                 .zip(seen_to.as_ref())
                 .is_some_and(|(end, seen)| key > *end && key <= *seen);
-            if *own || (from <= key && key <= to) || covered_from_bottom {
+            if !unresolved_prefix && (*own || (from <= key && key <= to) || covered_from_bottom) {
                 frontier = Some(key);
             } else {
                 break;
             }
         }
 
-        let has_unread_in_gap = gap_end.as_ref().is_some_and(|end| {
+        let has_unread_in_gap = unresolved_prefix || gap_end.as_ref().is_some_and(|end| {
             ordered.iter().any(|(key, own)| {
                 !*own
                     && frontier.as_ref().is_none_or(|mark| key > mark)
@@ -2342,7 +2365,9 @@ impl Store {
             self.read_marks.insert(channel_id.to_owned(), read_at);
         }
 
-        if self.read_states.get(channel_id) != before.as_ref() {
+        if self.read_states.get(channel_id) != before.as_ref()
+            || self.gap_ends.get(channel_id) != before_gap_end.as_ref()
+        {
             self.refresh_channel_read_badge(channel_id);
             self.persist_read_state(channel_id);
         } else if at_newest {
@@ -6127,6 +6152,45 @@ mod tests {
             .filter(|op| matches!(op, CacheOp::UpsertReadState(_)))
             .count();
         assert_eq!(writes, 1);
+    }
+
+    #[test]
+    fn hourglass_bottom_progress_survives_a_jump_and_is_persisted() {
+        let mut store = navigation_store(6);
+        store.observe_visible_messages("geral", &ids(5..=6));
+        store.observe_visible_messages("geral", &ids(4..=5));
+        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m5".into())));
+        let writes = store.take_cache_ops();
+        let cached = writes.iter().find_map(|op| match op {
+            CacheOp::UpsertReadState(read) => Some(read),
+            _ => None,
+        }).expect("gap-end write");
+        assert_eq!(cached.gap_end_message_id.as_deref(), Some("m5"));
+        store.reset_read_span("geral");
+        store.observe_visible_messages("geral", &ids(5..=6));
+        assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m5".into())));
+    }
+
+    #[test]
+    fn unread_prefix_with_unloaded_anchor_stays_unread_until_history_arrives() {
+        let mut store = navigation_store(6);
+        let ghost = navigation_message("ghost", 0);
+        store.read_states.insert("geral".into(), ChannelReadState {
+            read_at: Some(ghost.at.with_timezone(&Utc)),
+            read_message_id: Some("ghost".into()),
+            ..ChannelReadState::default()
+        });
+        store.history_has_more.insert("geral".into(), true);
+        store.observe_visible_messages("geral", &ids(5..=6));
+        store.observe_visible_messages("geral", &ids(3..=5));
+        store.observe_visible_messages("geral", &ids(1..=3));
+        assert_eq!(frontier_id(&store).as_deref(), Some("ghost"));
+        assert!(store.hourglass_target("geral").is_some());
+        assert!(store.channel("geral").unwrap().unread);
+        store.history_has_more.insert("geral".into(), false);
+        store.reset_read_span("geral");
+        store.observe_visible_messages("geral", &ids(1..=6));
+        assert_eq!(frontier_id(&store).as_deref(), Some("m6"));
     }
 
     #[test]
