@@ -1355,16 +1355,12 @@ impl PapoApp {
             } else {
                 0
             };
-            let unread = self.settings.badge
-                && self
-                    .workspaces
-                    .iter()
-                    .any(|ws| ws.runtime.store.has_unread());
-
             if let Some(launcher) = &self.launcher {
+                // Unread state is conveyed by the static red tray dot; KDE's
+                // launcher urgency flag makes the taskbar icon blink.
                 launcher.set(Badge {
                     count: mentions,
-                    urgent: unread && mentions == 0,
+                    urgent: false,
                 });
             }
         }
