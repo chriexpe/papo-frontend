@@ -643,7 +643,7 @@ fn merge_channel_head_accepts_any_overlap_not_only_oldest() {
 }
 
 #[test]
-fn merge_channel_head_without_witnesses_discards_disjoint_cache() {
+fn merge_channel_head_without_witnesses_preserves_unproven_history() {
     let temp = TempDb::new("merge-no-witness");
     let db = open(&temp);
     db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
@@ -658,7 +658,7 @@ fn merge_channel_head_without_witnesses_discards_disjoint_cache() {
     }]);
     db.flush();
     let snapshot = db.load_snapshot("srv").unwrap();
-    assert_eq!(snapshot.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["fresh"]);
+    assert_eq!(snapshot.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["stale", "fresh"]);
 }
 
 #[test]
