@@ -6161,7 +6161,7 @@ mod tests {
         store.observe_visible_messages("geral", &ids(4..=5));
         assert_eq!(store.hourglass_range("geral"), Some(("m2".into(), "m5".into())));
         let writes = store.take_cache_ops();
-        let cached = writes.iter().find_map(|op| match op {
+        let cached = writes.iter().rev().find_map(|op| match op {
             CacheOp::UpsertReadState(read) => Some(read),
             _ => None,
         }).expect("gap-end write");
