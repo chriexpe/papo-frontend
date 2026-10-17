@@ -434,13 +434,17 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                            AND message_id IN ({placeholders}))"
                 )
             };
-            statements.push(Stmt {
-                sql: format!(
-                    "DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
-                     AND pinned = 0{overlap_guard}"
-                ),
-                params,
-            });
+            // No eligible witness (e.g. an all-own-message window) does
+            // not prove disjointness: preserve the older cache instead.
+            if !overlap_ids.is_empty() {
+                statements.push(Stmt {
+                    sql: format!(
+                        "DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                         AND pinned = 0{overlap_guard}"
+                    ),
+                    params,
+                });
+            }
             for message_id in deleted_ids {
                 statements.push(Stmt {
                     sql: "DELETE FROM messages
