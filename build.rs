@@ -13,6 +13,26 @@ fn main() {
         "winit patch is missing or outdated: run python3 scripts/prepare-winit.py before Cargo",
     );
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        let sources = [
+            "native/macos/webembed.m",
+            "native/macos/notify.m",
+            "native/macos/appearance.m",
+        ];
+        for source in sources {
+            println!("cargo:rerun-if-changed={source}");
+        }
+        cc::Build::new()
+            .files(sources)
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("papo_macos");
+        for framework in ["AppKit", "WebKit", "QuartzCore", "UserNotifications"] {
+            println!("cargo:rustc-link-lib=framework={framework}");
+        }
+        return;
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
