@@ -117,10 +117,17 @@ impl StickerText {
         let size = font.size.max(18.0);
         for ch in shown.chars() {
             let format = if self.entry(ch).is_some() {
+                // Letter spacing is added between glyphs, not to a section's
+                // only glyph. Reserve the slot through its actual advance so
+                // wrapping, selection and the editor clip include the image.
+                let mut slot_font = FontId::proportional(size + 2.0);
+                let advance = ui.fonts_mut(|fonts| fonts.glyph_width(&slot_font, ch));
+                if advance > 0.0 {
+                    slot_font.size *= (size + 2.0) / advance;
+                }
                 egui::TextFormat {
-                    font_id: FontId::proportional(0.01),
+                    font_id: slot_font,
                     color: Color32::TRANSPARENT,
-                    extra_letter_spacing: size + 2.0,
                     line_height: Some(size + 2.0),
                     ..Default::default()
                 }
@@ -148,24 +155,26 @@ impl StickerText {
     ) {
         let mut clipped = ui.new_child(egui::UiBuilder::new());
         clipped.set_clip_rect(output.text_clip_rect.intersect(ui.clip_rect()));
-        for (index, ch) in output.galley.text().chars().enumerate() {
-            let Some((id, _)) = self.entry(ch) else {
-                continue;
-            };
-            let cursor = output
-                .galley
-                .pos_from_cursor(egui::text::CCursor::new(index));
-            let size = cursor.height().max(18.0) - 2.0;
-            let rect =
-                Rect::from_min_size(output.galley_pos + cursor.min.to_vec2(), Vec2::splat(size));
-            super::emoji::draw_reaction(
-                &mut clipped,
-                t,
-                media,
-                store,
-                &Emoji::Custom(id.clone()),
-                rect,
-            );
+        for row in &output.galley.rows {
+            for glyph in &row.glyphs {
+                let Some((id, _)) = self.entry(glyph.chr) else {
+                    continue;
+                };
+                let slot = Rect::from_min_size(
+                    output.galley_pos + row.pos.to_vec2() + Vec2::new(glyph.pos.x, 0.0),
+                    Vec2::new(glyph.advance_width, row.size.y),
+                );
+                let size = (slot.width().min(slot.height()) - 2.0).max(0.0);
+                let rect = Rect::from_center_size(slot.center(), Vec2::splat(size));
+                super::emoji::draw_reaction(
+                    &mut clipped,
+                    t,
+                    media,
+                    store,
+                    &Emoji::Custom(id.clone()),
+                    rect,
+                );
+            }
         }
     }
 }
@@ -193,6 +202,78 @@ mod tests {
             }
         });
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn inline_stickers_reserve_a_full_square_in_the_text_editor() {
+        for scale in [1.0, 1.25, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(scale);
+            super::super::theme::install_fonts(&ctx, None);
+            let mut editor = StickerText::default();
+            let emojis = [CustomEmoji {
+                id: "test".into(),
+                name: "test".into(),
+                blob: None,
+            }];
+            let mut store = Store::default();
+            store.emojis = emojis.to_vec();
+            let tokens =
+                super::super::theme::Tokens::new(super::super::theme::Appearance::Dark, None);
+            let mut media = crate::media::MediaStore::new(None);
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                for size in [11.0_f32, 13.0, 18.0, 24.0] {
+                    for width in [60.0, 300.0] {
+                        for text in [":test:", "text :test: ", ":test::test: end"] {
+                            let mut shown = editor.encode(text, &emojis);
+                            let font = FontId::proportional(size);
+                            let mut layouter = |ui: &egui::Ui, text: &dyn egui::TextBuffer, width| {
+                                editor.layout(ui, text.as_str(), font.clone(), Color32::WHITE, width)
+                            };
+                            let field = egui::TextEdit::multiline(&mut shown)
+                                .font(font.clone())
+                                .layouter(&mut layouter)
+                                .desired_width(width)
+                                .show(ui);
+                            for row in &field.galley.rows {
+                                for glyph in &row.glyphs {
+                                    if editor.entry(glyph.chr).is_some() {
+                                        assert!(
+                                            glyph.advance_width >= size.max(18.0),
+                                            "sticker squeezed to {} points: {text:?}, font={size}, scale={scale}",
+                                            glyph.advance_width,
+                                        );
+                                    }
+                                }
+                            }
+                            editor.paint(ui, &field, &tokens, &mut media, &store);
+                        }
+                    }
+                }
+            });
+            let mut painted = 0;
+            for shape in &output.shapes {
+                if let egui::Shape::Rect(rect) = &shape.shape
+                    && rect.stroke.color == tokens.separator
+                {
+                    painted += 1;
+                    assert!(
+                        rect.rect.width() >= 17.5,
+                        "sticker too small: {:?}",
+                        rect.rect
+                    );
+                    assert!((rect.rect.width() - rect.rect.height()).abs() < 0.01);
+                    assert!(
+                        shape.clip_rect.expand(0.01).contains_rect(rect.rect),
+                        "sticker clipped: {:?} outside {:?}",
+                        rect.rect,
+                        shape.clip_rect,
+                    );
+                }
+            }
+            assert_eq!(painted, 32);
+            output.textures_delta.clear();
+        }
     }
 
     #[test]
