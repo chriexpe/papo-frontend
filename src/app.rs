@@ -844,6 +844,7 @@ pub struct PapoApp {
     activator: Option<Activator>,
     /// A janela foi fechada para a bandeja; o processo continua ativo.
     window_hidden: bool,
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     hidden_viewports: Vec<egui::ViewportId>,
     window_attached: bool,
     /// Servidor de mentira: a rede é ignorada.
@@ -1154,6 +1155,7 @@ impl PapoApp {
             #[cfg(target_os = "linux")]
             activator: None,
             window_hidden: false,
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             hidden_viewports: Vec::new(),
             window_attached: false,
             demo,
@@ -1224,7 +1226,7 @@ impl PapoApp {
     }
 
     /// Restaura as janelas preservadas na bandeja e pede foco ao compositor.
-    #[cfg_attr(target_os = "android", allow(dead_code))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn show_window(&mut self, ctx: &egui::Context) {
         self.window_hidden = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -1245,7 +1247,7 @@ impl PapoApp {
     }
 
     /// Fechar não encerra: a janela recolhe e o Papo segue na bandeja.
-    #[cfg_attr(target_os = "android", allow(dead_code))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     fn hide_window(&mut self, ctx: &egui::Context) {
         self.window_hidden = true;
         self.focused = false;
@@ -4494,22 +4496,30 @@ impl eframe::App for PapoApp {
         std::time::Duration::from_secs(5)
     }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[cfg(not(target_os = "android"))]
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.attach_window(frame);
-        let was_hidden = self.window_hidden;
-        self.handle_window_lifecycle(ctx);
-        if self.window_hidden && !was_hidden
-            && let Some(storage) = frame.storage_mut()
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
-            eframe::App::save(self, storage);
-            storage.flush();
+            let was_hidden = self.window_hidden;
+            self.handle_window_lifecycle(ctx);
+            if self.window_hidden && !was_hidden
+                && let Some(storage) = frame.storage_mut()
+            {
+                eframe::App::save(self, storage);
+                storage.flush();
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            self.focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
         }
         self.notification
             .set_foreground(self.focused && !self.window_hidden);
         self.sync_notification_contexts();
         self.pump_runtime(ctx);
         self.sync_notification_contexts();
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         self.sync_desktop_badges();
         #[cfg(target_os = "windows")]
         {

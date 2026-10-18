@@ -120,6 +120,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+          components: clippy
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -131,6 +132,8 @@ jobs:
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
           gst-inspect-1.0 webrtcbin
           gst-inspect-1.0 nicesrc
+      - name: Check macOS code and tests for warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Compile macOS desktop application and native WebKit bridge
         run: cargo build --locked --bin papo
       - name: Test WKWebView geometry contract
@@ -173,6 +176,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+          components: clippy
       - uses: ./.github/actions/prepare-winit
       - name: Test winit preparation on Windows
         run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
@@ -199,7 +203,7 @@ jobs:
         shell: pwsh
         run: choco install innosetup -y --no-progress
       - name: Check native Windows build
-        run: cargo check --locked --workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - uses: actions/cache@v4
         with:
           path: rsrpc-build

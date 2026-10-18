@@ -99,11 +99,10 @@ fn parse_rgb_triplet(value: &str) -> Option<Color32> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn le_cor_da_secao_certa() {
         let ini = "[Colors:Window]\nBackgroundNormal=54,54,54\n\n[Colors:Selection]\nBackgroundNormal=49,91,239\n";

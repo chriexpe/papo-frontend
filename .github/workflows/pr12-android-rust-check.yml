@@ -24,6 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
+          components: clippy
       - uses: ./.github/actions/prepare-winit
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -46,4 +47,4 @@ jobs:
             export "SYSTEM_DEPS_${dep}_LIB=gstreamer_android"
             export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=/tmp/papo-gst"
           done
-          cargo ndk -t arm64-v8a --platform 24 check --lib
+          cargo ndk -t arm64-v8a --platform 24 clippy --lib --locked -- -D warnings
