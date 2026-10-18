@@ -118,9 +118,11 @@ modules:
       - type: dir
         path: ..
         # O repositório inteiro é a fonte; sem isto o `.git`, o `target` e o
-        # resultado da compilação anterior entrariam na cópia.
+        # resultado da compilação anterior entrariam na cópia. A .papo é
+        # preparada pelas fontes abaixo; copiar a do host reaplicaria o patch.
         skip:
           - .git
+          - .papo
           - target
           - .flatpak-builder
           - build-dir

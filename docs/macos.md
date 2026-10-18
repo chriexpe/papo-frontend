@@ -6,7 +6,11 @@ The bundle now includes GStreamer libraries, native plugins and the scanner;
 Homebrew is required on the build host only. This
 version is for development and hands-on compatibility tests only.
 
-## Download the app from CI
+## Download the app
+
+Tagged releases include `papo-VERSION-arm64-macos-adhoc.zip` and its SHA-256
+checksum. The ZIP contains the same self-contained, ad-hoc-signed `Papo.app`
+described above. Development builds remain available from CI:
 
 1. Open the latest successful [CI run](https://github.com/chriexpe/papo-frontend/actions/workflows/ci.yml)
    for the branch/PR, and download artifact `papo-macos-arm64-adhoc`.
