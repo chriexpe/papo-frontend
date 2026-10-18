@@ -201,6 +201,8 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
                 read_message_id: Some("m1".to_owned()),
                 seen_to_at: Some(5_000),
                 seen_to_message_id: Some("m5".to_owned()),
+                gap_end_at: Some(4_000),
+                gap_end_message_id: Some("m4".to_owned()),
                 unread_mentions: vec!["m4".to_owned()],
                 updated_at: 2_000,
             }),
@@ -230,6 +232,8 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
     assert_eq!(state.read_message_id.as_deref(), Some("m1"));
     assert_eq!(state.seen_to_at, Some(5_000));
     assert_eq!(state.seen_to_message_id.as_deref(), Some("m5"));
+    assert_eq!(state.gap_end_at, Some(4_000));
+    assert_eq!(state.gap_end_message_id.as_deref(), Some("m4"));
     assert_eq!(state.unread_mentions, vec!["m4".to_owned()]);
 }
 
@@ -551,6 +555,7 @@ fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
                 message("head-new", "geral", "new", 10_000),
             ],
             deleted_ids: vec!["head-stale".to_owned()],
+            overlap_ids: vec!["head-keep".to_owned()],
         }],
     );
     db.flush();
@@ -566,6 +571,94 @@ fn partial_head_merge_preserves_older_cache_and_removes_stale_head_rows() {
             .map(|m| m.content.as_str()),
         Some("new value")
     );
+}
+
+#[test]
+fn merge_channel_head_purges_disjoint_history_when_anchor_missing() {
+    let temp = TempDb::new("merge-disjoint");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("old-1", "geral", "old", 1_000),
+                message("old-2", "geral", "old", 2_000),
+            ],
+        }],
+    );
+    db.flush();
+
+    // The server window does not overlap; anchor_id points to a message not in SQLite
+    db.submit(
+        "srv",
+        vec![CacheOp::MergeChannelHead {
+            channel_id: "geral".to_owned(),
+            cached_at: now_millis(),
+            messages: vec![
+                message("head-100", "geral", "new 100", 100_000),
+                message("head-101", "geral", "new 101", 101_000),
+            ],
+            deleted_ids: vec![],
+            overlap_ids: vec!["head-100".to_owned(), "head-101".to_owned()],
+        }],
+    );
+    db.flush();
+
+    let snapshot = db.load_snapshot("srv").expect("snapshot");
+    let ids: Vec<&str> = snapshot.messages.iter().map(|m| m.id.as_str()).collect();
+    // old-1 and old-2 must have been purged because head-100 was not in local cache
+    assert_eq!(ids, vec!["head-100", "head-101"]);
+}
+
+#[test]
+fn merge_channel_head_accepts_any_overlap_not_only_oldest() {
+    let temp = TempDb::new("merge-partial-overlap");
+    let db = open(&temp);
+    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "geral".to_owned(),
+        cached_at: now_millis(),
+        messages: vec![
+            message("old", "geral", "old", 1_000),
+            message("shared", "geral", "shared", 9_000),
+        ],
+    }]);
+    db.flush();
+    db.submit("srv", vec![CacheOp::MergeChannelHead {
+        channel_id: "geral".to_owned(),
+        cached_at: now_millis(),
+        messages: vec![
+            message("server-older", "geral", "older", 8_000),
+            message("shared", "geral", "updated", 9_000),
+            message("server-newer", "geral", "newer", 10_000),
+        ],
+        deleted_ids: vec![],
+        overlap_ids: vec!["server-older".into(), "shared".into(), "server-newer".into()],
+    }]);
+    db.flush();
+    let snapshot = db.load_snapshot("srv").unwrap();
+    assert!(snapshot.messages.iter().any(|m| m.id == "old"));
+    assert!(snapshot.messages.iter().any(|m| m.id == "server-newer"));
+}
+
+#[test]
+fn merge_channel_head_without_witnesses_preserves_unproven_history() {
+    let temp = TempDb::new("merge-no-witness");
+    let db = open(&temp);
+    db.submit("srv", vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "geral".into(), cached_at: now_millis(),
+        messages: vec![message("stale", "geral", "stale", 1_000)],
+    }]);
+    db.flush();
+    db.submit("srv", vec![CacheOp::MergeChannelHead {
+        channel_id: "geral".into(), cached_at: now_millis(),
+        messages: vec![message("fresh", "geral", "fresh", 9_000)],
+        deleted_ids: vec![], overlap_ids: vec![],
+    }]);
+    db.flush();
+    let snapshot = db.load_snapshot("srv").unwrap();
+    assert_eq!(snapshot.messages.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["stale", "fresh"]);
 }
 
 #[test]

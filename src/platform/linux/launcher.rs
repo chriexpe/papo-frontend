@@ -16,7 +16,7 @@ const APP_URI: &str = "application://papo.desktop";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Badge {
     pub count: u32,
-    /// Sem contagem, mas com coisa nova: o ícone só pisca.
+    /// Urgência do launcher (desativada pelo cliente para evitar pulsação).
     pub urgent: bool,
 }
 

@@ -1355,16 +1355,12 @@ impl PapoApp {
             } else {
                 0
             };
-            let unread = self.settings.badge
-                && self
-                    .workspaces
-                    .iter()
-                    .any(|ws| ws.runtime.store.has_unread());
-
             if let Some(launcher) = &self.launcher {
+                // Unread state is conveyed by the static red tray dot; KDE's
+                // launcher urgency flag makes the taskbar icon blink.
                 launcher.set(Badge {
                     count: mentions,
-                    urgent: unread && mentions == 0,
+                    urgent: false,
                 });
             }
         }
@@ -1903,7 +1899,18 @@ impl PapoApp {
 
         // Foco sozinho não significa leitura. Só as linhas realmente expostas
         // pela viewport no frame anterior avançam a fronteira durável.
-        if focused && !ws.runtime.store.selected_channel.is_empty() {
+        //
+        // Online, enquanto o snapshot do servidor não chegou, a tela mostra o
+        // cache — que pode estar atrasado ou ter um buraco antes do head real.
+        // Ler isso avançaria fronteira e marca d'água sobre uma timeline que
+        // está para mudar. Offline, o cache é tudo o que há e vale como leitura.
+        let timeline_settled = {
+            let store = &ws.runtime.store;
+            store.connection != crate::api::ws::Connection::Online
+                || store.timeline_status(&store.selected_channel)
+                    == crate::state::TimelineStatus::Fresh
+        };
+        if focused && timeline_settled && !ws.runtime.store.selected_channel.is_empty() {
             let channel_id = ws.runtime.store.selected_channel.clone();
             if std::mem::take(&mut self.ui.read_span_break) {
                 ws.runtime.store.reset_read_span(&channel_id);
@@ -1991,6 +1998,7 @@ impl PapoApp {
             ChatAction::MarkServerRead => {
                 let ws = &mut self.workspaces[self.active];
                 ws.runtime.store.mark_all_read();
+                self.ui.clear_unread_marker(&ws.runtime.store);
                 let ids = ws.runtime.store.take_all_open_notifications();
                 if !ids.is_empty() && !ws.runtime.store.me.is_empty() {
                     ws.runtime.net.send(Command::MarkNotificationsRead {
@@ -2123,6 +2131,7 @@ impl PapoApp {
                         self.ui.reply_notify = notify_reply;
                         return;
                     }
+                    self.ui.clear_unread_marker(&ws.runtime.store);
                     self.ui.capture_draft(&channel_id);
                     let draft_ops = self.ui.drafts.take_persistence_ops(&owner_user_id, true);
                     if !draft_ops.is_empty() {
@@ -2139,6 +2148,7 @@ impl PapoApp {
                         created_at: papo_core::cache::now_millis(),
                     });
                 } else {
+                    self.ui.clear_unread_marker(&ws.runtime.store);
                     let owner_user_id = ws.runtime.store.me.clone();
                     if !owner_user_id.is_empty() {
                         self.ui.capture_draft(&channel_id);
@@ -2455,6 +2465,7 @@ impl PapoApp {
                 let channel_id = ws.runtime.store.selected_channel.clone();
                 let message_id = ws.runtime.store.push_pending(&channel_id, &content, reply_to);
                 ws.runtime.store.set_message_pending_local(&message_id, false);
+                self.ui.clear_unread_marker(&ws.runtime.store);
             }
             ChatAction::Edit {
                 message_id,
@@ -3534,6 +3545,9 @@ impl PapoApp {
             MenuCommand::MarkAllRead => {
                 for ws in &mut self.workspaces {
                     ws.runtime.store.mark_all_read();
+                }
+                if let Some(ws) = self.workspaces.get(self.active) {
+                    self.ui.clear_unread_marker(&ws.runtime.store);
                 }
             }
             MenuCommand::NewChannel => self.sheet.open_new_channel(),
