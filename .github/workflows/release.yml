@@ -111,6 +111,7 @@ jobs:
           for deb in papo_*.deb; do sha256sum "$deb" > "$deb.sha256"; done
 
       - name: Arch package (.pkg.tar.zst)
+        if: matrix.arch == 'x86_64'
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ -n "$version" ] || version=dev

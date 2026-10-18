@@ -3,9 +3,13 @@
 set -euo pipefail
 version="${1:?version required}"
 arch="${2:?architecture required}"
+if [[ "$arch" != x86_64 ]]; then
+  echo "Arch binary packages require x86_64: archlinux:base-devel has no $arch image." >&2
+  exit 1
+fi
 tarball="papo-$version-$arch-linux.tar.gz"
 test -f "$tarball"
-# Native x86_64/aarch64 Ubuntu GitHub runners both provide Docker.
+# The official Arch container supports x86_64 only.
 docker run --rm \
   -e "PAPO_VERSION=$version" \
   -v "$PWD:/release" \
