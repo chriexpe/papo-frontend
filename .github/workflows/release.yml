@@ -256,6 +256,54 @@ jobs:
             ${{ env.WINDOWS_SETUP }}
             ${{ env.WINDOWS_SETUP }}.sha256
 
+  macos:
+    needs: version
+    runs-on: macos-15
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-arm64
+      - name: Install native GStreamer SDK
+        run: |
+          brew install gstreamer libnice-gstreamer pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix gstreamer)/lib/pkgconfig" >> "$GITHUB_ENV"
+          gst-inspect-1.0 webrtcbin
+          gst-inspect-1.0 nicesrc
+      - name: Build macOS release
+        env:
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
+        run: cargo build --release --locked --bin papo
+      - name: Package and smoke-test self-contained macOS app
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)"
+          bash packaging/macos/build-app.sh target/release/papo "$version" dist
+          test "$(lipo -archs dist/Papo.app/Contents/MacOS/papo)" = "arm64"
+          test -f dist/Papo.app/Contents/PlugIns/libgstnice.dylib
+          test -f dist/Papo.app/Contents/Helpers/gst-plugin-scanner
+          env GST_PLUGIN_PATH_1_0=/dev/null GST_PLUGIN_SYSTEM_PATH_1_0=/dev/null \
+            dist/Papo.app/Contents/MacOS/papo voice-check | tee packaged-voice-check.log
+          grep -q "GStreamer" packaged-voice-check.log
+          grep -Eq '\[ok\] +webrtcbin' packaged-voice-check.log
+          grep -Eq '\[ok\] +nicesrc' packaged-voice-check.log
+          grep -Eq '\[ok\] +osxaudiosrc' packaged-voice-check.log
+          archive="papo-$version-arm64-macos-adhoc.zip"
+          (cd dist && ditto -c -k --sequesterRsrc --keepParent Papo.app "../$archive")
+          shasum -a 256 "$archive" > "$archive.sha256"
+          echo "MACOS_ZIP=$archive" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-macos-arm64
+          path: |
+            ${{ env.MACOS_ZIP }}
+            ${{ env.MACOS_ZIP }}.sha256
+          if-no-files-found: error
+
   # O bundle Flatpak é o pacote que não depende do GStreamer do sistema: o
   # runtime do freedesktop já o traz, e a extensão ffmpeg-full traz os codecs.
   # A compilação roda no flatpak-builder, sem rede, a partir de
@@ -415,7 +463,7 @@ jobs:
             ${{ env.ANDROID_APK }}.sha256
 
   publish:
-    needs: [build, windows, flatpak, android]
+    needs: [build, windows, macos, flatpak, android]
     runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
