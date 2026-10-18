@@ -101,6 +101,28 @@ pub struct ResolvedPreview {
     pub post: Box<PostMeta>,
 }
 
+impl ResolvedPreview {
+    /// Social sites sometimes advertise the author's avatar as og:image even
+    /// when the post has no media. Keep it in the header, not as a large cover.
+    /// Apply this to cached results too; a direct image link still shows it.
+    pub fn content_image_url(&self) -> Option<&str> {
+        let image = self.image_url.as_deref()?;
+        if self.kind == PreviewKind::Image || self.source_url == image {
+            return Some(image);
+        }
+        if self.post.author_avatar.as_deref() == Some(image) {
+            return None;
+        }
+        if let Ok(url) = Url::parse(image)
+            && url.host_str().is_some_and(|host| host == "twimg.com" || host.ends_with(".twimg.com"))
+            && (url.path().contains("/profile_images/") || url.path().contains("/default_profile_images/"))
+        {
+            return None;
+        }
+        Some(image)
+    }
+}
+
 /// Quem publicou, quando e como o post foi recebido. Tudo opcional e sempre
 /// vindo de dados publicados (oEmbed, JSON-LD, ActivityPub, meta tags) ou da
 /// convenção de texto `N likes, N comments - autor on data: "legenda"`.
@@ -3126,6 +3148,36 @@ fn safe_key(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn social_avatars_do_not_become_post_covers_even_in_cached_metadata() {
+        let mut preview = ResolvedPreview {
+            source_url: "https://x.com/user/status/1".into(),
+            kind: PreviewKind::Link,
+            media_url: None,
+            image_url: None,
+            embed_url: None,
+            title: None,
+            description: Some("text-only post".into()),
+            provider_name: None,
+            post: Box::default(),
+        };
+        for image in [
+            "https://abs.twimg.com/sticky/default_profile_images/default_profile_normal.png",
+            "https://pbs.twimg.com/profile_images/123/avatar.jpg",
+        ] {
+            preview.image_url = Some(image.into());
+            assert_eq!(preview.content_image_url(), None);
+            preview.kind = PreviewKind::Image;
+            assert_eq!(preview.content_image_url(), Some(image));
+            preview.kind = PreviewKind::Link;
+        }
+        let photo = "https://pbs.twimg.com/media/real-photo.jpg";
+        preview.image_url = Some(photo.into());
+        assert_eq!(preview.content_image_url(), Some(photo));
+        preview.post.author_avatar = Some(photo.into());
+        assert_eq!(preview.content_image_url(), None);
+    }
 
     #[test]
     fn canonical_keeps_query_and_removes_default_https_port() {

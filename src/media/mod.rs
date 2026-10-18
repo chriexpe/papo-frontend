@@ -1113,19 +1113,13 @@ fn remote_resource_id(canonical_url: &str) -> String {
 }
 
 fn texture_eviction_class(key: &str) -> u8 {
-    // Transient provider media is always the first reconstructed class to go.
-    // It must never displace visible chat thumbnails just because it was added
-    // later and happened to fall into the generic catch-all class.
+    // Drop transient picker media first. All persistent chat assets then share
+    // one LRU: unused stickers/avatars must not evict a visible post image on
+    // every frame merely because their resource classes used to rank higher.
     if key.starts_with("ephemeral-image:") {
         0
-    } else if key.starts_with("full:") || key.starts_with("remote-image:") {
-        1
-    } else if key.starts_with("poster:") {
-        2
-    } else if key.starts_with("thumb:") || key.starts_with("preview:") {
-        3
     } else {
-        4
+        1
     }
 }
 
@@ -1621,7 +1615,9 @@ impl MediaStore {
         let mut aged: Vec<(u8, u64, String)> = self
             .textures
             .iter()
-            .filter(|(_, texture)| !matches!(texture, Texture::Loading))
+            // Failures cost no GPU bytes and serve as negative cache entries.
+            // Evicting one under pressure retries a broken URL every paint.
+            .filter(|(_, texture)| matches!(texture, Texture::Ready(_) | Texture::Animated { .. }))
             .map(|(key, _)| {
                 (
                     texture_eviction_class(key),
@@ -2821,6 +2817,35 @@ mod lifecycle_tests {
         assert!(
             texture_eviction_class("ephemeral-image:x") < texture_eviction_class("preview:x")
         );
+    }
+
+    #[test]
+    fn visible_remote_images_outlive_unused_stickers_under_budget_pressure() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(800);
+        for key in ["emoji:old", "thumb:old", "remote-image:visible"] {
+            media.textures.insert(key.into(), textura(&ctx, key, 10, 10));
+            media.touch(key);
+        }
+        media.housekeep();
+        assert!(media.textures.contains_key("remote-image:visible"));
+        assert!(!media.textures.contains_key("emoji:old"));
+        media.housekeep();
+        assert_eq!(total_bytes(&media), 800);
+    }
+
+    #[test]
+    fn budget_pressure_does_not_forget_failed_images_and_retry_them() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(400);
+        let url = "https://example.com/broken-image";
+        let key = remote_image_key(&remote_resource_id(url));
+        media.textures.insert(key.clone(), Texture::Failed);
+        for other in ["emoji:a", "emoji:b"] {
+            media.textures.insert(other.into(), textura(&ctx, other, 10, 10));
+        }
+        media.housekeep();
+        assert!(matches!(media.remote_image("card", url), Some(Texture::Failed)));
     }
 
     #[test]

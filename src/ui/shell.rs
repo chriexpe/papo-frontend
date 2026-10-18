@@ -1121,6 +1121,8 @@ pub struct UiState {
     anchor_drift: f32,
     /// Offset applied on the next layout pass after an opening or anchor correction.
     forced_chat_scroll: Option<(String, f32)>,
+    /// Retain known image geometry while an evicted texture reloads.
+    embed_image_sizes: std::collections::HashMap<String, Vec2>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -1269,6 +1271,7 @@ impl Default for UiState {
             chat_anchor: None,
             anchor_drift: 0.0,
             forced_chat_scroll: None,
+            embed_image_sizes: std::collections::HashMap::new(),
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -3142,12 +3145,12 @@ fn timeline_nav_controls(
         );
 
         if response.clicked() {
-            if kind == 0 && store.browsing_history(&channel_id) {
+            if kind == 0 {
                 state.return_to_latest(ui.ctx(), store);
+                ui.ctx().request_repaint();
                 continue;
             }
             let target = match kind {
-                0 => newest.clone(),
                 1 => back.clone(),
                 2 => mention.clone(),
                 _ => None,
@@ -7464,7 +7467,7 @@ fn custom_embed_card(
     };
     let (backend_video, video_url, embed_url) =
         choose_embed_media(source_url, Some(embed), ready.as_ref());
-    let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
+    let image_url = ready.as_ref().and_then(|preview| preview.content_image_url().map(str::to_owned));
     let remote_image = image_url.as_deref().and_then(|raw| {
         if allow_network { state.media.remote_image(card_id, raw) }
         else { state.media.loaded_remote_image(raw) }
@@ -7696,6 +7699,15 @@ fn render_embed_media(
             .existing_player(&player_id)
             .is_some_and(|player| player.is_playing());
 
+    let expects_image = image.is_some() || image_url.is_some()
+        || backend.is_some_and(|embed| embed.image_data.is_some()
+            || embed.image.is_some() || embed.thumbnail.is_some());
+    if let Some(texture) = image {
+        state.embed_image_sizes.insert(embed_id.to_owned(), texture.size_vec2());
+    } else if !expects_image {
+        state.embed_image_sizes.remove(embed_id);
+    }
+
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
     if gif_style_embed(url) && (backend_video.is_some() || video_url.is_some()) {
@@ -7743,13 +7755,7 @@ fn render_embed_media(
         ui.add_space(space::SM);
     } else if let Some(texture) = image {
         let source = texture.size_vec2();
-        let scale = (card_width / source.x)
-            .min(IMAGE_MAX_H / source.y)
-            .min(1.0);
-        let size = Vec2::new(
-            (source.x * scale).max(1.0),
-            (source.y * scale).max(1.0),
-        );
+        let size = embed_image_size(source, card_width, IMAGE_MAX_H);
         let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
         media_rect = Some(image_rect);
         ui.painter().image(
@@ -7869,9 +7875,22 @@ fn render_embed_media(
             media_clicked = true;
         }
         ui.add_space(space::SM);
+    } else if expects_image && let Some(source) = state.embed_image_sizes.get(embed_id) {
+        // A GPU cache miss does not change the post's media dimensions. Only
+        // reserve previously observed media, never invent a cover for a text post.
+        let size = embed_image_size(*source, card_width, IMAGE_MAX_H);
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        media_rect = Some(rect);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
+        ui.add_space(space::SM);
     }
 
     (media_clicked, media_rect)
+}
+
+fn embed_image_size(source: Vec2, width: f32, max_height: f32) -> Vec2 {
+    let scale = (width / source.x).min(max_height / source.y).min(1.0);
+    Vec2::new((source.x * scale).max(1.0), (source.y * scale).max(1.0))
 }
 
 /// Backend metadata is authoritative when it has a real player or playable
@@ -8124,7 +8143,7 @@ fn preview_card(
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
 
-    let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
+    let image_url = ready.as_ref().and_then(|preview| preview.content_image_url().map(str::to_owned));
     let remote_image = image_url
         .as_deref()
         .and_then(|remote| {
@@ -13315,6 +13334,36 @@ mod reply_quote_tests {
 mod row_cache_tests {
     use super::*;
 
+    #[test]
+    fn known_embed_image_geometry_survives_texture_reload_without_forcing_text_post_covers() {
+        let ctx = egui::Context::default();
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let texture = ctx.load_texture(
+            "post-image", egui::ColorImage::filled([200, 300], Color32::WHITE),
+            egui::TextureOptions::LINEAR,
+        );
+        for (image, advertised) in [(Some(&texture), true), (None, true), (Some(&texture), true), (None, false)] {
+            let mut rect = None;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                rect = render_embed_media(ui, &mut state, &tokens, EmbedMediaView {
+                    id: "post", embed_id: "message:post", url: "https://example.com/post",
+                    backend: None, image, remote_image: image,
+                    image_url: advertised.then(|| "https://example.com/photo.jpg".into()),
+                    title: None, video_url: None, embed_url: None, backend_video: None,
+                    card_width: 420.0,
+                    policy: PreviewPolicy { webembed: false, network: false },
+                }).1;
+            });
+            output.textures_delta.clear();
+            if advertised {
+                assert_eq!(rect.expect("known image slot").size(), Vec2::new(200.0, 300.0));
+            } else {
+                assert!(rect.is_none(), "a text-only post must not reserve a cover");
+            }
+        }
+    }
+
     fn scroll_fixture() -> (egui::Context, Store, UiState, Tokens) {
         let ctx = egui::Context::default();
         super::super::theme::install_fonts(&ctx, None);
@@ -13390,6 +13439,46 @@ mod row_cache_tests {
             anchor.message_id.clone(),
             anchor.content_y - state.chat_scroll_metrics.as_ref().unwrap().1,
         )
+    }
+
+    #[test]
+    fn newest_arrow_returns_to_the_live_bottom_and_stays_there() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        state.last_scroll_activity = f64::NEG_INFINITY;
+        let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0));
+        let mut button = None;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |ui| {
+            button = timeline_nav_controls(ui, &mut store, &mut state, &tokens, &crate::i18n::PT_BR, area, 56.0)
+                .first().copied();
+        });
+        output.textures_delta.clear();
+        let pos = button.expect("newest arrow while scrolled away").center();
+        for pressed in [true, false] {
+            let mut output = ctx.run_ui(egui::RawInput {
+                screen_rect: Some(area),
+                events: vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            }, |ui| {
+                timeline_nav_controls(ui, &mut store, &mut state, &tokens, &crate::i18n::PT_BR, area, 56.0);
+            });
+            output.textures_delta.clear();
+        }
+        assert_eq!(state.scroll_latest_pending.as_deref(), Some("c1"));
+        assert!(state.jump.is_none() && state.navigation_target.is_none());
+        let mut bottom = None;
+        for _ in 0..10 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+            assert!(state.visible_message_ids.iter().any(|id| id == "m079"));
+            let offset = state.chat_scroll_metrics.as_ref().unwrap().1;
+            if let Some(previous) = bottom {
+                assert_eq!(offset, previous, "return-to-latest must not oscillate");
+            }
+            bottom = Some(offset);
+        }
     }
 
     #[test]
