@@ -25,7 +25,6 @@ jobs:
           ./scripts/deps.sh --install
       - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
-        with:
       - name: Test winit preparation
         run: python -B -m unittest discover -s tests -p 'test_prepare_winit.py'
       - run: cargo test --locked --workspace
@@ -121,6 +120,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.CLIPPY_TOOLCHAIN }}
+      - uses: ./.github/actions/prepare-winit
       - uses: Swatinem/rust-cache@v2
         with:
           key: macos-arm64
