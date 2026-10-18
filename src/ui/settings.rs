@@ -824,6 +824,7 @@ impl Rows<'_> {
     }
 
     /// Linha inteira clicável, para navegar ou disparar uma ação.
+    #[cfg(not(target_os = "android"))]
     fn action(&mut self, label: &str, hint: Option<&str>, danger: bool) -> bool {
         let inset = if self.tiled { TILE_INSET * 2.0 } else { ROW_INSET + space::MD };
         let width = (fit_width(self.ui) - inset).max(120.0);

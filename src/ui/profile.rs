@@ -411,7 +411,8 @@ fn hidden_field(
     let outer = text_area.expand2(FIELD_PAD);
     let backdrop = ui.painter().add(egui::Shape::Noop);
     let hovered = ui.rect_contains_pointer(outer);
-    // O mesmo tamanho A/B que `field_height` usou para medir.
+    // The native Android field uses its own font metrics.
+    #[cfg(not(target_os = "android"))]
     let shown_font = if multiline {
         super::theme::adaptive_font(ui, font, value, text_area.width())
     } else {

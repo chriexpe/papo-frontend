@@ -130,7 +130,7 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeNetworkCh
 ) {
     let transport = env
         .get_string(&transport)
-        .map(|value| String::from(value))
+        .map(String::from)
         .unwrap_or_else(|_| "other".to_owned());
     network_changed(available, epoch.max(0) as u64, &transport);
 }

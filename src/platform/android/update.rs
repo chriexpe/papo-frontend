@@ -56,6 +56,12 @@ pub struct Updater {
     enabled: bool,
 }
 
+impl Default for Updater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Updater {
     pub fn new() -> Self {
         let (sender, events) = mpsc::channel();
