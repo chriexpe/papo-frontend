@@ -1,3 +1,13 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -97,6 +97,7 @@
+     "dpi/serde",
+ ]
+ wayland = [
++    "percent-encoding",
+     "wayland-client",
+     "wayland-backend",
+     "wayland-protocols",
 --- a/src/platform_impl/linux/wayland/event_loop/mod.rs
 +++ b/src/platform_impl/linux/wayland/event_loop/mod.rs
 @@ -483,7 +483,8 @@
@@ -21,6 +31,189 @@
  
                  redraw_requested.then_some(WindowEvent::RedrawRequested)
              });
+--- /dev/null
++++ b/src/platform_impl/linux/wayland/seat/data_device.rs
+@@ -0,0 +1,124 @@
++//! Receive file drops through wl_data_device without blocking the event loop.
++
++use std::io::Read;
++use std::path::PathBuf;
++
++use sctk::data_device_manager::{
++    data_device::{DataDeviceData, DataDeviceHandler},
++    data_offer::{DataOfferHandler, DragOffer},
++    data_source::DataSourceHandler,
++    WritePipe,
++};
++use sctk::reexports::calloop::PostAction;
++use sctk::reexports::client::{
++    protocol::{wl_data_device::WlDataDevice, wl_data_device_manager::DndAction,
++        wl_data_source::WlDataSource, wl_surface::WlSurface},
++    Connection, Proxy, QueueHandle,
++};
++
++use crate::event::WindowEvent;
++use crate::platform_impl::wayland::{make_wid, state::WinitState};
++
++const URI_LIST: &str = "text/uri-list";
++const MAX_URI_BYTES: usize = 1 << 20;
++
++impl DataDeviceHandler for WinitState {
++    fn enter(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice, _: f64, _: f64, surface: &WlSurface) {
++        let Some(offer) = device.data::<DataDeviceData>().and_then(|data| data.drag_offer()) else { return };
++        if !self.windows.get_mut().contains_key(&make_wid(surface)) { return; }
++        let supported = offer.with_mime_types(|mimes| mimes.iter().any(|mime| mime == URI_LIST));
++        offer.accept_mime_type(offer.serial, supported.then(|| URI_LIST.to_owned()));
++        if supported {
++            offer.set_actions(DndAction::Copy, DndAction::Copy);
++            // A payload isn't available yet, but the application can already
++            // highlight the drop target. Paths arrive only after a real drop.
++            self.events_sink.push_window_event(WindowEvent::HoveredFile(PathBuf::new()), make_wid(surface));
++        }
++    }
++
++    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
++        for window_id in self.windows.get_mut().keys() {
++            self.events_sink.push_window_event(WindowEvent::HoveredFileCancelled, *window_id);
++        }
++    }
++
++    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
++    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
++
++    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, device: &WlDataDevice) {
++        let Some(offer) = device.data::<DataDeviceData>().and_then(|data| data.drag_offer()) else { return };
++        let window_id = make_wid(&offer.surface);
++        if !self.windows.get_mut().contains_key(&window_id)
++            || !offer.with_mime_types(|mimes| mimes.iter().any(|mime| mime == URI_LIST))
++        { return; }
++        let Ok(pipe) = offer.receive(URI_LIST.to_owned()) else { return };
++        let mut bytes = Vec::new();
++        let result = self.loop_handle.insert_source(pipe, move |_, file, state| {
++            // SAFETY: the file remains owned by this event source.
++            let file = unsafe { file.get_mut() };
++            let mut buffer = [0; 8192];
++            match file.read(&mut buffer) {
++                Ok(0) => {
++                    for path in local_files(&bytes) {
++                        state.events_sink.push_window_event(WindowEvent::DroppedFile(path), window_id);
++                    }
++                    state.events_sink.push_window_event(WindowEvent::HoveredFileCancelled, window_id);
++                    offer.finish();
++                    offer.destroy();
++                    PostAction::Remove
++                }
++                Ok(count) if bytes.len() + count <= MAX_URI_BYTES => {
++                    bytes.extend_from_slice(&buffer[..count]);
++                    PostAction::Continue
++                }
++                Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => PostAction::Continue,
++                _ => {
++                    state.events_sink.push_window_event(WindowEvent::HoveredFileCancelled, window_id);
++                    offer.destroy();
++                    PostAction::Remove
++                }
++            }
++        });
++        if let Err(error) = result { tracing::warn!("could not receive dropped files: {error}"); }
++    }
++}
++
++fn local_files(bytes: &[u8]) -> Vec<PathBuf> {
++    use std::os::unix::ffi::OsStringExt;
++    let Ok(text) = std::str::from_utf8(bytes) else { return Vec::new() };
++    text.lines().filter_map(|line| {
++        let rest = line.trim().strip_prefix("file://")?;
++        let path = if rest.starts_with('/') { rest } else { rest.strip_prefix("localhost/")? };
++        let path = if path.starts_with('/') { path.to_owned() } else { format!("/{path}") };
++        let decoded = percent_encoding::percent_decode_str(&path).collect::<Vec<_>>();
++        if decoded.contains(&0) { return None; }
++        Some(PathBuf::from(std::ffi::OsString::from_vec(decoded)))
++    }).collect()
++}
++
++impl DataOfferHandler for WinitState {
++    fn source_actions(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
++    fn selected_action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &mut DragOffer, _: DndAction) {}
++}
++
++// This integration receives drags only; the clipboard remains application-owned.
++impl DataSourceHandler for WinitState {
++    fn accept_mime(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: Option<String>) {}
++    fn send_request(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: String, _: WritePipe) {}
++    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
++    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
++    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
++    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
++}
++
++sctk::delegate_data_device!(WinitState);
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn uri_list_accepts_only_local_file_paths() {
++        assert_eq!(local_files(b"# ignored\r\nfile:///tmp/a%20b.png\r\nhttps://example.test/x\r\nfile://remote/tmp/no\r\nfile://localhost/tmp/yes\nfile:///bad%00name"),
++            vec![PathBuf::from("/tmp/a b.png"), PathBuf::from("/tmp/yes")]);
++    }
++}
+--- a/src/platform_impl/linux/wayland/seat/mod.rs
++++ b/src/platform_impl/linux/wayland/seat/mod.rs
+@@ -19,6 +19,7 @@
+ use crate::keyboard::ModifiersState;
+ use crate::platform_impl::wayland::state::WinitState;
+ 
++mod data_device;
+ mod keyboard;
+ mod pointer;
+ mod text_input;
+@@ -36,6 +37,7 @@
+ pub struct WinitSeatState {
+     /// The pointer bound on the seat.
+     pointer: Option<Arc<ThemedPointer<WinitPointerData>>>,
++    pub data_device: Option<sctk::data_device_manager::data_device::DataDevice>,
+ 
+     /// The touch bound on the seat.
+     touch: Option<WlTouch>,
+@@ -84,6 +86,11 @@
+                 return;
+             },
+         };
++
++        if seat_state.data_device.is_none() {
++            seat_state.data_device = self.data_device_manager.as_ref()
++                .map(|manager| manager.get_data_device(queue_handle, &seat));
++        }
+ 
+         match capability {
+             SeatCapability::Touch if seat_state.touch.is_none() => {
+--- a/src/platform_impl/linux/wayland/state.rs
++++ b/src/platform_impl/linux/wayland/state.rs
+@@ -53,6 +53,7 @@
+ 
+     /// The seat state responsible for all sorts of input.
+     pub seat_state: SeatState,
++    pub data_device_manager: Option<sctk::data_device_manager::DataDeviceManagerState>,
+ 
+     /// The shm for software buffers, such as cursors.
+     pub shm: Shm,
+@@ -142,6 +143,7 @@
+         let monitors = output_state.outputs().map(MonitorHandle::new).collect();
+ 
+         let seat_state = SeatState::new(globals, queue_handle);
++        let data_device_manager = sctk::data_device_manager::DataDeviceManagerState::bind(globals, queue_handle).ok();
+ 
+         let mut seats = AHashMap::default();
+         for seat in seat_state.seats() {
+@@ -164,6 +166,7 @@
+             subcompositor_state: subcompositor_state.map(Arc::new),
+             output_state,
+             seat_state,
++            data_device_manager,
+             shm,
+             custom_cursor_pool,
+ 
 --- a/src/platform_impl/linux/wayland/window/mod.rs
 +++ b/src/platform_impl/linux/wayland/window/mod.rs
 @@ -126,7 +126,8 @@

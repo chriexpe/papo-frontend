@@ -214,6 +214,25 @@ impl Tray {
     }
 }
 
+/// O ícone do aplicativo em alguns tamanhos, em ARGB32.
+fn load_icons(pending: bool) -> Vec<Icon> {
+    [22u32, 32, 64]
+        .into_iter()
+        .filter_map(|size| {
+            let scaled = crate::platform::tray_icon::render(size, pending)?;
+            let data = scaled
+                .pixels()
+                .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
+                .collect();
+            Some(Icon {
+                width: size as i32,
+                height: size as i32,
+                data,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,23 +267,4 @@ mod tests {
         assert!(matches!(ksni::Tray::status(&tray), Status::Active));
         assert_eq!(ksni::Tray::icon_pixmap(&tray)[0].data, vec![255, 229, 57, 53]);
     }
-}
-
-/// O ícone do aplicativo em alguns tamanhos, em ARGB32.
-fn load_icons(pending: bool) -> Vec<Icon> {
-    [22u32, 32, 64]
-        .into_iter()
-        .filter_map(|size| {
-            let scaled = crate::platform::tray_icon::render(size, pending)?;
-            let data = scaled
-                .pixels()
-                .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
-                .collect();
-            Some(Icon {
-                width: size as i32,
-                height: size as i32,
-                data,
-            })
-        })
-        .collect()
 }

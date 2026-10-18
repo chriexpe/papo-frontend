@@ -226,7 +226,11 @@ pub enum ChatAction {
     },
     /// Busca mais antiga do histórico quando a timeline chega perto do topo.
     LoadOlderMessages,
+    LoadNewerMessages,
+    CancelMessageNavigation(String),
+    LoadMessageContext { channel_id: String, message_id: String, at: Option<chrono::DateTime<chrono::Utc>> },
     /// Busca no servidor, a partir da pastilha.
+    LoadPinned(String),
     Search {
         request: crate::api::models::SearchRequest,
         cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
@@ -603,6 +607,8 @@ pub struct DraftBook {
     owner_user_id: Option<String>,
     loaded: bool,
     by_channel: std::collections::HashMap<String, DraftState>,
+    attachments: std::collections::HashMap<String, Vec<Upload>>,
+    embeds: std::collections::HashMap<String, Vec<crate::api::models::CustomEmbedInput>>,
     dirty: std::collections::HashMap<String, std::time::Instant>,
 }
 
@@ -622,6 +628,8 @@ impl DraftBook {
         self.owner_user_id = Some(owner_user_id.to_owned());
         self.loaded = false;
         self.by_channel.clear();
+        self.attachments.clear();
+        self.embeds.clear();
         self.dirty.clear();
     }
 
@@ -714,6 +722,7 @@ pub struct Stash {
     pub composer_caret_pending: Option<usize>,
     pub drafts: DraftBook,
     pub attachments: Vec<Upload>,
+    pub pending_uploads: std::collections::HashMap<String, crate::api::net::Command>,
     pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
     pub custom_embed_editor: bool,
     pub replying: Option<String>,
@@ -741,6 +750,7 @@ impl Stash {
             composer_caret_pending: None,
             drafts: DraftBook::default(),
             attachments: Vec::new(),
+            pending_uploads: Default::default(),
             custom_embeds: Vec::new(),
             custom_embed_editor: false,
             replying: None,
@@ -770,6 +780,7 @@ impl Stash {
         );
         std::mem::swap(&mut self.drafts, &mut ui.drafts);
         std::mem::swap(&mut self.attachments, &mut ui.attachments);
+        std::mem::swap(&mut self.pending_uploads, &mut ui.pending_uploads);
         std::mem::swap(&mut self.custom_embeds, &mut ui.custom_embeds);
         std::mem::swap(&mut self.custom_embed_editor, &mut ui.custom_embed_editor);
         std::mem::swap(&mut self.replying, &mut ui.replying);
@@ -785,6 +796,7 @@ impl Stash {
         std::mem::swap(&mut self.last_server_channel, &mut ui.last_server_channel);
         std::mem::swap(&mut self.last_channel, &mut ui.last_channel);
         std::mem::swap(&mut self.topic_since, &mut ui.topic_since);
+        ui.attachment_editor = None;
         ui.unread_marker = None;
         ui.unread_marker_baseline = None;
     }
@@ -922,6 +934,7 @@ pub struct UiState {
     /// Zonas de timeline/waveform que, no Android, arbitram o próprio gesto:
     /// horizontal = scrub; vertical = rolagem. O swipe da mensagem não entra.
     media_seek_zones: Vec<Rect>,
+    reaction_zones: Vec<Rect>,
     pub translucent: bool,
     pub pending: Vec<MenuCommand>,
     /// Renderizador do vidro fosco; ausente quando o backend não é o glow.
@@ -962,6 +975,7 @@ pub struct UiState {
     pub webembed_blocked: bool,
     /// Arquivos escolhidos, ainda não enviados.
     pub attachments: Vec<Upload>,
+    pub pending_uploads: std::collections::HashMap<String, crate::api::net::Command>,
     /// Embeds autorais, enviados com o mesmo envelope da mensagem.
     pub custom_embeds: Vec<crate::api::models::CustomEmbedInput>,
     pub custom_embed_editor: bool,
@@ -1024,6 +1038,7 @@ pub struct UiState {
     pub panel: Option<Panel>,
     /// Mensagem a alcançar e piscar, vinda de um resultado.
     pub jump: Option<Jump>,
+    navigation_target: Option<(String, String)>,
     /// Pastilha desktop atualmente "possuída" por uma mensagem. Guardar o
     /// retângulo permite atravessar da linha para a metade que flutua sobre a
     /// mensagem anterior sem perder o hover.
@@ -1038,6 +1053,8 @@ pub struct UiState {
     /// Texto do compositor no fim do quadro anterior, para saber o que o
     /// usuário acabou de digitar.
     pub composer_prev: String,
+    pub composer_stickers: super::composer_text::StickerText,
+    pub attachment_editor: Option<super::attachment_editor::AttachmentEditor>,
     /// Onde começava o apelido quando o Esc foi apertado.
     pub suggest_start: Option<usize>,
     pub emoji_query: String,
@@ -1053,8 +1070,11 @@ pub struct UiState {
     pub open_at_newest: bool,
     /// Ao chegar ao head, confirma uma lacuna antiga quando habilitado.
     pub mark_read_at_newest: bool,
+    pub prefer_backend_embeds: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
+    /// Measure a requested jump invisibly before presenting its new window.
+    open_jump_pending: Option<String>,
     /// Esc pediu o fim do canal, independentemente da âncora de não lidas.
     scroll_latest_pending: Option<String>,
     /// Primeira mensagem não lida fixada na conversa atual (`(channel_id, message_id)`).
@@ -1084,6 +1104,7 @@ pub struct UiState {
     /// Recado curto de erro da própria interface, com o instante em que
     /// apareceu.
     pub error: Option<(String, f64)>,
+    pub media_tasks: Vec<super::media_menu::RemoteTask>,
     /// Última geometria observada da conversa, usada para preservar o ponto
     /// visual quando uma página antiga entra antes do conteúdo visível.
     chat_scroll_metrics: Option<(String, f32, f32)>,
@@ -1096,20 +1117,13 @@ pub struct UiState {
     /// assinatura do que a determina. Linhas longe da tela não são montadas
     /// de novo: reservam esta altura (ver `message_list`).
     row_heights: std::collections::HashMap<String, (u64, f32)>,
-    /// Linhas que o quadro anterior pulou (ver `message_list`).
-    culled_rows: std::collections::HashSet<String>,
-    /// Quanto as linhas acima da tela mudaram de altura ao serem montadas de
-    /// novo; a conversa rola esse tanto para o que se lê não pular.
-    row_drift: f32,
-    /// Baseline capturada quando pedimos uma página mais antiga.
-    history_scroll_anchor: Option<(String, f32, f32)>,
-    /// Offset aplicado no quadro descartado seguinte ao prepend/relayout.
+    /// First visible message, measured in content coordinates.
+    chat_anchor: Option<ChatAnchor>,
+    anchor_drift: f32,
+    /// Offset applied on the next layout pass after an opening or anchor correction.
     forced_chat_scroll: Option<(String, f32)>,
-    /// Baseline para uma mudança de altura assíncrona acima da viewport.
-    relayout_scroll_anchor: Option<(String, f32, f32)>,
-    /// Fase de layout observada por preview: 0 carregando, 1 metadados ricos,
-    /// 2 mídia materializada. Cada avanço pode alterar a altura do cartão.
-    preview_layout_phase: std::collections::HashMap<String, u8>,
+    /// Retain known image geometry while an evicted texture reloads.
+    embed_image_sizes: std::collections::HashMap<String, Vec2>,
     /// A lista mudou de altura no quadro anterior. O egui só reencosta a
     /// rolagem no fim do quadro, então o seguinte sairia com a posição velha:
     /// ele é refeito antes de chegar à tela.
@@ -1164,6 +1178,7 @@ impl Default for UiState {
             reply_drag: None,
             message_rows: Vec::new(),
             media_seek_zones: Vec::new(),
+            reaction_zones: Vec::new(),
             translucent: true,
             pending: Vec::new(),
             glass: None,
@@ -1181,6 +1196,7 @@ impl Default for UiState {
             webembed_occlusions: Vec::new(),
             webembed_blocked: false,
             attachments: Vec::new(),
+            pending_uploads: Default::default(),
             custom_embeds: Vec::new(),
             custom_embed_editor: false,
             replying: None,
@@ -1217,11 +1233,14 @@ impl Default for UiState {
             self_card: Default::default(),
             panel: None,
             jump: None,
+            navigation_target: None,
             hover_actions: None,
             suggest: None,
             suggest_muted: false,
             format_pairing: None,
             composer_prev: String::new(),
+            composer_stickers: Default::default(),
+            attachment_editor: None,
             suggest_start: None,
             emoji_query: String::new(),
             emoji_group: 0,
@@ -1230,7 +1249,9 @@ impl Default for UiState {
             reveal_topic: true,
             open_at_newest: true,
             mark_read_at_newest: false,
+            prefer_backend_embeds: true,
             open_channel_pending: None,
+            open_jump_pending: None,
             scroll_latest_pending: None,
             unread_marker: None,
             unread_marker_baseline: None,
@@ -1244,16 +1265,15 @@ impl Default for UiState {
             channel_emoji_monochrome: true,
             recorder: None,
             error: None,
+            media_tasks: Vec::new(),
             chat_scroll_metrics: None,
             wheel_glide: WheelGlide::default(),
             composer_overflows: false,
             row_heights: std::collections::HashMap::new(),
-            culled_rows: std::collections::HashSet::new(),
-            row_drift: 0.0,
-            history_scroll_anchor: None,
+            chat_anchor: None,
+            anchor_drift: 0.0,
             forced_chat_scroll: None,
-            relayout_scroll_anchor: None,
-            preview_layout_phase: std::collections::HashMap::new(),
+            embed_image_sizes: std::collections::HashMap::new(),
             relayout: false,
             last_relayout_discard: f64::NEG_INFINITY,
         }
@@ -1261,6 +1281,15 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn set_prefer_backend_embeds(&mut self, prefer: bool) {
+        if self.prefer_backend_embeds != prefer {
+            self.prefer_backend_embeds = prefer;
+            self.row_heights.clear();
+            self.embed_image_sizes.clear();
+            self.relayout = true;
+        }
+    }
+
     pub fn clear_unread_marker(&mut self, store: &Store) {
         self.unread_marker = None;
         if !store.selected_channel.is_empty() {
@@ -1276,17 +1305,26 @@ impl UiState {
         if self.dismiss_floating(store) || self.cancel_composer_actions() {
             return;
         }
+        self.return_to_latest(ctx, store);
+    }
+
+    pub fn return_to_latest(&mut self, ctx: &egui::Context, store: &mut Store) {
         if !store.selected_channel.is_empty() {
             self.jump = None;
+            self.navigation_target = None;
+            self.actions.push(ChatAction::CancelMessageNavigation(
+                store.selected_channel.clone(),
+            ));
+            store.end_message_context(&store.selected_channel.clone());
             self.open_channel_pending = None;
+            self.open_jump_pending = None;
             self.scroll_latest_pending = Some(store.selected_channel.clone());
             self.clear_unread_marker(store);
             self.read_span_break = true;
             self.wheel_glide = WheelGlide::default();
-            self.history_scroll_anchor = None;
-            self.relayout_scroll_anchor = None;
             self.forced_chat_scroll = None;
-            self.row_drift = 0.0;
+            self.chat_anchor = None;
+            self.anchor_drift = 0.0;
             ctx.input_mut(|input| {
                 input.smooth_scroll_delta = Vec2::ZERO;
             });
@@ -1305,6 +1343,7 @@ impl UiState {
         } else if self.custom_embed_editor {
             self.custom_embed_editor = false;
         } else if self.panel.take().is_some() {
+            store.reset_search();
         } else if self.suggest.take().is_some() {
             self.suggest_muted = true;
         } else if self.android_gallery_menu_open {
@@ -1373,11 +1412,36 @@ impl UiState {
         }
     }
 
+    pub fn ingest_attachments(&mut self, channel_id: &str, uploads: Vec<Upload>) {
+        if self.last_channel == channel_id {
+            self.attachments.extend(uploads);
+        } else {
+            self.drafts
+                .attachments
+                .entry(channel_id.to_owned())
+                .or_default()
+                .extend(uploads);
+        }
+    }
+
     pub fn switch_draft_channel(&mut self, channel_id: &str) {
         let previous = self.last_channel.clone();
         if !previous.is_empty() {
             self.capture_draft(&previous);
         }
+        self.drafts
+            .attachments
+            .insert(previous.clone(), std::mem::take(&mut self.attachments));
+        self.drafts
+            .embeds
+            .insert(previous, std::mem::take(&mut self.custom_embeds));
+        self.attachments = self
+            .drafts
+            .attachments
+            .remove(channel_id)
+            .unwrap_or_default();
+        self.custom_embeds = self.drafts.embeds.remove(channel_id).unwrap_or_default();
+        self.attachment_editor = None;
         self.restore_draft(channel_id);
         self.last_channel = channel_id.to_owned();
     }
@@ -1415,18 +1479,6 @@ pub(crate) fn take_escape(ctx: &egui::Context) -> bool {
     })
 }
 
-fn preserve_chat_position_for_relayout(state: &mut UiState, ctx: &egui::Context) {
-    let channel = state.last_channel.clone();
-    let Some((metrics_channel, offset, height)) = state.chat_scroll_metrics.as_ref() else {
-        return;
-    };
-    if *metrics_channel != channel || *height <= 0.0 {
-        return;
-    }
-    state.relayout_scroll_anchor = Some((channel, *offset, *height));
-    ctx.request_discard("conteúdo assíncrono mudou a altura da conversa");
-}
-
 pub fn draw(
     ui: &mut egui::Ui,
     store: &mut Store,
@@ -1440,6 +1492,7 @@ pub fn draw(
 ) -> Option<super::rail::RailAction> {
     state.message_rows.clear();
     state.media_seek_zones.clear();
+    state.reaction_zones.clear();
     state.visible_message_ids.clear();
     state.webembed_inline_rect = None;
 
@@ -1449,6 +1502,7 @@ pub fn draw(
     if state.media.pump(ui.ctx()) {
         state.relayout = true;
     }
+    super::media_menu::pump(ui.ctx(), state, s);
     if let Some(giphy) = state.giphy.as_mut() {
         giphy.pump(ui.ctx());
     }
@@ -1458,9 +1512,28 @@ pub fn draw(
     // nada muito depois.
     if let Some(jump) = &state.jump {
         let now = ui.input(|input| input.time);
-        if jump.found.is_none() && now - jump.since > 10.0 {
+        if jump.found.is_none() && now - jump.since > 10.0 && state.navigation_target.is_none() {
             state.jump = None;
         }
+    }
+
+    if store.loading_message_context(&store.selected_channel) {
+        egui::Area::new(Id::new("message-context-progress"))
+            .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 64.0))
+            .order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(s.reaction_loading);
+                        if ui.button(icon::X).clicked() {
+                            state.actions.push(ChatAction::CancelMessageNavigation(store.selected_channel.clone()));
+                            store.end_message_context(&store.selected_channel.clone());
+                            state.navigation_target = None;
+                            state.jump = None;
+                        }
+                    });
+                });
+            });
     }
 
     // O erro que veio do servidor vira o mesmo aviso passageiro dos erros da
@@ -1476,7 +1549,12 @@ pub fn draw(
     if state.last_channel != store.selected_channel {
         let next_channel = store.selected_channel.clone();
         let previous_channel = state.last_channel.clone();
+        store.end_message_context(&previous_channel);
+        state.actions.push(ChatAction::CancelMessageNavigation(previous_channel.clone()));
         state.switch_draft_channel(&next_channel);
+        if state.panel.as_ref().is_some_and(|panel| panel.kind == PanelKind::Pinned) {
+            state.actions.push(ChatAction::LoadPinned(next_channel.clone()));
+        }
         state.topic_since = Some(ui.input(|input| input.time));
         state.media.pause_all();
         if state.webembed_scope == crate::webembed::FloatScope::CurrentChannel {
@@ -1490,9 +1568,10 @@ pub fn draw(
         state.edit_focus_pending = false;
         state.close_popup();
         state.chat_scroll_metrics = None;
-        state.history_scroll_anchor = None;
+        state.chat_anchor = None;
+        state.anchor_drift = 0.0;
         state.forced_chat_scroll = None;
-        state.relayout_scroll_anchor = None;
+        state.open_jump_pending = None;
         state.open_channel_pending = Some(next_channel.clone());
         state.unread_marker = None;
         state.unread_marker_baseline = None;
@@ -1513,6 +1592,28 @@ pub fn draw(
                 store.call.popped_out = false;
                 place_away_call(store);
             }
+        }
+    }
+
+    if let Some((channel, target)) = state.navigation_target.clone() {
+        if channel != store.selected_channel {
+            store.end_message_context(&channel);
+            state.navigation_target = None;
+            state.jump = None;
+        } else if store.messages_in(&channel).any(|message| message.id == target) {
+            state.jump = Some(Jump { message_id: target, found: None, since: ui.input(|input| input.time) });
+            state.open_channel_pending = None;
+            state.open_jump_pending = Some(channel.clone());
+            state.scroll_latest_pending = None;
+            state.navigation_target = None;
+            state.chat_anchor = None;
+            state.forced_chat_scroll = None;
+            state.read_span_break = true;
+        } else if !store.loading_message_context(&channel)
+            && !state.actions.iter().any(|action| matches!(action, ChatAction::LoadMessageContext { .. }))
+        {
+            state.navigation_target = None;
+            state.jump = None;
         }
     }
 
@@ -1544,6 +1645,9 @@ pub fn draw(
     // superfície sem compositor (DM vazio, voz, etc.) reutilize geometria
     // velha de outro canal.
     state.composer_picker_bounds = None;
+    state
+        .pending_uploads
+        .retain(|id, _| store.message(id).is_some_and(|message| message.pending));
 
     if state.compact {
         conversation(ui, store, state, call, t, s, stage);
@@ -3005,7 +3109,7 @@ fn timeline_nav_controls(
 
     let latest_visible = state.visible_message_ids.last().cloned();
     let newest = store.newest_loaded(&channel_id);
-    let show_newer = newest
+    let show_newer = store.browsing_history(&channel_id) || newest
         .as_ref()
         .is_some_and(|newest| latest_visible.as_ref() != Some(newest));
     let back = store.hourglass_target(&channel_id);
@@ -3052,8 +3156,12 @@ fn timeline_nav_controls(
         );
 
         if response.clicked() {
+            if kind == 0 {
+                state.return_to_latest(ui.ctx(), store);
+                ui.ctx().request_repaint();
+                continue;
+            }
             let target = match kind {
-                0 => newest.clone(),
                 1 => back.clone(),
                 2 => mention.clone(),
                 _ => None,
@@ -3258,7 +3366,7 @@ fn conversation(
             return;
         }
 
-        let composer_height = composer_height(ui, state, full);
+        let composer_height = composer_height(ui, store, state, full);
         let top_inset = PILL_MARGIN * 2.0 + PILL_HEIGHT;
         let bottom_inset = PILL_MARGIN * 2.0 + composer_height;
         #[cfg(target_os = "android")]
@@ -3291,14 +3399,20 @@ fn conversation(
             // páginas antigas até encontrá-la antes de estabilizar a abertura.
             let latest_pass =
                 state.scroll_latest_pending.as_deref() == Some(channel_id.as_str());
-            let opening_pass = latest_pass
+            let latest_measurement_pass = latest_pass
+                && !state.forced_chat_scroll.as_ref()
+                    .is_some_and(|(channel, _)| channel == &channel_id);
+            let requested_jump_pass = state.open_jump_pending.as_deref() == Some(channel_id.as_str());
+            let opening_pass = requested_jump_pass || latest_measurement_pass
                 || state.open_channel_pending.as_deref() == Some(channel_id.as_str());
             if opening_pass {
                 state.read_span_break = true;
             }
             let mut opening_at_bottom = false;
             let mut opening_at_message = false;
-            if latest_pass {
+            if requested_jump_pass {
+                opening_at_message = true;
+            } else if latest_pass {
                 opening_at_bottom = true;
             } else if opening_pass && store.newest_loaded(&channel_id).is_some() {
                 let unread = store.channel(&channel_id).is_some_and(|channel| channel.unread);
@@ -3369,8 +3483,8 @@ fn conversation(
                 // Um salto que resolve a abertura não pode animar a partir da
                 // posição velha/zero. O quadro que calcula o alvo é descartado
                 // e o próximo já nasce na posição final.
-                .animated(!(opening_at_bottom || opening_at_message))
-                .stick_to_bottom(true);
+                .animated(!(opening_at_bottom || opening_at_message || state.jump.is_some()))
+                .stick_to_bottom(!store.browsing_history(&channel_id));
             if let Some((forced_channel, offset)) = state.forced_chat_scroll.take() {
                 if forced_channel == channel_id {
                     scroll = scroll.vertical_scroll_offset(offset.max(0.0));
@@ -3378,7 +3492,7 @@ fn conversation(
                     state.forced_chat_scroll = Some((forced_channel, offset));
                 }
             }
-            let output = scroll.show_viewport(ui, |ui, _viewport| {
+            let output = scroll.show_viewport(ui, |ui, viewport| {
                 let web_scroll = state
                     .webembed
                     .take_scroll_delta_points(ui.ctx().pixels_per_point());
@@ -3414,6 +3528,7 @@ fn conversation(
                     message_list(ui, store, state, t, s, full, readable);
                     ui.add_space(bottom_inset);
                 });
+                viewport.min.y
             });
 
             // A primeira geometria útil do canal é somente uma medição. Para
@@ -3424,11 +3539,17 @@ fn conversation(
             if opening_at_bottom {
                 let bottom =
                     (output.content_size.y - output.inner_rect.height()).max(0.0);
-                state.forced_chat_scroll = Some((channel_id.clone(), bottom));
                 state.open_channel_pending = None;
-                state.scroll_latest_pending = None;
-                ui.ctx()
-                    .request_discard("posição inicial da conversa resolvida no head");
+                // A measured pixel offset is not the destination. Cold rows
+                // can expand on their first visible pass; keep the semantic
+                // bottom target until geometry was actually drawn there.
+                if !opening_pass && (output.inner - bottom).abs() <= 0.5 {
+                    state.scroll_latest_pending = None;
+                } else {
+                    state.scroll_latest_pending = Some(channel_id.clone());
+                    state.forced_chat_scroll = Some((channel_id.clone(), bottom));
+                    ui.ctx().request_discard("resolve the current bottom before completing navigation");
+                }
             } else if opening_at_message
                 && state
                     .jump
@@ -3442,70 +3563,52 @@ fn conversation(
                 state.forced_chat_scroll =
                     Some((channel_id.clone(), output.state.offset.y.max(0.0)));
                 state.open_channel_pending = None;
+                state.open_jump_pending = None;
                 ui.ctx()
                     .request_discard("posição inicial da conversa resolvida no anchor");
             }
 
-            // Linhas acima da tela mudaram de altura ao deixar de ser puladas:
-            // o scroll acompanha, senão o que se lê dá um tranco.
-            let drift = std::mem::take(&mut state.row_drift);
-            if drift.abs() > 0.5 && !opening_pass {
-                state.forced_chat_scroll =
-                    Some((channel_id.clone(), (output.state.offset.y + drift).max(0.0)));
-                ui.ctx().request_discard("linhas acima da tela mudaram de altura");
+            let drift = std::mem::take(&mut state.anchor_drift);
+            let at_bottom = output.state.offset.y
+                >= (output.content_size.y - output.inner_rect.height()).max(0.0) - 1.0;
+            let preserve_anchor = drift.abs() > 0.5
+                && state.jump.as_ref().is_none_or(|jump| jump.found.is_some())
+                && (!at_bottom || store.browsing_history(&channel_id));
+            // ScrollArea applies bottom sticking and clamping after laying out
+            // its children. When content resizes, redraw at the resolved offset
+            // before presenting it: a prepended page otherwise flashes old rows
+            // for one frame despite the returned state being at the bottom.
+            let content_resized = state.chat_scroll_metrics.as_ref().is_some_and(
+                |(channel, _, height)| channel == &channel_id
+                    && (output.content_size.y - height).abs() > 0.5,
+            );
+            let resize_changed_offset = content_resized
+                && (output.state.offset.y - output.inner).abs() > 0.5;
+            if !opening_pass && !latest_pass && (preserve_anchor || resize_changed_offset) {
+                let correction = if preserve_anchor { drift } else { 0.0 };
+                state.forced_chat_scroll = Some((channel_id.clone(),
+                    (output.state.offset.y + correction).max(0.0)));
+                ui.ctx().request_discard("draw the conversation at its resolved scroll offset");
             }
 
-            // Só pagina depois que a abertura estabilizou e com base no offset
-            // realmente aplicado pelo ScrollArea. O viewport passado à closure
-            // ainda reflete o offset de entrada e pode dizer "topo" no mesmo
-            // quadro em que `stick_to_bottom` encosta no fim.
             let request_older = !opening_pass
-                && output.state.offset.y <= top_inset + 360.0
-                && output.content_size.y > output.inner_rect.height() + 1.0
+                && !latest_pass
+                && output.state.offset.y <= top_inset + CHAT_LOAD_ABOVE
                 && store.can_load_older(&channel_id)
-                && state.history_scroll_anchor.is_none()
-                && state.jump.is_none();
-
+                && !store.loading_older(&channel_id)
+                && !state.actions.iter().any(|action| matches!(action, ChatAction::LoadOlderMessages))
+                && state.jump.as_ref().is_none_or(|jump| jump.found.is_some());
             if request_older {
-                state.history_scroll_anchor = Some((
-                    channel_id.clone(),
-                    output.state.offset.y,
-                    output.content_size.y,
-                ));
                 state.actions.push(ChatAction::LoadOlderMessages);
             }
 
-            if let Some((anchor_channel, anchor_offset, old_height)) =
-                state.history_scroll_anchor.clone()
-                && anchor_channel == channel_id
-                && old_height > 0.0
-                && output.content_size.y > old_height + 1.0
+            if !opening_pass && !latest_pass && !request_older
+                && output.state.offset.y + output.inner_rect.height() >= output.content_size.y - bottom_inset - 480.0
+                && store.can_load_newer(&channel_id)
+                && !state.actions.iter().any(|action| matches!(action, ChatAction::LoadNewerMessages))
+                && state.jump.as_ref().is_none_or(|jump| jump.found.is_some())
             {
-                let delta = output.content_size.y - old_height;
-                state.forced_chat_scroll =
-                    Some((channel_id.clone(), anchor_offset + delta));
-                state.history_scroll_anchor = None;
-                ui.ctx().request_discard("histórico antigo inserido acima da viewport");
-            } else if state.history_scroll_anchor.is_some()
-                && !request_older
-                && !store.loading_older(&channel_id)
-            {
-                // Falhou, chegou uma página vazia ou acabou o histórico sem
-                // alterar a geometria. Libera a âncora para permitir retry.
-                state.history_scroll_anchor = None;
-            }
-
-            if let Some((anchor_channel, anchor_offset, old_height)) =
-                state.relayout_scroll_anchor.clone()
-                && anchor_channel == channel_id
-                && old_height > 0.0
-                && (output.content_size.y - old_height).abs() > 1.0
-            {
-                let delta = output.content_size.y - old_height;
-                state.forced_chat_scroll =
-                    Some((channel_id.clone(), (anchor_offset + delta).max(0.0)));
-                state.relayout_scroll_anchor = None;
-                ui.ctx().request_discard("preview/mídia mudou acima da viewport");
+                state.actions.push(ChatAction::LoadNewerMessages);
             }
 
             if previous_offset
@@ -3705,6 +3808,11 @@ fn handle_mobile_gesture(
             || state.panel.is_some()
             || state.webembed_blocked
             || media_seek
+            || state
+                .reaction_zones
+                .iter()
+                .any(|rect| rect.contains(origin))
+            || state.attachment_editor.is_some()
             || state
                 .webembed_inline_rect
                 .is_some_and(|rect| rect.contains(origin))
@@ -4112,7 +4220,7 @@ fn call_layers(
 /// lado, em vez de abrir a descrição na âncora das ações.
 fn channel_pill(
     ui: &mut egui::Ui,
-    store: &Store,
+    store: &mut Store,
     state: &mut UiState,
     t: &Tokens,
     s: &Strings,
@@ -4255,7 +4363,7 @@ fn channel_pill(
     let header = Rect::from_min_size(rect.min, Vec2::new(width, PILL_HEIGHT));
     let response = ui.interact(header, Id::new("channel-topic-pill"), Sense::click());
     if topic_text.is_some() && response.clicked() {
-        toggle_panel(state, PanelKind::Topic);
+        toggle_panel(store, state, PanelKind::Topic);
     }
     if topic_text.is_some() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -4585,6 +4693,7 @@ fn actions_pill(
     if open.is_some() {
         if floating_surface_dismissed(ui.ctx(), rect, None, None) {
             state.panel = None;
+            store.reset_search();
             ui.ctx().request_discard("actions panel closed before painting");
             return rect;
         }
@@ -4603,6 +4712,7 @@ fn actions_pill(
             // O X mora à esquerda da pastilha esticada.
             if open.is_some() && icon_button(ui, t, icon::X, s.close).clicked() {
                 state.panel = None;
+                store.reset_search();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = space::XXS;
@@ -4616,7 +4726,7 @@ fn actions_pill(
                     }
                 }
                 if pill_toggle(ui, t, icon::PUSH_PIN, s.pinned, open == Some(PanelKind::Pinned)) {
-                    toggle_panel(state, PanelKind::Pinned);
+                    toggle_panel(store, state, PanelKind::Pinned);
                 }
                 if pill_toggle(
                     ui,
@@ -4625,7 +4735,7 @@ fn actions_pill(
                     s.search,
                     open == Some(PanelKind::Search),
                 ) {
-                    toggle_panel(state, PanelKind::Search);
+                    toggle_panel(store, state, PanelKind::Search);
                 }
             });
         },
@@ -4666,7 +4776,8 @@ fn actions_pill(
 }
 
 /// Abre a lista pedida, ou fecha se ela já era a que estava aberta.
-pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
+pub fn toggle_panel(store: &mut Store, state: &mut UiState, kind: PanelKind) {
+    store.reset_search();
     match &state.panel {
         Some(panel) if panel.kind == kind => state.panel = None,
         _ => {
@@ -4680,7 +4791,10 @@ pub fn toggle_panel(state: &mut UiState, kind: PanelKind) {
                 search_active: None,
                 focus: kind == PanelKind::Search,
                 searched: false,
-            })
+            });
+            if kind == PanelKind::Pinned {
+                state.actions.push(ChatAction::LoadPinned(store.selected_channel.clone()));
+            }
         }
     }
 }
@@ -4713,13 +4827,50 @@ struct SearchShortcut {
 }
 
 fn search_fragment(query: &str) -> (&str, usize) {
-    let start = query
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_whitespace())
-        .map(|(index, c)| index + c.len_utf8())
-        .unwrap_or(0);
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in query.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quoted {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch.is_whitespace() && !quoted {
+            start = index + ch.len_utf8();
+        }
+    }
     (&query[start..], start)
+}
+
+fn search_tokens(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for ch in query.chars() {
+        if escaped {
+            token.push(ch);
+            escaped = false;
+        } else if ch == '\\' && quoted {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch.is_whitespace() && !quoted {
+            if !token.is_empty() {
+                tokens.push(std::mem::take(&mut token));
+            }
+        } else {
+            token.push(ch);
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -4734,7 +4885,7 @@ struct SearchFilterUsage {
 fn search_filter_usage(query: &str) -> SearchFilterUsage {
     let mut usage = SearchFilterUsage::default();
 
-    for token in query.split_whitespace() {
+    for token in search_tokens(query) {
         let Some((prefix, value)) = token.split_once(':') else {
             continue;
         };
@@ -4841,7 +4992,7 @@ fn search_shortcuts(
             for channel in channels.into_iter().take(6) {
                 out.push(SearchShortcut {
                     label: format!("em: #{}", channel.name),
-                    replacement: format!("em:#{}", channel.name),
+                    replacement: format!("em:{}", serde_json::to_string(&format!("#{}", channel.name)).unwrap()),
                 });
             }
         }
@@ -4950,41 +5101,34 @@ fn search_request_from_panel(
     let mut contains_attachment = panel.search_attachments.then_some(true);
     let mut has = None;
 
-    for token in panel.query.split_whitespace() {
+    let tokens = search_tokens(&panel.query);
+    for token in &tokens {
         let Some((prefix, value)) = token.split_once(':') else {
-            text.push(token);
+            text.push(token.as_str());
             continue;
         };
         match prefix.to_lowercase().as_str() {
             "de" | "from" | "author" => {
-                if author.is_none()
-                    && let Some(id) = search_member_id(store, value)
-                {
-                    author = Some(id);
+                if author.is_none() {
+                    author = Some(search_member_id(store, value)?);
                 }
             }
             "em" | "in" | "channel" => {
-                if channel_id.is_none()
-                    && let Some(id) = search_channel_id(store, value)
-                {
-                    channel_id = Some(id);
+                if channel_id.is_none() {
+                    channel_id = Some(search_channel_id(store, value)?);
                 }
             }
             "mentions" | "menciona" | "mention" => {
-                if mention.is_none()
-                    && let Some(id) = search_member_id(store, value)
-                {
-                    mention = Some(id);
+                if mention.is_none() {
+                    mention = Some(search_member_id(store, value)?);
                 }
             }
             "tem" | "has" => match value.to_lowercase().as_str() {
                 "link" => has = Some("link".to_owned()),
-                "anexo" | "arquivo" | "attachment" | "file" => {
-                    contains_attachment = Some(true)
-                }
-                _ => text.push(token),
+                "anexo" | "arquivo" | "attachment" | "file" => contains_attachment = Some(true),
+                _ => text.push(token.as_str()),
             },
-            _ => text.push(token),
+            _ => text.push(token.as_str()),
         }
     }
 
@@ -5006,7 +5150,12 @@ fn search_request_from_panel(
         mention,
         has,
         order: Some(
-            if panel.search_oldest_first { "asc" } else { "desc" }.to_owned(),
+            if panel.search_oldest_first {
+                "asc"
+            } else {
+                "desc"
+            }
+            .to_owned(),
         ),
         date_start: None,
         date_end: None,
@@ -5073,9 +5222,10 @@ fn search_panel(
             let field = ui.add(
                 egui::TextEdit::singleline(&mut query)
                     .id(search_id)
-                    .hint_text(s.search_placeholder)
+                    .hint_text(RichText::new(s.search_placeholder).font(text::body()))
                     .desired_width(field_width)
-                    .font(text::body()),
+                    .font(text::body())
+                    .vertical_align(Align::Center),
             );
             let _ = crate::platform::ime::sync_text_edit(
                 ui.ctx(),
@@ -5283,6 +5433,7 @@ fn search_panel(
                 } else {
                     result.attachments.clone()
                 },
+                store.message(&result.id).map(|message| message.previews.clone()).unwrap_or_default(),
             )
         })
         .collect();
@@ -5303,6 +5454,7 @@ fn search_panel(
                 at,
                 body,
                 attachments,
+                previews,
             ) in found
             {
                 if result_row(
@@ -5319,6 +5471,7 @@ fn search_panel(
                         channel_name: Some(&channel_name),
                         body: &body,
                         attachments: &attachments,
+                        previews: &previews,
                         row_width: result_width,
                     },
                 ) {
@@ -5359,9 +5512,16 @@ fn search_panel(
 /// Fixadas do canal aberto, dentro da mesma pastilha.
 fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &Tokens, s: &Strings) {
     let channel_id = store.selected_channel.clone();
-    let pinned: Vec<_> = store
-        .messages_in(&channel_id)
-        .filter(|message| message.pinned)
+    let mut messages: Vec<_> = store.messages_in(&channel_id)
+        .filter(|message| message.pinned).collect();
+    if let Some(snapshot) = store.pinned_messages.get(&channel_id) {
+        for message in snapshot {
+            if store.message(&message.id).is_none() {
+                messages.push(message);
+            }
+        }
+    }
+    let pinned: Vec<_> = messages.into_iter()
         .map(|message| {
             let body = if !message.content.trim().is_empty() {
                 message.content.clone()
@@ -5383,13 +5543,14 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 message.at,
                 body,
                 message.attachments.clone(),
+                message.previews.clone(),
             )
         })
         .collect();
 
     if pinned.is_empty() {
         ui.label(
-            RichText::new(s.no_pinned)
+            RichText::new(if store.loading_pinned(&channel_id) { s.reaction_loading } else { s.no_pinned })
                 .font(text::footnote())
                 .color(t.label_tertiary),
         );
@@ -5402,7 +5563,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .max_height(pinned_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, author_id, author_name, at, body, attachments) in pinned {
+            for (message_id, author_id, author_name, at, body, attachments, previews) in pinned {
                 if result_row(
                     ui,
                     store,
@@ -5417,6 +5578,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         channel_name: None,
                         body: &body,
                         attachments: &attachments,
+                        previews: &previews,
                         row_width: pinned_width,
                     },
                 ) {
@@ -5435,6 +5597,7 @@ struct ResultPreview<'a> {
     channel_name: Option<&'a str>,
     body: &'a str,
     attachments: &'a [crate::api::models::Attachment],
+    previews: &'a [crate::api::models::LinkPreview],
     /// Largura do painel, medida uma vez fora do ScrollArea. Ler
     /// `available_width()` por linha deixava cada linha herdar o transbordo
     /// da anterior e o cartão crescia além da pastilha.
@@ -5451,6 +5614,20 @@ fn result_row(
     s: &Strings,
     preview: ResultPreview<'_>,
 ) -> bool {
+    ui.push_id(("result-preview", preview.message_id), |ui| {
+        result_row_contents(ui, store, state, t, s, preview)
+    })
+    .inner
+}
+
+fn result_row_contents(
+    ui: &mut egui::Ui,
+    store: &Store,
+    state: &mut UiState,
+    t: &Tokens,
+    s: &Strings,
+    preview: ResultPreview<'_>,
+) -> bool {
     let ResultPreview {
         message_id,
         author_id,
@@ -5459,6 +5636,7 @@ fn result_row(
         channel_name,
         body,
         attachments,
+        previews,
         row_width,
     } = preview;
     let shown_body = store.display_mentions(body);
@@ -5527,7 +5705,7 @@ fn result_row(
                     }
                 });
                 if !shown_body.trim().is_empty()
-                    && direct_media_message_url(state, body, true).is_none()
+                    && direct_media_message_url(state, body, previews, true).is_none()
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
@@ -5560,6 +5738,7 @@ fn result_row(
                     t,
                     message_id,
                     body,
+                    previews,
                     (max_text_width - space::MD).max(80.0),
                 );
             });
@@ -5661,6 +5840,31 @@ fn blink_alpha(state: &mut UiState, message_id: &str, ui: &egui::Ui, row: Rect) 
     Some(phase.sin().abs() as f32)
 }
 
+fn request_message_jump(
+    store: &Store,
+    state: &mut UiState,
+    channel_id: &str,
+    message_id: &str,
+    now: f64,
+) {
+    state.jump = Some(Jump {
+        message_id: message_id.to_owned(),
+        found: None,
+        since: now,
+    });
+    state.navigation_target = Some((channel_id.to_owned(), message_id.to_owned()));
+    if !store
+        .messages_in(channel_id)
+        .any(|message| message.id == message_id)
+    {
+        state.actions.push(ChatAction::LoadMessageContext {
+            channel_id: channel_id.to_owned(),
+            message_id: message_id.to_owned(),
+            at: store.message_timestamp(channel_id, message_id),
+        });
+    }
+}
+
 /// Leva a janela até a mensagem: troca de canal se precisar e marca o alvo
 /// para a lista rolar até ele e piscá-lo.
 fn go_to(
@@ -5673,11 +5877,15 @@ fn go_to(
     if !channel_id.is_empty() && store.selected_channel != channel_id {
         store.selected_channel = channel_id.to_owned();
     }
-    state.jump = Some(Jump {
-        message_id: message_id.to_owned(),
-        found: None,
-        since: ui.input(|input| input.time),
-    });
+    request_message_jump(
+        store,
+        state,
+        channel_id,
+        message_id,
+        ui.input(|input| input.time),
+    );
+    state.panel = None;
+    store.reset_search();
 }
 
 // ---------------------------------------------------------------------------
@@ -5702,8 +5910,8 @@ fn message_display_name<'a>(message: &'a Message, store: &'a Store) -> &'a str {
 /// Network loading window around the actual readable chat viewport. We bias
 /// strongly upward because history is consumed by scrolling toward older
 /// messages; below the viewport only a small runway is useful.
-const CHAT_LOAD_ABOVE: f32 = 1200.0;
-const CHAT_LOAD_BELOW: f32 = 320.0;
+const CHAT_LOAD_ABOVE: f32 = super::attachments::VIEWPORT_MARGIN_ABOVE;
+const CHAT_LOAD_BELOW: f32 = super::attachments::VIEWPORT_MARGIN_BELOW;
 
 /// Resumo do que decide a altura de uma linha da conversa. Se mudar, a
 /// altura guardada vale nada e a linha é montada de novo.
@@ -5873,10 +6081,11 @@ fn sync_unread_marker(
         {
             state.unread_marker = Some((channel_id.to_owned(), first_id));
         }
-    } else if !focused && has_unread {
-        if let Some(first_id) = first_unread_after_baseline(store, state, channel_id) {
-            state.unread_marker = Some((channel_id.to_owned(), first_id));
-        }
+    } else if !focused
+        && has_unread
+        && let Some(first_id) = first_unread_after_baseline(store, state, channel_id)
+    {
+        state.unread_marker = Some((channel_id.to_owned(), first_id));
     }
 
     state.unread_marker.as_ref().map(|(_, id)| id.clone())
@@ -5894,6 +6103,7 @@ fn message_list(
     let channel_id = store.selected_channel.clone();
     let channel_open_pass = state.open_channel_pending.as_deref() == Some(channel_id.as_str());
     let opening_pass = channel_open_pass
+        || state.open_jump_pending.as_deref() == Some(channel_id.as_str())
         || state.scroll_latest_pending.as_deref() == Some(channel_id.as_str());
     let mut messages = store.messages_in(&channel_id);
     let Some(first_message) = messages.next() else {
@@ -5938,16 +6148,23 @@ fn message_list(
     // Montar toda linha carregada a cada quadro custa O(mensagens): com umas
     // centenas, a rolagem trava. Linha longe da tela, cuja altura já se
     // conhece, só reserva o espaço.
-    let mut culled_now = std::collections::HashSet::new();
+    let list_origin = ui.cursor().top();
+    let previous_anchor = state.chat_anchor.as_ref()
+        .filter(|anchor| anchor.channel_id == channel_id).cloned();
+    let mut next_anchor = None;
+    state.anchor_drift = 0.0;
     let cull_margin = CHAT_LOAD_ABOVE.max(CHAT_LOAD_BELOW).max(readable.height());
     let can_cull = readable.width() > 0.0
         && readable.height() > 0.0
-        && state.jump.is_none()
         && state.reply_drag.is_none();
 
     for message in std::iter::once(first_message).chain(messages) {
         let author_key = message_group_key(message);
         let y_start = ui.cursor().top();
+        let content_y = y_start - list_origin;
+        if let Some(anchor) = previous_anchor.as_ref().filter(|anchor| anchor.message_id == message.id) {
+            state.anchor_drift = content_y - anchor.content_y;
+        }
         let day = message.at.day();
         let new_day = last_day != Some(day);
         let hourglass_start = hourglass_range
@@ -5974,6 +6191,8 @@ fn message_list(
             ui.pixels_per_point(),
         );
         if can_cull
+            && state.jump.as_ref().is_none_or(|jump| jump.message_id != message.id)
+            && previous_anchor.as_ref().is_none_or(|anchor| anchor.message_id != message.id)
             && !message.pending
             && focused_message.as_deref() != Some(message.id.as_str())
             && state.editing.as_ref().is_none_or(|(id, _)| id != &message.id)
@@ -5986,7 +6205,6 @@ fn message_list(
                 Vec2::new(width, (height - ui.spacing().item_spacing.y).max(0.0)),
                 Sense::hover(),
             );
-            culled_now.insert(message.id.clone());
             last_day = Some(day);
             last_author = (!hourglass_end).then(|| author_key.clone());
             last_at = Some(message.at);
@@ -6059,7 +6277,9 @@ fn message_list(
         // de um áudio ou numa imagem não fazia nada além de acender a
         // linha. Como o escopo entra antes do conteúdo, o conteúdo ganha, e
         // a linha só recebe o toque que sobra.
-        let mut builder = UiBuilder::new().sense(Sense::click());
+        let mut builder = UiBuilder::new()
+            .id_salt(("message-row", &message.id))
+            .sense(Sense::click());
         if let Some(layer) = sliding {
             builder = builder.layer_id(layer);
         }
@@ -6119,6 +6339,9 @@ fn message_list(
                     ui.add_space(space::LG);
                 }
                 ui.vertical(|ui| {
+                    // Message text must not inherit the 36-point control height.
+                    ui.spacing_mut().interact_size.y = 0.0;
+                    ui.spacing_mut().item_spacing.y = space::XXS;
                     // `horizontal_top` soma o espaçamento entre itens depois
                     // da foto, então a coluna começa mais à direita do que
                     // `text_indent` supõe. Medir pelo ponto onde ela de fato
@@ -6209,6 +6432,11 @@ fn message_list(
 
         let row = Rect::from_x_y_ranges(rows, inner.response.rect.y_range());
         let visible_height = row.intersect(readable).height().max(0.0);
+        if !opening_pass && next_anchor.is_none() && visible_height > 0.0 {
+            next_anchor = Some(ChatAnchor {
+                channel_id: channel_id.clone(), message_id: message.id.clone(), content_y,
+            });
+        }
         let seen_threshold = (row.height() * 0.55).min(32.0);
         if !message.pending && visible_height >= seen_threshold {
             // Durante um salto as linhas passam voando; só contam depois que
@@ -6326,6 +6554,7 @@ fn message_list(
 
             let secondary = !state.compact
                 && focused_message.is_none()
+                && !egui::Popup::is_any_open(ui.ctx())
                 && ui.input(|input| input.pointer.secondary_clicked());
             if secondary {
                 let at = ui.ctx().pointer_latest_pos().unwrap_or(row.center());
@@ -6347,19 +6576,9 @@ fn message_list(
         }
         last_at = Some(message.at);
         let height = ui.cursor().top() - y_start;
-        // Uma linha acima da tela que vinha sendo pulada e agora tem outra
-        // altura (mídia ou prévia que só aparece quando ela entra no alcance
-        // de carga) empurraria o que se lê. O desvio é devolvido ao scroll.
-        if state.culled_rows.contains(&message.id)
-            && let Some(&(_, before)) = state.row_heights.get(&message.id)
-            && (height - before).abs() > 0.5
-            && ui.cursor().top() <= readable.min.y
-        {
-            state.row_drift += height - before;
-        }
         state.row_heights.insert(message.id.clone(), (signature, height));
     }
-    state.culled_rows = culled_now;
+    state.chat_anchor = next_anchor;
 
     let timeline_fresh = store.connection != crate::api::ws::Connection::Online
         || store.timeline_status(&channel_id) == crate::state::TimelineStatus::Fresh;
@@ -6406,7 +6625,12 @@ fn reply_quote(
             if target.content.is_empty() && !target.attachments.is_empty() {
                 (format!("{} {}", icon::PAPERCLIP, target.attachments[0].name()), Vec::new())
             } else {
-                let (display, bindings) = store.display_mentions_with_bindings(&target.content);
+                // Quotes occupy one line. Preserve character positions for
+                // mentions while flattening line breaks before measuring text.
+                let single_line: String = target.content.chars()
+                    .map(|ch| if matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}') { ' ' } else { ch })
+                    .collect();
+                let (display, bindings) = store.display_mentions_with_bindings(&single_line);
                 (emoji::elide_preview(&display, &store.emojis, 80), bindings)
             },
         ),
@@ -6416,20 +6640,15 @@ fn reply_quote(
 
     // A citação leva à original, como um resultado de busca ou uma fixada.
     // Ela some do banco quando a original é apagada; aí não há aonde ir.
-    let exists = store.message(reply_to).is_some();
-    let sense = if exists { Sense::click() } else { Sense::hover() };
+    let sense = Sense::click();
     let preview_font = text::footnote();
     let preview_size = 14.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), sense);
-    if exists && state.panel.is_none() && response.hovered() {
+    if state.panel.is_none() && response.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if exists && state.panel.is_none() && response.clicked() {
-        state.jump = Some(Jump {
-            message_id: reply_to.to_owned(),
-            found: None,
-            since: ui.input(|input| input.time),
-        });
+    if state.panel.is_none() && response.clicked() {
+        request_message_jump(store, state, &store.selected_channel, reply_to, ui.input(|input| input.time));
     }
     let painter = ui.painter();
     painter.text(
@@ -6700,14 +6919,10 @@ fn message_body(
     if !message.content.is_empty() {
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
             gif::message(ui, state, t, s, &slug, width, allow_network);
-        } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
+        } else if direct_media_message_url(state, &message.content, &message.previews, allow_network).is_none() {
             let (shown_content, bindings) =
                 store.display_mentions_with_bindings(&message.content);
-            let color = if message.pending {
-                t.label_secondary
-            } else {
-                t.label
-            };
+            let color = t.label;
             let tokens = emoji::tokenize(&shown_content, &store.emojis);
             // Texto sem sintaxe de markdown, sem menção e a mensagem só de
             // emoji seguem o caminho simples: nada para interpretar, e o
@@ -6766,33 +6981,26 @@ fn message_body(
     }
 
     if message.pending {
+        if let Some(crate::api::net::Command::SendMessage { attachments, .. }) =
+            state.pending_uploads.get(&message.id)
+        {
+            composer_attachments::pending(ui, t, s, &mut state.media, attachments, width);
+        }
         let outgoing_state = store.outgoing_state(&message.id);
-        let (label, color) = match outgoing_state {
-            Some(papo_core::cache::OutgoingState::Queued) => {
-                (s.outgoing_waiting, t.label_tertiary)
-            }
-            Some(papo_core::cache::OutgoingState::Sending) => {
-                (s.outgoing_sending, t.label_tertiary)
-            }
+        let failure = match outgoing_state {
             Some(papo_core::cache::OutgoingState::UnknownOutcome) => {
-                (s.outgoing_uncertain, t.away)
+                Some((s.outgoing_uncertain, t.away))
             }
             Some(papo_core::cache::OutgoingState::FailedPermanent) => {
-                (s.outgoing_failed, t.danger)
+                Some((s.outgoing_failed, t.danger))
             }
-            None => (s.outgoing_waiting, t.label_tertiary),
+            _ => None,
         };
-        ui.add_space(space::XXS);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = space::SM;
-            ui.label(RichText::new(label).font(text::footnote()).color(color));
-            if matches!(
-                outgoing_state,
-                Some(
-                    papo_core::cache::OutgoingState::UnknownOutcome
-                        | papo_core::cache::OutgoingState::FailedPermanent
-                )
-            ) {
+        if let Some((label, color)) = failure {
+            ui.add_space(space::XXS);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                ui.label(RichText::new(label).font(text::footnote()).color(color));
                 if ui
                     .small_button(RichText::new(s.outgoing_retry_anyway).font(text::footnote()))
                     .clicked()
@@ -6809,8 +7017,8 @@ fn message_body(
                         .actions
                         .push(ChatAction::DismissOutgoing(message.id.clone()));
                 }
-            }
-        });
+            });
+        }
     }
 
     if !message.attachments.is_empty()
@@ -6833,6 +7041,7 @@ fn message_body(
                 MediaAction::Download { id, name } => {
                     state.actions.push(ChatAction::Download { id, name })
                 }
+                MediaAction::Link { id, open } => media_link(ui, state, &id, open),
                 MediaAction::Reveal(id) => state.media.reveal(&id),
             }
     }
@@ -6946,9 +7155,21 @@ fn obvious_direct_media_url(url: &str) -> bool {
 fn direct_media_message_url(
     state: &UiState,
     content: &str,
+    previews: &[crate::api::models::LinkPreview],
     allow_network: bool,
 ) -> Option<String> {
     let url = single_message_url(content)?;
+    let has_backend = backend_preview_urls(content, previews).contains(&url);
+    if has_backend {
+        let has_media = previews.iter().any(embed_has_media);
+        let animation = previews.iter().any(|embed| animation_embed(&url, Some(embed)));
+        if has_media && (obvious_direct_media_url(&url) || animation) {
+            return Some(url);
+        }
+        if state.prefer_backend_embeds {
+            return None;
+        }
+    }
     if obvious_direct_media_url(&url) {
         return Some(url);
     }
@@ -7086,10 +7307,8 @@ fn rich_body(
 }
 
 
-/// Um único cartão serve tanto para o LinkPreview que veio do backend quanto
-/// para uma URL encontrada diretamente no texto. A descoberta rica é sempre
-/// client-side e capability-driven; metadados do backend entram apenas como
-/// fallback imediato enquanto o coordenador resolve/atualiza a URL.
+/// Backend cards respect the embed preference. The separate client-side
+/// pass handles links without a corresponding backend card.
 fn link_previews(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -7239,6 +7458,11 @@ fn custom_embed_card(
     width: f32,
     allow_network: bool,
 ) {
+    if animation_embed(source_url, Some(embed)) && embed_has_media(embed) {
+        preview_card(ui, state, t, &embed.id, card_id, source_url, Some(embed), width,
+            PreviewPolicy { webembed: true, network: allow_network });
+        return;
+    }
     let author = embed
         .author
         .as_ref()
@@ -7280,7 +7504,7 @@ fn custom_embed_card(
         };
         texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
     });
-    let resolved = if source_url.is_empty() { None } else {
+    let resolved = if source_url.is_empty() || state.prefer_backend_embeds { None } else {
         state.previews.as_ref().and_then(|coordinator| {
             if allow_network { coordinator.get_or_request(source_url) }
             else { coordinator.peek(source_url) }
@@ -7291,13 +7515,13 @@ fn custom_embed_card(
         _ => None,
     };
     let (backend_video, video_url, embed_url) =
-        choose_embed_media(source_url, Some(embed), ready.as_ref());
-    let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
+        choose_embed_media(source_url, Some(embed), ready.as_ref(), state.prefer_backend_embeds);
+    let image_url = ready.as_ref().and_then(|preview| preview.content_image_url().map(str::to_owned));
     let remote_image = image_url.as_deref().and_then(|raw| {
         if allow_network { state.media.remote_image(card_id, raw) }
         else { state.media.loaded_remote_image(raw) }
     }).and_then(|texture| texture.frame(ui.ctx())).cloned();
-    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() {
+    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() || embed.image_data.is_some() {
         let texture = if allow_network {
             state.media.preview(embed)
         } else {
@@ -7425,17 +7649,31 @@ fn custom_embed_card(
     ui.add_space(space::XS);
 }
 
-/// A backend video is a direct, authenticated media stream only if its
-/// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
-/// expose an HTML iframe in `video.url` with no video MIME type: do not
-/// send those HTML pages to the GStreamer MP4 player/relay.
-/// Klipy's /gifs pages publish silent MP4 renditions via og:video. MP4 is
-/// a transport format, not proof of user-facing video semantics. These pages
-/// are looping animations, unlike ordinary X status videos.
+/// Compatibility for older provider embeds without GIF metadata. New embeds
+/// declare their animation semantics through fetch_method or the media MIME.
 fn gif_style_embed(source: &str) -> bool {
     let Ok(url) = url::Url::parse(source) else { return false };
-    matches!(url.host_str(), Some("klipy.com" | "www.klipy.com"))
-        && url.path().starts_with("/gifs/")
+    if url.scheme() != "https" { return false; }
+    let host = url.host_str().unwrap_or_default();
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    match host {
+        "klipy.com" => url.path().starts_with("/gifs/"),
+        "giphy.com" => url.path().starts_with("/gifs/") || url.path().starts_with("/stickers/"),
+        "tenor.com" => url.path().starts_with("/view/"),
+        _ => url.path().to_ascii_lowercase().ends_with(".gif"),
+    }
+}
+
+fn animation_embed(source: &str, backend: Option<&crate::api::models::LinkPreview>) -> bool {
+    backend.is_some_and(|embed| embed.fetch_method.as_deref() == Some("gif")
+        || [embed.image.as_ref(), embed.thumbnail.as_ref()].into_iter().flatten()
+            .any(|media| media.mime_type.as_deref().is_some_and(|mime| mime.eq_ignore_ascii_case("image/gif"))))
+        || gif_style_embed(source)
+}
+
+fn embed_has_media(embed: &crate::api::models::LinkPreview) -> bool {
+    embed.image.is_some() || embed.thumbnail.is_some() || embed.image_data.is_some()
+        || embed.video.is_some() || embed.embed_url.is_some()
 }
 
 fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
@@ -7445,6 +7683,8 @@ fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
     Some((width / height).clamp(0.25, 4.0))
 }
 
+/// Only declared video MIME types go through the authenticated media relay;
+/// an HTML player URL must use the web-embed path instead.
 fn backend_has_playable_video(embed: &crate::api::models::LinkPreview) -> bool {
     !embed.id.is_empty()
         && embed.video.as_ref().is_some_and(|media| {
@@ -7524,9 +7764,25 @@ fn render_embed_media(
             .existing_player(&player_id)
             .is_some_and(|player| player.is_playing());
 
+    let expects_image = image.is_some() || image_url.is_some()
+        || backend.is_some_and(|embed| embed.image_data.is_some()
+            || embed.image.is_some() || embed.thumbnail.is_some());
+    if let Some(texture) = image {
+        state.embed_image_sizes.insert(embed_id.to_owned(), texture.size_vec2());
+    } else if !expects_image {
+        state.embed_image_sizes.remove(embed_id);
+    } else if !state.embed_image_sizes.contains_key(embed_id)
+        && let Some(size) = backend.and_then(|embed| embed.image.as_ref().or(embed.thumbnail.as_ref()))
+            .and_then(|media| Some(Vec2::new(media.width? as f32, media.height? as f32)))
+            .filter(|size| size.x > 0.0 && size.y > 0.0)
+    {
+        state.embed_image_sizes.insert(embed_id.to_owned(), size);
+    }
+
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
-    if gif_style_embed(url) && (backend_video.is_some() || video_url.is_some()) {
+    let animation = animation_embed(url, backend);
+    if animation && (backend_video.is_some() || video_url.is_some()) {
         let source = if let Some(embed) = backend_video {
             crate::media::PlaySource::EmbedVideo(&embed.id)
         } else {
@@ -7571,13 +7827,11 @@ fn render_embed_media(
         ui.add_space(space::SM);
     } else if let Some(texture) = image {
         let source = texture.size_vec2();
-        let scale = (card_width / source.x)
-            .min(IMAGE_MAX_H / source.y)
-            .min(1.0);
-        let size = Vec2::new(
-            (source.x * scale).max(1.0),
-            (source.y * scale).max(1.0),
-        );
+        let size = if animation {
+            animation_image_size(source, card_width, IMAGE_MAX_H)
+        } else {
+            embed_image_size(source, card_width, IMAGE_MAX_H)
+        };
         let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
         media_rect = Some(image_rect);
         ui.painter().image(
@@ -7697,23 +7951,48 @@ fn render_embed_media(
             media_clicked = true;
         }
         ui.add_space(space::SM);
+    } else if expects_image && let Some(source) = state.embed_image_sizes.get(embed_id) {
+        // A GPU cache miss does not change the post's media dimensions. Only
+        // reserve previously observed media, never invent a cover for a text post.
+        let size = if animation {
+            animation_image_size(*source, card_width, IMAGE_MAX_H)
+        } else {
+            embed_image_size(*source, card_width, IMAGE_MAX_H)
+        };
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        media_rect = Some(rect);
+        ui.painter().rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
+        ui.add_space(space::SM);
     }
 
     (media_clicked, media_rect)
 }
 
-/// Backend metadata is authoritative when it has a real player or playable
-/// video; local preview resolution fills omissions without overriding it.
+fn embed_image_size(source: Vec2, width: f32, max_height: f32) -> Vec2 {
+    let scale = (width / source.x).min(max_height / source.y).min(1.0);
+    Vec2::new((source.x * scale).max(1.0), (source.y * scale).max(1.0))
+}
+
+fn animation_image_size(source: Vec2, width: f32, max_height: f32) -> Vec2 {
+    let scale = (width / source.x).min(max_height / source.y);
+    Vec2::new((source.x * scale).max(1.0), (source.y * scale).max(1.0))
+}
+
+/// When preferred, backend metadata also owns the absence of media. Local
+/// resolution can enrich it only when the user disables that preference.
 fn choose_embed_media<'a>(
     source_url: &str,
     backend: Option<&'a crate::api::models::LinkPreview>,
     ready: Option<&papo_core::preview::ResolvedPreview>,
+    prefer_backend: bool,
 ) -> (Option<&'a crate::api::models::LinkPreview>, Option<String>, Option<String>) {
     use papo_core::preview::PreviewKind;
+    let authoritative = prefer_backend && backend.is_some();
+    let ready = if authoritative { None } else { ready };
     let iframe = backend
         .and_then(|embed| embed.embed_url.clone().or_else(|| backend_iframe_video_url(embed)))
         .or_else(|| ready.and_then(|preview| preview.embed_url.clone()))
-        .or_else(|| youtube_player_url(source_url))
+        .or_else(|| (!authoritative).then(|| youtube_player_url(source_url)).flatten())
         .filter(|url| papo_core::preview::safe_remote_url(url));
 
     let mut backend_video = backend.filter(|embed| backend_has_playable_video(embed));
@@ -7737,10 +8016,11 @@ fn choose_embed_media<'a>(
             });
     }
     let mut iframe = iframe;
-    if youtube_player_url(source_url).is_some() || (iframe.is_some() && !gif_style_embed(source_url)) {
+    let animation = animation_embed(source_url, backend);
+    if (!authoritative && youtube_player_url(source_url).is_some()) || (iframe.is_some() && !animation) {
         backend_video = None;
         direct = None;
-    } else if gif_style_embed(source_url) && (backend_video.is_some() || direct.is_some()) {
+    } else if animation && (backend_video.is_some() || direct.is_some()) {
         iframe = None;
     }
     (backend_video, direct, iframe)
@@ -7813,6 +8093,18 @@ fn rich_links_from_message(
     }
 }
 
+fn media_link(ui: &egui::Ui, state: &mut UiState, id: &str, open: bool) {
+    let link = format!(
+        "{}/attachments/{id}",
+        state.server_url.trim_end_matches('/')
+    );
+    if open {
+        state.request_external_url(ui.ctx(), link);
+    } else {
+        ui.ctx().copy_text(link);
+    }
+}
+
 fn panel_attachments(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -7847,6 +8139,7 @@ fn panel_attachments(
             MediaAction::Download { id, name } => {
                 state.actions.push(ChatAction::Download { id, name });
             }
+            MediaAction::Link { id, open } => media_link(ui, state, &id, open),
             MediaAction::Reveal(id) => state.media.reveal(&id),
         }
     }
@@ -7858,13 +8151,25 @@ fn panel_rich_links(
     t: &Tokens,
     message_id: &str,
     content: &str,
+    previews: &[crate::api::models::LinkPreview],
     width: f32,
 ) {
     use std::hash::{Hash, Hasher};
 
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews.iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom")).count();
+    for preview in previews {
+        let url = backend_preview_render_url(preview, &content_urls, automatic_count);
+        let embed_id = format!("embed:panel:{message_id}:backend:{}", preview.id);
+        preview_card(ui, state, t, &preview.id, &embed_id, &url, Some(preview), width,
+            PreviewPolicy { webembed: false, network: true });
+    }
+    let backend_urls = backend_preview_urls(content, previews);
+
     let mut seen = std::collections::HashSet::new();
     for url in papo_core::preview::extract_https_urls(content) {
-        if !seen.insert(url.clone()) {
+        if backend_urls.contains(&url) || !seen.insert(url.clone()) {
             continue;
         }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -7913,7 +8218,7 @@ fn preview_card(
     const MAX_W: f32 = 420.0;
 
     // Sem URL, o embed customizado já é a fonte completa de metadados.
-    let resolved = if url.is_empty() {
+    let resolved = if url.is_empty() || (state.prefer_backend_embeds && backend.is_some()) {
         None
     } else {
         state.previews.as_ref().and_then(|coordinator| {
@@ -7929,6 +8234,7 @@ fn preview_card(
         _ => None,
     };
     let backend_image = backend
+        .filter(|preview| preview.image_data.is_some() || preview.image.is_some() || preview.thumbnail.is_some())
         .and_then(|preview| {
             if policy.network {
                 state.media.preview(preview)
@@ -7939,7 +8245,7 @@ fn preview_card(
         .and_then(|texture| texture.frame(ui.ctx()))
         .cloned();
 
-    let image_url = ready.as_ref().and_then(|preview| preview.image_url.clone());
+    let image_url = ready.as_ref().and_then(|preview| preview.content_image_url().map(str::to_owned));
     let remote_image = image_url
         .as_deref()
         .and_then(|remote| {
@@ -7960,7 +8266,23 @@ fn preview_card(
     // Previously a frontend media_url could shadow a valid YouTube iframe,
     // leaving a broken native video card instead of a WebView.
     let (backend_video, video_url, embed_url) =
-        choose_embed_media(url, backend, ready.as_ref());
+        choose_embed_media(url, backend, ready.as_ref(), state.prefer_backend_embeds);
+
+    // A provider GIF is the message's media, not a miniature cover for a
+    // titled link card. Keep backend media authority while changing only its
+    // presentation; missing animation bytes still require a server refresh.
+    if animation_embed(url, backend)
+        && (backend.is_some_and(embed_has_media) || image.is_some()
+            || video_url.is_some() || embed_url.is_some())
+    {
+        ui.add_space(space::SM);
+        let _ = render_embed_media(ui, state, t, EmbedMediaView {
+            id, embed_id, url, backend, image, remote_image: remote_image.as_ref(),
+            image_url, title: backend.and_then(|embed| embed.title.as_deref()),
+            video_url, embed_url, backend_video, card_width: width.min(MAX_W), policy,
+        });
+        return;
+    }
 
     let post = ready
         .as_ref()
@@ -7991,22 +8313,6 @@ fn preview_card(
                 .ok()
                 .and_then(|parsed| parsed.host_str().map(str::to_owned))
         });
-
-    // O cartão pode crescer em duas etapas: primeiro chegam os metadados
-    // (título/embed/media URL), depois a imagem realmente materializa.
-    let phase = if image.is_some() {
-        2
-    } else if ready.is_some() || backend.is_some() || video_url.is_some() || embed_url.is_some() {
-        1
-    } else {
-        0
-    };
-    let previous_phase = state.preview_layout_phase.insert(embed_id.to_owned(), phase);
-    if previous_phase.is_some_and(|previous| phase > previous)
-        && ui.cursor().min.y < ui.clip_rect().min.y
-    {
-        preserve_chat_position_for_relayout(state, ui.ctx());
-    }
 
     ui.add_space(space::SM);
     // O cartão se expande `MD` para cada lado ao desenhar a moldura; a borda
@@ -8137,7 +8443,7 @@ fn preview_card(
     // Keyed by card occurrence, not by preview id: one preview can back
     // several messages, and a sliding row moves to another layer, which made
     // egui see the same id in two layers in one frame (debug assert).
-    let hover = ui.interact(rect, Id::new(("link-preview-hover", embed_id)), Sense::hover());
+    let hover = ui.interact(rect, ui.id().with(("link-preview-hover", embed_id)), Sense::hover());
     let fill = if hover.hovered() {
         t.fill_medium
     } else {
@@ -8674,6 +8980,7 @@ fn reaction_chip(
         .layout_no_wrap(count.clone(), text::caption(), t.label);
     let size = Vec2::new(glyph + galley.size().x + space::LG + space::XS, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    state.reaction_zones.push(rect);
 
     let (fill, stroke, label) = if reaction.mine {
         (t.accent.gamma_multiply(0.20), t.accent, t.label)
@@ -8704,67 +9011,82 @@ fn reaction_chip(
         label,
     );
 
+    response.clone().on_hover_ui(|ui| {
+        reaction_people(ui, s, store, state, message_id, channel_id, reaction);
+    });
     response.context_menu(|ui| {
-        ui.set_min_width(220.0);
-        ui.label(RichText::new(s.reaction_people).font(text::headline()));
-
-        let groups = store.reaction_details.get(message_id);
-        let group = groups.and_then(|groups| {
-            groups.iter().find(|group| match &reaction.emoji {
-                Emoji::Unicode(value) => group.unicode.as_deref() == Some(value.as_str()),
-                Emoji::Custom(id) => group.emoji_id.as_deref() == Some(id.as_str()),
-            })
-        });
-
-        let loading = store.reaction_details_loading.contains(message_id);
-        if groups.is_none() && !loading {
-            state.actions.push(ChatAction::LoadReactionDetails {
-                channel_id: channel_id.to_owned(),
-                message_id: message_id.to_owned(),
-                cursor: None,
-                append: false,
-            });
-        }
-
-        if let Some(group) = group {
-            if group.users.is_empty() && loading {
-                ui.label(s.reaction_loading);
-            } else {
-                for user in &group.users {
-                    let name = store
-                        .member(&user.user_id)
-                        .map(|member| member.name.as_str())
-                        .unwrap_or(user.user_id.as_str());
-                    ui.label(name);
-                }
-            }
-        } else if loading || groups.is_none() {
-            ui.label(s.reaction_loading);
-        }
-
-        if store
-            .reaction_details_has_more
-            .get(message_id)
-            .copied()
-            .unwrap_or(false)
-        {
-            ui.separator();
-            if ui
-                .add_enabled(!loading, egui::Button::new(s.reaction_more))
-                .clicked()
-                && let Some(cursor) = store.reaction_details_cursor(message_id)
-            {
-                state.actions.push(ChatAction::LoadReactionDetails {
-                    channel_id: channel_id.to_owned(),
-                    message_id: message_id.to_owned(),
-                    cursor: Some(cursor),
-                    append: true,
-                });
-            }
-        }
+        reaction_people(ui, s, store, state, message_id, channel_id, reaction);
     });
 
     response.clicked()
+}
+
+fn reaction_people(
+    ui: &mut egui::Ui,
+    s: &Strings,
+    store: &Store,
+    state: &mut UiState,
+    message_id: &str,
+    channel_id: &str,
+    reaction: &crate::state::Reaction,
+) {
+    ui.set_min_width(220.0);
+    ui.label(RichText::new(s.reaction_people).font(text::headline()));
+
+    let groups = store.reaction_details.get(message_id);
+    let group = groups.and_then(|groups| {
+        groups.iter().find(|group| match &reaction.emoji {
+            Emoji::Unicode(value) => group.unicode.as_deref() == Some(value.as_str()),
+            Emoji::Custom(id) => group.emoji_id.as_deref() == Some(id.as_str()),
+        })
+    });
+
+    let loading = store.reaction_details_loading.contains(message_id);
+    if groups.is_none() && !loading {
+        state.actions.push(ChatAction::LoadReactionDetails {
+            channel_id: channel_id.to_owned(),
+            message_id: message_id.to_owned(),
+            cursor: None,
+            append: false,
+        });
+    }
+
+    if let Some(group) = group {
+        if group.users.is_empty() && loading {
+            ui.label(s.reaction_loading);
+        } else {
+            for user in &group.users {
+                let name = store
+                    .member(&user.user_id)
+                    .map(|member| member.name.as_str())
+                    .unwrap_or(user.user_id.as_str());
+                ui.label(name);
+            }
+        }
+    } else if loading || groups.is_none() {
+        ui.label(s.reaction_loading);
+    }
+
+    if store
+        .reaction_details_has_more
+        .get(message_id)
+        .copied()
+        .unwrap_or(false)
+    {
+        ui.separator();
+        if ui
+            .add_enabled(!loading, egui::Button::new(s.reaction_more))
+            .clicked()
+            && let Some(cursor) = store.reaction_details_cursor(message_id)
+        {
+            state.actions.push(ChatAction::LoadReactionDetails {
+                channel_id: channel_id.to_owned(),
+                message_id: message_id.to_owned(),
+                cursor: Some(cursor),
+                append: true,
+            });
+        }
+    }
 }
 
 fn hover_pill_rect(message: &Message, row: Rect, store: &Store) -> Option<Rect> {
@@ -8984,7 +9306,8 @@ fn modal_layer_wanted(state: &UiState) -> bool {
 /// diálogo de link). Nesses casos as views nativas do Android, que ficam
 /// acima de tudo o que o egui desenha, não podem receber o toque.
 fn blocking_modal_open(state: &UiState) -> bool {
-    state.external_link_prompt.is_some()
+    state.attachment_editor.is_some()
+        || state.external_link_prompt.is_some()
         || state.viewer.is_some()
         || state.link_viewer.is_some()
         || state.profile.is_some()
@@ -9207,6 +9530,7 @@ fn emoji_popup(
                 }
                 state.composer.push_str(&insert);
                 state.composer.push(' ');
+                state.composer_caret_pending = Some(state.composer.chars().count());
             }
             state.close_popup();
             return;
@@ -9251,7 +9575,7 @@ fn context_menu(
     // Mensagem que é só uma mídia (link direto ou GIF): copiar é copiar o
     // link. Qualquer outra com link ganha "Copiar link" além de "Copiar
     // texto", e ele leva só o endereço.
-    let media_link = direct_media_message_url(state, &message.content, true).or_else(|| {
+    let media_link = direct_media_message_url(state, &message.content, &message.previews, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
@@ -9825,6 +10149,13 @@ const WHEEL_NOTCH_PX: f32 = 96.0;
 /// caminho em ~0,25 s, sem uma cauda longa se arrastando.
 const WHEEL_SPRING: f32 = 26.0;
 
+#[derive(Clone)]
+struct ChatAnchor {
+    channel_id: String,
+    message_id: String,
+    content_y: f32,
+}
+
 /// Estado do deslizamento da roda do mouse sobre a conversa.
 #[derive(Default)]
 struct WheelGlide {
@@ -9832,8 +10163,6 @@ struct WheelGlide {
     remaining: f32,
     /// Velocidade com que esse resto está diminuindo (px/s).
     velocity: f32,
-    /// O que o quadro rolou, para repetir se o egui refizer o quadro.
-    last_step: f32,
 }
 
 impl WheelGlide {
@@ -9880,15 +10209,12 @@ fn glide_step(glide: &mut WheelGlide, requested: f32, dt: f32) -> f32 {
 /// suave. Trackpad (pixels) continua com o tratamento do egui, que já vem
 /// suavizado pelo sistema.
 fn glide_wheel(ui: &egui::Ui, glide: &mut WheelGlide, area: Rect, enabled: bool) {
-    // Quadro refeito (`request_discard`): o mesmo passo, não outro.
+    // The first pass already committed wheel movement to ScrollArea's state.
+    // Replaying it after a layout discard applies the same input twice.
     if ui.ctx().current_pass_index() > 0 {
-        let step = glide.last_step;
-        if step != 0.0 {
-            ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
-        }
+        ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = 0.0);
         return;
     }
-    glide.last_step = 0.0;
     let hovering = enabled
         && ui.input(|input| input.pointer.hover_pos()).is_some_and(|position| {
             area.contains(position)
@@ -9922,7 +10248,6 @@ fn glide_wheel(ui: &egui::Ui, glide: &mut WheelGlide, area: Rect, enabled: bool)
         return;
     }
     let step = glide_step(glide, requested, dt);
-    glide.last_step = step;
     ui.ctx().input_mut(|input| input.smooth_scroll_delta.y = step);
     ui.ctx().request_repaint();
 }
@@ -9946,7 +10271,15 @@ fn composer_max_rows(area: Rect, row_h: f32) -> usize {
     (fit.max(3.0) as usize).min(COMPOSER_MAX_ROWS)
 }
 
-fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
+fn composer_base_font() -> egui::FontId {
+    if cfg!(target_os = "android") {
+        text::message()
+    } else {
+        text::body()
+    }
+}
+
+fn composer_height(ui: &egui::Ui, store: &Store, state: &mut UiState, area: Rect) -> f32 {
     #[cfg(not(target_os = "android"))]
     let recording = state.recorder.is_some();
     #[cfg(target_os = "android")]
@@ -9956,12 +10289,16 @@ fn composer_height(ui: &egui::Ui, state: &UiState, area: Rect) -> f32 {
     let text_width = composer_text_width(area, with_record);
 
     // Tamanho A numa linha, B quando quebra: a altura segue o tamanho em uso.
-    let font = adaptive_font(ui, &text::message(), &state.composer, text_width);
-    let rows = if state.composer.is_empty() {
+    let shown = state
+        .composer_stickers
+        .encode(&state.composer, &store.emojis);
+    let font = adaptive_font(ui, &composer_base_font(), &shown, text_width);
+    let rows = if shown.is_empty() {
         1
     } else {
-        ui.painter()
-            .layout(state.composer.clone(), font.clone(), Color32::WHITE, text_width)
+        state
+            .composer_stickers
+            .layout(ui, &shown, font.clone(), Color32::WHITE, text_width)
             .rows
             .len()
             .max(1)
@@ -10177,9 +10514,11 @@ fn custom_embed_form_field(
         let _ = t;
         let _ = key;
         if multiline {
-            ui.add(egui::TextEdit::multiline(value).desired_rows(3));
+            ui.add(egui::TextEdit::multiline(value).font(text::body()).desired_rows(3));
         } else {
-            ui.text_edit_singleline(value);
+            ui.add(egui::TextEdit::singleline(value)
+                .font(text::body())
+                .vertical_align(Align::Center));
         }
     }
 }
@@ -10499,12 +10838,8 @@ fn composer(
             text::footnote(),
             if jump.hovered() { t.label } else { t.label_secondary },
         );
-        if jump.clicked() && store.message(&reply_to).is_some() {
-            state.jump = Some(Jump {
-                message_id: reply_to.clone(),
-                found: None,
-                since: ui.input(|input| input.time),
-            });
+        if jump.clicked() {
+            request_message_jump(store, state, &store.selected_channel, &reply_to, ui.input(|input| input.time));
         }
 
         let notify_response = ui
@@ -10573,8 +10908,13 @@ fn composer(
                 composer_attachments::TileAction::Anonymize => {
                     state.attachments[index].anonymize = !state.attachments[index].anonymize;
                 }
-                composer_attachments::TileAction::EditExternally => {
-                    crate::platform::files::open_path(&state.attachments[index].path);
+                composer_attachments::TileAction::Edit => {
+                    state.attachment_editor =
+                        Some(super::attachment_editor::AttachmentEditor::new(
+                            index,
+                            state.attachments[index].clone(),
+                            ui.ctx().clone(),
+                        ));
                 }
             }
         }
@@ -10669,24 +11009,40 @@ fn composer(
     if inline_button(ui, t, emoji_rect, icon::SMILEY, s.emoji, "emoji").clicked() {
         state.gif_picker_opened = None;
         state.gif_picker_anchor = None;
-        state.popup = Some(Popup {
-            kind: PopupKind::ComposerEmoji,
-            message_id: String::new(),
-            anchor: emoji_rect,
-            at_pointer: false,
-            opened,
-        });
+        if state
+            .popup
+            .as_ref()
+            .is_some_and(|popup| popup.kind == PopupKind::ComposerEmoji)
+        {
+            state.close_popup();
+        } else {
+            state.popup = Some(Popup {
+                kind: PopupKind::ComposerEmoji,
+                message_id: String::new(),
+                anchor: emoji_rect,
+                at_pointer: false,
+                opened,
+            });
+        }
     }
     if inline_button(ui, t, sticker_rect, icon::STICKER, s.sticker, "sticker").clicked() {
         state.gif_picker_opened = None;
         state.gif_picker_anchor = None;
-        state.popup = Some(Popup {
-            kind: PopupKind::ComposerSticker,
-            message_id: String::new(),
-            anchor: sticker_rect,
-            at_pointer: false,
-            opened,
-        });
+        if state
+            .popup
+            .as_ref()
+            .is_some_and(|popup| popup.kind == PopupKind::ComposerSticker)
+        {
+            state.close_popup();
+        } else {
+            state.popup = Some(Popup {
+                kind: PopupKind::ComposerSticker,
+                message_id: String::new(),
+                anchor: sticker_rect,
+                at_pointer: false,
+                opened,
+            });
+        }
     }
     if inline_button(ui, t, gif_rect, icon::GIF, s.gif, "gif").clicked() {
         state.popup = None;
@@ -10731,7 +11087,7 @@ fn composer(
     // campo nativo, que recebe só o A; aqui vale para o desenho do egui.
     let composer_font = adaptive_font(
         ui,
-        &text::message(),
+        &composer_base_font(),
         &state.composer,
         composer_text_width(area, with_record),
     );
@@ -10792,6 +11148,7 @@ fn composer(
                 format!("{} #{}…", s.composer_hint, channel_name)
             };
             let edit_id = Id::new("caixa-de-mensagem");
+            let composer_before_edit = state.composer.clone();
             // As setas e o Enter pertencem à lista de sugestões enquanto ela
             // estiver aberta; sem tirá-los da caixa de texto, a seta moveria
             // o cursor e o Enter mandaria `:parc` como mensagem.
@@ -10872,6 +11229,7 @@ fn composer(
                         t.label_tertiary,
                         text::message().size,
                     );
+                    crate::platform::native_text::stickers("composer", &state.composer, &store.emojis);
                     state.typed = events.changed;
                     if let Some(after) = pending_before
                         && state.composer_caret_pending == Some(after)
@@ -10921,7 +11279,9 @@ fn composer(
                 // Never steal text from surfaces that intentionally own
                 // keyboard input (search/pinned, message edit, settings/modal
                 // sheets, pickers/viewers, etc.).
-                let sink_available = state.editing.is_none()
+                let sink_available = state.attachment_editor.is_none()
+                    && state.editing.is_none()
+                    && !state.custom_embed_editor
                     && state.panel.is_none()
                     && state.popup.is_none()
                     && state.gif_picker_opened.is_none()
@@ -10931,6 +11291,13 @@ fn composer(
                     && state.server_card.is_none()
                     && state.external_link_prompt.is_none()
                     && !state.webembed_blocked;
+                let paste_requested = ui.input(|input| {
+                    (input.modifiers.command && input.key_pressed(egui::Key::V))
+                        || input
+                            .events
+                            .iter()
+                            .any(|event| matches!(event, egui::Event::Paste(_)))
+                });
                 let typed_without_composer = sink_available
                     && !ui.ctx().memory(|memory| memory.has_focus(edit_id))
                     && ui.input(|input| {
@@ -10941,15 +11308,44 @@ fn composer(
                             _ => false,
                         })
                     });
-                if typed_without_composer {
-                    ui.ctx()
-                        .memory_mut(|memory| memory.request_focus(edit_id));
+                if typed_without_composer || (sink_available && paste_requested) {
+                    ui.ctx().memory_mut(|memory| memory.request_focus(edit_id));
                 }
 
-                let paste_shortcut = ui.ctx().memory(|memory| memory.has_focus(edit_id))
+                let edit_last = sink_available
+                    && state.composer.is_empty()
+                    && state.attachments.is_empty()
+                    && state.custom_embeds.is_empty()
+                    && state.suggest.is_none()
                     && ui.input(|input| {
-                        input.modifiers.command && input.key_pressed(egui::Key::V)
+                        input.modifiers.is_none() && input.key_pressed(egui::Key::ArrowUp)
                     });
+                if edit_last
+                    && let Some(message) = store
+                        .messages
+                        .iter()
+                        .filter(|message| {
+                            message.channel_id == store.selected_channel
+                                && message.mine(&store.me)
+                                && !message.pending
+                        })
+                        .max_by_key(|message| (message.at, &message.id))
+                {
+                    let (content, bindings) =
+                        store.display_mentions_with_bindings(&message.content);
+                    state.editing = Some((message.id.clone(), content));
+                    state.editing_mentions = bindings;
+                    state.editing_custom_embeds = None;
+                    state.custom_embed_editor = false;
+                    state.edit_focus_pending = true;
+                    request_message_jump(store, state, &store.selected_channel, &message.id, ui.input(|input| input.time));
+                    ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                    });
+                    ui.ctx().request_repaint();
+                }
+
+                let paste_shortcut = sink_available && paste_requested;
                 if paste_shortcut {
                     let pasted = crate::platform::clipboard::attachments();
                     if !pasted.is_empty() {
@@ -10977,6 +11373,20 @@ fn composer(
             let (field_focused, caret) = {
                 let ime_changed =
                     crate::platform::ime::prepare_text_edit(ui.ctx(), edit_id, &mut state.composer);
+                let mut shown = state
+                    .composer_stickers
+                    .encode(&state.composer, &store.emojis);
+                if let Some(after) = state.composer_caret_pending.take()
+                    && let Some(mut edit) = egui::TextEdit::load_state(ui.ctx(), edit_id)
+                {
+                    edit.cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(
+                                state.composer_stickers.shown_caret(&shown, after),
+                            ),
+                        )));
+                    edit.store(ui.ctx(), edit_id);
+                }
                 let viewport_h =
                     (line.height() - space::XS * 2.0).max(COMPOSER_LINE_H - space::XS * 2.0);
                 // Janela do texto centrada na caixa; o layout do pai a deixava
@@ -10997,19 +11407,33 @@ fn composer(
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(&mut viewport, |ui| {
                         ui.set_min_height(viewport_h);
-                        egui::TextEdit::multiline(&mut state.composer)
+                        let mut layouter = |ui: &egui::Ui, buffer: &dyn egui::TextBuffer, width| {
+                            state.composer_stickers.layout(
+                                ui,
+                                buffer.as_str(),
+                                composer_font.clone(),
+                                t.label,
+                                width,
+                            )
+                        };
+                        let output = egui::TextEdit::multiline(&mut shown)
                             .id(edit_id)
-                            .hint_text(RichText::new(hint).color(t.label_tertiary))
+                            .hint_text(RichText::new(hint)
+                                .font(composer_font.clone())
+                                .color(t.label_tertiary))
                             .frame(Frame::NONE)
                             .font(composer_font.clone())
+                            .layouter(&mut layouter)
                             .desired_rows(1)
                             .vertical_align(Align::Center)
                             .min_size(Vec2::new(0.0, viewport_h))
                             .desired_width(f32::INFINITY)
                             .margin(egui::Margin::symmetric(space::XS as i8, space::SM as i8))
-                            .show(ui)
-                            .response
-                            .response
+                            .show(ui);
+                        state
+                            .composer_stickers
+                            .paint(ui, &output, t, &mut state.media, store);
+                        output.response.response
                     });
                 state.composer_overflows =
                     response.content_size.y > response.inner_rect.height() + 1.0;
@@ -11022,17 +11446,48 @@ fn composer(
                     crate::platform::ime::Kind::Multiline,
                 );
                 state.typed = response.changed() || ime_changed;
-                if let Some(after) = state.composer_caret_pending.take()
-                    && let Some(mut edit) = egui::TextEdit::load_state(ui.ctx(), edit_id)
+                state.composer = state.composer_stickers.decode(&shown);
+                ui.ctx().output_mut(|output| {
+                    for command in &mut output.commands {
+                        if let egui::OutputCommand::CopyText(value) = command {
+                            *value = state.composer_stickers.decode(value);
+                        }
+                    }
+                });
+                // Completing a typed shortcode changes its character count in
+                // the editor on the next frame. Keep the caret after the image.
+                let raw_caret = caret_of(ui.ctx(), edit_id)
+                    .map(|caret| state.composer_stickers.raw_caret(&shown, caret));
+                if state
+                    .composer_stickers
+                    .encode(&state.composer, &store.emojis)
+                    != shown
                 {
-                    edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
-                        egui::text::CCursor::new(after),
-                    )));
-                    edit.store(ui.ctx(), edit_id);
+                    state.composer_caret_pending = raw_caret;
+                    ui.ctx().request_repaint();
                 }
-                (response.has_focus(), caret_of(ui.ctx(), edit_id))
+                (response.has_focus(), raw_caret)
             };
 
+            let caret = if state.typed {
+                caret.map(|caret| {
+                    if let Some(after) = finish_shortcode(
+                        &mut state.composer,
+                        &composer_before_edit,
+                        caret,
+                        &store.emojis,
+                    )
+                    {
+                        state.composer_caret_pending = Some(after);
+                        ui.ctx().request_repaint();
+                        after
+                    } else {
+                        caret
+                    }
+                })
+            } else {
+                caret
+            };
             reanchor_mentions(&state.composer, &mut state.composer_mentions);
 
             if keys.dismiss {
@@ -11115,6 +11570,8 @@ fn composer(
             #[cfg(not(target_os = "android"))]
             {
                 let enter = field_focused
+                    && !blocking_modal_open(state)
+                    && !state.webembed_blocked
                     && !accepted
                     && state.suggest.is_none()
                     && ui.input(|input| {
@@ -11144,12 +11601,18 @@ fn caret_of(ctx: &egui::Context, id: Id) -> Option<usize> {
 
 /// Atualiza as sugestões de `@pessoa` ou `:figurinha` em torno do cursor.
 fn refresh_suggestions(store: &Store, state: &mut UiState, focused: bool, caret: Option<usize>) {
+    if state.popup.is_some() || state.gif_picker_opened.is_some() {
+        state.suggest = None;
+        return;
+    }
     let Some(caret) = caret.filter(|_| focused) else {
         state.suggest = None;
         return;
     };
 
     let candidate = typing_mention(&state.composer, caret)
+        .filter(|_| !store.channel(&store.selected_channel)
+            .is_some_and(|channel| channel.kind == ChannelKind::Direct))
         .map(|(start, query)| (SuggestKind::Mention, start, query))
         .or_else(|| {
             typing_shortcode(&state.composer, caret)
@@ -11286,6 +11749,43 @@ fn typing_shortcode(text: &str, caret: usize) -> Option<(usize, String)> {
     None
 }
 
+/// Add a separator when a complete server shortcode has just been typed.
+fn finish_shortcode(
+    text: &mut String,
+    before: &str,
+    caret: usize,
+    emojis: &[crate::state::CustomEmoji],
+) -> Option<usize> {
+    let byte = text
+        .char_indices()
+        .nth(caret)
+        .map_or(text.len(), |(byte, _)| byte);
+    // Only complete a newly inserted closing colon. Deleting the separator
+    // after an existing sticker must not insert that separator again.
+    let unchanged_prefix = text.chars().zip(before.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    let unchanged_suffix = text[unchanged_prefix..].chars().rev()
+        .zip(before[unchanged_prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    if byte <= unchanged_prefix || byte > text.len() - unchanged_suffix {
+        return None;
+    }
+    if !text[..byte].ends_with(':')
+        || text[byte..].chars().next().is_some_and(char::is_whitespace)
+        || !emojis
+            .iter()
+            .any(|emoji| text[..byte].ends_with(&format!(":{}:", emoji.name)))
+    {
+        return None;
+    }
+    text.insert(byte, ' ');
+    Some(caret + 1)
+}
+
 fn replace_char_range(text: &str, start: usize, end: usize, replacement: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     if start > end || end > chars.len() {
@@ -11319,7 +11819,7 @@ fn accept_suggestion(
             let Some(emoji) = store.emojis.iter().find(|emoji| &emoji.id == chosen) else {
                 return;
             };
-            format!(":{}:", emoji.name)
+            format!(":{}: ", emoji.name)
         }
         SuggestKind::Mention => {
             let Some(member) = store.member(chosen) else {
@@ -11661,12 +12161,24 @@ mod link_preview_dedupe_tests {
     }
 
     #[test]
-    fn klipy_gif_style_mp4_is_animation_but_regular_twitter_video_is_not() {
+    fn gif_provider_mp4_is_animation_but_regular_video_is_not() {
         assert!(gif_style_embed("https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme"));
         assert!(gif_style_embed("https://www.klipy.com/gifs/a"));
+        assert!(gif_style_embed("https://giphy.com/gifs/wave-123"));
+        assert!(gif_style_embed("https://www.tenor.com/view/wave-gif-123"));
+        assert!(gif_style_embed("https://media.example.com/anything.GIF?quality=high"));
         assert!(!gif_style_embed("https://x.com/Lord_PSMG/status/2109376514688966914"));
         assert!(!gif_style_embed("https://not-klipy.com/gifs/something"));
         assert!(!gif_style_embed("https://klipy.com/videos/trailer"));
+        assert!(!gif_style_embed("https://giphy.com/clips/trailer"));
+        assert!(!gif_style_embed("https://not-tenor.com/view/trailer"));
+        let mut embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "other-provider", "source_type": "link", "fetch_method": "gif"
+        })).unwrap();
+        assert!(animation_embed("https://another.example/item/123", Some(&embed)));
+        embed.fetch_method = None;
+        embed.thumbnail = Some(serde_json::from_value(serde_json::json!({"mime_type": "image/gif"})).unwrap());
+        assert!(animation_embed("https://another.example/item/123", Some(&embed)));
     }
 
     #[test]
@@ -11697,7 +12209,7 @@ mod link_preview_dedupe_tests {
             "image": {"url": "https://img.youtube.com/vi/S_WnNiaU4m0/hqdefault.jpg"},
             "video": {"url": "https://www.youtube.com/embed/S_WnNiaU4m0"}
         })).unwrap();
-        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None, true);
         assert!(backend_video.is_none());
         assert!(direct.is_none());
         assert!(iframe.unwrap().contains("/embed/S_WnNiaU4m0"));
@@ -11713,7 +12225,7 @@ mod link_preview_dedupe_tests {
             "source_type": "custom",
             "video": {"url": "https://cdn.example.test/animation.mp4", "mime_type": "video/mp4"}
         })).unwrap();
-        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None, true);
         assert!(gif_style_embed(source));
         assert!(backend_video.is_some());
         assert!(direct.is_none());
@@ -11733,10 +12245,65 @@ mod link_preview_dedupe_tests {
         .expect("valid custom embed");
 
         let (backend_video, video_url, iframe) =
-            choose_embed_media("https://cdn.example.test/post", Some(&embed), None);
+            choose_embed_media("https://cdn.example.test/post", Some(&embed), None, true);
         assert!(backend_video.is_some(), "custom video goes through the native player");
         assert!(video_url.is_none());
         assert!(iframe.is_none());
+    }
+
+    #[test]
+    fn preferred_backend_text_embed_does_not_acquire_scraped_or_inferred_media() {
+        let source = "https://youtu.be/S_WnNiaU4m0";
+        let embed = serde_json::from_value(serde_json::json!({
+            "id": "text-only", "source_type": "link", "title": "Text only"
+        })).unwrap();
+        let scraped = papo_core::preview::ResolvedPreview {
+            source_url: source.into(),
+            kind: papo_core::preview::PreviewKind::Video,
+            media_url: Some("https://cdn.example.test/scraped.mp4".into()),
+            image_url: Some("https://cdn.example.test/scraped.jpg".into()),
+            embed_url: Some("https://www.youtube.com/embed/S_WnNiaU4m0".into()),
+            title: None, description: None, provider_name: None,
+            post: Default::default(),
+        };
+        assert_eq!(choose_embed_media(source, Some(&embed), Some(&scraped), true),
+            (None, None, None));
+        assert!(choose_embed_media(source, Some(&embed), Some(&scraped), false).2.is_some());
+        assert!(choose_embed_media(source, None, Some(&scraped), true).2.is_some());
+    }
+
+    #[test]
+    fn backend_cards_in_chat_and_panels_do_not_schedule_frontend_unfurling_by_default() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState {
+            previews: Some(std::sync::Arc::new(papo_core::preview::PreviewCoordinator::new(
+                std::sync::Arc::new(papo_core::cache::ClientDb::open(None)),
+                std::sync::Arc::new(|| {}),
+            ))),
+            ..Default::default()
+        };
+        let content = "https://example.com/backend-post";
+        for source_type in ["link", "custom"] {
+            let preview = serde_json::from_value(serde_json::json!({
+                "id": "backend-post", "source_type": source_type,
+                "url": content, "title": "Backend title"
+            })).unwrap();
+            let previews = [preview];
+            assert!(direct_media_message_url(&state, content, &previews, true).is_none());
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                link_previews(ui, &mut state, &tokens, "message", content, &previews, 400.0, true);
+                rich_links_from_message(ui, &mut state, &tokens, "message", content, &previews, 400.0, true);
+                panel_rich_links(ui, &mut state, &tokens, "message", content, &previews, 400.0);
+            });
+            output.textures_delta.clear();
+            let title_count = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Backend title"
+            )).count();
+            assert_eq!(title_count, 2, "both chat and panel show the backend card");
+            assert_eq!(state.previews.as_ref().unwrap().stats().queued, 0);
+        }
     }
 }
 
@@ -11953,6 +12520,148 @@ mod away_call_tests {
 #[cfg(test)]
 mod draft_tests {
     use super::*;
+
+    #[test]
+    fn search_channel_filters_preserve_spaces_and_closing_clears_results() {
+        let mut store = Store::default();
+        store.selected_channel = "c1".into();
+        store.channels.push(crate::state::Channel {
+            id: "c1".into(), name: "🖥 Chat".into(), kind: ChannelKind::Text,
+            topic: None, position: 0, permissions: Vec::new(),
+            notification_settings: "all".into(), parent_id: None, unread: false, mentions: 0,
+        });
+        let mut state = UiState::default();
+        toggle_panel(&mut store, &mut state, PanelKind::Search);
+        state.panel.as_mut().unwrap().query = "em:\"#🖥 Chat\" tem:link".into();
+        let request = search_request_from_panel(state.panel.as_ref().unwrap(), &store).unwrap();
+        assert_eq!(request.channel_id.as_deref(), Some("c1"));
+        assert_eq!(request.has.as_deref(), Some("link"));
+        assert!(request.text.is_none());
+        state.panel.as_mut().unwrap().query = "em:#missing tem:link".into();
+        assert!(search_request_from_panel(state.panel.as_ref().unwrap(), &store).is_none());
+        store.search_has_more = true;
+        toggle_panel(&mut store, &mut state, PanelKind::Search);
+        assert!(state.panel.is_none());
+        assert!(!store.search_has_more);
+        toggle_panel(&mut store, &mut state, PanelKind::Search);
+        assert!(state.panel.as_ref().unwrap().query.is_empty());
+    }
+
+    #[test]
+    fn direct_messages_leave_mentions_plain_but_keep_sticker_suggestions() {
+        let mut store = Store::default();
+        store.selected_channel = "dm".into();
+        store.channels.push(crate::state::Channel {
+            id: "dm".into(), name: "DM".into(), kind: ChannelKind::Direct,
+            topic: None, position: 0, permissions: Vec::new(),
+            notification_settings: "all".into(), parent_id: None, unread: false, mentions: 0,
+        });
+        store.members.push(crate::state::Member {
+            id: "u1".into(), username: "ana".into(), name: "Ana".into(),
+            banned: false, presence: Presence::Online, status_message: None,
+            typing_label: None, role_color: None, roles: Vec::new(),
+        });
+        let mut state = UiState { composer: "@Ana".into(), ..Default::default() };
+        refresh_suggestions(&store, &mut state, true, Some(4));
+        assert!(state.suggest.is_none());
+        assert_eq!(store.encode_mentions("@Ana", &[]), "@Ana");
+        assert_eq!(store.encode_mentions("@Ana", &[MentionBinding {
+            start: 0, label: "Ana".into(), user_id: "u1".into(),
+        }]), "@Ana");
+        store.emojis.push(crate::state::CustomEmoji {
+            id: "e1".into(), name: "test".into(), blob: None,
+        });
+        state.composer = ":tes".into();
+        refresh_suggestions(&store, &mut state, true, Some(4));
+        assert!(state.suggest.as_ref().is_some_and(|suggest| suggest.kind == SuggestKind::Sticker));
+        store.channels[0].kind = ChannelKind::Text;
+        state.composer = "@Ana".into();
+        refresh_suggestions(&store, &mut state, true, Some(4));
+        assert!(state.suggest.as_ref().is_some_and(|suggest| suggest.kind == SuggestKind::Mention));
+        assert_eq!(store.encode_mentions("@Ana", &[]), "@mention(<@u1>)");
+    }
+
+    #[test]
+    fn dropped_attachments_follow_the_target_channel_before_it_renders() {
+        let upload = |name: &str| Upload {
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            name: name.to_owned(),
+            mime: "image/png".into(),
+            size: 1,
+            spoiler: false,
+            anonymize: false,
+        };
+        let mut ui = UiState {
+            last_channel: "A".into(),
+            ..Default::default()
+        };
+        ui.ingest_attachments("A", vec![upload("alpha.png")]);
+        ui.ingest_attachments("B", vec![upload("beta.png")]);
+        assert_eq!(ui.attachments[0].name, "alpha.png");
+        ui.switch_draft_channel("B");
+        assert_eq!(ui.attachments.len(), 1);
+        assert_eq!(ui.attachments[0].name, "beta.png");
+        ui.switch_draft_channel("A");
+        assert_eq!(ui.attachments[0].name, "alpha.png");
+    }
+
+    #[test]
+    fn completed_shortcodes_get_one_separator_and_keep_following_text() {
+        let emojis = vec![crate::state::CustomEmoji {
+            id: "e1".into(),
+            name: "test".into(),
+            blob: None,
+        }];
+        let mut typed = "é :test:next".to_owned();
+        assert_eq!(finish_shortcode(&mut typed, "é :testnext", 8, &emojis), Some(9));
+        assert_eq!(typed, "é :test: next");
+        assert_eq!(finish_shortcode(&mut typed, "é :testnext", 8, &emojis), None);
+        let mut unknown = ":unknown:".to_owned();
+        assert_eq!(finish_shortcode(&mut unknown, ":unknown", 9, &emojis), None);
+    }
+
+    #[test]
+    fn backspace_removes_the_separator_then_the_inline_sticker() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let id = Id::new("sticker-backspace");
+        let emojis = [crate::state::CustomEmoji {
+            id: "e1".into(), name: "test".into(), blob: None,
+        }];
+        let mut editor = super::super::composer_text::StickerText::default();
+        let mut raw = "é :test: ".to_owned();
+        for (step, expected) in ["é :test: ", "é :test:", "é ", "é"].into_iter().enumerate() {
+            if step == 1 {
+                let mut edit = egui::TextEdit::load_state(&ctx, id).unwrap();
+                edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(editor.encode(&raw, &emojis).chars().count()),
+                )));
+                edit.store(&ctx, id);
+                ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+            let mut input = egui::RawInput::default();
+            if step > 0 {
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Backspace, physical_key: None, pressed,
+                        repeat: false, modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            let mut output = ctx.run_ui(input, |ui| {
+                let before = raw.clone();
+                let mut shown = editor.encode(&raw, &emojis);
+                let output = egui::TextEdit::multiline(&mut shown).id(id).show(ui);
+                raw = editor.decode(&shown);
+                if output.response.changed() {
+                    let caret = editor.raw_caret(&shown, output.cursor_range.unwrap().primary.index.into());
+                    assert_eq!(finish_shortcode(&mut raw, &before, caret, &emojis), None);
+                }
+            });
+            output.textures_delta.clear();
+            assert_eq!(raw, expected, "Backspace step {step}");
+        }
+    }
 
     fn state(text: &str, reply: Option<&str>, notify: bool) -> DraftState {
         DraftState {
@@ -12302,10 +13011,16 @@ mod escape_tests {
                 id: format!("m{index:03}"), channel_id: "c1".into(), author_id: "u1".into(),
                 external_author: None,
                 content: format!("Mensagem {index}: texto da conversa para testar a rolagem."),
-                at: chrono::Local::now(), edited: false, reply_to: None,
-                attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
-                pinned: false, pending: false,
-            }).collect();
+                at: chrono::Local::now(),
+                edited: false,
+                reply_to: None,
+                attachments: Vec::new(),
+                previews: Vec::new(),
+                reactions: Vec::new(),
+                pinned: false,
+                pending: false,
+            })
+            .collect();
         let mut state = UiState {
             last_channel: "c1".into(), open_at_newest: false,
             forced_chat_scroll: Some(("c1".into(), 0.0)),
@@ -12574,6 +13289,62 @@ mod custom_embed_tests {
 mod wheel_glide_tests {
     use super::*;
 
+    fn offset_after_wheel_with_relayout(discard: bool) -> f32 {
+        let ctx = egui::Context::default();
+        let mut glide = WheelGlide::default();
+        let point = egui::pos2(150.0, 150.0);
+        let mut offset = 0.0;
+        for warmup in [true, false] {
+            let mut events = vec![egui::Event::PointerMoved(point)];
+            if !warmup {
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: Vec2::new(0.0, 1.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                });
+            }
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(600.0, 800.0),
+                    )),
+                    time: Some(if warmup { 0.0 } else { 1.0 / 60.0 }),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    glide_wheel(ui, &mut glide, ui.max_rect(), true);
+                    let mut scroll = egui::ScrollArea::vertical().id_salt("wheel-relayout");
+                    if warmup {
+                        scroll = scroll.vertical_scroll_offset(500.0);
+                    }
+                    let result = scroll.show(ui, |ui| {
+                        ui.allocate_exact_size(Vec2::new(500.0, 3000.0), Sense::hover());
+                    });
+                    offset = result.state.offset.y;
+                    if !warmup && discard && ui.ctx().current_pass_index() == 0 {
+                        ui.ctx()
+                            .request_discard("media layout changed during wheel input");
+                    }
+                },
+            );
+            output.textures_delta.clear();
+        }
+        offset
+    }
+
+    #[test]
+    fn relayout_does_not_apply_the_same_wheel_step_twice() {
+        let normal = offset_after_wheel_with_relayout(false);
+        let relayout = offset_after_wheel_with_relayout(true);
+        assert!(
+            (normal - relayout).abs() < 0.1,
+            "normal={normal}, relayout={relayout}"
+        );
+    }
+
     fn run(requests: &[(usize, f32)], frames: usize, dt: f32) -> Vec<f32> {
         let mut glide = WheelGlide::default();
         (0..frames)
@@ -12603,7 +13374,9 @@ mod wheel_glide_tests {
         // (O último passo só recolhe o que sobra abaixo de meio pixel.)
         let last = steps.iter().rposition(|step| *step > 0.0).unwrap();
         assert!(
-            steps[peak_at..last].windows(2).all(|pair| pair[1] <= pair[0] + 1e-3),
+            steps[peak_at..last]
+                .windows(2)
+                .all(|pair| pair[1] <= pair[0] + 1e-3),
             "{steps:?}"
         );
         // Termina de vez: ~99% em ~0,25 s (15 quadros) e nada depois de 0,4 s.
@@ -12614,15 +13387,29 @@ mod wheel_glide_tests {
 
     #[test]
     fn motion_does_not_depend_on_the_frame_rate() {
-        let slow: f32 = run(&[(0, WHEEL_NOTCH_PX)], 30, 1.0 / 30.0).iter().take(8).sum();
-        let fast: f32 = run(&[(0, WHEEL_NOTCH_PX)], 120, 1.0 / 120.0).iter().take(32).sum();
+        let slow: f32 = run(&[(0, WHEEL_NOTCH_PX)], 30, 1.0 / 30.0)
+            .iter()
+            .take(8)
+            .sum();
+        let fast: f32 = run(&[(0, WHEEL_NOTCH_PX)], 120, 1.0 / 120.0)
+            .iter()
+            .take(32)
+            .sum();
         // Mesmo instante (~0,27 s), mesma posição, com ritmos de quadro diferentes.
         assert!((slow - fast).abs() < 1.0, "{slow} vs {fast}");
     }
 
     #[test]
     fn extra_notches_add_up_without_stalling() {
-        let steps = run(&[(0, WHEEL_NOTCH_PX), (3, WHEEL_NOTCH_PX), (6, WHEEL_NOTCH_PX)], 90, 1.0 / 60.0);
+        let steps = run(
+            &[
+                (0, WHEEL_NOTCH_PX),
+                (3, WHEEL_NOTCH_PX),
+                (6, WHEEL_NOTCH_PX),
+            ],
+            90,
+            1.0 / 60.0,
+        );
         let total: f32 = steps.iter().sum();
         assert!((total - 3.0 * WHEEL_NOTCH_PX).abs() < 1e-3, "{total}");
         assert!(steps.iter().all(|step| *step >= 0.0), "{steps:?}");
@@ -12642,6 +13429,40 @@ mod wheel_glide_tests {
 #[cfg(test)]
 mod reply_quote_tests {
     use super::*;
+
+    #[test]
+    fn multiline_reply_preview_fits_completely_inside_its_single_line() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.emojis.push(crate::state::CustomEmoji {
+            id: "e-1".into(), name: "papo".into(), blob: None,
+        });
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            external_author: None,
+            content: "homem que não foi aceito nem no céu nem no inferno\n↳ :papo:1".into(),
+            at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
+            previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
+        });
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 800.0);
+        });
+        output.textures_delta.clear();
+        let mut chunks = 0;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                assert!(!text.galley.text().contains('\n'));
+                assert!(clipped.clip_rect.expand(0.01).contains_rect(
+                    Rect::from_min_size(text.pos, text.galley.size()),
+                ), "reply text clipped: {:?}", text.galley.text());
+                chunks += 1;
+            }
+        }
+        assert!(chunks >= 3);
+    }
 
     #[test]
     fn reply_quote_renders_custom_emojis_around_styled_mentions() {
@@ -12723,9 +13544,15 @@ mod reply_quote_tests {
         store.messages.push(Message {
             id: "original".into(), channel_id: "c".into(), author_id: "author".into(),
             external_author: None,
-            content: String::new(), at: Local::now(), edited: false, reply_to: None,
-            attachments: Vec::new(), previews: Vec::new(), reactions: Vec::new(),
-            pinned: false, pending: false,
+            content: String::new(),
+            at: Local::now(),
+            edited: false,
+            reply_to: None,
+            attachments: Vec::new(),
+            previews: Vec::new(),
+            reactions: Vec::new(),
+            pinned: false,
+            pending: false,
         });
         let cases = [
             (
@@ -12790,6 +13617,419 @@ mod reply_quote_tests {
 mod row_cache_tests {
     use super::*;
 
+    #[test]
+    fn provider_gif_is_standalone_media_at_chat_width_before_and_after_loading() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let store = Store::default();
+        let texture = ctx.load_texture("raven", egui::ColorImage::filled([165, 104], Color32::WHITE),
+            egui::TextureOptions::LINEAR);
+        for (url, source_type, fetch_method, mime) in [
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "link", "opengraph", "image/jpeg"),
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "custom", "manual", "image/jpeg"),
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "link", "gif", "image/gif"),
+            ("https://giphy.com/gifs/wave-123", "link", "opengraph", "image/jpeg"),
+            ("https://tenor.com/view/wave-gif-123", "link", "opengraph", "image/jpeg"),
+            ("https://another.example/item/123", "link", "gif", "image/gif"),
+            ("https://another.example/item/123", "link", "opengraph", "image/gif"),
+        ] {
+            let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+                "id": "raven", "url": url, "source_type": source_type, "fetch_method": fetch_method,
+                "provider": "KLIPY", "title": "An Iq Too High Raven",
+                "thumbnail": {"mime_type": mime, "width": 165, "height": 104}
+            })).unwrap();
+            let mut message = message(url);
+            message.previews = vec![embed.clone()];
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                message_body(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR,
+                    &message, 500.0, false);
+            });
+            output.textures_delta.clear();
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().contains("klipy.com")
+                    || text.galley.text().contains("KLIPY")
+                    || text.galley.text().contains("An Iq Too High Raven")
+            )), "a provider GIF must not show link-card text");
+            let placeholder = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == tokens.fill_soft => Some(rect.rect),
+                _ => None,
+            }).expect("declared GIF dimensions reserve its media slot before loading");
+            assert!((placeholder.width() - 420.0).abs() < 0.01);
+            let mut loaded = None;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                loaded = render_embed_media(ui, &mut state, &tokens, EmbedMediaView {
+                    id: "raven", embed_id: "loaded-raven", url, backend: Some(&embed),
+                    image: Some(&texture), remote_image: None, image_url: None,
+                    title: embed.title.as_deref(), video_url: None, embed_url: None,
+                    backend_video: None, card_width: 420.0,
+                    policy: PreviewPolicy { webembed: false, network: false },
+                }).1;
+            });
+            output.textures_delta.clear();
+            assert_eq!(loaded.unwrap().size(), placeholder.size());
+        }
+    }
+
+    #[test]
+    fn known_embed_image_geometry_survives_texture_reload_without_forcing_text_post_covers() {
+        let ctx = egui::Context::default();
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let texture = ctx.load_texture(
+            "post-image", egui::ColorImage::filled([200, 300], Color32::WHITE),
+            egui::TextureOptions::LINEAR,
+        );
+        for (image, advertised) in [(Some(&texture), true), (None, true), (Some(&texture), true), (None, false)] {
+            let mut rect = None;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                rect = render_embed_media(ui, &mut state, &tokens, EmbedMediaView {
+                    id: "post", embed_id: "message:post", url: "https://example.com/post",
+                    backend: None, image, remote_image: image,
+                    image_url: advertised.then(|| "https://example.com/photo.jpg".into()),
+                    title: None, video_url: None, embed_url: None, backend_video: None,
+                    card_width: 420.0,
+                    policy: PreviewPolicy { webembed: false, network: false },
+                }).1;
+            });
+            output.textures_delta.clear();
+            if advertised {
+                assert_eq!(rect.expect("known image slot").size(), Vec2::new(200.0, 300.0));
+            } else {
+                assert!(rect.is_none(), "a text-only post must not reserve a cover");
+            }
+        }
+    }
+
+    fn scroll_fixture() -> (egui::Context, Store, UiState, Tokens) {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.selected_channel = "c1".into();
+        store.channels.push(crate::state::Channel {
+            id: "c1".into(),
+            name: "general".into(),
+            kind: ChannelKind::Text,
+            topic: None,
+            position: 0,
+            permissions: Vec::new(),
+            notification_settings: "all".into(),
+            parent_id: None,
+            unread: false,
+            mentions: 0,
+        });
+        store.messages = (0..80)
+            .map(|index| {
+                let mut message = message(&format!("row-{index:03}"));
+                message.id = format!("m{index:03}");
+                message.channel_id = "c1".into();
+                message
+            })
+            .collect();
+        let mut state = UiState {
+            last_channel: "c1".into(),
+            ..Default::default()
+        };
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        scroll_frame_with_wheel(&ctx, &mut store, &mut state, &tokens, 600.0);
+        (ctx, store, state, tokens)
+    }
+
+    fn scroll_frame(ctx: &egui::Context, store: &mut Store, state: &mut UiState, tokens: &Tokens) {
+        scroll_frame_with_wheel(ctx, store, state, tokens, 0.0);
+    }
+
+    fn scroll_frame_with_wheel(
+        ctx: &egui::Context,
+        store: &mut Store,
+        state: &mut UiState,
+        tokens: &Tokens,
+        wheel: f32,
+    ) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(700.0, 500.0),
+                )),
+                events: vec![egui::Event::PointerMoved(egui::pos2(350.0, 150.0))],
+                ..Default::default()
+            },
+            |ui| {
+                let step = if ui.ctx().current_pass_index() == 0 {
+                    wheel
+                } else {
+                    0.0
+                };
+                ui.input_mut(|input| input.smooth_scroll_delta.y = step);
+                state.visible_message_ids.clear();
+                conversation(ui, store, state, None, tokens, &crate::i18n::PT_BR, None);
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    fn anchor_position(state: &UiState) -> (String, f32) {
+        let anchor = state.chat_anchor.as_ref().expect("visible message anchor");
+        (
+            anchor.message_id.clone(),
+            anchor.content_y - state.chat_scroll_metrics.as_ref().unwrap().1,
+        )
+    }
+
+    #[test]
+    fn newest_arrow_skips_new_unread_block_and_stays_at_live_bottom() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        store.me = "me".into();
+        let last_read = store.messages.last().unwrap().clone();
+        store.read_states.insert("c1".into(), crate::state::ChannelReadState {
+            read_at: Some(last_read.at.with_timezone(&chrono::Utc)),
+            read_message_id: Some(last_read.id.clone()),
+            seen_to_at: Some(last_read.at.with_timezone(&chrono::Utc)),
+            seen_to_id: Some(last_read.id.clone()),
+            ..Default::default()
+        });
+        state.clear_unread_marker(&store);
+        for index in 80..140 {
+            let mut incoming = last_read.clone();
+            incoming.id = format!("m{index:03}");
+            incoming.content = format!("new unread message {index}");
+            incoming.at += chrono::Duration::seconds(index);
+            store.messages.push(incoming);
+        }
+        store.channels[0].unread = true;
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let visible = state.visible_message_ids.clone();
+        store.observe_visible_messages_with_policy("c1", &visible, false);
+        state.last_scroll_activity = f64::NEG_INFINITY;
+        let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0));
+        let mut button = None;
+        let mut output = ctx.run_ui(egui::RawInput { screen_rect: Some(area), ..Default::default() }, |ui| {
+            button = timeline_nav_controls(ui, &mut store, &mut state, &tokens, &crate::i18n::PT_BR, area, 56.0)
+                .first().copied();
+        });
+        output.textures_delta.clear();
+        let pos = button.expect("newest arrow while scrolled away").center();
+        for pressed in [true, false] {
+            let mut output = ctx.run_ui(egui::RawInput {
+                screen_rect: Some(area),
+                events: vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                ..Default::default()
+            }, |ui| {
+                timeline_nav_controls(ui, &mut store, &mut state, &tokens, &crate::i18n::PT_BR, area, 56.0);
+            });
+            output.textures_delta.clear();
+        }
+        assert_eq!(state.scroll_latest_pending.as_deref(), Some("c1"));
+        assert!(state.jump.is_none() && state.navigation_target.is_none());
+        let mut bottom = None;
+        for _ in 0..10 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+            assert!(state.visible_message_ids.iter().any(|id| id == "m139"),
+                "latest message missing; showing {:?}", state.visible_message_ids);
+            let offset = state.chat_scroll_metrics.as_ref().unwrap().1;
+            if let Some(previous) = bottom {
+                assert_eq!(offset, previous, "return-to-latest must not oscillate");
+            }
+            bottom = Some(offset);
+            let visible = state.visible_message_ids.clone();
+            store.observe_visible_messages_with_policy("c1", &visible, true);
+        }
+    }
+
+    #[test]
+    fn return_to_latest_tracks_the_bottom_when_tail_geometry_changes_after_measurement() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        state.return_to_latest(&ctx, &mut store);
+        let mut expanded = false;
+        let mut output = ctx.run_ui(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0))),
+            ..Default::default()
+        }, |ui| {
+            state.visible_message_ids.clear();
+            conversation(ui, &mut store, &mut state, None, &tokens, &crate::i18n::PT_BR, None);
+            if !expanded {
+                // The hidden pass measured cold media. Its first visible pass
+                // sees the real, larger geometry of the new messages below.
+                for message in &mut store.messages[60..] {
+                    message.content = "newly resolved media in the unread tail\n".repeat(15);
+                }
+                expanded = true;
+            }
+        });
+        output.textures_delta.clear();
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        assert!(state.visible_message_ids.iter().any(|id| id == "m079"),
+            "return-to-latest landed before the newest message: {:?}", state.visible_message_ids);
+    }
+
+    #[test]
+    fn requested_jump_is_measured_before_its_target_is_presented() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        state.open_jump_pending = Some("c1".into());
+        state.jump = Some(Jump {
+            message_id: "m000".into(),
+            found: None,
+            since: 0.0,
+        });
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        assert!(state.open_jump_pending.is_none());
+        // Highlighted jumps suppress read receipts; the visual anchor still
+        // identifies the first row actually visible after the hidden pass.
+        assert_eq!(
+            state
+                .chat_anchor
+                .as_ref()
+                .map(|anchor| anchor.message_id.as_str()),
+            Some("m000")
+        );
+        assert_eq!(state.chat_scroll_metrics.as_ref().unwrap().1, 0.0);
+    }
+
+    #[test]
+    fn prepending_history_at_the_bottom_does_not_present_the_old_offset() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        state.scroll_latest_pending = Some("c1".into());
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let before = state.chat_anchor.as_ref().unwrap().message_id.clone();
+        let older: Vec<_> = (0..60)
+            .map(|index| {
+                let mut message = store.messages[0].clone();
+                message.id = format!("old-{index}");
+                message.content = "older history".into();
+                message.at -= chrono::Duration::minutes(30);
+                message
+            })
+            .collect();
+        store.messages.splice(0..0, older);
+
+        // Check the presented frame, before another repaint can hide the jump.
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let after = state.chat_anchor.as_ref().unwrap().message_id.clone();
+        assert_eq!(before, after);
+        assert!(state.visible_message_ids.iter().any(|id| id == "m079"));
+    }
+
+    #[test]
+    fn content_resizing_at_the_bottom_presents_the_latest_rows_immediately() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        state.scroll_latest_pending = Some("c1".into());
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let before = anchor_position(&state);
+
+        // A preview above the viewport expands, then contracts. Both frames
+        // must paint the latest rows without waiting for the next repaint.
+        for content in ["loaded preview\n".repeat(30), "row-000".into()] {
+            store.messages[0].content = content;
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+            let after = anchor_position(&state);
+            assert_eq!(before.0, after.0);
+            assert!((before.1 - after.1).abs() < 1.0, "{before:?} -> {after:?}");
+            assert!(state.visible_message_ids.iter().any(|id| id == "m079"));
+        }
+    }
+
+    #[test]
+    fn content_growth_above_and_below_keeps_the_visible_message_in_place() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        for _ in 0..3 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        }
+        let before = anchor_position(&state);
+        assert_ne!(before.0, "m000");
+        store.messages[0].content = "image metadata expands a row above the viewport\n".repeat(20);
+        store.messages[79].content = "a different preview expands below the viewport\n".repeat(30);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let after = anchor_position(&state);
+        assert_eq!(before.0, after.0);
+        assert!(
+            (before.1 - after.1).abs() < 1.0,
+            "before={before:?}, after={after:?}"
+        );
+    }
+
+    #[test]
+    fn prepending_older_history_keeps_the_visible_message_in_place() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        for _ in 0..3 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        }
+        let before = anchor_position(&state);
+        let older: Vec<_> = (0..20)
+            .map(|index| {
+                let mut message = store.messages[0].clone();
+                message.id = format!("old-{index}");
+                message.content = "older history".into();
+                message.at -= chrono::Duration::minutes(30);
+                message
+            })
+            .collect();
+        store.messages.splice(0..0, older);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let after = anchor_position(&state);
+        assert_eq!(before.0, after.0);
+        assert!(
+            (before.1 - after.1).abs() < 1.0,
+            "before={before:?}, after={after:?}"
+        );
+    }
+
+    #[test]
+    fn a_preview_below_the_viewport_does_not_move_the_scroll_position() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        for _ in 0..3 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        }
+        let before = anchor_position(&state);
+        store.messages[79].content = "a newly loaded image below the viewport\n".repeat(30);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let after = anchor_position(&state);
+        assert_eq!(before.0, after.0);
+        assert!(
+            (before.1 - after.1).abs() < 1.0,
+            "before={before:?}, after={after:?}"
+        );
+    }
+
+    #[test]
+    fn wheel_input_is_preserved_while_rows_change_height() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        for _ in 0..3 {
+            scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        }
+        let anchor_id = state.chat_anchor.as_ref().unwrap().message_id.clone();
+        let index = store
+            .messages
+            .iter()
+            .position(|message| message.id == anchor_id)
+            .unwrap();
+        let position = |store: &Store, state: &UiState| {
+            store.messages[..index]
+                .iter()
+                .map(|message| state.row_heights[&message.id].1)
+                .sum::<f32>()
+                - state.chat_scroll_metrics.as_ref().unwrap().1
+        };
+        let before = position(&store, &state);
+        store.messages[0].content = "an image above finishes loading\n".repeat(20);
+        scroll_frame_with_wheel(&ctx, &mut store, &mut state, &tokens, 30.0);
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let after = position(&store, &state);
+        assert!(
+            (after - before - 30.0).abs() < 1.0,
+            "before={before}, after={after}"
+        );
+    }
+
     fn message(content: &str) -> Message {
         Message {
             id: "m".into(),
@@ -12830,17 +14070,46 @@ mod row_cache_tests {
         );
         assert_ne!(
             reference,
-            sig(&message("oi, tudo bem?"), false, false, false, false, false, 600.0)
+            sig(
+                &message("oi, tudo bem?"),
+                false,
+                false,
+                false,
+                false,
+                false,
+                600.0
+            )
         );
-        assert_ne!(reference, sig(&base, true, false, false, false, false, 600.0));
-        assert_ne!(reference, sig(&base, false, true, false, false, false, 600.0));
-        assert_ne!(reference, sig(&base, false, false, true, false, false, 600.0));
-        assert_ne!(reference, sig(&base, false, false, false, true, false, 600.0));
-        assert_ne!(reference, sig(&base, false, false, false, false, true, 600.0));
-        assert_ne!(reference, sig(&base, false, false, false, false, false, 601.0));
+        assert_ne!(
+            reference,
+            sig(&base, true, false, false, false, false, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&base, false, true, false, false, false, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&base, false, false, true, false, false, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&base, false, false, false, true, false, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&base, false, false, false, false, true, 600.0)
+        );
+        assert_ne!(
+            reference,
+            sig(&base, false, false, false, false, false, 601.0)
+        );
         let mut edited = message("oi");
         edited.edited = true;
-        assert_ne!(reference, sig(&edited, false, false, false, false, false, 600.0));
+        assert_ne!(
+            reference,
+            sig(&edited, false, false, false, false, false, 600.0)
+        );
     }
 }
 
@@ -13143,5 +14412,47 @@ mod external_avatar_url_tests {
         ] {
             assert!(external_avatar_url(raw, "https://api.papo.example/").is_none(), "{raw}");
         }
+    }
+}
+
+#[cfg(test)]
+mod message_navigation_tests {
+    use super::*;
+
+    #[test]
+    fn missing_pin_requests_context_with_its_exact_timestamp() {
+        let mut store = Store::default();
+        let wire = serde_json::from_value(serde_json::json!({
+            "id": "old-pin", "channel_id": "chat", "author_id": "other", "content": "first message",
+            "created_at": "2020-01-01T00:00:00.123456789Z",
+        }))
+        .unwrap();
+        store.apply(crate::api::net::Update::PinnedMessages {
+            ticket: None,
+            channel_id: "chat".into(),
+            messages: vec![wire],
+        });
+        let mut state = UiState::default();
+        request_message_jump(&store, &mut state, "chat", "old-pin", 1.0);
+        assert!(
+            matches!(state.actions.last(), Some(ChatAction::LoadMessageContext { at: Some(at), message_id, .. })
+            if message_id == "old-pin" && at.timestamp_subsec_nanos() == 123_456_789)
+        );
+        assert!(store.messages.is_empty());
+    }
+
+    #[test]
+    fn loaded_message_jump_does_not_fetch_another_context() {
+        let mut store = Store::default();
+        let wire = serde_json::from_value(serde_json::json!({
+            "id": "loaded", "channel_id": "chat", "author_id": "other", "content": "loaded",
+            "created_at": "2026-10-17T00:00:00Z",
+        }))
+        .unwrap();
+        store.apply(crate::api::net::Update::Sent(Box::new(wire)));
+        let mut state = UiState::default();
+        request_message_jump(&store, &mut state, "chat", "loaded", 1.0);
+        assert!(state.actions.is_empty());
+        assert_eq!(state.jump.as_ref().unwrap().message_id, "loaded");
     }
 }

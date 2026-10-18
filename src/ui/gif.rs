@@ -1,6 +1,6 @@
 //! Native Papo UI for GIPHY GIFs.
 
-use egui::{Align, Color32, CornerRadius, Id, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
+use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, UiBuilder, Vec2};
 use egui_phosphor::regular as icon;
 
 use crate::giphy::{BrowseMode, Category, GifItem};
@@ -527,7 +527,9 @@ fn draw_search(
         );
         child.add(
             egui::TextEdit::singleline(&mut giphy.browser.query)
-                .hint_text(s.gif_search_giphy)
+                .hint_text(egui::RichText::new(s.gif_search_giphy).font(text::body()))
+                .font(text::body())
+                .vertical_align(Align::Center)
                 .desired_width(f32::INFINITY)
                 .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8)),
         );
@@ -604,6 +606,7 @@ pub fn message(
         .rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
 
     if let Some(item) = item.as_ref() {
+        super::media_menu::remote(ui, state, s, &response, &item.gif_url, &format!("{id}.gif"));
         // Chat GIFs autoplay exactly like the picker, but clipped messages do
         // not keep animations resident or schedule repaints.
         if rect.intersects(ui.clip_rect().expand(96.0)) {
@@ -631,7 +634,7 @@ pub fn message(
             egui::pos2(rect.max.x - 34.0, rect.min.y + 6.0),
             Vec2::splat(28.0),
         );
-        let star = ui.interact(star_rect, Id::new(("giphy-star", id)), Sense::click());
+        let star = ui.interact(star_rect, ui.id().with(("giphy-star", id)), Sense::click());
         if response.hovered() || star.hovered() {
             ui.painter().rect_filled(
                 star_rect,

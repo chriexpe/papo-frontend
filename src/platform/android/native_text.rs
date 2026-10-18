@@ -330,6 +330,9 @@ fn call_selection(key: &str, selection: i32) {
 }
 
 fn call_hide() {
+    if let Ok(mut last) = LAST_STICKERS.lock() {
+        *last = None;
+    }
     let Some(app) = APP.get() else {
         return;
     };
@@ -443,6 +446,53 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeEditorFoc
         state.focus = Some((String::from(key), focused != 0));
     }
     super::wake::request();
+}
+
+/// Replacement spans retain shortcodes in the native Editable, preserving
+/// Android selection, clipboard and IME behavior while displaying sticker art.
+static LAST_STICKERS: Mutex<Option<(String, String, String)>> = Mutex::new(None);
+
+pub fn stickers(key: &str, text: &str, emojis: &[crate::state::CustomEmoji]) {
+    let entries: Vec<_> = emojis
+        .iter()
+        .filter(|emoji| text.contains(&format!(":{}:", emoji.name)))
+        .filter_map(|emoji| emoji.blob.as_ref().map(|blob| (&emoji.name, blob)))
+        .collect();
+    let Ok(json) = serde_json::to_string(&entries) else {
+        return;
+    };
+    let signature = (key.to_owned(), text.to_owned(), json.clone());
+    let Ok(mut last) = LAST_STICKERS.lock() else {
+        return;
+    };
+    if last.as_ref() == Some(&signature) {
+        return;
+    }
+    let Some(app) = APP.get() else { return };
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let (Ok(key), Ok(json)) = (env.new_string(key), env.new_string(json)) else {
+        return;
+    };
+    let activity = unsafe { jni::objects::JObject::from_raw(app.activity_as_ptr().cast()) };
+    let result = env.call_method(
+        &activity,
+        "setNativeEditorStickers",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[
+            jni::objects::JValue::Object(&key),
+            jni::objects::JValue::Object(&json),
+        ],
+    );
+    if result.is_ok() {
+        *last = Some(signature);
+    } else {
+        let _ = env.exception_clear();
+    }
 }
 
 #[cfg(test)]

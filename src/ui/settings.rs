@@ -1009,6 +1009,7 @@ impl Rows<'_> {
                     .char_limit(limit)
                     .password(secret)
                     .font(text::body())
+                    .vertical_align(if lines > 1 { Align::Min } else { Align::Center })
                     .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8));
                 // Várias linhas: altura fixa e rolagem por dentro. Sem isso o
                 // campo crescia com o texto (512 caracteres de bio) e cobria
@@ -1344,6 +1345,7 @@ pub struct Context<'a> {
     pub topic_reveal: &'a mut bool,
     pub open_at_newest: &'a mut bool,
     pub mark_read_at_newest: &'a mut bool,
+    pub prefer_backend_embeds: &'a mut bool,
     pub record_button: &'a mut bool,
     pub channel_emoji_monochrome: &'a mut bool,
     pub self_card: &'a mut crate::ui::profile::SelfCardStyle,
@@ -1827,6 +1829,7 @@ fn channel_name_input(
                         .id(edit_id)
                         .char_limit(32)
                         .font(text::body())
+                        .vertical_align(Align::Center)
                         .margin(egui::Margin::symmetric(
                             space::MD as i8,
                             space::XS as i8,
@@ -2057,7 +2060,7 @@ fn text_input(
             egui::TextEdit::singleline(value)
                 .id(id)
                 .char_limit(if limit == 0 { usize::MAX } else { limit })
-                .hint_text(hint)
+                .hint_text(RichText::new(hint).font(font.clone()))
                 .frame(egui::Frame::NONE)
                 .font(font)
                 .text_color(t.label)
@@ -2803,6 +2806,7 @@ fn app_settings_index(s: &Strings) -> Vec<(AppPane, &'static str)> {
         (AppPane::Appearance, s.topic_reveal),
         (AppPane::Appearance, s.open_at_newest),
         (AppPane::Appearance, s.mark_read_at_newest),
+        (AppPane::Appearance, s.prefer_backend_embeds),
         (AppPane::Appearance, s.record_button),
         (AppPane::Appearance, s.channel_emoji_monochrome),
         (AppPane::Appearance, s.webembed_offscreen),
@@ -3477,7 +3481,7 @@ fn rail(
                 child.add_sized(
                     inner.size(),
                     egui::TextEdit::singleline(&mut state.mobile_query)
-                        .hint_text(s.rail_search)
+                        .hint_text(RichText::new(s.rail_search).font(px(13.0, "regular")))
                         .frame(egui::Frame::NONE)
                         .font(px(13.0, "regular"))
                         .vertical_align(Align::Center),
@@ -4010,6 +4014,9 @@ fn app_pane(
                 );
                 rows.row(s.record_button, Some(s.record_button_hint), |ui, t| {
                     switch(ui, t, data.record_button);
+                });
+                rows.row(s.prefer_backend_embeds, Some(s.prefer_backend_embeds_hint), |ui, t| {
+                    switch(ui, t, data.prefer_backend_embeds);
                 });
             });
 

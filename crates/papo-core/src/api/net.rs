@@ -263,9 +263,22 @@ pub enum Command {
         ticket: RefreshTicket,
     },
     LoadOlderMessages {
-        channel_id: String,
+        ticket: RefreshTicket,
         since: chrono::DateTime<chrono::Utc>,
         last_id: String,
+    },
+    CancelMessageNavigation {
+        channel_id: String,
+    },
+    LoadNewerMessages {
+        ticket: RefreshTicket,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: String,
+    },
+    LoadMessageContext {
+        ticket: RefreshTicket,
+        message_id: String,
+        at: Option<chrono::DateTime<chrono::Utc>>,
     },
     CreateChannel {
         name: String,
@@ -297,6 +310,7 @@ pub enum Command {
         channel_id: String,
     },
     Search {
+        generation: u64,
         request: crate::api::models::SearchRequest,
         cursor: Option<(chrono::DateTime<chrono::Utc>, String)>,
         append: bool,
@@ -411,12 +425,18 @@ pub enum Command {
         owner_user_id: String,
     },
     SendMessage {
+        local_id: String,
+        owner_user_id: String,
         embeds: Vec<super::models::CustomEmbedInput>,
         channel_id: String,
         content: String,
         reply_to: Option<String>,
         notify_reply: bool,
         attachments: Vec<Upload>,
+    },
+    UploadPreparationFailed {
+        local_id: String,
+        message: String,
     },
     EditMessage {
         embeds: Option<Vec<super::models::CustomEmbedInput>>,
@@ -437,9 +457,7 @@ pub enum Command {
         message_id: String,
         pin: bool,
     },
-    LoadPinned {
-        channel_id: String,
-    },
+    LoadPinned { ticket: RefreshTicket },
     MarkNotificationsRead {
         user_id: String,
         ids: Vec<String>,
@@ -496,11 +514,12 @@ pub enum Update {
     /// Canal recém-criado: a janela o seleciona assim que a lista chega.
     ChannelCreated(String),
     SearchResults {
+        generation: u64,
         results: Vec<crate::api::models::SearchResult>,
         has_more: bool,
         append: bool,
     },
-    SearchFailed,
+    SearchFailed { generation: u64, message: String },
     ReactionDetails {
         message_id: String,
         reactions: Vec<crate::api::models::ReactionGroup>,
@@ -543,18 +562,22 @@ pub enum Update {
     /// A carga de histórico falhou; a Store libera a tentativa correspondente.
     MessagesFailed(RefreshTicket),
     OlderMessages {
-        channel_id: String,
+        ticket: RefreshTicket,
         messages: Vec<Message>,
         has_more: bool,
     },
     OlderMessagesFailed {
-        channel_id: String,
+        ticket: RefreshTicket,
     },
+    NewerMessages { ticket: RefreshTicket, messages: Vec<Message>, has_more: bool },
+    MessageContext { ticket: RefreshTicket, message_id: String, context: super::models::MessageContext },
+    MessageContextFailed { ticket: RefreshTicket, message: String },
     /// Projeção durável local, criada/restaurada antes de qualquer POST.
     Outgoing(Box<CachedOutgoing>),
     OutgoingRestored(Vec<CachedOutgoing>),
     OutgoingRemoved(String),
     OutgoingRejected {
+        local_id: String,
         owner_user_id: String,
         channel_id: String,
         content: String,
@@ -566,6 +589,11 @@ pub enum Update {
         local_id: String,
         message: Box<Message>,
     },
+    UploadFailed {
+        local_id: String,
+        message: String,
+        state: OutgoingState,
+    },
     Sent(Box<Message>),
     Edited(Box<Message>),
     Deleted(String),
@@ -573,6 +601,13 @@ pub enum Update {
     Pinned {
         channel_id: String,
         ids: Vec<String>,
+    },
+    PinnedFailed { ticket: RefreshTicket, message: String },
+    PinChanged { channel_id: String, message_id: String, pinned: bool },
+    PinnedMessages {
+        ticket: Option<RefreshTicket>,
+        channel_id: String,
+        messages: Vec<Message>,
     },
     Notifications(Vec<Notification>),
     Event(Box<Event>),
@@ -1812,6 +1847,7 @@ async fn worker(
                                 &updates,
                                 &wake,
                                 Update::OutgoingRejected {
+                                    local_id,
                                     owner_user_id,
                                     channel_id,
                                     content,
@@ -1870,6 +1906,7 @@ async fn worker(
                                     &updates,
                                     &wake,
                                     Update::OutgoingRejected {
+                                        local_id: item.local_id.clone(),
                                         owner_user_id: item.owner_user_id.clone(),
                                         channel_id: item.channel_id.clone(),
                                         content,
@@ -2109,6 +2146,127 @@ async fn worker(
                                 },
                                 priority: ReconcilePriority::Visible,
                                 kind: ReconcileKind::ChannelHistory { ticket },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
+                    }
+                    Command::LoadOlderMessages {
+                        ticket,
+                        since,
+                        last_id,
+                    } => {
+                        if ticket.generation != runtime_generation {
+                            publish(&updates, &wake, Update::OlderMessagesFailed { ticket });
+                            continue;
+                        }
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: ticket.generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::Visible,
+                                kind: ReconcileKind::OlderHistory {
+                                    ticket,
+                                    since,
+                                    last_id,
+                                },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
+                    }
+                    Command::LoadPinned { ticket } => {
+                        if ticket.generation != runtime_generation {
+                            publish(
+                                &updates,
+                                &wake,
+                                Update::PinnedFailed {
+                                    ticket,
+                                    message: "Connection changed while loading pinned messages.".into(),
+                                },
+                            );
+                            continue;
+                        }
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: ticket.generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::UserRequested,
+                                kind: ReconcileKind::PinnedHistory { ticket },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
+                    }
+                    Command::CancelMessageNavigation { channel_id } => {
+                        let mut aborts =
+                            reconcile_scheduler.cancel_key(&ReconcileKey::MessageContext(channel_id.clone()));
+                        aborts.extend(reconcile_scheduler.cancel_key(&ReconcileKey::OlderHistory(channel_id)));
+                        abort_reconciles(aborts, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
+                    }
+                    Command::LoadNewerMessages {
+                        ticket,
+                        since,
+                        last_id,
+                    } => {
+                        if ticket.generation != runtime_generation {
+                            publish(&updates, &wake, Update::OlderMessagesFailed { ticket });
+                            continue;
+                        }
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: ticket.generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::Visible,
+                                kind: ReconcileKind::NewerHistory {
+                                    ticket,
+                                    since,
+                                    last_id,
+                                },
+                            },
+                            std::time::Instant::now(),
+                        );
+                        abort_reconciles(result.abort_run_ids, &mut reconcile_aborts);
+                        diagnostics_dirty = true;
+                    }
+                    Command::LoadMessageContext {
+                        ticket,
+                        message_id,
+                        at,
+                    } => {
+                        if ticket.generation != runtime_generation {
+                            publish(
+                                &updates,
+                                &wake,
+                                Update::MessageContextFailed {
+                                    ticket,
+                                    message: "Connection changed; try opening the message again.".into(),
+                                },
+                            );
+                            continue;
+                        }
+                        let result = reconcile_scheduler.submit(
+                            ReconcileRequest {
+                                owner: TaskOwner {
+                                    generation: ticket.generation,
+                                    session_epoch,
+                                },
+                                priority: ReconcilePriority::UserRequested,
+                                kind: ReconcileKind::MessageContext {
+                                    ticket,
+                                    message_id,
+                                    at,
+                                },
                             },
                             std::time::Instant::now(),
                         );
@@ -2550,6 +2708,9 @@ fn update_runtime_diagnostics(
         .map(|job| ReconcileJobDiagnostics {
             key: match job.key {
                 ReconcileKey::ChannelHistory(channel_id) => format!("channel:{channel_id}"),
+                ReconcileKey::OlderHistory(channel_id) => format!("history:{channel_id}"),
+                ReconcileKey::MessageContext(channel_id) => format!("context:{channel_id}"),
+                ReconcileKey::PinnedHistory(channel_id) => format!("pins:{channel_id}"),
                 ReconcileKey::ServerMetadata => "server-metadata".to_owned(),
             },
             priority: match job.priority {
@@ -2637,7 +2798,7 @@ async fn run_reconcile(
                         ticket,
                         messages: list.messages,
                         has_more: list.has_more,
-                        pinned_ids: fetch_pinned_ids(&api, &scope, &channel_id).await,
+                        pinned_ids: None,
                     }],
                 },
                 Err(error) => ReconcileCompletion {
@@ -2648,6 +2809,104 @@ async fn run_reconcile(
                         Update::MessagesFailed(ticket),
                         update_for_error(error),
                     ],
+                },
+            }
+        }
+        ReconcileKind::OlderHistory {
+            ticket,
+            since,
+            last_id,
+        } => match with_retry(|| api.messages_before(&ticket.channel_id, since, &last_id)).await {
+            Ok(list) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: true,
+                updates: vec![Update::OlderMessages {
+                    ticket,
+                    messages: list.messages,
+                    has_more: list.has_more,
+                }],
+            },
+            Err(error) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: false,
+                updates: vec![
+                    Update::OlderMessagesFailed { ticket },
+                    update_for_error(error),
+                ],
+            },
+        },
+        ReconcileKind::NewerHistory {
+            ticket,
+            since,
+            last_id,
+        } => match with_retry(|| api.messages_after(&ticket.channel_id, since, &last_id)).await {
+            Ok(list) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: true,
+                updates: vec![Update::NewerMessages {
+                    ticket,
+                    messages: list.messages,
+                    has_more: list.has_more,
+                }],
+            },
+            Err(error) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: false,
+                updates: vec![
+                    Update::OlderMessagesFailed { ticket },
+                    update_for_error(error),
+                ],
+            },
+        },
+        ReconcileKind::MessageContext {
+            ticket,
+            message_id,
+            at,
+        } => match with_retry(|| api.message_context(&ticket.channel_id, &message_id, at)).await {
+            Ok(context) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: true,
+                updates: vec![Update::MessageContext {
+                    ticket,
+                    message_id,
+                    context,
+                }],
+            },
+            Err(error) => ReconcileCompletion {
+                run_id,
+                is_metadata: false,
+                success: false,
+                updates: vec![Update::MessageContextFailed {
+                    ticket,
+                    message: error.to_string(),
+                }],
+            },
+        },
+        ReconcileKind::PinnedHistory { ticket } => {
+            match with_retry(|| api.pinned(&ticket.channel_id)).await {
+                Ok(list) => ReconcileCompletion {
+                    run_id,
+                    is_metadata: false,
+                    success: true,
+                    updates: vec![Update::PinnedMessages {
+                        channel_id: ticket.channel_id.clone(),
+                        ticket: Some(ticket),
+                        messages: list.pinned,
+                    }],
+                },
+                Err(error) => ReconcileCompletion {
+                    run_id,
+                    is_metadata: false,
+                    success: false,
+                    updates: vec![Update::PinnedFailed {
+                        ticket,
+                        message: error.to_string(),
+                    }],
                 },
             }
         }
@@ -3183,6 +3442,11 @@ async fn handle(
         Command::Refresh
         | Command::RefreshAfterConnect
         | Command::LoadMessages { .. }
+        | Command::LoadOlderMessages { .. }
+        | Command::LoadNewerMessages { .. }
+        | Command::LoadMessageContext { .. }
+        | Command::CancelMessageNavigation { .. }
+        | Command::LoadPinned { .. }
         | Command::ProbeConnection
         | Command::NetworkHint(_)
         | Command::SetActivity(_) => {}
@@ -3264,32 +3528,8 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
-        Command::LoadOlderMessages {
-            channel_id,
-            since,
-            last_id,
-        } => match api.messages_before(&channel_id, since, &last_id).await {
-            Ok(list) => publish(
-                updates,
-                wake,
-                Update::OlderMessages {
-                    channel_id,
-                    messages: list.messages,
-                    has_more: list.has_more,
-                },
-            ),
-            Err(error) => {
-                publish(
-                    updates,
-                    wake,
-                    Update::OlderMessagesFailed {
-                        channel_id: channel_id.clone(),
-                    },
-                );
-                report(storage_key, updates, wake, error);
-            }
-        },
         Command::Search {
+            generation,
             request,
             cursor,
             append,
@@ -3300,14 +3540,14 @@ async fn handle(
                     updates,
                     wake,
                     Update::SearchResults {
+                        generation,
                         results: found.results,
                         has_more: found.has_more,
                         append,
                     },
                 ),
                 Err(error) => {
-                    publish(updates, wake, Update::SearchFailed);
-                    report(storage_key, updates, wake, error);
+                    publish(updates, wake, Update::SearchFailed { generation, message: error.to_string() });
                 }
             }
         }
@@ -3530,7 +3770,12 @@ async fn handle(
         | Command::DismissOutgoing { .. } => {
             unreachable!("comando de fila é interceptado pelo worker antes do handler legado")
         }
+        Command::UploadPreparationFailed { local_id, message } => {
+            publish(updates, wake, Update::UploadFailed { local_id, message, state: OutgoingState::FailedPermanent });
+        }
         Command::SendMessage {
+            local_id,
+            owner_user_id,
             embeds,
             channel_id,
             content,
@@ -3538,6 +3783,21 @@ async fn handle(
             notify_reply,
             attachments,
         } => {
+            if !session.is_authenticated()
+                || me.lock().ok().and_then(|owner| owner.clone()).as_deref()
+                    != Some(owner_user_id.as_str())
+            {
+                publish(
+                    updates,
+                    wake,
+                    Update::UploadFailed {
+                        local_id,
+                        message: "Session changed before the upload could be sent".to_owned(),
+                        state: OutgoingState::FailedPermanent,
+                    },
+                );
+                return;
+            }
             match api
                 .send_message(
                     &channel_id,
@@ -3549,9 +3809,27 @@ async fn handle(
                 )
                 .await
             {
-                Ok(message) => publish(updates, wake, Update::Sent(Box::new(message))),
+                Ok(message) => publish(
+                    updates,
+                    wake,
+                    Update::SendConfirmed {
+                        local_id,
+                        message: Box::new(message),
+                    },
+                ),
                 Err(error) => {
                     let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
+                    publish(
+                        updates,
+                        wake,
+                        Update::UploadFailed {
+                            local_id,
+                            message: error.to_string(),
+                            state: if matches!(error, ApiError::Network(_) | ApiError::Decode(_)) {
+                                OutgoingState::UnknownOutcome
+                            } else { OutgoingState::FailedPermanent },
+                        },
+                    );
                     report(storage_key, updates, wake, error);
                     if dm_blocked
                         && let Ok(dms) = api.direct_messages().await
@@ -3603,12 +3881,9 @@ async fn handle(
                 api.unpin_message(&channel_id, &message_id).await
             };
             match outcome {
-                Ok(()) => load_pinned(api, storage_key, updates, wake, channel_id).await,
+                Ok(()) => publish(updates, wake, Update::PinChanged { channel_id, message_id, pinned: pin }),
                 Err(error) => report(storage_key, updates, wake, error),
             }
-        }
-        Command::LoadPinned { channel_id } => {
-            load_pinned(api, storage_key, updates, wake, channel_id).await
         }
         Command::MarkNotificationsRead { user_id, ids } => {
             if !ids.is_empty()
@@ -3724,34 +3999,6 @@ async fn handle(
             remove_secret(storage, storage_key, Secret::SessionToken);
             publish(updates, wake, Update::Session(None));
         }
-    }
-}
-
-async fn fetch_pinned_ids(api: &Api, scope: &str, channel_id: &str) -> Option<Vec<String>> {
-    match with_retry(|| api.pinned(channel_id)).await {
-        Ok(list) => Some(
-            list.pinned
-                .into_iter()
-                .map(|message| message.id)
-                .collect(),
-        ),
-        Err(ApiError::NotFound) => Some(Vec::new()),
-        Err(error) => {
-            log::warn!("runtime {scope}: fixadas: {error}");
-            None
-        }
-    }
-}
-
-async fn load_pinned(
-    api: &Api,
-    storage_key: &str,
-    updates: &UpdateSender,
-    wake: &Wake,
-    channel_id: String,
-) {
-    if let Some(ids) = fetch_pinned_ids(api, storage_key, &channel_id).await {
-        publish(updates, wake, Update::Pinned { channel_id, ids });
     }
 }
 

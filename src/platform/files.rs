@@ -62,6 +62,8 @@ pub enum ImagePick {
     Sticker,
     /// Arte da atividade manual do Rich Presence. Fica só neste aparelho.
     ActivityArt,
+    /// Local attachment editing; no server upload happens from the editor.
+    Attachment,
 }
 
 impl ImagePick {
@@ -75,6 +77,7 @@ impl ImagePick {
             Self::Avatar | Self::ServerIcon | Self::ActivityArt => (512, 512, 2 * 1024 * 1024),
             Self::Banner => (1536, 512, 2 * 1024 * 1024),
             Self::Sticker => (512, 512, 256 * 1024),
+            Self::Attachment => (u16::MAX as u32, u16::MAX as u32, usize::MAX),
         }
     }
 
@@ -84,6 +87,7 @@ impl ImagePick {
             // Figurinha começa quadrada; o editor deixa trocar por "Original".
             Self::Avatar | Self::ServerIcon | Self::Sticker | Self::ActivityArt => Some(1.0),
             Self::Banner => Some(3.0),
+            Self::Attachment => None,
         }
     }
 }
@@ -93,7 +97,7 @@ const PREVIEW_MAX: u32 = 1600;
 
 /// Depois de escolher: figurinha vai direto para o encolhimento; o resto
 /// abre o editor com uma prévia.
-fn after_pick(path: &Path, name: String, purpose: ImagePick) -> Chosen {
+pub(crate) fn after_pick(path: &Path, name: String, purpose: ImagePick) -> Chosen {
     let image = match image::open(path) {
         Ok(image) => image,
         Err(error) => {
@@ -124,17 +128,13 @@ const ANIMATION_BUDGET: f32 = 12_000_000.0;
 /// Quadros de um GIF animado, reduzidos, para a prévia do editor. Vazio para
 /// qualquer outra coisa (inclusive GIF de um quadro só).
 fn animation_frames(path: &Path) -> Vec<(egui::ColorImage, f32)> {
-    use image::AnimationDecoder as _;
     let Ok(raw) = std::fs::read(path) else {
         return Vec::new();
     };
-    if image::guess_format(&raw).ok() != Some(image::ImageFormat::Gif) {
-        return Vec::new();
-    }
-    let Ok(decoder) = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(raw)) else {
+    let Ok(Some(frames)) = crate::media::prepare::animation_frames(&raw) else {
         return Vec::new();
     };
-    let Ok(frames) = decoder.into_frames().collect_frames() else {
+    let Ok(frames) = frames.take(240).collect::<Result<Vec<_>, _>>() else {
         return Vec::new();
     };
     if frames.len() <= 1 {

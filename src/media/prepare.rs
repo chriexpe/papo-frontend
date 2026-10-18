@@ -74,8 +74,10 @@ pub fn fit_cropped(
     let raw = std::fs::read(path).map_err(|error| error.to_string())?;
     let format = image::guess_format(&raw).map_err(|_| "formato não reconhecido".to_owned())?;
 
-    if format == ImageFormat::Gif
-        && let Some(prepared) = animated_gif(&raw, crop, max_width, max_height, max_bytes)?
+    if matches!(
+        format,
+        ImageFormat::Gif | ImageFormat::WebP | ImageFormat::Png
+    ) && let Some(prepared) = animated_gif(&raw, crop, max_width, max_height, max_bytes)?
     {
         return Ok(prepared);
     }
@@ -132,9 +134,10 @@ fn animated_gif(
     max_height: u32,
     max_bytes: usize,
 ) -> Result<Option<Prepared>, String> {
-    let decoder = GifDecoder::new(Cursor::new(raw)).map_err(|error| error.to_string())?;
-    let frames: Vec<Frame> = decoder
-        .into_frames()
+    let Some(decoded) = animation_frames(raw)? else {
+        return Ok(None);
+    };
+    let frames: Vec<Frame> = decoded
         .collect_frames()
         .map_err(|error| error.to_string())?;
     if frames.len() <= 1 {
@@ -201,6 +204,36 @@ fn animated_gif(
     }
 }
 
+/// Decode animation before any static-image conversion can discard its frames.
+pub(crate) fn animation_frames(raw: &[u8]) -> Result<Option<image::Frames<'_>>, String> {
+    let frames = match image::guess_format(raw).map_err(|error| error.to_string())? {
+        ImageFormat::Gif => GifDecoder::new(Cursor::new(raw))
+            .map_err(|error| error.to_string())?
+            .into_frames(),
+        ImageFormat::WebP => {
+            let decoder = image::codecs::webp::WebPDecoder::new(Cursor::new(raw))
+                .map_err(|error| error.to_string())?;
+            if !decoder.has_animation() {
+                return Ok(None);
+            }
+            decoder.into_frames()
+        }
+        ImageFormat::Png => {
+            let decoder = image::codecs::png::PngDecoder::new(Cursor::new(raw))
+                .map_err(|error| error.to_string())?;
+            if !decoder.is_apng().map_err(|error| error.to_string())? {
+                return Ok(None);
+            }
+            decoder
+                .apng()
+                .map_err(|error| error.to_string())?
+                .into_frames()
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(frames))
+}
+
 /// Reduz até caber na caixa, mantendo a proporção. Imagem menor que isso é
 /// deixada em paz: ampliar só faria peso e borrão.
 fn scale_to(image: &DynamicImage, width: u32, height: u32) -> DynamicImage {
@@ -241,6 +274,53 @@ fn encode64(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webp_and_apng_keep_all_frames_when_prepared_and_cropped() {
+        for (name, bytes) in [
+            (
+                "animated.webp",
+                include_bytes!("../../tests/fixtures/animated-sticker.webp").as_slice(),
+            ),
+            (
+                "animated.png",
+                include_bytes!("../../tests/fixtures/animated-sticker.png").as_slice(),
+            ),
+        ] {
+            let path = temp(name);
+            std::fs::write(&path, bytes).unwrap();
+            let prepared = fit_cropped(
+                &path,
+                Some(Crop {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 1.0,
+                }),
+                512,
+                512,
+                256 << 10,
+            )
+            .unwrap();
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD
+                .decode(prepared.blob)
+                .unwrap();
+            let frames = animation_frames(&encoded)
+                .unwrap()
+                .unwrap()
+                .collect_frames()
+                .unwrap();
+            assert_eq!(frames.len(), 2);
+            assert_eq!(frames[0].buffer().dimensions(), (4, 6));
+            assert_ne!(
+                frames[0].buffer().get_pixel(0, 0),
+                frames[1].buffer().get_pixel(0, 0)
+            );
+            assert_eq!(frames[0].delay().numer_denom_ms(), (80, 1));
+            assert_eq!(frames[1].delay().numer_denom_ms(), (120, 1));
+        }
+    }
 
     fn temp(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("papo-prepare-test");

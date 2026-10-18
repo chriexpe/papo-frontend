@@ -43,6 +43,7 @@ fn message(id: &str, channel: &str, content: &str, created_at: i64) -> CachedMes
         external_author: None,
         content: content.to_owned(),
         created_at,
+        created_at_nanos: (created_at.rem_euclid(1000) * 1000000) as u32,
         edited: false,
         reply_to: None,
         pinned: false,
@@ -277,7 +278,7 @@ fn channel_cache_pages_are_bounded_and_cursor_stable() {
         .load_channel_page_async(
             "srv",
             "geral",
-            Some((oldest.created_at, oldest.id.clone())),
+            Some((oldest.created_at, oldest.created_at_nanos, oldest.id.clone())),
         )
         .expect("second request")
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -293,7 +294,7 @@ fn channel_cache_pages_are_bounded_and_cursor_stable() {
         .load_channel_page_async(
             "srv",
             "geral",
-            Some((oldest.created_at, oldest.id.clone())),
+            Some((oldest.created_at, oldest.created_at_nanos, oldest.id.clone())),
         )
         .expect("third request")
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -340,7 +341,7 @@ fn pinned_retention_does_not_move_local_history_cursor() {
         page.messages.iter().filter(|message| !message.pinned).count(),
         CACHE_PAGE_SIZE as usize
     );
-    assert!(page.messages.iter().any(|message| message.id == "pin" && message.pinned));
+    assert!(page.pins.iter().any(|message| message.id == "pin" && message.pinned));
     let oldest_normal = page
         .messages
         .iter()
@@ -349,6 +350,44 @@ fn pinned_retention_does_not_move_local_history_cursor() {
         .expect("normal message");
     assert_eq!(oldest_normal.id, "m010");
     assert!(page.has_more);
+}
+
+#[test]
+fn fetched_pin_snapshot_is_available_after_reopening_the_database() {
+    let temp = TempDb::new("pinned-snapshot-restart");
+    let mut state = crate::state::Store::default();
+    let pinned = serde_json::from_value(serde_json::json!({
+        "id": "old-pin", "channel_id": "geral", "author_id": "u1",
+        "content": "pinned outside loaded history", "created_at": "2020-01-01T00:00:00Z",
+        "attachments": [{"id": "image", "mime_type": "image/gif", "original_file_name": "image.gif"}]
+    })).unwrap();
+    state.apply(crate::api::net::Update::PinnedMessages {
+        ticket: None,
+        channel_id: "geral".into(), messages: vec![pinned],
+    });
+    let db = open(&temp);
+    db.submit("srv", state.take_cache_ops());
+    db.flush();
+    drop(db);
+
+    let db = open(&temp);
+    let page = db.load_channel_page_async("srv", "geral", None).unwrap()
+        .recv_timeout(std::time::Duration::from_secs(2)).unwrap().unwrap();
+    let mut restored = crate::state::Store::default();
+    restored.restore_cached_page(page.clone(), false);
+    let cached_pin = &restored.pinned_messages["geral"][0];
+    assert_eq!(cached_pin.content, "pinned outside loaded history");
+    assert_eq!(cached_pin.attachments[0].name(), "image.gif");
+    assert!(cached_pin.pinned);
+
+    // A delayed local page must not resurrect pins removed by a fresh response.
+    let mut fresh = crate::state::Store::default();
+    fresh.apply(crate::api::net::Update::Pinned {
+        channel_id: "geral".into(), ids: Vec::new(),
+    });
+    fresh.restore_cached_page(page, false);
+    assert!(fresh.pinned_messages["geral"].is_empty());
+    assert!(!fresh.messages.iter().any(|message| message.pinned));
 }
 
 #[test]
@@ -838,7 +877,7 @@ fn pinned_upserts_stay_within_pinned_retention() {
     for index in 0..(PINNED_RETENTION + 80) {
         let mut pinned = message(&format!("pin{index}"), "geral", "p", index);
         pinned.pinned = true;
-        db.submit("srv", vec![CacheOp::UpsertMessage(pinned)]);
+        db.submit("srv", vec![CacheOp::UpsertDetachedMessage(pinned)]);
     }
     db.flush();
 
@@ -1912,4 +1951,355 @@ fn profile_images_are_bounded_partitioned_and_cleared() {
     db.submit("b", vec![CacheOp::ClearCachedData]);
     db.flush();
     assert!(load("b").avatars.is_empty());
+}
+
+#[test]
+fn detached_pins_never_enter_the_timeline_even_after_unpinning() {
+    let temp = TempDb::new("detached-pin-timeline");
+    let db = open(&temp);
+    let mut pin = message("pin", "geral", "old pin", 1);
+    pin.pinned = true;
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".into(),
+                messages: vec![message("head", "geral", "latest", 1000)],
+                cached_at: now_millis(),
+            },
+            CacheOp::UpsertDetachedMessage(pin),
+            CacheOp::ReplacePins {
+                channel_id: "geral".into(),
+                ids: Vec::new(),
+            },
+        ],
+    );
+    db.flush();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        ["head"]
+    );
+    assert!(page.pins.is_empty());
+}
+
+#[test]
+fn missing_append_anchor_cannot_create_a_cached_history_gap() {
+    let temp = TempDb::new("missing-history-anchor");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".into(),
+                messages: vec![message("head", "geral", "latest", 1000)],
+                cached_at: now_millis(),
+            },
+            CacheOp::AppendChannelHistory {
+                channel_id: "geral".into(),
+                anchor_id: "missing-page".into(),
+                messages: vec![message("too-old", "geral", "disconnected", 100)],
+                reconcile: true,
+                complete: false,
+            },
+        ],
+    );
+    db.flush();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert_eq!(page.messages.len(), 1);
+    assert_eq!(page.messages[0].id, "head");
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::AppendChannelHistory {
+                channel_id: "geral".into(),
+                anchor_id: "head".into(),
+                messages: vec![message("middle", "geral", "connected", 500)],
+                reconcile: true,
+                complete: false,
+            },
+            CacheOp::AppendChannelHistory {
+                channel_id: "geral".into(),
+                anchor_id: "middle".into(),
+                messages: vec![message("too-old", "geral", "connected now", 100)],
+                reconcile: true,
+                complete: true,
+            },
+        ],
+    );
+    db.flush();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        ["too-old", "middle", "head"]
+    );
+}
+
+#[test]
+fn server_head_reconciliation_removes_stale_rows_that_were_only_on_disk() {
+    let temp = TempDb::new("disk-only-head-tombstone");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".into(),
+                messages: vec![
+                    message("old", "geral", "old", 100),
+                    message("start", "geral", "start", 1000),
+                    message("deleted", "geral", "stale", 1001),
+                    message("end", "geral", "end", 1002),
+                ],
+                cached_at: now_millis(),
+            },
+            CacheOp::MergeChannelHead {
+                channel_id: "geral".into(),
+                messages: vec![
+                    message("start", "geral", "start", 1000),
+                    message("end", "geral", "end", 1002),
+                ],
+                deleted_ids: Vec::new(),
+                cached_at: now_millis(),
+                overlap_ids: vec!["start".into()],
+            },
+        ],
+    );
+    db.flush();
+    let snapshot = db.load_snapshot("srv").unwrap();
+    assert!(
+        !snapshot
+            .messages
+            .iter()
+            .any(|message| message.id == "deleted")
+    );
+    assert!(snapshot.messages.iter().any(|message| message.id == "old"));
+}
+
+#[test]
+fn historical_page_revalidation_removes_deleted_disk_rows_in_its_range() {
+    let temp = TempDb::new("history-range-revalidation");
+    let db = open(&temp);
+    db.submit(
+        "srv",
+        vec![
+            CacheOp::ReplaceChannelSnapshot {
+                channel_id: "geral".into(),
+                messages: vec![
+                    message("old", "geral", "old", 100),
+                    message("deleted", "geral", "stale", 200),
+                    message("head", "geral", "head", 1000),
+                ],
+                cached_at: now_millis(),
+            },
+            CacheOp::AppendChannelHistory {
+                channel_id: "geral".into(),
+                anchor_id: "head".into(),
+                messages: vec![message("old", "geral", "edited", 100)],
+                reconcile: true,
+                complete: true,
+            },
+        ],
+    );
+    db.flush();
+    let snapshot = db.load_snapshot("srv").unwrap();
+    assert!(
+        !snapshot
+            .messages
+            .iter()
+            .any(|message| message.id == "deleted")
+    );
+    assert_eq!(
+        snapshot
+            .messages
+            .iter()
+            .find(|message| message.id == "old")
+            .unwrap()
+            .content,
+        "edited"
+    );
+}
+
+#[test]
+fn cache_round_trip_and_pagination_keep_submillisecond_order_and_server_cursor() {
+    let temp = TempDb::new("exact-history-cursor");
+    let db = open(&temp);
+    // All messages occupy the same millisecond. IDs run in reverse order,
+    // proving that fractional timestamps, not IDs alone, decide page bounds.
+    let messages: Vec<_> = (0..205)
+        .map(|index| {
+            let mut message = message(
+                &format!("m{:03}", 205 - index),
+                "geral",
+                "same millisecond",
+                1123,
+            );
+            message.created_at_nanos = 123_000_000 + index;
+            message
+        })
+        .collect();
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".into(),
+            messages,
+            cached_at: now_millis(),
+        }],
+    );
+    db.flush();
+    let mut cursor = None;
+    let mut collected = Vec::new();
+    loop {
+        let page = db
+            .load_channel_page_async("srv", "geral", cursor)
+            .unwrap()
+            .recv()
+            .unwrap()
+            .unwrap();
+        let first = page.messages.first().unwrap();
+        assert_eq!(
+            first.to_store().at.timestamp_subsec_nanos(),
+            first.created_at_nanos
+        );
+        cursor = Some((first.created_at, first.created_at_nanos, first.id.clone()));
+        collected.extend(page.messages.iter().map(|message| message.id.clone()));
+        if !page.has_more {
+            break;
+        }
+    }
+    collected.sort();
+    collected.dedup();
+    assert_eq!(collected.len(), 205);
+}
+
+#[test]
+fn auxiliary_pin_retention_cannot_remove_rows_from_continuous_history() {
+    let temp = TempDb::new("timeline-pins-retention");
+    let db = open(&temp);
+    let messages = (0..PINNED_RETENTION + 10)
+        .map(|index| {
+            let mut cached = message(&format!("m{index:04}"), "geral", "pinned history", index);
+            cached.pinned = true;
+            cached
+        })
+        .collect();
+    db.submit(
+        "srv",
+        vec![CacheOp::ReplaceChannelSnapshot {
+            channel_id: "geral".into(),
+            messages,
+            cached_at: now_millis(),
+        }],
+    );
+    db.flush();
+    let snapshot = db.load_snapshot("srv").unwrap();
+    assert_eq!(snapshot.messages.len(), (PINNED_RETENTION + 10) as usize);
+}
+
+#[test]
+fn schema_18_upgrade_keeps_pins_and_user_state_but_rebuilds_unproven_history() {
+    let temp = TempDb::new("history-membership-migration");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let db = turso::Builder::new_local(temp.path().to_string_lossy().as_ref()).build().await.unwrap();
+        let mut conn = db.connect().unwrap();
+        super::schema::apply_migrations_for_test(&mut conn, 18).await.unwrap();
+        conn.execute("INSERT INTO server_cache(server_key, owner_user_id, me_user_id, updated_at) VALUES ('srv','owner','owner',1000)", ()).await.unwrap();
+        conn.execute("INSERT INTO messages(server_key, message_id, channel_id, author_id, content, created_at, pinned)
+            VALUES ('srv','pin','geral','author','pinned',1123,1),('srv','old','geral','author','unproven',1000,0)", ()).await.unwrap();
+        conn.execute("INSERT INTO drafts(server_key, owner_user_id, channel_id, text, reply_to, notify_reply, updated_at)
+            VALUES ('srv','owner','geral','keep this draft',NULL,1,1000)", ()).await.unwrap();
+        conn.execute("INSERT INTO send_queue(server_key, local_id, owner_user_id, channel_id, content, notify_reply, created_at, state)
+            VALUES ('srv','queued','owner','geral','keep this send',1,1000,'queued')", ()).await.unwrap();
+        conn.execute("INSERT INTO channel_read_state(server_key, owner_user_id, channel_id, read_at, read_message_id, updated_at)
+            VALUES ('srv','owner','geral',1000,'old',1000)", ()).await.unwrap();
+    });
+    let db = open(&temp);
+    assert!(db.is_enabled());
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert!(page.messages.is_empty());
+    assert_eq!(page.pins.len(), 1);
+    assert_eq!(page.pins[0].created_at_nanos, 123_000_000);
+    assert_eq!(
+        db.load_drafts("srv", "owner").unwrap()[0].text,
+        "keep this draft"
+    );
+    assert_eq!(
+        db.load_outgoing("srv", "owner").unwrap()[0].local_id,
+        "queued"
+    );
+    assert_eq!(
+        db.load_metadata("srv").unwrap().read_states[0]
+            .read_message_id
+            .as_deref(),
+        Some("old")
+    );
+}
+
+#[test]
+fn detached_metadata_pressure_cannot_punch_holes_around_a_chronological_pin() {
+    let temp = TempDb::new("detached-pressure-continuity");
+    let db = open(&temp);
+    let mut pin = message("middle-pin", "geral", "chronological pin", 2);
+    pin.pinned = true;
+    let mut ops = vec![CacheOp::ReplaceChannelSnapshot {
+        channel_id: "geral".into(),
+        messages: vec![
+            message("before", "geral", "before", 1),
+            pin,
+            message("after", "geral", "after", 3),
+        ],
+        cached_at: now_millis(),
+    }];
+    ops.extend((0..MESSAGE_RETENTION + 1).map(|index| {
+        CacheOp::UpsertDetachedMessage(message(
+            &format!("detached-{index:05}"),
+            "geral",
+            "standalone metadata",
+            index + 1000,
+        ))
+    }));
+    db.submit("srv", ops);
+    db.flush();
+    let page = db
+        .load_channel_page_async("srv", "geral", None)
+        .unwrap()
+        .recv()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        page.messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        ["before", "middle-pin", "after"]
+    );
 }

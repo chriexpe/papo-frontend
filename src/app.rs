@@ -320,6 +320,9 @@ pub struct Settings {
     /// Desligado, a leitura só avança quando a fronteira é percorrida sem saltos.
     #[serde(default)]
     pub mark_read_at_newest: bool,
+    /// Backend embed metadata is authoritative; unfurl only missing embeds.
+    #[serde(default = "enabled")]
+    pub prefer_backend_embeds: bool,
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
@@ -426,6 +429,7 @@ impl Default for Settings {
             topic_reveal: true,
             open_at_newest: true,
             mark_read_at_newest: false,
+            prefer_backend_embeds: true,
             record_button: true,
             channel_emoji_monochrome: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
@@ -555,9 +559,9 @@ struct PendingEmojiCache {
 
 struct PendingCachePage {
     channel_id: String,
-    older: bool,
     restore_epoch: u64,
     receiver: std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>,
+    history_ticket: Option<papo_core::api::net::RefreshTicket>,
 }
 
 /// Um servidor conectado: rede, estado e o que a interface guarda dele.
@@ -682,7 +686,7 @@ impl Workspace {
     fn queue_cached_page(
         &mut self,
         channel_id: String,
-        before: Option<(i64, String)>,
+        before: Option<(i64, u32, String)>,
         older: bool,
     ) -> bool {
         let restore_epoch = self.runtime.store.cache_restore_epoch();
@@ -695,9 +699,9 @@ impl Workspace {
             return false;
         };
         self.cache_pages.push(PendingCachePage {
-            channel_id,
-            older,
+            channel_id: channel_id.clone(),
             restore_epoch,
+            history_ticket: if older { self.runtime.store.history_ticket(&channel_id) } else { None },
             receiver,
         });
         true
@@ -717,6 +721,9 @@ impl Workspace {
         };
         let ticket = self.runtime.store.mark_loading(&channel_id);
         self.runtime.net.send(Command::LoadMessages { ticket });
+        if let Some(ticket) = self.runtime.store.begin_load_pinned(&channel_id, false) {
+            self.runtime.net.send(Command::LoadPinned { ticket });
+        }
     }
 
     fn sync_notification_context(&self, enabled: bool, visible_server: bool, push: bool) {
@@ -1044,6 +1051,7 @@ impl PapoApp {
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.open_at_newest = settings.open_at_newest;
         ui_state.mark_read_at_newest = settings.mark_read_at_newest;
+        ui_state.set_prefer_backend_embeds(settings.prefer_backend_embeds);
         ui_state.show_record = settings.record_button;
         ui_state.channel_emoji_monochrome = settings.channel_emoji_monochrome;
         ui_state.self_card = settings.self_card;
@@ -2080,15 +2088,50 @@ impl PapoApp {
                 let channel_id = ws.runtime.store.selected_channel.clone();
                 if let Some(before) = ws.runtime.store.begin_load_cached_older(&channel_id) {
                     ws.queue_cached_page(channel_id, Some(before), true);
-                } else if let Some((since, last_id)) =
-                    ws.runtime.store.begin_load_older(&channel_id)
-                {
+                } else if let Some((since, last_id)) = ws.runtime.store.begin_load_older(&channel_id) {
                     ws.runtime.net.send(Command::LoadOlderMessages {
-                        channel_id,
+                        ticket: ws
+                            .runtime
+                            .store
+                            .history_ticket(&channel_id)
+                            .expect("reserved history"),
                         since,
                         last_id,
                     });
                 }
+            }
+            ChatAction::CancelMessageNavigation(channel_id) => ws
+                .runtime
+                .net
+                .send(Command::CancelMessageNavigation { channel_id }),
+            ChatAction::LoadNewerMessages => {
+                let channel = ws.runtime.store.selected_channel.clone();
+                if let Some((since, last_id)) = ws.runtime.store.begin_load_newer(&channel) {
+                    ws.runtime.net.send(Command::LoadNewerMessages {
+                        ticket: ws
+                            .runtime
+                            .store
+                            .history_ticket(&channel)
+                            .expect("reserved history"),
+                        since,
+                        last_id,
+                    });
+                }
+            }
+            ChatAction::LoadMessageContext {
+                channel_id,
+                message_id,
+                at,
+            } => {
+                ws.runtime.net.send(Command::CancelMessageNavigation {
+                    channel_id: channel_id.clone(),
+                });
+                let ticket = ws.runtime.store.begin_message_context(&channel_id);
+                ws.runtime.net.send(Command::LoadMessageContext {
+                    ticket,
+                    message_id,
+                    at,
+                });
             }
             ChatAction::Send {
                 embeds,
@@ -2114,10 +2157,11 @@ impl PapoApp {
                     }
                     return;
                 }
-                // Texto comum entra na fila persistente. O Net só publica o
-                // eco depois que o ClientDb confirmou a linha; anexo continua
-                // no caminho legado porque o backend define os metadados do
-                // upload e caminhos locais não podem ir para o banco.
+                if ws.runtime.store.browsing_history(&channel_id) || ws.runtime.store.loading_message_context(&channel_id) {
+                    self.ui.return_to_latest(ctx, &mut ws.runtime.store);
+                }
+                // Show the local echo immediately. Text is persisted before
+                // the POST; upload paths remain scoped to this UI session.
                 if attachments.is_empty() {
                     let owner_user_id = ws.runtime.store.me.clone();
                     if owner_user_id.is_empty() {
@@ -2137,15 +2181,33 @@ impl PapoApp {
                     if !draft_ops.is_empty() {
                         self.cache.submit(&ws.runtime.server_key, draft_ops);
                     }
+                    let local_id = papo_core::cache::new_local_id();
+                    let created_at = papo_core::cache::now_millis();
+                    ws.runtime
+                        .store
+                        .project_outgoing(papo_core::cache::CachedOutgoing {
+                            local_id: local_id.clone(),
+                            owner_user_id: owner_user_id.clone(),
+                            channel_id: channel_id.clone(),
+                            content: wire_content.clone(),
+                            embeds: embeds.clone(),
+                            reply_to: reply_to.clone(),
+                            notify_reply,
+                            created_at,
+                            state: papo_core::cache::OutgoingState::Queued,
+                            attempt_count: 0,
+                            last_attempt_at: None,
+                            last_error: None,
+                        });
                     ws.runtime.net.send(Command::QueueMessage {
                         embeds,
-                        local_id: papo_core::cache::new_local_id(),
+                        local_id,
                         owner_user_id,
                         channel_id,
                         content: wire_content,
                         reply_to,
                         notify_reply,
-                        created_at: papo_core::cache::now_millis(),
+                        created_at,
                     });
                 } else {
                     self.ui.clear_unread_marker(&ws.runtime.store);
@@ -2158,47 +2220,22 @@ impl PapoApp {
                             self.cache.submit(&ws.runtime.server_key, draft_ops);
                         }
                     }
-                    if attachments.iter().any(|upload| upload.anonymize) {
-                        // Reescrever imagem custa; fora da thread da interface.
-                        let sender = ws.runtime.net.sender();
-                        std::thread::spawn(move || {
-                            let dir = crate::media::cache_root().join("anonymized");
-                            let attachments = attachments
-                                .into_iter()
-                                .filter_map(|upload| {
-                                    if !upload.anonymize {
-                                        return Some(upload);
-                                    }
-                                    match crate::platform::anonymize::anonymize(&upload, &dir) {
-                                        Ok(done) => Some(done.upload),
-                                        // Nunca cair para o original: o usuário
-                                        // pediu anonimato.
-                                        Err(error) => {
-                                            log::warn!("anonimizar {}: {error}", upload.name);
-                                            None
-                                        }
-                                    }
-                                })
-                                .collect();
-                            sender.send(Command::SendMessage {
-                                embeds,
-                                channel_id,
-                                content: wire_content,
-                                reply_to,
-                                notify_reply,
-                                attachments,
-                            });
-                        });
-                    } else {
-                        ws.runtime.net.send(Command::SendMessage {
-                            embeds,
-                            channel_id,
-                            content: wire_content,
-                            reply_to,
-                            notify_reply,
-                            attachments,
-                        });
-                    }
+                    let local_id =
+                        ws.runtime
+                            .store
+                            .push_upload(&channel_id, &wire_content, reply_to.clone());
+                    let command = Command::SendMessage {
+                        local_id: local_id.clone(),
+                        owner_user_id,
+                        embeds,
+                        channel_id,
+                        content: wire_content,
+                        reply_to,
+                        notify_reply,
+                        attachments,
+                    };
+                    self.ui.pending_uploads.insert(local_id, command.clone());
+                    send_upload(ws.runtime.net.sender(), command);
                 }
             }
             ChatAction::Edit {
@@ -2214,12 +2251,23 @@ impl PapoApp {
                 ws.runtime.net.send(Command::DeleteMessage { message_id })
             }
             ChatAction::RetryOutgoing(local_id) => {
+                if let Some(command) = self.ui.pending_uploads.get(&local_id).cloned() {
+                    ws.runtime.store.mark_upload_sending(&local_id);
+                    send_upload(ws.runtime.net.sender(), command);
+                    return;
+                }
                 ws.runtime.net.send(Command::RetryOutgoing {
                     local_id,
                     owner_user_id: ws.runtime.store.me.clone(),
                 });
             }
             ChatAction::DismissOutgoing(local_id) => {
+                if self.ui.pending_uploads.remove(&local_id).is_some() {
+                    ws.runtime
+                        .store
+                        .apply(crate::api::net::Update::OutgoingRemoved(local_id));
+                    return;
+                }
                 ws.runtime.net.send(Command::DismissOutgoing {
                     local_id,
                     owner_user_id: ws.runtime.store.me.clone(),
@@ -2423,13 +2471,20 @@ impl PapoApp {
                     ws.runtime.store.call.floating = false;
                 }
             }
+            ChatAction::LoadPinned(channel_id) => {
+                if let Some(ticket) = ws.runtime.store.begin_load_pinned(&channel_id, true) {
+                    ws.runtime.net.send(Command::LoadPinned { ticket });
+                }
+            }
             ChatAction::Search {
                 request,
                 cursor,
                 append,
             } => {
+                if !append { ws.runtime.store.reset_search(); }
                 ws.runtime.store.searching = true;
                 ws.runtime.net.send(Command::Search {
+                    generation: ws.runtime.store.search_generation,
                     request,
                     cursor,
                     append,
@@ -2702,6 +2757,9 @@ impl PapoApp {
             }
             // Sem rede na demonstração: estas ações não têm efeito local.
             ChatAction::LoadOlderMessages
+            | ChatAction::CancelMessageNavigation(_)
+            | ChatAction::LoadNewerMessages
+            | ChatAction::LoadMessageContext { .. }
             | ChatAction::OpenDirectMessage(_)
             | ChatAction::SelectInboxDirectMessage { .. }
             | ChatAction::HideDirectMessage { .. }
@@ -2712,6 +2770,7 @@ impl PapoApp {
             | ChatAction::EditProfile
             | ChatAction::MarkServerRead
             | ChatAction::LeaveServer
+            | ChatAction::LoadPinned(_)
             | ChatAction::Search { .. }
             | ChatAction::LoadReactionDetails { .. } => {}
             // A presença muda na hora, sem servidor para confirmar.
@@ -2844,15 +2903,19 @@ impl PapoApp {
                     continue;
                 }
                 match result {
-                    Ok(page) => workspace
-                        .runtime
-                        .store
-                        .restore_cached_page(page, request.older),
+                    Ok(page) => {
+                        if let Some(ticket) = request.history_ticket.as_ref() {
+                            workspace.runtime.store.restore_cached_history(ticket, page);
+                        } else {
+                            workspace.runtime.store.restore_cached_page(page, false);
+                        }
+                    },
                     Err(error) => {
-                        workspace
-                            .runtime
-                            .store
-                            .cached_page_failed(&request.channel_id, request.older);
+                        if let Some(ticket) = request.history_ticket.as_ref() {
+                            workspace.runtime.store.cached_history_failed(ticket);
+                        } else {
+                            workspace.runtime.store.cached_page_failed(&request.channel_id, false);
+                        }
                         log::warn!(
                             "cache: hydration failed server={} channel={}: {error}",
                             workspace.runtime.server_key,
@@ -3069,6 +3132,9 @@ impl PapoApp {
         ctx.request_repaint();
         if egui::Popup::is_any_open(ctx) {
             egui::Popup::close_all(ctx);
+            return;
+        }
+        if self.ui.attachment_editor.take().is_some() {
             return;
         }
         if self.crop.take().is_some() {
@@ -3355,14 +3421,30 @@ impl PapoApp {
 
     /// Respostas dos diálogos do sistema e arquivos soltos na janela.
     fn pump_files(&mut self, ctx: &egui::Context) {
+        let store = &self.workspaces[self.active].runtime.store;
+        let channel_id = store.selected_channel.clone();
+        let chat_target = store.screen == Screen::Chat
+            && store.channel(&channel_id).is_some_and(|channel| {
+                matches!(
+                    channel.kind,
+                    crate::state::ChannelKind::Text | crate::state::ChannelKind::Direct
+                )
+            });
         #[cfg(target_os = "android")]
-        self.ui
-            .attachments
-            .extend(crate::platform::files::take_clipboard_attachments());
+        if chat_target {
+            self.ui.ingest_attachments(
+                &channel_id,
+                crate::platform::files::take_clipboard_attachments(),
+            );
+        }
 
         for chosen in self.dialogs.poll() {
             match chosen {
-                Chosen::Files(uploads) => self.ui.attachments.extend(uploads),
+                Chosen::Files(uploads) => {
+                    if chat_target {
+                        self.ui.ingest_attachments(&channel_id, uploads);
+                    }
+                }
                 Chosen::Folder(path) => self.settings.downloads = DownloadMode::Folder(path),
                 Chosen::SaveAs { id, name, dest } => self.ui.media.save(&id, &name, dest),
                 Chosen::SaveCached { source, dest } => {
@@ -3396,6 +3478,7 @@ impl PapoApp {
                     shrunk: _,
                     name,
                 } => match purpose {
+                    ImagePick::Attachment => {}
                     ImagePick::Avatar => {
                         self.workspaces[self.active].runtime
                             .net
@@ -3435,11 +3518,14 @@ impl PapoApp {
 
         // Arrastar e soltar entra na mesma fila do seletor.
         let dropped = ctx.input(|input| input.raw.dropped_files.clone());
-        for file in dropped {
-            let path = file.path();
-            if !path.as_os_str().is_empty() {
-                self.ui.attachments.push(files::describe(&path.to_path_buf()));
-            }
+        if chat_target {
+            let uploads = dropped
+                .into_iter()
+                .map(|file| file.path().to_path_buf())
+                .filter(|path| path.is_file())
+                .map(|path| files::describe(&path))
+                .collect();
+            self.ui.ingest_attachments(&channel_id, uploads);
         }
     }
 
@@ -3553,7 +3639,7 @@ impl PapoApp {
             MenuCommand::NewChannel => self.sheet.open_new_channel(),
             // A busca virou parte da pastilha de ações, dentro da conversa.
             MenuCommand::Search => {
-                crate::ui::shell::toggle_panel(&mut self.ui, crate::ui::shell::PanelKind::Search)
+                crate::ui::shell::toggle_panel(&mut self.workspaces[self.active].runtime.store, &mut self.ui, crate::ui::shell::PanelKind::Search)
             }
             // "Sobre" virou uma linha no fim dos ajustes, em vez de uma
             // janela só para dizer a versão.
@@ -3797,6 +3883,7 @@ impl PapoApp {
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
+            self.settings.prefer_backend_embeds,
         );
 
         let diagnostics: Vec<crate::ui::settings::WorkspaceDiagnostics> = self
@@ -3840,6 +3927,7 @@ impl PapoApp {
                 topic_reveal: &mut self.settings.topic_reveal,
                 open_at_newest: &mut self.settings.open_at_newest,
                 mark_read_at_newest: &mut self.settings.mark_read_at_newest,
+                prefer_backend_embeds: &mut self.settings.prefer_backend_embeds,
                 record_button: &mut self.settings.record_button,
                 channel_emoji_monochrome: &mut self.settings.channel_emoji_monochrome,
                 self_card: &mut self.settings.self_card,
@@ -3898,12 +3986,14 @@ impl PapoApp {
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
+            self.settings.prefer_backend_embeds,
         );
         if before_primary != after_primary || before_secondary != after_secondary {
             self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
             self.ui.mark_read_at_newest = self.settings.mark_read_at_newest;
+            self.ui.set_prefer_backend_embeds(self.settings.prefer_backend_embeds);
             self.ui.show_record = self.settings.record_button;
             if ask_download != before_secondary.8 {
                 self.settings.downloads = if ask_download {
@@ -4748,6 +4838,19 @@ impl eframe::App for PapoApp {
         self.sheet.modal_above = self.crop.is_some();
         self.settings_sheet(&ctx);
         self.crop_editor(&ctx);
+        if let Some(mut editor) = self.ui.attachment_editor.take() {
+            match editor.draw(&ctx, &self.tokens, strings) {
+                Some(crate::ui::attachment_editor::Outcome::Save(upload)) => {
+                    if let Some(current) = self.ui.attachments.get_mut(editor.index)
+                        && current.path == editor.original
+                    {
+                        *current = upload;
+                    }
+                }
+                Some(crate::ui::attachment_editor::Outcome::Cancel) => {}
+                None => self.ui.attachment_editor = Some(editor),
+            }
+        }
         crate::platform::back::intercept(
             self.crop.is_some()
                 || self.sheet.open.is_some()
@@ -5060,9 +5163,60 @@ fn tray_labels(settings: &Settings) -> TrayLabels {
     }
 }
 
+/// Image rewriting runs before upload and fails the whole send if any image
+/// cannot be anonymized. Never silently send a subset of the attachments.
+fn send_upload(sender: crate::api::net::NetSender, mut command: Command) {
+    let Command::SendMessage { attachments, .. } = &mut command else {
+        return;
+    };
+    if !attachments.iter().any(|upload| upload.anonymize) {
+        sender.send(command);
+        return;
+    }
+    std::thread::spawn(move || {
+        let Command::SendMessage {
+            local_id,
+            attachments,
+            ..
+        } = &mut command
+        else {
+            return;
+        };
+        let dir = crate::media::cache_root().join("anonymized");
+        for upload in attachments {
+            if upload.anonymize {
+                match crate::platform::anonymize::anonymize(upload, &dir) {
+                    Ok(done) => *upload = done.upload,
+                    Err(message) => {
+                        sender.send(Command::UploadPreparationFailed {
+                            local_id: local_id.clone(),
+                            message,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+        sender.send(command);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalise_server_url;
+
+    #[test]
+    fn backend_embed_preference_defaults_on_and_persists_when_disabled() {
+        let mut saved = serde_json::to_value(super::Settings::default()).unwrap();
+        saved.as_object_mut().unwrap().remove("prefer_backend_embeds");
+        let mut settings: super::Settings = serde_json::from_value(saved).unwrap();
+        assert!(settings.prefer_backend_embeds);
+        settings.prefer_backend_embeds = false;
+        let restored: super::Settings = serde_json::from_value(
+            serde_json::to_value(settings).unwrap(),
+        ).unwrap();
+        assert!(!restored.prefer_backend_embeds);
+    }
 
     /// Endereço sem esquema é o caso comum de um servidor de casa; ele tem de
     /// virar uma URL que o `reqwest` aceite, ou a conexão morre em silêncio.

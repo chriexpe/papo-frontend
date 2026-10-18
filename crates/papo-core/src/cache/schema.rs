@@ -7,7 +7,7 @@
 use turso::Connection;
 
 /// Versão que o código espera encontrar depois de migrar.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// Uma migração: versão alvo e as instruções SQL que a compõem.
 struct Migration {
@@ -254,6 +254,17 @@ const MIGRATIONS: &[Migration] = &[Migration {
     statements: &[
         "ALTER TABLE channel_read_state ADD COLUMN gap_end_at INTEGER",
         "ALTER TABLE channel_read_state ADD COLUMN gap_end_message_id TEXT",
+    ],
+}, Migration {
+    version: 19,
+    statements: &[
+        "ALTER TABLE messages ADD COLUMN timeline INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE messages ADD COLUMN created_at_nanos INTEGER NOT NULL DEFAULT 0",
+        "UPDATE messages SET created_at_nanos = ((created_at % 1000 + 1000) % 1000) * 1000000",
+        // Old rows have no proof of continuity. Keep retained pins, drafts,
+        // read state and the send queue; rebuild chronological coverage online.
+        "DELETE FROM messages WHERE pinned = 0",
+        "CREATE INDEX idx_messages_timeline ON messages(server_key, channel_id, timeline, created_at, created_at_nanos, message_id)",
     ],
 }];
 

@@ -6,11 +6,15 @@ crate (from Cargo's archive cache when possible), verifies its SHA-256, extracts
 it into the ignored `.papo/patch/winit-0.30.13` directory, and applies the diff.
 Cargo compiles that local path through `[patch.crates-io]`.
 
-The patch changes four source files: runtime visibility, Wayland window
+The visibility changes cover runtime visibility, Wayland window
 state/configure handling and redraw scheduling. Hiding unmaps the toplevel;
 showing restores its metadata and waits for a fresh configure. Background
 logic remains active while hidden painting is suspended. Initial visibility
 semantics remain unchanged.
+
+The same patch adds native Wayland file-drop reception through `wl_data_device`.
+It accepts copy operations with local file URIs and reads the bounded URI payload
+through the existing event loop before emitting normal winit file-drop events.
 
 ## Preparing a checkout
 

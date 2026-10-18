@@ -64,6 +64,7 @@ pub struct CropEditor {
     square: bool,
     /// Figurinha: o nome, digitado aqui mesmo.
     sticker_name: String,
+    pub attachment: Option<papo_core::api::client::Upload>,
 }
 
 pub enum CropOutcome {
@@ -120,13 +121,14 @@ impl CropEditor {
             cycle,
             zoom: 1.0,
             center: (size / 2.0).to_pos2(),
-            square: true,
+            square: purpose != ImagePick::Attachment,
             sticker_name: sanitize(&stem),
+            attachment: None,
         }
     }
 
     fn aspect(&self) -> f32 {
-        if self.purpose == ImagePick::Sticker && !self.square {
+        if matches!(self.purpose, ImagePick::Sticker | ImagePick::Attachment) && !self.square {
             self.size.x / self.size.y
         } else {
             self.purpose.aspect().unwrap_or(1.0)
@@ -155,6 +157,10 @@ impl CropEditor {
 
     /// Tamanho que o servidor vai receber, pela proporção do recorte.
     fn output_size(&self) -> (u32, u32) {
+        if self.purpose == ImagePick::Attachment {
+            let size = self.crop_size();
+            return (size.x.round() as u32, size.y.round() as u32);
+        }
         let (max_w, max_h, _) = self.purpose.limits();
         let aspect = self.aspect();
         if aspect >= max_w as f32 / max_h as f32 {
@@ -210,8 +216,14 @@ pub fn draw(
     let base_width = if side { STICKER_SHEET_WIDTH } else { SHEET_WIDTH };
     let width = base_width.min(screen.width() - space::MD * 2.0);
     let stacked = if sticker && !side { STACKED_EXTRA } else { 0.0 };
-    let canvas_h = CANVAS_HEIGHT.min((screen.height() - HEADER - 112.0 - stacked - space::XL).max(160.0));
-    let height = HEADER + canvas_h + 112.0 + stacked;
+    let extra = if editor.attachment.is_some() {
+        24.0
+    } else {
+        0.0
+    };
+    let canvas_h = CANVAS_HEIGHT
+        .min((screen.height() - HEADER - 112.0 - stacked - extra - space::XL).max(120.0));
+    let height = HEADER + canvas_h + 112.0 + stacked + extra;
     let sheet = Rect::from_center_size(screen.center(), Vec2::new(width, height));
 
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("editor-de-recorte"));
@@ -268,6 +280,7 @@ fn editor_contents(
         ImagePick::ServerIcon => s.crop_icon,
         ImagePick::Sticker => s.sticker_new,
         ImagePick::ActivityArt => s.crop_activity,
+        ImagePick::Attachment => s.attach_edit,
         _ => s.crop_avatar,
     };
     let title_galley = ui
@@ -279,25 +292,42 @@ fn editor_contents(
     );
     let title_w = title_galley.size().x;
     ui.painter().galley(title_pos, title_galley, t.label);
-    let meta = format!(
-        "{} · {} × {}",
-        editor.name, editor.size.x as u32, editor.size.y as u32
-    );
-    ui.painter()
-        .with_clip_rect(Rect::from_x_y_ranges(
-            title_pos.x + title_w + space::MD..=sheet.max.x - space::XL,
-            sheet.y_range(),
-        ))
-        .text(
+    if let Some(upload) = editor.attachment.as_mut() {
+        let field_left = title_pos.x + title_w + space::MD;
+        let field = Rect::from_center_size(
             egui::pos2(
-                title_pos.x + title_w + space::MD,
+                (field_left + sheet.max.x - space::XL) / 2.0,
                 sheet.min.y + HEADER / 2.0,
             ),
-            Align2::LEFT_CENTER,
-            meta,
-            text::callout(),
-            t.label_tertiary,
+            Vec2::new(sheet.max.x - space::XL - field_left, 30.0),
         );
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(field)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| super::attachment_editor::name_field(ui, upload, s),
+        );
+    } else {
+        let meta = format!(
+            "{} · {} × {}",
+            editor.name, editor.size.x as u32, editor.size.y as u32
+        );
+        ui.painter()
+            .with_clip_rect(Rect::from_x_y_ranges(
+                title_pos.x + title_w + space::MD..=sheet.max.x - space::XL,
+                sheet.y_range(),
+            ))
+            .text(
+                egui::pos2(
+                    title_pos.x + title_w + space::MD,
+                    sheet.min.y + HEADER / 2.0,
+                ),
+                Align2::LEFT_CENTER,
+                meta,
+                text::callout(),
+                t.label_tertiary,
+            );
+    }
     ui.painter().line_segment(
         [
             egui::pos2(sheet.min.x, sheet.min.y + HEADER),
@@ -459,7 +489,9 @@ fn editor_contents(
                         .font(text::icon(12.0))
                         .color(t.label_secondary),
                 );
-                let toggle_w = if sticker { 150.0 } else { 0.0 };
+                let adjustable =
+                    matches!(editor.purpose, ImagePick::Sticker | ImagePick::Attachment);
+                let toggle_w = if adjustable { 150.0 } else { 0.0 };
                 ui.spacing_mut().slider_width = (ui.available_width() - 26.0 - toggle_w).max(60.0);
                 ui.add(egui::Slider::new(&mut editor.zoom, 1.0..=MAX_ZOOM).show_value(false));
                 ui.label(
@@ -467,7 +499,7 @@ fn editor_contents(
                         .font(text::icon(18.0))
                         .color(t.label_secondary),
                 );
-                if sticker {
+                if adjustable {
                     let mut square = editor.square;
                     if segmented(ui, t, &mut square, &[(true, s.crop_square), (false, s.crop_original)]) {
                         editor.square = square;
@@ -491,6 +523,12 @@ fn editor_contents(
                 )
                 .wrap(),
             );
+            if let Some(upload) = editor.attachment.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut upload.spoiler, s.attach_spoiler);
+                    ui.checkbox(&mut upload.anonymize, s.attach_anonymize);
+                });
+            }
             // Sem espaço para a coluna, nome e prévias descem para cá.
             if sticker && !side {
                 ui.add_space(space::XS);
@@ -516,7 +554,11 @@ fn editor_contents(
     }
 
     // --- Pé: o que sai, e os botões -----------------------------------------------
-    let ready = !sticker || !editor.sticker_name.is_empty();
+    let ready = (!sticker || !editor.sticker_name.is_empty())
+        && editor
+            .attachment
+            .as_ref()
+            .is_none_or(|upload| super::attachment_editor::valid_name(&upload.name));
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(footer.shrink2(Vec2::new(space::XL, space::MD)))
@@ -534,8 +576,13 @@ fn editor_contents(
             } else {
                 "WebP".to_owned()
             };
+            let summary = if editor.purpose == ImagePick::Attachment {
+                format!("{w} × {h} · {kind}")
+            } else {
+                format!("{w} × {h} · {kind} · {weight}")
+            };
             ui.label(
-                egui::RichText::new(format!("{w} × {h} · {kind} · {weight}"))
+                egui::RichText::new(summary)
                     .font(text::footnote())
                     .color(t.label_tertiary),
             );
