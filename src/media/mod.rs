@@ -1817,15 +1817,14 @@ impl MediaStore {
     /// Imagem de embed. Os bytes são buscados sob demanda em GET /embeds/:id.
     pub fn preview(&mut self, preview: &LinkPreview) -> Option<&Texture> {
         let key = preview_key(&preview.id);
+        // Absence in the current metadata is authoritative, even if this ID
+        // used to have an image. A decoded texture cannot recreate removed media.
+        if preview.image_data.is_none() && preview.thumbnail.is_none() && preview.image.is_none() {
+            self.textures.remove(&key);
+            self.used.remove(&key);
+            return None;
+        }
         if !self.textures.contains_key(&key) {
-            // Sem MIME/tamanho e sem blob o backend já disse que não há imagem:
-            // não vale disparar uma requisição que só voltaria vazia.
-            if preview.image_data.is_none()
-                && preview.thumbnail.is_none()
-                && preview.image.is_none()
-            {
-                return None;
-            }
             self.textures.insert(key.clone(), Texture::Loading);
             self.ask(Request::Preview {
                 id: preview.id.clone(),
@@ -2832,6 +2831,21 @@ mod lifecycle_tests {
         assert!(!media.textures.contains_key("emoji:old"));
         media.housekeep();
         assert_eq!(total_bytes(&media), 800);
+    }
+
+    #[test]
+    fn text_only_backend_metadata_cannot_resurrect_a_cached_cover() {
+        let ctx = egui::Context::default();
+        let mut media = store_com_budget(800);
+        let preview = serde_json::from_value(serde_json::json!({
+            "id": "post", "source_type": "link", "title": "No image"
+        })).unwrap();
+        let key = preview_key("post");
+        media.textures.insert(key.clone(), textura(&ctx, &key, 10, 10));
+        media.touch(&key);
+        assert!(media.preview(&preview).is_none());
+        assert!(!media.textures.contains_key(&key));
+        assert!(!media.used.contains_key(&key));
     }
 
     #[test]

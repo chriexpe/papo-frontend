@@ -4,6 +4,7 @@ Branch: `feat/chat-qol`, based on `origin/feat/unread-divider` at `8f407ef`.
 The checkout was fast-forwarded by 11 commits; it already contained `origin/main`.
 
 - [x] Render server stickers inside the composer, with a trailing space. Preserve shortcodes in drafts, clipboard text and API payloads.
+- [x] Add that space only when completing a newly inserted shortcode. Backspace can remove the space and then the inline sticker without completion reinserting it.
 - [x] Decode animated WebP/APNG as animations and preserve animation when preparing stickers.
 - [x] Paste files/images without first focusing the composer. Receive native Wayland file drops. Keep attachments with their target channel.
 - [x] With an empty composer, ↑ edits the latest editable message from the current user in that channel. Suggestions retain their arrow-key navigation.
@@ -23,6 +24,10 @@ The checkout was fast-forwarded by 11 commits; it already contained `origin/main
 - [x] Give media in search results separate widget identities from the timeline.
 - [x] Add image/GIF context menus: copy image, save image, copy media link and open media link.
 - [x] Apply wheel movement once across repeated layout passes. Preserve the visible message when content changes above it or older history is prepended, and keep row widget identities stable during culling.
+- [x] Keep return-to-latest active until the newest viewport is actually drawn, including when the unread tail grows after its initial measurement.
+- [x] Add “Prefer backend embeds” under Appearance → Chat, enabled by default. Backend cards own their metadata, including absent media; frontend previews remain available for links without backend cards. Disabling the setting restores frontend enrichment.
+- [x] Flatten multiline reply snippets before layout so the single-line quote does not clip their first and last lines.
+- [x] Render provider GIFs as standalone media using declared GIF fetch methods/MIME types, with legacy GIPHY, Tenor and KLIPY page compatibility. Reserve declared dimensions during loading, preserve aspect ratio and use the chat's media width instead of a small titled link card.
 
 The crop controls reuse the existing original-ratio/square editor. Cropped or
 anonymized WebP/APNG animations are encoded as GIF. Original files are untouched.

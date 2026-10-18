@@ -320,6 +320,9 @@ pub struct Settings {
     /// Desligado, a leitura só avança quando a fronteira é percorrida sem saltos.
     #[serde(default)]
     pub mark_read_at_newest: bool,
+    /// Backend embed metadata is authoritative; unfurl only missing embeds.
+    #[serde(default = "enabled")]
+    pub prefer_backend_embeds: bool,
     /// Botão de gravar recado ao lado da caixa de texto.
     #[serde(default = "enabled")]
     pub record_button: bool,
@@ -426,6 +429,7 @@ impl Default for Settings {
             topic_reveal: true,
             open_at_newest: true,
             mark_read_at_newest: false,
+            prefer_backend_embeds: true,
             record_button: true,
             channel_emoji_monochrome: true,
             self_card: crate::ui::profile::SelfCardStyle::default(),
@@ -1047,6 +1051,7 @@ impl PapoApp {
         ui_state.reveal_topic = settings.topic_reveal;
         ui_state.open_at_newest = settings.open_at_newest;
         ui_state.mark_read_at_newest = settings.mark_read_at_newest;
+        ui_state.set_prefer_backend_embeds(settings.prefer_backend_embeds);
         ui_state.show_record = settings.record_button;
         ui_state.channel_emoji_monochrome = settings.channel_emoji_monochrome;
         ui_state.self_card = settings.self_card;
@@ -3878,6 +3883,7 @@ impl PapoApp {
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
+            self.settings.prefer_backend_embeds,
         );
 
         let diagnostics: Vec<crate::ui::settings::WorkspaceDiagnostics> = self
@@ -3921,6 +3927,7 @@ impl PapoApp {
                 topic_reveal: &mut self.settings.topic_reveal,
                 open_at_newest: &mut self.settings.open_at_newest,
                 mark_read_at_newest: &mut self.settings.mark_read_at_newest,
+                prefer_backend_embeds: &mut self.settings.prefer_backend_embeds,
                 record_button: &mut self.settings.record_button,
                 channel_emoji_monochrome: &mut self.settings.channel_emoji_monochrome,
                 self_card: &mut self.settings.self_card,
@@ -3979,12 +3986,14 @@ impl PapoApp {
             self.settings.webembed_offscreen,
             self.settings.webembed_scope,
             ask_download,
+            self.settings.prefer_backend_embeds,
         );
         if before_primary != after_primary || before_secondary != after_secondary {
             self.ui.channel_emoji_monochrome = self.settings.channel_emoji_monochrome;
             self.ui.self_card = self.settings.self_card;
             self.ui.open_at_newest = self.settings.open_at_newest;
             self.ui.mark_read_at_newest = self.settings.mark_read_at_newest;
+            self.ui.set_prefer_backend_embeds(self.settings.prefer_backend_embeds);
             self.ui.show_record = self.settings.record_button;
             if ask_download != before_secondary.8 {
                 self.settings.downloads = if ask_download {
@@ -5195,6 +5204,19 @@ fn send_upload(sender: crate::api::net::NetSender, mut command: Command) {
 #[cfg(test)]
 mod tests {
     use super::normalise_server_url;
+
+    #[test]
+    fn backend_embed_preference_defaults_on_and_persists_when_disabled() {
+        let mut saved = serde_json::to_value(super::Settings::default()).unwrap();
+        saved.as_object_mut().unwrap().remove("prefer_backend_embeds");
+        let mut settings: super::Settings = serde_json::from_value(saved).unwrap();
+        assert!(settings.prefer_backend_embeds);
+        settings.prefer_backend_embeds = false;
+        let restored: super::Settings = serde_json::from_value(
+            serde_json::to_value(settings).unwrap(),
+        ).unwrap();
+        assert!(!restored.prefer_backend_embeds);
+    }
 
     /// Endereço sem esquema é o caso comum de um servidor de casa; ele tem de
     /// virar uma URL que o `reqwest` aceite, ou a conexão morre em silêncio.

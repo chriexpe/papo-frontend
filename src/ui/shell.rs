@@ -1070,6 +1070,7 @@ pub struct UiState {
     pub open_at_newest: bool,
     /// Ao chegar ao head, confirma uma lacuna antiga quando habilitado.
     pub mark_read_at_newest: bool,
+    pub prefer_backend_embeds: bool,
     /// Canal esperando a primeira navegação depois de ser aberto.
     open_channel_pending: Option<String>,
     /// Measure a requested jump invisibly before presenting its new window.
@@ -1248,6 +1249,7 @@ impl Default for UiState {
             reveal_topic: true,
             open_at_newest: true,
             mark_read_at_newest: false,
+            prefer_backend_embeds: true,
             open_channel_pending: None,
             open_jump_pending: None,
             scroll_latest_pending: None,
@@ -1279,6 +1281,15 @@ impl Default for UiState {
 }
 
 impl UiState {
+    pub fn set_prefer_backend_embeds(&mut self, prefer: bool) {
+        if self.prefer_backend_embeds != prefer {
+            self.prefer_backend_embeds = prefer;
+            self.row_heights.clear();
+            self.embed_image_sizes.clear();
+            self.relayout = true;
+        }
+    }
+
     pub fn clear_unread_marker(&mut self, store: &Store) {
         self.unread_marker = None;
         if !store.selected_channel.is_empty() {
@@ -3388,8 +3399,11 @@ fn conversation(
             // páginas antigas até encontrá-la antes de estabilizar a abertura.
             let latest_pass =
                 state.scroll_latest_pending.as_deref() == Some(channel_id.as_str());
+            let latest_measurement_pass = latest_pass
+                && !state.forced_chat_scroll.as_ref()
+                    .is_some_and(|(channel, _)| channel == &channel_id);
             let requested_jump_pass = state.open_jump_pending.as_deref() == Some(channel_id.as_str());
-            let opening_pass = requested_jump_pass || latest_pass
+            let opening_pass = requested_jump_pass || latest_measurement_pass
                 || state.open_channel_pending.as_deref() == Some(channel_id.as_str());
             if opening_pass {
                 state.read_span_break = true;
@@ -3525,11 +3539,17 @@ fn conversation(
             if opening_at_bottom {
                 let bottom =
                     (output.content_size.y - output.inner_rect.height()).max(0.0);
-                state.forced_chat_scroll = Some((channel_id.clone(), bottom));
                 state.open_channel_pending = None;
-                state.scroll_latest_pending = None;
-                ui.ctx()
-                    .request_discard("posição inicial da conversa resolvida no head");
+                // A measured pixel offset is not the destination. Cold rows
+                // can expand on their first visible pass; keep the semantic
+                // bottom target until geometry was actually drawn there.
+                if !opening_pass && (output.inner - bottom).abs() <= 0.5 {
+                    state.scroll_latest_pending = None;
+                } else {
+                    state.scroll_latest_pending = Some(channel_id.clone());
+                    state.forced_chat_scroll = Some((channel_id.clone(), bottom));
+                    ui.ctx().request_discard("resolve the current bottom before completing navigation");
+                }
             } else if opening_at_message
                 && state
                     .jump
@@ -3564,7 +3584,7 @@ fn conversation(
             );
             let resize_changed_offset = content_resized
                 && (output.state.offset.y - output.inner).abs() > 0.5;
-            if !opening_pass && (preserve_anchor || resize_changed_offset) {
+            if !opening_pass && !latest_pass && (preserve_anchor || resize_changed_offset) {
                 let correction = if preserve_anchor { drift } else { 0.0 };
                 state.forced_chat_scroll = Some((channel_id.clone(),
                     (output.state.offset.y + correction).max(0.0)));
@@ -3572,6 +3592,7 @@ fn conversation(
             }
 
             let request_older = !opening_pass
+                && !latest_pass
                 && output.state.offset.y <= top_inset + CHAT_LOAD_ABOVE
                 && store.can_load_older(&channel_id)
                 && !store.loading_older(&channel_id)
@@ -3581,7 +3602,7 @@ fn conversation(
                 state.actions.push(ChatAction::LoadOlderMessages);
             }
 
-            if !opening_pass && !request_older
+            if !opening_pass && !latest_pass && !request_older
                 && output.state.offset.y + output.inner_rect.height() >= output.content_size.y - bottom_inset - 480.0
                 && store.can_load_newer(&channel_id)
                 && !state.actions.iter().any(|action| matches!(action, ChatAction::LoadNewerMessages))
@@ -5412,6 +5433,7 @@ fn search_panel(
                 } else {
                     result.attachments.clone()
                 },
+                store.message(&result.id).map(|message| message.previews.clone()).unwrap_or_default(),
             )
         })
         .collect();
@@ -5432,6 +5454,7 @@ fn search_panel(
                 at,
                 body,
                 attachments,
+                previews,
             ) in found
             {
                 if result_row(
@@ -5448,6 +5471,7 @@ fn search_panel(
                         channel_name: Some(&channel_name),
                         body: &body,
                         attachments: &attachments,
+                        previews: &previews,
                         row_width: result_width,
                     },
                 ) {
@@ -5519,6 +5543,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                 message.at,
                 body,
                 message.attachments.clone(),
+                message.previews.clone(),
             )
         })
         .collect();
@@ -5538,7 +5563,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
         .max_height(pinned_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for (message_id, author_id, author_name, at, body, attachments) in pinned {
+            for (message_id, author_id, author_name, at, body, attachments, previews) in pinned {
                 if result_row(
                     ui,
                     store,
@@ -5553,6 +5578,7 @@ fn pinned_panel(ui: &mut egui::Ui, store: &mut Store, state: &mut UiState, t: &T
                         channel_name: None,
                         body: &body,
                         attachments: &attachments,
+                        previews: &previews,
                         row_width: pinned_width,
                     },
                 ) {
@@ -5571,6 +5597,7 @@ struct ResultPreview<'a> {
     channel_name: Option<&'a str>,
     body: &'a str,
     attachments: &'a [crate::api::models::Attachment],
+    previews: &'a [crate::api::models::LinkPreview],
     /// Largura do painel, medida uma vez fora do ScrollArea. Ler
     /// `available_width()` por linha deixava cada linha herdar o transbordo
     /// da anterior e o cartão crescia além da pastilha.
@@ -5609,6 +5636,7 @@ fn result_row_contents(
         channel_name,
         body,
         attachments,
+        previews,
         row_width,
     } = preview;
     let shown_body = store.display_mentions(body);
@@ -5677,7 +5705,7 @@ fn result_row_contents(
                     }
                 });
                 if !shown_body.trim().is_empty()
-                    && direct_media_message_url(state, body, true).is_none()
+                    && direct_media_message_url(state, body, previews, true).is_none()
                 {
                     ui.add_space(space::XXS);
                     let tokens = emoji::tokenize(&shown_body, &store.emojis);
@@ -5710,6 +5738,7 @@ fn result_row_contents(
                     t,
                     message_id,
                     body,
+                    previews,
                     (max_text_width - space::MD).max(80.0),
                 );
             });
@@ -6596,7 +6625,12 @@ fn reply_quote(
             if target.content.is_empty() && !target.attachments.is_empty() {
                 (format!("{} {}", icon::PAPERCLIP, target.attachments[0].name()), Vec::new())
             } else {
-                let (display, bindings) = store.display_mentions_with_bindings(&target.content);
+                // Quotes occupy one line. Preserve character positions for
+                // mentions while flattening line breaks before measuring text.
+                let single_line: String = target.content.chars()
+                    .map(|ch| if matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}') { ' ' } else { ch })
+                    .collect();
+                let (display, bindings) = store.display_mentions_with_bindings(&single_line);
                 (emoji::elide_preview(&display, &store.emojis, 80), bindings)
             },
         ),
@@ -6885,7 +6919,7 @@ fn message_body(
     if !message.content.is_empty() {
         if let Some(slug) = crate::giphy::message_id(&message.content).map(str::to_owned) {
             gif::message(ui, state, t, s, &slug, width, allow_network);
-        } else if direct_media_message_url(state, &message.content, allow_network).is_none() {
+        } else if direct_media_message_url(state, &message.content, &message.previews, allow_network).is_none() {
             let (shown_content, bindings) =
                 store.display_mentions_with_bindings(&message.content);
             let color = t.label;
@@ -7121,9 +7155,21 @@ fn obvious_direct_media_url(url: &str) -> bool {
 fn direct_media_message_url(
     state: &UiState,
     content: &str,
+    previews: &[crate::api::models::LinkPreview],
     allow_network: bool,
 ) -> Option<String> {
     let url = single_message_url(content)?;
+    let has_backend = backend_preview_urls(content, previews).contains(&url);
+    if has_backend {
+        let has_media = previews.iter().any(embed_has_media);
+        let animation = previews.iter().any(|embed| animation_embed(&url, Some(embed)));
+        if has_media && (obvious_direct_media_url(&url) || animation) {
+            return Some(url);
+        }
+        if state.prefer_backend_embeds {
+            return None;
+        }
+    }
     if obvious_direct_media_url(&url) {
         return Some(url);
     }
@@ -7261,10 +7307,8 @@ fn rich_body(
 }
 
 
-/// Um único cartão serve tanto para o LinkPreview que veio do backend quanto
-/// para uma URL encontrada diretamente no texto. A descoberta rica é sempre
-/// client-side e capability-driven; metadados do backend entram apenas como
-/// fallback imediato enquanto o coordenador resolve/atualiza a URL.
+/// Backend cards respect the embed preference. The separate client-side
+/// pass handles links without a corresponding backend card.
 fn link_previews(
     ui: &mut egui::Ui,
     state: &mut UiState,
@@ -7414,6 +7458,11 @@ fn custom_embed_card(
     width: f32,
     allow_network: bool,
 ) {
+    if animation_embed(source_url, Some(embed)) && embed_has_media(embed) {
+        preview_card(ui, state, t, &embed.id, card_id, source_url, Some(embed), width,
+            PreviewPolicy { webembed: true, network: allow_network });
+        return;
+    }
     let author = embed
         .author
         .as_ref()
@@ -7455,7 +7504,7 @@ fn custom_embed_card(
         };
         texture.and_then(|texture| texture.frame(ui.ctx())).cloned()
     });
-    let resolved = if source_url.is_empty() { None } else {
+    let resolved = if source_url.is_empty() || state.prefer_backend_embeds { None } else {
         state.previews.as_ref().and_then(|coordinator| {
             if allow_network { coordinator.get_or_request(source_url) }
             else { coordinator.peek(source_url) }
@@ -7466,13 +7515,13 @@ fn custom_embed_card(
         _ => None,
     };
     let (backend_video, video_url, embed_url) =
-        choose_embed_media(source_url, Some(embed), ready.as_ref());
+        choose_embed_media(source_url, Some(embed), ready.as_ref(), state.prefer_backend_embeds);
     let image_url = ready.as_ref().and_then(|preview| preview.content_image_url().map(str::to_owned));
     let remote_image = image_url.as_deref().and_then(|raw| {
         if allow_network { state.media.remote_image(card_id, raw) }
         else { state.media.loaded_remote_image(raw) }
     }).and_then(|texture| texture.frame(ui.ctx())).cloned();
-    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() {
+    let image_texture = if embed.image.is_some() || embed.thumbnail.is_some() || embed.image_data.is_some() {
         let texture = if allow_network {
             state.media.preview(embed)
         } else {
@@ -7600,17 +7649,31 @@ fn custom_embed_card(
     ui.add_space(space::XS);
 }
 
-/// A backend video is a direct, authenticated media stream only if its
-/// declared MIME type is playable. Some oEmbed responses (e.g. YouTube)
-/// expose an HTML iframe in `video.url` with no video MIME type: do not
-/// send those HTML pages to the GStreamer MP4 player/relay.
-/// Klipy's /gifs pages publish silent MP4 renditions via og:video. MP4 is
-/// a transport format, not proof of user-facing video semantics. These pages
-/// are looping animations, unlike ordinary X status videos.
+/// Compatibility for older provider embeds without GIF metadata. New embeds
+/// declare their animation semantics through fetch_method or the media MIME.
 fn gif_style_embed(source: &str) -> bool {
     let Ok(url) = url::Url::parse(source) else { return false };
-    matches!(url.host_str(), Some("klipy.com" | "www.klipy.com"))
-        && url.path().starts_with("/gifs/")
+    if url.scheme() != "https" { return false; }
+    let host = url.host_str().unwrap_or_default();
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    match host {
+        "klipy.com" => url.path().starts_with("/gifs/"),
+        "giphy.com" => url.path().starts_with("/gifs/") || url.path().starts_with("/stickers/"),
+        "tenor.com" => url.path().starts_with("/view/"),
+        _ => url.path().to_ascii_lowercase().ends_with(".gif"),
+    }
+}
+
+fn animation_embed(source: &str, backend: Option<&crate::api::models::LinkPreview>) -> bool {
+    backend.is_some_and(|embed| embed.fetch_method.as_deref() == Some("gif")
+        || [embed.image.as_ref(), embed.thumbnail.as_ref()].into_iter().flatten()
+            .any(|media| media.mime_type.as_deref().is_some_and(|mime| mime.eq_ignore_ascii_case("image/gif"))))
+        || gif_style_embed(source)
+}
+
+fn embed_has_media(embed: &crate::api::models::LinkPreview) -> bool {
+    embed.image.is_some() || embed.thumbnail.is_some() || embed.image_data.is_some()
+        || embed.video.is_some() || embed.embed_url.is_some()
 }
 
 fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
@@ -7620,6 +7683,8 @@ fn media_aspect(media: Option<&crate::api::models::EmbedMedia>) -> Option<f32> {
     Some((width / height).clamp(0.25, 4.0))
 }
 
+/// Only declared video MIME types go through the authenticated media relay;
+/// an HTML player URL must use the web-embed path instead.
 fn backend_has_playable_video(embed: &crate::api::models::LinkPreview) -> bool {
     !embed.id.is_empty()
         && embed.video.as_ref().is_some_and(|media| {
@@ -7706,11 +7771,18 @@ fn render_embed_media(
         state.embed_image_sizes.insert(embed_id.to_owned(), texture.size_vec2());
     } else if !expects_image {
         state.embed_image_sizes.remove(embed_id);
+    } else if !state.embed_image_sizes.contains_key(embed_id)
+        && let Some(size) = backend.and_then(|embed| embed.image.as_ref().or(embed.thumbnail.as_ref()))
+            .and_then(|media| Some(Vec2::new(media.width? as f32, media.height? as f32)))
+            .filter(|size| size.x > 0.0 && size.y > 0.0)
+    {
+        state.embed_image_sizes.insert(embed_id.to_owned(), size);
     }
 
     let mut media_clicked = false;
     let mut media_rect: Option<Rect> = None;
-    if gif_style_embed(url) && (backend_video.is_some() || video_url.is_some()) {
+    let animation = animation_embed(url, backend);
+    if animation && (backend_video.is_some() || video_url.is_some()) {
         let source = if let Some(embed) = backend_video {
             crate::media::PlaySource::EmbedVideo(&embed.id)
         } else {
@@ -7755,7 +7827,11 @@ fn render_embed_media(
         ui.add_space(space::SM);
     } else if let Some(texture) = image {
         let source = texture.size_vec2();
-        let size = embed_image_size(source, card_width, IMAGE_MAX_H);
+        let size = if animation {
+            animation_image_size(source, card_width, IMAGE_MAX_H)
+        } else {
+            embed_image_size(source, card_width, IMAGE_MAX_H)
+        };
         let (image_rect, response) = ui.allocate_exact_size(size, Sense::click());
         media_rect = Some(image_rect);
         ui.painter().image(
@@ -7878,7 +7954,11 @@ fn render_embed_media(
     } else if expects_image && let Some(source) = state.embed_image_sizes.get(embed_id) {
         // A GPU cache miss does not change the post's media dimensions. Only
         // reserve previously observed media, never invent a cover for a text post.
-        let size = embed_image_size(*source, card_width, IMAGE_MAX_H);
+        let size = if animation {
+            animation_image_size(*source, card_width, IMAGE_MAX_H)
+        } else {
+            embed_image_size(*source, card_width, IMAGE_MAX_H)
+        };
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         media_rect = Some(rect);
         ui.painter().rect_filled(rect, CornerRadius::same(radius::CARD), t.fill_soft);
@@ -7893,18 +7973,26 @@ fn embed_image_size(source: Vec2, width: f32, max_height: f32) -> Vec2 {
     Vec2::new((source.x * scale).max(1.0), (source.y * scale).max(1.0))
 }
 
-/// Backend metadata is authoritative when it has a real player or playable
-/// video; local preview resolution fills omissions without overriding it.
+fn animation_image_size(source: Vec2, width: f32, max_height: f32) -> Vec2 {
+    let scale = (width / source.x).min(max_height / source.y);
+    Vec2::new((source.x * scale).max(1.0), (source.y * scale).max(1.0))
+}
+
+/// When preferred, backend metadata also owns the absence of media. Local
+/// resolution can enrich it only when the user disables that preference.
 fn choose_embed_media<'a>(
     source_url: &str,
     backend: Option<&'a crate::api::models::LinkPreview>,
     ready: Option<&papo_core::preview::ResolvedPreview>,
+    prefer_backend: bool,
 ) -> (Option<&'a crate::api::models::LinkPreview>, Option<String>, Option<String>) {
     use papo_core::preview::PreviewKind;
+    let authoritative = prefer_backend && backend.is_some();
+    let ready = if authoritative { None } else { ready };
     let iframe = backend
         .and_then(|embed| embed.embed_url.clone().or_else(|| backend_iframe_video_url(embed)))
         .or_else(|| ready.and_then(|preview| preview.embed_url.clone()))
-        .or_else(|| youtube_player_url(source_url))
+        .or_else(|| (!authoritative).then(|| youtube_player_url(source_url)).flatten())
         .filter(|url| papo_core::preview::safe_remote_url(url));
 
     let mut backend_video = backend.filter(|embed| backend_has_playable_video(embed));
@@ -7928,10 +8016,11 @@ fn choose_embed_media<'a>(
             });
     }
     let mut iframe = iframe;
-    if youtube_player_url(source_url).is_some() || (iframe.is_some() && !gif_style_embed(source_url)) {
+    let animation = animation_embed(source_url, backend);
+    if (!authoritative && youtube_player_url(source_url).is_some()) || (iframe.is_some() && !animation) {
         backend_video = None;
         direct = None;
-    } else if gif_style_embed(source_url) && (backend_video.is_some() || direct.is_some()) {
+    } else if animation && (backend_video.is_some() || direct.is_some()) {
         iframe = None;
     }
     (backend_video, direct, iframe)
@@ -8062,13 +8151,25 @@ fn panel_rich_links(
     t: &Tokens,
     message_id: &str,
     content: &str,
+    previews: &[crate::api::models::LinkPreview],
     width: f32,
 ) {
     use std::hash::{Hash, Hasher};
 
+    let content_urls = papo_core::preview::extract_https_urls(content);
+    let automatic_count = previews.iter()
+        .filter(|preview| preview.source_type.as_deref() != Some("custom")).count();
+    for preview in previews {
+        let url = backend_preview_render_url(preview, &content_urls, automatic_count);
+        let embed_id = format!("embed:panel:{message_id}:backend:{}", preview.id);
+        preview_card(ui, state, t, &preview.id, &embed_id, &url, Some(preview), width,
+            PreviewPolicy { webembed: false, network: true });
+    }
+    let backend_urls = backend_preview_urls(content, previews);
+
     let mut seen = std::collections::HashSet::new();
     for url in papo_core::preview::extract_https_urls(content) {
-        if !seen.insert(url.clone()) {
+        if backend_urls.contains(&url) || !seen.insert(url.clone()) {
             continue;
         }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -8117,7 +8218,7 @@ fn preview_card(
     const MAX_W: f32 = 420.0;
 
     // Sem URL, o embed customizado já é a fonte completa de metadados.
-    let resolved = if url.is_empty() {
+    let resolved = if url.is_empty() || (state.prefer_backend_embeds && backend.is_some()) {
         None
     } else {
         state.previews.as_ref().and_then(|coordinator| {
@@ -8133,6 +8234,7 @@ fn preview_card(
         _ => None,
     };
     let backend_image = backend
+        .filter(|preview| preview.image_data.is_some() || preview.image.is_some() || preview.thumbnail.is_some())
         .and_then(|preview| {
             if policy.network {
                 state.media.preview(preview)
@@ -8164,7 +8266,23 @@ fn preview_card(
     // Previously a frontend media_url could shadow a valid YouTube iframe,
     // leaving a broken native video card instead of a WebView.
     let (backend_video, video_url, embed_url) =
-        choose_embed_media(url, backend, ready.as_ref());
+        choose_embed_media(url, backend, ready.as_ref(), state.prefer_backend_embeds);
+
+    // A provider GIF is the message's media, not a miniature cover for a
+    // titled link card. Keep backend media authority while changing only its
+    // presentation; missing animation bytes still require a server refresh.
+    if animation_embed(url, backend)
+        && (backend.is_some_and(embed_has_media) || image.is_some()
+            || video_url.is_some() || embed_url.is_some())
+    {
+        ui.add_space(space::SM);
+        let _ = render_embed_media(ui, state, t, EmbedMediaView {
+            id, embed_id, url, backend, image, remote_image: remote_image.as_ref(),
+            image_url, title: backend.and_then(|embed| embed.title.as_deref()),
+            video_url, embed_url, backend_video, card_width: width.min(MAX_W), policy,
+        });
+        return;
+    }
 
     let post = ready
         .as_ref()
@@ -9457,7 +9575,7 @@ fn context_menu(
     // Mensagem que é só uma mídia (link direto ou GIF): copiar é copiar o
     // link. Qualquer outra com link ganha "Copiar link" além de "Copiar
     // texto", e ele leva só o endereço.
-    let media_link = direct_media_message_url(state, &message.content, true).or_else(|| {
+    let media_link = direct_media_message_url(state, &message.content, &message.previews, true).or_else(|| {
         crate::giphy::message_id(&message.content)
             .and_then(|id| state.giphy.as_mut()?.item(id, ui.ctx()))
             .map(|item| item.gif_url)
@@ -11030,6 +11148,7 @@ fn composer(
                 format!("{} #{}…", s.composer_hint, channel_name)
             };
             let edit_id = Id::new("caixa-de-mensagem");
+            let composer_before_edit = state.composer.clone();
             // As setas e o Enter pertencem à lista de sugestões enquanto ela
             // estiver aberta; sem tirá-los da caixa de texto, a seta moveria
             // o cursor e o Enter mandaria `:parc` como mensagem.
@@ -11352,7 +11471,12 @@ fn composer(
 
             let caret = if state.typed {
                 caret.map(|caret| {
-                    if let Some(after) = finish_shortcode(&mut state.composer, caret, &store.emojis)
+                    if let Some(after) = finish_shortcode(
+                        &mut state.composer,
+                        &composer_before_edit,
+                        caret,
+                        &store.emojis,
+                    )
                     {
                         state.composer_caret_pending = Some(after);
                         ui.ctx().request_repaint();
@@ -11628,6 +11752,7 @@ fn typing_shortcode(text: &str, caret: usize) -> Option<(usize, String)> {
 /// Add a separator when a complete server shortcode has just been typed.
 fn finish_shortcode(
     text: &mut String,
+    before: &str,
     caret: usize,
     emojis: &[crate::state::CustomEmoji],
 ) -> Option<usize> {
@@ -11635,6 +11760,20 @@ fn finish_shortcode(
         .char_indices()
         .nth(caret)
         .map_or(text.len(), |(byte, _)| byte);
+    // Only complete a newly inserted closing colon. Deleting the separator
+    // after an existing sticker must not insert that separator again.
+    let unchanged_prefix = text.chars().zip(before.chars())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    let unchanged_suffix = text[unchanged_prefix..].chars().rev()
+        .zip(before[unchanged_prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(ch, _)| ch.len_utf8())
+        .sum::<usize>();
+    if byte <= unchanged_prefix || byte > text.len() - unchanged_suffix {
+        return None;
+    }
     if !text[..byte].ends_with(':')
         || text[byte..].chars().next().is_some_and(char::is_whitespace)
         || !emojis
@@ -12022,12 +12161,24 @@ mod link_preview_dedupe_tests {
     }
 
     #[test]
-    fn klipy_gif_style_mp4_is_animation_but_regular_twitter_video_is_not() {
+    fn gif_provider_mp4_is_animation_but_regular_video_is_not() {
         assert!(gif_style_embed("https://klipy.com/gifs/come-look-at-this-come-look-at-this-meme"));
         assert!(gif_style_embed("https://www.klipy.com/gifs/a"));
+        assert!(gif_style_embed("https://giphy.com/gifs/wave-123"));
+        assert!(gif_style_embed("https://www.tenor.com/view/wave-gif-123"));
+        assert!(gif_style_embed("https://media.example.com/anything.GIF?quality=high"));
         assert!(!gif_style_embed("https://x.com/Lord_PSMG/status/2109376514688966914"));
         assert!(!gif_style_embed("https://not-klipy.com/gifs/something"));
         assert!(!gif_style_embed("https://klipy.com/videos/trailer"));
+        assert!(!gif_style_embed("https://giphy.com/clips/trailer"));
+        assert!(!gif_style_embed("https://not-tenor.com/view/trailer"));
+        let mut embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+            "id": "other-provider", "source_type": "link", "fetch_method": "gif"
+        })).unwrap();
+        assert!(animation_embed("https://another.example/item/123", Some(&embed)));
+        embed.fetch_method = None;
+        embed.thumbnail = Some(serde_json::from_value(serde_json::json!({"mime_type": "image/gif"})).unwrap());
+        assert!(animation_embed("https://another.example/item/123", Some(&embed)));
     }
 
     #[test]
@@ -12058,7 +12209,7 @@ mod link_preview_dedupe_tests {
             "image": {"url": "https://img.youtube.com/vi/S_WnNiaU4m0/hqdefault.jpg"},
             "video": {"url": "https://www.youtube.com/embed/S_WnNiaU4m0"}
         })).unwrap();
-        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None, true);
         assert!(backend_video.is_none());
         assert!(direct.is_none());
         assert!(iframe.unwrap().contains("/embed/S_WnNiaU4m0"));
@@ -12074,7 +12225,7 @@ mod link_preview_dedupe_tests {
             "source_type": "custom",
             "video": {"url": "https://cdn.example.test/animation.mp4", "mime_type": "video/mp4"}
         })).unwrap();
-        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None);
+        let (backend_video, direct, iframe) = choose_embed_media(source, Some(&embed), None, true);
         assert!(gif_style_embed(source));
         assert!(backend_video.is_some());
         assert!(direct.is_none());
@@ -12094,10 +12245,65 @@ mod link_preview_dedupe_tests {
         .expect("valid custom embed");
 
         let (backend_video, video_url, iframe) =
-            choose_embed_media("https://cdn.example.test/post", Some(&embed), None);
+            choose_embed_media("https://cdn.example.test/post", Some(&embed), None, true);
         assert!(backend_video.is_some(), "custom video goes through the native player");
         assert!(video_url.is_none());
         assert!(iframe.is_none());
+    }
+
+    #[test]
+    fn preferred_backend_text_embed_does_not_acquire_scraped_or_inferred_media() {
+        let source = "https://youtu.be/S_WnNiaU4m0";
+        let embed = serde_json::from_value(serde_json::json!({
+            "id": "text-only", "source_type": "link", "title": "Text only"
+        })).unwrap();
+        let scraped = papo_core::preview::ResolvedPreview {
+            source_url: source.into(),
+            kind: papo_core::preview::PreviewKind::Video,
+            media_url: Some("https://cdn.example.test/scraped.mp4".into()),
+            image_url: Some("https://cdn.example.test/scraped.jpg".into()),
+            embed_url: Some("https://www.youtube.com/embed/S_WnNiaU4m0".into()),
+            title: None, description: None, provider_name: None,
+            post: Default::default(),
+        };
+        assert_eq!(choose_embed_media(source, Some(&embed), Some(&scraped), true),
+            (None, None, None));
+        assert!(choose_embed_media(source, Some(&embed), Some(&scraped), false).2.is_some());
+        assert!(choose_embed_media(source, None, Some(&scraped), true).2.is_some());
+    }
+
+    #[test]
+    fn backend_cards_in_chat_and_panels_do_not_schedule_frontend_unfurling_by_default() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState {
+            previews: Some(std::sync::Arc::new(papo_core::preview::PreviewCoordinator::new(
+                std::sync::Arc::new(papo_core::cache::ClientDb::open(None)),
+                std::sync::Arc::new(|| {}),
+            ))),
+            ..Default::default()
+        };
+        let content = "https://example.com/backend-post";
+        for source_type in ["link", "custom"] {
+            let preview = serde_json::from_value(serde_json::json!({
+                "id": "backend-post", "source_type": source_type,
+                "url": content, "title": "Backend title"
+            })).unwrap();
+            let previews = [preview];
+            assert!(direct_media_message_url(&state, content, &previews, true).is_none());
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                link_previews(ui, &mut state, &tokens, "message", content, &previews, 400.0, true);
+                rich_links_from_message(ui, &mut state, &tokens, "message", content, &previews, 400.0, true);
+                panel_rich_links(ui, &mut state, &tokens, "message", content, &previews, 400.0);
+            });
+            output.textures_delta.clear();
+            let title_count = output.shapes.iter().filter(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Backend title"
+            )).count();
+            assert_eq!(title_count, 2, "both chat and panel show the backend card");
+            assert_eq!(state.previews.as_ref().unwrap().stats().queued, 0);
+        }
     }
 }
 
@@ -12407,11 +12613,54 @@ mod draft_tests {
             blob: None,
         }];
         let mut typed = "é :test:next".to_owned();
-        assert_eq!(finish_shortcode(&mut typed, 8, &emojis), Some(9));
+        assert_eq!(finish_shortcode(&mut typed, "é :testnext", 8, &emojis), Some(9));
         assert_eq!(typed, "é :test: next");
-        assert_eq!(finish_shortcode(&mut typed, 8, &emojis), None);
+        assert_eq!(finish_shortcode(&mut typed, "é :testnext", 8, &emojis), None);
         let mut unknown = ":unknown:".to_owned();
-        assert_eq!(finish_shortcode(&mut unknown, 9, &emojis), None);
+        assert_eq!(finish_shortcode(&mut unknown, ":unknown", 9, &emojis), None);
+    }
+
+    #[test]
+    fn backspace_removes_the_separator_then_the_inline_sticker() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let id = Id::new("sticker-backspace");
+        let emojis = [crate::state::CustomEmoji {
+            id: "e1".into(), name: "test".into(), blob: None,
+        }];
+        let mut editor = super::super::composer_text::StickerText::default();
+        let mut raw = "é :test: ".to_owned();
+        for (step, expected) in ["é :test: ", "é :test:", "é ", "é"].into_iter().enumerate() {
+            if step == 1 {
+                let mut edit = egui::TextEdit::load_state(&ctx, id).unwrap();
+                edit.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                    egui::text::CCursor::new(editor.encode(&raw, &emojis).chars().count()),
+                )));
+                edit.store(&ctx, id);
+                ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+            let mut input = egui::RawInput::default();
+            if step > 0 {
+                for pressed in [true, false] {
+                    input.events.push(egui::Event::Key {
+                        key: egui::Key::Backspace, physical_key: None, pressed,
+                        repeat: false, modifiers: egui::Modifiers::NONE,
+                    });
+                }
+            }
+            let mut output = ctx.run_ui(input, |ui| {
+                let before = raw.clone();
+                let mut shown = editor.encode(&raw, &emojis);
+                let output = egui::TextEdit::multiline(&mut shown).id(id).show(ui);
+                raw = editor.decode(&shown);
+                if output.response.changed() {
+                    let caret = editor.raw_caret(&shown, output.cursor_range.unwrap().primary.index.into());
+                    assert_eq!(finish_shortcode(&mut raw, &before, caret, &emojis), None);
+                }
+            });
+            output.textures_delta.clear();
+            assert_eq!(raw, expected, "Backspace step {step}");
+        }
     }
 
     fn state(text: &str, reply: Option<&str>, notify: bool) -> DraftState {
@@ -13182,6 +13431,40 @@ mod reply_quote_tests {
     use super::*;
 
     #[test]
+    fn multiline_reply_preview_fits_completely_inside_its_single_line() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let mut store = Store::default();
+        store.emojis.push(crate::state::CustomEmoji {
+            id: "e-1".into(), name: "papo".into(), blob: None,
+        });
+        store.messages.push(Message {
+            id: "original".into(), channel_id: "c".into(), author_id: "u1".into(),
+            external_author: None,
+            content: "homem que não foi aceito nem no céu nem no inferno\n↳ :papo:1".into(),
+            at: Local::now(), edited: false, reply_to: None, attachments: Vec::new(),
+            previews: Vec::new(), reactions: Vec::new(), pinned: false, pending: false,
+        });
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            reply_quote(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR, "original", 800.0);
+        });
+        output.textures_delta.clear();
+        let mut chunks = 0;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                assert!(!text.galley.text().contains('\n'));
+                assert!(clipped.clip_rect.expand(0.01).contains_rect(
+                    Rect::from_min_size(text.pos, text.galley.size()),
+                ), "reply text clipped: {:?}", text.galley.text());
+                chunks += 1;
+            }
+        }
+        assert!(chunks >= 3);
+    }
+
+    #[test]
     fn reply_quote_renders_custom_emojis_around_styled_mentions() {
         let ctx = egui::Context::default();
         super::super::theme::install_fonts(&ctx, None);
@@ -13335,6 +13618,61 @@ mod row_cache_tests {
     use super::*;
 
     #[test]
+    fn provider_gif_is_standalone_media_at_chat_width_before_and_after_loading() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut state = UiState::default();
+        let store = Store::default();
+        let texture = ctx.load_texture("raven", egui::ColorImage::filled([165, 104], Color32::WHITE),
+            egui::TextureOptions::LINEAR);
+        for (url, source_type, fetch_method, mime) in [
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "link", "opengraph", "image/jpeg"),
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "custom", "manual", "image/jpeg"),
+            ("https://klipy.com/gifs/an-iq-too-high-raven", "link", "gif", "image/gif"),
+            ("https://giphy.com/gifs/wave-123", "link", "opengraph", "image/jpeg"),
+            ("https://tenor.com/view/wave-gif-123", "link", "opengraph", "image/jpeg"),
+            ("https://another.example/item/123", "link", "gif", "image/gif"),
+            ("https://another.example/item/123", "link", "opengraph", "image/gif"),
+        ] {
+            let embed: crate::api::models::LinkPreview = serde_json::from_value(serde_json::json!({
+                "id": "raven", "url": url, "source_type": source_type, "fetch_method": fetch_method,
+                "provider": "KLIPY", "title": "An Iq Too High Raven",
+                "thumbnail": {"mime_type": mime, "width": 165, "height": 104}
+            })).unwrap();
+            let mut message = message(url);
+            message.previews = vec![embed.clone()];
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                message_body(ui, &store, &mut state, &tokens, &crate::i18n::PT_BR,
+                    &message, 500.0, false);
+            });
+            output.textures_delta.clear();
+            assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text().contains("klipy.com")
+                    || text.galley.text().contains("KLIPY")
+                    || text.galley.text().contains("An Iq Too High Raven")
+            )), "a provider GIF must not show link-card text");
+            let placeholder = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == tokens.fill_soft => Some(rect.rect),
+                _ => None,
+            }).expect("declared GIF dimensions reserve its media slot before loading");
+            assert!((placeholder.width() - 420.0).abs() < 0.01);
+            let mut loaded = None;
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                loaded = render_embed_media(ui, &mut state, &tokens, EmbedMediaView {
+                    id: "raven", embed_id: "loaded-raven", url, backend: Some(&embed),
+                    image: Some(&texture), remote_image: None, image_url: None,
+                    title: embed.title.as_deref(), video_url: None, embed_url: None,
+                    backend_video: None, card_width: 420.0,
+                    policy: PreviewPolicy { webembed: false, network: false },
+                }).1;
+            });
+            output.textures_delta.clear();
+            assert_eq!(loaded.unwrap().size(), placeholder.size());
+        }
+    }
+
+    #[test]
     fn known_embed_image_geometry_survives_texture_reload_without_forcing_text_post_covers() {
         let ctx = egui::Context::default();
         let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
@@ -13442,9 +13780,29 @@ mod row_cache_tests {
     }
 
     #[test]
-    fn newest_arrow_returns_to_the_live_bottom_and_stays_there() {
+    fn newest_arrow_skips_new_unread_block_and_stays_at_live_bottom() {
         let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        store.me = "me".into();
+        let last_read = store.messages.last().unwrap().clone();
+        store.read_states.insert("c1".into(), crate::state::ChannelReadState {
+            read_at: Some(last_read.at.with_timezone(&chrono::Utc)),
+            read_message_id: Some(last_read.id.clone()),
+            seen_to_at: Some(last_read.at.with_timezone(&chrono::Utc)),
+            seen_to_id: Some(last_read.id.clone()),
+            ..Default::default()
+        });
+        state.clear_unread_marker(&store);
+        for index in 80..140 {
+            let mut incoming = last_read.clone();
+            incoming.id = format!("m{index:03}");
+            incoming.content = format!("new unread message {index}");
+            incoming.at += chrono::Duration::seconds(index);
+            store.messages.push(incoming);
+        }
+        store.channels[0].unread = true;
         scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        let visible = state.visible_message_ids.clone();
+        store.observe_visible_messages_with_policy("c1", &visible, false);
         state.last_scroll_activity = f64::NEG_INFINITY;
         let area = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0));
         let mut button = None;
@@ -13472,13 +13830,43 @@ mod row_cache_tests {
         let mut bottom = None;
         for _ in 0..10 {
             scroll_frame(&ctx, &mut store, &mut state, &tokens);
-            assert!(state.visible_message_ids.iter().any(|id| id == "m079"));
+            assert!(state.visible_message_ids.iter().any(|id| id == "m139"),
+                "latest message missing; showing {:?}", state.visible_message_ids);
             let offset = state.chat_scroll_metrics.as_ref().unwrap().1;
             if let Some(previous) = bottom {
                 assert_eq!(offset, previous, "return-to-latest must not oscillate");
             }
             bottom = Some(offset);
+            let visible = state.visible_message_ids.clone();
+            store.observe_visible_messages_with_policy("c1", &visible, true);
         }
+    }
+
+    #[test]
+    fn return_to_latest_tracks_the_bottom_when_tail_geometry_changes_after_measurement() {
+        let (ctx, mut store, mut state, tokens) = scroll_fixture();
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        state.return_to_latest(&ctx, &mut store);
+        let mut expanded = false;
+        let mut output = ctx.run_ui(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700.0, 500.0))),
+            ..Default::default()
+        }, |ui| {
+            state.visible_message_ids.clear();
+            conversation(ui, &mut store, &mut state, None, &tokens, &crate::i18n::PT_BR, None);
+            if !expanded {
+                // The hidden pass measured cold media. Its first visible pass
+                // sees the real, larger geometry of the new messages below.
+                for message in &mut store.messages[60..] {
+                    message.content = "newly resolved media in the unread tail\n".repeat(15);
+                }
+                expanded = true;
+            }
+        });
+        output.textures_delta.clear();
+        scroll_frame(&ctx, &mut store, &mut state, &tokens);
+        assert!(state.visible_message_ids.iter().any(|id| id == "m079"),
+            "return-to-latest landed before the newest message: {:?}", state.visible_message_ids);
     }
 
     #[test]
