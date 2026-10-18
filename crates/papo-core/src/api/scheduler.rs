@@ -15,6 +15,9 @@ pub(crate) struct TaskOwner {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ReconcileKey {
     ChannelHistory(String),
+    OlderHistory(String),
+    MessageContext(String),
+    PinnedHistory(String),
     ServerMetadata,
 }
 
@@ -29,8 +32,30 @@ pub(crate) enum ReconcilePriority {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ReconcileKind {
-    ChannelHistory { ticket: RefreshTicket },
-    ServerMetadata { user_id: Option<String> },
+    ChannelHistory {
+        ticket: RefreshTicket,
+    },
+    OlderHistory {
+        ticket: RefreshTicket,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: String,
+    },
+    NewerHistory {
+        ticket: RefreshTicket,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: String,
+    },
+    MessageContext {
+        ticket: RefreshTicket,
+        message_id: String,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+    },
+    PinnedHistory {
+        ticket: RefreshTicket,
+    },
+    ServerMetadata {
+        user_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -46,13 +71,27 @@ impl ReconcileRequest {
             ReconcileKind::ChannelHistory { ticket } => {
                 ReconcileKey::ChannelHistory(ticket.channel_id.clone())
             }
+            ReconcileKind::OlderHistory { ticket, .. }
+            | ReconcileKind::NewerHistory { ticket, .. } => {
+                ReconcileKey::OlderHistory(ticket.channel_id.clone())
+            }
+            ReconcileKind::MessageContext { ticket, .. } => {
+                ReconcileKey::MessageContext(ticket.channel_id.clone())
+            }
+            ReconcileKind::PinnedHistory { ticket } => {
+                ReconcileKey::PinnedHistory(ticket.channel_id.clone())
+            }
             ReconcileKind::ServerMetadata { .. } => ReconcileKey::ServerMetadata,
         }
     }
 
     fn request_id(&self) -> Option<u64> {
         match &self.kind {
-            ReconcileKind::ChannelHistory { ticket } => Some(ticket.request_id),
+            ReconcileKind::ChannelHistory { ticket }
+            | ReconcileKind::PinnedHistory { ticket }
+            | ReconcileKind::OlderHistory { ticket, .. }
+            | ReconcileKind::NewerHistory { ticket, .. }
+            | ReconcileKind::MessageContext { ticket, .. } => Some(ticket.request_id),
             ReconcileKind::ServerMetadata { .. } => None,
         }
     }
@@ -228,7 +267,10 @@ impl ReconcileScheduler {
                 self.active_by_key.remove(&key);
                 self.running.remove(&run_id);
                 self.enqueue(request, now);
-                log::debug!("reconcile {}: superseded running {key:?} run={run_id}", self.scope);
+                log::debug!(
+                    "reconcile {}: superseded running {key:?} run={run_id}",
+                    self.scope
+                );
                 return SubmitResult {
                     accepted: true,
                     abort_run_ids: vec![run_id],
@@ -236,7 +278,10 @@ impl ReconcileScheduler {
             }
 
             if Self::equivalent_running(&request, running) {
-                log::debug!("reconcile {}: coalesced running {key:?} run={run_id}", self.scope);
+                log::debug!(
+                    "reconcile {}: coalesced running {key:?} run={run_id}",
+                    self.scope
+                );
             }
             return SubmitResult::default();
         }
@@ -261,9 +306,9 @@ impl ReconcileScheduler {
     }
 
     pub fn is_current_run(&self, run_id: u64) -> bool {
-        self.running.get(&run_id).is_some_and(|running| {
-            self.active_by_key.get(&running.key) == Some(&run_id)
-        })
+        self.running
+            .get(&run_id)
+            .is_some_and(|running| self.active_by_key.get(&running.key) == Some(&run_id))
     }
 
     pub fn is_running_key(&self, key: &ReconcileKey) -> bool {
@@ -398,6 +443,17 @@ impl ReconcileScheduler {
         stale
     }
 
+    pub fn cancel_key(&mut self, key: &ReconcileKey) -> Vec<u64> {
+        self.queued.retain(|queued| &queued.request.key() != key);
+        self.retry_until.remove(key);
+        if let Some(run_id) = self.active_by_key.remove(key) {
+            self.running.remove(&run_id);
+            vec![run_id]
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn cancel_all(&mut self) -> Vec<u64> {
         self.queued.clear();
         self.retry_until.clear();
@@ -432,7 +488,11 @@ impl ReconcileScheduler {
             return true;
         }
         match &incoming.kind {
-            ReconcileKind::ChannelHistory { ticket } => existing
+            ReconcileKind::ChannelHistory { ticket }
+            | ReconcileKind::PinnedHistory { ticket }
+            | ReconcileKind::OlderHistory { ticket, .. }
+            | ReconcileKind::NewerHistory { ticket, .. }
+            | ReconcileKind::MessageContext { ticket, .. } => existing
                 .request_id
                 .is_some_and(|request_id| ticket.request_id > request_id),
             ReconcileKind::ServerMetadata { .. } => false,
@@ -485,15 +545,31 @@ mod tests {
     fn single_flight_channel_reconciliation() {
         let now = Instant::now();
         let mut scheduler = ReconcileScheduler::new(2);
-        assert!(scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now).accepted);
-        assert!(!scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now).accepted);
-        assert!(!scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now).accepted);
+        assert!(
+            scheduler
+                .submit(channel("geral", 10, ReconcilePriority::Visible), now)
+                .accepted
+        );
+        assert!(
+            !scheduler
+                .submit(channel("geral", 10, ReconcilePriority::Visible), now)
+                .accepted
+        );
+        assert!(
+            !scheduler
+                .submit(channel("geral", 10, ReconcilePriority::Visible), now)
+                .accepted
+        );
         assert_eq!(scheduler.stats().queued, 1);
 
         let started = scheduler.start_ready(now);
         assert_eq!(started.len(), 1);
         assert_eq!(scheduler.stats().in_flight, 1);
-        assert!(!scheduler.submit(channel("geral", 10, ReconcilePriority::Visible), now).accepted);
+        assert!(
+            !scheduler
+                .submit(channel("geral", 10, ReconcilePriority::Visible), now)
+                .accepted
+        );
     }
 
     #[test]
@@ -597,10 +673,22 @@ mod tests {
     fn metadata_is_single_flight() {
         let now = Instant::now();
         let mut scheduler = ReconcileScheduler::new(2);
-        assert!(scheduler.submit(metadata(ReconcilePriority::ActiveServer), now).accepted);
-        assert!(!scheduler.submit(metadata(ReconcilePriority::ActiveServer), now).accepted);
+        assert!(
+            scheduler
+                .submit(metadata(ReconcilePriority::ActiveServer), now)
+                .accepted
+        );
+        assert!(
+            !scheduler
+                .submit(metadata(ReconcilePriority::ActiveServer), now)
+                .accepted
+        );
         let run = scheduler.start_ready(now).pop().expect("metadata");
-        assert!(!scheduler.submit(metadata(ReconcilePriority::ActiveServer), now).accepted);
+        assert!(
+            !scheduler
+                .submit(metadata(ReconcilePriority::ActiveServer), now)
+                .accepted
+        );
         assert!(scheduler.complete(run.run_id, true, now));
     }
 
@@ -612,7 +700,11 @@ mod tests {
         let run = scheduler.start_ready(now).pop().expect("run");
         assert!(scheduler.complete(run.run_id, false, now));
 
-        assert!(scheduler.submit(channel("geral", 2, ReconcilePriority::Visible), now).accepted);
+        assert!(
+            scheduler
+                .submit(channel("geral", 2, ReconcilePriority::Visible), now)
+                .accepted
+        );
         assert!(scheduler.start_ready(now).is_empty());
         assert_eq!(scheduler.start_ready(now + RETRY_BACKOFF).len(), 1);
     }
@@ -660,7 +752,11 @@ mod tests {
         assert_eq!(active.queued, 1);
         assert_eq!(active.running, 1);
         assert_eq!(
-            active.jobs.iter().filter(|job| job.state == DiagnosticJobState::Running).count(),
+            active
+                .jobs
+                .iter()
+                .filter(|job| job.state == DiagnosticJobState::Running)
+                .count(),
             1
         );
 
@@ -688,7 +784,10 @@ mod tests {
         assert_eq!(superseded.jobs[0].state, DiagnosticJobState::Queued);
         assert!(!scheduler.complete(first.run_id, true, now));
 
-        scheduler.invalidate_owner(TaskOwner { generation: 4, session_epoch: 1 });
+        scheduler.invalidate_owner(TaskOwner {
+            generation: 4,
+            session_epoch: 1,
+        });
         assert!(scheduler.diagnostics(now).jobs.is_empty());
     }
 

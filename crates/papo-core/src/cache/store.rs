@@ -24,7 +24,7 @@ pub struct TursoCache {
 }
 
 struct Stmt {
-    sql: &'static str,
+    sql: std::borrow::Cow<'static, str>,
     params: Vec<Value>,
 }
 
@@ -81,8 +81,8 @@ fn original_image(blob: &Option<String>) -> Option<Vec<u8>> {
 
 const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         server_key, message_id, channel_id, author_id, content, created_at,
-        edited, reply_to, pinned, attachments, reactions, embeds, external_author
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+        edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
     ON CONFLICT(server_key, message_id) DO UPDATE SET
         channel_id = excluded.channel_id,
         author_id = excluded.author_id,
@@ -94,7 +94,21 @@ const UPSERT_MESSAGE: &str = "INSERT INTO messages (
         attachments = excluded.attachments,
         reactions = excluded.reactions,
         embeds = excluded.embeds,
-        external_author = excluded.external_author";
+        external_author = excluded.external_author,
+        created_at_nanos = excluded.created_at_nanos";
+
+static UPSERT_TIMELINE_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    UPSERT_MESSAGE
+        .replace(
+            "created_at_nanos\n    )",
+            "created_at_nanos, timeline\n    )",
+        )
+        .replace("?13,?14)", "?13,?14,1)")
+        .replace(
+            "created_at_nanos = excluded.created_at_nanos",
+            "created_at_nanos = excluded.created_at_nanos, timeline = 1",
+        )
+});
 
 fn message_params(server_key: &str, message: &CachedMessage) -> Vec<Value> {
     vec![
@@ -110,22 +124,37 @@ fn message_params(server_key: &str, message: &CachedMessage) -> Vec<Value> {
         text(&encode_json(&message.attachments)),
         text(&encode_json(&message.reactions)),
         text(&encode_json(&message.embeds)),
-        opt_text(message.external_author.as_ref().and_then(|a| serde_json::to_string(a).ok()).as_deref()),
+        opt_text(
+            message
+                .external_author
+                .as_ref()
+                .and_then(|a| serde_json::to_string(a).ok())
+                .as_deref(),
+        ),
+        integer(i64::from(message.created_at_nanos)),
     ]
 }
 
 /// Mantém só as mensagens mais recentes por canal, com tetos duros também
 /// para as fixadas.
-fn retention_statements(server_key: &str, channel_id: &str) -> [Stmt; 2] {
+fn retention_statements(server_key: &str, channel_id: &str) -> [Stmt; 3] {
     [
         Stmt {
+            sql: "UPDATE messages SET timeline = 0 WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
+                  AND message_id NOT IN (SELECT message_id FROM messages
+                      WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
+                      ORDER BY created_at DESC, created_at_nanos DESC, message_id DESC LIMIT ?3)".into(),
+            params: vec![text(server_key), text(channel_id), integer(MESSAGE_RETENTION)],
+        },
+        Stmt {
             sql: "DELETE FROM messages
-                  WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                  WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0 AND timeline = 0
                     AND message_id NOT IN (
                         SELECT message_id FROM messages
                         WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
-                        ORDER BY created_at DESC LIMIT ?3
-                    )",
+                        ORDER BY created_at DESC, created_at_nanos DESC, message_id DESC LIMIT ?3
+                    )"
+            .into(),
             params: vec![
                 text(server_key),
                 text(channel_id),
@@ -134,12 +163,13 @@ fn retention_statements(server_key: &str, channel_id: &str) -> [Stmt; 2] {
         },
         Stmt {
             sql: "DELETE FROM messages
-                  WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1
+                  WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1 AND timeline = 0
                     AND message_id NOT IN (
                         SELECT message_id FROM messages
                         WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1
-                        ORDER BY created_at DESC LIMIT ?3
-                    )",
+                        ORDER BY created_at DESC, created_at_nanos DESC, message_id DESC LIMIT ?3
+                    )"
+            .into(),
             params: vec![
                 text(server_key),
                 text(channel_id),
@@ -163,7 +193,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       me_user_id = COALESCE(excluded.me_user_id, me_user_id),
                       me_display_name = COALESCE(excluded.me_display_name, me_display_name),
                       me_username = COALESCE(excluded.me_username, me_username),
-                      updated_at = excluded.updated_at",
+                      updated_at = excluded.updated_at"
+                .into(),
             params: vec![
                 text(server_key),
                 opt_text(server.owner_user_id.as_deref()),
@@ -189,7 +220,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       me_user_id = excluded.me_user_id,
                       me_display_name = excluded.me_display_name,
                       me_username = excluded.me_username,
-                      updated_at = excluded.updated_at",
+                      updated_at = excluded.updated_at"
+                .into(),
             params: vec![
                 text(server_key),
                 text(owner_user_id),
@@ -212,7 +244,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       gap_end_at = excluded.gap_end_at,
                       gap_end_message_id = excluded.gap_end_message_id,
                       unread_mentions = excluded.unread_mentions,
-                      updated_at = excluded.updated_at",
+                      updated_at = excluded.updated_at"
+                .into(),
             params: vec![
                 text(server_key),
                 text(&state.owner_user_id),
@@ -229,7 +262,7 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
         }],
         CacheOp::ReplaceChannels(channels) => {
             let mut statements = vec![Stmt {
-                sql: "DELETE FROM channels WHERE server_key = ?1",
+                sql: "DELETE FROM channels WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             }];
             for channel in channels {
@@ -246,7 +279,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                               position = excluded.position,
                               unread = excluded.unread,
                               mentions = excluded.mentions,
-                              updated_at = excluded.updated_at",
+                              updated_at = excluded.updated_at"
+                        .into(),
                     params: vec![
                         text(server_key),
                         text(&channel.id),
@@ -268,7 +302,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       WHERE server_key = ?1
                         AND channel_id NOT IN (
                             SELECT channel_id FROM channels WHERE server_key = ?1
-                        )",
+                        )"
+                .into(),
                 params: vec![text(server_key)],
             });
             statements.push(Stmt {
@@ -276,7 +311,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       WHERE server_key = ?1
                         AND channel_id NOT IN (
                             SELECT channel_id FROM channels WHERE server_key = ?1
-                        )",
+                        )"
+                .into(),
                 params: vec![text(server_key)],
             });
             statements.push(Stmt {
@@ -284,14 +320,15 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       WHERE server_key = ?1
                         AND channel_id NOT IN (
                             SELECT channel_id FROM channels WHERE server_key = ?1
-                        )",
+                        )"
+                .into(),
                 params: vec![text(server_key)],
             });
             statements
         }
         CacheOp::ReplaceEmojis(emojis) => {
             let mut statements = vec![Stmt {
-                sql: "DELETE FROM server_emojis WHERE server_key = ?1",
+                sql: "DELETE FROM server_emojis WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             }];
             for emoji in emojis {
@@ -299,27 +336,29 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                     base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()).ok()
                 );
                 statements.push(Stmt {
-                    sql: "INSERT INTO server_emojis (server_key, emoji_id, name, image_data) VALUES (?1,?2,?3,?4)",
+                    sql: "INSERT INTO server_emojis (server_key, emoji_id, name, image_data) VALUES (?1,?2,?3,?4)".into(),
                     params: vec![text(server_key), text(&emoji.id), text(&emoji.name),
                         bytes.map(Value::Blob).unwrap_or(Value::Null)],
                 });
             }
             statements.push(Stmt {
                 sql: "INSERT INTO server_emojis_state (server_key, updated_at) VALUES (?1,?2)
-                      ON CONFLICT(server_key) DO UPDATE SET updated_at = excluded.updated_at",
+                      ON CONFLICT(server_key) DO UPDATE SET updated_at = excluded.updated_at"
+                    .into(),
                 params: vec![text(server_key), integer(super::types::now_millis())],
             });
             statements
         }
         CacheOp::SetServerIcon(blob) => {
             let mut statements = vec![Stmt {
-                sql: "DELETE FROM profile_images WHERE server_key = ?1 AND kind = 'server-icon'",
+                sql: "DELETE FROM profile_images WHERE server_key = ?1 AND kind = 'server-icon'"
+                    .into(),
                 params: vec![text(server_key)],
             }];
             if let Some(image) = original_image(blob) {
                 statements.push(Stmt {
                     sql: "INSERT INTO profile_images (server_key, kind, resource_id, image_data, updated_at)
-                          VALUES (?1, 'server-icon', '', ?2, ?3)",
+                          VALUES (?1, 'server-icon', '', ?2, ?3)".into(),
                     params: vec![text(server_key), Value::Blob(image), integer(super::types::now_millis())],
                 });
             }
@@ -328,13 +367,14 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
         CacheOp::SetAvatar { user_id, blob } => {
             let mut statements = vec![Stmt {
                 sql: "DELETE FROM profile_images
-                      WHERE server_key = ?1 AND kind = 'avatar' AND resource_id = ?2",
+                      WHERE server_key = ?1 AND kind = 'avatar' AND resource_id = ?2"
+                    .into(),
                 params: vec![text(server_key), text(user_id)],
             }];
             if let Some(image) = original_image(blob) {
                 statements.push(Stmt {
                     sql: "INSERT INTO profile_images (server_key, kind, resource_id, image_data, updated_at)
-                          VALUES (?1, 'avatar', ?2, ?3, ?4)",
+                          VALUES (?1, 'avatar', ?2, ?3, ?4)".into(),
                     params: vec![text(server_key), text(user_id),
                         Value::Blob(image), integer(super::types::now_millis())],
                 });
@@ -345,7 +385,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                                 SELECT resource_id FROM profile_images
                                 WHERE server_key = ?1 AND kind = 'avatar'
                                 ORDER BY updated_at DESC, resource_id DESC LIMIT ?2
-                            )",
+                            )"
+                    .into(),
                     params: vec![text(server_key), integer(MAX_CACHED_AVATARS)],
                 });
             }
@@ -353,7 +394,7 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
         }
         CacheOp::ReplaceMembers(members) => {
             let mut statements = vec![Stmt {
-                sql: "DELETE FROM members WHERE server_key = ?1",
+                sql: "DELETE FROM members WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             }];
             for member in members {
@@ -367,7 +408,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                               name = excluded.name,
                               role_color = excluded.role_color,
                               roles = excluded.roles,
-                              updated_at = excluded.updated_at",
+                              updated_at = excluded.updated_at"
+                        .into(),
                     params: vec![
                         text(server_key),
                         text(&member.id),
@@ -391,20 +433,22 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                     // Mensagens confirmadas somem; as fixadas ficam até o
                     // snapshot ou um evento de exclusão dizerem o contrário.
                     sql: "DELETE FROM messages
-                          WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0",
+                          WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0"
+                        .into(),
                     params: vec![text(server_key), text(channel_id)],
                 },
                 Stmt {
                     sql: "INSERT INTO channel_cache_state (server_key, channel_id, cached_at)
                           VALUES (?1,?2,?3)
                           ON CONFLICT(server_key, channel_id) DO UPDATE SET
-                              cached_at = excluded.cached_at",
+                              cached_at = excluded.cached_at"
+                        .into(),
                     params: vec![text(server_key), text(channel_id), integer(*cached_at)],
                 },
             ];
             for message in messages {
                 statements.push(Stmt {
-                    sql: UPSERT_MESSAGE,
+                    sql: UPSERT_TIMELINE_MESSAGE.as_str().into(),
                     params: message_params(server_key, message),
                 });
             }
@@ -430,25 +474,45 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 params.extend(overlap_ids.iter().map(|id| text(id)));
                 format!(
                     " AND NOT EXISTS (SELECT 1 FROM messages
-                         WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                         WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
                            AND message_id IN ({placeholders}))"
                 )
             };
-            // No eligible witness (e.g. an all-own-message window) does
-            // not prove disjointness: preserve the older cache instead.
+            // An empty window cannot prove disjointness; a complete empty
+            // snapshot uses ReplaceChannelSnapshot instead.
+            let delete_sql = format!(
+                "DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                 AND pinned = 0{overlap_guard}"
+            );
             if !overlap_ids.is_empty() {
                 statements.push(Stmt {
-                    sql: format!(
-                        "DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
-                         AND pinned = 0{overlap_guard}"
-                    ),
+                    sql: delete_sql.into(),
+                    params,
+                });
+            }
+            // The server is authoritative for the entire returned head range,
+            // including rows still on disk that have never entered this Store.
+            if let Some(oldest) = messages.iter().min_by_key(|message| {
+                (message.created_at, message.created_at_nanos, &message.id)
+            }) {
+                let placeholders = (0..messages.len()).map(|index| format!("?{}", index + 6))
+                    .collect::<Vec<_>>().join(",");
+                let mut params = vec![text(server_key), text(channel_id), integer(oldest.created_at),
+                    integer(i64::from(oldest.created_at_nanos)), text(&oldest.id)];
+                params.extend(messages.iter().map(|message| text(&message.id)));
+                statements.push(Stmt {
+                    sql: format!("DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                        AND (created_at > ?3 OR (created_at = ?3 AND created_at_nanos > ?4)
+                            OR (created_at = ?3 AND created_at_nanos = ?4 AND message_id >= ?5))
+                        AND message_id NOT IN ({placeholders})").into(),
                     params,
                 });
             }
             for message_id in deleted_ids {
                 statements.push(Stmt {
                     sql: "DELETE FROM messages
-                          WHERE server_key = ?1 AND channel_id = ?2 AND message_id = ?3",
+                          WHERE server_key = ?1 AND channel_id = ?2 AND message_id = ?3"
+                        .into(),
                     params: vec![text(server_key), text(channel_id), text(message_id)],
                 });
             }
@@ -456,27 +520,103 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 sql: "INSERT INTO channel_cache_state (server_key, channel_id, cached_at)
                       VALUES (?1,?2,?3)
                       ON CONFLICT(server_key, channel_id) DO UPDATE SET
-                          cached_at = excluded.cached_at",
+                          cached_at = excluded.cached_at"
+                    .into(),
                 params: vec![text(server_key), text(channel_id), integer(*cached_at)],
             });
             for message in messages {
                 statements.push(Stmt {
-                    sql: UPSERT_MESSAGE,
+                    sql: UPSERT_TIMELINE_MESSAGE.as_str().into(),
                     params: message_params(server_key, message),
                 });
             }
             statements
         }
-        CacheOp::UpsertMessage(message) => vec![
+        CacheOp::AppendChannelHistory {
+            channel_id,
+            anchor_id,
+            messages,
+            reconcile,
+            complete,
+        } => {
+            let mut statements = Vec::new();
+            if *reconcile {
+                let mut params = vec![text(server_key), text(channel_id), text(anchor_id)];
+                let lower = if let Some(oldest) = messages
+                    .iter()
+                    .min_by_key(|message| {
+                        (message.created_at, message.created_at_nanos, &message.id)
+                    })
+                    .filter(|_| !complete)
+                {
+                    params.extend([
+                        integer(oldest.created_at),
+                        integer(i64::from(oldest.created_at_nanos)),
+                        text(&oldest.id),
+                    ]);
+                    " AND (messages.created_at > ?4 OR (messages.created_at = ?4 AND messages.created_at_nanos > ?5) OR (messages.created_at = ?4 AND messages.created_at_nanos = ?5 AND messages.message_id >= ?6))"
+                } else {
+                    ""
+                };
+                let offset = params.len() + 1;
+                let ids = (0..messages.len())
+                    .map(|index| format!("?{}", index + offset))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                params.extend(messages.iter().map(|message| text(&message.id)));
+                let ids = if ids.is_empty() {
+                    String::new()
+                } else {
+                    format!(" AND messages.message_id NOT IN ({ids})")
+                };
+                statements.push(Stmt {
+                        sql: format!("DELETE FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                            AND EXISTS (SELECT 1 FROM messages AS boundary WHERE boundary.server_key = ?1
+                                AND boundary.channel_id = ?2 AND boundary.message_id = ?3 AND boundary.timeline = 1
+                                AND (messages.created_at < boundary.created_at OR (messages.created_at = boundary.created_at AND messages.created_at_nanos < boundary.created_at_nanos)
+                                    OR (messages.created_at = boundary.created_at AND messages.created_at_nanos = boundary.created_at_nanos AND messages.message_id < boundary.message_id)))
+                            {lower}{ids}").into(), params,
+                    });
+            }
+            statements.extend(messages.iter().map(|message| Stmt {
+                sql: UPSERT_MESSAGE.into(),
+                params: message_params(server_key, message),
+            }));
+            if !messages.is_empty() {
+                let placeholders = (0..messages.len())
+                    .map(|index| format!("?{}", index + 4))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut params = vec![text(server_key), text(channel_id), text(anchor_id)];
+                params.extend(messages.iter().map(|message| text(&message.id)));
+                statements.push(Stmt {
+                        sql: format!(
+                            "UPDATE messages SET timeline = 1
+                            WHERE server_key = ?1 AND channel_id = ?2 AND message_id IN ({placeholders})
+                            AND EXISTS (SELECT 1 FROM messages WHERE server_key = ?1 AND channel_id = ?2
+                                AND message_id = ?3 AND timeline = 1)"
+                        )
+                        .into(),
+                        params,
+                    });
+            }
+            statements
+        }
+        CacheOp::UpsertMessage(message) | CacheOp::UpsertDetachedMessage(message) => vec![
             Stmt {
-                sql: UPSERT_MESSAGE,
+                sql: if matches!(op, CacheOp::UpsertMessage(_)) {
+                    UPSERT_TIMELINE_MESSAGE.as_str().into()
+                } else {
+                    UPSERT_MESSAGE.into()
+                },
                 params: message_params(server_key, message),
             },
             Stmt {
                 sql: "INSERT INTO channel_cache_state (server_key, channel_id, cached_at)
-                      VALUES (?1, ?2, ?3)
-                      ON CONFLICT(server_key, channel_id) DO UPDATE SET
-                          cached_at = MAX(cached_at, excluded.cached_at)",
+                          VALUES (?1, ?2, ?3)
+                          ON CONFLICT(server_key, channel_id) DO UPDATE SET
+                              cached_at = MAX(cached_at, excluded.cached_at)"
+                    .into(),
                 params: vec![
                     text(server_key),
                     text(&message.channel_id),
@@ -485,7 +625,7 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             },
         ],
         CacheOp::DeleteMessage { message_id } => vec![Stmt {
-            sql: "DELETE FROM messages WHERE server_key = ?1 AND message_id = ?2",
+            sql: "DELETE FROM messages WHERE server_key = ?1 AND message_id = ?2".into(),
             params: vec![text(server_key), text(message_id)],
         }],
         CacheOp::ReplacePins { channel_id, ids } => {
@@ -494,13 +634,15 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             // conjunto ficam desafixadas e a retenção pode removê-las.
             let mut statements = vec![Stmt {
                 sql: "UPDATE messages SET pinned = 0
-                      WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1",
+                      WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1"
+                    .into(),
                 params: vec![text(server_key), text(channel_id)],
             }];
             for message_id in ids {
                 statements.push(Stmt {
                     sql: "UPDATE messages SET pinned = 1
-                          WHERE server_key = ?1 AND message_id = ?2",
+                          WHERE server_key = ?1 AND message_id = ?2"
+                        .into(),
                     params: vec![text(server_key), text(message_id)],
                 });
             }
@@ -516,7 +658,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       mentions = excluded.mentions,
                       reply_to = excluded.reply_to,
                       notify_reply = excluded.notify_reply,
-                      updated_at = excluded.updated_at",
+                      updated_at = excluded.updated_at"
+                .into(),
             params: vec![
                 text(server_key),
                 text(&draft.owner_user_id),
@@ -533,72 +676,91 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             channel_id,
         } => vec![Stmt {
             sql: "DELETE FROM drafts
-                  WHERE server_key = ?1 AND owner_user_id = ?2 AND channel_id = ?3",
+                  WHERE server_key = ?1 AND owner_user_id = ?2 AND channel_id = ?3"
+                .into(),
             params: vec![text(server_key), text(owner_user_id), text(channel_id)],
         }],
         CacheOp::ClearCachedData => vec![
-            Stmt { sql: "DELETE FROM profile_images WHERE server_key = ?1", params: vec![text(server_key)] },
-            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
-            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
-                sql: "DELETE FROM messages WHERE server_key = ?1",
+                sql: "DELETE FROM profile_images WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channels WHERE server_key = ?1",
+                sql: "DELETE FROM server_emojis WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM members WHERE server_key = ?1",
+                sql: "DELETE FROM server_emojis_state WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channel_cache_state WHERE server_key = ?1",
+                sql: "DELETE FROM messages WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM server_cache WHERE server_key = ?1",
+                sql: "DELETE FROM channels WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM members WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM channel_cache_state WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM server_cache WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
         ],
         CacheOp::ClearServer => vec![
-            Stmt { sql: "DELETE FROM profile_images WHERE server_key = ?1", params: vec![text(server_key)] },
-            Stmt { sql: "DELETE FROM server_emojis WHERE server_key = ?1", params: vec![text(server_key)] },
-            Stmt { sql: "DELETE FROM server_emojis_state WHERE server_key = ?1", params: vec![text(server_key)] },
             Stmt {
-                sql: "DELETE FROM drafts WHERE server_key = ?1",
+                sql: "DELETE FROM profile_images WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM notification_ledger WHERE server_key = ?1",
+                sql: "DELETE FROM server_emojis WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM send_queue WHERE server_key = ?1",
+                sql: "DELETE FROM server_emojis_state WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channel_read_state WHERE server_key = ?1",
+                sql: "DELETE FROM drafts WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM messages WHERE server_key = ?1",
+                sql: "DELETE FROM notification_ledger WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channels WHERE server_key = ?1",
+                sql: "DELETE FROM send_queue WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM members WHERE server_key = ?1",
+                sql: "DELETE FROM channel_read_state WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM channel_cache_state WHERE server_key = ?1",
+                sql: "DELETE FROM messages WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
             Stmt {
-                sql: "DELETE FROM server_cache WHERE server_key = ?1",
+                sql: "DELETE FROM channels WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM members WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM channel_cache_state WHERE server_key = ?1".into(),
+                params: vec![text(server_key)],
+            },
+            Stmt {
+                sql: "DELETE FROM server_cache WHERE server_key = ?1".into(),
                 params: vec![text(server_key)],
             },
         ],
@@ -627,11 +789,12 @@ impl TursoCache {
             // Toda operação que pode aumentar (ou desafixar) mensagens de um
             // canal passa pela retenção, uma vez por canal no fim do lote.
             match op {
-                CacheOp::UpsertMessage(message) => {
+                CacheOp::UpsertMessage(message) | CacheOp::UpsertDetachedMessage(message) => {
                     retention_channels.push(message.channel_id.clone());
                 }
                 CacheOp::ReplaceChannelSnapshot { channel_id, .. }
                 | CacheOp::MergeChannelHead { channel_id, .. }
+                | CacheOp::AppendChannelHistory { channel_id, .. }
                 | CacheOp::ReplacePins { channel_id, .. } => {
                     retention_channels.push(channel_id.clone());
                 }
@@ -653,7 +816,8 @@ impl TursoCache {
 
         let tx = self.conn.transaction().await?;
         for statement in &statements {
-            tx.execute(statement.sql, statement.params.clone()).await?;
+            tx.execute(statement.sql.as_ref(), statement.params.clone())
+                .await?;
         }
         tx.commit().await?;
         Ok(())
@@ -971,7 +1135,7 @@ impl TursoCache {
         tx.execute(UPSERT_MESSAGE, message_params(server_key, message))
             .await?;
         for statement in retention_statements(server_key, &message.channel_id) {
-            tx.execute(statement.sql, statement.params).await?;
+            tx.execute(statement.sql.as_ref(), statement.params).await?;
         }
         tx.execute(
             "DELETE FROM send_queue WHERE server_key = ?1 AND local_id = ?2",
@@ -1274,32 +1438,33 @@ impl TursoCache {
         Ok(metadata)
     }
 
-    /// Lê uma página cronológica do cache local. Fixadas antigas são retenção
-    /// auxiliar, não parte do cursor da timeline: incluí-las aqui poderia fazer
-    /// uma fixada muito velha pular centenas de mensagens normais.
+    /// Read proven chronological rows, including pins inside that history.
+    /// Standalone retained pins are returned separately on the initial page
+    /// and never move a chronological pagination cursor.
     pub async fn load_channel_page(
         &self,
         server_key: &str,
         channel_id: &str,
-        before: Option<(i64, &str)>,
+        before: Option<(i64, u32, &str)>,
     ) -> Result<CachedMessagePage, turso::Error> {
         let initial = before.is_none();
-        let (before_at, before_id) = before
-            .map(|(at, id)| (Value::Integer(at), Value::Text(id.to_owned())))
-            .unwrap_or((Value::Null, Value::Null));
+        let (before_at, before_nanos, before_id) = before
+            .map(|(at, nanos, id)| (integer(at), integer(i64::from(nanos)), text(id)))
+            .unwrap_or((Value::Null, Value::Null, Value::Null));
         let limit = CACHE_PAGE_SIZE.saturating_add(1);
         let mut rows = self
             .conn
             .query(
                 "SELECT message_id, channel_id, author_id, content, created_at,
-                        edited, reply_to, pinned, attachments, reactions, embeds, external_author
+                        edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
                  FROM messages
-                 WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 0
+                 WHERE server_key = ?1 AND channel_id = ?2 AND timeline = 1
                    AND (?3 IS NULL OR created_at < ?3
-                        OR (created_at = ?3 AND message_id < ?4))
-                 ORDER BY created_at DESC, message_id DESC
-                 LIMIT ?5",
-                vec![text(server_key), text(channel_id), before_at, before_id, integer(limit)],
+                        OR (created_at = ?3 AND created_at_nanos < ?4)
+                        OR (created_at = ?3 AND created_at_nanos = ?4 AND message_id < ?5))
+                 ORDER BY created_at DESC, created_at_nanos DESC, message_id DESC
+                 LIMIT ?6",
+                vec![text(server_key), text(channel_id), before_at, before_nanos, before_id, integer(limit)],
             )
             .await?;
 
@@ -1315,6 +1480,7 @@ impl TursoCache {
                 author_id: row.get(2)?,
                 content: row.get(3)?,
                 created_at: row.get(4)?,
+                created_at_nanos: row.get::<i64>(12)? as u32,
                 edited: row.get(5)?,
                 reply_to: row.get(6)?,
                 pinned: row.get(7)?,
@@ -1334,12 +1500,13 @@ impl TursoCache {
         // A primeira hidratação também leva as fixadas retidas fora da janela
         // normal. Elas aparecem offline, mas nunca participam do cursor das
         // páginas seguintes.
+        let mut pins = Vec::new();
         if initial {
             let mut pinned = self
                 .conn
                 .query(
                     "SELECT message_id, channel_id, author_id, content, created_at,
-                            edited, reply_to, pinned, attachments, reactions, embeds, external_author
+                            edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
                      FROM messages
                      WHERE server_key = ?1 AND channel_id = ?2 AND pinned = 1
                      ORDER BY created_at DESC, message_id DESC
@@ -1352,12 +1519,13 @@ impl TursoCache {
                 let reactions: String = row.get(9)?;
                 let embeds: String = row.get(10)?;
             let external_json: Option<String> = row.get(11)?;
-                messages.push(CachedMessage {
+                pins.push(CachedMessage {
                     id: row.get(0)?,
                     channel_id: row.get(1)?,
                     author_id: row.get(2)?,
                     content: row.get(3)?,
                     created_at: row.get(4)?,
+                created_at_nanos: row.get::<i64>(12)? as u32,
                     edited: row.get(5)?,
                     reply_to: row.get(6)?,
                     pinned: row.get(7)?,
@@ -1374,10 +1542,12 @@ impl TursoCache {
         messages.sort_by(|a, b| {
             a.created_at
                 .cmp(&b.created_at)
+                .then_with(|| a.created_at_nanos.cmp(&b.created_at_nanos))
                 .then_with(|| a.id.cmp(&b.id))
         });
         Ok(CachedMessagePage {
             channel_id: channel_id.to_owned(),
+            pins,
             messages,
             has_more,
         })
@@ -1462,7 +1632,7 @@ impl TursoCache {
             .conn
             .query(
                 "SELECT message_id, channel_id, author_id, content, created_at,
-                        edited, reply_to, pinned, attachments, reactions, embeds, external_author
+                        edited, reply_to, pinned, attachments, reactions, embeds, external_author, created_at_nanos
                  FROM messages WHERE server_key = ?1 ORDER BY created_at",
                 [server_key],
             )
@@ -1478,6 +1648,7 @@ impl TursoCache {
                 author_id: row.get(2)?,
                 content: row.get(3)?,
                 created_at: row.get(4)?,
+                created_at_nanos: row.get::<i64>(12)? as u32,
                 edited: row.get(5)?,
                 reply_to: row.get(6)?,
                 pinned: row.get(7)?,

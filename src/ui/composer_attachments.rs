@@ -33,8 +33,7 @@ pub enum TileAction {
     Remove,
     Spoiler,
     Anonymize,
-    /// Abre o arquivo no aplicativo padrão do sistema.
-    EditExternally,
+    Edit,
 }
 
 /// Desenha a faixa. Devolve a ação pedida no quadro, se houver.
@@ -79,7 +78,7 @@ pub fn band(
         if origin.x > area.max.x || origin.x + TILE + STACK_W < area.min.x {
             continue;
         }
-        if let Some(action) = tile(&mut child, t, s, media, upload, index, origin) {
+        if let Some(action) = tile(&mut child, t, s, media, upload, index, origin, true) {
             requested = Some((index, action));
         }
     }
@@ -116,6 +115,7 @@ fn tile(
     upload: &Upload,
     index: usize,
     origin: egui::Pos2,
+    editable: bool,
 ) -> Option<TileAction> {
     let rect = Rect::from_min_size(origin, vec2(TILE + space::SM + STACK_W, TILE));
     let thumb = Rect::from_min_size(rect.min, Vec2::splat(TILE));
@@ -244,6 +244,10 @@ fn tile(
         egui::StrokeKind::Inside,
     );
 
+    if !editable {
+        return None;
+    }
+
     // Cápsula de vidro com as ações, empilhadas à direita.
     ui.painter().rect(
         stack,
@@ -252,7 +256,7 @@ fn tile(
         Stroke::new(1.0, t.separator),
         egui::StrokeKind::Inside,
     );
-    let actions: [(TileAction, &str, &str, bool); 4] = [
+    let actions = [
         (TileAction::Remove, icon::X, s.attach_remove, false),
         (
             TileAction::Spoiler,
@@ -266,13 +270,12 @@ fn tile(
             s.attach_anonymize,
             upload.anonymize,
         ),
-        (
-            TileAction::EditExternally,
-            icon::PENCIL_SIMPLE,
-            s.attach_edit_external,
-            false,
-        ),
+        (TileAction::Edit, icon::PENCIL_SIMPLE, s.attach_edit, false),
     ];
+    let actions: Vec<_> = actions
+        .into_iter()
+        .filter(|(action, _, _, _)| *action != TileAction::Anonymize || kind == Kind::Image)
+        .collect();
     let gap = (stack.height() - BUTTON * actions.len() as f32) / (actions.len() as f32 + 1.0);
     let mut requested = None;
     for (slot, (action, glyph, tooltip, active)) in actions.into_iter().enumerate() {
@@ -393,6 +396,25 @@ pub fn link_card(ui: &mut egui::Ui, t: &Tokens, url: &str, band: Rect) {
             t.label_tertiary,
         );
     }
+}
+
+/// Local previews while the authenticated upload is in flight.
+pub fn pending(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    s: &Strings,
+    media: &mut MediaStore,
+    uploads: &[Upload],
+    width: f32,
+) {
+    ui.set_max_width(width);
+    ui.horizontal_wrapped(|ui| {
+        for (index, upload) in uploads.iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(TILE), Sense::hover());
+            tile(ui, t, s, media, upload, index, rect.min, false);
+            response.on_hover_text(&upload.name);
+        }
+    });
 }
 
 #[cfg(test)]

@@ -760,15 +760,145 @@ impl Api {
         since: chrono::DateTime<chrono::Utc>,
         last_id: &str,
     ) -> ApiResult<MessageList> {
-        let query = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair(
-                "since",
-                &since.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-            )
-            .append_pair("last_id", last_id)
-            .finish();
+        self.message_page(channel_id, Some((since, last_id)), false, 100)
+            .await
+    }
+
+    pub async fn messages_after(
+        &self,
+        channel_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+        last_id: &str,
+    ) -> ApiResult<MessageList> {
+        self.message_page(channel_id, Some((since, last_id)), true, 100)
+            .await
+    }
+
+    async fn message_page(
+        &self,
+        channel_id: &str,
+        cursor: Option<(chrono::DateTime<chrono::Utc>, &str)>,
+        forward: bool,
+        limit: usize,
+    ) -> ApiResult<MessageList> {
+        let query = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query
+                .append_pair("order", if forward { "asc" } else { "desc" })
+                .append_pair("limit", &limit.to_string());
+            if let Some((at, id)) = cursor {
+                query
+                    .append_pair(
+                        "since",
+                        &at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    )
+                    .append_pair("last_id", id);
+            }
+            query.finish()
+        };
         self.get(&format!("/channels/{channel_id}/messages?{query}"))
             .await
+    }
+
+    /// Compose a context window using the existing directional cursors. The
+    /// second request starts at the immediate predecessor, so it includes a
+    /// fresh copy of the target itself, with reactions, attachments and embeds.
+    pub async fn message_context(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> ApiResult<super::models::MessageContext> {
+        let at = match at {
+            Some(at) => at,
+            None => {
+                // Unloaded replies can carry only an opaque ID. This backend
+                // requires since together with last_id; seek until its exact
+                // cursor is known, without projecting intermediate pages.
+                let mut cursor: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+                loop {
+                    let page = self
+                        .message_page(
+                            channel_id,
+                            cursor.as_ref().map(|(at, id)| (*at, id.as_str())),
+                            false,
+                            100,
+                        )
+                        .await?;
+                    if let Some(target) = page
+                        .messages
+                        .iter()
+                        .find(|message| message.id == message_id)
+                    {
+                        break target.created_at;
+                    }
+                    let oldest = page
+                        .messages
+                        .iter()
+                        .min_by_key(|message| (message.created_at, &message.id));
+                    let Some(oldest) = oldest.filter(|_| page.has_more) else {
+                        return Err(ApiError::Decode(
+                            "Message was deleted or is unavailable in this channel.".into(),
+                        ));
+                    };
+                    let next = (oldest.created_at, oldest.id.clone());
+                    if cursor.as_ref().is_some_and(|previous| next >= *previous) {
+                        return Err(ApiError::Decode(
+                            "History cursor did not advance while locating the message.".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
+            }
+        };
+        let before = self
+            .message_page(channel_id, Some((at, message_id)), false, 30)
+            .await?;
+        if before.messages.iter().any(|message| {
+            message.channel_id != channel_id
+                || (message.created_at, message.id.as_str()) >= (at, message_id)
+        }) {
+            return Err(ApiError::Decode("Invalid preceding message window.".into()));
+        }
+        let predecessor = before
+            .messages
+            .iter()
+            .max_by_key(|message| (message.created_at, &message.id));
+        let after = self
+            .message_page(
+                channel_id,
+                predecessor.map(|message| (message.created_at, message.id.as_str())),
+                true,
+                31,
+            )
+            .await?;
+        if after
+            .messages
+            .iter()
+            .any(|message| message.channel_id != channel_id)
+            || !after
+                .messages
+                .iter()
+                .any(|message| message.id == message_id)
+        {
+            return Err(ApiError::Decode(
+                "Message was deleted or is unavailable in this channel.".into(),
+            ));
+        }
+        let mut messages = before.messages;
+        messages.extend(after.messages);
+        messages.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        messages.dedup_by(|a, b| a.id == b.id);
+        Ok(super::models::MessageContext {
+            channel_id: channel_id.to_owned(),
+            messages,
+            has_more_before: before.has_more,
+            has_more_after: after.has_more,
+        })
     }
 
     /// O endpoint aceita multipart porque carrega anexos; sem anexo, só os
@@ -1656,3 +1786,7 @@ mod tests {
         assert_eq!(requests, 2);
     }
 }
+
+#[cfg(test)]
+#[path = "history_tests.rs"]
+mod history_tests;

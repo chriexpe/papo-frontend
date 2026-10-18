@@ -114,6 +114,7 @@ pub enum Request {
     Full { id: String },
     /// Garante o arquivo no cache e devolve o caminho (vídeo, áudio, outros).
     File { id: String, name: String },
+    CopyImage { id: String, name: String },
     /// Verifica se o arquivo já está em disco, **sem** baixar. É a única
     /// consulta que desenhar um cartão pode disparar: uma ida ao disco local
     /// não é um download, e é assim que mídia guardada por uma sessão anterior
@@ -176,6 +177,7 @@ impl Request {
             Self::Thumb { .. } => "thumb",
             Self::Full { .. } => "full",
             Self::File { .. } => "file",
+            Self::CopyImage { .. } => "copy-image",
             Self::Probe { .. } => "probe",
             Self::Save { .. } => "save",
             Self::Waveform { .. } => "waveform",
@@ -194,6 +196,7 @@ impl Request {
 }
 
 pub enum Loaded {
+    Copied(Box<ColorImage>),
     Image {
         key: String,
         image: Box<ColorImage>,
@@ -386,6 +389,21 @@ async fn run(
         }
         // Só olha o disco: nenhum byte sai pela rede por causa disto. É o que
         // permite um cartão reaproveitar o cache sem pedir o anexo.
+        Request::CopyImage { id, name } => {
+            let _slot = fetch_gate.acquire().await;
+            let path = authenticated_cache_path(server_key, "files", &id, &name);
+            match cached_file(api, &path, &format!("/attachments/{id}")).await {
+                Ok(()) => match image::ImageReader::open(&path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|reader| reader.with_guessed_format().map_err(|error| error.to_string()))
+                    .and_then(|reader| reader.decode().map_err(|error| error.to_string()))
+                {
+                    Ok(image) => Loaded::Copied(Box::new(to_color_image(image, u32::MAX))),
+                    Err(error) => Loaded::Failed { key: file_key(&id), error },
+                },
+                Err(error) => Loaded::Failed { key: file_key(&id), error },
+            }
+        }
         Request::Probe { id, name } => {
             let path = authenticated_cache_path(server_key, "files", &id, &name);
             match tokio::fs::metadata(&path).await {
@@ -734,7 +752,7 @@ async fn cached_file(api: &Api, path: &Path, route: &str) -> Result<(), String> 
 
 /// Decodifica bytes em textura; GIF vira animação.
 fn decode(key: String, bytes: &[u8], max: u32) -> Loaded {
-    decode_with_gif_limits(key, bytes, max, 240, usize::MAX)
+    decode_with_gif_limits(key, bytes, max, 240, 32 << 20)
 }
 
 fn decode_with_gif_limits(
@@ -744,9 +762,7 @@ fn decode_with_gif_limits(
     max_frames: usize,
     max_bytes: usize,
 ) -> Loaded {
-    if bytes.starts_with(b"GIF8")
-        && let Some(frames) = decode_gif(bytes, max, max_frames, max_bytes)
-    {
+    if let Some(frames) = decode_gif(bytes, max, max_frames, max_bytes) {
         if frames.len() > 1 {
             return Loaded::Animation { key, frames };
         }
@@ -795,15 +811,14 @@ fn decode_gif(
     max_frames: usize,
     max_bytes: usize,
 ) -> Option<Vec<(ColorImage, f32)>> {
-    use image::AnimationDecoder;
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+    let frames = prepare::animation_frames(bytes).ok()??;
     let max_frames = max_frames.max(1);
     let max_bytes = max_bytes.max(4);
     let mut out = Vec::new();
     let mut stride = 1usize;
     let mut source_index = 0usize;
 
-    for frame in decoder.into_frames().take(240) {
+    for frame in frames.take(240) {
         let Ok(frame) = frame else { break };
         let (numerator, denominator) = frame.delay().numer_denom_ms();
         let delay = if denominator == 0 {
@@ -1452,6 +1467,7 @@ impl MediaStore {
                 Loaded::Missing { key } => {
                     self.textures.insert(key, Texture::Failed);
                 }
+                Loaded::Copied(image) => ctx.copy_image(*image),
                 Loaded::Saved { name, path } => {
                     self.saved = Some((name, path, ctx.input(|input| input.time)));
                 }
@@ -2145,6 +2161,10 @@ impl MediaStore {
             .get(&key)
             .map(Vec::as_slice)
             .filter(|peaks| !peaks.is_empty())
+    }
+
+    pub fn copy_image(&self, id: &str, name: &str) {
+        self.ask(Request::CopyImage { id: id.to_owned(), name: name.to_owned() });
     }
 
     pub fn save(&self, id: &str, name: &str, dest: PathBuf) {
@@ -3208,5 +3228,25 @@ mod custom_asset_identity_tests {
         let mut media = MediaStore::new(None);
         assert!(media.emoji("sticker", None).is_none());
         assert!(media.avatar("user", None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod animation_tests {
+    use super::*;
+    #[test]
+    fn webp_and_apng_decode_as_animation_instead_of_a_static_image() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/animated-sticker.webp").as_slice(),
+            include_bytes!("../../tests/fixtures/animated-sticker.png").as_slice(),
+        ] {
+            let Loaded::Animation { frames, .. } = decode("sticker".into(), bytes, 128) else {
+                panic!("animation was flattened")
+            };
+            assert_eq!(frames.len(), 2);
+            assert_ne!(frames[0].0.pixels, frames[1].0.pixels);
+            assert!((frames[0].1 - 0.08).abs() < 0.001);
+            assert!((frames[1].1 - 0.12).abs() < 0.001);
+        }
     }
 }

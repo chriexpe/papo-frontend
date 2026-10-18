@@ -23,8 +23,8 @@ const FILE_H: f32 = 56.0;
 /// Folga de pré-busca em volta da área visível. Fora dela o cartão não pede
 /// nada: nem disco, nem rede. A margem cobre perto de uma tela, então rolagem
 /// rápida ainda encontra o conteúdo a caminho em vez de esperar.
-const VIEWPORT_MARGIN_ABOVE: f32 = 1200.0;
-const VIEWPORT_MARGIN_BELOW: f32 = 320.0;
+pub(super) const VIEWPORT_MARGIN_ABOVE: f32 = 1800.0;
+pub(super) const VIEWPORT_MARGIN_BELOW: f32 = 480.0;
 
 /// O próximo cartão está perto o bastante da área visível para valer um
 /// pedido? A janela é maior acima porque histórico é consumido rolando para
@@ -40,6 +40,7 @@ pub enum MediaAction {
     /// Abre a imagem ou o vídeo em tela cheia.
     Open { message_id: String, index: usize },
     Download { id: String, name: String },
+    Link { id: String, open: bool },
     Reveal(String),
 }
 
@@ -208,7 +209,7 @@ fn grid(
         let index = first_index + offset;
         let response = ui.interact(
             rect,
-            egui::Id::new(("media-grid", message_id, index)),
+            ui.id().with(("media-grid", message_id, index)),
             Sense::click(),
         );
         let hidden = attachment.sensitive() && media.sensitive_hidden(&attachment.id);
@@ -315,11 +316,8 @@ fn grid(
                 index,
             }));
         }
-        if response.secondary_clicked() {
-            action = action.or(Some(MediaAction::Download {
-                id: attachment.id.clone(),
-                name: attachment.name().to_owned(),
-            }));
+        if !video {
+            action = action.or(image_menu(&response, s, media, attachment));
         }
     }
     action
@@ -432,13 +430,35 @@ fn image(
             index,
         });
     }
-    if response.secondary_clicked() {
-        return Some(MediaAction::Download {
+    image_menu(&response, s, media, attachment)
+}
+
+fn image_menu(
+    response: &egui::Response,
+    s: &Strings,
+    media: &MediaStore,
+    attachment: &Attachment,
+) -> Option<MediaAction> {
+    use super::media_menu::{Action, menu};
+    match menu(response, s) {
+        Some(Action::Copy) => {
+            media.copy_image(&attachment.id, attachment.name());
+            None
+        }
+        Some(Action::Save) => Some(MediaAction::Download {
             id: attachment.id.clone(),
             name: attachment.name().to_owned(),
-        });
+        }),
+        Some(Action::CopyLink) => Some(MediaAction::Link {
+            id: attachment.id.clone(),
+            open: false,
+        }),
+        Some(Action::OpenLink) => Some(MediaAction::Link {
+            id: attachment.id.clone(),
+            open: true,
+        }),
+        None => None,
     }
-    None
 }
 
 fn video(
@@ -1485,6 +1505,32 @@ pub fn elide(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod grid_tests {
     use super::*;
+
+    #[test]
+    fn same_media_in_chat_and_search_has_independent_widget_ids() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let t = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut media = MediaStore::new(None);
+        let attachment: Attachment = serde_json::from_value(serde_json::json!({
+            "id": "image1", "mime_type": "image/png", "original_file_name": "image.png"
+        })).unwrap();
+        let attachments = vec![attachment.clone(), attachment];
+        let mut ids = Vec::new();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            for surface in ["chat", "search"] {
+                ui.push_id(surface, |ui| {
+                    ids.push(ui.id().with(("media-grid", "m1", 0_usize)));
+                    grid(ui, &t, crate::i18n::Lang::En.strings(), &mut media, "m1", 0, &attachments, 220.0);
+                });
+            }
+        });
+        output.textures_delta.clear();
+        assert_ne!(ids[0], ids[1]);
+        let first = ctx.read_response(ids[0]).unwrap();
+        let second = ctx.read_response(ids[1]).unwrap();
+        assert_ne!(first.rect, second.rect);
+    }
 
     fn bounds(cells: &[Rect]) -> Rect {
         cells.iter().fold(Rect::NOTHING, |all, cell| all.union(*cell))

@@ -335,6 +335,43 @@ pub static GROUPS: &[Group] = &[
 /// Emojis sugeridos na barra rápida da pastilha de ações.
 pub const QUICK: [&str; 6] = ["👍", "❤️", "😂", "🎉", "😮", "😢"];
 
+#[derive(Clone, Default)]
+struct PickerNavigation {
+    frame: u64,
+    query: String,
+    group: usize,
+    index: usize,
+}
+
+fn navigate(index: usize, key: egui::Key, columns: usize, custom: usize, total: usize) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let index = index.min(total - 1);
+    let (base, count) = if index < custom {
+        (0, custom)
+    } else {
+        (custom, total - custom)
+    };
+    let local = index - base;
+    let column = local % columns;
+    match key {
+        egui::Key::ArrowLeft => index.saturating_sub(1),
+        egui::Key::ArrowRight => (index + 1).min(total - 1),
+        egui::Key::ArrowUp if local >= columns => index - columns,
+        egui::Key::ArrowUp if base > 0 => {
+            (((custom - 1) / columns) * columns + column).min(custom - 1)
+        }
+        egui::Key::ArrowDown if (local / columns + 1) * columns < count => {
+            base + (local + columns).min(count - 1)
+        }
+        egui::Key::ArrowDown if custom > 0 && base == 0 && custom < total => {
+            custom + column.min(total - custom - 1)
+        }
+        _ => index,
+    }
+}
+
 /// Desenha o seletor e devolve o emoji escolhido.
 pub fn picker(
     ui: &mut egui::Ui,
@@ -348,29 +385,72 @@ pub fn picker(
     custom_only: bool,
 ) -> Option<Emoji> {
     let mut chosen = None;
+    let navigation_id = ui.id().with(("emoji-navigation", custom_only));
+    let frame = ui.ctx().cumulative_frame_nr();
+    let previous = ui.data(|data| data.get_temp::<PickerNavigation>(navigation_id));
+    let opening = previous.as_ref().is_none_or(|nav| nav.frame + 1 < frame);
+    let mut navigation = if opening {
+        PickerNavigation::default()
+    } else {
+        previous.unwrap()
+    };
+    navigation.frame = frame;
+    // Take navigation before TextEdit can move its cursor or surrender focus.
+    #[allow(unused_mut)]
+    let mut keys = ui.input_mut(|input| {
+        let mut keys = Vec::new();
+        input.events.retain(|event| {
+            if let egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } = event
+                && modifiers.is_none()
+                && matches!(
+                    key,
+                    egui::Key::ArrowLeft
+                        | egui::Key::ArrowRight
+                        | egui::Key::ArrowUp
+                        | egui::Key::ArrowDown
+                        | egui::Key::Enter
+                )
+            {
+                keys.push(*key);
+                return false;
+            }
+            true
+        });
+        keys
+    });
+    #[allow(unused_mut)]
+    let mut accept = keys.contains(&egui::Key::Enter);
 
     ui.set_width(ui.available_width().min(300.0));
     ui.add_space(space::XS);
 
     // Fila rápida: o que se usa quase sempre, a um clique.
     if !custom_only {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::XXS;
-        for entry in QUICK {
-            let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-            if response.hovered() {
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XXS;
+            for entry in QUICK {
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
+                if response.hovered() {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(radius::CONTROL),
+                        t.fill_soft,
+                    );
+                }
+                draw_unicode(ui, t, media, entry, rect.shrink(5.0));
+                if response.clicked() {
+                    chosen = Some(Emoji::Unicode(entry.to_owned()));
+                }
             }
-            draw_unicode(ui, t, media, entry, rect.shrink(5.0));
-            if response.clicked() {
-                chosen = Some(Emoji::Unicode(entry.to_owned()));
-            }
-        }
-    });
-    ui.add_space(space::XS);
-    ui.separator();
-    ui.add_space(space::XS);
+        });
+        ui.add_space(space::XS);
+        ui.separator();
+        ui.add_space(space::XS);
     }
 
     // Busca
@@ -387,7 +467,7 @@ pub fn picker(
         );
         let field_id = ui.id().with(("emoji-search", custom_only));
         let key = format!("emoji:{field_id:?}");
-        let _ = crate::platform::native_field::show(
+        let events = crate::platform::native_field::show(
             ui.ctx(),
             &key,
             query,
@@ -395,21 +475,49 @@ pub fn picker(
             s.emoji_search,
             crate::platform::native_field::Mode::Search,
             0,
-            false,
+            opening,
             t.label,
             t.label_tertiary,
             text::body().size,
         );
+        accept |= events.submit;
+        keys.extend(crate::platform::native_field::take_navigation(&key));
     }
 
     #[cfg(not(target_os = "android"))]
     {
+        let search_id = ui.id().with(("emoji-search", custom_only));
+        let typing = ui.input(|input| {
+            input.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Ime(_)
+                )
+            })
+        });
+        if opening || typing {
+            ui.memory_mut(|memory| memory.request_focus(search_id));
+        }
         let field = egui::TextEdit::singleline(query)
-            .hint_text(s.emoji_search)
+            .id(search_id)
+            .hint_text(RichText::new(s.emoji_search).font(text::body()))
+            .font(text::body())
             .desired_width(f32::INFINITY)
             .vertical_align(Align::Center)
             .margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8));
         ui.add(field);
+        ui.memory_mut(|memory| {
+            if memory.has_focus(search_id) {
+                memory.set_focus_lock_filter(
+                    search_id,
+                    egui::EventFilter {
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        ..Default::default()
+                    },
+                );
+            }
+        });
     }
     ui.add_space(space::XS);
 
@@ -422,8 +530,7 @@ pub fn picker(
             ui.spacing_mut().item_spacing.x = space::XXS;
             for (index, entry) in GROUPS.iter().enumerate() {
                 let selected = *group == index;
-                let (rect, response) =
-                    ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::click());
                 if selected || response.hovered() {
                     ui.painter().rect_filled(
                         rect,
@@ -436,7 +543,11 @@ pub fn picker(
                     egui::Align2::CENTER_CENTER,
                     entry.icon,
                     text::icon(15.0),
-                    if selected { t.accent } else { t.label_secondary },
+                    if selected {
+                        t.accent
+                    } else {
+                        t.label_secondary
+                    },
                 );
                 if response.clicked() {
                     *group = index;
@@ -446,6 +557,35 @@ pub fn picker(
         ui.add_space(space::XS);
     }
 
+    let custom: Vec<_> = store
+        .emojis
+        .iter()
+        .filter(|emoji| !searching || emoji.name.to_lowercase().contains(&filter))
+        .collect();
+    let entries: Vec<&(&str, &str)> = if custom_only {
+        Vec::new()
+    } else if searching {
+        GROUPS
+            .iter()
+            .flat_map(|entry| entry.emojis.iter())
+            .filter(|(_, keywords)| keywords.contains(&filter))
+            .collect()
+    } else {
+        GROUPS[(*group).min(GROUPS.len() - 1)]
+            .emojis
+            .iter()
+            .collect()
+    };
+    let changed = navigation.query != *query || navigation.group != *group;
+    if changed {
+        navigation.index = 0;
+    }
+    navigation.query.clone_from(query);
+    navigation.group = *group;
+    let total = custom.len() + entries.len();
+    navigation.index = navigation.index.min(total.saturating_sub(1));
+    let scroll_selected = changed || keys.iter().any(|key| *key != egui::Key::Enter);
+
     // The scroll viewport owns all remaining panel height. On shorter
     // windows its items must scroll, not paint beyond the popup or into chat.
     let scroll_height = ui.available_height().clamp(1.0, 260.0);
@@ -453,13 +593,11 @@ pub fn picker(
         .max_height(scroll_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            let (columns, _) = grid_geometry(ui.available_width());
+            for key in &keys {
+                navigation.index = navigate(navigation.index, *key, columns, custom.len(), total);
+            }
             // Emojis do servidor primeiro: são a identidade da casa.
-            let custom: Vec<_> = store
-                .emojis
-                .iter()
-                .filter(|emoji| !searching || emoji.name.to_lowercase().contains(&filter))
-                .cloned()
-                .collect();
             if !custom.is_empty() {
                 ui.label(
                     RichText::new(s.emoji_custom.to_uppercase())
@@ -471,11 +609,15 @@ pub fn picker(
                     let emoji = &custom[index];
                     let (rect, response) =
                         ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-                    if response.hovered() {
+                    let selected = navigation.index == index;
+                    if selected && scroll_selected {
+                        response.scroll_to_me(Some(Align::Center));
+                    }
+                    if selected || response.hovered() {
                         ui.painter().rect_filled(
                             rect,
                             CornerRadius::same(radius::CONTROL),
-                            t.fill_soft,
+                            if selected { t.fill_medium } else { t.fill_soft },
                         );
                     }
                     if let Some(texture) = media
@@ -490,18 +632,6 @@ pub fn picker(
                 });
                 ui.add_space(space::SM);
             }
-
-            let entries: Vec<&(&str, &str)> = if custom_only {
-                Vec::new()
-            } else if searching {
-                GROUPS
-                    .iter()
-                    .flat_map(|entry| entry.emojis.iter())
-                    .filter(|(_, keywords)| keywords.contains(&filter))
-                    .collect()
-            } else {
-                GROUPS[(*group).min(GROUPS.len() - 1)].emojis.iter().collect()
-            };
 
             if entries.is_empty() && custom.is_empty() {
                 ui.add_space(space::LG);
@@ -518,9 +648,16 @@ pub fn picker(
             grid(ui, entries.len(), |ui, index| {
                 let (emoji, keywords) = entries[index];
                 let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, CornerRadius::same(radius::CONTROL), t.fill_soft);
+                let selected = navigation.index == custom.len() + index;
+                if selected && scroll_selected {
+                    response.scroll_to_me(Some(Align::Center));
+                }
+                if selected || response.hovered() {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(radius::CONTROL),
+                        if selected { t.fill_medium } else { t.fill_soft },
+                    );
                 }
                 draw_unicode(ui, t, media, emoji, rect.shrink(5.0));
                 let name = keywords.split_whitespace().next().unwrap_or(emoji);
@@ -530,6 +667,22 @@ pub fn picker(
             });
         });
 
+    if accept {
+        chosen = if let Some(emoji) = custom.get(navigation.index) {
+            Some(Emoji::Custom(emoji.id.clone()))
+        } else {
+            entries
+                .get(navigation.index.saturating_sub(custom.len()))
+                .map(|(emoji, _)| Emoji::Unicode((*emoji).to_owned()))
+        };
+    }
+    ui.data_mut(|data| {
+        if chosen.is_some() {
+            data.remove::<PickerNavigation>(navigation_id);
+        } else {
+            data.insert_temp(navigation_id, navigation);
+        }
+    });
     chosen
 }
 
@@ -573,6 +726,89 @@ fn grid(ui: &mut egui::Ui, count: usize, mut cell: impl FnMut(&mut egui::Ui, usi
 #[cfg(test)]
 mod picker_grid_tests {
     use super::*;
+
+    #[test]
+    fn keyboard_navigation_crosses_partial_grid_sections() {
+        use egui::Key::*;
+        assert_eq!(navigate(0, ArrowDown, 8, 3, 25), 3);
+        assert_eq!(navigate(5, ArrowUp, 8, 3, 25), 2);
+        assert_eq!(navigate(5, ArrowDown, 8, 3, 25), 13);
+        assert_eq!(navigate(0, ArrowLeft, 8, 0, 25), 0);
+        assert_eq!(navigate(24, ArrowRight, 8, 0, 25), 24);
+        assert_eq!(navigate(24, ArrowDown, 8, 0, 25), 24);
+        assert_eq!(navigate(0, ArrowDown, 8, 0, 0), 0);
+    }
+
+    #[test]
+    fn picker_focuses_search_then_arrows_and_enter_select_without_sending() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let tokens = Tokens::new(super::super::theme::Appearance::Dark, None);
+        let mut store = Store::default();
+        store.emojis = (0..20)
+            .map(|index| crate::state::CustomEmoji {
+                id: index.to_string(),
+                name: format!("sticker{index}"),
+                blob: None,
+            })
+            .collect();
+        let mut media = MediaStore::new(None);
+        let mut query = String::new();
+        let mut group = 0;
+        let mut run = |events| {
+            let mut chosen = None;
+            let mut enter_left = false;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(300.0, 380.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    chosen = picker(
+                        ui,
+                        &tokens,
+                        crate::i18n::Lang::En.strings(),
+                        &store,
+                        &mut media,
+                        &mut query,
+                        &mut group,
+                        true,
+                    );
+                    enter_left = ui.input(|input| input.key_pressed(egui::Key::Enter));
+                },
+            );
+            output.textures_delta.clear();
+            assert!(!enter_left, "Enter must belong to the picker");
+            (chosen, query.clone())
+        };
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(vec![]);
+        assert_eq!(run(vec![egui::Event::Text("sticker".into())]).1, "sticker");
+        run(vec![key(egui::Key::ArrowDown), key(egui::Key::ArrowRight)]);
+        assert_eq!(
+            run(vec![key(egui::Key::Enter)]).0,
+            Some(Emoji::Custom("9".into()))
+        );
+        // Reopening resets focus/selection; empty results cannot select a stale item.
+        assert_eq!(
+            run(vec![
+                egui::Event::Text("missing".into()),
+                key(egui::Key::Enter)
+            ])
+            .0,
+            None
+        );
+    }
 
     #[test]
     fn grid_spreads_eight_icons_across_the_available_width() {

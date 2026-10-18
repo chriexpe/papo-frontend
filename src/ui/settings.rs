@@ -1009,6 +1009,7 @@ impl Rows<'_> {
                     .char_limit(limit)
                     .password(secret)
                     .font(text::body())
+                    .vertical_align(if lines > 1 { Align::Min } else { Align::Center })
                     .margin(egui::Margin::symmetric(space::MD as i8, space::XS as i8));
                 // Várias linhas: altura fixa e rolagem por dentro. Sem isso o
                 // campo crescia com o texto (512 caracteres de bio) e cobria
@@ -1827,6 +1828,7 @@ fn channel_name_input(
                         .id(edit_id)
                         .char_limit(32)
                         .font(text::body())
+                        .vertical_align(Align::Center)
                         .margin(egui::Margin::symmetric(
                             space::MD as i8,
                             space::XS as i8,
@@ -2057,7 +2059,7 @@ fn text_input(
             egui::TextEdit::singleline(value)
                 .id(id)
                 .char_limit(if limit == 0 { usize::MAX } else { limit })
-                .hint_text(hint)
+                .hint_text(RichText::new(hint).font(font.clone()))
                 .frame(egui::Frame::NONE)
                 .font(font)
                 .text_color(t.label)
@@ -3477,7 +3479,7 @@ fn rail(
                 child.add_sized(
                     inner.size(),
                     egui::TextEdit::singleline(&mut state.mobile_query)
-                        .hint_text(s.rail_search)
+                        .hint_text(RichText::new(s.rail_search).font(px(13.0, "regular")))
                         .frame(egui::Frame::NONE)
                         .font(px(13.0, "regular"))
                         .vertical_align(Align::Center),

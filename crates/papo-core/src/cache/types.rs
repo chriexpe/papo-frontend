@@ -333,6 +333,8 @@ pub struct CachedMessage {
     pub content: String,
     /// Milissegundos desde a época, em UTC.
     pub created_at: i64,
+    /// Full fractional second from the server; history cursors must not round.
+    pub created_at_nanos: u32,
     pub edited: bool,
     pub reply_to: Option<String>,
     pub pinned: bool,
@@ -352,6 +354,7 @@ impl CachedMessage {
             external_author: message.external_author.as_deref().cloned(),
             content: message.content.clone(),
             created_at: message.at.with_timezone(&Utc).timestamp_millis(),
+            created_at_nanos: message.at.timestamp_subsec_nanos(),
             edited: message.edited,
             reply_to: message.reply_to.clone(),
             pinned: message.pinned,
@@ -400,6 +403,7 @@ impl CachedMessage {
             external_author: message.external_author.clone(),
             content: message.content.clone().unwrap_or_default(),
             created_at: message.created_at.timestamp_millis(),
+            created_at_nanos: message.created_at.timestamp_subsec_nanos(),
             edited: message.edited_at.is_some(),
             reply_to: message.reply_to.clone(),
             pinned: false,
@@ -438,7 +442,8 @@ impl CachedMessage {
             author_id: self.author_id.clone(),
             external_author: self.external_author.clone().map(Box::new),
             content: self.content.clone(),
-            at: millis_to_local(self.created_at),
+            at: DateTime::from_timestamp(self.created_at.div_euclid(1000), self.created_at_nanos)
+                .map(|at| at.with_timezone(&Local)).unwrap_or_else(|| millis_to_local(self.created_at)),
             edited: self.edited,
             reply_to: self.reply_to.clone(),
             attachments: self
@@ -521,6 +526,8 @@ impl CachedServerMetadata {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CachedMessagePage {
     pub channel_id: String,
+    /// Retained pins are snapshots, never evidence of continuous history.
+    pub pins: Vec<CachedMessage>,
     pub messages: Vec<CachedMessage>,
     pub has_more: bool,
 }
@@ -581,14 +588,16 @@ pub enum CacheOp {
         messages: Vec<CachedMessage>,
         deleted_ids: Vec<String>,
         cached_at: i64,
-        /// Mensagem mais antiga da janela (não fixada, de outra pessoa). Se o
-        /// cache não a tem, a região gravada termina antes da janela: há um
-        /// buraco entre as duas, e as linhas antigas são descartadas para que
-        /// o histórico volte a ser buscado no servidor em vez de pular o
-        /// trecho que faltou.
+        /// Candidate IDs from the authoritative window. Only DB rows already
+        /// marked as chronological history can witness overlap.
         overlap_ids: Vec<String>,
     },
+    /// Extend proven coverage only if the page's boundary is still in the DB.
+    /// A dropped earlier write must never create a new disconnected segment.
+    AppendChannelHistory { channel_id: String, anchor_id: String, messages: Vec<CachedMessage>, reconcile: bool, complete: bool },
     UpsertMessage(CachedMessage),
+    /// A standalone pin/send confirmation does not establish timeline coverage.
+    UpsertDetachedMessage(CachedMessage),
     DeleteMessage { message_id: String },
     /// Snapshot autoritativo de fixadas. Converge também linhas que a Store
     /// não tem carregadas: uma fixada antiga que saiu da janela precisa ser

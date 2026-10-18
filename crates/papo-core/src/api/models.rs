@@ -620,7 +620,7 @@ pub struct SearchResult {
     #[serde(rename = "type", default)]
     pub kind: String,
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub content: String,
     #[serde(default)]
     pub channel_id: String,
@@ -679,7 +679,7 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
-fn nullable_author_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+fn nullable_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
@@ -702,7 +702,7 @@ pub struct Message {
     pub channel_id: String,
     // Webhook messages have no Papo user author; retain an empty identifier
     // in the current store model while external_author supplies display identity.
-    #[serde(default, deserialize_with = "nullable_author_id")]
+    #[serde(default, deserialize_with = "nullable_string")]
     pub author_id: String,
     #[serde(default)]
     pub external_author: Option<ExternalAuthor>,
@@ -1013,6 +1013,15 @@ pub struct UpdateMessageRequest {
     /// None = keep existing custom embeds, Some([]) = remove them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embeds: Option<Vec<CustomEmbedInput>>,
+}
+
+/// A bounded, chronological window containing the requested message.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageContext {
+    pub channel_id: String,
+    pub messages: Vec<Message>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1421,6 +1430,17 @@ mod tests {
         let list: PinnedList = serde_json::from_str(json).unwrap();
         assert_eq!(list.pinned.len(), 1);
         assert_eq!(list.pinned[0].id, "m1");
+    }
+
+    #[test]
+    fn busca_aceita_conteudo_nulo_em_mensagem_so_de_anexo() {
+        let response: SearchResponse = serde_json::from_value(serde_json::json!({
+            "results": [{ "type": "message", "id": "m1", "content": null,
+                "channel_id": "c1", "channel_name": "Chat", "author_id": "u1",
+                "created_at": "2026-10-18T00:00:00Z" }], "has_more": false
+        })).unwrap();
+        assert_eq!(response.results.len(), 1);
+        assert!(response.results[0].content.is_empty());
     }
 
     /// A busca manda só o que foi preenchido.

@@ -182,6 +182,7 @@ public class PapoActivity extends GameActivity {
     /** Eventos de campos nativos comuns. Cada chave possui sua própria View/estado. */
     private static native void nativeFieldTextChanged(String key, String text);
     private static native void nativeFieldSubmit(String key);
+    private static native void nativeFieldNavigate(String key, int code);
     private static native void nativeFieldFocusChanged(String key, boolean focused);
     private static native void nativeFieldLines(String key, int lines, int lineHeightPx);
 
@@ -996,6 +997,81 @@ public class PapoActivity extends GameActivity {
         });
     }
 
+    private final android.util.LruCache<String, android.graphics.drawable.Drawable> stickerDrawables =
+            new android.util.LruCache<>(32);
+
+    private static final class StickerSpan extends android.text.style.ImageSpan {
+        StickerSpan(android.graphics.drawable.Drawable drawable) {
+            super(drawable, android.text.style.DynamicDrawableSpan.ALIGN_CENTER);
+        }
+    }
+
+    /** Render images over shortcode ranges; the underlying text stays intact. */
+    public void setNativeEditorStickers(String key, String json) {
+        runOnUiThread(() -> {
+            if (nativeEditor == null || !key.equals(nativeEditorKey)) {
+                return;
+            }
+            final Editable text = nativeEditor.getText();
+            for (StickerSpan span : text.getSpans(0, text.length(), StickerSpan.class)) {
+                final android.graphics.drawable.Drawable drawable = span.getDrawable();
+                if (drawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                    ((android.graphics.drawable.AnimatedImageDrawable) drawable).stop();
+                }
+                text.removeSpan(span);
+            }
+            try {
+                final org.json.JSONArray entries = new org.json.JSONArray(json);
+                final String value = text.toString();
+                final int side = Math.max(1, Math.round(nativeEditor.getTextSize() * 1.2f));
+                for (int index = 0; index < entries.length(); index++) {
+                    final org.json.JSONArray entry = entries.getJSONArray(index);
+                    final String shortcode = ":" + entry.getString(0) + ":";
+                    final String blob = entry.getString(1);
+                    android.graphics.drawable.Drawable drawable = stickerDrawables.get(blob);
+                    if (drawable == null) {
+                        final byte[] bytes = android.util.Base64.decode(blob, android.util.Base64.DEFAULT);
+                        drawable = android.graphics.ImageDecoder.decodeDrawable(
+                                android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes)));
+                        stickerDrawables.put(blob, drawable);
+                    }
+                    final int width = Math.max(1, Math.round(side * (float) drawable.getIntrinsicWidth()
+                            / Math.max(1, drawable.getIntrinsicHeight())));
+                    drawable.setBounds(0, 0, width, side);
+                    drawable.setCallback(new android.graphics.drawable.Drawable.Callback() {
+                        @Override
+                        public void invalidateDrawable(android.graphics.drawable.Drawable who) {
+                            nativeEditor.invalidate();
+                        }
+                        @Override
+                        public void scheduleDrawable(android.graphics.drawable.Drawable who, Runnable action, long when) {
+                            nativeEditor.postDelayed(action, Math.max(0, when - android.os.SystemClock.uptimeMillis()));
+                        }
+                        @Override
+                        public void unscheduleDrawable(android.graphics.drawable.Drawable who, Runnable action) {
+                            nativeEditor.removeCallbacks(action);
+                        }
+                    });
+                    int start = value.indexOf(shortcode);
+                    while (start >= 0) {
+                        text.setSpan(new StickerSpan(drawable), start, start + shortcode.length(),
+                                android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        start = value.indexOf(shortcode, start + shortcode.length());
+                    }
+                    if (drawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                        final android.graphics.drawable.AnimatedImageDrawable animation =
+                                (android.graphics.drawable.AnimatedImageDrawable) drawable;
+                        animation.setRepeatCount(android.graphics.drawable.AnimatedImageDrawable.REPEAT_INFINITE);
+                        animation.start();
+                    }
+                }
+                nativeEditor.post(this::reportNativeEditorLines);
+            } catch (Exception error) {
+                Log.w("Papo", "Cannot render inline sticker", error);
+            }
+        });
+    }
+
     /** Move o cursor depois de uma alteração iniciada pelo egui (ex.: :emoji:). */
     public void setNativeEditorSelection(String key, int selection) {
         runOnUiThread(() -> {
@@ -1024,6 +1100,12 @@ public class PapoActivity extends GameActivity {
             nativeEditor.clearFocus();
             if (imm != null) {
                 imm.hideSoftInputFromWindow(nativeEditor.getWindowToken(), 0);
+            }
+            for (StickerSpan span : nativeEditor.getText().getSpans(0, nativeEditor.length(), StickerSpan.class)) {
+                final android.graphics.drawable.Drawable drawable = span.getDrawable();
+                if (drawable instanceof android.graphics.drawable.AnimatedImageDrawable) {
+                    ((android.graphics.drawable.AnimatedImageDrawable) drawable).stop();
+                }
             }
             nativeEditor.setVisibility(View.GONE);
         });
@@ -1176,6 +1258,19 @@ public class PapoActivity extends GameActivity {
                 }
                 return false;
             });
+        }
+
+        @Override
+        public boolean onKeyDown(int keyCode, KeyEvent event) {
+            if (key.startsWith("emoji:") && event.hasNoModifiers()
+                    && (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                        || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                        || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                        || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                nativeFieldNavigate(key, keyCode);
+                return true;
+            }
+            return super.onKeyDown(keyCode, event);
         }
 
         @Override

@@ -841,6 +841,7 @@ mod tests {
     fn update_aplica_store_e_sinaliza_efeito_de_ui() {
         let (mut runtime, _) = disabled_runtime();
         let effects = runtime.process_update(Update::OutgoingRejected {
+            local_id: "local-rejected".to_owned(),
             owner_user_id: "u1".to_owned(),
             channel_id: "c1".to_owned(),
             content: "olá".to_owned(),

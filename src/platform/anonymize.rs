@@ -49,15 +49,27 @@ pub fn gibberish_name(original: &str) -> String {
     name
 }
 
-/// Reencoda a imagem só com os pixels. `None` se não for uma imagem que
-/// saibamos reescrever (ou se for um GIF, que perderia a animação).
+/// Rewrite pixels and animation timing, omitting identifying metadata.
 pub fn scrub_image(bytes: &[u8]) -> Option<(Vec<u8>, ImageFormat)> {
     let format = image::guess_format(bytes).ok()?;
     if !matches!(
         format,
-        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP | ImageFormat::Gif
     ) {
         return None;
+    }
+    if let Some(frames) = crate::media::prepare::animation_frames(bytes).ok()? {
+        let mut out = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut out);
+            encoder
+                .set_repeat(image::codecs::gif::Repeat::Infinite)
+                .ok()?;
+            for frame in frames {
+                encoder.encode_frame(frame.ok()?).ok()?;
+            }
+        }
+        return Some((out, ImageFormat::Gif));
     }
     let mut decoder = ImageReader::with_format(Cursor::new(bytes), format)
         .into_decoder()
@@ -84,15 +96,32 @@ pub fn scrub_image(bytes: &[u8]) -> Option<(Vec<u8>, ImageFormat)> {
 /// tocado. Em caso de erro devolve o motivo.
 pub fn anonymize(upload: &Upload, dir: &Path) -> Result<Anonymized, String> {
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let name = gibberish_name(&upload.name);
+    let bytes_if_image = if upload.mime.starts_with("image/") {
+        let bytes = std::fs::read(&upload.path).map_err(|error| error.to_string())?;
+        Some(
+            scrub_image(&bytes)
+                .ok_or_else(|| "Cannot remove metadata from this image".to_owned())?,
+        )
+    } else {
+        None
+    };
+    let mut name = gibberish_name(&upload.name);
+    let mut mime = upload.mime.clone();
+    if let Some((_, format)) = &bytes_if_image {
+        let (extension, content_type) = match format {
+            ImageFormat::Gif => ("gif", "image/gif"),
+            ImageFormat::Png => ("png", "image/png"),
+            ImageFormat::WebP => ("webp", "image/webp"),
+            ImageFormat::Jpeg => ("jpg", "image/jpeg"),
+            _ => unreachable!(),
+        };
+        name = Path::new(&name)
+            .with_extension(extension)
+            .to_string_lossy()
+            .into_owned();
+        mime = content_type.to_owned();
+    }
     let target: PathBuf = dir.join(&name);
-
-    let bytes_if_image = upload
-        .mime
-        .starts_with("image/")
-        .then(|| std::fs::read(&upload.path).ok())
-        .flatten()
-        .and_then(|bytes| scrub_image(&bytes));
 
     let scrubbed = bytes_if_image.is_some();
     match bytes_if_image {
@@ -106,7 +135,7 @@ pub fn anonymize(upload: &Upload, dir: &Path) -> Result<Anonymized, String> {
         upload: Upload {
             path: target,
             name,
-            mime: upload.mime.clone(),
+            mime,
             size,
             spoiler: upload.spoiler,
             anonymize: false,
@@ -118,6 +147,29 @@ pub fn anonymize(upload: &Upload, dir: &Path) -> Result<Anonymized, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anonymizing_animated_images_preserves_pixels_and_timing() {
+        for bytes in [
+            include_bytes!("../../tests/fixtures/animated-sticker.webp").as_slice(),
+            include_bytes!("../../tests/fixtures/animated-sticker.png").as_slice(),
+        ] {
+            let (encoded, format) = scrub_image(bytes).unwrap();
+            assert_eq!(format, ImageFormat::Gif);
+            let frames = crate::media::prepare::animation_frames(&encoded)
+                .unwrap()
+                .unwrap()
+                .collect_frames()
+                .unwrap();
+            assert_eq!(frames.len(), 2);
+            assert_ne!(
+                frames[0].buffer().get_pixel(0, 0),
+                frames[1].buffer().get_pixel(0, 0)
+            );
+            assert_eq!(frames[0].delay().numer_denom_ms(), (80, 1));
+            assert_eq!(frames[1].delay().numer_denom_ms(), (120, 1));
+        }
+    }
 
     fn png_with_text_chunk() -> Vec<u8> {
         let img = DynamicImage::new_rgb8(4, 3);

@@ -1,0 +1,217 @@
+//! Inline sticker presentation. Drafts and network payloads keep shortcodes;
+//! the desktop editor sees one character per sticker, including undo/selection.
+
+use std::collections::HashMap;
+
+use egui::{Color32, FontId, Rect, Vec2};
+
+use crate::state::{CustomEmoji, Emoji, Store};
+
+#[derive(Default)]
+pub struct StickerText {
+    entries: Vec<(String, String)>,
+    symbols: HashMap<(String, String), char>,
+}
+
+impl StickerText {
+    fn entry(&self, symbol: char) -> Option<&(String, String)> {
+        let index = (symbol as u32).checked_sub(0xf0000)? as usize;
+        self.entries.get(index)
+    }
+
+    pub fn encode(&mut self, text: &str, emojis: &[CustomEmoji]) -> String {
+        let mut names = HashMap::new();
+        for emoji in emojis {
+            let key = (emoji.id.clone(), emoji.name.clone());
+            let symbol = if let Some(symbol) = self.symbols.get(&key) {
+                *symbol
+            } else {
+                let Some(symbol) = char::from_u32(0xf0000 + self.entries.len() as u32)
+                    .filter(|symbol| (*symbol as u32) <= 0xffffd)
+                else {
+                    continue;
+                };
+                self.entries.push(key.clone());
+                self.symbols.insert(key, symbol);
+                symbol
+            };
+            names.entry(emoji.name.as_str()).or_insert(symbol);
+        }
+        let mut out = String::new();
+        let mut rest = text;
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix(':')
+                && let Some(end) = after.find(':')
+                && let Some(symbol) = names.get(&after[..end])
+            {
+                out.push(*symbol);
+                rest = &after[end + 1..];
+            } else {
+                let ch = rest.chars().next().unwrap();
+                out.push(ch);
+                rest = &rest[ch.len_utf8()..];
+            }
+        }
+        out
+    }
+
+    pub fn decode(&self, shown: &str) -> String {
+        let mut out = String::new();
+        for ch in shown.chars() {
+            if let Some((_, name)) = self.entry(ch) {
+                out.push(':');
+                out.push_str(name);
+                out.push(':');
+            } else {
+                out.push(ch);
+            }
+        }
+        out
+    }
+
+    pub fn raw_caret(&self, shown: &str, caret: usize) -> usize {
+        shown
+            .chars()
+            .take(caret)
+            .map(|ch| {
+                self.entry(ch)
+                    .map_or(1, |(_, name)| name.chars().count() + 2)
+            })
+            .sum()
+    }
+
+    pub fn shown_caret(&self, shown: &str, caret: usize) -> usize {
+        let mut raw = 0;
+        for (index, ch) in shown.chars().enumerate() {
+            if raw >= caret {
+                return index;
+            }
+            raw += self
+                .entry(ch)
+                .map_or(1, |(_, name)| name.chars().count() + 2);
+        }
+        shown.chars().count()
+    }
+
+    pub fn layout(
+        &self,
+        ui: &egui::Ui,
+        shown: &str,
+        font: FontId,
+        color: Color32,
+        width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut job = egui::text::LayoutJob::default();
+        // Empty editors still need the same line metrics as typed text.
+        if shown.is_empty() {
+            job.append(
+                "",
+                0.0,
+                egui::TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                },
+            );
+        }
+        let size = font.size.max(18.0);
+        for ch in shown.chars() {
+            let format = if self.entry(ch).is_some() {
+                egui::TextFormat {
+                    font_id: FontId::proportional(0.01),
+                    color: Color32::TRANSPARENT,
+                    extra_letter_spacing: size + 2.0,
+                    line_height: Some(size + 2.0),
+                    ..Default::default()
+                }
+            } else {
+                egui::TextFormat {
+                    font_id: font.clone(),
+                    color,
+                    ..Default::default()
+                }
+            };
+            job.append(&ch.to_string(), 0.0, format);
+        }
+        job.wrap.max_width = width;
+        job.keep_trailing_whitespace = true;
+        ui.fonts_mut(|fonts| fonts.layout_job(job))
+    }
+
+    pub fn paint(
+        &self,
+        ui: &mut egui::Ui,
+        output: &egui::text_edit::TextEditOutput,
+        t: &super::theme::Tokens,
+        media: &mut crate::media::MediaStore,
+        store: &Store,
+    ) {
+        let mut clipped = ui.new_child(egui::UiBuilder::new());
+        clipped.set_clip_rect(output.text_clip_rect.intersect(ui.clip_rect()));
+        for (index, ch) in output.galley.text().chars().enumerate() {
+            let Some((id, _)) = self.entry(ch) else {
+                continue;
+            };
+            let cursor = output
+                .galley
+                .pos_from_cursor(egui::text::CCursor::new(index));
+            let size = cursor.height().max(18.0) - 2.0;
+            let rect =
+                Rect::from_min_size(output.galley_pos + cursor.min.to_vec2(), Vec2::splat(size));
+            super::emoji::draw_reaction(
+                &mut clipped,
+                t,
+                media,
+                store,
+                &Emoji::Custom(id.clone()),
+                rect,
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_composer_uses_the_same_line_metrics_as_its_text() {
+        let ctx = egui::Context::default();
+        super::super::theme::install_fonts(&ctx, None);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let editor = StickerText::default();
+            for size in [11.0, 13.0, 18.0, 24.0] {
+                let font = FontId::proportional(size);
+                let empty = editor.layout(ui, "", font.clone(), Color32::WHITE, 300.0);
+                let typed = editor.layout(ui, "Hello", font, Color32::WHITE, 300.0);
+                assert!((empty.size().y - typed.size().y).abs() < 0.01);
+                let caret = egui::text::CCursor::new(0);
+                assert_eq!(
+                    empty.pos_from_cursor(caret).y_range(),
+                    typed.pos_from_cursor(caret).y_range()
+                );
+            }
+        });
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn stickers_round_trip_with_unicode_selection_and_undo() {
+        let emoji = CustomEmoji {
+            id: "test".into(),
+            name: "test".into(),
+            blob: None,
+        };
+        let mut editor = StickerText::default();
+        let shown = editor.encode("é :test: hi :missing:", &[emoji]);
+        assert_eq!(editor.decode(&shown), "é :test: hi :missing:");
+        assert_eq!(editor.raw_caret(&shown, 3), 8);
+        assert_eq!(editor.shown_caret(&shown, 8), 3);
+        let mut deleted = shown.clone();
+        let at = deleted.char_indices().nth(2).unwrap().0;
+        deleted.remove(at);
+        assert_eq!(editor.decode(&deleted), "é  hi :missing:");
+        editor.encode("", &[]);
+        assert_eq!(editor.decode(&shown), "é :test: hi :missing:");
+    }
+}

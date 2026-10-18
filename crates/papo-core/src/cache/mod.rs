@@ -98,7 +98,7 @@ enum WorkerMsg {
     LoadChannelPage {
         server_key: String,
         channel_id: String,
-        before: Option<(i64, String)>,
+        before: Option<(i64, u32, String)>,
         reply: std::sync::mpsc::Sender<Result<CachedMessagePage, String>>,
     },
     EnqueueOutgoing {
@@ -574,7 +574,7 @@ impl ClientDb {
         &self,
         server_key: &str,
         channel_id: &str,
-        before: Option<(i64, String)>,
+        before: Option<(i64, u32, String)>,
     ) -> Option<std::sync::mpsc::Receiver<Result<CachedMessagePage, String>>> {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         if !self.enqueue(
@@ -800,7 +800,7 @@ async fn apply(cache: &mut TursoCache, stats: &Arc<CacheStats>, message: WorkerM
                 .load_channel_page(
                     &server_key,
                     &channel_id,
-                    before.as_ref().map(|(at, id)| (*at, id.as_str())),
+                    before.as_ref().map(|(at, nanos, id)| (*at, *nanos, id.as_str())),
                 )
                 .await
                 .map_err(|error| error.to_string());

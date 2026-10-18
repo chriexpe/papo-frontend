@@ -58,6 +58,7 @@ struct Spec {
 struct FieldState {
     incoming: Option<String>,
     submit: bool,
+    navigation: Vec<egui::Key>,
     focused: bool,
     last: Option<Spec>,
     /// Linhas e altura de cada linha (px) que o próprio EditText mediu, só nos
@@ -77,6 +78,13 @@ pub struct Events {
     pub changed: bool,
     pub submit: bool,
     pub focused: bool,
+}
+
+pub fn take_navigation(key: &str) -> Vec<egui::Key> {
+    state().lock().ok()
+        .and_then(|mut state| state.fields.get_mut(key)
+            .map(|field| std::mem::take(&mut field.navigation)))
+        .unwrap_or_default()
 }
 
 /// Linhas que o texto ocupa no campo nativo `key` e a altura de cada uma, em
@@ -286,6 +294,29 @@ pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldText
         && let Some(field) = state.fields.get_mut(String::from(key).as_str())
     {
         field.incoming = Some(String::from(text));
+    }
+    super::wake::request();
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_chriexpe_papo_PapoActivity_nativeFieldNavigate(
+    mut env: jni::JNIEnv,
+    _class: jni::objects::JClass,
+    key: jni::objects::JString,
+    code: jni::sys::jint,
+) {
+    let key_event = match code {
+        19 => egui::Key::ArrowUp,
+        20 => egui::Key::ArrowDown,
+        21 => egui::Key::ArrowLeft,
+        22 => egui::Key::ArrowRight,
+        _ => return,
+    };
+    let Ok(key) = env.get_string(&key) else { return; };
+    if let Ok(mut state) = state().lock()
+        && let Some(field) = state.fields.get_mut(String::from(key).as_str())
+    {
+        field.navigation.push(key_event);
     }
     super::wake::request();
 }

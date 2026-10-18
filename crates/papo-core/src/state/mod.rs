@@ -319,6 +319,14 @@ struct ActiveRefresh {
     barrier_revision: u64,
 }
 
+#[derive(Clone, Debug)]
+struct ActiveHistory {
+    ticket: RefreshTicket,
+    barrier_revision: u64,
+    cursor: MessageKey,
+    forward: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RefreshDiagnostics {
     pub generation: u64,
@@ -443,6 +451,20 @@ struct ChannelMutationJournal {
 }
 
 #[derive(Debug)]
+struct HistoryContext {
+    messages: Vec<Message>,
+    has_older: bool,
+    has_newer: bool,
+}
+
+#[derive(Debug)]
+struct ContextRequest {
+    ticket: RefreshTicket,
+    mutations: Vec<TimelineMutation>,
+    report_error: bool,
+}
+
+#[derive(Debug)]
 pub struct Store {
     pub screen: Screen,
     pub connection: Connection,
@@ -457,6 +479,11 @@ pub struct Store {
     pub blocked_users: HashSet<String>,
     pub members: Vec<Member>,
     pub messages: Vec<Message>,
+    /// IDs fetched as continuous history, excluding standalone pins and sends.
+    timeline_ids: HashSet<String>,
+    message_contexts: HashMap<String, HistoryContext>,
+    context_requests: HashMap<String, ContextRequest>,
+    pin_requests: HashMap<String, ContextRequest>,
     pub emojis: Vec<CustomEmoji>,
     emojis_fresh: bool,
     emojis_cached: bool,
@@ -501,8 +528,12 @@ pub struct Store {
     loading_channels: HashMap<String, ActiveRefresh>,
     /// Se ainda há páginas mais antigas no backend, por canal.
     history_has_more: HashMap<String, bool>,
+    /// Exact oldest boundary verified against the current server generation.
+    history_server_cursor: HashMap<String, MessageKey>,
     /// Evita disparar duas páginas antigas do mesmo canal ao mesmo tempo.
     history_loading: HashSet<String>,
+    history_requests: HashMap<String, ActiveHistory>,
+    history_retry_after: HashMap<String, Instant>,
     /// Mutações live recebidas durante refreshes REST.
     mutation_journals: HashMap<String, ChannelMutationJournal>,
     next_refresh_request_id: u64,
@@ -540,6 +571,9 @@ pub struct Store {
     pub audit_has_more: bool,
     /// Última resposta da busca, do servidor na tela.
     pub search_results: Vec<models::SearchResult>,
+    pub search_generation: u64,
+    pub pinned_messages: HashMap<String, Vec<Message>>,
+    known_pins: HashMap<String, HashSet<String>>,
     pub search_has_more: bool,
     /// Uma busca saiu e ainda não voltou.
     pub searching: bool,
@@ -562,6 +596,10 @@ impl Default for Store {
             blocked_users: HashSet::new(),
             members: Vec::new(),
             messages: Vec::new(),
+            timeline_ids: HashSet::new(),
+            message_contexts: HashMap::new(),
+            context_requests: HashMap::new(),
+            pin_requests: HashMap::new(),
             emojis: Vec::new(),
             emojis_fresh: false,
             emojis_cached: false,
@@ -585,7 +623,10 @@ impl Default for Store {
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
             history_has_more: HashMap::new(),
+            history_server_cursor: HashMap::new(),
             history_loading: HashSet::new(),
+            history_requests: HashMap::new(),
+            history_retry_after: HashMap::new(),
             mutation_journals: HashMap::new(),
             next_refresh_request_id: 0,
             typing: HashMap::new(),
@@ -605,6 +646,9 @@ impl Default for Store {
             audit_logs: Vec::new(),
             audit_has_more: false,
             search_results: Vec::new(),
+            search_generation: 0,
+            pinned_messages: HashMap::new(),
+            known_pins: HashMap::new(),
             search_has_more: false,
             searching: false,
             reaction_details: HashMap::new(),
@@ -619,16 +663,99 @@ fn mention_boundary(c: char) -> bool {
     c.is_whitespace() || (!c.is_alphanumeric() && c != '_')
 }
 
-/// Eligible overlap witnesses from the authoritative server window.
-/// Own and pinned messages cannot establish continuity of the history.
-fn continuity_ids(window: &[Message], me: &str) -> Vec<String> {
-    window
-        .iter()
-        .filter(|message| !message.pending && !message.pinned && message.author_id != me)
-        .map(|message| message.id.clone())
-        .collect()
-}
 
+/// Apply one mutation to a projection without treating a standalone message
+/// as proof that the gap between two history windows has been fetched.
+fn project_messages(messages: &mut Vec<Message>, mutation: &TimelineMutation, insert: bool) {
+    if let TimelineMutation::MessageDelete { id } = mutation {
+        messages.retain(|message| &message.id != id);
+        return;
+    }
+    if let TimelineMutation::MessageUpsert(message) = mutation {
+        if let Some(existing) = messages
+            .iter_mut()
+            .find(|existing| existing.id == message.id)
+        {
+            let pinned = existing.pinned;
+            *existing = message.clone();
+            existing.pinned = pinned;
+        } else if insert {
+            messages.push(message.clone());
+        }
+        messages.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
+        return;
+    }
+    let Some(id) = mutation.affected_message_id() else {
+        return;
+    };
+    let Some(message) = messages.iter_mut().find(|message| message.id == id) else {
+        return;
+    };
+    match mutation {
+        TimelineMutation::MessageEdit { content, .. } => {
+            message.content.clone_from(content);
+            message.edited = true;
+        }
+        TimelineMutation::MessagePinned { pinned, .. } => message.pinned = *pinned,
+        TimelineMutation::EmbedsReplaced { embeds, .. } => message.previews.clone_from(embeds),
+        TimelineMutation::AttachmentModeration {
+            attachment_id,
+            status,
+            ..
+        } => {
+            if let Some(attachment) = message
+                .attachments
+                .iter_mut()
+                .find(|attachment| &attachment.id == attachment_id)
+            {
+                attachment.moderation_status = Some(status.clone());
+            }
+        }
+        TimelineMutation::MessagePending { pending, .. } => message.pending = *pending,
+        TimelineMutation::Reaction { emoji, count, .. } => {
+            if let Some(reaction) = message
+                .reactions
+                .iter_mut()
+                .find(|reaction| &reaction.emoji == emoji)
+            {
+                reaction.count = (*count).max(0) as u32;
+            } else if *count > 0 {
+                message.reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    count: *count as u32,
+                    mine: false,
+                });
+            }
+            message.reactions.retain(|reaction| reaction.count > 0);
+        }
+        TimelineMutation::LocalReaction { emoji, add, .. } => {
+            match message
+                .reactions
+                .iter_mut()
+                .find(|reaction| &reaction.emoji == emoji)
+            {
+                Some(reaction) if *add && !reaction.mine => {
+                    reaction.mine = true;
+                    reaction.count = reaction.count.saturating_add(1);
+                }
+                Some(reaction) if !*add && reaction.mine => {
+                    reaction.mine = false;
+                    reaction.count = reaction.count.saturating_sub(1);
+                }
+                None if *add => message.reactions.push(Reaction {
+                    emoji: emoji.clone(),
+                    count: 1,
+                    mine: true,
+                }),
+                _ => {}
+            }
+            message.reactions.retain(|reaction| reaction.count > 0);
+        }
+        TimelineMutation::MessageUpsert(_) | TimelineMutation::MessageDelete { .. } => {
+            unreachable!()
+        }
+    }
+}
 
 impl Store {
     pub fn channel(&self, id: &str) -> Option<&Channel> {
@@ -803,6 +930,13 @@ impl Store {
         self.channels.sort_by_key(|channel| channel.position);
     }
 
+    pub fn reset_search(&mut self) {
+        self.search_generation = self.search_generation.wrapping_add(1);
+        self.search_results.clear();
+        self.search_has_more = false;
+        self.searching = false;
+    }
+
     pub fn member(&self, id: &str) -> Option<&Member> {
         self.members.iter().find(|member| member.id == id)
     }
@@ -820,6 +954,11 @@ impl Store {
     /// resolvido quando aquele nickname/display name identifica uma única
     /// pessoa no servidor.
     pub fn encode_mentions(&self, text: &str, bindings: &[MentionBinding]) -> String {
+        if self.channel(&self.selected_channel)
+            .is_some_and(|channel| channel.kind == ChannelKind::Direct)
+        {
+            return text.to_owned();
+        }
         let chars: Vec<char> = text.chars().collect();
         let mut bindings_by_start: HashMap<usize, &MentionBinding> =
             bindings.iter().map(|binding| (binding.start, binding)).collect();
@@ -972,13 +1111,106 @@ impl Store {
     }
 
     pub fn message(&self, id: &str) -> Option<&Message> {
-        self.messages.iter().find(|message| message.id == id)
+        self.message_contexts
+            .values()
+            .flat_map(|context| context.messages.iter())
+            .chain(self.messages.iter())
+            .find(|message| message.id == id)
     }
 
     pub fn messages_in<'a>(&'a self, channel_id: &'a str) -> impl Iterator<Item = &'a Message> {
-        self.messages
+        self.message_contexts
+            .get(channel_id)
+            .map(|context| &context.messages)
+            .unwrap_or(&self.messages)
             .iter()
             .filter(move |message| message.channel_id == channel_id)
+    }
+
+    pub fn message_timestamp(&self, channel_id: &str, message_id: &str) -> Option<DateTime<Utc>> {
+        self.message(message_id)
+            .filter(|message| message.channel_id == channel_id)
+            .or_else(|| {
+                self.pinned_messages
+                    .get(channel_id)?
+                    .iter()
+                    .find(|message| message.id == message_id)
+            })
+            .map(|message| message.at.with_timezone(&Utc))
+            .or_else(|| {
+                self.search_results
+                    .iter()
+                    .find(|result| result.id == message_id && result.channel_id == channel_id)?
+                    .created_at
+            })
+    }
+
+    pub fn browsing_history(&self, channel_id: &str) -> bool {
+        self.message_contexts.contains_key(channel_id)
+    }
+
+    pub fn loading_message_context(&self, channel_id: &str) -> bool {
+        self.context_requests.contains_key(channel_id)
+    }
+
+    pub fn loading_pinned(&self, channel_id: &str) -> bool {
+        self.pin_requests.contains_key(channel_id)
+    }
+
+    pub fn begin_load_pinned(
+        &mut self,
+        channel_id: &str,
+        report_error: bool,
+    ) -> Option<RefreshTicket> {
+        if let Some(request) = self.pin_requests.get_mut(channel_id) {
+            request.report_error |= report_error;
+            return None;
+        }
+        self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
+        let ticket = RefreshTicket {
+            channel_id: channel_id.to_owned(),
+            generation: self.sync_generation,
+            request_id: self.next_refresh_request_id,
+        };
+        self.pin_requests.insert(
+            channel_id.to_owned(),
+            ContextRequest {
+                ticket: ticket.clone(),
+                mutations: Vec::new(),
+                report_error,
+            },
+        );
+        Some(ticket)
+    }
+
+    pub fn begin_message_context(&mut self, channel_id: &str) -> RefreshTicket {
+        self.end_message_context(channel_id);
+        self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
+        let ticket = RefreshTicket {
+            channel_id: channel_id.to_owned(),
+            generation: self.sync_generation,
+            request_id: self.next_refresh_request_id,
+        };
+        self.context_requests.insert(
+            channel_id.to_owned(),
+            ContextRequest {
+                ticket: ticket.clone(),
+                mutations: Vec::new(),
+                report_error: true,
+            },
+        );
+        ticket
+    }
+
+    pub fn end_message_context(&mut self, channel_id: &str) {
+        self.message_contexts.remove(channel_id);
+        self.context_requests.remove(channel_id);
+        self.history_requests.remove(channel_id);
+        self.history_loading.remove(channel_id);
+        if !self.loading_channels.contains_key(channel_id) {
+            self.mutation_journals.remove(channel_id);
+        }
+        self.reset_read_span(channel_id);
     }
 
     pub fn members_by_presence(&self, presence: Presence) -> impl Iterator<Item = &Member> {
@@ -1127,6 +1359,10 @@ impl Store {
             .collect();
 
         self.messages.clear();
+        self.timeline_ids.clear();
+        self.message_contexts.clear();
+        self.context_requests.clear();
+        self.pin_requests.clear();
         self.gap_ends.clear();
         self.read_states = metadata
             .read_states
@@ -1218,6 +1454,7 @@ impl Store {
             cached_channels,
         });
         for message in messages {
+            self.timeline_ids.insert(message.id.clone());
             self.apply_mutation(
                 MutationSource::CacheRestore,
                 StoreMutation::Timeline {
@@ -1234,11 +1471,18 @@ impl Store {
     /// outro.
     pub fn clear_cached_state(&mut self) {
         self.cache_restore_epoch = self.cache_restore_epoch.wrapping_add(1);
+        self.reset_search();
+        self.pinned_messages.clear();
+        self.known_pins.clear();
         self.server = None;
         self.channels.clear();
         self.direct_messages.clear();
         self.members.clear();
         self.messages.clear();
+        self.timeline_ids.clear();
+        self.message_contexts.clear();
+        self.context_requests.clear();
+        self.pin_requests.clear();
         self.emojis.clear();
         self.emojis_fresh = false;
         self.emojis_cached = false;
@@ -1251,7 +1495,10 @@ impl Store {
         self.cache_history_has_more.clear();
         self.cache_loading.clear();
         self.history_has_more.clear();
+        self.history_server_cursor.clear();
         self.history_loading.clear();
+        self.history_requests.clear();
+        self.history_retry_after.clear();
         self.pending_cache.clear();
         self.outgoing_states.clear();
         self.read_spans.clear();
@@ -1391,6 +1638,25 @@ impl Store {
     /// Projeta uma página local sem atribuir freshness.
     pub fn restore_cached_page(&mut self, page: CachedMessagePage, older: bool) {
         let channel_id = page.channel_id.clone();
+        if !older {
+            // Pins are available independently of whether the chronological
+            // page still overlaps the server's current history window.
+            self.pinned_messages
+                .entry(channel_id.clone())
+                .or_insert_with(|| {
+                    page.pins
+                        .iter()
+                        .filter(|message| {
+                            message.pinned
+                                && self
+                                    .known_pins
+                                    .get(&channel_id)
+                                    .is_none_or(|ids| ids.contains(&message.id))
+                        })
+                        .map(CachedMessage::to_store)
+                        .collect()
+                });
+        }
         let fresh = self.timeline_status(&channel_id) == TimelineStatus::Fresh;
         let authoritative_complete = fresh
             && !self
@@ -1399,15 +1665,12 @@ impl Store {
                 .copied()
                 .unwrap_or(false);
         let fresh_cutoff = if !older && fresh && !authoritative_complete {
-            self.messages_in(&channel_id)
-                .filter(|message| !message.pending)
+            self.messages
+                .iter()
+                .filter(|message| message.channel_id == channel_id)
+                .filter(|message| !message.pending && self.timeline_ids.contains(&message.id))
                 .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
-                .map(|message| {
-                    (
-                        message.at.with_timezone(&Utc).timestamp_millis(),
-                        message.id.clone(),
-                    )
-                })
+                .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
         } else {
             None
         };
@@ -1418,8 +1681,7 @@ impl Store {
         // passa a vir do servidor.
         let detached = fresh_cutoff.is_some()
             && !page.messages.iter().any(|cached| {
-                !cached.pinned
-                    && cached.author_id != self.me
+                self.timeline_ids.contains(&cached.id)
                     && self.message(&cached.id).is_some_and(|known| !known.pending)
             });
         if detached {
@@ -1430,19 +1692,19 @@ impl Store {
         }
 
         if !authoritative_complete && !detached {
-            for message in page.messages {
+            for mut message in page.messages {
+                if let Some(ids) = self.known_pins.get(&channel_id) {
+                    message.pinned = ids.contains(&message.id);
+                }
                 let older_than_fresh_head = fresh_cutoff.as_ref().is_none_or(|(at, id)| {
-                    message.created_at < *at
-                        || (message.created_at == *at && message.id < *id)
+                    let cached_at = message.to_store().at.with_timezone(&Utc);
+                    cached_at < *at || (cached_at == *at && message.id < *id)
                 });
-                if older || !fresh || older_than_fresh_head {
-                    self.apply_mutation(
-                        MutationSource::CacheRestore,
-                        StoreMutation::Timeline {
-                            channel_id: Some(channel_id.clone()),
-                            mutation: TimelineMutation::MessageUpsert(message.to_store()),
-                        },
-                    );
+                if (older || !fresh || older_than_fresh_head)
+                    && !self.timeline_ids.contains(&message.id)
+                {
+                    self.timeline_ids.insert(message.id.clone());
+                    self.upsert_message(message.to_store());
                 }
             }
             self.sort_messages();
@@ -1473,13 +1735,28 @@ impl Store {
 
     pub fn can_load_older(&self, channel_id: &str) -> bool {
         !self.history_loading.contains(channel_id)
-            && (self
-                .cache_history_has_more
+            && !self.loading_channels.contains_key(channel_id)
+            && !self.cache_loading.contains(channel_id)
+            && self
+                .history_retry_after
                 .get(channel_id)
-                .copied()
-                .unwrap_or(false)
-                || (self.connection == Connection::Online
-                    && self.history_has_more.get(channel_id).copied().unwrap_or(false)))
+                .is_none_or(|until| Instant::now() >= *until)
+            && !self.loading_message_context(channel_id)
+            && if let Some(context) = self.message_contexts.get(channel_id) {
+                context.has_older && self.connection == Connection::Online
+            } else if self.connection == Connection::Online {
+                self.timeline_status(channel_id) == TimelineStatus::Fresh
+                    && self
+                        .history_has_more
+                        .get(channel_id)
+                        .copied()
+                        .unwrap_or(false)
+            } else {
+                self.cache_history_has_more
+                    .get(channel_id)
+                    .copied()
+                    .unwrap_or(false)
+            }
     }
 
     pub fn loading_older(&self, channel_id: &str) -> bool {
@@ -1487,8 +1764,13 @@ impl Store {
     }
 
     /// Reserva primeiro uma página antiga do Turso.
-    pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, String)> {
-        if self.history_loading.contains(channel_id)
+    pub fn begin_load_cached_older(&mut self, channel_id: &str) -> Option<(i64, u32, String)> {
+        if self.connection == Connection::Online
+            || self.browsing_history(channel_id)
+            || self.loading_message_context(channel_id)
+            || self.loading_channels.contains_key(channel_id)
+            || self.cache_loading.contains(channel_id)
+            || self.history_loading.contains(channel_id)
             || !self
                 .cache_history_has_more
                 .get(channel_id)
@@ -1499,39 +1781,164 @@ impl Store {
         }
         let oldest = self
             .messages_in(channel_id)
-            .filter(|message| !message.pending && !message.pinned)
+            .filter(|message| !message.pending && self.timeline_ids.contains(&message.id))
             .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
         let cursor = (
             oldest.at.with_timezone(&Utc).timestamp_millis(),
+            oldest.at.timestamp_subsec_nanos(),
             oldest.id.clone(),
         );
-        self.history_loading.insert(channel_id.to_owned());
+        self.reserve_history(
+            channel_id,
+            (oldest.at.with_timezone(&Utc), oldest.id.clone()),
+            false,
+        );
         Some(cursor)
     }
 
     /// Depois que o Turso esgotou, reserva a próxima página do backend.
-    pub fn begin_load_older(
-        &mut self,
-        channel_id: &str,
-    ) -> Option<(DateTime<Utc>, String)> {
-        if self.history_loading.contains(channel_id)
-            || self
-                .cache_history_has_more
-                .get(channel_id)
-                .copied()
-                .unwrap_or(false)
-            || self.connection != Connection::Online
-            || !self.history_has_more.get(channel_id).copied().unwrap_or(false)
-        {
+    pub fn begin_load_older(&mut self, channel_id: &str) -> Option<(DateTime<Utc>, String)> {
+        if self.connection != Connection::Online || !self.can_load_older(channel_id) {
             return None;
         }
-        let oldest = self
+        let cursor = if self.browsing_history(channel_id) {
+            let oldest = self
+                .messages_in(channel_id)
+                .filter(|message| !message.pending)
+                .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+            (oldest.at.with_timezone(&Utc), oldest.id.clone())
+        } else {
+            self.history_server_cursor.get(channel_id)?.clone()
+        };
+        self.reserve_history(channel_id, cursor.clone(), false);
+        Some(cursor)
+    }
+
+    pub fn can_load_newer(&self, channel_id: &str) -> bool {
+        self.connection == Connection::Online
+            && !self.loading_channels.contains_key(channel_id)
+            && !self.history_loading.contains(channel_id)
+            && !self.loading_message_context(channel_id)
+            && self
+                .history_retry_after
+                .get(channel_id)
+                .is_none_or(|until| Instant::now() >= *until)
+            && self
+                .message_contexts
+                .get(channel_id)
+                .is_some_and(|context| context.has_newer)
+    }
+
+    pub fn begin_load_newer(&mut self, channel_id: &str) -> Option<(DateTime<Utc>, String)> {
+        if !self.can_load_newer(channel_id) {
+            return None;
+        }
+        let newest = self
             .messages_in(channel_id)
             .filter(|message| !message.pending)
-            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
-        let cursor = (oldest.at.with_timezone(&Utc), oldest.id.clone());
-        self.history_loading.insert(channel_id.to_owned());
+            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))?;
+        let cursor = (newest.at.with_timezone(&Utc), newest.id.clone());
+        self.reserve_history(channel_id, cursor.clone(), true);
         Some(cursor)
+    }
+
+    fn reserve_history(&mut self, channel_id: &str, cursor: MessageKey, forward: bool) {
+        self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
+        let barrier_revision = self
+            .mutation_journals
+            .entry(channel_id.to_owned())
+            .or_default()
+            .revision;
+        let ticket = RefreshTicket {
+            channel_id: channel_id.to_owned(),
+            generation: self.sync_generation,
+            request_id: self.next_refresh_request_id,
+        };
+        self.history_requests.insert(
+            channel_id.to_owned(),
+            ActiveHistory {
+                ticket,
+                barrier_revision,
+                cursor,
+                forward,
+            },
+        );
+        self.history_loading.insert(channel_id.to_owned());
+    }
+
+    pub fn history_ticket(&self, channel_id: &str) -> Option<RefreshTicket> {
+        self.history_requests
+            .get(channel_id)
+            .map(|request| request.ticket.clone())
+    }
+
+    fn history_ticket_is_current(&self, ticket: &RefreshTicket) -> bool {
+        ticket.generation == self.sync_generation
+            && self
+                .history_requests
+                .get(&ticket.channel_id)
+                .is_some_and(|request| request.ticket == *ticket)
+    }
+
+    fn history_page_is_valid(
+        &mut self,
+        ticket: &RefreshTicket,
+        messages: &[models::Message],
+        forward: bool,
+        has_more: bool,
+    ) -> bool {
+        let request = &self.history_requests[&ticket.channel_id];
+        let valid = request.forward == forward
+            && (!messages.is_empty() || !has_more)
+            && messages.iter().all(|message| {
+                let key = (message.created_at, message.id.clone());
+                message.channel_id == ticket.channel_id
+                    && if forward {
+                        key > request.cursor
+                    } else {
+                        key < request.cursor
+                    }
+            });
+        if !valid {
+            self.apply(Update::OlderMessagesFailed {
+                ticket: ticket.clone(),
+            });
+            self.error =
+                Some("The server returned a history page that does not advance its cursor.".into());
+        }
+        valid
+    }
+
+    pub fn cached_history_failed(&mut self, ticket: &RefreshTicket) {
+        if !self.history_ticket_is_current(ticket) {
+            return;
+        }
+        self.cached_page_failed(&ticket.channel_id, true);
+        self.history_requests.remove(&ticket.channel_id);
+        self.mutation_journals.remove(&ticket.channel_id);
+    }
+
+    pub fn restore_cached_history(&mut self, ticket: &RefreshTicket, page: CachedMessagePage) {
+        if !self.history_ticket_is_current(ticket) {
+            return;
+        }
+        let request = &self.history_requests[&ticket.channel_id];
+        if page.channel_id != ticket.channel_id
+            || page.messages.iter().any(|message| {
+                (
+                    message.to_store().at.with_timezone(&Utc),
+                    message.id.clone(),
+                ) >= request.cursor
+            })
+        {
+            self.cached_history_failed(ticket);
+            return;
+        }
+        let barrier = request.barrier_revision;
+        self.restore_cached_page(page, true);
+        self.replay_timeline_mutations(&ticket.channel_id, barrier);
+        self.history_requests.remove(&ticket.channel_id);
+        self.mutation_journals.remove(&ticket.channel_id);
     }
 
     /// Canal que ainda precisa ter as mensagens buscadas.
@@ -1552,6 +1959,9 @@ impl Store {
     }
 
     pub fn mark_loading(&mut self, channel_id: &str) -> RefreshTicket {
+        self.history_requests.remove(channel_id);
+        self.history_loading.remove(channel_id);
+        self.history_retry_after.remove(channel_id);
         self.next_refresh_request_id = self.next_refresh_request_id.saturating_add(1);
         let journal = self
             .mutation_journals
@@ -1586,7 +1996,15 @@ impl Store {
     }
 
     fn record_timeline_mutation(&mut self, channel_id: &str, mutation: TimelineMutation) {
-        if !self.loading_channels.contains_key(channel_id) {
+        if let Some(request) = self.pin_requests.get_mut(channel_id) {
+            request.mutations.push(mutation.clone());
+        }
+        if let Some(request) = self.context_requests.get_mut(channel_id) {
+            request.mutations.push(mutation.clone());
+        }
+        if !self.loading_channels.contains_key(channel_id)
+            && !self.history_requests.contains_key(channel_id)
+        {
             return;
         }
         let journal = self
@@ -1603,20 +2021,28 @@ impl Store {
     fn channel_for_message(&self, message_id: &str) -> Option<String> {
         self.messages
             .iter()
+            .chain(
+                self.message_contexts
+                    .values()
+                    .flat_map(|context| context.messages.iter()),
+            )
+            .chain(self.pinned_messages.values().flatten())
             .find(|message| message.id == message_id)
             .map(|message| message.channel_id.clone())
             .or_else(|| {
-                self.mutation_journals.iter().find_map(|(channel_id, journal)| {
-                    journal.entries.iter().rev().find_map(|entry| {
-                        if let TimelineMutation::MessageUpsert(message) = &entry.mutation
-                            && message.id == message_id
-                        {
-                            Some(channel_id.clone())
-                        } else {
-                            None
-                        }
+                self.mutation_journals
+                    .iter()
+                    .find_map(|(channel_id, journal)| {
+                        journal.entries.iter().rev().find_map(|entry| {
+                            if let TimelineMutation::MessageUpsert(message) = &entry.mutation
+                                && message.id == message_id
+                            {
+                                Some(channel_id.clone())
+                            } else {
+                                None
+                            }
+                        })
                     })
-                })
             })
     }
 
@@ -1633,7 +2059,22 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default();
+        let upsert_ids: HashSet<_> = mutations
+            .iter()
+            .filter_map(|mutation| {
+                if let TimelineMutation::MessageUpsert(message) = mutation {
+                    (!message.pending).then(|| message.id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let complete_head = self.loading_channels.contains_key(channel_id)
+            && self.history_has_more.get(channel_id) == Some(&false);
         for mutation in mutations {
+            if complete_head && let TimelineMutation::MessageUpsert(message) = &mutation {
+                self.upsert_message(message.clone());
+            }
             self.apply_mutation(
                 MutationSource::Reconcile,
                 StoreMutation::Timeline {
@@ -1641,6 +2082,52 @@ impl Store {
                     mutation,
                 },
             );
+        }
+        let anchor = self.history_server_cursor.get(channel_id).cloned();
+        let confirmed: Vec<_> = self
+            .messages
+            .iter()
+            .filter(|message| {
+                message.channel_id == channel_id
+                    && !message.pending
+                    && upsert_ids.contains(&message.id)
+                    && (complete_head
+                        || anchor.as_ref().is_none_or(|cursor| {
+                            (message.at.with_timezone(&Utc), message.id.clone()) >= *cursor
+                        }))
+            })
+            .map(CachedMessage::from_store)
+            .collect();
+        if !confirmed.is_empty() {
+            self.timeline_ids
+                .extend(confirmed.iter().map(|message| message.id.clone()));
+            if let Some((_, anchor_id)) = anchor {
+                self.pending_cache.push(CacheOp::AppendChannelHistory {
+                    channel_id: channel_id.to_owned(),
+                    anchor_id,
+                    messages: confirmed,
+                    reconcile: false,
+                    complete: false,
+                });
+            } else {
+                let messages: Vec<_> = self
+                    .messages
+                    .iter()
+                    .filter(|message| message.channel_id == channel_id && !message.pending)
+                    .map(CachedMessage::from_store)
+                    .collect();
+                if let Some(oldest) = messages.first() {
+                    self.history_server_cursor.insert(
+                        channel_id.to_owned(),
+                        (oldest.to_store().at.with_timezone(&Utc), oldest.id.clone()),
+                    );
+                }
+                self.pending_cache.push(CacheOp::ReplaceChannelSnapshot {
+                    channel_id: channel_id.to_owned(),
+                    messages,
+                    cached_at: now_millis(),
+                });
+            }
         }
     }
 
@@ -1652,11 +2139,38 @@ impl Store {
             } => {
                 let live_message = if source == MutationSource::Live {
                     match &mutation {
-                        TimelineMutation::MessageUpsert(message) => Some((
-                            message.clone(),
-                            !self.message_is_known(&message.id),
-                        )),
+                        TimelineMutation::MessageUpsert(message) => {
+                            Some((message.clone(), !self.message_is_known(&message.id)))
+                        }
                         _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let TimelineMutation::MessagePinned { message_id, pinned } = &mutation
+                    && let Some(channel) = channel_id.as_ref()
+                {
+                    let ids = self.known_pins.entry(channel.clone()).or_default();
+                    if *pinned {
+                        ids.insert(message_id.clone());
+                    } else {
+                        ids.remove(message_id);
+                    }
+                }
+                let live_append = if source == MutationSource::Live {
+                    if let TimelineMutation::MessageUpsert(message) = &mutation {
+                        self.messages
+                            .iter()
+                            .filter(|known| {
+                                known.channel_id == message.channel_id
+                                    && self.timeline_ids.contains(&known.id)
+                                    && !known.pending
+                            })
+                            .max_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+                            .filter(|known| (message.at, &message.id) > (known.at, &known.id))
+                            .map(|anchor| (message.clone(), anchor.id.clone()))
+                    } else {
+                        None
                     }
                 } else {
                     None
@@ -1664,7 +2178,7 @@ impl Store {
                 let cache_message_id = mutation.affected_message_id().map(str::to_owned);
                 let deleted = matches!(mutation, TimelineMutation::MessageDelete { .. });
 
-                if source == MutationSource::Live
+                if matches!(source, MutationSource::Live | MutationSource::Local)
                     && let Some(channel_id) = channel_id.as_deref()
                 {
                     self.record_timeline_mutation(channel_id, mutation.clone());
@@ -1677,8 +2191,23 @@ impl Store {
                         TimelineMutation::MessageUpsert(message)
                     ) if self.timeline_status(&message.channel_id) != TimelineStatus::Fresh
                 );
+                if source == MutationSource::Live
+                    && project
+                    && let TimelineMutation::MessageUpsert(message) = &mutation
+                {
+                    self.timeline_ids.insert(message.id.clone());
+                }
                 if project {
-                    self.apply_timeline_projection(mutation);
+                    if source == MutationSource::CacheRestore {
+                        if let TimelineMutation::MessageUpsert(message) = mutation {
+                            self.upsert_message(message);
+                            self.sort_messages();
+                        } else {
+                            self.apply_timeline_projection(mutation);
+                        }
+                    } else {
+                        self.apply_timeline_projection(mutation);
+                    }
                 }
 
                 // Só Live e Reconcile persistem; CacheRestore nunca volta ao
@@ -1687,6 +2216,47 @@ impl Store {
                     && let Some(message_id) = cache_message_id
                 {
                     self.emit_message_cache_effect(&message_id, deleted);
+                }
+
+                if project && let Some((message, anchor_id)) = live_append {
+                    self.pending_cache.push(CacheOp::AppendChannelHistory {
+                        channel_id: message.channel_id.clone(),
+                        anchor_id,
+                        messages: vec![CachedMessage::from_store(&message)],
+                        reconcile: false,
+                        complete: false,
+                    });
+                }
+
+                if project
+                    && let Some((message, _)) = live_message.as_ref()
+                    && !self.history_server_cursor.contains_key(&message.channel_id)
+                    && self.history_has_more.get(&message.channel_id) == Some(&false)
+                {
+                    // A verified empty head is a valid starting boundary for
+                    // the first live arrival. Include only subscription-backed
+                    // rows, never unrelated send acknowledgements.
+                    let messages: Vec<_> = self
+                        .messages
+                        .iter()
+                        .filter(|known| {
+                            known.channel_id == message.channel_id
+                                && !known.pending
+                                && self.timeline_ids.contains(&known.id)
+                        })
+                        .map(CachedMessage::from_store)
+                        .collect();
+                    if let Some(oldest) = messages.first() {
+                        self.history_server_cursor.insert(
+                            message.channel_id.clone(),
+                            (oldest.to_store().at.with_timezone(&Utc), oldest.id.clone()),
+                        );
+                    }
+                    self.pending_cache.push(CacheOp::ReplaceChannelSnapshot {
+                        channel_id: message.channel_id.clone(),
+                        messages,
+                        cached_at: now_millis(),
+                    });
                 }
 
                 if let Some((message, first_delivery)) = live_message {
@@ -1727,16 +2297,20 @@ impl Store {
                     self.messages
                         .retain(|message| message.channel_id != channel_id || message.pending);
                 } else if let Some((oldest_at, oldest_id)) = oldest_returned.as_ref() {
-                    overlap_ids = continuity_ids(&messages, &self.me);
+                    overlap_ids = messages
+                        .iter()
+                        .filter(|message| !message.pending)
+                        .map(|message| message.id.clone())
+                        .collect();
                     let local_below = self.messages.iter().any(|message| {
                         message.channel_id == channel_id
                             && !message.pending
-                            && !message.pinned
+                            && self.timeline_ids.contains(&message.id)
                             && (message.at < *oldest_at
                                 || (message.at == *oldest_at && message.id < *oldest_id))
                     });
-                    let contiguous = !local_below
-                        || self.local_region_touches(&channel_id, &returned_ids);
+                    let contiguous =
+                        !local_below || self.local_region_touches(&channel_id, &returned_ids);
                     if !contiguous {
                         log::debug!(
                             "timeline gap channel={}: local history does not reach the server window; refetching older pages",
@@ -1745,20 +2319,26 @@ impl Store {
                         self.messages.retain(|message| {
                             message.channel_id != channel_id
                                 || message.pending
-                                || message.pinned
+                                || !self.timeline_ids.contains(&message.id)
                                 || message.at > *oldest_at
                                 || (message.at == *oldest_at && message.id >= *oldest_id)
                         });
-                        self.cache_history_has_more.insert(channel_id.clone(), false);
+                        self.cache_history_has_more
+                            .insert(channel_id.clone(), false);
                     }
                     self.messages.retain(|message| {
                         if message.channel_id != channel_id || message.pending {
                             return true;
                         }
+                        if !self.timeline_ids.contains(&message.id)
+                            && (message.at, &message.id) < (*oldest_at, oldest_id)
+                        {
+                            return false;
+                        }
                         let inside_authoritative_head = message.at > *oldest_at
                             || (message.at == *oldest_at && message.id >= *oldest_id);
-                        let stale = inside_authoritative_head
-                            && !returned_ids.contains(&message.id);
+                        let stale =
+                            inside_authoritative_head && !returned_ids.contains(&message.id);
                         if stale {
                             deleted_ids.push(message.id.clone());
                         }
@@ -1767,9 +2347,16 @@ impl Store {
                 }
 
                 for message in &messages {
+                    self.timeline_ids.insert(message.id.clone());
                     self.upsert_message(message.clone());
                 }
                 self.sort_messages();
+                let present: HashSet<_> = self
+                    .messages
+                    .iter()
+                    .map(|message| message.id.clone())
+                    .collect();
+                self.timeline_ids.retain(|id| present.contains(id));
 
                 if source == MutationSource::Reconcile {
                     if complete {
@@ -1796,6 +2383,16 @@ impl Store {
                 }
             }
             StoreMutation::ConfirmSent { local_id, message } => {
+                self.record_timeline_mutation(
+                    &message.channel_id,
+                    TimelineMutation::MessageDelete {
+                        id: local_id.clone(),
+                    },
+                );
+                self.record_timeline_mutation(
+                    &message.channel_id,
+                    TimelineMutation::MessageUpsert(message.clone()),
+                );
                 // Uma confirmação resolve só a intenção correspondente. A
                 // persistência da mensagem+remoção da fila já foi feita
                 // transacionalmente pelo ClientDb no worker de rede.
@@ -1816,11 +2413,14 @@ impl Store {
             });
             return;
         }
-        if let Some(message) = self.messages.iter().find(|message| message.id == message_id)
+        if let Some(message) = self.messages.iter()
+            .chain(self.message_contexts.values().flat_map(|context| context.messages.iter()))
+            .chain(self.pinned_messages.values().flatten())
+            .find(|message| message.id == message_id)
             && !message.pending
         {
-            self.pending_cache
-                .push(CacheOp::UpsertMessage(CachedMessage::from_store(message)));
+            let cached = CachedMessage::from_store(message);
+            self.pending_cache.push(CacheOp::UpsertDetachedMessage(cached));
         }
     }
 
@@ -1864,120 +2464,77 @@ impl Store {
         }
     }
 
-    fn apply_timeline_projection(&mut self, mutation: TimelineMutation) {
-        match mutation {
+    fn apply_timeline_projection(&mut self, mut mutation: TimelineMutation) {
+        if let TimelineMutation::MessageUpsert(message) = &mut mutation
+            && let Some(pins) = self.known_pins.get(&message.channel_id)
+        {
+            message.pinned = pins.contains(&message.id);
+        }
+        if let TimelineMutation::Reaction { message_id, .. }
+        | TimelineMutation::LocalReaction { message_id, .. } = &mutation
+        {
+            self.reaction_details.remove(message_id);
+            self.reaction_details_has_more.remove(message_id);
+        }
+        if let TimelineMutation::MessageDelete { id } = &mutation {
+            self.timeline_ids.remove(id);
+            for ids in self.known_pins.values_mut() {
+                ids.remove(id);
+            }
+        }
+        if let TimelineMutation::MessagePinned { message_id, pinned } = &mutation {
+            if *pinned {
+                if let Some(channel) = self.channel_for_message(message_id) {
+                    self.known_pins
+                        .entry(channel)
+                        .or_default()
+                        .insert(message_id.clone());
+                }
+            } else {
+                for ids in self.known_pins.values_mut() {
+                    ids.remove(message_id);
+                }
+            }
+        }
+        let insert_in_head = match &mutation {
             TimelineMutation::MessageUpsert(message) => {
-                self.upsert_message(message);
-                self.sort_messages();
+                message.pending
+                    || self
+                        .history_server_cursor
+                        .get(&message.channel_id)
+                        .is_none_or(|cursor| {
+                            (message.at.with_timezone(&Utc), message.id.clone()) >= *cursor
+                        })
             }
-            TimelineMutation::MessageEdit { id, content } => {
-                if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
-                    message.content = content;
-                    message.edited = true;
+            _ => false,
+        };
+        project_messages(&mut self.messages, &mutation, insert_in_head);
+        for context in self.message_contexts.values_mut() {
+            let insert = match &mutation {
+                TimelineMutation::MessageUpsert(message) => {
+                    !context.has_newer
+                        && context.messages.last().is_some_and(|last| {
+                            message.channel_id == last.channel_id
+                                && (message.at, &message.id) >= (last.at, &last.id)
+                        })
                 }
-            }
-            TimelineMutation::MessageDelete { id } => {
-                self.messages.retain(|message| message.id != id);
-            }
-            TimelineMutation::MessagePinned { message_id, pinned } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.pinned = pinned;
-                }
-            }
-            TimelineMutation::EmbedsReplaced { message_id, embeds } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    message.previews = embeds;
-                }
-            }
-            TimelineMutation::AttachmentModeration {
-                message_id,
-                attachment_id,
-                status,
-            } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                    && let Some(attachment) = message
-                        .attachments
-                        .iter_mut()
-                        .find(|attachment| attachment.id == attachment_id)
-                {
-                    attachment.moderation_status = Some(status);
-                }
-            }
-            TimelineMutation::Reaction {
-                message_id,
-                emoji,
-                count,
-            } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    match message
-                        .reactions
-                        .iter_mut()
-                        .find(|reaction| reaction.emoji == emoji)
-                    {
-                        Some(reaction) => reaction.count = count.max(0) as u32,
-                        None if count > 0 => message.reactions.push(Reaction {
-                            emoji,
-                            count: count as u32,
-                            mine: false,
-                        }),
-                        None => {}
-                    }
-                    message.reactions.retain(|reaction| reaction.count > 0);
-                }
-            }
-            TimelineMutation::LocalReaction {
-                message_id,
-                emoji,
-                add,
-            } => {
-                if let Some(message) = self
-                    .messages
-                    .iter_mut()
-                    .find(|message| message.id == message_id)
-                {
-                    match message
-                        .reactions
-                        .iter_mut()
-                        .find(|reaction| reaction.emoji == emoji)
-                    {
-                        Some(reaction) if add && !reaction.mine => {
-                            reaction.mine = true;
-                            reaction.count = reaction.count.saturating_add(1);
-                        }
-                        Some(reaction) if !add && reaction.mine => {
-                            reaction.mine = false;
-                            reaction.count = reaction.count.saturating_sub(1);
-                        }
-                        None if add => message.reactions.push(Reaction {
-                            emoji,
-                            count: 1,
-                            mine: true,
-                        }),
-                        _ => {}
-                    }
-                    message.reactions.retain(|reaction| reaction.count > 0);
-                }
-            }
-            TimelineMutation::MessagePending { id, pending } => {
-                if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
-                    message.pending = pending;
-                }
-            }
+                _ => false,
+            };
+            project_messages(&mut context.messages, &mutation, insert);
+        }
+        if let TimelineMutation::MessagePinned {
+            message_id,
+            pinned: true,
+        } = &mutation
+            && let Some(message) = self.message(message_id).cloned()
+            && let Some(pins) = self.pinned_messages.get_mut(&message.channel_id)
+            && !pins.iter().any(|pin| pin.id == message.id)
+        {
+            pins.push(message);
+        }
+        for pins in self.pinned_messages.values_mut() {
+            project_messages(pins, &mutation, false);
+            pins.retain(|message| message.pinned);
         }
     }
 
@@ -1991,7 +2548,11 @@ impl Store {
                 // Pin é mantido por uma trilha própria (snapshot de pins /
                 // evento MessagePinned), portanto um upsert de mensagem não
                 // pode apagá-lo só porque o payload comum não o carrega.
-                message.pinned = existing.pinned;
+                message.pinned = self
+                    .known_pins
+                    .get(&message.channel_id)
+                    .map(|pins| pins.contains(&message.id))
+                    .unwrap_or(existing.pinned);
                 *existing = message;
             }
             None => self.messages.push(message),
@@ -2128,7 +2689,7 @@ impl Store {
     fn refresh_channel_read_badge(&mut self, channel_id: &str) {
         let frontier = self.frontier_key(channel_id);
         let has_newer = self
-            .messages_in(channel_id)
+            .messages.iter().filter(|message| message.channel_id == channel_id)
             .filter(|message| !message.pending && message.author_id != self.me)
             .any(|message| {
                 let key = (message.at.with_timezone(&Utc), message.id.clone());
@@ -2144,17 +2705,13 @@ impl Store {
         }
     }
 
-    /// A região local do canal (cache restaurado ou páginas já trazidas)
-    /// compartilha alguma mensagem com a janela autoritativa do servidor?
-    ///
-    /// A região local é contígua por construção; se ela toca a janela, a união
-    /// também é. Mensagens próprias não contam: uma enviada com o canal ainda
-    /// desatualizado vai para o topo do cache e fingiria uma sobreposição.
+    /// Only messages fetched as continuous history can prove overlap with a
+    /// new server window. An own message or pin is valid evidence when it
+    /// belongs to that history, but an isolated send or pin snapshot is not.
     fn local_region_touches(&self, channel_id: &str, window_ids: &HashSet<String>) -> bool {
-        self.messages_in(channel_id).any(|message| {
+        self.messages.iter().filter(|message| message.channel_id == channel_id).any(|message| {
             !message.pending
-                && !message.pinned
-                && message.author_id != self.me
+                && self.timeline_ids.contains(&message.id)
                 && window_ids.contains(&message.id)
         })
     }
@@ -2223,7 +2780,8 @@ impl Store {
 
         // A cursor before an unloaded history window is not proof that
         // the intervening messages were read. Wait for older pages.
-        let unresolved_prefix = self.read_states.get(channel_id)
+        let browsing_history = self.browsing_history(channel_id);
+        let unresolved_prefix = browsing_history || self.read_states.get(channel_id)
             .and_then(|state| state.read_message_id.as_deref())
             .is_some_and(|id| self.message(id).is_none())
             && (self.history_has_more.get(channel_id).copied().unwrap_or(false)
@@ -2242,6 +2800,7 @@ impl Store {
 
         let before = self.read_states.get(channel_id).cloned();
         let legacy = self.read_marks.get(channel_id).copied();
+        let previous_frontier = self.frontier_key(channel_id);
         let state = self.read_states.entry(channel_id.to_owned()).or_default();
         if state.read_at.is_none() && state.read_message_id.is_none() {
             state.read_at = legacy;
@@ -2275,7 +2834,7 @@ impl Store {
             // the prefix between the persisted anchor and the window is whole.
             if let Some(first) = ordered.iter()
                 .map(|(key, _)| key)
-                .find(|key| self.frontier_key(channel_id).as_ref().is_none_or(|mark| *key > mark))
+                .find(|key| previous_frontier.as_ref().is_none_or(|mark| *key > mark))
                 && gap_end.as_ref().is_some_and(|end| end < first)
             {
                 gap_end = Some(first.clone());
@@ -2331,7 +2890,7 @@ impl Store {
         // intervalo durante um salto. Só a preferência da interface pode
         // transformar a chegada ao head em leitura da lacuna antiga; a
         // ampulheta continua sendo a navegação secundária desse intervalo.
-        let at_newest = mark_read_at_newest
+        let at_newest = !browsing_history && mark_read_at_newest
             && ordered
                 .last()
                 .is_some_and(|(newest, _)| newest == &hi);
@@ -2947,27 +3506,207 @@ impl Store {
                 }
             }
             Update::OlderMessages {
-                channel_id,
+                ticket,
                 messages,
                 has_more,
             } => {
-                let me = self.me.clone();
-                for message in messages {
-                    let message = convert(message, &me);
-                    self.apply_mutation(
-                        MutationSource::Reconcile,
-                        StoreMutation::Timeline {
-                            channel_id: Some(channel_id.clone()),
-                            mutation: TimelineMutation::MessageUpsert(message),
-                        },
-                    );
+                if !self.history_ticket_is_current(&ticket) {
+                    return;
                 }
-                self.sort_messages();
-                self.history_has_more.insert(channel_id.clone(), has_more);
+                if !self.history_page_is_valid(&ticket, &messages, false, has_more) {
+                    return;
+                }
+                let channel_id = ticket.channel_id.clone();
+                let barrier = self.history_requests[&channel_id].barrier_revision;
+                let has_more = has_more && !messages.is_empty();
+                if let Some(context) = self.message_contexts.get_mut(&channel_id) {
+                    for message in messages {
+                        project_messages(
+                            &mut context.messages,
+                            &TimelineMutation::MessageUpsert(convert(message, &self.me)),
+                            true,
+                        );
+                    }
+                    context.has_older = has_more;
+                } else {
+                    let before = self.history_requests[&channel_id].cursor.clone();
+                    let returned: HashSet<_> =
+                        messages.iter().map(|message| message.id.clone()).collect();
+                    let oldest = messages
+                        .iter()
+                        .min_by_key(|message| (message.created_at, &message.id))
+                        .map(|message| (message.created_at, message.id.clone()));
+                    self.messages.retain(|message| {
+                        if message.channel_id != channel_id || message.pending {
+                            return true;
+                        }
+                        let key = (message.at.with_timezone(&Utc), message.id.clone());
+                        let in_page = key < before
+                            && (!has_more || oldest.as_ref().is_some_and(|oldest| key >= *oldest));
+                        !in_page || returned.contains(&message.id)
+                    });
+                    let present: HashSet<_> = self
+                        .messages
+                        .iter()
+                        .map(|message| message.id.clone())
+                        .collect();
+                    self.timeline_ids.retain(|id| present.contains(id));
+                    if let Some(oldest) = oldest {
+                        self.history_server_cursor
+                            .insert(channel_id.clone(), oldest);
+                    }
+                    let cached: Vec<_> = messages
+                        .iter()
+                        .map(|message| {
+                            let mut cached = CachedMessage::from_api(message);
+                            cached.pinned = self
+                                .known_pins
+                                .get(&channel_id)
+                                .is_some_and(|pins| pins.contains(&message.id));
+                            cached
+                        })
+                        .collect();
+                    self.pending_cache.push(CacheOp::AppendChannelHistory {
+                        channel_id: channel_id.clone(),
+                        anchor_id: before.1,
+                        messages: cached,
+                        reconcile: true,
+                        complete: !has_more,
+                    });
+                    let me = self.me.clone();
+                    for message in messages {
+                        let mut message = convert(message, &me);
+                        message.pinned = self
+                            .known_pins
+                            .get(&channel_id)
+                            .is_some_and(|pins| pins.contains(&message.id));
+                        self.timeline_ids.insert(message.id.clone());
+                        self.upsert_message(message);
+                    }
+                    self.sort_messages();
+                }
+                self.replay_timeline_mutations(&channel_id, barrier);
+                if !self.browsing_history(&channel_id) {
+                    self.history_has_more.insert(channel_id.clone(), has_more);
+                }
                 self.history_loading.remove(&channel_id);
+                self.history_requests.remove(&channel_id);
+                self.history_retry_after.remove(&channel_id);
+                self.mutation_journals.remove(&channel_id);
             }
-            Update::OlderMessagesFailed { channel_id } => {
-                self.history_loading.remove(&channel_id);
+            Update::NewerMessages {
+                ticket,
+                messages,
+                has_more,
+            } => {
+                if !self.history_ticket_is_current(&ticket) {
+                    return;
+                }
+                if !self.history_page_is_valid(&ticket, &messages, true, has_more) {
+                    return;
+                }
+                let channel_id = &ticket.channel_id;
+                let barrier = self.history_requests[channel_id].barrier_revision;
+                if let Some(context) = self.message_contexts.get_mut(channel_id) {
+                    context.has_newer = has_more && !messages.is_empty();
+                    for message in messages {
+                        project_messages(
+                            &mut context.messages,
+                            &TimelineMutation::MessageUpsert(convert(message, &self.me)),
+                            true,
+                        );
+                    }
+                }
+                self.replay_timeline_mutations(channel_id, barrier);
+                self.history_requests.remove(channel_id);
+                self.history_loading.remove(channel_id);
+                self.history_retry_after.remove(channel_id);
+                self.mutation_journals.remove(channel_id);
+            }
+            Update::MessageContext {
+                ticket,
+                message_id,
+                context,
+            } => {
+                if !self
+                    .context_requests
+                    .get(&ticket.channel_id)
+                    .is_some_and(|request| request.ticket == ticket)
+                    || ticket.generation != self.sync_generation
+                {
+                    return;
+                }
+                if context.channel_id != ticket.channel_id
+                    || !context
+                        .messages
+                        .iter()
+                        .any(|message| message.id == message_id)
+                    || context
+                        .messages
+                        .iter()
+                        .any(|message| message.channel_id != ticket.channel_id)
+                {
+                    self.apply(Update::MessageContextFailed {
+                        ticket,
+                        message: "Invalid message context returned by server.".into(),
+                    });
+                    return;
+                }
+                let request = self
+                    .context_requests
+                    .remove(&ticket.channel_id)
+                    .expect("current context");
+                let mut messages: Vec<_> = context
+                    .messages
+                    .into_iter()
+                    .map(|message| convert(message, &self.me))
+                    .collect();
+                messages.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
+                messages.dedup_by(|a, b| a.id == b.id);
+                for message in &mut messages {
+                    message.pinned = self
+                        .known_pins
+                        .get(&ticket.channel_id)
+                        .is_some_and(|pins| pins.contains(&message.id));
+                }
+                for mutation in request.mutations {
+                    project_messages(&mut messages, &mutation, false);
+                }
+                if !messages.iter().any(|message| message.id == message_id) {
+                    self.error = Some("The requested message was deleted.".into());
+                    return;
+                }
+                self.message_contexts.insert(
+                    ticket.channel_id.clone(),
+                    HistoryContext {
+                        messages,
+                        has_older: context.has_more_before,
+                        has_newer: context.has_more_after,
+                    },
+                );
+                self.reset_read_span(&ticket.channel_id);
+            }
+            Update::MessageContextFailed { ticket, message } => {
+                if self
+                    .context_requests
+                    .get(&ticket.channel_id)
+                    .is_some_and(|request| request.ticket == ticket)
+                {
+                    self.context_requests.remove(&ticket.channel_id);
+                    self.error = Some(message);
+                }
+            }
+            Update::OlderMessagesFailed { ticket } => {
+                if !self.history_ticket_is_current(&ticket) {
+                    return;
+                }
+                self.history_loading.remove(&ticket.channel_id);
+                self.history_requests.remove(&ticket.channel_id);
+                self.history_retry_after.insert(
+                    ticket.channel_id.clone(),
+                    Instant::now() + std::time::Duration::from_secs(2),
+                );
+                self.mutation_journals.remove(&ticket.channel_id);
             }
             Update::UserSettings(settings) => {
                 let mut settings = *settings;
@@ -2988,14 +3727,19 @@ impl Store {
                 self.busy = false;
             }
             Update::Done | Update::PasswordResetLink { .. } | Update::PasswordRecovered => self.busy = false,
-            Update::SearchFailed => {
-                self.searching = false;
+            Update::SearchFailed { generation, message } => {
+                if generation == self.search_generation {
+                    self.searching = false;
+                    self.error = Some(message);
+                }
             }
             Update::SearchResults {
+                generation,
                 results,
                 has_more,
                 append,
             } => {
+                if generation != self.search_generation { return; }
                 if append {
                     for result in results {
                         if !self.search_results.iter().any(|existing| existing.id == result.id) {
@@ -3143,7 +3887,16 @@ impl Store {
                     let pinned: HashSet<String> = authoritative_pins
                         .as_ref()
                         .map(|ids| ids.iter().cloned().collect())
-                        .unwrap_or(previous_pins);
+                        .unwrap_or_else(|| self.known_pins.get(&channel_id).cloned().unwrap_or(previous_pins));
+                    if authoritative_pins.is_some() {
+                        self.known_pins.insert(channel_id.clone(), pinned.clone());
+                        if let Some(messages) = self.pinned_messages.get_mut(&channel_id) {
+                            messages.retain(|message| pinned.contains(&message.id));
+                        }
+                    }
+                    if let Some(oldest) = messages.iter().min_by_key(|message| (message.created_at, &message.id)) {
+                        self.history_server_cursor.insert(channel_id.clone(), (oldest.created_at, oldest.id.clone()));
+                    } else { self.history_server_cursor.remove(&channel_id); }
                     let me = self.me.clone();
                     let messages = messages
                         .into_iter()
@@ -3176,6 +3929,7 @@ impl Store {
 
                     // O snapshot só vira autoridade depois de reaplicar tudo
                     // que chegou pelo WebSocket após o barrier deste ticket.
+                    self.history_has_more.insert(channel_id.clone(), has_more);
                     self.replay_timeline_mutations(&channel_id, barrier_revision);
                     self.sort_messages();
 
@@ -3230,8 +3984,10 @@ impl Store {
                 self.project_outgoing(*outgoing);
             }
             Update::OutgoingRestored(outgoing) => {
-                self.messages.retain(|message| !message.pending);
-                self.outgoing_states.clear();
+                self.messages
+                    .retain(|message| !message.pending || message.id.starts_with("upload-"));
+                self.outgoing_states
+                    .retain(|id, _| id.starts_with("upload-"));
                 for outgoing in outgoing {
                     self.project_outgoing(outgoing);
                 }
@@ -3240,7 +3996,20 @@ impl Store {
                 self.messages.retain(|message| message.id != local_id);
                 self.outgoing_states.remove(&local_id);
             }
-            Update::OutgoingRejected { message, .. } => {
+            Update::OutgoingRejected {
+                local_id, message, ..
+            } => {
+                self.apply(Update::OutgoingRemoved(local_id));
+                self.error = Some(message);
+            }
+            Update::UploadFailed { local_id, message, state } => {
+                if self
+                    .message(&local_id)
+                    .is_some_and(|message| message.pending)
+                {
+                    self.outgoing_states
+                        .insert(local_id, state);
+                }
                 self.error = Some(message);
             }
             Update::SendConfirmed { local_id, message } => {
@@ -3267,6 +4036,7 @@ impl Store {
             Update::Edited(message) => {
                 let me = self.me.clone();
                 let updated = convert(*message, &me);
+                self.record_timeline_mutation(&updated.channel_id, TimelineMutation::MessageUpsert(updated.clone()));
                 self.apply_mutation(
                     MutationSource::Reconcile,
                     StoreMutation::Timeline {
@@ -3300,11 +4070,112 @@ impl Store {
                     self.emojis_cached = true;
                 }
             }
+            Update::PinChanged {
+                channel_id,
+                message_id,
+                pinned,
+            } => {
+                self.apply_mutation(
+                    MutationSource::Live,
+                    StoreMutation::Timeline {
+                        channel_id: Some(channel_id.clone()),
+                        mutation: TimelineMutation::MessagePinned { message_id, pinned },
+                    },
+                );
+                self.pending_cache.push(CacheOp::ReplacePins {
+                    channel_id: channel_id.clone(),
+                    ids: self
+                        .known_pins
+                        .get(&channel_id)
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                        .collect(),
+                });
+            }
+            Update::PinnedFailed { ticket, message } => {
+                if self
+                    .pin_requests
+                    .get(&ticket.channel_id)
+                    .is_some_and(|request| request.ticket == ticket)
+                {
+                    let request = self
+                        .pin_requests
+                        .remove(&ticket.channel_id)
+                        .expect("current pin request");
+                    if request.report_error {
+                        self.error = Some(message);
+                    }
+                }
+            }
+            Update::PinnedMessages {
+                ticket,
+                channel_id,
+                messages,
+            } => {
+                let mutations = if let Some(ticket) = ticket {
+                    if ticket.generation != self.sync_generation
+                        || !self
+                            .pin_requests
+                            .get(&channel_id)
+                            .is_some_and(|request| request.ticket == ticket)
+                    {
+                        return;
+                    }
+                    self.pin_requests
+                        .remove(&channel_id)
+                        .expect("current pin request")
+                        .mutations
+                } else {
+                    Vec::new()
+                };
+                let mut messages: Vec<_> = messages
+                    .into_iter()
+                    .map(|message| {
+                        let mut message = convert(message, &self.me);
+                        message.pinned = true;
+                        message
+                    })
+                    .collect();
+                for mutation in mutations {
+                    if let TimelineMutation::MessagePinned {
+                        message_id,
+                        pinned: true,
+                    } = &mutation
+                        && !messages.iter().any(|message| &message.id == message_id)
+                        && let Some(mut message) = self.message(message_id).cloned()
+                    {
+                        message.pinned = true;
+                        messages.push(message);
+                    }
+                    project_messages(&mut messages, &mutation, false);
+                }
+                messages.retain(|message| message.pinned);
+                let ids = messages.iter().map(|message| message.id.clone()).collect();
+                for message in &messages {
+                    self.pending_cache
+                        .push(CacheOp::UpsertDetachedMessage(CachedMessage::from_store(
+                            message,
+                        )));
+                }
+                self.pinned_messages.insert(channel_id.clone(), messages);
+                self.apply(Update::Pinned { channel_id, ids });
+            }
             Update::Pinned { channel_id, ids } => {
                 let pinned: HashSet<String> = ids.iter().cloned().collect();
+                self.known_pins.insert(channel_id.clone(), pinned.clone());
+                if let Some(messages) = self.pinned_messages.get_mut(&channel_id) {
+                    messages.retain(|message| pinned.contains(&message.id));
+                }
                 let changes: Vec<(String, bool)> = self
                     .messages
                     .iter()
+                    .chain(
+                        self.message_contexts
+                            .get(&channel_id)
+                            .into_iter()
+                            .flat_map(|context| &context.messages),
+                    )
                     .filter(|message| message.channel_id == channel_id)
                     .map(|message| (message.id.clone(), pinned.contains(&message.id)))
                     .collect();
@@ -3319,7 +4190,8 @@ impl Store {
                 }
                 // Snapshot autoritativo: converge também linhas que a Store
                 // não tem carregadas.
-                self.pending_cache.push(CacheOp::ReplacePins { channel_id, ids });
+                self.pending_cache
+                    .push(CacheOp::ReplacePins { channel_id, ids });
             }
             Update::Notifications(notifications) => {
                 for notification in notifications {
@@ -3390,6 +4262,11 @@ impl Store {
                 }
                 if self.connection == Connection::Online && connection != Connection::Online {
                     self.sync_generation = self.sync_generation.saturating_add(1);
+                    self.context_requests.clear();
+                    self.pin_requests.clear();
+                    self.history_requests.clear();
+                    self.history_loading.clear();
+                    self.history_retry_after.clear();
                     self.loading_channels.clear();
                 }
                 self.connection = connection;
@@ -3771,8 +4648,8 @@ impl Store {
         add
     }
 
-    /// Projeta uma linha já durável da fila como eco local. Repetir o mesmo
-    /// local_id é idempotente e só atualiza o estado visível.
+    /// Project an outgoing intent immediately. Durable queue updates reuse
+    /// the same local_id, so publishing the queued row is idempotent.
     pub fn project_outgoing(&mut self, outgoing: CachedOutgoing) {
         let local_id = outgoing.local_id.clone();
         let state = outgoing.state;
@@ -3815,7 +4692,34 @@ impl Store {
         content: &str,
         reply_to: Option<String>,
     ) -> String {
-        let id = crate::cache::new_local_id();
+        self.push_pending_as(crate::cache::new_local_id(), channel_id, content, reply_to)
+    }
+
+    /// Session-only upload echo; file paths stay in the UI, outside the database.
+    pub fn push_upload(
+        &mut self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+    ) -> String {
+        let id = format!("upload-{}", crate::cache::new_local_id());
+        let id = self.push_pending_as(id, channel_id, content, reply_to);
+        self.mark_upload_sending(&id);
+        id
+    }
+
+    pub fn mark_upload_sending(&mut self, id: &str) {
+        self.outgoing_states
+            .insert(id.to_owned(), OutgoingState::Sending);
+    }
+
+    fn push_pending_as(
+        &mut self,
+        id: String,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<String>,
+    ) -> String {
         self.project_outgoing(CachedOutgoing {
             local_id: id.clone(),
             owner_user_id: self.me.clone(),
@@ -5279,6 +6183,41 @@ mod tests {
     }
 
     #[test]
+    fn upload_failure_and_confirmation_only_change_the_matching_echo() {
+        let mut store = Store {
+            me: "me".into(),
+            ..Store::default()
+        };
+        let first = store.push_upload("general", "same", None);
+        let second = store.push_upload("general", "same", None);
+        store.apply(Update::UploadFailed {
+            local_id: second.clone(),
+            message: "failed".into(),
+            state: OutgoingState::UnknownOutcome,
+        });
+        assert_eq!(store.outgoing_state(&first), Some(OutgoingState::Sending));
+        assert_eq!(
+            store.outgoing_state(&second),
+            Some(OutgoingState::UnknownOutcome)
+        );
+        store.apply(Update::SendConfirmed {
+            local_id: first.clone(),
+            message: Box::new(wire_message("confirmed", "general", "same")),
+        });
+        assert!(store.message(&first).is_none());
+        assert!(
+            store
+                .message(&second)
+                .is_some_and(|message| message.pending)
+        );
+        assert!(
+            store
+                .message("confirmed")
+                .is_some_and(|message| !message.pending)
+        );
+    }
+
+    #[test]
     fn http_confirm_then_ws_event_converges_once() {
         let mut store = Store {
             selected_channel: "geral".to_owned(),
@@ -5456,6 +6395,7 @@ mod tests {
                 external_author: None,
                 content: "do disco".to_owned(),
                 created_at: 1_000,
+                created_at_nanos: 0,
                 edited: false,
                 reply_to: None,
                 pinned: false,
@@ -5552,7 +6492,7 @@ mod tests {
         assert!(
             ops.iter().any(|op| matches!(
                 op,
-                CacheOp::UpsertMessage(message) if message.id == "m-live"
+                CacheOp::UpsertDetachedMessage(message) if message.id == "m-live"
             )),
             "live precisa persistir: {ops:?}"
         );
@@ -5583,7 +6523,7 @@ mod tests {
         let ops = store.take_cache_ops();
         assert!(ops.iter().any(|op| matches!(
             op,
-            CacheOp::UpsertMessage(message)
+            CacheOp::UpsertDetachedMessage(message)
                 if message.id == "m1" && message.content == "editada" && message.edited
         )));
 
@@ -5717,6 +6657,9 @@ mod tests {
             convert(keep, &me),
         ];
 
+        // These fixture rows represent a fetched chronological page.
+        store.timeline_ids.extend(store.messages.iter().map(|message| message.id.clone()));
+
         let ticket = store.mark_loading("geral");
         let mut keep_new = wire_message("keep", "geral", "new value");
         keep_new.created_at = base;
@@ -5766,11 +6709,13 @@ mod tests {
         };
 
         store.apply(Update::SearchResults {
+            generation: 0,
             results: vec![result("a"), result("b")],
             has_more: true,
             append: false,
         });
         store.apply(Update::SearchResults {
+            generation: 0,
             results: vec![result("b"), result("c")],
             has_more: false,
             append: true,
@@ -5780,6 +6725,42 @@ mod tests {
         assert_eq!(ids, vec!["a", "b", "c"]);
         assert!(!store.search_has_more);
         assert!(!store.searching);
+    }
+
+    #[test]
+    fn busca_descarta_respostas_e_erros_de_pesquisas_fechadas() {
+        let mut store = Store::default();
+        let old = store.search_generation;
+        store.reset_search();
+        store.searching = true;
+        store.apply(Update::SearchResults {
+            generation: old, results: Vec::new(), has_more: true, append: false,
+        });
+        store.apply(Update::SearchFailed { generation: old, message: "old error".into() });
+        assert!(store.searching);
+        assert!(!store.search_has_more);
+        assert!(store.error.is_none());
+        store.apply(Update::SearchResults {
+            generation: store.search_generation, results: Vec::new(), has_more: true, append: false,
+        });
+        assert!(!store.searching);
+        assert!(store.search_has_more);
+        store.reset_search();
+        assert!(!store.search_has_more);
+        assert!(store.search_results.is_empty());
+    }
+
+    #[test]
+    fn fixadas_fora_do_historico_carregado_preservam_conteudo_e_eventos() {
+        let mut store = Store::default();
+        store.apply(Update::PinnedMessages {
+            ticket: None,
+            channel_id: "c1".into(), messages: vec![wire_message("old-pin", "c1", "old pinned text")],
+        });
+        assert!(store.messages.is_empty(), "pins must not create a gap in the timeline");
+        assert_eq!(store.pinned_messages["c1"][0].content, "old pinned text");
+        store.set_message_pinned_local("old-pin", false);
+        assert!(store.pinned_messages["c1"].is_empty());
     }
 
     #[test]
@@ -5853,7 +6834,7 @@ mod tests {
         let mut older = wire_message("mais-antiga", "geral", "mais antiga");
         older.created_at = now - chrono::Duration::minutes(2);
         store.apply(Update::OlderMessages {
-            channel_id: "geral".to_owned(),
+            ticket: store.history_ticket("geral").unwrap(),
             messages: vec![older],
             has_more: false,
         });
@@ -6398,3 +7379,6 @@ mod notification_badge_tests {
         assert_eq!(store.pending_notification_count(), 0);
     }
 }
+
+#[cfg(test)]
+mod history_tests;

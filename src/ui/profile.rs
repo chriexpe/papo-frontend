@@ -432,6 +432,7 @@ fn hidden_field(
             .char_limit(limit)
             .font(shown_font.clone())
             .text_color(color)
+            .vertical_align(if multiline { egui::Align::Min } else { egui::Align::Center })
             .hint_text(
                 RichText::new(hint)
                     .font(shown_font.clone())
