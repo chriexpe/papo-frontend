@@ -67,6 +67,24 @@
   </content_rating>
 
   <releases>
+    <release version="0.8.5" date="2026-10-18">
+      <description>
+        <p>Melhorias na composição de mensagens, mídia e navegação pelo histórico.</p>
+        <p xml:lang="en">Improvements to message composition, media and history navigation.</p>
+        <ul>
+          <li>Stickers animados no compositor, navegação pelo teclado e anexos por arrastar ou colar</li>
+          <li xml:lang="en">Animated stickers in the composer, keyboard navigation and drag-and-drop or pasted attachments</li>
+          <li>Editor de anexos com recorte, nome, spoiler e remoção de metadados</li>
+          <li xml:lang="en">Attachment editing with cropping, filenames, spoilers and metadata removal</li>
+          <li>Envio imediato na conversa, participantes das reações e correções na busca e nas mensagens fixadas</li>
+          <li xml:lang="en">Immediate message display, reaction participants, and search and pinned-message fixes</li>
+          <li>Histórico e cache conciliados, saltos para mensagens antigas e rolagem mais estável</li>
+          <li xml:lang="en">Reconciled history and cache, jumps to old messages and more stable scrolling</li>
+          <li>Embeds do servidor preferidos por padrão, GIFs como mídia e correções nas prévias de respostas</li>
+          <li xml:lang="en">Backend embeds preferred by default, GIFs displayed as media and reply-preview fixes</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.5" date="2026-10-05">
       <description>
         <p>Mensagens com formatação, anexos com prévia e mais cuidado com links e janelas.</p>

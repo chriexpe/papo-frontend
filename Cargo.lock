@@ -4112,7 +4112,7 @@ dependencies = [
 
 [[package]]
 name = "papo"
-version = "0.7.5"
+version = "0.8.5"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -4172,7 +4172,7 @@ dependencies = [
 
 [[package]]
 name = "papo-core"
-version = "0.7.5"
+version = "0.8.5"
 dependencies = [
  "base64",
  "chrono",
