@@ -58,7 +58,10 @@ class PapoUiTest {
     private fun chat() {
         demo()
         compose.onNodeWithText("geral").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-header").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasTestTag("channel-header") and hasText("geral")).fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     @Test fun firstLaunchHasNoPrefilledServerAndValidatesAddressesInline() {
@@ -94,7 +97,10 @@ class PapoUiTest {
     private fun media() {
         demo()
         compose.onNodeWithText("mídia").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-header").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasTestTag("channel-header") and hasText("mídia")).fetchSemanticsNodes().isNotEmpty() &&
+                compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()
+        }
     }
 
     @Test fun attachmentRollupPicksAndSendsAFileThroughTheNativeCore() {
@@ -207,6 +213,19 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Remove Voice note ", substring = true).performClick()
     }
 
+    @Test fun backendMislabeledM4aUsesAudioControlsAndKeepsItsCompactFrame() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play voice-note.m4a"))
+        val frame = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("attachment-demo-audio", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Play voice-note.m4a").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("player-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("audio-controls", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Audio position").assertExists()
+        val loaded = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(frame.height, loaded.height, 1f)
+    }
+
     @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {
         media()
         compose.onNodeWithTag("message-list", useUnmergedTree = true).performScrollToNode(hasTestTag("embed-embed-portrait"))
@@ -227,7 +246,7 @@ class PapoUiTest {
         val frame = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         compose.onNodeWithContentDescription("Play clip.mp4").performClick()
         val player = "player-demo://papo/me/attachment/demo-video"
-        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready")).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         val playing = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertEquals(frame.height, playing.height, 1f)
     }

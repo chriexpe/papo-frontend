@@ -115,6 +115,9 @@ fallback frame. Decode, error and retry events never resize the frame.
 Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
 the app pauses playback; disposed players release their resources. Only one
 player is active per conversation. Original image viewing supports pinch zoom.
+Audio uses compact Compose play/pause, seek and time controls without a video
+surface. M4A/M4B audio names correct the backend’s broad `video/mp4` container
+label in the shared core; actual MP4/M4V video keeps its video presentation.
 Files download on demand to private cache and open via Android’s file chooser.
 
 Papo media uses authenticated attachment/thumbnail and embed-video relay routes.

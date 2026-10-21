@@ -1242,20 +1242,32 @@ impl Kind {
             | "heif" | "svg" | "ico" | "jxl" => Self::Image,
             "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "ogv" | "wmv" | "flv" | "3gp"
             | "mpg" | "mpeg" | "ts" | "m2ts" => Self::Video,
-            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "aac" | "wma" | "aif"
+            "mp3" | "ogg" | "oga" | "opus" | "wav" | "flac" | "m4a" | "m4b" | "aac" | "wma" | "aif"
             | "aiff" | "weba" | "mka" => Self::Audio,
             _ => return None,
         };
         Some(kind)
     }
 
-    /// Mime primeiro; a extensão entra quando ele não diz nada.
+    /// Mime primeiro, com correção para contêiner MP4 de áudio; a extensão
+    /// também entra quando o mime não diz nada.
     ///
     /// O backend deduz o mime sozinho e erra: um `.mp4` volta como
     /// `application/octet-stream` e um recado de voz como `application/ogg`.
     /// Os dois caem em `Other` pelo mime e apareceriam como um arquivo
     /// qualquer, em vez do vídeo e da forma de onda que são.
     pub fn guess(mime: &str, name: &str) -> Self {
+        // Go's content sniffer labels MP4 containers video/mp4 even when
+        // they contain only audio. M4A/M4B are the audio-only variants;
+        // don't let that broad container label turn voice notes into video.
+        let essence = mime.split(';').next().unwrap_or("").trim();
+        if essence.eq_ignore_ascii_case("video/mp4")
+            && name.rsplit_once('.').is_some_and(|(_, extension)| {
+                extension.eq_ignore_ascii_case("m4a") || extension.eq_ignore_ascii_case("m4b")
+            })
+        {
+            return Self::Audio;
+        }
         match Self::of(mime) {
             Self::Other => Self::of_extension(name).unwrap_or(Self::Other),
             known => known,
@@ -1411,6 +1423,22 @@ mod tests {
     fn mime_conhecido_tem_a_palavra_final() {
         assert_eq!(Kind::guess("video/mp4", "coisa.bin"), Kind::Video);
         assert_eq!(Kind::guess("image/png", "sem-extensao"), Kind::Image);
+    }
+
+    #[test]
+    fn audio_only_mp4_names_correct_the_backend_container_label() {
+        for mime in ["video/mp4", "VIDEO/MP4", "video/mp4; codecs=mp4a.40.2"] {
+            for name in ["Voice note.m4a", "RECORDING.M4A", "audiobook.m4b"] {
+                assert_eq!(Kind::guess(mime, name), Kind::Audio, "{mime}: {name}");
+            }
+        }
+        assert_eq!(Kind::guess("audio/mp4", "Voice note.m4a"), Kind::Audio);
+        assert_eq!(Kind::guess("application/octet-stream", "Voice note.m4a"), Kind::Audio);
+        assert_eq!(Kind::guess("video/mp4", "movie.mp4"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.m4v"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.bin"), Kind::Video);
+        assert_eq!(Kind::guess("video/mp4", "movie.mp3"), Kind::Video);
+        assert_eq!(Kind::guess("image/png", "image.m4a"), Kind::Image);
     }
 
     /// Nem todo octet-stream é mídia; um arquivo continua arquivo.

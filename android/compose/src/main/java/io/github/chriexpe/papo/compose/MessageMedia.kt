@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -58,6 +59,7 @@ import io.github.chriexpe.papo.core.EmbedView
 import io.github.chriexpe.papo.core.MediaRequest
 import io.github.chriexpe.papo.core.MediaResource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -148,7 +150,7 @@ private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewMo
         }
         "video", "audio" -> {
             val id = "${server.url}/${server.me}/attachment/${a.id}"
-            if (a.kind == "audio") Box(Modifier.fillMaxWidth().height(104.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
+            if (a.kind == "audio") Box(Modifier.fillMaxWidth().height(104.dp).testTag("audio-attachment-${a.id}").clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
                 PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, MediaResource.Attachment(a.id, false), audio = true)
             } else ReservedMedia(0, 0, tag = "attachment-${a.id}") {
                 PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, MediaResource.Attachment(a.id, false),
@@ -297,9 +299,16 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 @Composable
 private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null) {
     if (!active) {
-        if (poster != null || embedPoster != null) MediaImage(server, model, title, resource = poster, embed = embedPoster, viewer = false)
-        if (audio) Text(title, Modifier.align(Alignment.CenterStart).padding(start = 16.dp, end = 72.dp), style = MaterialTheme.typography.bodyMedium)
-        PlayButton(title, activate)
+        if (audio) Row(Modifier.fillMaxSize().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            FilledIconButton(onClick = activate, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.PlayArrow, "Play $title") }
+            Column(Modifier.weight(1f)) {
+                Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Text("Audio", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            if (poster != null || embedPoster != null) MediaImage(server, model, title, resource = poster, embed = embedPoster, viewer = false)
+            PlayButton(title, activate)
+        }
         return
     }
     val context = LocalContext.current
@@ -330,11 +339,62 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
         onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); player?.release() }
     }
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
-    else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = { it.player = player }, modifier = Modifier.fillMaxSize().testTag("player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" })
+    else Box(Modifier.fillMaxSize().testTag("player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
+        if (audio) AudioControls(player, title)
+        else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = { it.player = player }, modifier = Modifier.fillMaxSize())
+    }
     if (error.isNotBlank()) Column(Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(error, style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { error = ""; if (player == null) retry++ else { player.prepare(); player.play() } }) { Text("Retry") }
     }
+}
+
+/** Audio has its own controls and never creates a video surface. */
+@Composable
+private fun AudioControls(player: Player, title: String) {
+    var playing by remember(player) { mutableStateOf(player.isPlaying) }
+    var position by remember(player) { mutableLongStateOf(0) }
+    var duration by remember(player) { mutableLongStateOf(0) }
+    var seek by remember(player) { mutableStateOf<Float?>(null) }
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
+    LaunchedEffect(player) {
+        while (true) {
+            position = player.currentPosition.coerceAtLeast(0)
+            duration = player.duration.coerceAtLeast(0)
+            delay(250)
+        }
+    }
+    Row(Modifier.fillMaxSize().testTag("audio-controls").padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FilledIconButton(onClick = {
+            if (player.isPlaying) player.pause()
+            else { if (player.playbackState == Player.STATE_ENDED) player.seekTo(0); player.play() }
+        }, modifier = Modifier.size(48.dp)) {
+            Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, if (playing) "Pause $title" else "Play $title")
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            Slider(value = (seek ?: position.toFloat()).coerceIn(0f, duration.coerceAtLeast(1).toFloat()),
+                onValueChange = { seek = it }, onValueChangeFinished = { seek?.let { player.seekTo(it.toLong()) }; seek = null },
+                valueRange = 0f..duration.coerceAtLeast(1).toFloat(), enabled = duration > 0,
+                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Audio position" })
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(audioTime((seek?.toLong() ?: position)), style = MaterialTheme.typography.labelSmall)
+                Text(audioTime(duration), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+private fun audioTime(milliseconds: Long): String {
+    val seconds = milliseconds.coerceAtLeast(0) / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
 }
 
 @Suppress("SetJavaScriptEnabled")

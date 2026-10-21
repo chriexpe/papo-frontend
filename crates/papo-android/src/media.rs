@@ -286,7 +286,7 @@ pub fn demo_request(resource: MediaResource) -> Result<MediaRequest, String> {
                 ("demo-gif", _) => "animation.gif",
                 ("demo-video", true) => "landscape.png",
                 ("demo-video", false) => "clip.mp4",
-                ("demo-audio", _) => "tone.wav",
+                ("demo-audio", _) => "voice-note.m4a",
                 ("demo-file", _) => "notes.txt",
                 _ => return Err("Demo media not found".into()),
             };
@@ -317,6 +317,16 @@ pub fn demo_image(id: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_labeled_m4a_projects_as_audio_without_rewriting_metadata() {
+        let attachment: Attachment = serde_json::from_value(serde_json::json!({
+            "id":"voice", "original_file_name":"Voice note.m4a", "mime_type":"video/mp4", "size_bytes":1024
+        })).unwrap();
+        let view = AttachmentView::from(&attachment);
+        assert_eq!(view.kind, "audio");
+        assert_eq!(view.mime, "video/mp4");
+    }
 
     #[test]
     fn media_routes_keep_server_prefix_and_encode_ids_as_one_segment() {
