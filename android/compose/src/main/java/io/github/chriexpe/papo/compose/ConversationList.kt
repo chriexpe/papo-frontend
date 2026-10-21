@@ -78,9 +78,9 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             ServerHeader(server,model,appError,Modifier.weight(1f))
-            GlassPill(Modifier.size(52.dp),radius=20) {
-                Box(Modifier.fillMaxSize().clickable(onClickLabel="Client settings",onClick=onSettings).testTag("account-settings").semantics {contentDescription="Client settings"}.padding(6.dp),contentAlignment=Alignment.Center) {
-                    UserAvatar(server.me,server.myName)
+            GlassPill(Modifier.size(60.dp),radius=20) {
+                Box(Modifier.fillMaxSize().clickable(onClickLabel="Client settings",onClick=onSettings).testTag("account-settings").semantics {contentDescription="Client settings"}.padding(4.dp),contentAlignment=Alignment.Center) {
+                    UserAvatar(server.me,server.myName,Modifier.fillMaxSize(),shape=RoundedCornerShape(16.dp))
                 }
             }
         }

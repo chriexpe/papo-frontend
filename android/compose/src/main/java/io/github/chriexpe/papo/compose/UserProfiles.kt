@@ -44,7 +44,7 @@ internal val LocalOpenProfile=compositionLocalOf<(String)->Unit> {{}}
 /** Avatar bytes stay out of frequently polled snapshots. Both encoded and
  * decoded images are scoped to the server, account, user and image revision. */
 @Composable
-internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
+internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier,shape:androidx.compose.ui.graphics.Shape=CircleShape) {
     val profileContext=LocalProfileContext.current
     val profile=profileContext?.server?.profiles?.firstOrNull {it.id==id}
     val revision=profile?.avatarRevision.orEmpty()
@@ -55,10 +55,10 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
     }
     key(profileContext?.server?.url,profileContext?.server?.me,id,revision) {
         var loaded by remember {mutableStateOf(false)}
-        Box(modifier.size(40.dp).clip(CircleShape).testTag("avatar-$id").semantics {
+        Box(modifier.size(40.dp).clip(shape).testTag("avatar-$id").semantics {
             contentDescription="$name avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
         },contentAlignment=Alignment.Center) {
-            if(!loaded) Avatar(name,Modifier.fillMaxSize())
+            if(!loaded) Avatar(name,Modifier.fillMaxSize(),shape)
             if(image!=null) ManagedAsyncImage(
                 ImageRequest.Builder(context).data(image).size(256).build(),null,MediaImages.loader(context),
                 modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false},retentionKey="avatar/$id/$revision")

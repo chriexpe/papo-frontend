@@ -317,14 +317,14 @@ private fun FloatingNavigation(selected: String, onSelect: (String) -> Unit, mod
             }
         }
         GlassPill(Modifier.size(72.dp).testTag("servers-navigation"),radius=24) {
-            NavigationDestination("Servers",Icons.Outlined.Dns,selected=="Servers",{onSelect("Servers")},Modifier.fillMaxSize().padding(6.dp))
+            NavigationDestination("Servers",Icons.Outlined.Dns,selected=="Servers",{onSelect("Servers")},Modifier.fillMaxSize().padding(6.dp),radius=18)
         }
     }
 }
 
 @Composable
-private fun NavigationDestination(name:String,icon:ImageVector,active:Boolean,onClick:()->Unit,modifier:Modifier=Modifier) {
-    Column(modifier.clip(RoundedCornerShape(25.dp)).background(if(active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+private fun NavigationDestination(name:String,icon:ImageVector,active:Boolean,onClick:()->Unit,modifier:Modifier=Modifier,radius:Int=25) {
+    Column(modifier.clip(RoundedCornerShape(radius.dp)).background(if(active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
         .selectable(selected=active,onClick=onClick,role=Role.Tab).heightIn(min=58.dp).padding(horizontal=10.dp,vertical=8.dp),
         horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(3.dp,Alignment.CenterVertically)) {
         Icon(icon,null,Modifier.size(22.dp),tint=if(active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -356,10 +356,10 @@ private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit,
 }
 
 @Composable
-internal fun Avatar(name: String, modifier: Modifier = Modifier) {
+internal fun Avatar(name: String, modifier: Modifier = Modifier, shape:androidx.compose.ui.graphics.Shape = CircleShape) {
     val colors = listOf(Color(0xFF305C88), Color(0xFF76503C), Color(0xFF5B537E), Color(0xFF386858))
     val initials = name.split(' ').filter { it.isNotBlank() }.take(2).map { it.first() }.joinToString("").uppercase()
-    Box(modifier.size(40.dp).clip(CircleShape).background(colors[(name.hashCode() and Int.MAX_VALUE) % colors.size]), contentAlignment = Alignment.Center) {
+    Box(modifier.size(40.dp).clip(shape).background(colors[(name.hashCode() and Int.MAX_VALUE) % colors.size]), contentAlignment = Alignment.Center) {
         Text(initials, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
     }
 }
