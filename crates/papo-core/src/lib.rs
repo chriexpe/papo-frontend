@@ -10,6 +10,7 @@ pub mod core;
 pub mod notification;
 pub mod preview;
 pub mod runtime;
+pub mod search;
 pub mod state;
 pub mod storage;
 
