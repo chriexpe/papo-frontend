@@ -70,7 +70,13 @@ pub enum Action {
         channel_id: String,
         message_id: String,
         emoji: String,
+        custom: bool,
         add: bool,
+    },
+    ReactionDetails {
+        channel_id: String,
+        message_id: String,
+        more: bool,
     },
     Retry {
         local_id: String,
@@ -337,13 +343,22 @@ impl Client {
                 channel_id,
                 message_id,
                 emoji,
+                custom,
                 add,
             } => Command::React {
                 channel_id,
                 message_id,
-                emoji: ReactionRequest::unicode(emoji),
+                emoji: if custom { ReactionRequest::custom(emoji) } else { ReactionRequest::unicode(emoji) },
                 add,
             },
+            Action::ReactionDetails { channel_id, message_id, more } => {
+                if store.message(&message_id).is_none_or(|m| m.channel_id != channel_id) {
+                    return Err("Message is no longer available".into());
+                }
+                let cursor = if more { store.reaction_details_cursor(&message_id) } else { None };
+                if !store.begin_reaction_details(&message_id) { return Ok(()); }
+                Command::LoadReactionDetails { channel_id, message_id, cursor, append: more }
+            }
             Action::Retry { local_id } => Command::RetryOutgoing {
                 local_id,
                 owner_user_id: store.me.clone(),
@@ -424,7 +439,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let messages: Vec<_> = s.messages_in(&s.selected_channel).map(|m| {
             let name = s.members.iter().find(|u| u.id == m.author_id).map(|u| u.name.as_str())
                 .or_else(|| m.external_author.as_ref().map(|a| a.name.as_str())).unwrap_or(&m.author_id);
-            let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(_) => "✦".to_owned() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
+            let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(id) => id.clone() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
             json!({ "id": m.id, "authorId": m.author_id, "author": name, "content": m.content,
                 "at": m.at.timestamp_millis(), "edited": m.edited, "mine": m.mine(&s.me), "replyTo": m.reply_to.as_deref().unwrap_or_default(),
                 "replyContent": m.reply_to.as_ref().and_then(|id| s.message(id)).map(|m| m.content.as_str()).unwrap_or_default(),
@@ -443,6 +458,9 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
         "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
         "me": s.me, "myName": s.my_name, "selectedChannel": s.selected_channel, "channels": channels,
+        "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name})).collect::<Vec<_>>(),
+        "reactionDetails": s.reaction_details.iter().map(|(id, groups)| json!({"messageId":id,"groups":groups.iter().map(|g| json!({"emoji":g.emoji_id.as_ref().or(g.unicode.as_ref()).cloned().unwrap_or_default(),"custom":g.emoji_id.is_some(),"users":g.users.iter().map(|u| json!({"id":u.user_id,"name":s.members.iter().find(|m|m.id==u.user_id).map(|m|m.name.as_str()).unwrap_or(&u.user_id)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"more":s.reaction_details_has_more.get(id).copied().unwrap_or(false)})).collect::<Vec<_>>(),
+        "reactionLoading": s.reaction_details_loading.iter().collect::<Vec<_>>(),
         "messages": messages, "members": members, "dms": dms, "typing": s.typing_names(), "locked": s.locked,
         "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),

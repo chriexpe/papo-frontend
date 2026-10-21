@@ -26,10 +26,13 @@ class PapoUiTest {
 
     private lateinit var savedClient: Map<String, *>
     private lateinit var savedAppearance: Map<String, *>
+    private lateinit var savedExpressions: Map<String, *>
     private lateinit var savedAttachments: Map<String, *>
 
     @Before fun launch() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        savedExpressions = context.getSharedPreferences("compose-expressions", 0).all.toMap()
+        context.getSharedPreferences("compose-expressions", 0).edit().clear().commit()
         savedAttachments = context.getSharedPreferences("compose-attachments", 0).all.toMap()
         context.getSharedPreferences("compose-attachments", 0).edit().clear().commit()
         savedClient = context.getSharedPreferences("compose-client", 0).all.toMap()
@@ -46,6 +49,7 @@ class PapoUiTest {
             values.forEach { (key, value) -> when (value) { is String -> editor.putString(key, value); is Boolean -> editor.putBoolean(key, value) } }
             editor.commit()
         }
+        restore("compose-expressions", savedExpressions)
         restore("compose-attachments", savedAttachments)
         restore("compose-client", savedClient)
         restore("compose-appearance", savedAppearance)
@@ -64,6 +68,57 @@ class PapoUiTest {
         }
     }
 
+    @Test fun serverStickersInsertAnimateAndAppearInSharedReactionPicker() {
+        chat()
+        compose.onNodeWithContentDescription("Emoji and stickers").performClick()
+        compose.onNodeWithTag("emoji-picker").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNode(hasSetTextAction()).assertTextEquals(":papo_wave:")
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription(":papo_wave:",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onAllNodesWithContentDescription("Message actions").onFirst().performClick()
+        compose.onNodeWithContentDescription("More reactions").performClick()
+        compose.onNodeWithTag("emoji-picker").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("See who reacted with papo_wave").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("See who reacted with papo_wave").performClick()
+        compose.onNodeWithTag("reaction-people").assertIsDisplayed()
+        compose.waitUntil(10_000) {compose.onAllNodesWithText("You",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("Remove my reaction").assertExists()
+    }
+
+    @Test fun gifPickerUsesStableProviderMarkerAndTracksRecentOnlyAfterSending() {
+        chat()
+        compose.onNodeWithContentDescription("GIF picker").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("A little motion").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("A little motion").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasSetTextAction()).fetchSemanticsNodes().any {it.config.getOrElse(SemanticsProperties.EditableText) {AnnotatedString("")}.text=="giphy:demo-motion"}}
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("provider-gif-demo-motion",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("GIF picker").performClick()
+        compose.onNodeWithText("Recent").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("A little motion").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNode(hasContentDescription("A little motion") and hasAnyAncestor(hasTestTag("gif-picker"))).assertIsDisplayed()
+    }
+
+    @Test fun uploadedGifFavoriteIsSharedWithFullscreenAndPicker() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Photo: animation.gif"))
+        compose.waitUntil(10_000) {compose.onAllNodes(hasContentDescription("Photo: animation.gif") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Photo: animation.gif").performClick()
+        compose.onAllNodesWithContentDescription("Favorite GIF").onLast().performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Remove GIF from favorites").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Close image").performClick()
+        compose.onNodeWithContentDescription("GIF picker").performClick()
+        compose.onNodeWithText("Favorites").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("animation.gif").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("animation.gif").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Remove animation.gif.gif").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Send message").assertIsEnabled()
+        compose.onNodeWithContentDescription("Remove animation.gif.gif").performClick()
+    }
+
     @Test fun firstLaunchHasNoPrefilledServerAndValidatesAddressesInline() {
         compose.onNodeWithText("Add server").assertIsNotEnabled()
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))
@@ -77,6 +132,9 @@ class PapoUiTest {
         chat()
         val draft = "rascunho 🌱\nsegunda linha"
         compose.onNode(hasSetTextAction()).performTextInput(draft)
+        val sendCenter=compose.onNodeWithContentDescription("Send message").fetchSemanticsNode().boundsInRoot.center.y
+        assertEquals(sendCenter,compose.onNodeWithContentDescription("Emoji and stickers").fetchSemanticsNode().boundsInRoot.center.y,1f)
+        assertEquals(sendCenter,compose.onNodeWithContentDescription("GIF picker").fetchSemanticsNode().boundsInRoot.center.y,1f)
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithText("geral").performClick()
         compose.onNode(hasSetTextAction()).assertTextEquals(draft)
@@ -218,6 +276,7 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play voice-note.m4a"))
         val frame = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         compose.onNodeWithTag("attachment-demo-audio", useUnmergedTree = true).assertDoesNotExist()
+        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("waveform-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Waveform ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Play voice-note.m4a").performClick()
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("player-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("audio-controls", useUnmergedTree = true).assertIsDisplayed()

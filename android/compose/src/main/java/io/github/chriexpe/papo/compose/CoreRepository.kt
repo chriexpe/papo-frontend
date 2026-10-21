@@ -220,6 +220,95 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         (handles[url] ?: error("Server is closed")).mediaRequest(resource)
     }
 
+    private val emojiImages = object : LruCache<String, ByteArray>(16 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
+    private val emojiImageLock = Mutex()
+    internal suspend fun emojiImage(server: ServerState, id: String): ByteArray {
+        val key="${server.url}/${server.me}/$id"
+        emojiImages.get(key)?.let { return it }
+        return emojiImageLock.withLock {
+            emojiImages.get(key)?.let { return@withLock it }
+            val client=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me) { "Account changed" }; handles[server.url] ?: error("Server is closed") }
+            withContext(kotlinx.coroutines.Dispatchers.IO) { client.emojiImage(id).also {emojiImages.put(key,it)} }
+        }
+    }
+
+    internal val expressions = ExpressionLibrary(getApplication())
+    private val gifLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private val pendingGifs = mutableMapOf<String, List<Pair<GifChoice,String>>>()
+
+    internal fun react(server: ServerState, message: ChatMessage, emoji: EmojiChoice) {
+        val add = !message.reactions.any { it.emoji == emoji.value && it.custom == emoji.custom && it.mine }
+        command(Action.React(server.selected, message.id, emoji.value, emoji.custom, add), server.url) {
+            if (add) viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) { expressions.used(expressions.owner(server), listOf(emoji)) }
+        }
+    }
+    internal fun recordSent(server: ServerState, draftKey: String, text: String, files: Set<String>) = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        val owner=expressions.owner(server)
+        expressions.used(owner, messageEmoji(text, server))
+        val gifs=withContext(kotlinx.coroutines.Dispatchers.Main) { pendingGifs.remove(draftKey).orEmpty() }
+        gifs.filter { (g,path) -> if(path.isNotBlank()) path in files else text.contains("giphy:${g.providerId}") || text.contains("https://giphy.com/gifs/${g.providerId}") }.forEach { (g,_) -> expressions.recent(owner,g) }
+        GifChoice.marker(text)?.let { id -> if(gifs.none {it.first.providerId==id}) expressions.recent(owner,GifChoice("giphy:$id","GIF",providerId=id)) }
+    }
+    internal suspend fun gifPage(server: ServerState, query: String, offset: Int): io.github.chriexpe.papo.core.GifPageView {
+        val client=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me) { "Account changed" }; handles[server.url] ?: error("Server is closed") }
+        return withContext(kotlinx.coroutines.Dispatchers.IO) { client.gifPage(query,offset.toUInt()) }
+    }
+    internal suspend fun gifItem(server: ServerState, id: String): GifChoice {
+        val client=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me) { "Account changed" }; handles[server.url] ?: error("Server is closed") }
+        return withContext(kotlinx.coroutines.Dispatchers.IO) { GifChoice.from(client.gifItem(id)) }
+    }
+    internal suspend fun gifCopy(server: ServerState, gif: GifChoice): java.io.File = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val owner=expressions.owner(server)
+        val target=expressions.file(owner,gif.key)
+        if (target.isFile) return@withContext target
+        val temporary=java.io.File.createTempFile("gif-", ".part", target.parentFile)
+        try {
+            when {
+                gif.embed.isNotBlank() -> temporary.writeBytes(embedImage(server,gif.embed,gif.revision))
+                gif.attachment.isNotBlank() -> {
+                    val source=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me); (handles[server.url] ?: error("Server is closed")).mediaRequest(MediaResource.Attachment(gif.attachment,false)) }
+                    MediaNetwork.download(getApplication(),source,"image.gif").copyTo(temporary,true)
+                }
+                else -> {
+                    val resolved=if(gif.url.isBlank() && gif.providerId.isNotBlank()) gifItem(server,gif.providerId) else gif
+                    val source=publicGifSource(resolved.url)
+                    MediaNetwork.download(getApplication(),source,"image.gif").copyTo(temporary,true)
+                }
+            }
+            check(temporary.length()>0) { "GIF is empty" }
+            check(temporary.renameTo(target)) { "Couldn’t save this GIF" }
+            target
+        } finally { temporary.delete() }
+    }
+    internal fun toggleGif(server: ServerState, gif: GifChoice) = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        val owner=expressions.owner(server)
+        gifLocks.getOrPut("$owner/${gif.key}") { Mutex() }.withLock {
+            try {
+                val removing=expressions.state(owner).favorites.any { it.key==gif.key }
+                val saved=if(!removing && (gif.attachment.isNotBlank() || gif.embed.isNotBlank())) gif.copy(path=gifCopy(server,gif).absolutePath) else gif
+                expressions.favorite(owner,saved)
+            } catch(e:kotlinx.coroutines.CancellationException) { throw e }
+            catch(e:Exception) { withContext(dispatcher) { publish(error=e.message ?: "Couldn’t save this GIF") } }
+        }
+    }
+    internal fun pickGif(server: ServerState, draftKey: String, gif: GifChoice, onMarker: (String)->Unit, onDone: ()->Unit) = viewModelScope.launch {
+        try {
+            if(gif.providerId.isNotBlank()) {
+                pendingGifs[draftKey]=pendingGifs[draftKey].orEmpty()+ (gif to "")
+                onMarker("giphy:${gif.providerId}")
+            } else {
+                val file=gifCopy(server,gif)
+                val copy=withContext(kotlinx.coroutines.Dispatchers.IO) { AttachmentFiles.create(getApplication(),"gif").also { file.copyTo(it,true) } }
+                attachments.captured(draftKey,copy,"${gif.title.ifBlank { "Animation" }.take(80)}.gif","image/gif").join()
+                pendingGifs[draftKey]=pendingGifs[draftKey].orEmpty()+ (gif.copy(path=file.absolutePath) to copy.absolutePath)
+            }
+            onDone()
+        } catch(e:kotlinx.coroutines.CancellationException) { throw e }
+        catch(e:Exception) { attachments.report(draftKey,e.message ?: "Couldn’t attach this GIF") }
+    }
+
     internal suspend fun audioWaveform(server: ServerState, resource: MediaResource): AudioWaveform {
         val source = withContext(dispatcher) {
             check(snapshots[server.url]?.me == server.me) { "Account changed" }

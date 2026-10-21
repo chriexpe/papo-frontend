@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod cache;
+pub mod giphy;
 pub mod core;
 pub mod notification;
 pub mod preview;

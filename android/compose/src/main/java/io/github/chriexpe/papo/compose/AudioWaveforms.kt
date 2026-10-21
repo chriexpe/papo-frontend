@@ -99,10 +99,10 @@ internal object AudioWaveformDecoder {
                 if (android.os.SystemClock.elapsedRealtime() - lastProgress > 10_000) throw IOException("Audio decoder stalled")
             }
             check(peaks.frames > 0 && rate > 0) { "Audio has no decoded samples" }
-            AudioWaveform(peaks.finish(), if (durationUs > 0) durationUs / 1000 else peaks.frames * 1000 / rate)
+            AudioWaveform(peaks.finish(), if (durationUs > 0) durationUs / 1000 else (peaks.frames * 1000 / rate).coerceAtLeast(1))
         } finally {
             if (started) runCatching { codec?.stop() }
-            codec?.release(); extractor.release()
+            try { codec?.release() } finally { extractor.release() }
         }
     }
 

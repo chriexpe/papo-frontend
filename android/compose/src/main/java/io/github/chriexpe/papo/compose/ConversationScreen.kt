@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -67,6 +68,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     var text by rememberSaveable(draftKey) { mutableStateOf(model.draft(draftKey)) }
     var reply by rememberSaveable(draftKey) { mutableStateOf<String?>(null) }
+    var emojiPicker by remember(draftKey) { mutableStateOf(false) }
+    var emojiTarget by remember(draftKey) { mutableStateOf<ChatMessage?>(null) }
+    var gifPicker by remember(draftKey) { mutableStateOf(false) }
+    var gifPreparing by remember(draftKey) { mutableStateOf(false) }
+    var reactionPeople by remember(draftKey) { mutableStateOf<Pair<String,EmojiChoice>?>(null) }
+    val expressionStates by model.expressions.states.collectAsState()
+    val expressions = expressionStates[model.expressions.owner(server)] ?: model.expressions.state(model.expressions.owner(server))
     var selected by remember { mutableStateOf<ChatMessage?>(null) }
     var edit by remember { mutableStateOf<ChatMessage?>(null) }
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
@@ -106,12 +114,15 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     }
 
     val submitMessage: (Boolean) -> Unit = { attachmentsOnly ->
-        val sent = text
+        val original = text
+        val sent = if(GifChoice.marker(text)!=null) text else Regex("(?m)^giphy:([A-Za-z0-9_-]{1,200})$").replace(text) {"https://giphy.com/gifs/${it.groupValues[1]}"}
+        val sentFiles = attachmentDraft.files.map {it.path}.toSet()
         submitting = true
         val onResult: (Boolean) -> Unit = { accepted ->
             submitting = false
             if (accepted) {
-                if (text == sent) { text = ""; model.saveDraft(draftKey, "") }
+                model.recordSent(server,draftKey,sent,sentFiles)
+                if (text == original) { text = ""; model.saveDraft(draftKey, "") }
                 reply = null
                 scope.launch { listState.animateScrollToItem(0) }
             }
@@ -130,8 +141,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     if (server.connection == "online") "Say hello in ${channel.name}." else "Messages will appear when the server is reachable.")
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
-                MessageRow(message, onActions = { selected = message }, onReaction = { r ->
-                    if (!r.custom) model.command(Action.React(channel.id, message.id, r.emoji, !r.mine))
+                MessageRow(message, server, model, onActions = { selected = message }, onReaction = { r ->
+                    reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji)
                 }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
             }
             if (server.canLoadOlder) item("history") {
@@ -201,7 +212,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
-                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.Bottom) {
+                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
                             BasicTextField(text, onValueChange = {
                                 text = it
                                 model.saveDraft(draftKey, it)
@@ -211,10 +222,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
                                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
                                 decorationBox = { inner -> Box { if (text.isEmpty()) Text("Message ${if (channel.kind == "direct") channel.name else "#${channel.name}"}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis); inner() } })
+                            IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
+                            IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
                                 if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
                                 else submitMessage(false)
-                            }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing,
+                            }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing && !gifPreparing,
                                 modifier = Modifier.size(48.dp)) {
                                 if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
                             }
@@ -224,6 +237,20 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
         }
     }
+
+    if(emojiPicker) EmojiPicker(server,model,onDismiss={emojiPicker=false},onPick={emoji ->
+        val target=emojiTarget
+        if(target!=null) { model.react(server,server.messages.firstOrNull {it.id==target.id} ?: target,emoji); emojiPicker=false }
+        else { text+=emoji.token; model.saveDraft(draftKey,text) }
+    })
+    if(gifPicker) GifPicker(server,model,onDismiss={gifPicker=false},onPick={gif ->
+        gifPreparing=true
+        model.pickGif(server,draftKey,gif,onMarker={ marker ->
+            text=if(text.isBlank()) marker else text.trimEnd()+"\nhttps://giphy.com/gifs/${gif.providerId}"
+            model.saveDraft(draftKey,text)
+        },onDone={gifPreparing=false; gifPicker=false}).invokeOnCompletion { scope.launch {gifPreparing=false} }
+    })
+    reactionPeople?.let { (id,emoji) -> ReactionPeople(server,model,id,emoji,onDismiss={reactionPeople=null}) }
 
     if (confirmAttachmentRetry) AlertDialog(onDismissRequest = { confirmAttachmentRetry = false },
         title = { Text("Retry sending attachments?") },
@@ -235,9 +262,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp)) {
             Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { listOf("👍", "❤️", "😂", "🎉", "👀").forEach { emoji -> TextButton(onClick = {
-                    model.command(Action.React(channel.id, message.id, emoji, !message.reactions.any { it.emoji == emoji && it.mine })); selected = null
-                }) { Text(emoji, fontSize = 24.sp) } } }
+                val frequent=(expressions.usage.map {it.first}.filter { !it.custom || server.emojis.any { e->e.id==it.value } } + server.emojis.map {EmojiChoice(it.id,true,it.name)} + listOf("👍","❤️","😂","🎉","👀").map {EmojiChoice(it)}).distinctBy {it.key}.take(5)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    frequent.forEach { emoji -> IconButton(onClick = { model.react(server,message,emoji); selected=null },modifier=Modifier.semantics {contentDescription="React with ${emoji.token}"}) { EmojiGlyph(server,emoji,28,model) } }
+                    IconButton(onClick={emojiTarget=message; selected=null; emojiPicker=true}) {Icon(Icons.Outlined.AddReaction,"More reactions")}
+                }
                 SheetAction("Reply", Icons.Outlined.Reply) { reply = message.id; selected = null }
             }
             SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
@@ -276,7 +305,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, onActions: () -> Unit, onReaction: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, onActions: () -> Unit, onReaction: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     Row(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Avatar(message.author)
@@ -291,10 +320,10 @@ private fun MessageRow(message: ChatMessage, onActions: () -> Unit, onReaction: 
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (message.content.isNotBlank()) SelectionContainer { Text(linkedText(message.content), style = MaterialTheme.typography.bodyLarge, lineHeight = 24.sp) }
+            if (message.content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(message.content,server,model)
             media()
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                message.reactions.forEach { reaction -> FilterChip(reaction.mine, { onReaction(reaction) }, enabled = !reaction.custom, label = { Text("${reaction.emoji} ${reaction.count}") }) }
+                message.reactions.forEach { reaction -> FilterChip(reaction.mine, { onReaction(reaction) }, label = { Row(verticalAlignment=Alignment.CenterVertically) { EmojiGlyph(server,EmojiChoice(reaction.emoji,reaction.custom),22,model); Text(" ${reaction.count}") } }, modifier=Modifier.semantics {contentDescription="See who reacted with ${if(reaction.custom) server.emojis.firstOrNull {it.id==reaction.emoji}?.name ?: "sticker" else reaction.emoji}"}) }
             }
             if (message.pending) Text(when (message.delivery) {
                 "unknown" -> "Delivery unconfirmed · tap ⋯ to retry"

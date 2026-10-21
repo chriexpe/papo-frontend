@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     alias(libs.plugins.android.application)
     id("org.jetbrains.kotlin.plugin.compose")
@@ -75,6 +77,10 @@ val buildRustNative by tasks.registering(Exec::class) {
     inputs.files(fileTree(rootProject.file("../crates/papo-android")) { include("Cargo.toml", "src/**") })
     inputs.files(fileTree("src/main/assets/demo"))
     inputs.property("abis", papoAbis)
+    inputs.property("gifProviderConfiguration", providers.environmentVariable("PAPO_GIPHY_API_KEY").map {
+        MessageDigest.getInstance("SHA-256").digest(it.toByteArray()).joinToString("") { byte -> "%02x".format(byte) }
+    }.orElse("unconfigured"))
+    inputs.file(rootProject.file("../crates/papo-core/build.rs"))
     papoAbis.forEach { outputs.file(rustJni.map { directory -> directory.file("$it/libpapo_compose.so") }) }
     commandLine(listOf("cargo", "ndk") + papoAbis.flatMap { listOf("-t", it) } +
         listOf("--platform", "31", "-o", rustJni.get().asFile.absolutePath, "build", "--locked", "-p", "papo-android", "--lib"))

@@ -151,6 +151,7 @@ internal object MediaNetwork {
 
 @Composable
 internal fun MessageMedia(message: ChatMessage, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit) {
+    GifChoice.marker(message.content)?.let { ProviderGif(server,model,it) }
     message.attachments.forEach { attachment ->
         Attachment(attachment, server, model, activePlayer, onPlayer)
     }
@@ -191,7 +192,7 @@ private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewMo
     }
     when (a.kind) {
         "image" -> ReservedMedia(0, 0, fallback = 4f / 3f, tag = "attachment-${a.id}") {
-            MediaImage(server, model, "Photo: ${a.name}", resource = MediaResource.Attachment(a.id, false))
+            MediaImage(server, model, "Photo: ${a.name}", resource = MediaResource.Attachment(a.id, false), gif = if(a.mime.substringBefore(';').equals("image/gif",true) || a.name.endsWith(".gif",true)) GifChoice("attachment:${a.id}",a.name,attachment=a.id) else null)
         }
         "video", "audio" -> {
             val id = "${server.url}/${server.me}/attachment/${a.id}"
@@ -271,7 +272,7 @@ private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, a
             }
         }
         when (e.kind) {
-            "image", "gif" -> ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") { MediaImage(server, model, e.title.ifBlank { "Image preview" }, embed = e) }
+            "image", "gif" -> ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") { MediaImage(server, model, e.title.ifBlank { "Image preview" }, embed = e, gif=if(e.kind=="gif") GifChoice("embed:${e.id}",e.title.ifBlank { "GIF" },embed=e.id,revision=e.revision,width=e.width,height=e.height) else null) }
             "video" -> ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
                 val id = "${server.url}/${server.me}/embed/${e.id}"
                 PlayableMedia(server, model, id, e.title.ifBlank { "Video" }, activePlayer == id, { onPlayer(id) }, MediaResource.EmbedVideo(e.id), embedPoster = e.takeIf { it.hasImage })
@@ -291,7 +292,7 @@ private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, a
 }
 
 @Composable
-private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true) {
+private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true, gif: GifChoice? = null) {
     val context = LocalContext.current
     var retry by remember { mutableStateOf(0) }
     var expanded by remember { mutableStateOf(false) }
@@ -323,11 +324,12 @@ private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, descr
         Text("Image unavailable", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = { decodeError = false; retry++ }) { Text("Retry") }
     }
-    if (expanded) ImageViewer(request, loader, description) { expanded = false }
+    if (gif!=null) GifStar(server,model,gif,Modifier.align(Alignment.TopEnd))
+    if (expanded) ImageViewer(request, loader, description, favorite = { if(gif!=null) GifStar(server,model,gif,light=true) }) { expanded = false }
 }
 
 @Composable
-private fun ImageViewer(request: ImageRequest, loader: ImageLoader, title: String, onClose: () -> Unit) {
+private fun ImageViewer(request: ImageRequest, loader: ImageLoader, title: String, favorite: @Composable ()->Unit = {}, onClose: () -> Unit) {
     var scale by remember { mutableStateOf(1f) }
     var x by remember { mutableStateOf(0f) }; var y by remember { mutableStateOf(0f) }
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
@@ -337,6 +339,7 @@ private fun ImageViewer(request: ImageRequest, loader: ImageLoader, title: Strin
             }.graphicsLayer { scaleX = scale; scaleY = scale; translationX = x; translationY = y }, contentScale = ContentScale.Fit)
             Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(title, color = Color.White, maxLines = 1, modifier = Modifier.weight(1f).padding(12.dp))
+                favorite()
                 IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "Close image", tint = Color.White) }
             }
         }

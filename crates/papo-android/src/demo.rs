@@ -5,7 +5,7 @@ use papo_core::api::{models, ws::Event};
 use papo_core::state::Store;
 
 pub struct Demo {
-    store: Store,
+    pub(crate) store: Store,
     events: Vec<Value>,
     media_files: HashMap<String, PathBuf>,
 }
@@ -49,6 +49,11 @@ impl Demo {
             {"id":"bruno","username":"bruno","nickname":"Bruno","status":"away"},
             {"id":"dora","username":"dora","nickname":"Dora","status":"busy"}
         ]))));
+        use base64::Engine;
+        store.apply(Update::Emojis(vec![models::Emoji {
+            id:"demo-wave".into(), name:"papo_wave".into(), created_at:None, format:Some("GIF".into()),
+            image_blob:Some(base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../android/compose/src/main/assets/demo/animation.gif"))),
+        }]));
         let now = now_millis();
         store.apply(Update::DirectMessages(decode(json!([{"id":"dm-ana","user":{"id":"ana","username":"ana","nickname":"Ana","status":"online"},"created_at":at(now),"unread_count":1}]))));
         for (channel, rows) in [
@@ -264,11 +269,21 @@ impl Demo {
             Action::React {
                 message_id,
                 emoji,
+                custom,
                 add,
                 ..
             } => self
                 .store
-                .set_reaction_local(&message_id, &Emoji::Unicode(emoji), add),
+                .set_reaction_local(&message_id, &if custom { Emoji::Custom(emoji) } else { Emoji::Unicode(emoji) }, add),
+            Action::ReactionDetails { message_id, .. } => {
+                let groups = self.store.message(&message_id).map(|m|m.reactions.iter().map(|r| models::ReactionGroup {
+                    emoji_id: if let Emoji::Custom(id) = &r.emoji { Some(id.clone()) } else { None },
+                    unicode: if let Emoji::Unicode(e) = &r.emoji { Some(e.clone()) } else { None },
+                    count:r.count,
+                    users: (0..r.count).map(|i|models::ReactionUser { id:format!("{message_id}-{i}"), user_id:if r.mine && i==0 { "me" } else { "ana" }.into(), created_at: chrono::Utc::now() }).collect(),
+                }).collect()).unwrap_or_default();
+                self.store.apply(Update::ReactionDetails {message_id,reactions:groups,has_more:false,append:false});
+            }
             Action::ClearError => self.store.error = None,
             Action::Visible { channel_id, ids } => {
                 self.store
