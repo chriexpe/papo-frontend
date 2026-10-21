@@ -3471,6 +3471,10 @@ impl Store {
                     let name = profile.display_name().to_owned();
                     let status_message = profile.status_message.clone();
                     let typing_label = profile.typing.clone();
+                    if id == self.me {
+                        self.my_name = name.clone();
+                        self.my_username = username.clone();
+                    }
                     if let Some(member) = self.members.iter_mut().find(|member| member.id == id) {
                         member.username = username;
                         member.name = name;
@@ -5118,7 +5122,7 @@ mod tests {
 
     #[test]
     fn blank_profile_and_user_refreshes_keep_author_and_mention_names() {
-        let mut store = Store::default();
+        let mut store = Store {me:"u1".into(),my_name:"Old display name".into(),..Store::default()};
         store.apply(Update::Profiles(vec![models::UserProfile {
             id: "u1".to_owned(),
             username: "jenosmobile".to_owned(),
@@ -5134,6 +5138,8 @@ mod tests {
             roles: Vec::new(),
         }]));
         let assert_visible = |store: &Store| {
+            assert_eq!(store.my_name,"jenosmobile");
+            assert_eq!(store.my_username,"jenosmobile");
             assert_eq!(store.member("u1").map(|member| member.name.as_str()), Some("jenosmobile"));
             assert_eq!(store.display_mentions("oi @mention(<@u1>)"), "oi @jenosmobile");
         };
