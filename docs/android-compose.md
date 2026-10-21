@@ -28,7 +28,9 @@ scripts/android-compose.sh --all-abis
 If multiple devices are connected, set `ANDROID_SERIAL` before installing.
 
 Android Studio can open `android` and run the `compose` module. Gradle builds
-the Rust adapter automatically. A direct build supports both ABIs by default:
+the Rust adapter and generates Kotlin bindings automatically. UniFFI is pinned
+to 0.32.2, and the generator reads metadata from the exact library packaged in
+the APK. Generated sources stay under `compose/build/generated/uniffi`. A direct build supports both ABIs by default:
 
 ```bash
 cd android
@@ -61,17 +63,17 @@ last for the current session; demo drafts use the normal draft storage.
 ```text
 Compose screens
   → PapoViewModel: one background actor + conflated wake channel
-    → JNI: versioned snapshots and typed actions (papo-android)
+    → UniFFI: generated records, enums, objects and callbacks (papo-android)
       → ServerRuntime / Store / Net / ClientDb (papo-core)
 ```
 
 - `papo-core` owns authentication, REST/WebSocket, reconnects, cache
   reconciliation, history boundaries, account isolation, and the durable text
-  outbox. The Android adapter has no duplicate HTTP client or reducer.
-- Network updates wake the actor through a JNI callback. No frame loop or
+  outbox. The Android adapter has no duplicate messaging transport or reducer.
+- Network updates wake the actor through a generated UniFFI callback. No frame loop or
   periodic UI polling is required. Drain batches are bounded.
-- All JNI entry points, cache reads, and JSON projections run off the UI thread.
-  Handles live in a Rust registry instead of exposing raw pointers to Kotlin.
+- Core calls and cache reads run off the UI thread. Kotlin consumes generated
+  records and action enums; UniFFI manages native object and callback lifetimes.
   The ViewModel survives rotation and releases its handles when cleared.
 - Credentials use AES-GCM with an Android Keystore key and server/type-specific
   authenticated data. Cache/drafts are app-private; credentials and cache are
@@ -98,14 +100,37 @@ Form failures stay inline, connection state has a persistent indicator, delivery
 state stays on the message, and app-wide failures use one dismissible feedback
 pill. There are no per-screen Android Toast styles.
 
+## Media
+
+The demo’s **mídia** conversation includes local image, portrait, animated GIF,
+video, audio and file fixtures, plus link/custom cards and a YouTube preview.
+These assets work without a server; YouTube playback itself requires internet.
+
+Embed media reserves its width/height from backend metadata before fetching
+bytes. Video dimensions take precedence for players; image previews follow the
+backend’s thumbnail-first response. Missing or invalid dimensions use a stable
+fallback frame. Decode, error and retry events never resize the frame.
+
+Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
+the app pauses playback; disposed players release their resources. Only one
+player is active per conversation. Original image viewing supports pinch zoom.
+Files download on demand to private cache and open via Android’s file chooser.
+
+Papo media uses authenticated attachment/thumbnail and embed-video relay routes.
+Embed images come through the core’s authenticated preview endpoint, with a
+bounded compressed image cache scoped to server, account and revision. Native
+streaming preserves byte-range requests. The media HTTP client pins credentials
+to one server origin and disables redirects. YouTube runs in an isolated WebView
+without Papo headers or a JavaScript bridge; arbitrary iframe URLs are not run.
+
 ## Scope
 
 Included: server setup, authentication, channels, DMs/member list, message
 history, offline cache, text drafts, durable text sends, replies, Unicode
-reactions, edit/delete, themes, and glass controls.
+reactions, edit/delete, themes, glass controls, image/GIF viewing with zoom, native video/audio playback,
+file downloads, link/custom cards, and opt-in YouTube playback.
 
-Still to port: attachment upload/download and media rendering (attachments
-currently show filenames), full Markdown and custom emoji rendering, search,
+Still to port: attachment uploads, full Markdown and custom emoji rendering, search,
 voice/video, FCM/background reconciliation, notifications, the full client
 settings and server administration panels, account recovery, and release
 packaging. The established egui settings panels are the design reference for
@@ -128,8 +153,11 @@ The test script builds both APKs, runs lint, installs them, invokes the explicit
 instrumentation suite, and requires a nonzero JUnit passing-test count. This
 avoids false success from Gradle UTP reporting zero tests on a preview emulator.
 
-Device tests cover first-launch validation, demo interactions through JNI,
+Device tests cover first-launch validation, demo interactions through UniFFI,
 Unicode/multiline messages, saved drafts, appearance/demo exit, Keystore
-isolation, and wake callbacks from the live network worker. Android 17 needs
+isolation, and wake callbacks from the live network worker. Media tests decode a
+portrait image and play a local video while asserting that reserved frames stay
+unchanged. A local HTTP fixture checks Range requests, session headers, origin
+restrictions and redirect behavior. Android 17 needs
 the test-only Espresso 3.8 alpha because older Espresso reflects a removed
 InputManager API. Production dependencies remain independent of Espresso.

@@ -24,26 +24,36 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONArray
-import org.json.JSONObject
+import io.github.chriexpe.papo.core.Action
+import io.github.chriexpe.papo.core.NativeClient
+import io.github.chriexpe.papo.core.Credentials
+import io.github.chriexpe.papo.core.WakeListener
+import io.github.chriexpe.papo.core.MediaResource
+import io.github.chriexpe.papo.core.MediaRequest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import android.util.LruCache
 
-@Keep
-object NativeCore {
-    init { System.loadLibrary("papo_compose") }
-    external fun open(url: String, database: String, secrets: AndroidSecrets, listener: CoreWake): Long
-    external fun poll(handle: Long): String
-    external fun dispatch(handle: Long, action: String)
-    external fun close(handle: Long)
-    external fun openDemo(): Long
+typealias ServerState = io.github.chriexpe.papo.core.ClientSnapshot
+typealias Conversation = io.github.chriexpe.papo.core.ChannelView
+typealias Person = io.github.chriexpe.papo.core.MemberView
+typealias Reaction = io.github.chriexpe.papo.core.ReactionView
+typealias ChatMessage = io.github.chriexpe.papo.core.MessageView
+val ServerState.name get() = serverName
+val ServerState.selected get() = selectedChannel
+val ServerState.conversation get() = (channels + dms).firstOrNull { it.id == selected }
+val ServerState.isDemo get() = url == "demo://papo"
+
+class CoreWake(private val wake: () -> Unit) : WakeListener {
+    override fun onWake() = wake()
 }
 
+/** Persists core credentials encrypted with an Android Keystore key. */
 @Keep
-class CoreWake(private val wake: () -> Unit) {
-    fun onWake() = wake()
-}
-
-/** Tokens never leave native core except through this Keystore-backed store. */
-@Keep
-class AndroidSecrets(context: Context) {
+class AndroidSecrets(context: Context) : Credentials {
     private val preferences = context.getSharedPreferences("core-secrets", Context.MODE_PRIVATE)
     private val key: SecretKey by lazy {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -56,7 +66,7 @@ class AndroidSecrets(context: Context) {
         }.generateKey()
     }
 
-    @Synchronized fun load(server: String, secret: String): String? {
+    @Synchronized override fun load(server: String, secret: String): String? {
         val id = "$server/$secret"
         val bytes = preferences.getString(id, null)?.let { Base64.decode(it, Base64.NO_WRAP) } ?: return null
         require(bytes.size >= 28) { "Invalid encrypted credential" }
@@ -66,7 +76,7 @@ class AndroidSecrets(context: Context) {
         return String(cipher.doFinal(bytes.copyOfRange(12, bytes.size)), Charsets.UTF_8)
     }
 
-    @Synchronized fun store(server: String, secret: String, value: String) {
+    @Synchronized override fun store(server: String, secret: String, value: String) {
         val id = "$server/$secret"
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key)
@@ -77,51 +87,11 @@ class AndroidSecrets(context: Context) {
         }
     }
 
-    @Synchronized fun remove(server: String, secret: String) {
+    @Synchronized override fun remove(server: String, secret: String) {
         check(preferences.edit().remove("$server/$secret").commit()) { "Could not remove credential" }
     }
 }
 
-internal fun JSONObject.string(key: String, fallback: String = "") = if (isNull(key)) fallback else optString(key, fallback)
-internal fun JSONArray.objects(): List<JSONObject> = (0 until length()).mapNotNull { optJSONObject(it) }
-internal fun JSONObject.objects(key: String) = optJSONArray(key)?.objects().orEmpty()
-
-data class Conversation(val id: String, val name: String, val kind: String, val topic: String, val unread: Boolean, val mentions: Int)
-data class Person(val id: String, val name: String, val presence: String)
-data class Reaction(val emoji: String, val count: Int, val mine: Boolean, val custom: Boolean)
-data class ChatMessage(
-    val id: String, val authorId: String, val author: String, val content: String, val at: Long,
-    val mine: Boolean, val edited: Boolean, val pending: Boolean, val delivery: String,
-    val replyTo: String, val replyContent: String, val reactions: List<Reaction>, val attachments: List<String>,
-)
-data class ServerState(
-    val url: String, val name: String, val screen: String, val connection: String, val me: String,
-    val myName: String, val selected: String, val channels: List<Conversation>, val members: List<Person>,
-    val dms: List<Conversation>, val messages: List<ChatMessage>, val locked: Boolean, val busy: Boolean,
-    val error: String, val typing: List<String>, val canLoadOlder: Boolean, val loadingOlder: Boolean,
-) {
-    val conversation get() = (channels + dms).firstOrNull { it.id == selected }
-    val isDemo get() = url == "demo://papo"
-    companion object {
-        fun parse(json: JSONObject): ServerState = ServerState(
-            url = json.string("url"), name = json.string("serverName"), screen = json.string("screen"),
-            connection = json.string("connection"), me = json.string("me"), myName = json.string("myName"),
-            selected = json.string("selectedChannel"), channels = json.objects("channels").map {
-                Conversation(it.string("id"), it.string("name"), it.string("kind"), it.string("topic"), it.optBoolean("unread"), it.optInt("mentions"))
-            }, members = json.objects("members").map { Person(it.string("id"), it.string("name"), it.string("presence")) },
-            dms = json.objects("dms").map { Conversation(it.string("id"), it.string("name"), "direct", "", it.optInt("unread") > 0, it.optInt("unread")) },
-            messages = json.objects("messages").map { m -> ChatMessage(
-                m.string("id"), m.string("authorId"), m.string("author"), m.string("content"), m.optLong("at"),
-                m.optBoolean("mine"), m.optBoolean("edited"), m.optBoolean("pending"), m.string("delivery"),
-                m.string("replyTo"), m.string("replyContent"), m.objects("reactions").map {
-                    Reaction(it.string("emoji"), it.optInt("count"), it.optBoolean("mine"), it.optBoolean("custom"))
-                }, m.objects("attachments").map { it.string("name") }
-            ) }, locked = json.optBoolean("locked"), busy = json.optBoolean("busy"), error = json.string("error"),
-            typing = json.optJSONArray("typing")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty(),
-            canLoadOlder = json.optBoolean("canLoadOlder"), loadingOlder = json.optBoolean("loadingOlder"),
-        )
-    }
-}
 data class PapoState(val servers: List<ServerState> = emptyList(), val activeUrl: String = "", val error: String = "", val opening: Boolean = false) {
     val active get() = servers.firstOrNull { it.url == activeUrl }
 }
@@ -132,7 +102,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val signals = Channel<Unit>(Channel.CONFLATED)
     private val preferences = application.getSharedPreferences("compose-client", Context.MODE_PRIVATE)
     private val secrets = AndroidSecrets(application)
-    private val handles = linkedMapOf<String, Long>()
+    private val handles = linkedMapOf<String, NativeClient>()
+    private data class EmbedKey(val server: String, val account: String, val id: String, val revision: String, val author: Boolean)
+    private val embedLock = Mutex()
+    private val embedLoads = mutableMapOf<EmbedKey, Deferred<ByteArray>>()
+    private val embedCache = object : LruCache<EmbedKey, ByteArray>(16 * 1024 * 1024) {
+        override fun sizeOf(key: EmbedKey, value: ByteArray) = value.size
+    }
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
@@ -168,11 +144,10 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private fun open(input: String, activate: Boolean = true): Boolean = try {
         publish(error = "", opening = true)
         val path = getApplication<Application>().filesDir.resolve("compose-messages.db").absolutePath
-        val handle = NativeCore.open(input, path, secrets, CoreWake { signals.trySend(Unit) })
-        val snapshot = JSONObject(NativeCore.poll(handle))
-        val server = ServerState.parse(snapshot)
+        val handle = NativeClient.open(input, path, secrets, CoreWake { signals.trySend(Unit) })
+        val server = handle.poll()
         val old = handles[server.url]
-        if (old != null) { NativeCore.close(handle) } else {
+        if (old != null) { handle.release() } else {
             handles[server.url] = handle
             snapshots[server.url] = server
         }
@@ -186,15 +161,15 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private fun poll() {
         try {
             for ((url, handle) in handles) {
-                val json = JSONObject(NativeCore.poll(handle))
-                snapshots[url] = ServerState.parse(json)
-                for (event in json.objects("events")) {
-                    val callback = awaitingPersistence.remove(event.string("localId")) ?: continue
-                    val accepted = event.string("type") == "accepted"
-                    if (!accepted) publish(error = event.string("error"))
+                val snapshot = handle.poll()
+                snapshots[url] = snapshot
+                for (event in snapshot.events) {
+                    val callback = awaitingPersistence.remove(event.localId) ?: continue
+                    val accepted = event.kind == "accepted"
+                    if (!accepted) publish(error = event.error)
                     viewModelScope.launch(kotlinx.coroutines.Dispatchers.Main) { callback(accepted) }
                 }
-                if (json.optBoolean("more")) signals.trySend(Unit)
+                if (snapshot.more) signals.trySend(Unit)
             }
             publish()
         } catch (e: Exception) { publish(error = e.message ?: "Could not update messages") }
@@ -206,14 +181,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun exploreDemo() = viewModelScope.launch(dispatcher) {
         try {
-            if ("demo://papo" !in handles) handles["demo://papo"] = NativeCore.openDemo()
+            if ("demo://papo" !in handles) handles["demo://papo"] = NativeClient.demo()
             activeUrl = "demo://papo"
             poll()
         } catch (e: Exception) { publish(error = e.message ?: "Could not open demo") }
     }
 
     fun leaveDemo() = viewModelScope.launch(dispatcher) {
-        handles.remove("demo://papo")?.let(NativeCore::close)
+        handles.remove("demo://papo")?.release()
         snapshots.remove("demo://papo")
         activeUrl = handles.keys.firstOrNull().orEmpty()
         publish(error = "")
@@ -225,15 +200,40 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         publish(error = "")
     }
 
-    fun command(type: String, vararg arguments: Pair<String, Any?>, url: String = state.value.activeUrl, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {
+    fun command(action: Action, url: String = state.value.activeUrl, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {
         try {
             val handle = handles[url] ?: return@launch
-            val json = JSONObject().put("type", type)
-            arguments.forEach { (key, value) -> json.put(key, value ?: JSONObject.NULL) }
-            NativeCore.dispatch(handle, json.toString())
+            handle.dispatch(action)
             poll()
             launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
         } catch (e: Exception) { publish(error = e.message ?: "Could not complete action") }
+    }
+
+    suspend fun mediaRequest(url: String, resource: MediaResource): MediaRequest = withContext(dispatcher) {
+        (handles[url] ?: error("Server is closed")).mediaRequest(resource)
+    }
+
+    suspend fun embedImage(server: ServerState, id: String, revision: String, author: Boolean = false): ByteArray {
+        val key = EmbedKey(server.url, server.me, id, revision, author)
+        val load = embedLock.withLock {
+            embedCache.get(key)?.let { return it }
+            embedLoads.getOrPut(key) {
+                viewModelScope.async(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        val client = withContext(dispatcher) {
+                            check(snapshots[server.url]?.me == server.me) { "Account changed" }
+                            handles[server.url] ?: error("Server is closed")
+                        }
+                        val bytes = client.embedImage(id, author)
+                        embedLock.withLock { embedCache.put(key, bytes) }
+                        bytes
+                    } finally {
+                        embedLock.withLock { embedLoads.remove(key) }
+                    }
+                }
+            }
+        }
+        return load.await()
     }
 
     fun send(server: ServerState, text: String, reply: String?, onResult: (Boolean) -> Unit) = viewModelScope.launch(dispatcher) {
@@ -241,8 +241,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         try {
             val handle = handles[server.url] ?: error("Server is closed")
             awaitingPersistence[id] = onResult
-            NativeCore.dispatch(handle, JSONObject().put("type", "send").put("local_id", id)
-                .put("channel_id", server.selected).put("content", text).put("reply_to", reply ?: JSONObject.NULL).toString())
+            handle.dispatch(Action.Send(id, server.selected, text, reply))
             signals.trySend(Unit)
         } catch (e: Exception) {
             awaitingPersistence.remove(id)
@@ -253,7 +252,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun typing(server: ServerState) {
         val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastTyping > 3000) { lastTyping = now; command("typing", "channel_id" to server.selected) }
+        if (now - lastTyping > 3000) { lastTyping = now; command(Action.Typing(server.selected)) }
     }
 
     private fun networkChanged(force: Boolean = false) = viewModelScope.launch(dispatcher) {
@@ -263,17 +262,19 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         if (!force && fingerprint == networkFingerprint) return@launch
         networkFingerprint = fingerprint
         networkEpoch++
-        handles.keys.toList().forEach { url -> command("network", "available" to available, "epoch" to networkEpoch, url = url) }
+        handles.keys.toList().forEach { url -> command(Action.Network(available, networkEpoch.toULong()), url = url) }
     }
 
-    fun resume() { networkChanged(); viewModelScope.launch(dispatcher) { handles.keys.toList().forEach { command("refresh", url = it) } } }
-    fun clearError() { mutableState.value = mutableState.value.copy(error = ""); command("clear_error") }
+    fun resume() { networkChanged(); viewModelScope.launch(dispatcher) { handles.keys.toList().forEach { command(Action.Refresh, url = it) } } }
+    fun clearError() { mutableState.value = mutableState.value.copy(error = ""); command(Action.ClearError) }
     fun draft(key: String) = preferences.getString("draft/$key", "").orEmpty()
     fun saveDraft(key: String, text: String) { preferences.edit().putString("draft/$key", text).apply() }
 
     override fun onCleared() {
         if (callbackRegistered) connectivity.unregisterNetworkCallback(networkCallback)
         signals.close()
-        executor.execute { handles.values.forEach(NativeCore::close); dispatcher.close() }
+        executor.execute { handles.values.forEach { it.release() }; dispatcher.close() }
     }
 }
+
+private fun NativeClient.release() { shutdown(); close() }

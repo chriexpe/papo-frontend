@@ -789,7 +789,7 @@ pub struct LinkPreview {
     pub video: Option<EmbedMedia>,
     #[serde(default)]
     pub footer: Option<EmbedFooter>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable_list")]
     pub fields: Vec<EmbedField>,
     #[serde(default)]
     pub embed_url: Option<String>,
@@ -818,6 +818,51 @@ pub struct EmbedMedia {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub size_bytes: Option<i64>,
+}
+
+impl EmbedMedia {
+    /// Missing, zero and negative dimensions cannot define a layout ratio.
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
+        let (width, height) = (self.width?, self.height?);
+        (width > 0 && height > 0).then_some((width as u32, height as u32))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmbedPlayback { Video, YouTube }
+
+impl LinkPreview {
+    /// Backend video URLs are relay inputs, not public image URLs. An absent
+    /// MIME means an iframe only for the backend's exact YouTube pattern.
+    pub fn playback(&self) -> Option<EmbedPlayback> {
+        if let Some(video) = &self.video {
+            if video.mime_type.as_deref().is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("video/")) {
+                return Some(EmbedPlayback::Video);
+            }
+            if video.mime_type.as_deref().is_none_or(str::is_empty)
+                && video.url.as_deref().is_some_and(valid_youtube_embed) {
+                return Some(EmbedPlayback::YouTube);
+            }
+        }
+        self.embed_url.as_deref().filter(|url| valid_youtube_embed(url)).map(|_| EmbedPlayback::YouTube)
+    }
+
+    pub fn media_dimensions(&self) -> Option<(u32, u32)> {
+        let video = self.playback().and(self.video.as_ref()).and_then(EmbedMedia::dimensions);
+        // GET /embeds/:id returns the thumbnail blob when one exists, with
+        // the original image as fallback. Reserve space for those same bytes.
+        video.or_else(|| self.thumbnail.as_ref().and_then(EmbedMedia::dimensions))
+            .or_else(|| self.image.as_ref().and_then(EmbedMedia::dimensions))
+    }
+}
+
+pub fn valid_youtube_embed(raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else { return false; };
+    let Some(id) = url.path().strip_prefix("/embed/") else { return false; };
+    url.scheme() == "https" && url.username().is_empty() && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && matches!(url.host_str(), Some("www.youtube.com" | "www.youtube-nocookie.com"))
+        && !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1221,6 +1266,39 @@ impl Kind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embed_metadata_keeps_dimensions_and_accepts_nullable_fields() {
+        let embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"portrait", "fields":null, "image":{"mime_type":"image/png"},
+            "thumbnail":{"width":540,"height":960}
+        })).unwrap();
+        assert_eq!(embed.media_dimensions(), Some((540, 960)));
+        assert!(embed.fields.is_empty());
+        let restored: LinkPreview = serde_json::from_str(&serde_json::to_string(&embed).unwrap()).unwrap();
+        assert_eq!(restored.media_dimensions(), Some((540, 960)));
+    }
+
+    #[test]
+    fn video_and_iframe_have_distinct_backend_contracts() {
+        let direct: LinkPreview = serde_json::from_value(serde_json::json!({"id":"v", "video":{"url":"https://cdn.example/movie.mp4","mime_type":"video/mp4","width":1920,"height":1080},"thumbnail":{"width":200,"height":300}})).unwrap();
+        assert_eq!(direct.playback(), Some(EmbedPlayback::Video));
+        assert_eq!(direct.media_dimensions(), Some((1920, 1080)));
+        let iframe: LinkPreview = serde_json::from_value(serde_json::json!({"id":"y","video":{"url":"https://www.youtube.com/embed/abc_123-xyz","width":1280,"height":720}})).unwrap();
+        assert_eq!(iframe.playback(), Some(EmbedPlayback::YouTube));
+        for url in ["https://www.youtube.com.attacker.example/embed/abc", "http://www.youtube.com/embed/abc", "https://user@www.youtube.com/embed/abc", "https://www.youtube.com/watch?v=abc", "https://www.youtube.com/embed/abc/path"] { assert!(!valid_youtube_embed(url), "{url}"); }
+        let invalid = EmbedMedia { url: None, mime_type: None, width: Some(-1), height: Some(0), size_bytes: None };
+        assert_eq!(invalid.dimensions(), None);
+    }
+
+    #[test]
+    fn preview_dimensions_follow_the_backend_thumbnail_precedence() {
+        let embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"image", "image":{"width":1920,"height":1080},
+            "thumbnail":{"width":540,"height":960}
+        })).unwrap();
+        assert_eq!(embed.media_dimensions(), Some((540, 960)));
+    }
 
     /// As sete permissões vão todas no corpo, inclusive as falsas: o
     /// `RolePermissions` do backend não tem `omitempty`, e mandar só as

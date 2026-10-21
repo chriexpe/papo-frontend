@@ -16,13 +16,14 @@ use papo_core::storage::SecretStore;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+pub mod bindings;
 pub mod demo;
-#[cfg(target_os = "android")]
-mod jni_bridge;
+pub mod media;
+uniffi::setup_scaffolding!();
 
 /// The wire contract is deliberately small and versioned. Kotlin only renders
 /// projections; it never writes the core Store or implements backend requests.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, uniffi::Enum)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     Login {
@@ -145,7 +146,7 @@ impl Client {
         })
     }
 
-    // JNI calls run on a dedicated Kotlin dispatcher, never on Android's UI
+    // UniFFI calls run on a dedicated Kotlin dispatcher, never on Android's UI
     // thread. Cache responses are bounded and checked against the owner epoch.
     fn hydrate(&mut self, channel: &str, before: Option<(i64, u32, String)>, older: bool) {
         let epoch = self.runtime.store.cache_restore_epoch();
@@ -365,24 +366,24 @@ impl Client {
 fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let channels: Vec<_> = s.channels.iter().map(|c| json!({
             "id": c.id, "name": c.name, "kind": match c.kind { ChannelKind::Text => "text", ChannelKind::Voice => "voice", ChannelKind::Category => "category", ChannelKind::Direct => "direct" },
-            "topic": c.topic, "unread": c.unread, "mentions": c.mentions,
+            "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions,
         })).collect();
     let messages: Vec<_> = s.messages_in(&s.selected_channel).map(|m| {
             let name = s.members.iter().find(|u| u.id == m.author_id).map(|u| u.name.as_str())
                 .or_else(|| m.external_author.as_ref().map(|a| a.name.as_str())).unwrap_or(&m.author_id);
             let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(_) => "✦".to_owned() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
             json!({ "id": m.id, "authorId": m.author_id, "author": name, "content": m.content,
-                "at": m.at.timestamp_millis(), "edited": m.edited, "mine": m.mine(&s.me), "replyTo": m.reply_to,
-                "replyContent": m.reply_to.as_ref().and_then(|id| s.message(id)).map(|m| m.content.as_str()),
-                "pending": m.pending, "delivery": s.outgoing_state(&m.id).map(|state| match state { OutgoingState::Queued => "queued", OutgoingState::Sending => "sending", OutgoingState::UnknownOutcome => "unknown", OutgoingState::FailedPermanent => "failed" }),
-                "reactions": reactions, "attachments": m.attachments.iter().map(|a| json!({"id": a.id, "name": a.name(), "mime": a.mime(), "status": a.moderation_status})).collect::<Vec<_>>(),
+                "at": m.at.timestamp_millis(), "edited": m.edited, "mine": m.mine(&s.me), "replyTo": m.reply_to.as_deref().unwrap_or_default(),
+                "replyContent": m.reply_to.as_ref().and_then(|id| s.message(id)).map(|m| m.content.as_str()).unwrap_or_default(),
+                "pending": m.pending, "delivery": s.outgoing_state(&m.id).map(|state| match state { OutgoingState::Queued => "queued", OutgoingState::Sending => "sending", OutgoingState::UnknownOutcome => "unknown", OutgoingState::FailedPermanent => "failed" }).unwrap_or_default(),
+                "reactions": reactions, "attachments": m.attachments.iter().map(media::AttachmentView::from).collect::<Vec<_>>(), "embeds": m.previews.iter().map(media::EmbedView::from).collect::<Vec<_>>(),
             })
         }).collect();
     let members: Vec<_> = s.members.iter().map(|u| json!({ "id": u.id, "name": u.name, "presence": format!("{:?}", u.presence).to_lowercase() })).collect();
     let dms: Vec<_> = s
         .direct_messages
         .iter()
-        .map(|dm| json!({ "id": dm.id, "name": dm.user.display_name(), "unread": dm.unread_count }))
+        .map(|dm| json!({ "id": dm.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": dm.unread_count > 0, "mentions": dm.unread_count }))
         .collect();
     json!({ "version": 1, "url": url, "key": key,
         "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
@@ -390,7 +391,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
         "me": s.me, "myName": s.my_name, "selectedChannel": s.selected_channel, "channels": channels,
         "messages": messages, "members": members, "dms": dms, "typing": s.typing_names(), "locked": s.locked,
-        "busy": s.busy, "error": s.error, "canLoadOlder": s.can_load_older(&s.selected_channel),
+        "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
     })
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds only papo-core + its JNI adapter, then the native Compose UI.
+# Builds only papo-core + its UniFFI adapter, then the native Compose UI.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"

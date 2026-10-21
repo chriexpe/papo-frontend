@@ -2,6 +2,7 @@
 
 package io.github.chriexpe.papo.compose
 
+import io.github.chriexpe.papo.core.Action
 import android.os.Bundle
 import android.app.Activity
 import androidx.activity.ComponentActivity
@@ -129,20 +130,20 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 } else if (server.screen != "chat" && tab != "Servers") {
                     Authentication(server, state.error, onBack = { tab = "Servers" },
-                        onSwitch = { adding = true }, command = { type, args -> model.command(type, *args) })
+                        onSwitch = { adding = true }, command = { model.command(it) })
                 } else if (inConversation && server.conversation != null) {
                     ConversationScreen(server, model, onBack = { inConversation = false })
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
                             "Chats" -> ConversationList(server, onServer = { tab = "Servers" },
-                                onOpen = { id -> model.command("select_channel", "channel_id" to id); inConversation = true },
-                                onDm = { id -> model.command("open_dm", "user_id" to id); inConversation = true })
+                                onOpen = { id -> model.command(Action.SelectChannel(id)); inConversation = true },
+                                onDm = { id -> model.command(Action.OpenDm(id)); inConversation = true })
                             "Servers" -> ServerList(state, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
                             else -> ClientSettings(server, theme, glass,
                                 onTheme = { theme = it; preferences.edit().putString("theme", it).apply() },
                                 onGlass = { glass = it; preferences.edit().putBoolean("glass", it).apply() },
-                                onLogout = { if (server.isDemo) model.leaveDemo() else model.command("logout") })
+                                onLogout = { if (server.isDemo) model.leaveDemo() else model.command(Action.Logout) })
                         }
                         FloatingNavigation(tab, onSelect = { tab = it }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
                     }
@@ -243,7 +244,7 @@ private fun AddServerForm(opening: Boolean, error: String, modifier: Modifier = 
 }
 
 @Composable
-private fun Authentication(server: ServerState, appError: String, onBack: () -> Unit, onSwitch: () -> Unit, command: (String, Array<Pair<String, Any?>>) -> Unit) {
+private fun Authentication(server: ServerState, appError: String, onBack: () -> Unit, onSwitch: () -> Unit, command: (Action) -> Unit) {
     var username by rememberSaveable(server.url) { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var register by rememberSaveable(server.url) { mutableStateOf(false) }
@@ -263,9 +264,9 @@ private fun Authentication(server: ServerState, appError: String, onBack: () -> 
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 12.dp))
             Button(onClick = {
                 when {
-                    server.locked -> command("unlock", arrayOf("password" to password))
-                    server.screen == "needs_server" -> command("create_server", arrayOf("name" to username))
-                    else -> command(if (register) "register" else "login", arrayOf("username" to username, "password" to password))
+                    server.locked -> command(Action.Unlock(password))
+                    server.screen == "needs_server" -> command(Action.CreateServer(username))
+                    else -> command(if (register) Action.Register(username, password) else Action.Login(username, password))
                 }
                 password = ""
             }, enabled = !server.busy && (if (server.locked) password.isNotBlank() else if (server.screen == "needs_server") username.isNotBlank() else username.isNotBlank() && password.isNotBlank()), modifier = Modifier.fillMaxWidth().padding(top = 24.dp).heightIn(min = 52.dp)) {

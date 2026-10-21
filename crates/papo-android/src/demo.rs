@@ -34,7 +34,8 @@ impl Demo {
             {"id":"projects","name":"Projetos","type":"category","position":1},
             {"id":"design","name":"design","type":"text","position":2,"topic":"Small details, better experiences.","parent_id":"projects"},
             {"id":"dev","name":"dev","type":"text","position":3,"topic":"What are you building?","parent_id":"projects"},
-            {"id":"music","name":"música","type":"text","position":4,"topic":"Something worth listening to."}
+            {"id":"music","name":"música","type":"text","position":4,"topic":"Something worth listening to."},
+            {"id":"media","name":"mídia","type":"text","position":5,"topic":"Photos, GIFs, video and rich cards."}
         ]))));
         store.apply(Update::Users(decode(json!([
             {"id":"me","username":"christian","nickname":"Christian","status":"online"},
@@ -128,6 +129,38 @@ impl Demo {
                 pinned_ids: None,
             });
         }
+        let fixtures = vec![
+            json!({"content":"Uma imagem, sem sair da conversa.","attachments":[{"id":"demo-photo","mime_type":"image/png","original_file_name":"landscape.png","size_bytes":12000,"moderation_status":"clean"}]}),
+            json!({"content":"E uma foto em pé.","attachments":[{"id":"demo-portrait","mime_type":"image/png","original_file_name":"portrait.png","moderation_status":"clean"}]}),
+            json!({"content":"GIFs também se mexem 🙂","attachments":[{"id":"demo-gif","mime_type":"image/gif","original_file_name":"animation.gif","moderation_status":"clean"}]}),
+            json!({"content":"Vídeo com controles nativos.","attachments":[{"id":"demo-video","mime_type":"video/mp4","original_file_name":"clip.mp4","thumbnail_id":"poster","moderation_status":"clean"}]}),
+            json!({"content":"Um trecho de áudio.","attachments":[{"id":"demo-audio","mime_type":"audio/wav","original_file_name":"tone.wav","moderation_status":"clean"}]}),
+            json!({"content":"Arquivos continuam sendo arquivos.","attachments":[{"id":"demo-file","mime_type":"text/plain","original_file_name":"notes.txt","size_bytes":64,"moderation_status":"clean"}]}),
+            json!({"content":"Um card personalizado, com os campos na ordem do servidor.","embeds":[{"id":"embed-custom","source_type":"custom","title":"A place for your people","description":"Rich cards keep their author, fields, footer and image.","site_name":"Papo","color":"#0A84FF","url":"https://github.com/chriexpe/papo-frontend","author":{"name":"Papo","media":{"mime_type":"image/png"}},"image":{"mime_type":"image/png","width":960,"height":540},"fields":[{"position":2,"name":"Platform","value":"Android","inline":true},{"position":1,"name":"Built with","value":"Compose + Rust","inline":true}],"footer":{"text":"Made for good conversations"}}]}),
+            json!({"content":"As dimensões chegam antes dos pixels.","embeds":[{"id":"embed-portrait","title":"Portrait preview","image":{"mime_type":"image/png","width":540,"height":960}}]}),
+            json!({"content":"Um GIF do resolvedor de embeds.","embeds":[{"id":"embed-gif","source_type":"link","fetch_method":"gif","site_name":"GIF preview","title":"A little motion","image":{"mime_type":"image/gif","width":480,"height":320}}]}),
+            json!({"content":"Vídeo de embed usa o relay autenticado.","embeds":[{"id":"embed-video","title":"Video preview","thumbnail":{"mime_type":"image/png","width":960,"height":540},"video":{"mime_type":"video/mp4","url":"https://example.invalid/clip.mp4","width":1280,"height":720}}]}),
+            json!({"content":"Um player de provedor só abre quando você pede.","embeds":[{"id":"embed-youtube","source_type":"link","site_name":"YouTube","title":"YouTube preview","url":"https://www.youtube.com/watch?v=jfKfPfyJRdk","thumbnail":{"mime_type":"image/png","width":1280,"height":720},"video":{"url":"https://www.youtube.com/embed/jfKfPfyJRdk","width":1280,"height":720}}]}),
+            json!({"content":"Às vezes, o texto basta.","embeds":[{"id":"embed-link","title":"Papo on GitHub","description":"A simple link card without media.","url":"https://github.com/chriexpe/papo-frontend","site_name":"GitHub","fields":null}]}),
+        ];
+        let ticket = store.mark_loading("media");
+        let messages = fixtures
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut value)| {
+                value["id"] = json!(format!("media-{i}"));
+                value["channel_id"] = json!("media");
+                value["author_id"] = json!(if i % 2 == 0 { "ana" } else { "dora" });
+                value["created_at"] = json!(at(now - (12 - i as i64) * 60_000));
+                decode(value)
+            })
+            .collect();
+        store.apply(Update::Messages {
+            ticket,
+            messages,
+            has_more: false,
+            pinned_ids: None,
+        });
         store.selected_channel = "general".into();
         store.screen = Screen::Chat;
         store.connection = Connection::Online;
@@ -257,5 +290,33 @@ mod tests {
         })
         .unwrap();
         assert_eq!(demo.poll()["messages"].as_array().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn generated_snapshot_contract_contains_real_media_dimensions() {
+        let demo = crate::bindings::NativeClient::demo();
+        assert_eq!(demo.poll().unwrap().messages.len(), 10);
+        demo.dispatch(Action::SelectChannel {
+            channel_id: "media".into(),
+        })
+        .unwrap();
+        let snapshot = demo.poll().unwrap();
+        assert_eq!(snapshot.messages.len(), 12);
+        let portrait = snapshot
+            .messages
+            .iter()
+            .flat_map(|m| &m.embeds)
+            .find(|e| e.id == "embed-portrait")
+            .unwrap();
+        assert_eq!((portrait.width, portrait.height), (540, 960));
+        let youtube = snapshot
+            .messages
+            .iter()
+            .flat_map(|m| &m.embeds)
+            .find(|e| e.id == "embed-youtube")
+            .unwrap();
+        assert_eq!(youtube.kind, "iframe");
+        demo.shutdown();
+        assert!(demo.poll().is_err());
     }
 }

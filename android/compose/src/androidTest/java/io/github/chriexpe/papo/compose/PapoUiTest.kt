@@ -10,22 +10,42 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.semantics.stateDescription
+import android.content.SharedPreferences
 import org.junit.runner.RunWith
 import androidx.test.ext.junit.runners.AndroidJUnit4
 
-/** Runs the real Activity, JNI library and shared Rust reducer on a device. */
+/** Runs the real Activity, UniFFI library and shared Rust reducer on a device. */
 @RunWith(AndroidJUnit4::class)
 class PapoUiTest {
     @get:Rule val compose = createEmptyComposeRule()
     private lateinit var activity: ActivityScenario<MainActivity>
 
+    private lateinit var savedClient: Map<String, *>
+    private lateinit var savedAppearance: Map<String, *>
+
     @Before fun launch() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        savedClient = context.getSharedPreferences("compose-client", 0).all.toMap()
+        savedAppearance = context.getSharedPreferences("compose-appearance", 0).all.toMap()
         context.getSharedPreferences("compose-client", 0).edit().clear().commit()
         context.getSharedPreferences("compose-appearance", 0).edit().clear().commit()
         activity = ActivityScenario.launch(MainActivity::class.java)
     }
-    @After fun close() { activity.close() }
+    @After fun close() {
+        activity.close()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        fun restore(name: String, values: Map<String, *>) {
+            val editor = context.getSharedPreferences(name, 0).edit().clear()
+            values.forEach { (key, value) -> when (value) { is String -> editor.putString(key, value); is Boolean -> editor.putBoolean(key, value) } }
+            editor.commit()
+        }
+        restore("compose-client", savedClient)
+        restore("compose-appearance", savedAppearance)
+    }
 
     private fun demo() {
         compose.onNodeWithText("Explore demo").performClick()
@@ -67,4 +87,35 @@ class PapoUiTest {
         compose.onNodeWithText("Explore demo").assertExists()
         compose.onNodeWithText("Add server").assertIsNotEnabled()
     }
+    private fun media() {
+        demo()
+        compose.onNodeWithText("mídia").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Papo · Demo").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {
+        media()
+        compose.onNodeWithTag("message-list", useUnmergedTree = true).performScrollToNode(hasTestTag("embed-embed-portrait"))
+        val frame = compose.onNodeWithTag("embed-embed-portrait", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(540f / 960f, frame.width / frame.height, 0.01f)
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasContentDescription("Portrait preview") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Loaded")).fetchSemanticsNodes().isNotEmpty()
+        }
+        val loaded = compose.onNodeWithTag("embed-embed-portrait", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(frame.height, loaded.height, 1f)
+        compose.onNodeWithContentDescription("Portrait preview").performClick()
+        compose.onNodeWithContentDescription("Close image").assertExists().performClick()
+    }
+
+    @Test fun videoAttachmentDecodesAndKeepsItsReservedFrame() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play clip.mp4"))
+        val frame = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithContentDescription("Play clip.mp4").performClick()
+        val player = "player-demo://papo/me/attachment/demo-video"
+        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready")).fetchSemanticsNodes().isNotEmpty() }
+        val playing = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(frame.height, playing.height, 1f)
+    }
+
 }

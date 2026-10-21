@@ -1,7 +1,7 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.test.platform.app.InstrumentationRegistry
-import org.json.JSONObject
+import io.github.chriexpe.papo.core.NativeClient
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.concurrent.Semaphore
@@ -28,13 +28,13 @@ class CoreBridgeTest {
 
         val wake = Semaphore(0)
         val db = context.cacheDir.resolve("bridge-${System.nanoTime()}.db")
-        val handle = NativeCore.open("http://127.0.0.1:9", db.absolutePath, secrets, CoreWake { wake.release() })
+        val handle = NativeClient.open("http://127.0.0.1:9", db.absolutePath, secrets, CoreWake { wake.release() })
         try {
             assertTrue("Native network worker must signal the actor", wake.tryAcquire(10, TimeUnit.SECONDS))
-            val state = JSONObject(NativeCore.poll(handle))
-            assertEquals(1, state.getInt("version"))
-            assertEquals("http://127.0.0.1:9", state.getString("url"))
-            assertEquals(0, state.getJSONArray("messages").length())
-        } finally { NativeCore.close(handle) }
+            val state = handle.poll()
+            assertEquals(1, state.version)
+            assertEquals("http://127.0.0.1:9", state.url)
+            assertEquals(0, state.messages.size)
+        } finally { handle.shutdown(); handle.close() }
     }
 }

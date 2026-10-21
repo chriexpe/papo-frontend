@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -48,7 +49,7 @@ import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import org.json.JSONArray
+import io.github.chriexpe.papo.core.Action
 
 @Composable
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
@@ -61,6 +62,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
     var members by remember { mutableStateOf(false) }
+    var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -81,14 +83,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 val ids = latestServer.messages.map { it.id }.toSet()
                 listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.filter { it in ids }
             }.distinctUntilChanged().collect { ids ->
-                if (ids.isNotEmpty()) model.command("visible", "channel_id" to channel.id, "ids" to JSONArray(ids), url = server.url)
+                if (ids.isNotEmpty()) model.command(Action.Visible(channel.id, ids), url = server.url)
             }
         }
     }
 
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
         LazyColumn(state = listState, reverseLayout = true,
-            modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current),
+            modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("message-list"),
             contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = composerHeight + 8.dp),
         ) {
             if (server.messages.isEmpty()) item("empty") {
@@ -97,11 +99,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 MessageRow(message, onActions = { selected = message }, onReaction = { r ->
-                    if (!r.custom) model.command("react", "channel_id" to channel.id, "message_id" to message.id, "emoji" to r.emoji, "add" to !r.mine)
-                })
+                    if (!r.custom) model.command(Action.React(channel.id, message.id, r.emoji, !r.mine))
+                }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
             }
             if (server.canLoadOlder) item("history") {
-                TextButton(onClick = { model.command("older") }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                TextButton(onClick = { model.command(Action.Older) }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
                     if (server.loadingOlder) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Load earlier messages")
                 }
             }
@@ -125,7 +127,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 }
             }
             if (server.connection != "online") GlassPill(Modifier.padding(top = 8.dp), radius = 24) {
-                ConnectionBanner(server.connection) { model.command("refresh") }
+                ConnectionBanner(server.connection) { model.command(Action.Refresh) }
             }
         }
 
@@ -183,8 +185,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { listOf("👍", "❤️", "😂", "🎉", "👀").forEach { emoji -> TextButton(onClick = {
-                    model.command("react", "channel_id" to channel.id, "message_id" to message.id, "emoji" to emoji,
-                        "add" to !message.reactions.any { it.emoji == emoji && it.mine }); selected = null
+                    model.command(Action.React(channel.id, message.id, emoji, !message.reactions.any { it.emoji == emoji && it.mine })); selected = null
                 }) { Text(emoji, fontSize = 24.sp) } } }
                 SheetAction("Reply", Icons.Outlined.Reply) { reply = message.id; selected = null }
             }
@@ -195,7 +196,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             if (message.delivery in listOf("failed", "unknown")) {
                 SheetAction("Retry sending", Icons.Outlined.Refresh) { retry = message; selected = null }
-                SheetAction("Discard unsent message", Icons.Outlined.DeleteOutline) { model.command("dismiss", "local_id" to message.id); selected = null }
+                SheetAction("Discard unsent message", Icons.Outlined.DeleteOutline) { model.command(Action.Dismiss(message.id)); selected = null }
             }
             Spacer(Modifier.height(16.dp))
         }
@@ -204,16 +205,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         var edited by remember(message.id) { mutableStateOf(message.content) }
         AlertDialog(onDismissRequest = { edit = null }, title = { Text("Edit message") }, text = {
             OutlinedTextField(edited, { edited = it }, label = { Text("Message") }, modifier = Modifier.fillMaxWidth(), maxLines = 8)
-        }, confirmButton = { TextButton(onClick = { model.command("edit", "message_id" to message.id, "content" to edited); edit = null }, enabled = edited.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = { edit = null }) { Text("Cancel") } })
+        }, confirmButton = { TextButton(onClick = { model.command(Action.Edit(message.id, edited)); edit = null }, enabled = edited.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = { edit = null }) { Text("Cancel") } })
     }
     delete?.let { message -> AlertDialog(onDismissRequest = { delete = null }, title = { Text("Delete this message?") }, text = { Text("This removes the message for everyone. You can’t undo it.") },
-        confirmButton = { TextButton(onClick = { model.command("delete", "message_id" to message.id); delete = null }) { Text("Delete", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { delete = null }) { Text("Cancel") } }) }
+        confirmButton = { TextButton(onClick = { model.command(Action.Delete(message.id)); delete = null }) { Text("Delete", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { delete = null }) { Text("Cancel") } }) }
     retry?.let { message -> AlertDialog(onDismissRequest = { retry = null }, title = { Text("Retry sending?") }, text = { Text(if (message.delivery == "unknown") "The server may already have received this message. Retrying could send it twice." else "Try sending this message again.") },
-        confirmButton = { TextButton(onClick = { model.command("retry", "local_id" to message.id); retry = null }) { Text("Retry") } }, dismissButton = { TextButton(onClick = { retry = null }) { Text("Cancel") } }) }
+        confirmButton = { TextButton(onClick = { model.command(Action.Retry(message.id)); retry = null }) { Text("Retry") } }, dismissButton = { TextButton(onClick = { retry = null }) { Text("Cancel") } }) }
     if (members) ModalBottomSheet(onDismissRequest = { members = false }) {
         Text("People in ${server.name}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
         LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { Avatar(person.name) }, modifier = Modifier.clickable(enabled = person.id != server.me) { model.command("open_dm", "user_id" to person.id); members = false }) }
+            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { Avatar(person.name) }, modifier = Modifier.clickable(enabled = person.id != server.me) { model.command(Action.OpenDm(person.id)); members = false }) }
         }
     }
 }
@@ -224,7 +225,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, onActions: () -> Unit, onReaction: (Reaction) -> Unit) {
+private fun MessageRow(message: ChatMessage, onActions: () -> Unit, onReaction: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     Row(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Avatar(message.author)
@@ -240,7 +241,7 @@ private fun MessageRow(message: ChatMessage, onActions: () -> Unit, onReaction: 
                 Text(message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (message.content.isNotBlank()) SelectionContainer { Text(linkedText(message.content), style = MaterialTheme.typography.bodyLarge, lineHeight = 24.sp) }
-            message.attachments.forEach { name -> Row(Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) { Icon(Icons.Outlined.AttachFile, null, Modifier.size(20.dp)); Text(name, style = MaterialTheme.typography.bodyMedium) } }
+            media()
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.reactions.forEach { reaction -> FilterChip(reaction.mine, { onReaction(reaction) }, enabled = !reaction.custom, label = { Text("${reaction.emoji} ${reaction.count}") }) }
             }
