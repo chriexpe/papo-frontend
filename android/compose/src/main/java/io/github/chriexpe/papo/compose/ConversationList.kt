@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -48,8 +50,7 @@ internal fun applySearchSuggestion(value:TextFieldValue,hint:SearchSuggestion):T
 }
 
 @Composable
-internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:String,onOpen:(String)->Unit,onProfile:(String)->Unit,onMessage:(String,String)->Unit) {
-    var section by rememberSaveable(server.url) {mutableStateOf("Channels")}
+internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:String,direct:Boolean,onSettings:()->Unit,onOpen:(String)->Unit,onProfile:(String)->Unit,onMessage:(String,String)->Unit) {
     // A server owns its search; changing servers never leaks terms/results.
     var query by rememberSaveable(server.url,stateSaver=TextFieldValue.Saver) {mutableStateOf(TextFieldValue())}
     var analysis by remember(server.url) {mutableStateOf<SearchAnalysis?>(null)}
@@ -75,7 +76,14 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
     }
     val hints=if(focused) analysis?.suggestions.orEmpty() else emptyList()
     Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
-        ServerHeader(server,model,appError)
+        Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+            ServerHeader(server,model,appError,Modifier.weight(1f))
+            GlassPill(Modifier.size(52.dp),radius=20) {
+                Box(Modifier.fillMaxSize().clickable(onClickLabel="Client settings",onClick=onSettings).testTag("account-settings").semantics {contentDescription="Client settings"}.padding(6.dp),contentAlignment=Alignment.Center) {
+                    UserAvatar(server.me,server.myName)
+                }
+            }
+        }
         if(server.connection!="online") ConnectionBanner(server.connection) {model.command(Action.Refresh,server.url)}
         OutlinedTextField(query,::update,placeholder={Text("Search channels, people, messages")},leadingIcon={Icon(Icons.Outlined.Search,null)},
             trailingIcon=if(query.text.isNotEmpty()) ( {IconButton(onClick={update(TextFieldValue())}) {Icon(Icons.Outlined.Close,"Clear search")}} ) else null,
@@ -88,12 +96,9 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                     leadingContent={Icon(Icons.Outlined.FilterAlt,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clickable {pick(hint)})}
             }
         }
-        if(!searching) Row(Modifier.padding(horizontal=20.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-            listOf("Channels","Direct","People").forEach {label ->FilterChip(section==label,{section=label},label={Text(label)})}
-        }
-        val needle=if(searching && ':' !in query.text) query.text.trim() else ""
+        val needle=if(searching && ':' !in query.text) query.text.trim().removePrefix("@").removePrefix("#") else ""
         val channels=server.channels.filter {it.kind=="text" && (!searching || (needle.isNotBlank() && it.name.contains(needle,true)))}
-        val people=server.members.filter {it.id!=server.me && (!searching || (needle.isNotBlank() && (it.name.contains(needle,true)||it.username.contains(needle,true))))}
+        val people=server.members.filter {it.id!=server.me && (!searching || ((needle.isNotBlank() || query.text.trim()=="@") && (it.name.contains(needle,true)||it.username.contains(needle,true))))}
         val exact=server.searchQuery==query.text
         val results=if(exact) server.searchResults else emptyList()
         LazyColumn(Modifier.weight(1f).hazeSource(LocalHaze.current).testTag("conversation-results"),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=128.dp)) {
@@ -113,15 +118,13 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                     leadingContent={UserAvatar(hit.authorId,hit.author)},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),
                     modifier=Modifier.testTag("search-hit-${hit.id}").clip(RoundedCornerShape(18.dp)).clickable {focus.clearFocus();keyboard?.hide();onMessage(hit.channelId,hit.id)})}
                 if(exact && server.searchHasMore) item {TextButton(onClick={model.command(Action.Search(query.text,true),server.url)},enabled=!server.searching,modifier=Modifier.fillMaxWidth()) {Text("Load more messages")}}
-            } else if(section=="People") {
-                if(people.isEmpty()) item {EmptyState("No people here yet","People in your community will appear here.")}
-                items(people,key={it.id}) {PersonItem(it,onProfile)}
             } else {
-                val conversations=if(section=="Direct") server.dms else server.channels.filter {it.kind!="direct" && it.kind!="voice"}
-                if(conversations.isEmpty()) item {EmptyState("A little quiet here.",if(section=="Direct") "Find someone in People to start a direct message." else "Your text channels will appear here.")}
+                if(direct) item {SearchHeading("Direct messages")}
+                val conversations=if(direct) server.dms else server.channels.filter {it.kind!="direct" && it.kind!="voice"}
+                if(conversations.isEmpty()) item {EmptyState("A little quiet here.",if(direct) "Search for someone to start a direct message." else "Your text channels will appear here.")}
                 items(conversations,key={it.id}) {channel ->
                     if(channel.kind=="category") SearchHeading(channel.name.uppercase())
-                    else if(section=="Direct") ListItem(headlineContent={Text(channel.name,fontWeight=FontWeight.Medium)},leadingContent={UserAvatar(channel.userId,channel.name,Modifier.clickable {onProfile(channel.userId)})},
+                    else if(direct) ListItem(headlineContent={Text(channel.name,fontWeight=FontWeight.Medium)},leadingContent={UserAvatar(channel.userId,channel.name,Modifier.clickable {onProfile(channel.userId)})},
                         trailingContent={if(channel.mentions>0) Badge {Text(channel.mentions.toString())} else Icon(Icons.Outlined.ChevronRight,null)},
                         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {onOpen(channel.id)})
                     else ChannelItem(channel,onOpen)

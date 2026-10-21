@@ -16,6 +16,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.verticalScroll
@@ -46,6 +47,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -121,13 +124,14 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
         CompositionLocalProvider(LocalHaze provides haze, LocalGlass provides glass, LocalContentColor provides colors.onSurface) {
             var adding by rememberSaveable { mutableStateOf(false) }
             var tab by rememberSaveable { mutableStateOf("Chats") }
+            var settingsOrigin by rememberSaveable {mutableStateOf("Chats")}
             var inConversation by rememberSaveable(state.activeUrl) { mutableStateOf(false) }
             val server = state.active
             val conversationStates=rememberSaveableStateHolder()
             var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
             var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
             val openProfile:(String)->Unit = {externalProfile=null;profileId=it}
-            val leaveConversation:()->Unit = { inConversation = false; tab = "Chats" }
+            val leaveConversation:()->Unit = { inConversation = false }
             CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
             // Child dialogs, sheets and the IME consume Back first. Keep the
             // activity alive until navigation reaches the conversation list.
@@ -137,6 +141,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     profileId != null -> profileId = null
                     externalProfile != null -> externalProfile = null
                     inConversation -> leaveConversation()
+                    tab == "Settings" -> tab = settingsOrigin
                     else -> tab = "Chats"
                 }
             }
@@ -153,7 +158,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
-                            "Chats" -> conversationStates.SaveableStateProvider("${server.url}/${server.me}") {ConversationList(server, model, appError = state.error,
+                            "Chats", "Direct" -> conversationStates.SaveableStateProvider("${server.url}/${server.me}/$tab") {ConversationList(server, model, appError = state.error, direct = tab=="Direct", onSettings = {settingsOrigin=tab;tab="Settings"},
                                 onOpen = { id -> model.command(Action.SelectChannel(id)); inConversation = true },
                                 onProfile = openProfile,
                                 onMessage = { channelId,messageId ->model.command(Action.SelectChannel(channelId),server.url) {
@@ -305,18 +310,26 @@ private fun Authentication(server: ServerState, appError: String, onBack: () -> 
 
 @Composable
 private fun FloatingNavigation(selected: String, onSelect: (String) -> Unit, modifier: Modifier = Modifier) {
-    GlassPill(modifier.widthIn(max = 400.dp)) {
-        Row(Modifier.padding(6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            listOf("Chats" to Icons.Outlined.Forum, "Servers" to Icons.Outlined.Dns, "Settings" to Icons.Outlined.Tune).forEach { (name, icon) ->
-                val active = selected == name
-                Column(Modifier.weight(1f).clip(RoundedCornerShape(25.dp)).background(if (active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-                    .clickable(onClickLabel = name) { onSelect(name) }.padding(horizontal = 12.dp, vertical = 10.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Icon(icon, null, Modifier.size(22.dp), tint = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(name, style = MaterialTheme.typography.labelSmall, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
-                }
+    Row(modifier.widthIn(max=400.dp).fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalAlignment=Alignment.CenterVertically) {
+        GlassPill(Modifier.weight(1f).testTag("chat-navigation")) {
+            Row(Modifier.padding(6.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                NavigationDestination("Chats",Icons.Outlined.Forum,selected=="Chats",{onSelect("Chats")},Modifier.weight(1f))
+                NavigationDestination("Direct",Icons.Outlined.ChatBubbleOutline,selected=="Direct",{onSelect("Direct")},Modifier.weight(1f))
             }
         }
+        GlassPill(Modifier.size(72.dp).testTag("servers-navigation"),radius=24) {
+            NavigationDestination("Servers",Icons.Outlined.Dns,selected=="Servers",{onSelect("Servers")},Modifier.fillMaxSize().padding(6.dp))
+        }
+    }
+}
+
+@Composable
+private fun NavigationDestination(name:String,icon:ImageVector,active:Boolean,onClick:()->Unit,modifier:Modifier=Modifier) {
+    Column(modifier.clip(RoundedCornerShape(25.dp)).background(if(active) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+        .selectable(selected=active,onClick=onClick,role=Role.Tab).heightIn(min=58.dp).padding(horizontal=10.dp,vertical=8.dp),
+        horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(3.dp,Alignment.CenterVertically)) {
+        Icon(icon,null,Modifier.size(22.dp),tint=if(active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(name,style=MaterialTheme.typography.labelSmall,fontWeight=if(active) FontWeight.Bold else FontWeight.Normal,maxLines=1)
     }
 }
 

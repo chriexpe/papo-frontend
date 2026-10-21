@@ -186,7 +186,7 @@ class PapoUiTest {
     }
     @Test fun systemBackLeavesSettingsForChatsBeforeExiting() {
         demo()
-        compose.onNodeWithText("Settings",substring=false).performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
         systemBack()
         compose.onNodeWithTag("server-header").assertIsDisplayed()
     }
@@ -203,6 +203,37 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         systemBack()
         compose.onNodeWithTag("server-header").assertIsDisplayed()
+    }
+
+    @Test fun navigationGroupsChatsAndDirectAndKeepsServersSeparate() {
+        demo()
+        compose.onNode(hasText("Chats") and hasAnyAncestor(hasTestTag("chat-navigation"))).assertIsDisplayed()
+        compose.onNode(hasText("Direct") and hasAnyAncestor(hasTestTag("chat-navigation"))).assertIsDisplayed()
+        compose.onNode(hasText("Servers") and hasAnyAncestor(hasTestTag("servers-navigation"))).assertIsDisplayed()
+        compose.onNodeWithText("Channels",substring=false).assertDoesNotExist()
+        compose.onNodeWithText("People",substring=false).assertDoesNotExist()
+        compose.onNodeWithText("Settings",substring=false).assertDoesNotExist()
+        compose.onNodeWithText("Direct",substring=false).performClick()
+        compose.onNodeWithText("Direct messages").assertIsDisplayed()
+        compose.onNodeWithText("Ana",substring=false).performClick()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("Direct messages").assertIsDisplayed()
+        compose.onNodeWithText("Servers",substring=false).performClick()
+        compose.onNodeWithText("Your servers").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("geral",substring=false).assertIsDisplayed()
+    }
+
+    @Test fun avatarOpensClientSettingsAndReturnsToItsOriginalDestination() {
+        demo()
+        compose.onNodeWithText("Direct",substring=false).performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("APPEARANCE").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("Direct messages").assertIsDisplayed()
+        compose.onNodeWithText("Chats",substring=false).performClick()
+        compose.onNodeWithText("geral",substring=false).assertIsDisplayed()
     }
 
     @Test fun serverHeaderShowsIconAndPersonalNotificationsWithoutCreatorName() {
@@ -235,6 +266,26 @@ class PapoUiTest {
         compose.waitUntil(5000) {compose.onAllNodesWithText("Server saved").fetchSemanticsNodes().isNotEmpty()}
         systemBack()
         compose.onNodeWithTag("server-header").assert(hasText("Papo Compose"))
+    }
+
+    @Test fun serverEditorsSaveChannelAndRoleChanges() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNode(hasText("Channels",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).performClick()
+        compose.onNode(hasText("geral",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).performClick()
+        compose.onNode(hasText("Channel name") and hasSetTextAction()).performTextReplacement("geral-updated")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithText("Save channel").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("Save channel").fetchSemanticsNodes().isEmpty()}
+        compose.onNode(hasText("Roles",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).performClick()
+        compose.onNodeWithText("Designers",substring=false).performClick()
+        compose.onNode(hasText("Role name") and hasSetTextAction()).performTextReplacement("Creators")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithText("Save role").performScrollTo().performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("Save role").fetchSemanticsNodes().isEmpty()}
+        compose.onNodeWithText("Creators",substring=false).assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("geral-updated",substring=false).assertIsDisplayed()
     }
 
     @Test fun normalMemberCanOpenServerInformationWithoutAnAdminGear() {
@@ -325,8 +376,8 @@ class PapoUiTest {
         compose.onNodeWithTag("avatar-ana",useUnmergedTree=true).performClick()
         compose.onNodeWithTag("user-profile").assertIsDisplayed()
         compose.onNodeWithContentDescription("Close profile").performClick()
-        compose.onNodeWithText("People",substring=false).performClick()
-        compose.onNodeWithText("Ana",substring=false).performClick()
+        compose.onNodeWithTag("global-search").performTextInput("ana")
+        compose.onNode(hasText("Ana",substring=false) and !hasSetTextAction()).performClick()
         compose.onNodeWithTag("user-profile").assertIsDisplayed()
         compose.onNodeWithText("Message @ana").performClick()
         compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("Ana")).fetchSemanticsNodes().isNotEmpty()}
@@ -553,7 +604,7 @@ class PapoUiTest {
 
     @Test fun appearanceControlsAndDemoExitWork() {
         demo()
-        compose.onNodeWithText("Settings").performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
         compose.onNodeWithText("Dark").performClick()
         compose.onNodeWithContentDescription("Frosted controls").performClick()
         compose.onNodeWithText("Leave demo").performScrollTo().performClick()

@@ -53,11 +53,11 @@ internal fun ServerIcon(server:ServerState,model:PapoViewModel,modifier:Modifier
 }
 
 @Composable
-internal fun ServerHeader(server:ServerState,model:PapoViewModel,appError:String) {
+internal fun ServerHeader(server:ServerState,model:PapoViewModel,appError:String,modifier:Modifier=Modifier) {
     var panel by rememberSaveable(server.url) {mutableStateOf("")}
     var settingsFromInfo by remember {mutableStateOf(false)}
     val canAdmin=server.capabilities.canAdmin
-    GlassPill(Modifier.padding(start=20.dp,end=20.dp,top=16.dp,bottom=8.dp).fillMaxWidth(),radius=24) {
+    GlassPill(modifier.fillMaxWidth(),radius=24) {
         Row(Modifier.fillMaxWidth().heightIn(min=76.dp).testTag("server-header").clickable(onClickLabel="Server information") {panel="info"}.padding(start=12.dp,end=8.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             ServerIcon(server,model)
             Text(server.name,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)

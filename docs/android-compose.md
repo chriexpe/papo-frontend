@@ -102,8 +102,9 @@ the system or can be selected explicitly.
 System Back dismisses the active viewer, sheet, attachment menu or keyboard
 before leaving the conversation. Back from fullscreen video restores the same
 inline player. Back during recording stops capture into an unsent attachment;
-the draft is preserved. Conversation Back returns to Chats, and Back from
-Settings or Servers also returns to Chats before the activity can exit.
+the draft is preserved. Conversation Back returns to its Chats or Direct list. Client settings returns
+to the destination it opened from; Servers and Direct return to Chats before
+the activity can exit.
 
 Form failures stay inline, connection state has a persistent indicator, delivery
 state stays on the message, and app-wide failures use one dismissible feedback
@@ -377,3 +378,9 @@ Global search does not inherit a selected DM's scope. Pagination uses the
 backend cursor and stale responses are rejected through the core's search
 generation. A result opens its conversation and jumps to the original message;
 Back restores the search query and results. Another Back clears the search.
+
+Chats and Direct share one floating navigation pill. Servers is a separate
+button beside it. The redundant Channels/Direct/People filter row is removed;
+people and channels remain available through global search (`@` lists people).
+The account avatar beside the server pill opens client settings. Search and
+list state are kept per destination, server and signed-in account.
