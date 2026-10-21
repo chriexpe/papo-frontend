@@ -124,9 +124,7 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                 if(conversations.isEmpty()) item {EmptyState("A little quiet here.",if(direct) "Search for someone to start a direct message." else "Your text channels will appear here.")}
                 items(conversations,key={it.id}) {channel ->
                     if(channel.kind=="category") SearchHeading(channel.name.uppercase())
-                    else if(direct) ListItem(headlineContent={Text(channel.name,fontWeight=FontWeight.Medium)},leadingContent={UserAvatar(channel.userId,channel.name,Modifier.clickable {onProfile(channel.userId)})},
-                        trailingContent={if(channel.mentions>0) Badge {Text(channel.mentions.toString())} else Icon(Icons.Outlined.ChevronRight,null)},
-                        colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {onOpen(channel.id)})
+                    else if(direct) DirectMessageItem(server,model,channel,onOpen={onOpen(channel.id)},onProfile={onProfile(channel.userId)})
                     else ChannelItem(channel,onOpen)
                 }
             }

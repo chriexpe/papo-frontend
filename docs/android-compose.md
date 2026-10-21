@@ -425,3 +425,26 @@ bitmaps across screens before any disk/native work. Non-shareable animated
 images are decoded independently, retaining the existing viewport pause/release
 rules. Encoded bytes still use the same 256 MiB shared media cache; no additional
 avatar-only disk store is introduced.
+
+## Global direct messages and notifications
+
+Servers opens with two global actions: Direct messages and Notifications. The
+DM list combines signed-in servers, reuses the same conversation rows as the
+server-scoped list, and shows the server name beneath each nickname. Search
+matches nicknames, usernames and server names. Identical user/channel IDs on
+different servers remain distinct, including avatar, profile and navigation scope.
+
+Notifications reads each account's backend notification records through the
+canonical core API and displays their actual source server, author, channel,
+content, date and read state. A failed account gets its own retry row while other
+accounts stay usable. Opening a row jumps to its original message; the existing
+visibility-based read path applies. Explicit mark-as-read waits for backend
+acknowledgement and reconciles the core's unread counters. These are in-app inbox
+records; background Android push remains outside this milestone.
+
+Global conversation navigation validates the expected account, selects the target
+and switches servers in one actor turn. Back returns to the originating global
+list and then Servers. Profiles from the global DM list retain their source
+server without activating an unrelated account. The chat-list account button now
+uses a larger squircle image, and the Servers selection/ripple follows its inset
+rounded-square shape.

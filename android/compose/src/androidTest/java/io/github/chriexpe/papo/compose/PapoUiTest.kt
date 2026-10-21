@@ -225,6 +225,86 @@ class PapoUiTest {
         compose.onNodeWithText("geral",substring=false).assertIsDisplayed()
     }
 
+    @Test fun serversOpensGlobalDirectMessagesAndReturnsAfterChatAndProfile() {
+        demo()
+        compose.onNodeWithText("Servers",substring=false).performClick()
+        compose.onNode(hasText("Direct messages") and hasAnyAncestor(hasTestTag("global-actions"))).assertIsDisplayed().performClick()
+        compose.onNodeWithTag("global-direct-messages").assertIsDisplayed()
+        compose.onNodeWithText("Ana",substring=false).assertIsDisplayed()
+        compose.onNode(hasText("Papo") and hasAnyAncestor(hasTestTag("global-direct-list"))).assertIsDisplayed()
+        compose.onNodeWithTag("avatar-ana",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+        compose.onNodeWithText("@ana",substring=false).assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("Ana",substring=false).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()}
+        systemBack()
+        compose.onNodeWithTag("global-direct-messages").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("global-actions").assertIsDisplayed()
+    }
+
+    @Test fun globalNotificationsOpenTheSourceMessageAndConfirmReadThroughCore() {
+        demo()
+        compose.onNodeWithText("Servers",substring=false).performClick()
+        compose.onNode(hasText("Notifications") and hasAnyAncestor(hasTestTag("global-actions"))).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("notification-demo-demo-notification").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("notification-demo-demo-notification").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Unread"))
+        compose.onNodeWithContentDescription("Mark notification as read").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("notification-demo-demo-notification") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Read")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("notification-demo-demo-notification").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("channel-header").assert(hasText("geral"))
+        systemBack()
+        compose.onNodeWithTag("global-notifications").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("global-actions").assertIsDisplayed()
+    }
+
+    @Test fun globalNotificationsKeepHealthyResultsWhenAnotherAccountFails() {
+        demo()
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val source=model.state.value.active!!
+            val unavailable=source.copy(url="https://unavailable.example.test",key="unavailable",serverName="Unavailable account")
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState(),LocalGlass provides false) {
+                        GlobalNotifications(PapoState(listOf(source,unavailable),source.url),model,onBack={},onOpen={_,_->})
+                    }
+                }
+            }
+        }
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("notification-demo-demo-notification").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("notification-demo-demo-notification").assertIsDisplayed()
+        compose.onNodeWithText("Unavailable account",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("Retry",substring=false).assertIsDisplayed()
+    }
+
+    @Test fun globalDirectRowsKeepServersSeparateEvenWithTheSameUserAndChannelIds() {
+        val client=io.github.chriexpe.papo.core.NativeClient.demo()
+        val source=try {client.poll()} finally {client.close()}
+        val first=source.copy(url="https://first.example.test",key="first",serverName="First server")
+        val second=source.copy(url="https://second.example.test",key="second",serverName="Second server")
+        val state=PapoState(listOf(first,second),first.url)
+        assertEquals(2,globalDirects(state,"Ana").size)
+        assertEquals(second.url,globalDirects(state,"second").single().server.url)
+        assertEquals(1,globalDirects(state.copy(servers=listOf(first,second.copy(screen="auth",me=""))),"").size)
+        var opened=""
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState(),LocalGlass provides false) {
+                        GlobalDirectMessages(state,model,onBack={},onProfile={_,_->},onOpen={server,channel ->opened="${server.url}/${channel.id}"})
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("dm-second-dm-ana").performClick()
+        compose.runOnIdle {assertEquals("${second.url}/dm-ana",opened)}
+    }
+
     @Test fun avatarOpensClientSettingsAndReturnsToItsOriginalDestination() {
         demo()
         compose.onNodeWithText("Direct",substring=false).performClick()

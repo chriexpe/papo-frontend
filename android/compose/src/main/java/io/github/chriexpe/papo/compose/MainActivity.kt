@@ -126,22 +126,30 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var adding by rememberSaveable { mutableStateOf(false) }
             var tab by rememberSaveable { mutableStateOf("Chats") }
             var settingsOrigin by rememberSaveable {mutableStateOf("Chats")}
-            var inConversation by rememberSaveable(state.activeUrl) { mutableStateOf(false) }
+            var inConversation by rememberSaveable { mutableStateOf(false) }
             val server = state.active
             val conversationStates=rememberSaveableStateHolder()
-            var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
+            var conversationScope by rememberSaveable {mutableStateOf("")}
+            val showingConversation=inConversation && conversationScope=="${server?.url}/${server?.me}"
+            fun enterConversation(target:ServerState) {conversationScope="${target.url}/${target.me}";inConversation=true}
+            var profileId by remember {mutableStateOf<String?>(null)}
+            var profileServerUrl by remember {mutableStateOf("")}
+            var profileOwner by remember {mutableStateOf("")}
+            val openScopedProfile:(ServerState,String)->Unit={target,id ->profileServerUrl=target.url;profileOwner=target.me;profileId=id}
+            val profileServer=state.servers.firstOrNull {it.url==profileServerUrl && it.me==profileOwner && it.screen=="chat"}
             var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
-            val openProfile:(String)->Unit = {externalProfile=null;profileId=it}
+            val openProfile:(String)->Unit = {id ->externalProfile=null;server?.let {openScopedProfile(it,id)}}
             val leaveConversation:()->Unit = { inConversation = false }
             CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
             // Child dialogs, sheets and the IME consume Back first. Keep the
             // activity alive until navigation reaches the conversation list.
-            BackHandler(inConversation || tab != "Chats" || profileId != null || externalProfile != null || adding) {
+            BackHandler(showingConversation || tab != "Chats" || profileId != null || externalProfile != null || adding) {
                 when {
                     adding -> adding = false
                     profileId != null -> profileId = null
                     externalProfile != null -> externalProfile = null
-                    inConversation -> leaveConversation()
+                    showingConversation -> leaveConversation()
+                    tab=="GlobalDirect" || tab=="GlobalNotifications" -> tab="Servers"
                     tab == "Settings" -> tab = settingsOrigin
                     else -> tab = "Chats"
                 }
@@ -151,25 +159,29 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     Welcome(state.opening, state.error, model::clearError, model::exploreDemo) { model.addServer(it) }
                 } else if (server == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                } else if (server.screen != "chat" && tab != "Servers") {
+                } else if (server.screen != "chat" && tab !in listOf("Servers","GlobalDirect","GlobalNotifications")) {
                     Authentication(server, state.error, onBack = { tab = "Servers" },
                         onSwitch = { adding = true }, command = { model.command(it) })
-                } else if (inConversation && server.conversation != null) {
+                } else if (showingConversation && server.conversation != null) {
                     ConversationScreen(server, model, onBack = leaveConversation)
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
                             "Chats", "Direct" -> conversationStates.SaveableStateProvider("${server.url}/${server.me}/$tab") {ConversationList(server, model, appError = state.error, direct = tab=="Direct", onSettings = {settingsOrigin=tab;tab="Settings"},
-                                onOpen = { id -> model.command(Action.SelectChannel(id)); inConversation = true },
+                                onOpen = { id -> model.navigate(server,Action.SelectChannel(id)) {enterConversation(server)} },
                                 onProfile = openProfile,
-                                onMessage = { channelId,messageId ->model.command(Action.SelectChannel(channelId),server.url) {
-                                    model.command(Action.JumpToMessage(channelId,messageId),server.url) {inConversation=true}
-                                }})}
-                            "Servers" -> ServerList(state, model, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
+                                onMessage = { channelId,messageId ->model.navigate(server,Action.SelectChannel(channelId),messageId) {enterConversation(server)}})}
+                            "Servers" -> ServerList(state, model, onAdd = { adding = true }, onSelect = { inConversation=false;model.activate(it); tab = "Chats" },onDirect={tab="GlobalDirect"},onNotifications={tab="GlobalNotifications"})
+                            "GlobalDirect" -> conversationStates.SaveableStateProvider("global/direct") {
+                                GlobalDirectMessages(state,model,onBack={tab="Servers"},onProfile=openScopedProfile,onOpen={target,channel ->model.navigate(target,Action.SelectChannel(channel.id)) {enterConversation(target)}})
+                            }
+                            "GlobalNotifications" -> conversationStates.SaveableStateProvider("global/notifications") {
+                                GlobalNotifications(state,model,onBack={tab="Servers"},onOpen={target,item ->model.navigate(target,Action.SelectChannel(item.channelId),item.messageId.takeIf {it.isNotBlank()}) {enterConversation(target)}})
+                            }
                             else -> ClientSettings(server, model, onBack={tab=settingsOrigin},
                                 onLogout = { if (server.isDemo) model.leaveDemo() else model.command(Action.Logout) })
                         }
-                        if(tab!="Settings") FloatingNavigation(tab, onSelect = { tab = it }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
+                        if(tab!="Settings") FloatingNavigation(if(tab=="GlobalDirect" || tab=="GlobalNotifications") "Servers" else tab, onSelect = { tab = it }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
                     }
                 }
                 val error = if (state.servers.isEmpty()) "" else state.error.ifBlank { server?.error.orEmpty() }
@@ -178,7 +190,9 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 }
             }
             if(server?.screen=="chat") externalProfile?.let {author ->ExternalProfileSheet(server,author) {externalProfile=null}}
-            if(server?.screen=="chat") profileId?.let {id -> UserProfileSheet(server,model,id,onDismiss={profileId=null},onMessage={user ->profileId=null;model.command(Action.OpenDm(user),server.url) {inConversation=true}})}
+            profileServer?.let {target ->profileId?.let {id -> CompositionLocalProvider(LocalProfileContext provides ProfileContext(target,model)) {
+                UserProfileSheet(target,model,id,onDismiss={profileId=null},onMessage={user ->profileId=null;model.navigate(target,Action.OpenDm(user)) {enterConversation(target)}})
+            }}}
             }
             if (adding) ModalBottomSheet(onDismissRequest = { adding = false }) {
                 AddServerForm(state.opening, state.error, modifier = Modifier.padding(horizontal = 24.dp).navigationBarsPadding()) {
@@ -342,10 +356,15 @@ internal fun EmptyState(title: String, detail: String) {
 }
 
 @Composable
-private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit, onSelect: (String) -> Unit) {
+private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit, onSelect: (String) -> Unit,onDirect:()->Unit,onNotifications:()->Unit) {
     LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(), contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Your servers", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold) }
-        item { Text("Different places. The same you.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 16.dp)) }
+        item {
+            Row(Modifier.fillMaxWidth().testTag("global-actions"),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+                GlobalAction("Direct messages",Icons.Outlined.ChatBubbleOutline,state.servers.filter {it.screen=="chat"}.sumOf {s ->s.dms.count {it.unread}},onDirect,Modifier.weight(1f))
+                GlobalAction("Notifications",Icons.Outlined.NotificationsNone,state.servers.filter {it.screen=="chat"}.sumOf {it.notificationCount.toLong()}.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),onNotifications,Modifier.weight(1f))
+            }
+        }
+        item {Text("Your servers",style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=16.dp,start=8.dp,bottom=4.dp))}
         items(state.servers, key = { it.url }) { server ->
             ListItem(headlineContent = { Text(server.name, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingContent = { ServerIcon(server,model) }, trailingContent = { Icon(if (state.activeUrl == server.url) Icons.Outlined.CheckCircle else Icons.Outlined.ChevronRight, null) },
