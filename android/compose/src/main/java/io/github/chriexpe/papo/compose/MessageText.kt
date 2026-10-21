@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 internal fun MessageText(content: String, server: ServerState, model: PapoViewModel) {
     var detail by remember(server.url,server.me) {mutableStateOf<String?>(null)}
+    val openProfile by rememberUpdatedState(LocalOpenProfile.current)
     val color=MaterialTheme.colorScheme.primary
     val customs=remember(server.emojis) { server.emojis.associateBy { it.name } }
     val pattern=remember {Regex("https?://[^\\s<>]+|@mention\\(<@(?<person>[^>\\s]+)>\\)|:(?<sticker>[A-Za-z0-9_+\\-]+):")}
@@ -40,7 +41,7 @@ internal fun MessageText(content: String, server: ServerState, model: PapoViewMo
             if(m.value.startsWith("http")) withLink(LinkAnnotation.Url(m.value,TextLinkStyles(SpanStyle(color=color)))) {append(m.value)}
             else if(m.value.startsWith("@mention(")) {
                 val id=m.groups["person"]?.value.orEmpty()
-                withStyle(SpanStyle(color=color,fontWeight=FontWeight.Bold)) {append("@${server.members.firstOrNull {it.id==id}?.name ?: id}")}
+                withLink(LinkAnnotation.Clickable("profile:$id",TextLinkStyles(SpanStyle(color=color,fontWeight=FontWeight.Bold))) {openProfile(id)}) {append("@${server.members.firstOrNull {it.id==id}?.name ?: id}")}
             }
             else appendInlineContent(customs.getValue(requireNotNull(m.groups["sticker"]?.value)).id,m.value)
             end=m.range.last+1

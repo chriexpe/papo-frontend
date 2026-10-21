@@ -9,6 +9,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComposerDraftTest {
+    @Test fun externalAvatarRoutesResolveOnlyDocumentedServerPaths() {
+        val path="/webhooks/12345678-abcd-4321-abcd-123456789abc/avatar"
+        assertEquals("https://chat.example$path",externalAvatarUrl("https://chat.example/papo",path))
+        assertEquals("https://cdn.example/avatar.webp",externalAvatarUrl("https://chat.example","https://cdn.example/avatar.webp"))
+        listOf("//other.example/avatar","/users/me","/webhooks/../avatar","javascript:alert(1)","https://user:password@other.example/avatar").forEach {assertNull(externalAvatarUrl("https://chat.example",it))}
+    }
     @Test fun heldAuthorMentionAddsBoundaryAndPreservesAccountIdentity() {
         val client=NativeClient.demo()
         try {

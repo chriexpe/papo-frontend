@@ -112,6 +112,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
+    val overlayBlocking by rememberUpdatedState(LocalMediaOverlayBlocking.current)
     val density = LocalDensity.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -130,7 +131,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet()
     }}
     LaunchedEffect(mediaVisibility,listState) {
-        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
+        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && !overlayBlocking && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
             val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                 mediaVisibility.update(layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet(),enabled)
@@ -242,7 +243,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text("Load later messages")}
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
-                CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null),LocalMediaRowId provides message.id) {
+                CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !overlayBlocking),LocalMediaRowId provides message.id) {
                 MessageRow(message, server, model, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
@@ -422,17 +423,21 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 @Composable
 private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val openProfile=LocalOpenProfile.current
-    val person=server.members.firstOrNull {it.id==message.authorId}
-    val authorAction=Modifier.combinedClickable(onClickLabel="Open ${message.author} profile",onLongClickLabel="Mention ${message.author}",onClick={openProfile(message.authorId)},onLongClick={person?.let(onMention)})
+    val openExternal=LocalOpenExternalProfile.current
+    val external=message.externalAuthor
+    val person=if(external==null) server.members.firstOrNull {it.id==message.authorId} else null
+    val authorAction=Modifier.combinedClickable(onClickLabel="Open ${message.author} profile",onLongClickLabel="Mention ${message.author}",onClick={if(external!=null) openExternal(external) else openProfile(message.authorId)},onLongClick={if(external!=null) openExternal(external) else person?.let(onMention)})
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
         .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message"}
         .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        UserAvatar(message.authorId,message.author,Modifier.size(48.dp).then(authorAction).padding(2.dp))
+        if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
+        else UserAvatar(message.authorId,message.author,Modifier.size(48.dp).then(authorAction).padding(2.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(message.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
+                if(external!=null) AppBadge()
                 Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = onActions, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.MoreHoriz, "Message actions", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }

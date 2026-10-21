@@ -99,12 +99,36 @@ class PapoUiTest {
 
     @Test fun peopleOpenProfilesBeforeStartingDirectMessages() {
         demo()
+        compose.onNodeWithText("Direct",substring=false).performClick()
+        compose.onNodeWithTag("avatar-ana",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close profile").performClick()
         compose.onNodeWithText("People",substring=false).performClick()
         compose.onNodeWithText("Ana",substring=false).performClick()
         compose.onNodeWithTag("user-profile").assertIsDisplayed()
         compose.onNodeWithText("Message @ana").performClick()
         compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("Ana")).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithTag("user-profile").assertDoesNotExist()
+    }
+
+    @Test fun wormholeAuthorsUseExternalAvatarsAndAppProfiles() {
+        demo()
+        compose.onNodeWithText("design",substring=false).performClick()
+        compose.onNodeWithTag("author-design-0",useUnmergedTree=true).assertTextEquals("Ari")
+        compose.onNodeWithText("APP",substring=false).assertIsDisplayed()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("external-avatar-Wormhole-remote-ari") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Avatar loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("author-design-0",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("external-profile").assertIsDisplayed()
+        compose.onNodeWithTag("user-profile").assertDoesNotExist()
+        compose.onNodeWithText("Via Wormhole").assertIsDisplayed()
+        compose.onNodeWithText("Open external profile").assertIsDisplayed()
+        compose.onNodeWithText("Copy username").assertDoesNotExist()
+        compose.onNodeWithText("Copy name").performClick()
+        compose.onNodeWithText("Copied name").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close profile").performClick()
+        compose.onNodeWithTag("author-design-0",useUnmergedTree=true).performTouchInput {longClick()}
+        compose.onNodeWithTag("external-profile").assertIsDisplayed()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("")))
     }
 
     @Test fun serverStickersInsertAnimateAndAppearInSharedReactionPicker() {

@@ -67,7 +67,7 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
             if(!loaded) Avatar(name,Modifier.fillMaxSize())
             if(bytes!=null) ManagedAsyncImage(
                 ImageRequest.Builder(context).data(bytes).size(256).build(),null,ExpressionImages.loader(context),
-                modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false})
+                modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false},retentionKey="avatar/$id/$revision")
         }
     }
 }
@@ -170,5 +170,81 @@ private fun ProfileSection(label:String,content:@Composable ColumnScope.()->Unit
     Column(Modifier.padding(horizontal=24.dp,vertical=16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
         Text(label,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
         content()
+    }
+}
+
+internal val LocalOpenExternalProfile=compositionLocalOf<(io.github.chriexpe.papo.core.ExternalAuthorView)->Unit> {{}}
+
+/** External identities have no Papo user id. Only the documented webhook
+ * avatar route may be resolved relative to the connected server. No auth
+ * cookies are sent to the external image/profile URL. */
+internal fun externalAvatarUrl(server:String,raw:String):String? {
+    if(raw.startsWith("/webhooks/") && Regex("^/webhooks/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/avatar$").matches(raw)) {
+        return runCatching {java.net.URI(server).resolve(raw).toString()}.getOrNull()?.let(::externalProfileUrl)
+    }
+    return externalProfileUrl(raw)
+}
+internal fun externalProfileUrl(raw:String):String? = runCatching {
+    val uri=java.net.URI(raw)
+    raw.takeIf {uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo==null}
+}.getOrNull()
+
+@Composable
+internal fun ExternalAvatar(server:ServerState,author:io.github.chriexpe.papo.core.ExternalAuthorView,modifier:Modifier=Modifier) {
+    val context=LocalContext.current
+    val url=remember(server.url,author.avatarUrl) {
+        if(server.isDemo && author.avatarUrl.startsWith("file:///android_asset/demo/")) author.avatarUrl
+        else externalAvatarUrl(server.url,author.avatarUrl)
+    }
+    var loaded by remember(url) {mutableStateOf(false)}
+    Box(modifier.size(40.dp).clip(CircleShape).testTag("external-avatar-${author.source}-${author.id}").semantics {
+        contentDescription="${author.name} avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
+    }) {
+        if(!loaded) Avatar(author.name,Modifier.fillMaxSize())
+        url?.let {ManagedAsyncImage(it,null,ExpressionImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop,
+            onSuccess={loaded=true},onError={loaded=false},retentionKey="external/${author.source}/${author.id}/$it")}
+    }
+}
+
+@Composable
+internal fun AppBadge() {
+    Surface(shape=RoundedCornerShape(5.dp),color=MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Text("APP",Modifier.padding(horizontal=5.dp,vertical=2.dp),style=MaterialTheme.typography.labelSmall,fontWeight=FontWeight.Bold)
+    }
+}
+
+@Composable
+internal fun ExternalProfileSheet(server:ServerState,author:io.github.chriexpe.papo.core.ExternalAuthorView,onDismiss:()->Unit) {
+    val uriHandler=androidx.compose.ui.platform.LocalUriHandler.current
+    val clipboard=LocalClipboardManager.current
+    var copied by remember(author) {mutableStateOf(false)}
+    val profile=externalProfileUrl(author.profileUrl)
+    ModalBottomSheet(onDismissRequest=onDismiss,dragHandle=null,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max=androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp*.88f).testTag("external-profile"),contentPadding=PaddingValues(bottom=24.dp)) {
+            item {
+                Box(Modifier.fillMaxWidth().height(112.dp).background(MaterialTheme.colorScheme.primary.copy(alpha=.16f))) {
+                    Box(Modifier.align(Alignment.TopCenter).padding(top=8.dp).size(32.dp,4.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha=.3f),CircleShape))
+                    GlassPill(Modifier.align(Alignment.TopEnd).padding(8.dp)) {IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close profile")}}
+                }
+                ExternalAvatar(server,author,Modifier.padding(start=20.dp).offset(y=(-36).dp).size(88.dp).border(4.dp,MaterialTheme.colorScheme.surfaceContainerLow,CircleShape).padding(4.dp))
+                Column(Modifier.offset(y=(-24).dp).padding(horizontal=24.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                        SelectionContainer(Modifier.weight(1f,fill=false)) {Text(author.name,style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)}
+                        AppBadge()
+                    }
+                    Text("Via ${author.source}",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
+                Text("This identity is provided by an app integration.",Modifier.padding(horizontal=24.dp,vertical=20.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            item {
+                Column(Modifier.padding(horizontal=12.dp).navigationBarsPadding()) {
+                    if(profile!=null) ListItem(headlineContent={Text("Open external profile")},leadingContent={Icon(Icons.Outlined.OpenInNew,null)},
+                        colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {uriHandler.openUri(profile)})
+                    ListItem(headlineContent={Text(if(copied) "Copied name" else "Copy name")},leadingContent={Icon(Icons.Outlined.ContentCopy,null)},
+                        colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {clipboard.setText(AnnotatedString(author.name));copied=true})
+                }
+            }
+        }
     }
 }

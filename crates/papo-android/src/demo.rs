@@ -144,14 +144,18 @@ impl Demo {
                 .into_iter()
                 .enumerate()
                 .map(|(i, (author, content, reply))| {
-                    message(
+                    let mut row=message(
                         &format!("{channel}-{i}"),
                         channel,
                         author,
                         content,
                         reply.map(str::to_owned),
                         now - (12 - i as i64) * 60_000,
-                    )
+                    );
+                    if channel=="design" && i==0 {
+                        row.external_author=Some(decode(json!({"source":"Wormhole","id":"remote-ari","name":"Ari","avatar_url":"file:///android_asset/demo/portrait.png","profile_url":"https://example.test/ari"})));
+                    }
+                    row
                 })
                 .collect();
             store.apply(Update::Messages {
@@ -194,10 +198,10 @@ impl Demo {
             pinned_ids: None,
         });
         for member in &mut store.members {
-            member.presence=match member.id.as_str() {
-                "bruno"=>papo_core::state::Presence::Away,
-                "dora"=>papo_core::state::Presence::Busy,
-                _=>papo_core::state::Presence::Online,
+            member.presence = match member.id.as_str() {
+                "bruno" => papo_core::state::Presence::Away,
+                "dora" => papo_core::state::Presence::Busy,
+                _ => papo_core::state::Presence::Online,
             };
         }
         store.selected_channel = "general".into();
@@ -506,6 +510,29 @@ mod tests {
         assert!(ana.avatar_revision.is_empty());
         assert!(ana.banner.is_empty());
         assert!(ana.roles.is_empty());
+    }
+
+    #[test]
+    fn attributed_app_identity_takes_precedence_over_the_bridge_account() {
+        let client = crate::bindings::NativeClient::demo();
+        client
+            .dispatch(Action::SelectChannel {
+                channel_id: "design".into(),
+            })
+            .unwrap();
+        let snapshot = client.poll().unwrap();
+        let message = snapshot
+            .messages
+            .iter()
+            .find(|m| m.id == "design-0")
+            .unwrap();
+        assert_eq!(message.author, "Ari");
+        assert_ne!(message.author_id, "remote-ari");
+        let external = message.external_author.as_ref().unwrap();
+        assert_eq!(external.source, "Wormhole");
+        assert_eq!(external.id, "remote-ari");
+        assert!(!external.avatar_url.is_empty());
+        assert!(snapshot.members.iter().all(|m| m.id != external.id));
     }
     #[test]
     fn demo_uses_core_reduction_and_never_creates_a_real_session() {

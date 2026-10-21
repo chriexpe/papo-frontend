@@ -136,9 +136,16 @@ viewer and player. YouTube retains its isolated provider controls.
 Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
 the app pauses playback; disposed players release their resources. Only one
 player is active per conversation.
-Offscreen cleanup currently follows lazy-list disposal: there is no explicit
-viewport-edge pause or distance-based release policy yet. Retained offscreen
-rows can keep playback/animation alive until their composition is disposed.
+Offscreen video/audio pauses at the readable viewport edge; GIFs, animated
+stickers and animated avatars stop their animation clocks there too. A
+conversation-owned cache keeps nearby players and decoded images even when
+Compose deactivates their rows. Around two screens away they are released;
+playback positions and manual pause intent survive reconstruction. Measured
+row heights determine distance, with an average-height estimate for unseen
+rows after large jumps. Retention is also capped at three players and 96 image
+occurrences; playback bookmarks are capped at 128. Decoded animated images
+are independent per occurrence, so pausing one sticker cannot stop another.
+Profiles and fullscreen media pause the timeline behind them.
 Audio uses compact Compose play/pause, seek and time controls without a video
 surface. Its seek control draws a real decoded waveform before playback, with
 played/unplayed progress, touch and accessibility seeking. PCM peaks include
@@ -289,3 +296,25 @@ Core HTTP fixtures verify multipart bodies and failure classification.
 Android 17 needs
 the test-only Espresso 3.8 alpha because older Espresso reflects a removed
 InputManager API. Production dependencies remain independent of Espresso.
+
+
+### User profiles
+
+Names and avatars in chat, People and reaction lists open a native profile
+sheet. DM-list avatars and the account row open it too. The sheet shows the
+server avatar/banner, nickname, username, status, roles, bio and member date,
+with a scrollable body and a direct-message action for other members. Holding
+a chat author inserts a bound mention at the composer cursor, including the
+required spacing. Rendered mentions also open profiles.
+
+UniFFI projects profile metadata and avatar revisions; encoded avatar bytes
+are fetched on demand from papo-core and cached per server/account/user/revision.
+Banner requests use the authenticated content-addressed media route. Missing
+or unavailable avatars keep the initials fallback.
+
+Wormhole/webhook authors retain their external identity independently of the
+bridge account: supplied avatars, an APP badge, integration attribution and a
+separate external-profile sheet. They never issue a Papo profile lookup, DM or
+bound mention against the bridge account. Public avatar URLs receive no Papo
+credentials; only the documented server-local webhook avatar route is resolved
+relative to the connected server. External profile links accept HTTP(S) only.

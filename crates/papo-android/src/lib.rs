@@ -712,10 +712,11 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
             "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions,
         })).collect();
     let messages: Vec<_> = s.messages_in(&s.selected_channel).map(|m| {
-            let name = s.members.iter().find(|u| u.id == m.author_id).map(|u| u.name.as_str())
-                .or_else(|| m.external_author.as_ref().map(|a| a.name.as_str())).unwrap_or(&m.author_id);
+            let name = m.external_author.as_ref().map(|a| a.name.as_str())
+                .or_else(|| s.members.iter().find(|u| u.id == m.author_id).map(|u| u.name.as_str())).unwrap_or(&m.author_id);
             let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(id) => id.clone() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
             json!({ "id": m.id, "authorId": m.author_id, "author": name, "content": m.content,
+                "externalAuthor":m.external_author.as_ref().map(|a|json!({"source":a.source,"id":a.id,"name":a.name,"avatarUrl":a.avatar_url.as_deref().unwrap_or_default(),"profileUrl":a.profile_url.as_deref().unwrap_or_default()})),
                 "at": m.at.timestamp_millis(), "edited": m.edited, "mine": m.mine(&s.me), "replyTo": m.reply_to.as_deref().unwrap_or_default(),
                 "replyContent": m.reply_to.as_ref().and_then(|id| s.message(id)).map(|m| m.content.as_str()).unwrap_or_default(),
                 "pending": m.pending, "delivery": s.outgoing_state(&m.id).map(|state| match state { OutgoingState::Queued => "queued", OutgoingState::Sending => "sending", OutgoingState::UnknownOutcome => "unknown", OutgoingState::FailedPermanent => "failed" }).unwrap_or_default(),

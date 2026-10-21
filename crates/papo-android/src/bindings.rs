@@ -405,6 +405,8 @@ pub struct MessageView {
     pub id: String,
     pub author_id: String,
     pub author: String,
+    #[serde(default)]
+    pub external_author: Option<ExternalAuthorView>,
     pub content: String,
     pub at: i64,
     pub edited: bool,
@@ -416,6 +418,16 @@ pub struct MessageView {
     pub reactions: Vec<ReactionView>,
     pub attachments: Vec<media::AttachmentView>,
     pub embeds: Vec<media::EmbedView>,
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAuthorView {
+    pub source: String,
+    pub id: String,
+    pub name: String,
+    pub avatar_url: String,
+    pub profile_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]

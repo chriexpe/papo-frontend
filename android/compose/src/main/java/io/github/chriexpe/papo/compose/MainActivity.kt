@@ -123,8 +123,9 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var inConversation by rememberSaveable(state.activeUrl) { mutableStateOf(false) }
             val server = state.active
             var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
-            val openProfile:(String)->Unit = {profileId=it}
-            CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile) {
+            var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
+            val openProfile:(String)->Unit = {externalProfile=null;profileId=it}
+            CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
             BackHandler(inConversation) { inConversation = false }
             Box(Modifier.fillMaxSize().background(colors.background)) {
                 if (state.servers.isEmpty()) {
@@ -156,6 +157,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     FeedbackPill(error, model::clearError, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp))
                 }
             }
+            if(server?.screen=="chat") externalProfile?.let {author ->ExternalProfileSheet(server,author) {externalProfile=null}}
             if(server?.screen=="chat") profileId?.let {id -> UserProfileSheet(server,model,id,onDismiss={profileId=null},onMessage={user ->profileId=null;model.command(Action.OpenDm(user),server.url) {inConversation=true}})}
             }
             if (adding) ModalBottomSheet(onDismissRequest = { adding = false }) {
