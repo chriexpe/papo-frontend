@@ -89,13 +89,13 @@ impl AccountChange {
         }
     }
 }
-struct AccountApi {
-    api: Api,
-    owner: String,
+pub(super) struct ScopedApi {
+    pub(super) api: Api,
+    pub(super) owner: String,
     token: Option<String>,
 }
 impl NativeClient {
-    fn account_api(&self, expected_owner: &str) -> Result<AccountApi, CoreError> {
+    pub(super) fn scoped_api(&self, expected_owner: &str) -> Result<ScopedApi, CoreError> {
         let backend = self
             .backend
             .lock()
@@ -115,16 +115,16 @@ impl NativeClient {
         let session = Arc::new(Session::default());
         session.set_token(token.clone());
         let api = Api::new(&c.runtime.url, session).map_err(|e| e.to_string())?;
-        Ok(AccountApi {
+        Ok(ScopedApi {
             api,
             owner: c.runtime.store.me.clone(),
             token,
         })
     }
-    fn finish_account(
+    pub(super) fn finish_request(
         &self,
-        request: &AccountApi,
-        profile: Option<models::UserProfile>,
+        request: &ScopedApi,
+        updates: Vec<Update>,
     ) -> Result<(), CoreError> {
         let mut backend = self
             .backend
@@ -139,13 +139,13 @@ impl NativeClient {
                 .into());
         }
         c.runtime.net.session.set_token(request.api.session.token());
-        if let Some(profile) = profile {
-            c.runtime.store.apply(Update::Profiles(vec![profile]));
+        for update in updates {
+            c.runtime.store.apply(update);
         }
         Ok(())
     }
 }
-fn run<T>(
+pub(super) fn run<T>(
     future: impl std::future::Future<Output = Result<T, papo_core::api::client::ApiError>>,
 ) -> Result<T, CoreError> {
     tokio::runtime::Builder::new_current_thread()
@@ -171,10 +171,10 @@ impl NativeClient {
                 return Ok(AccountProfile::from(&demo_profile(&c.store)));
             }
         }
-        let request = self.account_api(&owner)?;
+        let request = self.scoped_api(&owner)?;
         let profile = run(request.api.profile(&request.owner))?;
         let view = AccountProfile::from(&profile);
-        self.finish_account(&request, Some(profile))?;
+        self.finish_request(&request, vec![Update::Profiles(vec![profile])])?;
         Ok(view)
     }
     pub fn account_change(&self, owner: String, change: AccountChange) -> Result<(), CoreError> {
@@ -191,11 +191,11 @@ impl NativeClient {
                 return demo_change(&mut c.store, change).map_err(Into::into);
             }
         }
-        let request = self.account_api(&owner)?;
+        let request = self.scoped_api(&owner)?;
         run(apply_change(&request.api, &request.owner, change))?;
         // A subsequent profile refresh is a separate read. Its failure must not
         // turn an acknowledged password/profile mutation into a failed save.
-        self.finish_account(&request, None)
+        self.finish_request(&request, vec![])
     }
     pub fn account_sessions(&self, owner: String) -> Result<Vec<SessionView>, CoreError> {
         {
@@ -210,9 +210,9 @@ impl NativeClient {
                 return Ok(vec![]);
             }
         }
-        let request = self.account_api(&owner)?;
+        let request = self.scoped_api(&owner)?;
         let sessions = run(request.api.connected_devices())?;
-        self.finish_account(&request, None)?;
+        self.finish_request(&request, vec![])?;
         Ok(sessions
             .into_iter()
             .map(|s| SessionView {
@@ -425,6 +425,19 @@ mod tests {
                     403,
                     r#"{"status":403,"detail":"profile rejected"}"#,
                 ),
+                (
+                    "GET",
+                    "/users/owner/notifications",
+                    200,
+                    r#"{"notifications":[{"id":"notice","message_id":"message","channel_id":"channel","author_id":"ana","message_content":"Hello","read":false,"created_at":"2026-10-21T12:00:00Z"}]}"#,
+                ),
+                ("PUT", "/users/owner/read_notification", 200, r#"{}"#),
+                (
+                    "PUT",
+                    "/users/owner/read_notification",
+                    403,
+                    r#"{"status":403,"detail":"read rejected"}"#,
+                ),
             ];
             let mut bodies = vec![];
             for (method, path, status, response) in script {
@@ -507,6 +520,11 @@ mod tests {
         ))
         .unwrap();
         assert!(run(apply_change(&api, "owner", profile())).is_err());
+        let notices = run(api.notifications("owner")).unwrap();
+        assert_eq!(notices[0].message_id.as_deref(), Some("message"));
+        assert!(!notices[0].read);
+        run(api.mark_notifications_read("owner", vec![notices[0].id.clone()])).unwrap();
+        assert!(run(api.mark_notifications_read("owner", vec!["rejected".into()])).is_err());
         let bodies = worker.join().unwrap();
         assert_eq!(
             bodies[0],
@@ -517,5 +535,6 @@ mod tests {
         assert_eq!(bodies[3], json!({"banner":"","banner_format":""}));
         assert_eq!(bodies[5], json!({"password":"new-password"}));
         assert_eq!(bodies[7], json!({"connection_id":"opaque-session"}));
+        assert_eq!(bodies[10], json!({"notification_ids":["notice"]}));
     }
 }

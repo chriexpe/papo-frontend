@@ -202,6 +202,33 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         publish(error = "")
     }
 
+    /** Switch the active server and select the target in the same actor turn.
+     * Routes carry the expected owner; a stale global row cannot enter a new account. */
+    internal fun navigate(server:ServerState,action:Action,messageId:String?=null,onReady:()->Unit) = viewModelScope.launch(dispatcher) {
+        try {
+            check(snapshots[server.url]?.me==server.me && server.me.isNotBlank()) {"Account changed"}
+            val client=handles[server.url] ?: error("Server is closed")
+            client.dispatch(action)
+            if(messageId!=null && action is Action.SelectChannel) client.dispatch(Action.JumpToMessage(action.channelId,messageId))
+            activeUrl=server.url
+            preferences.edit().putString("active-server",activeUrl).apply()
+            poll()
+            launch(kotlinx.coroutines.Dispatchers.Main) {onReady()}
+        } catch(e:kotlinx.coroutines.CancellationException) {throw e}
+        catch(e:Exception) {publish(error=e.message ?: "Couldn’t open conversation")}
+    }
+    internal suspend fun inbox(server:ServerState):List<io.github.chriexpe.papo.core.InboxItem> {
+        val client=accountClient(server)
+        val items=withContext(kotlinx.coroutines.Dispatchers.IO) {client.inbox(server.me)}
+        withContext(dispatcher) {poll()}
+        return items
+    }
+    internal suspend fun readInbox(server:ServerState,ids:List<String>) {
+        val client=accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {client.inboxRead(server.me,ids)}
+        withContext(dispatcher) {poll()}
+    }
+
     fun command(action: Action, url: String = state.value.activeUrl, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {
         try {
             val handle = handles[url] ?: return@launch

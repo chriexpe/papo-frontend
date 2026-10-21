@@ -328,6 +328,7 @@ pub struct ClientSnapshot {
     pub search_results: Vec<discovery::SearchHit>,
     pub me: String,
     pub my_name: String,
+    pub notification_count: u32,
     pub selected_channel: String,
     pub channels: Vec<ChannelView>,
     pub members: Vec<MemberView>,

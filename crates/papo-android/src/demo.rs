@@ -6,6 +6,7 @@ use papo_core::state::Store;
 
 pub struct Demo {
     pub(crate) store: Store,
+    pub(crate) notifications: Vec<models::Notification>,
     events: Vec<Value>,
     media_files: HashMap<String, PathBuf>,
     navigation_serial: u64,
@@ -213,7 +214,24 @@ impl Demo {
             c.unread = true;
             c.mentions = 2;
         }
+        let notification = store
+            .messages_in("general")
+            .filter(|m| m.author_id == "ana")
+            .last()
+            .map(|m| models::Notification {
+                id: "demo-notification".into(),
+                message_id: Some(m.id.clone()),
+                channel_id: Some("general".into()),
+                author_id: Some(m.author_id.clone()),
+                message_content: Some(m.content.clone()),
+                read: false,
+                created_at: Some(m.at.with_timezone(&chrono::Utc)),
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        store.apply(Update::Notifications(notification.clone()));
         Self {
+            notifications: notification,
             store,
             events: vec![],
             media_files: HashMap::new(),
@@ -344,7 +362,14 @@ impl Demo {
                     c.notification_settings = setting;
                 }
             }
-            Action::MarkServerRead => self.store.mark_all_read(),
+            Action::MarkServerRead => {
+                self.store.mark_all_read();
+                for item in &mut self.notifications {
+                    item.read = true;
+                }
+                self.store
+                    .apply(Update::Notifications(self.notifications.clone()));
+            }
             Action::SaveServer {
                 name,
                 public,
@@ -566,6 +591,16 @@ impl Demo {
             }
             Action::ClearError => self.store.error = None,
             Action::Visible { channel_id, ids } => {
+                for notification in &mut self.notifications {
+                    if notification.channel_id.as_deref() == Some(&channel_id)
+                        && notification
+                            .message_id
+                            .as_ref()
+                            .is_some_and(|id| ids.contains(id))
+                    {
+                        notification.read = true;
+                    }
+                }
                 self.store
                     .observe_visible_messages_with_policy(&channel_id, &ids, false)
             }
