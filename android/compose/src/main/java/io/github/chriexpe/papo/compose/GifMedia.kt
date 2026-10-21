@@ -53,10 +53,8 @@ internal fun GifStar(server: ServerState, model: PapoViewModel, gif: GifChoice, 
     val owner=model.expressions.owner(server)
     val state=states[owner] ?: model.expressions.state(owner)
     val selected=state.favorites.any {it.key==gif.key}
-    Surface(modifier.padding(4.dp),shape=MaterialTheme.shapes.extraLarge,color=if(light) Color.Black.copy(alpha=.56f) else MaterialTheme.colorScheme.surface.copy(alpha=.9f)) {
-        IconButton(onClick={model.toggleGif(server,gif)},modifier=Modifier.size(48.dp).semantics {stateDescription=if(selected) "Favorite" else "Not a favorite"}) {
-            Icon(if(selected) Icons.Outlined.Star else Icons.Outlined.StarBorder,if(selected) "Remove GIF from favorites" else "Favorite GIF",tint=if(selected) MaterialTheme.colorScheme.primary else if(light) Color.White else MaterialTheme.colorScheme.onSurface)
-        }
+    IconButton(onClick={model.toggleGif(server,gif)},modifier=modifier.padding(4.dp).size(48.dp).semantics {stateDescription=if(selected) "Favorite" else "Not a favorite"}) {
+        Icon(if(selected) Icons.Outlined.Star else Icons.Outlined.StarBorder,if(selected) "Remove GIF from favorites" else "Favorite GIF",tint=if(selected) MaterialTheme.colorScheme.primary else if(light) Color.White else MaterialTheme.colorScheme.onSurface)
     }
 }
 

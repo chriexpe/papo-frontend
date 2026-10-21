@@ -153,6 +153,16 @@ impl NativeClient {
         .map_err(CoreError::from)
     }
 
+    pub fn encode_message(&self, text: String, mentions: Vec<MentionSelection>) -> Result<String, CoreError> {
+        let backend=self.backend.lock().map_err(|_|"Client lock failed".to_owned())?;
+        let store=match backend.as_ref().ok_or("Client is closed".to_owned())? {
+            Backend::Live(client)=> &client.runtime.store,
+            Backend::Demo(client)=> &client.store,
+        };
+        let bindings=mentions.into_iter().map(|m|papo_core::state::MentionBinding {start:m.start as usize,label:m.label,user_id:m.user_id}).collect::<Vec<_>>();
+        Ok(store.encode_mentions(&text,&bindings))
+    }
+
     pub fn emoji_image(&self, id: String) -> Result<Vec<u8>, CoreError> {
         use base64::Engine;
         let blob = {
@@ -252,6 +262,7 @@ pub struct ChannelView {
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 pub struct MemberView {
     pub id: String,
+    pub username: String,
     pub name: String,
     pub presence: String,
 }
@@ -307,3 +318,7 @@ impl From<papo_core::giphy::GifItem> for GifView {
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct GifPageView { pub items:Vec<GifView>,pub more:bool }
+
+/// Start is a Unicode scalar index, matching papo-core's mention bindings.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct MentionSelection { pub start:u32, pub label:String, pub user_id:String }
