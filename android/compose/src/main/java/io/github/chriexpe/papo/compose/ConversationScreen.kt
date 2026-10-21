@@ -33,6 +33,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -73,6 +75,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(false) }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
+    var recording by remember(draftKey) { mutableStateOf(false) }
     var confirmAttachmentRetry by remember(draftKey) { mutableStateOf(false) }
     val attachmentDrafts by model.attachments.drafts.collectAsState()
     val attachmentDraft = attachmentDrafts[draftKey] ?: AttachmentDraft()
@@ -80,6 +83,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val density = LocalDensity.current
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var headerHeight by remember { mutableStateOf(90.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
     val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 100 } }
@@ -100,7 +105,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
-    val submitMessage: () -> Unit = {
+    val submitMessage: (Boolean) -> Unit = { attachmentsOnly ->
         val sent = text
         submitting = true
         val onResult: (Boolean) -> Unit = { accepted ->
@@ -111,7 +116,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 scope.launch { listState.animateScrollToItem(0) }
             }
         }
-        if (attachmentDraft.files.isEmpty()) model.send(server, sent, reply, onResult)
+        if (!attachmentsOnly && attachmentDraft.files.isEmpty()) model.send(server, sent, reply, onResult)
         else model.attachments.send(draftKey, server, sent, reply, onResult)
     }
 
@@ -183,9 +188,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, bottom = 6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
-                AttachmentActions(draftKey, model, enabled = !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, modifier = Modifier.zIndex(1f))
+                AttachmentActions(draftKey, model, enabled = !recording && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, onRecord = { focus.clearFocus(); keyboard?.hide(); recording = true }, modifier = Modifier.zIndex(1f))
                 GlassPill(Modifier.weight(1f), radius = 28) {
-                    Column {
+                    if (recording) RecordingComposer(draftKey, model, onClose = { recording = false }, onSend = {
+                        if (attachmentDraft.uncertain) confirmAttachmentRetry = true else submitMessage(true)
+                    })
+                    else Column {
                         PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
                         if (reply != null) Row(Modifier.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
@@ -205,7 +213,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                                 decorationBox = { inner -> Box { if (text.isEmpty()) Text("Message ${if (channel.kind == "direct") channel.name else "#${channel.name}"}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis); inner() } })
                             FilledIconButton(onClick = {
                                 if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
-                                else submitMessage()
+                                else submitMessage(false)
                             }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing,
                                 modifier = Modifier.size(48.dp)) {
                                 if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
@@ -220,7 +228,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     if (confirmAttachmentRetry) AlertDialog(onDismissRequest = { confirmAttachmentRetry = false },
         title = { Text("Retry sending attachments?") },
         text = { Text("The server may already have received the previous upload. Check the conversation first: sending again could duplicate it.") },
-        confirmButton = { TextButton(onClick = { confirmAttachmentRetry = false; submitMessage() }) { Text("Send again") } },
+        confirmButton = { TextButton(onClick = { confirmAttachmentRetry = false; submitMessage(false) }) { Text("Send again") } },
         dismissButton = { TextButton(onClick = { confirmAttachmentRetry = false }) { Text("Cancel") } })
 
     selected?.let { message -> ModalBottomSheet(onDismissRequest = { selected = null }) {

@@ -133,8 +133,11 @@ with ellipsis for long channel names; typed messages can still grow normally.
 
 The gallery and document picker grant access only to selected items. Capture
 uses the installed camera app and an app-private FileProvider destination.
-Voice notes request microphone permission, record AAC/M4A, and stop when the
-app leaves the foreground. Recordings attach to the draft before sending.
+Voice notes request microphone permission and replace the textbox with an
+inline recording bar: discard, elapsed time, measured microphone waveform,
+and Send. The waveform uses actual recorder peak amplitudes sampled every
+80 ms. Send stops and attaches AAC/M4A audio before dispatch; leaving the
+foreground stops recording and keeps the file in the draft without sending.
 
 Up to ten attachments can be staged. Private file copies and their metadata
 are saved per server/account/conversation, including across process death.
@@ -158,7 +161,7 @@ file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
 Still to port: full Markdown and custom emoji rendering, search,
-voice/video, FCM/background reconciliation, notifications, the full client
+voice/video calls, FCM/background reconciliation, notifications, the full client
 settings and server administration panels, account recovery, and release
 packaging. The established egui settings panels are the design reference for
 those ports; the Compose settings screen currently covers account, appearance,

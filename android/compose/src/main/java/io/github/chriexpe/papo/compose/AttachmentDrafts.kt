@@ -14,6 +14,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -61,6 +63,8 @@ internal class AttachmentDrafts(
     private val preferences = context.getSharedPreferences("compose-attachments", Context.MODE_PRIVATE)
     private val mutableDrafts = MutableStateFlow<Map<String, AttachmentDraft>>(emptyMap())
     val drafts = mutableDrafts.asStateFlow()
+    private val locks = mutableMapOf<String, Mutex>()
+    private fun lock(key: String) = locks.getOrPut(key) { Mutex() }
     private var initialized = false
     private val restored = scope.async(Dispatchers.IO) {
         preferences.all.mapNotNull { (key, value) ->
@@ -101,76 +105,83 @@ internal class AttachmentDrafts(
     }
     fun report(key: String, message: String) = scope.launch { ready(); update(key, get(key).copy(error = message)) }
     fun stage(key: String, uris: List<Uri>) = scope.launch {
-        ready()
-        if (uris.isEmpty()) return@launch
-        if (get(key).sending || get(key).preparing) { report(key, "Wait for the current attachment action to finish."); return@launch }
-        if (get(key).files.size + uris.size > 10) { report(key, "You can attach up to ten files to one message."); return@launch }
-        update(key, get(key).copy(preparing = true, error = ""))
-        val copied = mutableListOf<PendingAttachment>()
-        try {
-            withContext(Dispatchers.IO) { uris.forEach { copied += AttachmentFiles.copy(context, it) } }
-            update(key, get(key).copy(files = get(key).files + copied, preparing = false))
-            persist(key)
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) {
-            val retained = get(key).files.map { it.path }.toSet()
-            withContext(Dispatchers.IO) { copied.filter { it.path !in retained }.forEach { File(it.path).delete() } }
-            update(key, get(key).copy(preparing = false, error = e.message ?: "Couldn’t prepare these files"))
+        lock(key).withLock {
+            ready()
+            if (uris.isEmpty()) return@launch
+            if (get(key).sending || get(key).preparing) { report(key, "Wait for the current attachment action to finish."); return@launch }
+            if (get(key).files.size + uris.size > 10) { report(key, "You can attach up to ten files to one message."); return@launch }
+            update(key, get(key).copy(preparing = true, error = ""))
+            val copied = mutableListOf<PendingAttachment>()
+            try {
+                withContext(Dispatchers.IO) { uris.forEach { copied += AttachmentFiles.copy(context, it) } }
+                update(key, get(key).copy(files = get(key).files + copied, preparing = false))
+                persist(key)
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                val retained = get(key).files.map { it.path }.toSet()
+                withContext(Dispatchers.IO) { copied.filter { it.path !in retained }.forEach { File(it.path).delete() } }
+                update(key, get(key).copy(preparing = false, error = e.message ?: "Couldn’t prepare these files"))
+            }
         }
     }
-    fun finishCapture(key: String, keep: Boolean, name: String, stop: (Boolean) -> File?, onComplete: () -> Unit) = scope.launch {
+    fun finishCapture(key: String, keep: Boolean, name: String, stop: (Boolean) -> File?, onComplete: (Boolean) -> Unit) = scope.launch {
         val file = withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { stop(keep) }
-        if (keep) {
-            if (file != null) captured(key, file, name, "audio/mp4")
-            else report(key, "The recording was too short or couldn’t be saved. Try again.")
-        }
-        onComplete()
+        val staged = if (keep && file != null) addCaptured(key, file, name, "audio/mp4") else false
+        if (keep && file == null) report(key, "The recording was too short or couldn’t be saved. Try again.")
+        onComplete(staged)
     }
-    fun captured(key: String, file: File, name: String, mime: String) = scope.launch {
+    fun captured(key: String, file: File, name: String, mime: String) = scope.launch { addCaptured(key, file, name, mime) }
+    private suspend fun addCaptured(key: String, file: File, name: String, mime: String): Boolean = lock(key).withLock {
         ready()
         if (!AttachmentFiles.owns(context, file) || !file.isFile || file.length() == 0L) {
-            report(key, "The capture was empty. Try again."); return@launch
+            report(key, "The capture was empty. Try again."); return@withLock false
         }
-        if (get(key).files.size >= 10) { file.delete(); report(key, "You can attach up to ten files to one message."); return@launch }
+        if (get(key).files.size >= 10) { file.delete(); report(key, "You can attach up to ten files to one message."); return@withLock false }
         update(key, get(key).copy(files = get(key).files + PendingAttachment(file.absolutePath, name, mime, file.length()), error = ""))
-        runCatching { persist(key) }.onFailure { report(key, it.message ?: "Couldn’t save this attachment") }
+        try { persist(key); true }
+        catch (e: Exception) { report(key, e.message ?: "Couldn’t save this attachment"); false }
     }
     fun remove(key: String, file: PendingAttachment) = scope.launch {
-        ready()
-        if (get(key).sending || get(key).preparing) return@launch
-        update(key, get(key).copy(files = get(key).files - file, error = ""))
-        try {
-            persist(key)
-            withContext(Dispatchers.IO) { File(file.path).takeIf { AttachmentFiles.owns(context, it) }?.delete() }
-        } catch (e: Exception) { report(key, e.message ?: "Couldn’t remove this attachment") }
+        lock(key).withLock {
+            ready()
+            if (get(key).sending || get(key).preparing) return@launch
+            val remaining = get(key).files - file
+            update(key, get(key).copy(files = remaining, uncertain = get(key).uncertain && remaining.isNotEmpty(), error = ""))
+            try {
+                persist(key)
+                withContext(Dispatchers.IO) { File(file.path).takeIf { AttachmentFiles.owns(context, it) }?.delete() }
+            } catch (e: Exception) { report(key, e.message ?: "Couldn’t remove this attachment") }
+        }
     }
     fun send(key: String, server: ServerState, text: String, reply: String?, onResult: (Boolean) -> Unit) = scope.launch {
-        ready()
-        val draft = get(key)
-        if (draft.sending || draft.preparing || draft.files.isEmpty()) { onResult(false); return@launch }
-        update(key, draft.copy(sending = true, error = ""))
-        var dispatched = false
-        try {
-            // Persist the in-flight marker before dispatch. A restarted process
-            // cannot silently resend a POST whose outcome it never received.
-            persist(key)
-            dispatched = true
-            val result = upload(server, text, reply, draft.files)
-            if (result.accepted) {
-                update(key, get(key).copy(files = get(key).files - draft.files.toSet(), sending = false, uncertain = false, error = ""))
+        lock(key).withLock {
+            ready()
+            val draft = get(key)
+            if (draft.sending || draft.preparing || draft.files.isEmpty()) { onResult(false); return@launch }
+            update(key, draft.copy(sending = true, error = ""))
+            var dispatched = false
+            try {
+                // Persist the in-flight marker before dispatch. A restarted process
+                // cannot silently resend a POST whose outcome it never received.
                 persist(key)
-                withContext(Dispatchers.IO) { draft.files.forEach { File(it.path).takeIf { file -> AttachmentFiles.owns(context, file) }?.delete() } }
-                onResult(true)
-            } else {
-                update(key, get(key).copy(sending = false, uncertain = result.uncertain, error = result.error))
-                persist(key)
+                dispatched = true
+                val result = upload(server, text, reply, draft.files)
+                if (result.accepted) {
+                    update(key, get(key).copy(files = get(key).files - draft.files.toSet(), sending = false, uncertain = false, error = ""))
+                    persist(key)
+                    withContext(Dispatchers.IO) { draft.files.forEach { File(it.path).takeIf { file -> AttachmentFiles.owns(context, file) }?.delete() } }
+                    onResult(true)
+                } else {
+                    update(key, get(key).copy(sending = false, uncertain = result.uncertain, error = result.error))
+                    persist(key)
+                    onResult(false)
+                }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) {
+                update(key, get(key).copy(files = (get(key).files + draft.files).distinctBy { it.path }, sending = false, uncertain = dispatched || draft.uncertain, error = e.message ?: "The upload couldn’t be confirmed. Check the conversation before retrying."))
+                runCatching { persist(key) }
                 onResult(false)
             }
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) {
-            update(key, get(key).copy(files = (get(key).files + draft.files).distinctBy { it.path }, sending = false, uncertain = dispatched || draft.uncertain, error = e.message ?: "The upload couldn’t be confirmed. Check the conversation before retrying."))
-            runCatching { persist(key) }
-            onResult(false)
         }
     }
 }

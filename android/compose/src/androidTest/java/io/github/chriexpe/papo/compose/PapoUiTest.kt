@@ -182,14 +182,29 @@ class PapoUiTest {
         chat()
         compose.onNodeWithContentDescription("Open gallery").performTouchInput { longClick() }
         compose.onNodeWithText("Record audio").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Recording").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Send recording").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Live microphone waveform").assertIsDisplayed()
         android.os.SystemClock.sleep(1200)
-        compose.onNodeWithText("Stop and attach").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove Voice note ", substring = true).fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.onNodeWithContentDescription("Send recording").assertIsEnabled().performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Play Voice note ", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Play Voice note ", substring = true).performClick()
         compose.waitUntil(15_000) { compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready")).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun rotatingDuringRecordingKeepsTheVoiceNoteAndCaptionWithoutSending() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName, android.Manifest.permission.RECORD_AUDIO)
+        chat()
+        compose.onNode(hasSetTextAction()).performTextInput("Keep this caption")
+        compose.onNodeWithContentDescription("Open gallery").performTouchInput { longClick() }
+        compose.onNodeWithText("Record audio").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Send recording").fetchSemanticsNodes().isNotEmpty() }
+        android.os.SystemClock.sleep(1200)
+        activity.recreate()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove Voice note ", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNode(hasSetTextAction()).assertTextEquals("Keep this caption")
+        compose.onNodeWithContentDescription("Play Voice note ", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Remove Voice note ", substring = true).performClick()
     }
 
     @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {

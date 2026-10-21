@@ -56,11 +56,10 @@ import kotlinx.coroutines.withContext
 
 /** Anchored to the left of the composer; the roll-up overlays the timeline. */
 @Composable
-internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boolean, modifier: Modifier = Modifier) {
+internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boolean, onRecord: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var expanded by remember(key) { mutableStateOf(false) }
-    var recorder by remember(key) { mutableStateOf(false) }
     var cameraPath by rememberSaveable { mutableStateOf("") }
     var cameraKey by rememberSaveable { mutableStateOf("") }
     var pickerKey by rememberSaveable { mutableStateOf("") }
@@ -83,7 +82,7 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
         }
     }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
-        if (allowed) recorder = true
+        if (allowed) onRecord()
         else model.attachments.report(key, "Microphone permission is needed to record audio. You can enable it in Android settings.")
     }
     BackHandler(expanded) { expanded = false }
@@ -93,7 +92,7 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.width(184.dp)) {
                     AttachmentAction("Record audio", Icons.Outlined.Mic) {
                         expanded = false
-                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) recorder = true
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) onRecord()
                         else microphone.launch(Manifest.permission.RECORD_AUDIO)
                     }
                     AttachmentAction("Choose files", Icons.Outlined.AttachFile) {
@@ -128,7 +127,6 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
         }
     }
 
-    if (recorder) AudioRecordingDialog(key, model) { recorder = false }
 }
 
 @Composable
@@ -183,6 +181,7 @@ private class AudioCapture(private val context: Context) {
             input.prepare(); input.start()
         } catch (e: Exception) { stop(false); throw e }
     }
+    @Synchronized fun amplitude(): Int = runCatching { recorder?.maxAmplitude ?: 0 }.getOrDefault(0)
     @Synchronized fun stop(keep: Boolean): File? {
         val input = recorder ?: return null
         recorder = null
@@ -194,8 +193,9 @@ private class AudioCapture(private val context: Context) {
     }
 }
 
+/** Waveform bars are peaks measured from the active recorder, never animation fixtures. */
 @Composable
-private fun AudioRecordingDialog(key: String, model: PapoViewModel, close: () -> Unit) {
+internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () -> Unit, onSend: () -> Unit) {
     val context = LocalContext.current
     val capture = remember { AudioCapture(context.applicationContext) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -204,34 +204,61 @@ private fun AudioRecordingDialog(key: String, model: PapoViewModel, close: () ->
     var error by remember { mutableStateOf("") }
     var started by remember { mutableLongStateOf(0L) }
     var elapsed by remember { mutableLongStateOf(0L) }
-    val finish: (Boolean) -> Unit = { keep ->
+    val samples = remember { mutableStateListOf<Float>() }
+    val finish: (Boolean, Boolean) -> Unit = { keep, send ->
         if (!busy) {
             busy = true
-            model.attachments.finishCapture(key, keep, captureName("Voice note", "m4a"), capture::stop, close)
+            model.attachments.finishCapture(key, keep && recording, captureName("Voice note", "m4a"), capture::stop) { staged ->
+                onClose()
+                if (staged && send) onSend()
+            }
         }
     }
     val latestFinish by rememberUpdatedState(finish)
     LaunchedEffect(capture) {
         try { withContext(Dispatchers.IO) { capture.start() }; started = SystemClock.elapsedRealtime(); recording = true }
-        catch (e: Exception) { error = "Couldn’t start the microphone. Check its permission and try again." }
+        catch (e: kotlinx.coroutines.CancellationException) { throw e }
+        catch (e: Exception) { error = "Microphone unavailable" }
     }
-    LaunchedEffect(recording) {
-        while (recording) { elapsed = (SystemClock.elapsedRealtime() - started) / 1000; delay(250) }
+    LaunchedEffect(recording, busy) {
+        while (recording && !busy) {
+            elapsed = (SystemClock.elapsedRealtime() - started) / 1000
+            val peak = withContext(Dispatchers.IO) { capture.amplitude() }
+            samples.add(kotlin.math.sqrt(peak / 32767f).coerceIn(0f, 1f))
+            if (samples.size > 96) samples.removeAt(0)
+            delay(80)
+        }
     }
     DisposableEffect(capture, lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) latestFinish(true) }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) latestFinish(true, false) }
         lifecycle.addObserver(observer)
         onDispose {
             lifecycle.removeObserver(observer)
             if (!busy) { busy = true; model.attachments.finishCapture(key, true, captureName("Voice note", "m4a"), capture::stop) {} }
         }
     }
-    AlertDialog(onDismissRequest = { finish(false) }, icon = { Icon(Icons.Outlined.Mic, null, tint = MaterialTheme.colorScheme.error) },
-        title = { Text("Record audio") },
-        text = { Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-            if (error.isNotBlank()) Text(error)
-            else { Text("%d:%02d".format(elapsed / 60, elapsed % 60), style = MaterialTheme.typography.headlineLarge); Text(if (recording) "Recording" else "Starting microphone…", style = MaterialTheme.typography.bodyMedium) }
-        } },
-        confirmButton = { TextButton(onClick = { finish(true) }, enabled = recording && !busy) { Text("Stop and attach") } },
-        dismissButton = { TextButton(onClick = { finish(false) }, enabled = !busy) { Text("Cancel") } })
+    Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        IconButton(onClick = { finish(false, false) }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, "Discard recording", tint = MaterialTheme.colorScheme.error) }
+        Text("%d:%02d".format(elapsed / 60, elapsed % 60), style = MaterialTheme.typography.labelLarge,
+            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+        if (error.isNotEmpty()) Text(error, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        else {
+            val color = MaterialTheme.colorScheme.primary
+            androidx.compose.foundation.Canvas(Modifier.weight(1f).height(28.dp).semantics { contentDescription = "Live microphone waveform" }) {
+                val gap = 4.dp.toPx()
+                val count = (size.width / gap).toInt().coerceAtLeast(1)
+                val visible = samples.takeLast(count)
+                visible.forEachIndexed { index, level ->
+                    val x = size.width - (visible.size - index) * gap + gap / 2
+                    val half = (level * size.height / 2).coerceAtLeast(1.dp.toPx())
+                    drawLine(color, androidx.compose.ui.geometry.Offset(x, size.height / 2 - half),
+                        androidx.compose.ui.geometry.Offset(x, size.height / 2 + half), 2.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+                }
+            }
+        }
+        FilledIconButton(onClick = { finish(true, true) }, enabled = recording && !busy, modifier = Modifier.size(48.dp)) {
+            if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Outlined.ArrowUpward, "Send recording")
+        }
+    }
 }
