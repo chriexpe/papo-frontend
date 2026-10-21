@@ -105,6 +105,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val secrets = AndroidSecrets(application)
     private val handles = linkedMapOf<String, NativeClient>()
     private data class EmbedKey(val server: String, val account: String, val id: String, val revision: String, val author: Boolean)
+    private val waveforms = AudioWaveforms(application, viewModelScope)
     private val embedLock = Mutex()
     private val embedLoads = mutableMapOf<EmbedKey, Deferred<ByteArray>>()
     private val embedCache = object : LruCache<EmbedKey, ByteArray>(16 * 1024 * 1024) {
@@ -217,6 +218,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun mediaRequest(url: String, resource: MediaResource): MediaRequest = withContext(dispatcher) {
         (handles[url] ?: error("Server is closed")).mediaRequest(resource)
+    }
+
+    internal suspend fun audioWaveform(server: ServerState, resource: MediaResource): AudioWaveform {
+        val source = withContext(dispatcher) {
+            check(snapshots[server.url]?.me == server.me) { "Account changed" }
+            (handles[server.url] ?: error("Server is closed")).mediaRequest(resource)
+        }
+        return waveforms.load(source)
     }
 
     suspend fun embedImage(server: ServerState, id: String, revision: String, author: Boolean = false): ByteArray {

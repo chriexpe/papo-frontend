@@ -60,6 +60,7 @@ import io.github.chriexpe.papo.core.MediaRequest
 import io.github.chriexpe.papo.core.MediaResource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -82,20 +83,64 @@ internal object MediaNetwork {
         chain.proceed(builder.build())
     }.build()
 
-    suspend fun download(context: Context, source: MediaRequest, name: String): File = withContext(Dispatchers.IO) {
-        val directory = File(context.cacheDir, "media").apply { mkdirs() }
+    private fun fileKey(source: MediaRequest) = java.security.MessageDigest.getInstance("SHA-256").digest(source.cacheKey.toByteArray()).joinToString("") { "%02x".format(it) }
+    private val audioLock = Any()
+    private val audioPins = mutableMapOf<String, Int>()
+    private val audioCleanup = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+    internal class AudioFile(val file: File, private val release: () -> Unit) : java.io.Closeable {
+        private val closed = java.util.concurrent.atomic.AtomicBoolean()
+        override fun close() { if (closed.compareAndSet(false, true)) release() }
+    }
+    private fun audioFile(context: Context, source: MediaRequest) = File(File(context.cacheDir, "audio"), "${fileKey(source)}.bin")
+    private fun pin(file: File): AudioFile = synchronized(audioLock) {
+        audioPins[file.absolutePath] = (audioPins[file.absolutePath] ?: 0) + 1
+        AudioFile(file) {
+            synchronized(audioLock) {
+                val remaining = (audioPins[file.absolutePath] ?: 1) - 1
+                if (remaining > 0) audioPins[file.absolutePath] = remaining else audioPins.remove(file.absolutePath)
+            }
+            audioCleanup.launch { synchronized(audioLock) { trimAudio(file.parentFile!!) } }
+        }
+    }
+    fun existingAudio(context: Context, source: MediaRequest): AudioFile? = synchronized(audioLock) {
+        audioFile(context, source).takeIf { it.isFile }?.let { file -> file.setLastModified(System.currentTimeMillis()); pin(file) }
+    }
+    suspend fun downloadAudio(context: Context, source: MediaRequest): AudioFile {
+        val file = audioFile(context, source)
+        val lease = pin(file)
+        try {
+            downloadTo(context, source, "audio", requireNotNull(file.parentFile))
+            synchronized(audioLock) { trimAudio(file.parentFile!!) }
+            return lease
+        } catch (e: Exception) { lease.close(); throw e }
+    }
+    private fun trimAudio(directory: File) {
+        val files = directory.listFiles()?.filter { !it.name.endsWith(".part") }?.sortedBy { it.lastModified() }.orEmpty()
+        var bytes = files.sumOf { it.length() }
+        for (file in files) {
+            if (bytes <= 128L * 1024 * 1024) break
+            if (file.absolutePath !in audioPins) { val length = file.length(); if (file.delete()) bytes -= length }
+        }
+    }
+    suspend fun download(context: Context, source: MediaRequest, name: String): File = downloadTo(context, source, name, File(context.cacheDir, "media"))
+    private suspend fun downloadTo(context: Context, source: MediaRequest, name: String, directory: File): File = withContext(Dispatchers.IO) {
+        directory.mkdirs()
         val extension = name.substringAfterLast('.', "bin").filter(Char::isLetterOrDigit).take(12).ifBlank { "bin" }
-        val key = java.security.MessageDigest.getInstance("SHA-256").digest(source.cacheKey.toByteArray()).joinToString("") { "%02x".format(it) }
-        val file = File(directory, "$key.$extension")
-        if (file.isFile) return@withContext file
+        val file = File(directory, "${fileKey(source)}.$extension")
+        if (file.isFile) { file.setLastModified(System.currentTimeMillis()); return@withContext file }
         val partial = File.createTempFile("download-", ".part", directory)
+        val work = kotlinx.coroutines.currentCoroutineContext()
+        fun copy(input: java.io.InputStream, output: java.io.OutputStream) {
+            val buffer = ByteArray(64 * 1024)
+            while (true) { work.ensureActive(); val read = input.read(buffer); if (read < 0) break; output.write(buffer, 0, read) }
+        }
         try {
             partial.outputStream().use { output ->
-                if (source.url.startsWith("file:///android_asset/")) context.assets.open(source.url.removePrefix("file:///android_asset/")).use { it.copyTo(output) }
-                else if (source.origin == "demo" && source.url.startsWith("file://")) File(requireNotNull(Uri.parse(source.url).path)).inputStream().use { it.copyTo(output) }
+                if (source.url.startsWith("file:///android_asset/")) context.assets.open(source.url.removePrefix("file:///android_asset/")).use { copy(it, output) }
+                else if (source.origin == "demo" && source.url.startsWith("file://")) File(requireNotNull(Uri.parse(source.url).path)).inputStream().use { copy(it, output) }
                 else client(source).newCall(Request.Builder().url(source.url).build()).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Couldn’t download this file (${response.code})")
-                    response.body?.byteStream()?.use { it.copyTo(output) } ?: throw IOException("The file is empty")
+                    response.body?.byteStream()?.use { copy(it, output) } ?: throw IOException("The file is empty")
                 }
             }
             if (!partial.renameTo(file)) throw IOException("Couldn’t save this file")
@@ -150,8 +195,16 @@ private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewMo
         }
         "video", "audio" -> {
             val id = "${server.url}/${server.me}/attachment/${a.id}"
-            if (a.kind == "audio") Box(Modifier.fillMaxWidth().height(104.dp).testTag("audio-attachment-${a.id}").clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
-                PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, MediaResource.Attachment(a.id, false), audio = true)
+            if (a.kind == "audio") {
+                val resource = MediaResource.Attachment(a.id, false)
+                val waveform by produceState(WaveformState(), server.url, server.me, a.id) {
+                    try { value = WaveformState(model.audioWaveform(server, resource)) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { value = WaveformState(failed = true) }
+                }
+                Box(Modifier.fillMaxWidth().height(104.dp).testTag("audio-attachment-${a.id}").clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
+                    PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, resource, audio = true, waveform = waveform)
+                }
             } else ReservedMedia(0, 0, tag = "attachment-${a.id}") {
                 PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, MediaResource.Attachment(a.id, false),
                     poster = if (a.thumbnail) MediaResource.Attachment(a.id, true) else null)
@@ -297,13 +350,18 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null) {
+private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState()) {
+    var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
-        if (audio) Row(Modifier.fillMaxSize().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (audio) Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FilledIconButton(onClick = activate, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.PlayArrow, "Play $title") }
             Column(Modifier.weight(1f)) {
                 Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                Text("Audio", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                AudioWaveformSeek(waveform, 0f, waveform.data != null, id, { initialSeek = it; activate() }, Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("0:00", style = MaterialTheme.typography.labelSmall)
+                    Text(waveform.data?.durationMs?.let(::audioTime) ?: "—:—", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         } else {
             if (poster != null || embedPoster != null) MediaImage(server, model, title, resource = poster, embed = embedPoster, viewer = false)
@@ -321,26 +379,33 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = "Media unavailable. Tap to retry." }
     }
+    val cachedAudio = remember(source, audio) { source?.takeIf { audio }?.let { MediaNetwork.existingAudio(context, it) } }
     val player = remember(source) { source?.let { request ->
         val http = OkHttpDataSource.Factory(MediaNetwork.client(request))
         val factory = DefaultDataSource.Factory(context, http)
         ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(factory)).build().apply {
-            setMediaItem(MediaItem.fromUri(request.url)); playWhenReady = true; prepare()
+            setMediaItem(MediaItem.fromUri(cachedAudio?.file?.let(Uri::fromFile) ?: Uri.parse(request.url))); playWhenReady = true; prepare()
         }
     } }
     DisposableEffect(player, lifecycle) {
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) { error = "Playback failed. Tap to retry." }
-            override fun onPlaybackStateChanged(state: Int) { ready = state == Player.STATE_READY || state == Player.STATE_ENDED }
+            override fun onPlaybackStateChanged(state: Int) {
+                ready = state == Player.STATE_READY || state == Player.STATE_ENDED
+                if (state == Player.STATE_READY && initialSeek != null && player != null && player.duration > 0) {
+                    val fraction = initialSeek!!; initialSeek = null
+                    player.seekTo((fraction * player.duration).toLong())
+                }
+            }
         }
         player?.addListener(listener)
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) player?.pause() }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); player?.release() }
+        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); player?.release(); cachedAudio?.close() }
     }
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     else Box(Modifier.fillMaxSize().testTag("player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
-        if (audio) AudioControls(player, title)
+        if (audio) AudioControls(player, title, waveform, id)
         else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = { it.player = player }, modifier = Modifier.fillMaxSize())
     }
     if (error.isNotBlank()) Column(Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -351,11 +416,10 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
 
 /** Audio has its own controls and never creates a video surface. */
 @Composable
-private fun AudioControls(player: Player, title: String) {
+private fun AudioControls(player: Player, title: String, waveform: WaveformState, id: String) {
     var playing by remember(player) { mutableStateOf(player.isPlaying) }
     var position by remember(player) { mutableLongStateOf(0) }
-    var duration by remember(player) { mutableLongStateOf(0) }
-    var seek by remember(player) { mutableStateOf<Float?>(null) }
+    var duration by remember(player) { mutableLongStateOf(waveform.data?.durationMs ?: 0) }
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
@@ -366,7 +430,7 @@ private fun AudioControls(player: Player, title: String) {
     LaunchedEffect(player) {
         while (true) {
             position = player.currentPosition.coerceAtLeast(0)
-            duration = player.duration.coerceAtLeast(0)
+            duration = player.duration.takeIf { it > 0 } ?: waveform.data?.durationMs ?: 0
             delay(250)
         }
     }
@@ -380,12 +444,10 @@ private fun AudioControls(player: Player, title: String) {
         }
         Column(Modifier.weight(1f)) {
             Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
-            Slider(value = (seek ?: position.toFloat()).coerceIn(0f, duration.coerceAtLeast(1).toFloat()),
-                onValueChange = { seek = it }, onValueChangeFinished = { seek?.let { player.seekTo(it.toLong()) }; seek = null },
-                valueRange = 0f..duration.coerceAtLeast(1).toFloat(), enabled = duration > 0,
-                modifier = Modifier.fillMaxWidth().semantics { contentDescription = "Audio position" })
+            AudioWaveformSeek(waveform, if (duration > 0) position.toFloat() / duration else 0f, duration > 0, id,
+                onSeek = { fraction -> val target = (fraction * duration).toLong(); player.seekTo(target); position = target }, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(audioTime((seek?.toLong() ?: position)), style = MaterialTheme.typography.labelSmall)
+                Text(audioTime(position), style = MaterialTheme.typography.labelSmall)
                 Text(audioTime(duration), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
