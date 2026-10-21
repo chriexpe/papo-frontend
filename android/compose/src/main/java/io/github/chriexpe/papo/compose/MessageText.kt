@@ -5,6 +5,13 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.runtime.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.text.*
@@ -13,6 +20,7 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 internal fun MessageText(content: String, server: ServerState, model: PapoViewModel) {
+    var detail by remember(server.url,server.me) {mutableStateOf<String?>(null)}
     val color=MaterialTheme.colorScheme.primary
     val customs=remember(server.emojis) { server.emojis.associateBy { it.name } }
     val pattern=remember {Regex("https?://[^\\s<>]+|@mention\\(<@(?<person>[^>\\s]+)>\\)|:(?<sticker>[A-Za-z0-9_+\\-]+):")}
@@ -21,7 +29,9 @@ internal fun MessageText(content: String, server: ServerState, model: PapoViewMo
     val size=if(sticker) 72.sp else 24.sp
     val inline=matches.filter {it.value.startsWith(":")}.associate {m ->
         val e=customs.getValue(requireNotNull(m.groups["sticker"]?.value))
-        e.id to InlineTextContent(Placeholder(size,size,PlaceholderVerticalAlign.TextCenter)) { EmojiGlyph(server,EmojiChoice(e.id,true,e.name),if(sticker) 72 else 24,model) }
+        e.id to InlineTextContent(Placeholder(size,size,PlaceholderVerticalAlign.TextCenter)) {
+            Box(Modifier.fillMaxSize().testTag("message-sticker-${e.id}").clickable(onClickLabel="View sticker :${e.name}:") {detail=e.id},contentAlignment=Alignment.Center) {EmojiGlyph(server,EmojiChoice(e.id,true,e.name),if(sticker) 72 else 24,model)}
+        }
     }
     val text=remember(content,matches,color,server.members) { buildAnnotatedString {
         var end=0
@@ -38,4 +48,5 @@ internal fun MessageText(content: String, server: ServerState, model: PapoViewMo
         append(content.substring(end))
     } }
     SelectionContainer {Text(text,inlineContent=inline,style=MaterialTheme.typography.bodyLarge,lineHeight=if(sticker) 80.sp else 26.sp)}
+    detail?.let {id -> StickerDetails(server,model,id,onDismiss={detail=null})}
 }

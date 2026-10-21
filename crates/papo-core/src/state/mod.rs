@@ -954,11 +954,6 @@ impl Store {
     /// resolvido quando aquele nickname/display name identifica uma única
     /// pessoa no servidor.
     pub fn encode_mentions(&self, text: &str, bindings: &[MentionBinding]) -> String {
-        if self.channel(&self.selected_channel)
-            .is_some_and(|channel| channel.kind == ChannelKind::Direct)
-        {
-            return text.to_owned();
-        }
         let chars: Vec<char> = text.chars().collect();
         let mut bindings_by_start: HashMap<usize, &MentionBinding> =
             bindings.iter().map(|binding| (binding.start, binding)).collect();

@@ -7,6 +7,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -268,9 +269,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp)) {
             Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
-                val frequent=(expressions.usage.map {it.first}.filter { !it.custom || server.emojis.any { e->e.id==it.value } } + server.emojis.map {EmojiChoice(it.id,true,it.name)} + listOf("👍","❤️","😂","🎉","👀").map {EmojiChoice(it)}).distinctBy {it.key}.take(5)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    frequent.forEach { emoji -> IconButton(onClick = { model.react(server,message,emoji); selected=null },modifier=Modifier.semantics {contentDescription="React with ${emoji.token}"}) { EmojiGlyph(server,emoji,28,model) } }
+                val favorites=expressions.favoriteStickers.mapNotNull {id -> server.emojis.firstOrNull {it.id==id}?.let {EmojiChoice(it.id,true,it.name)}}
+                val frequent=favorites + (expressions.usage.map {it.first}.filter { !it.custom || server.emojis.any { e->e.id==it.value } } + server.emojis.map {EmojiChoice(it.id,true,it.name)} + listOf("👍","❤️","😂","🎉","👀").map {EmojiChoice(it)}).distinctBy {it.key}.filter {e -> favorites.none {it.key==e.key}}.take(5)
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+                    LazyRow(Modifier.weight(1f),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                        items(frequent,key={it.key}) { emoji -> IconButton(onClick = { model.react(server,message,emoji); selected=null },modifier=Modifier.semantics {contentDescription="React with ${emoji.token}"}) { EmojiGlyph(server,emoji,28,model) } }
+                    }
                     IconButton(onClick={emojiTarget=message; selected=null; emojiPicker=true}) {Icon(Icons.Outlined.AddReaction,"More reactions")}
                 }
                 SheetAction("Reply", Icons.Outlined.Reply) { reply = message.id; selected = null }

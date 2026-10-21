@@ -78,7 +78,17 @@ class PapoUiTest {
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString(":papo_wave: ")))
         compose.onNodeWithContentDescription("Send message").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription(":papo_wave:",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onAllNodesWithTag("message-sticker-demo-wave").onFirst().performClick()
+        compose.onNodeWithTag("sticker-details").assertIsDisplayed()
+        compose.onNodeWithText("Copy name").performClick()
+        compose.onNodeWithText("Copied").assertExists()
+        val clipboard=InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("papo_wave",clipboard.primaryClip?.getItemAt(0)?.text.toString())
+        compose.onNodeWithText("Favorite",substring=false).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithText("Favorited").fetchSemanticsNodes().isNotEmpty()}
+        androidx.test.espresso.Espresso.pressBack()
         compose.onAllNodesWithContentDescription("Message actions").onFirst().performClick()
+        compose.onNodeWithContentDescription("React with :papo_wave:").assertIsDisplayed()
         compose.onNodeWithContentDescription("More reactions").performClick()
         compose.onNodeWithTag("emoji-picker").assertIsDisplayed()
         compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()

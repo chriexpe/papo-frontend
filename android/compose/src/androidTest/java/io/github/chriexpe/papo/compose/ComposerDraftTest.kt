@@ -33,6 +33,8 @@ class ComposerDraftTest {
             val picked=initial.insert("@Ana",initial.trigger(),ana)
             assertEquals(3,picked.mentions.single().start)
             assertEquals("🙂 @mention(<@ana>) ",client.encodeMessage(picked.text,picked.mentions.map {it.native(picked.text)}))
+            client.dispatch(io.github.chriexpe.papo.core.Action.OpenDm("ana"))
+            assertEquals("🙂 @mention(<@ana>) ",client.encodeMessage(picked.text,picked.mentions.map {it.native(picked.text)}))
             val shifted=picked.edited(TextFieldValue("hello "+picked.text,TextRange(0)))
             assertEquals(9,shifted.mentions.single().start)
             val altered=picked.edited(TextFieldValue("🙂 @Anna "))

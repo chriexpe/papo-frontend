@@ -33,7 +33,7 @@ internal data class GifChoice(
         .put("preview", preview).put("width", width).put("height", height).put("attachment", attachment)
         .put("embed", embed).put("revision", revision).put("path", path)
 }
-internal data class ExpressionState(val favorites: List<GifChoice> = emptyList(), val recent: List<GifChoice> = emptyList(), val usage: List<Pair<EmojiChoice, Int>> = emptyList())
+internal data class ExpressionState(val favorites: List<GifChoice> = emptyList(), val recent: List<GifChoice> = emptyList(), val usage: List<Pair<EmojiChoice, Int>> = emptyList(), val favoriteStickers: List<String> = emptyList())
 
 /** Private, account-scoped library. Saved attachment/relay GIFs keep an owned
  * copy so a favorite still works if the source message disappears. */
@@ -51,12 +51,13 @@ internal class ExpressionLibrary(private val context: Context) {
         val j = runCatching { JSONObject(preferences.getString(owner, "{}")!!) }.getOrDefault(JSONObject())
         val usage = j.optJSONArray("usage") ?: JSONArray()
         val result = ExpressionState(decode(j.optJSONArray("favorites") ?: JSONArray()), decode(j.optJSONArray("recent") ?: JSONArray()),
-            (0 until usage.length()).mapNotNull { i -> runCatching { val e=usage.getJSONObject(i); EmojiChoice(e.getString("value"),e.getBoolean("custom"),e.getString("name")) to e.getInt("count") }.getOrNull() })
+            (0 until usage.length()).mapNotNull { i -> runCatching { val e=usage.getJSONObject(i); EmojiChoice(e.getString("value"),e.getBoolean("custom"),e.getString("name")) to e.getInt("count") }.getOrNull() },
+            (j.optJSONArray("stickerFavorites") ?: JSONArray()).let {a -> (0 until a.length()).map {a.getString(it)}})
         mutable.value = mutable.value + (owner to result)
         return result
     }
     private fun save(owner: String, state: ExpressionState) {
-        val j = JSONObject().put("favorites", JSONArray().apply { state.favorites.forEach { put(it.json()) } })
+        val j = JSONObject().put("stickerFavorites",JSONArray(state.favoriteStickers)).put("favorites", JSONArray().apply { state.favorites.forEach { put(it.json()) } })
             .put("recent", JSONArray().apply { state.recent.forEach { put(it.json()) } })
             .put("usage",JSONArray().apply { state.usage.forEach { (e,n) -> put(JSONObject().put("value",e.value).put("custom",e.custom).put("name",e.name).put("count",n)) } })
         check(preferences.edit().putString(owner,j.toString()).commit()) { "Couldn’t save your expression library" }
@@ -66,6 +67,10 @@ internal class ExpressionLibrary(private val context: Context) {
         val s=state(owner); val usage=s.usage.toMutableList()
         choices.forEach { e -> val old=usage.firstOrNull { it.first.key==e.key }; usage.removeAll { it.first.key==e.key }; usage.add(0,e to ((old?.second ?: 0)+1).coerceAtMost(1_000_000)) }
         save(owner,s.copy(usage=usage.sortedByDescending { it.second }.take(200)))
+    }
+    @Synchronized fun favoriteSticker(owner:String,id:String) {
+        val s=state(owner)
+        save(owner,s.copy(favoriteStickers=if(id in s.favoriteStickers) s.favoriteStickers-id else listOf(id)+s.favoriteStickers))
     }
     @Synchronized fun recent(owner: String, gif: GifChoice) { val s=state(owner); save(owner,s.copy(recent=(listOf(gif)+s.recent.filter { it.key!=gif.key }).take(50))); prune(owner) }
     @Synchronized fun favorite(owner: String, gif: GifChoice) {

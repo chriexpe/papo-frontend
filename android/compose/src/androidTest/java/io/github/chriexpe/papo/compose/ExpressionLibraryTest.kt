@@ -14,9 +14,11 @@ class ExpressionLibraryTest {
         val a=GifChoice("giphy:first","First",providerId="first")
         val b=GifChoice("giphy:second","Second",providerId="second")
         try {
+            library.favoriteSticker(owner,"demo-wave")
             library.favorite(owner,a); library.recent(owner,a); library.recent(owner,b); library.recent(owner,a)
             library.used(owner,listOf(EmojiChoice("👍"),EmojiChoice("wave",true,"wave"),EmojiChoice("wave",true,"wave")))
             val restored=ExpressionLibrary(context)
+            assertEquals(listOf("demo-wave"),restored.state(owner).favoriteStickers)
             assertEquals(listOf(a),restored.state(owner).favorites)
             assertEquals(listOf(a,b),restored.state(owner).recent)
             assertEquals("c:wave",restored.state(owner).usage.first().first.key)

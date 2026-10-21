@@ -170,7 +170,8 @@ Selection replaces the token at the cursor, inserts exactly one trailing space,
 and keeps editing focus. Mention labels are bold/accent-colored and retain
 stable user IDs, including duplicate display names and UTF-16/Unicode offsets.
 Bindings survive draft restoration and are invalidated if their label is edited.
-The wire format comes from core’s mention encoder. Sticker tokens render as real
+The wire format comes from core’s mention encoder, including in direct messages;
+DMs no longer discard the selected identity. Sticker tokens render as real
 animated images in the editor’s measured text layout; cursor mapping, wrapping,
 scrolling and atomic backspace use that same layout. Images stop animating when
 the composer leaves the foreground. Decode failures retain editable `:name:` text.
@@ -190,8 +191,11 @@ can be attached again even if the original message is deleted. Recent is updated
 after a send is accepted, excluding selected attachments removed before sending.
 The picker stages content in the existing draft; it never sends on selection.
 
-Holding a message shows the five most-used emoji (including phone and animated
-server emoji) and More reactions, which opens the same picker. Tap a reaction chip
+Tapping a sticker in chat opens its details sheet: animated image, name,
+Favorite and Copy name. Copy name copies the exact server name without colons;
+favorites persist per server/account. Holding a message shows favorite stickers
+first, then the five most-used emoji (including phone and animated server emoji).
+The row scrolls when needed, and More reactions opens the same picker. Tap a reaction chip
 to add/remove yours; hold it to see people, with pagination. Only your own reactions
 have the blue background. The live adapter updates its own-reaction flag together
 with the count, serializes HTTP changes per message/emoji, coalesces rapid taps,
