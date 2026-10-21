@@ -55,6 +55,15 @@ impl Demo {
             {"id":"dora","username":"dora","nickname":"Dora","status":"busy"}
         ]))));
         use base64::Engine;
+        let avatar = base64::engine::general_purpose::STANDARD.encode(include_bytes!(
+            "../../../android/compose/src/main/assets/demo/portrait.png"
+        ));
+        store.apply(Update::Profiles(decode(json!([
+            {"id":"ana","username":"ana","nickname":"Ana","avatar_blob":avatar,"banner_media":"demo-banner","description":"Design, café e boas conversas.\nConstruindo pequenos detalhes no Papo.","status_message":"Desenhando ideias","created_at":"2026-01-15T12:00:00Z","roles":[{"id":"designers","name":"Designers","color":"#67B989","position":1}]},
+            {"id":"me","username":"christian","nickname":"Christian","avatar_blob":null,"description":"Construindo o Papo para Android.","created_at":"2025-10-02T12:00:00Z","roles":[]},
+            {"id":"bruno","username":"bruno","nickname":"Bruno","roles":[]},
+            {"id":"dora","username":"dora","nickname":"Dora","roles":[]}
+        ]))));
         store.apply(Update::Emojis(vec![models::Emoji {
             id: "demo-wave".into(),
             name: "papo_wave".into(),
@@ -184,6 +193,13 @@ impl Demo {
             has_more: false,
             pinned_ids: None,
         });
+        for member in &mut store.members {
+            member.presence=match member.id.as_str() {
+                "bruno"=>papo_core::state::Presence::Away,
+                "dora"=>papo_core::state::Presence::Busy,
+                _=>papo_core::state::Presence::Online,
+            };
+        }
         store.selected_channel = "general".into();
         store.screen = Screen::Chat;
         store.connection = Connection::Online;
@@ -305,6 +321,7 @@ impl Demo {
                 );
                 self.store.apply(Update::DirectMessageOpened(Box::new(dm)));
             }
+            Action::LoadProfile { .. } => {}
             Action::Send {
                 local_id,
                 channel_id,
@@ -456,6 +473,40 @@ fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiles_project_metadata_and_invalidate_removed_avatars() {
+        let client = crate::bindings::NativeClient::demo();
+        let snapshot = client.poll().unwrap();
+        let ana = snapshot.profiles.iter().find(|p| p.id == "ana").unwrap();
+        assert!(ana.loaded);
+        assert!(!ana.avatar_revision.is_empty());
+        assert_eq!(ana.roles[0].name, "Designers");
+        assert_eq!(ana.banner, "demo-banner");
+        assert!(
+            client
+                .avatar_image("ana".into())
+                .unwrap()
+                .starts_with(b"\x89PNG")
+        );
+        assert!(client.avatar_image("missing".into()).is_err());
+        let request = client
+            .media_request(media::MediaResource::ProfileBanner {
+                user_id: "ana".into(),
+            })
+            .unwrap();
+        assert!(request.url.ends_with("landscape.png"));
+        assert!(request.headers.is_empty());
+        let mut demo = Demo::new();
+        demo.store.apply(Update::Profiles(decode(
+            json!([{"id":"ana","username":"ana","avatar_blob":null,"roles":[]}]),
+        )));
+        let after: crate::bindings::ClientSnapshot = serde_json::from_value(demo.poll()).unwrap();
+        let ana = after.profiles.iter().find(|p| p.id == "ana").unwrap();
+        assert!(ana.avatar_revision.is_empty());
+        assert!(ana.banner.is_empty());
+        assert!(ana.roles.is_empty());
+    }
     #[test]
     fn demo_uses_core_reduction_and_never_creates_a_real_session() {
         let mut demo = Demo::new();

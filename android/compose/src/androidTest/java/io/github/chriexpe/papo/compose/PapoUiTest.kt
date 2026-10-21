@@ -69,6 +69,44 @@ class PapoUiTest {
         }
     }
 
+    @Test fun chatProfilesShowImagesAndHeldAuthorsInsertMentions() {
+        chat()
+        compose.onNodeWithTag("author-general-9",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+        compose.onNodeWithText("@ana",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("Designers").assertIsDisplayed()
+        compose.onNodeWithText("Desenhando ideias").assertIsDisplayed()
+        compose.onNodeWithText("Design, café e boas conversas.",substring=true).assertIsDisplayed()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("avatar-ana") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Avatar loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()?.let {image ->
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("profile-preview.png").outputStream().use {image.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+        }
+        compose.onNodeWithText("Copy username").performClick()
+        compose.onNodeWithText("Copied username").assertIsDisplayed()
+        val clipboard=InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("ana",clipboard.primaryClip?.getItemAt(0)?.text.toString())
+        compose.onNodeWithContentDescription("Close profile").performClick()
+        compose.onNodeWithTag("author-general-9",useUnmergedTree=true).performTouchInput {longClick()}
+        compose.onNodeWithTag("user-profile").assertDoesNotExist()
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana ")))
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performTouchInput {longClick()}
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana @Ana ")))
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+    }
+
+    @Test fun peopleOpenProfilesBeforeStartingDirectMessages() {
+        demo()
+        compose.onNodeWithText("People",substring=false).performClick()
+        compose.onNodeWithText("Ana",substring=false).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+        compose.onNodeWithText("Message @ana").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("Ana")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("user-profile").assertDoesNotExist()
+    }
+
     @Test fun serverStickersInsertAnimateAndAppearInSharedReactionPicker() {
         chat()
         compose.onNodeWithContentDescription("Emoji and stickers").performClick()

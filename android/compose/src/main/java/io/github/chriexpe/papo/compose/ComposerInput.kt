@@ -176,7 +176,7 @@ internal fun ComposerSuggestions(draft:ComposerDraft, server:ServerState, model:
     GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
         LazyColumn(Modifier.heightIn(max=216.dp).testTag("composer-suggestions"),contentPadding=PaddingValues(6.dp)) {
             items(people,key={"person/${it.id}"}) {person ->
-                SuggestionRow(person.name,person.username,{Avatar(person.name)},"Mention ${person.name}") {onPick(draft.insert("@${person.name}",trigger,person))}
+                SuggestionRow(person.name,person.username,{UserAvatar(person.id,person.name)},"Mention ${person.name}") {onPick(draft.insert("@${person.name}",trigger,person))}
             }
             items(stickers,key={"sticker/${it.id}"}) {e ->
                 SuggestionRow(":${e.name}:","Server sticker",{EmojiGlyph(server,EmojiChoice(e.id,true,e.name),36,model)},"Insert :${e.name}:") {onPick(draft.insert(":${e.name}:",trigger))}

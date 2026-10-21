@@ -10,6 +10,7 @@ use serde::Deserialize;
 pub enum MediaResource {
     Attachment { id: String, thumbnail: bool },
     EmbedVideo { id: String },
+    ProfileBanner { user_id: String },
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct MediaRequest {
@@ -206,6 +207,15 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
                 if thumbnail { "thumbnail" } else { "attachment" },
             )
         }
+        MediaResource::ProfileBanner { user_id } => {
+            let sha = runtime
+                .store
+                .profiles
+                .get(&user_id)
+                .and_then(|p| p.banner.clone())
+                .ok_or("Profile banner is unavailable")?;
+            (sha.clone(), vec!["media".into(), sha], "profile-banner")
+        }
         MediaResource::EmbedVideo { id } => {
             check_embed(runtime, &id)?;
             let embed = runtime
@@ -291,6 +301,7 @@ pub fn demo_request(resource: MediaResource) -> Result<MediaRequest, String> {
             (id, file)
         }
         MediaResource::EmbedVideo { id } if id == "embed-video" => (id, "clip.mp4"),
+        MediaResource::ProfileBanner { user_id } if user_id == "ana" => (user_id, "landscape.png"),
         _ => return Err("Demo media not found".into()),
     };
     Ok(MediaRequest {
@@ -321,16 +332,25 @@ mod tests {
         let mut embed: LinkPreview = serde_json::from_value(serde_json::json!({
             "id":"direct", "url":"https://cdn.example/photo.png?sig=abc", "title":"Image title",
             "image":{"mime_type":"image/png","width":600,"height":400}
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(EmbedView::from(&embed).native_media);
-        embed.source_type=Some("custom".into());
+        embed.source_type = Some("custom".into());
         assert!(!EmbedView::from(&embed).native_media);
-        embed.source_type=Some("link".into());
-        embed.url=Some("https://example/article".into());
+        embed.source_type = Some("link".into());
+        embed.url = Some("https://example/article".into());
         assert!(!EmbedView::from(&embed).native_media);
-        embed.image.as_mut().unwrap().url=embed.url.clone();
-        assert!(EmbedView::from(&embed).native_media, "Opaque media URLs are confirmed by matching media metadata");
-        embed.video=Some(serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/embed/abc123"})).unwrap());
+        embed.image.as_mut().unwrap().url = embed.url.clone();
+        assert!(
+            EmbedView::from(&embed).native_media,
+            "Opaque media URLs are confirmed by matching media metadata"
+        );
+        embed.video = Some(
+            serde_json::from_value(
+                serde_json::json!({"url":"https://www.youtube.com/embed/abc123"}),
+            )
+            .unwrap(),
+        );
         assert!(!EmbedView::from(&embed).native_media);
     }
 
@@ -339,9 +359,10 @@ mod tests {
         let embed: LinkPreview = serde_json::from_value(serde_json::json!({
             "id":"gif", "url":"https://cdn.example/opaque", "thumbnail":{"mime_type":"image/png"},
             "image":{"mime_type":"IMAGE/GIF; charset=binary"}
-        })).unwrap();
-        let view=EmbedView::from(&embed);
-        assert_eq!(view.kind,"gif");
+        }))
+        .unwrap();
+        let view = EmbedView::from(&embed);
+        assert_eq!(view.kind, "gif");
         assert!(view.native_media);
     }
 

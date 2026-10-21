@@ -46,6 +46,9 @@ pub enum Action {
     OpenDm {
         user_id: String,
     },
+    LoadProfile {
+        user_id: String,
+    },
     Send {
         local_id: String,
         channel_id: String,
@@ -410,6 +413,7 @@ impl Client {
                 return Ok(());
             }
             Action::OpenDm { user_id } => Command::OpenDirectMessage { user_id },
+            Action::LoadProfile { user_id } => Command::LoadProfile { user_id },
             Action::Send {
                 local_id,
                 channel_id,
@@ -722,7 +726,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let dms: Vec<_> = s
         .direct_messages
         .iter()
-        .map(|dm| json!({ "id": dm.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": dm.unread_count > 0, "mentions": dm.unread_count }))
+        .map(|dm| json!({ "id": dm.id, "userId":dm.user.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": dm.unread_count > 0, "mentions": dm.unread_count }))
         .collect();
     json!({ "version": 1, "url": url, "key": key,
         "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
@@ -732,6 +736,20 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name})).collect::<Vec<_>>(),
         "reactionDetails": s.reaction_details.iter().map(|(id, groups)| json!({"messageId":id,"groups":groups.iter().map(|g| json!({"emoji":g.emoji_id.as_ref().or(g.unicode.as_ref()).cloned().unwrap_or_default(),"custom":g.emoji_id.is_some(),"users":g.users.iter().map(|u| json!({"id":u.user_id,"name":s.members.iter().find(|m|m.id==u.user_id).map(|m|m.name.as_str()).unwrap_or(&u.user_id)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"more":s.reaction_details_has_more.get(id).copied().unwrap_or(false)})).collect::<Vec<_>>(),
         "reactionLoading": s.reaction_details_loading.iter().collect::<Vec<_>>(),
+        "profiles": s.members.iter().map(|u| {
+            use std::hash::{Hash, Hasher};
+            let details=s.profiles.get(&u.id);
+            let revision=s.avatars.get(&u.id).map(|blob| {
+                let mut hash=std::collections::hash_map::DefaultHasher::new();
+                blob.hash(&mut hash); format!("{:016x}",hash.finish())
+            }).unwrap_or_default();
+            json!({"id":u.id,"avatarRevision":revision,"loaded":details.is_some(),
+                "banner":details.and_then(|p|p.banner.as_deref()).unwrap_or_default(),
+                "description":details.and_then(|p|p.description.as_deref()).unwrap_or_default(),
+                "createdAt":details.and_then(|p|p.created_at).map(|at|at.to_rfc3339()).unwrap_or_default(),
+                "statusMessage":u.status_message.as_deref().unwrap_or_default(),
+                "roles":details.map(|p|p.roles.iter().map(|r|json!({"id":r.id,"name":r.name,"color":r.color.as_deref().unwrap_or_default()})).collect::<Vec<_>>()).unwrap_or_default()})
+        }).collect::<Vec<_>>(),
         "messages": messages, "members": members, "dms": dms, "typing": s.typing_names(), "locked": s.locked,
         "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
         "browsingHistory":s.browsing_history(&s.selected_channel), "loadingContext":s.loading_message_context(&s.selected_channel),

@@ -141,6 +141,7 @@ internal fun GifPicker(server: ServerState, model: PapoViewModel, onDismiss: ()-
 @Composable
 internal fun ReactionPeople(server: ServerState, model: PapoViewModel, messageId: String, initial: EmojiChoice, onDismiss: ()->Unit) {
     val message=server.messages.firstOrNull {it.id==messageId}
+    val openProfile=LocalOpenProfile.current
     var selected by remember(messageId) { mutableStateOf(initial) }
     val details=server.reactionDetails.firstOrNull {it.messageId==messageId}
     val loading=messageId in server.reactionLoading
@@ -156,7 +157,7 @@ internal fun ReactionPeople(server: ServerState, model: PapoViewModel, messageId
                 TextButton(onClick={model.react(server,m,selected); model.command(io.github.chriexpe.papo.core.Action.ReactionDetails(server.selected,messageId,false),server.url)}) { Text(if(mine) "Remove my reaction" else "Add my reaction") }
             }
             val users=details?.groups?.firstOrNull {it.emoji==selected.value && it.custom==selected.custom}?.users.orEmpty().distinctBy {it.id}
-            LazyColumn(Modifier.weight(1f,fill=false)) { items(users,key={it.id}) { person -> Row(Modifier.fillMaxWidth().padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) { Avatar(person.name); Text(person.name); if(person.id==server.me) Text("You",color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.labelSmall) } } }
+            LazyColumn(Modifier.weight(1f,fill=false)) { items(users,key={it.id}) { person -> Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable {onDismiss();openProfile(person.id)}.padding(vertical=12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) { UserAvatar(person.id,person.name); Text(person.name); if(person.id==server.me) Text("You",color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.labelSmall) } } }
             if(loading) CircularProgressIndicator(Modifier.padding(16.dp).size(24.dp),strokeWidth=2.dp)
             else if(details==null) TextButton(onClick={model.command(io.github.chriexpe.papo.core.Action.ReactionDetails(server.selected,messageId,false),server.url)}) { Text("Retry loading reactions") }
             else if(details.more) TextButton(onClick={model.command(io.github.chriexpe.papo.core.Action.ReactionDetails(server.selected,messageId,true),server.url)}) { Text("Load more people") }

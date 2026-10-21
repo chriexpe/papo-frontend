@@ -122,6 +122,9 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var tab by rememberSaveable { mutableStateOf("Chats") }
             var inConversation by rememberSaveable(state.activeUrl) { mutableStateOf(false) }
             val server = state.active
+            var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
+            val openProfile:(String)->Unit = {profileId=it}
+            CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile) {
             BackHandler(inConversation) { inConversation = false }
             Box(Modifier.fillMaxSize().background(colors.background)) {
                 if (state.servers.isEmpty()) {
@@ -138,7 +141,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                         when (tab) {
                             "Chats" -> ConversationList(server, onServer = { tab = "Servers" },
                                 onOpen = { id -> model.command(Action.SelectChannel(id)); inConversation = true },
-                                onDm = { id -> model.command(Action.OpenDm(id)); inConversation = true })
+                                onProfile = openProfile)
                             "Servers" -> ServerList(state, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
                             else -> ClientSettings(server, theme, glass,
                                 onTheme = { theme = it; preferences.edit().putString("theme", it).apply() },
@@ -152,6 +155,8 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 if (error.isNotBlank() && server?.screen == "chat") {
                     FeedbackPill(error, model::clearError, Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(12.dp))
                 }
+            }
+            if(server?.screen=="chat") profileId?.let {id -> UserProfileSheet(server,model,id,onDismiss={profileId=null},onMessage={user ->profileId=null;model.command(Action.OpenDm(user),server.url) {inConversation=true}})}
             }
             if (adding) ModalBottomSheet(onDismissRequest = { adding = false }) {
                 AddServerForm(state.opening, state.error, modifier = Modifier.padding(horizontal = 24.dp).navigationBarsPadding()) {
@@ -298,7 +303,7 @@ private fun FloatingNavigation(selected: String, onSelect: (String) -> Unit, mod
 }
 
 @Composable
-private fun ConversationList(server: ServerState, onServer: () -> Unit, onOpen: (String) -> Unit, onDm: (String) -> Unit) {
+private fun ConversationList(server: ServerState, onServer: () -> Unit, onOpen: (String) -> Unit, onProfile: (String) -> Unit) {
     var section by rememberSaveable { mutableStateOf("Channels") }
     var query by rememberSaveable { mutableStateOf("") }
     Column(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding()) {
@@ -322,8 +327,8 @@ private fun ConversationList(server: ServerState, onServer: () -> Unit, onOpen: 
                 if (people.isEmpty()) item { EmptyState("No people here yet", "People in your community will appear here.") }
                 items(people, key = { it.id }) { person -> ListItem(
                     headlineContent = { Text(person.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(person.presence.replaceFirstChar(Char::uppercase)) },
-                    leadingContent = { Avatar(person.name) }, trailingContent = { Icon(Icons.Outlined.ChatBubbleOutline, null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onDm(person.id) }) }
+                    leadingContent = { UserAvatar(person.id,person.name) }, trailingContent = { Icon(Icons.Outlined.ChatBubbleOutline, null) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onProfile(person.id) }) }
             } else {
                 val filtered = channels.filter { it.name.contains(query, true) }
                 if (filtered.isEmpty()) item { EmptyState(if (query.isNotBlank()) "No conversations found" else if (section == "Direct") "A conversation starts with hello." else "A little quiet here.",
@@ -333,7 +338,7 @@ private fun ConversationList(server: ServerState, onServer: () -> Unit, onOpen: 
                     else ListItem(
                         headlineContent = { Text(channel.name, fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Medium) },
                         supportingContent = if (channel.topic.isNotBlank()) ({ Text(channel.topic, maxLines = 1, overflow = TextOverflow.Ellipsis) }) else null,
-                        leadingContent = { if (section == "Direct") Avatar(channel.name) else Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) { Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
+                        leadingContent = { if (section == "Direct") UserAvatar(channel.userId,channel.name,Modifier.clip(CircleShape).clickable {onProfile(channel.userId)}) else Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) { Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
                         trailingContent = { if (channel.mentions > 0) Badge { Text(channel.mentions.toString()) } else if (channel.unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape)) else Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
                         colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onOpen(channel.id) })
                 }
@@ -367,10 +372,11 @@ private fun ServerList(state: PapoState, onAdd: () -> Unit, onSelect: (String) -
 
 @Composable
 private fun ClientSettings(server: ServerState, theme: String, glass: Boolean, onTheme: (String) -> Unit, onGlass: (Boolean) -> Unit, onLogout: () -> Unit) {
+    val openProfile=LocalOpenProfile.current
     var logout by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(), contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Text("Settings", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold) }
-        item { SettingsGroup("YOUR ACCOUNT") { ListItem(headlineContent = { Text(server.myName, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.name) }, leadingContent = { Avatar(server.myName) }) } }
+        item { SettingsGroup("YOUR ACCOUNT") { ListItem(headlineContent = { Text(server.myName, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.name) }, leadingContent = { UserAvatar(server.me,server.myName) },modifier=Modifier.clickable {openProfile(server.me)}) } }
         item { SettingsGroup("APPEARANCE") {
             Column(Modifier.padding(16.dp)) {
                 Text("Theme", style = MaterialTheme.typography.titleMedium)

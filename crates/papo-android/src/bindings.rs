@@ -200,6 +200,34 @@ impl NativeClient {
             .map_err(|_| CoreError::from("Invalid emoji image".to_owned()))
     }
 
+    /// Decoded on demand, outside presentation snapshots. The profile revision
+    /// lets Android invalidate its account-scoped image cache after an update.
+    pub fn avatar_image(&self, id: String) -> Result<Vec<u8>, CoreError> {
+        use base64::Engine;
+        let blob = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Live(client) => &client.runtime.store,
+                Backend::Demo(client) => &client.store,
+            };
+            store
+                .avatars
+                .get(&id)
+                .cloned()
+                .ok_or("Avatar is unavailable".to_owned())?
+        };
+        let encoded = blob
+            .split_once("base64,")
+            .map(|(_, data)| data)
+            .unwrap_or(&blob);
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| CoreError::from("Invalid avatar image".to_owned()))
+    }
+
     // Provider work runs on Kotlin's IO dispatcher and never takes the server lock.
     pub fn gif_page(&self, query: String, offset: u32) -> Result<GifPageView, CoreError> {
         let demo = {
@@ -294,6 +322,8 @@ pub struct ClientSnapshot {
     pub selected_channel: String,
     pub channels: Vec<ChannelView>,
     pub members: Vec<MemberView>,
+    #[serde(default)]
+    pub profiles: Vec<ProfileView>,
     pub emojis: Vec<EmojiView>,
     pub reaction_details: Vec<ReactionDetailsView>,
     pub reaction_loading: Vec<String>,
@@ -320,6 +350,8 @@ pub struct ClientSnapshot {
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 pub struct ChannelView {
     pub id: String,
+    #[serde(default, rename = "userId")]
+    pub user_id: String,
     pub name: String,
     pub kind: String,
     pub topic: String,
@@ -332,6 +364,24 @@ pub struct MemberView {
     pub username: String,
     pub name: String,
     pub presence: String,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileView {
+    pub id: String,
+    pub avatar_revision: String,
+    pub loaded: bool,
+    pub banner: String,
+    pub description: String,
+    pub created_at: String,
+    pub status_message: String,
+    pub roles: Vec<ProfileRoleView>,
+}
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct ProfileRoleView {
+    pub id: String,
+    pub name: String,
+    pub color: String,
 }
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 pub struct ReactionView {

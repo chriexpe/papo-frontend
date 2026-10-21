@@ -224,6 +224,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         override fun sizeOf(key: String, value: ByteArray) = value.size
     }
     private val emojiImageLock = Mutex()
+    private val avatars = object : LruCache<String, ByteArray>(8 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: ByteArray) = value.size
+    }
+    internal suspend fun avatarImage(server: ServerState, id: String, revision: String): ByteArray = withContext(dispatcher) {
+        check(snapshots[server.url]?.me==server.me) { "Account changed" }
+        val key="${server.url}/${server.me}/$id/$revision"
+        avatars.get(key) ?: (handles[server.url] ?: error("Server is closed")).avatarImage(id).also {avatars.put(key,it)}
+    }
     internal suspend fun emojiImage(server: ServerState, id: String): ByteArray {
         val key="${server.url}/${server.me}/$id"
         emojiImages.get(key)?.let { return it }

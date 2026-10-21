@@ -58,6 +58,13 @@ internal data class ComposerDraft(val value:TextFieldValue=TextFieldValue(""),va
         val edited=edited(TextFieldValue(next,TextRange(start+token.length+1)))
         return if(person==null) edited else edited.copy(mentions=edited.mentions+ComposerMention(start,person.name,person.id))
     }
+    fun mention(person:Person):ComposerDraft {
+        val start=value.selection.min
+        val spaced=if(start>0 && !text[start-1].isWhitespace()) {
+            edited(TextFieldValue(text.replaceRange(start,value.selection.max," "),TextRange(start+1)))
+        } else this
+        return spaced.insert("@${person.name}",person=person)
+    }
     fun deleteSticker(next:TextFieldValue, stickers:List<IntRange>):ComposerDraft {
         if(value.selection.collapsed && next.text.length==text.length-1) {
             val cursor=value.selection.start

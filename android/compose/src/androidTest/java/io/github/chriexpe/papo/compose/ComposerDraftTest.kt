@@ -9,6 +9,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ComposerDraftTest {
+    @Test fun heldAuthorMentionAddsBoundaryAndPreservesAccountIdentity() {
+        val client=NativeClient.demo()
+        try {
+            val ana=client.poll().members.first {it.id=="ana"}
+            val draft=ComposerDraft(TextFieldValue("hello",TextRange(5))).mention(ana).mention(ana)
+            assertEquals("hello @Ana @Ana ",draft.text)
+            assertEquals(listOf("ana","ana"),draft.mentions.map {it.userId})
+            assertTrue(draft.mentions.all {it.valid(draft.text)})
+            assertEquals("hello @mention(<@ana>) @mention(<@ana>) ",client.encodeMessage(draft.text,draft.mentions.map {it.native(draft.text)}))
+        } finally {client.shutdown();client.close()}
+    }
     @Test fun suggestionsReplaceTheTokenAtCursorAndLeaveOneSpace() {
         val client=NativeClient.demo()
         try {

@@ -33,6 +33,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -77,6 +78,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
     var composer by rememberSaveable(draftKey,stateSaver=ComposerDraft.Saver) { mutableStateOf(ComposerDraft.restore(model.draft(draftKey),model.draftMentions(draftKey))) }
+    val openProfile=LocalOpenProfile.current
+    val composerFocus=remember {androidx.compose.ui.focus.FocusRequester()}
     val text=composer.text
     fun updateComposer(next:ComposerDraft) { composer=next; model.saveDraft(draftKey,next.text,next.json()) }
 
@@ -240,7 +243,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null),LocalMediaRowId provides message.id) {
-                MessageRow(message, server, model, highlight=highlighted?.first==message.id, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
+                MessageRow(message, server, model, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
                 }
@@ -321,7 +324,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
                         Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f),onFocusChange={composerFocused=it},animationsAllowed=viewedMedia==null && !emojiPicker && !gifPicker)
+                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=viewedMedia==null && !emojiPicker && !gifPicker)
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
@@ -404,7 +407,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     if (members) ModalBottomSheet(onDismissRequest = { members = false }) {
         Text("People in ${server.name}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
         LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { Avatar(person.name) }, modifier = Modifier.clickable(enabled = person.id != server.me) { model.command(Action.OpenDm(person.id)); members = false }) }
+            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { UserAvatar(person.id,person.name) }, modifier = Modifier.clickable {members=false;openProfile(person.id)}) }
         }
     }
     }
@@ -417,16 +420,19 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+    val openProfile=LocalOpenProfile.current
+    val person=server.members.firstOrNull {it.id==message.authorId}
+    val authorAction=Modifier.combinedClickable(onClickLabel="Open ${message.author} profile",onLongClickLabel="Mention ${message.author}",onClick={openProfile(message.authorId)},onLongClick={person?.let(onMention)})
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
         .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message"}
         .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Avatar(message.author)
+        UserAvatar(message.authorId,message.author,Modifier.size(48.dp).then(authorAction).padding(2.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(message.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(message.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
                 Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = onActions, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.MoreHoriz, "Message actions", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
