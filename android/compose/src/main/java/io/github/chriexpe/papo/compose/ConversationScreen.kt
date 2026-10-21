@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.onSizeChanged
@@ -66,7 +67,10 @@ import io.github.chriexpe.papo.core.Action
 internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBack: () -> Unit) {
     val channel = server.conversation ?: return
     val draftKey = "${server.url}/${server.me}/${channel.id}"
-    var text by rememberSaveable(draftKey) { mutableStateOf(model.draft(draftKey)) }
+    var composer by rememberSaveable(draftKey,stateSaver=ComposerDraft.Saver) { mutableStateOf(ComposerDraft.restore(model.draft(draftKey),model.draftMentions(draftKey))) }
+    val text=composer.text
+    fun updateComposer(next:ComposerDraft) { composer=next; model.saveDraft(draftKey,next.text,next.json()) }
+
     var reply by rememberSaveable(draftKey) { mutableStateOf<String?>(null) }
     var emojiPicker by remember(draftKey) { mutableStateOf(false) }
     var emojiTarget by remember(draftKey) { mutableStateOf<ChatMessage?>(null) }
@@ -115,6 +119,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 
     val submitMessage: (Boolean) -> Unit = { attachmentsOnly ->
         val original = text
+        val originalDraft = composer
         val sent = if(GifChoice.marker(text)!=null) text else Regex("(?m)^giphy:([A-Za-z0-9_-]{1,200})$").replace(text) {"https://giphy.com/gifs/${it.groupValues[1]}"}
         val sentFiles = attachmentDraft.files.map {it.path}.toSet()
         submitting = true
@@ -122,13 +127,21 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             submitting = false
             if (accepted) {
                 model.recordSent(server,draftKey,sent,sentFiles)
-                if (text == original) { text = ""; model.saveDraft(draftKey, "") }
+                if (composer.text == original && composer.mentions == originalDraft.mentions) updateComposer(ComposerDraft())
                 reply = null
                 scope.launch { listState.animateScrollToItem(0) }
             }
         }
-        if (!attachmentsOnly && attachmentDraft.files.isEmpty()) model.send(server, sent, reply, onResult)
-        else model.attachments.send(draftKey, server, sent, reply, onResult)
+        val sentReply = reply
+        scope.launch {
+            try {
+                val canonical=model.encodeMessage(server,originalDraft.text,originalDraft.mentions)
+                val encoded=if(GifChoice.marker(canonical)!=null) canonical else Regex("(?m)^giphy:([A-Za-z0-9_-]{1,200})$").replace(canonical) {"https://giphy.com/gifs/${it.groupValues[1]}"}
+                if (!attachmentsOnly && attachmentDraft.files.isEmpty()) model.send(server,encoded,sentReply,onResult)
+                else model.attachments.send(draftKey,server,encoded,sentReply,onResult)
+            } catch(e:kotlinx.coroutines.CancellationException) {throw e}
+            catch(e:Exception) {submitting=false; model.attachments.report(draftKey,e.message ?: "Couldn’t prepare this message")}
+        }
     }
 
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
@@ -142,8 +155,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 MessageRow(message, server, model, onActions = { selected = message }, onReaction = { r ->
-                    reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji)
-                }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
+                    model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
+                }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
             }
             if (server.canLoadOlder) item("history") {
                 TextButton(onClick = { model.command(Action.Older) }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
@@ -198,6 +211,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, bottom = 6.dp))
+            if(!recording && !emojiPicker && !gifPicker) ComposerSuggestions(composer,server,model) {updateComposer(it)}
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
                 AttachmentActions(draftKey, model, enabled = !recording && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, onRecord = { focus.clearFocus(); keyboard?.hide(); recording = true }, modifier = Modifier.zIndex(1f))
                 GlassPill(Modifier.weight(1f), radius = 28) {
@@ -213,15 +227,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
                         Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            BasicTextField(text, onValueChange = {
-                                text = it
-                                model.saveDraft(draftKey, it)
-                                model.typing(server)
-                            }, modifier = Modifier.weight(1f).padding(start = 14.dp, end = 8.dp, top = 12.dp, bottom = 12.dp).heightIn(min = 24.dp, max = 160.dp),
-                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                                decorationBox = { inner -> Box { if (text.isEmpty()) Text("Message ${if (channel.kind == "direct") channel.name else "#${channel.name}"}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis); inner() } })
+                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f))
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
@@ -241,13 +247,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     if(emojiPicker) EmojiPicker(server,model,onDismiss={emojiPicker=false},onPick={emoji ->
         val target=emojiTarget
         if(target!=null) { model.react(server,server.messages.firstOrNull {it.id==target.id} ?: target,emoji); emojiPicker=false }
-        else { text+=emoji.token; model.saveDraft(draftKey,text) }
+        else updateComposer(composer.insert(emoji.token))
     })
     if(gifPicker) GifPicker(server,model,onDismiss={gifPicker=false},onPick={gif ->
         gifPreparing=true
         model.pickGif(server,draftKey,gif,onMarker={ marker ->
-            text=if(text.isBlank()) marker else text.trimEnd()+"\nhttps://giphy.com/gifs/${gif.providerId}"
-            model.saveDraft(draftKey,text)
+            val next=if(text.isBlank()) marker else text.trimEnd()+"\nhttps://giphy.com/gifs/${gif.providerId}"
+            updateComposer(composer.edited(androidx.compose.ui.text.input.TextFieldValue(next,androidx.compose.ui.text.TextRange(next.length))))
         },onDone={gifPreparing=false; gifPicker=false}).invokeOnCompletion { scope.launch {gifPreparing=false} }
     })
     reactionPeople?.let { (id,emoji) -> ReactionPeople(server,model,id,emoji,onDismiss={reactionPeople=null}) }
@@ -305,7 +311,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, onActions: () -> Unit, onReaction: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     Row(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Avatar(message.author)
@@ -323,7 +329,15 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
             if (message.content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(message.content,server,model)
             media()
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                message.reactions.forEach { reaction -> FilterChip(reaction.mine, { onReaction(reaction) }, label = { Row(verticalAlignment=Alignment.CenterVertically) { EmojiGlyph(server,EmojiChoice(reaction.emoji,reaction.custom),22,model); Text(" ${reaction.count}") } }, modifier=Modifier.semantics {contentDescription="See who reacted with ${if(reaction.custom) server.emojis.firstOrNull {it.id==reaction.emoji}?.name ?: "sticker" else reaction.emoji}"}) }
+                message.reactions.forEach { reaction ->
+                    val name=if(reaction.custom) server.emojis.firstOrNull {it.id==reaction.emoji}?.name ?: "sticker" else reaction.emoji
+                    Surface(shape=RoundedCornerShape(16.dp),color=if(reaction.mine) MaterialTheme.colorScheme.primaryContainer else if(MaterialTheme.colorScheme.surface.luminance()<.5f) Color(0xFF2E2E32) else Color(0xFFECECEF),
+                        modifier=Modifier.padding(vertical=4.dp).clip(RoundedCornerShape(16.dp)).combinedClickable(
+                            onClick={onReaction(reaction)},onLongClick={onReactionPeople(reaction)},onLongClickLabel="See who reacted",role=Role.Button)
+                            .semantics {contentDescription="Reaction $name"; stateDescription=if(reaction.mine) "You reacted, ${reaction.count} reactions" else "${reaction.count} reactions"}) {
+                        Row(Modifier.padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically) { EmojiGlyph(server,EmojiChoice(reaction.emoji,reaction.custom),22,model); Text(" ${reaction.count}") }
+                    }
+                }
             }
             if (message.pending) Text(when (message.delivery) {
                 "unknown" -> "Delivery unconfirmed · tap ⋯ to retry"

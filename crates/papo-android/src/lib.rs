@@ -113,17 +113,25 @@ fn prepare_uploads(files: Vec<UploadFile>) -> Result<Vec<papo_core::api::client:
     if files.is_empty() || files.len() > 10 {
         return Err("Choose between one and ten attachments".into());
     }
-    files.into_iter().map(|file| {
-        let path = PathBuf::from(&file.path);
-        let metadata = std::fs::metadata(&path).map_err(|_| format!("{} is no longer available. Choose it again.", file.name))?;
-        if !metadata.is_file() || metadata.len() != file.size {
-            return Err(format!("{} changed. Choose it again.", file.name));
-        }
-        Ok(papo_core::api::client::Upload {
-            path, name: file.name, mime: file.mime, size: file.size,
-            spoiler: false, anonymize: false,
+    files
+        .into_iter()
+        .map(|file| {
+            let path = PathBuf::from(&file.path);
+            let metadata = std::fs::metadata(&path)
+                .map_err(|_| format!("{} is no longer available. Choose it again.", file.name))?;
+            if !metadata.is_file() || metadata.len() != file.size {
+                return Err(format!("{} changed. Choose it again.", file.name));
+            }
+            Ok(papo_core::api::client::Upload {
+                path,
+                name: file.name,
+                mime: file.mime,
+                size: file.size,
+                spoiler: false,
+                anonymize: false,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 pub fn normalize_url(input: &str) -> Result<String, String> {
@@ -148,6 +156,16 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
 
 pub struct Client {
     runtime: ServerRuntime,
+    // Serialize one user's mutation per message/emoji until HTTP settles.
+    pending_reactions: HashMap<(String, Emoji), PendingReaction>,
+}
+
+struct PendingReaction {
+    previous: bool,
+    previous_count: u32,
+    in_flight: bool,
+    desired: bool,
+    channel_id: String,
 }
 
 // All simultaneous server runtimes share one database worker, as in egui.
@@ -181,6 +199,7 @@ impl Client {
         let notifications = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
         Ok(Self {
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
+            pending_reactions: HashMap::new(),
         })
     }
 
@@ -211,13 +230,85 @@ impl Client {
                 break;
             };
             match &update {
+                Update::ReactionComplete {
+                    message_id,
+                    emoji,
+                    success,
+                    ..
+                } => {
+                    if let Some(kind) =
+                        Emoji::from_parts(emoji.unicode.clone(), emoji.emoji_id.clone())
+                        && let Some(pending) = self
+                            .pending_reactions
+                            .remove(&(message_id.clone(), kind.clone()))
+                    {
+                        if !success {
+                            self.runtime.store.restore_reaction_local(
+                                message_id,
+                                &kind,
+                                pending.previous,
+                                pending.previous_count,
+                            );
+                        } else {
+                            self.runtime.store.set_reaction_local(
+                                message_id,
+                                &kind,
+                                pending.desired,
+                            );
+                            if pending.desired != pending.in_flight {
+                                // Coalesce rapid taps to the user's latest intent; never race
+                                // POST against DELETE or retry a failed request automatically.
+                                self.runtime.net.send(Command::React {
+                                    channel_id: pending.channel_id.clone(),
+                                    message_id: message_id.clone(),
+                                    emoji: emoji.clone(),
+                                    add: pending.desired,
+                                });
+                                self.pending_reactions.insert(
+                                    (message_id.clone(), kind),
+                                    PendingReaction {
+                                        previous: pending.in_flight,
+                                        previous_count: if pending.in_flight == pending.previous {
+                                            pending.previous_count
+                                        } else if pending.in_flight {
+                                            pending.previous_count.saturating_add(1)
+                                        } else {
+                                            pending.previous_count.saturating_sub(1)
+                                        },
+                                        in_flight: pending.desired,
+                                        ..pending
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                Update::Event(event) => {
+                    if let papo_core::api::ws::Event::Reaction {
+                        message_id,
+                        unicode,
+                        emoji_id,
+                        count,
+                    } = event.as_ref()
+                        && let Some(kind) = Emoji::from_parts(unicode.clone(), emoji_id.clone())
+                        && let Some(pending) =
+                            self.pending_reactions.get_mut(&(message_id.clone(), kind))
+                    {
+                        pending.previous_count = (*count).clamp(0, i64::from(u32::MAX)) as u32;
+                    }
+                }
+                Update::Session(None) => self.pending_reactions.clear(),
                 Update::Outgoing(item) => {
                     events.push(json!({"type":"accepted", "localId": item.local_id}))
                 }
                 Update::SendConfirmed { local_id, .. } => {
                     events.push(json!({"type":"accepted", "localId":local_id}));
                 }
-                Update::UploadFailed { local_id, message, state } => {
+                Update::UploadFailed {
+                    local_id,
+                    message,
+                    state,
+                } => {
                     events.push(json!({"type":if *state == OutgoingState::UnknownOutcome { "unknown" } else { "rejected" }, "localId":local_id,"error":message}));
                 }
                 Update::OutgoingRejected {
@@ -315,19 +406,36 @@ impl Client {
                     created_at: now_millis(),
                 }
             }
-            Action::SendAttachments { local_id, channel_id, content, reply_to, files } => {
+            Action::SendAttachments {
+                local_id,
+                channel_id,
+                content,
+                reply_to,
+                files,
+            } => {
                 if store.screen != Screen::Chat || store.me.is_empty() {
                     return Err("Sign in before sending attachments".into());
                 }
                 if store.connection != Connection::Online {
                     return Err("Connect to the server before sending attachments. Your files are kept here.".into());
                 }
-                if local_id.is_empty() || !store.channels.iter().any(|c| c.id == channel_id && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct)) {
+                if local_id.is_empty()
+                    || !store.channels.iter().any(|c| {
+                        c.id == channel_id
+                            && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct)
+                    })
+                {
                     return Err("Select a text conversation".into());
                 }
                 Command::SendMessage {
-                    local_id, owner_user_id: store.me.clone(), channel_id, content,
-                    reply_to, notify_reply: true, embeds: vec![], attachments: prepare_uploads(files)?,
+                    local_id,
+                    owner_user_id: store.me.clone(),
+                    channel_id,
+                    content,
+                    reply_to,
+                    notify_reply: true,
+                    embeds: vec![],
+                    attachments: prepare_uploads(files)?,
                 }
             }
             Action::Edit {
@@ -345,19 +453,83 @@ impl Client {
                 emoji,
                 custom,
                 add,
-            } => Command::React {
+            } => {
+                let kind = if custom {
+                    Emoji::Custom(emoji.clone())
+                } else {
+                    Emoji::Unicode(emoji.clone())
+                };
+                let message = store
+                    .message(&message_id)
+                    .filter(|m| m.channel_id == channel_id)
+                    .ok_or("Message is no longer available")?;
+                let previous_count = message
+                    .reactions
+                    .iter()
+                    .find(|r| r.emoji == kind)
+                    .map(|r| r.count)
+                    .unwrap_or(0);
+                let previous = message
+                    .reactions
+                    .iter()
+                    .find(|r| r.emoji == kind)
+                    .is_some_and(|r| r.mine);
+                let key = (message_id.clone(), kind.clone());
+                if let Some(pending) = self.pending_reactions.get_mut(&key) {
+                    pending.desired = add;
+                    store.set_reaction_local(&message_id, &kind, add);
+                    return Ok(());
+                }
+                if previous == add {
+                    return Ok(());
+                }
+                self.pending_reactions.insert(
+                    key,
+                    PendingReaction {
+                        previous,
+                        previous_count,
+                        in_flight: add,
+                        desired: add,
+                        channel_id: channel_id.clone(),
+                    },
+                );
+                store.set_reaction_local(&message_id, &kind, add);
+                Command::React {
+                    channel_id,
+                    message_id,
+                    emoji: if custom {
+                        ReactionRequest::custom(emoji)
+                    } else {
+                        ReactionRequest::unicode(emoji)
+                    },
+                    add,
+                }
+            }
+            Action::ReactionDetails {
                 channel_id,
                 message_id,
-                emoji: if custom { ReactionRequest::custom(emoji) } else { ReactionRequest::unicode(emoji) },
-                add,
-            },
-            Action::ReactionDetails { channel_id, message_id, more } => {
-                if store.message(&message_id).is_none_or(|m| m.channel_id != channel_id) {
+                more,
+            } => {
+                if store
+                    .message(&message_id)
+                    .is_none_or(|m| m.channel_id != channel_id)
+                {
                     return Err("Message is no longer available".into());
                 }
-                let cursor = if more { store.reaction_details_cursor(&message_id) } else { None };
-                if !store.begin_reaction_details(&message_id) { return Ok(()); }
-                Command::LoadReactionDetails { channel_id, message_id, cursor, append: more }
+                let cursor = if more {
+                    store.reaction_details_cursor(&message_id)
+                } else {
+                    None
+                };
+                if !store.begin_reaction_details(&message_id) {
+                    return Ok(());
+                }
+                Command::LoadReactionDetails {
+                    channel_id,
+                    message_id,
+                    cursor,
+                    append: more,
+                }
             }
             Action::Retry { local_id } => Command::RetryOutgoing {
                 local_id,
@@ -510,3 +682,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reaction_tests;

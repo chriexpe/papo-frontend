@@ -11,7 +11,9 @@ pub struct Demo {
 }
 impl Drop for Demo {
     fn drop(&mut self) {
-        for path in self.media_files.values() { let _ = std::fs::remove_file(path); }
+        for path in self.media_files.values() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -51,8 +53,15 @@ impl Demo {
         ]))));
         use base64::Engine;
         store.apply(Update::Emojis(vec![models::Emoji {
-            id:"demo-wave".into(), name:"papo_wave".into(), created_at:None, format:Some("GIF".into()),
-            image_blob:Some(base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../android/compose/src/main/assets/demo/animation.gif"))),
+            id: "demo-wave".into(),
+            name: "papo_wave".into(),
+            created_at: None,
+            format: Some("GIF".into()),
+            image_blob: Some(
+                base64::engine::general_purpose::STANDARD.encode(include_bytes!(
+                    "../../../android/compose/src/main/assets/demo/animation.gif"
+                )),
+            ),
         }]));
         let now = now_millis();
         store.apply(Update::DirectMessages(decode(json!([{"id":"dm-ana","user":{"id":"ana","username":"ana","nickname":"Ana","status":"online"},"created_at":at(now),"unread_count":1}]))));
@@ -193,13 +202,21 @@ impl Demo {
         value
     }
 
-    pub fn media_request(&self, resource: media::MediaResource) -> Result<media::MediaRequest, String> {
+    pub fn media_request(
+        &self,
+        resource: media::MediaResource,
+    ) -> Result<media::MediaRequest, String> {
         if let media::MediaResource::Attachment { id, .. } = &resource
-            && let Some(path) = self.media_files.get(id) {
-                return Ok(media::MediaRequest {
-                    url: url::Url::from_file_path(path).map_err(|_| "Invalid demo attachment")?.to_string(),
-                    headers: HashMap::new(), origin: "demo".into(), cache_key: format!("demo/me/{id}"),
-                });
+            && let Some(path) = self.media_files.get(id)
+        {
+            return Ok(media::MediaRequest {
+                url: url::Url::from_file_path(path)
+                    .map_err(|_| "Invalid demo attachment")?
+                    .to_string(),
+                headers: HashMap::new(),
+                origin: "demo".into(),
+                cache_key: format!("demo/me/{id}"),
+            });
         }
         media::demo_request(resource)
     }
@@ -239,13 +256,31 @@ impl Demo {
                 self.events
                     .push(json!({"type":"accepted","localId":local_id}));
             }
-            Action::SendAttachments { local_id, channel_id, content, reply_to, files } => {
+            Action::SendAttachments {
+                local_id,
+                channel_id,
+                content,
+                reply_to,
+                files,
+            } => {
                 let files = prepare_uploads(files)?;
-                let mut sent = message(&local_id, &channel_id, "me", &content, reply_to, now_millis());
+                let mut sent = message(
+                    &local_id,
+                    &channel_id,
+                    "me",
+                    &content,
+                    reply_to,
+                    now_millis(),
+                );
                 for file in files {
                     let id = format!("demo-local-{}", papo_core::cache::new_local_id());
-                    let copy = file.path.parent().ok_or("Attachment folder is unavailable")?.join(&id);
-                    std::fs::copy(&file.path, &copy).map_err(|_| "Could not keep the demo attachment")?;
+                    let copy = file
+                        .path
+                        .parent()
+                        .ok_or("Attachment folder is unavailable")?
+                        .join(&id);
+                    std::fs::copy(&file.path, &copy)
+                        .map_err(|_| "Could not keep the demo attachment")?;
                     self.media_files.insert(id.clone(), copy);
                     sent.attachments.push(decode(json!({
                         "id":id,"original_file_name":file.name,"mime_type":file.mime,
@@ -253,7 +288,8 @@ impl Demo {
                     })));
                 }
                 self.store.apply(Update::Sent(Box::new(sent)));
-                self.events.push(json!({"type":"accepted","localId":local_id}));
+                self.events
+                    .push(json!({"type":"accepted","localId":local_id}));
             }
             Action::Edit {
                 message_id,
@@ -272,17 +308,51 @@ impl Demo {
                 custom,
                 add,
                 ..
-            } => self
-                .store
-                .set_reaction_local(&message_id, &if custom { Emoji::Custom(emoji) } else { Emoji::Unicode(emoji) }, add),
+            } => self.store.set_reaction_local(
+                &message_id,
+                &if custom {
+                    Emoji::Custom(emoji)
+                } else {
+                    Emoji::Unicode(emoji)
+                },
+                add,
+            ),
             Action::ReactionDetails { message_id, .. } => {
-                let groups = self.store.message(&message_id).map(|m|m.reactions.iter().map(|r| models::ReactionGroup {
-                    emoji_id: if let Emoji::Custom(id) = &r.emoji { Some(id.clone()) } else { None },
-                    unicode: if let Emoji::Unicode(e) = &r.emoji { Some(e.clone()) } else { None },
-                    count:r.count,
-                    users: (0..r.count).map(|i|models::ReactionUser { id:format!("{message_id}-{i}"), user_id:if r.mine && i==0 { "me" } else { "ana" }.into(), created_at: chrono::Utc::now() }).collect(),
-                }).collect()).unwrap_or_default();
-                self.store.apply(Update::ReactionDetails {message_id,reactions:groups,has_more:false,append:false});
+                let groups = self
+                    .store
+                    .message(&message_id)
+                    .map(|m| {
+                        m.reactions
+                            .iter()
+                            .map(|r| models::ReactionGroup {
+                                emoji_id: if let Emoji::Custom(id) = &r.emoji {
+                                    Some(id.clone())
+                                } else {
+                                    None
+                                },
+                                unicode: if let Emoji::Unicode(e) = &r.emoji {
+                                    Some(e.clone())
+                                } else {
+                                    None
+                                },
+                                count: r.count,
+                                users: (0..r.count)
+                                    .map(|i| models::ReactionUser {
+                                        id: format!("{message_id}-{i}"),
+                                        user_id: if r.mine && i == 0 { "me" } else { "ana" }.into(),
+                                        created_at: chrono::Utc::now(),
+                                    })
+                                    .collect(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.store.apply(Update::ReactionDetails {
+                    message_id,
+                    reactions: groups,
+                    has_more: false,
+                    append: false,
+                });
             }
             Action::ClearError => self.store.error = None,
             Action::Visible { channel_id, ids } => {

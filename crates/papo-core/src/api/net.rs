@@ -526,6 +526,12 @@ pub enum Update {
         has_more: bool,
         append: bool,
     },
+    ReactionComplete {
+        message_id: String,
+        emoji: ReactionRequest,
+        add: bool,
+        success: bool,
+    },
     ReactionDetailsFailed {
         message_id: String,
     },
@@ -3868,6 +3874,7 @@ async fn handle(
             } else {
                 api.remove_reaction(&channel_id, &message_id, &emoji).await
             };
+            publish(updates, wake, Update::ReactionComplete { message_id, emoji, add, success:outcome.is_ok() });
             if let Err(error) = outcome {
                 report(storage_key, updates, wake, error);
             }

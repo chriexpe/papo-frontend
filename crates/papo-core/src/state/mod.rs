@@ -3752,6 +3752,7 @@ impl Store {
                 self.search_has_more = has_more;
                 self.searching = false;
             }
+            Update::ReactionComplete { .. } => {},
             Update::ReactionDetailsFailed { message_id } => {
                 self.reaction_details_loading.remove(&message_id);
             }
@@ -4631,6 +4632,17 @@ impl Store {
                 },
             },
         );
+    }
+
+    /// Restore an optimistic reaction after rejection. A websocket count may
+    /// have arrived meanwhile, so changing the own flag alone can subtract twice.
+    pub fn restore_reaction_local(&mut self, message_id: &str, emoji: &Emoji, mine: bool, count: u32) {
+        self.set_reaction_local(message_id, emoji, mine);
+        let channel_id = self.channel_for_message(message_id);
+        self.apply_mutation(MutationSource::Local, StoreMutation::Timeline {
+            channel_id,
+            mutation: TimelineMutation::Reaction { message_id: message_id.to_owned(), emoji: emoji.clone(), count: i64::from(count) },
+        });
     }
 
     /// Compatibilidade para chamadores que ainda expressam a ação como toggle.

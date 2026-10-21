@@ -116,7 +116,11 @@ Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
 the app pauses playback; disposed players release their resources. Only one
 player is active per conversation. Original image viewing supports pinch zoom.
 Audio uses compact Compose play/pause, seek and time controls without a video
-surface. M4A/M4B audio names correct the backend’s broad `video/mp4` container
+surface. Its seek control draws a real decoded waveform before playback, with
+played/unplayed progress, touch and accessibility seeking. PCM peaks include
+all channels; silence stays flat. At most two decoders run, work cancels when
+unused, audio cache is bounded to 128 MiB, and account-scoped envelopes are
+cached in memory/on disk. M4A/M4B audio names correct the backend’s broad `video/mp4` container
 label in the shared core; actual MP4/M4V video keeps its video presentation.
 Files download on demand to private cache and open via Android’s file chooser.
 
@@ -155,15 +159,55 @@ rejections are definite, while lost responses, decode failures and server errors
 can have an unknown outcome. Demo attachments stay on-device, render through
 the same message views, and are discarded when the demo closes.
 
+## Emoji, mentions, GIFs and reactions
+
+The composer has separate emoji/sticker and GIF buttons beside Send, centered
+vertically even with multiline input. The shared emoji picker presents server
+emoji first, including animated images, followed by searchable Unicode emoji.
+Typing `@` opens matching display names/usernames; typing `:` opens matching
+server stickers. Both suggestion lists scroll within a bounded glass panel.
+Selection replaces the token at the cursor, inserts exactly one trailing space,
+and keeps editing focus. Mention labels are bold/accent-colored and retain
+stable user IDs, including duplicate display names and UTF-16/Unicode offsets.
+Bindings survive draft restoration and are invalidated if their label is edited.
+The wire format comes from core’s mention encoder. Sticker tokens render as real
+animated images in the editor’s measured text layout; cursor mapping, wrapping,
+scrolling and atomic backspace use that same layout. Images stop animating when
+the composer leaves the foreground. Decode failures retain editable `:name:` text.
+
+The GIF picker has Favorites, Recent and Trending tabs, search and pagination.
+GIPHY transport lives in `papo-core`; stable `giphy:<id>` messages remain compatible
+with egui. Set `PAPO_GIPHY_API_KEY` in the build environment for live search/trending;
+Gradle fingerprints configuration changes so Cargo rebuilds when it changes.
+No borrowed key or fake live results are shipped. Without a key, the picker
+explains availability while Favorites and Recent remain usable. The explicit
+demo supplies a local provider fixture for testing.
+
+GIFs have a star in chat and beside Close in fullscreen, without a background
+circle. Favorites and Recent persist per server/account. Provider favorites store
+IDs and rendition metadata; uploaded/relay GIFs retain a private file copy so they
+can be attached again even if the original message is deleted. Recent is updated
+after a send is accepted, excluding selected attachments removed before sending.
+The picker stages content in the existing draft; it never sends on selection.
+
+Holding a message shows the five most-used emoji (including phone and animated
+server emoji) and More reactions, which opens the same picker. Tap a reaction chip
+to add/remove yours; hold it to see people, with pagination. Only your own reactions
+have the blue background. The live adapter updates its own-reaction flag together
+with the count, serializes HTTP changes per message/emoji, coalesces rapid taps,
+and restores the previous state on rejection. Loopback HTTP regressions exercise
+POST → DELETE → POST, custom payloads, rapid taps and failed removals.
+
 ## Scope
 
 Included: server setup, authentication, channels, DMs/member list, message
-history, offline cache, text drafts, durable text sends, replies, Unicode
-reactions, edit/delete, themes, glass controls, image/GIF viewing with zoom, native video/audio playback,
+history, offline cache, text/mention drafts, durable text sends, replies,
+Unicode/custom reactions and reactor lists, server stickers, GIF pickers,
+inline suggestions, edit/delete, themes, glass controls, image/GIF viewing with zoom, native video/audio playback,
 file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
-Still to port: full Markdown and custom emoji rendering, search,
+Still to port: full Markdown, search,
 voice/video calls, FCM/background reconciliation, notifications, the full client
 settings and server administration panels, account recovery, and release
 packaging. The established egui settings panels are the design reference for

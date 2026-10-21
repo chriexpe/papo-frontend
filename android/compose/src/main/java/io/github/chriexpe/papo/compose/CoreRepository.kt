@@ -301,7 +301,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 val file=gifCopy(server,gif)
                 val copy=withContext(kotlinx.coroutines.Dispatchers.IO) { AttachmentFiles.create(getApplication(),"gif").also { file.copyTo(it,true) } }
-                attachments.captured(draftKey,copy,"${gif.title.ifBlank { "Animation" }.take(80)}.gif","image/gif").join()
+                val title=gif.title.ifBlank { "Animation" }.take(80)
+                attachments.captured(draftKey,copy,if(title.endsWith(".gif",true)) title else "$title.gif","image/gif").join()
                 pendingGifs[draftKey]=pendingGifs[draftKey].orEmpty()+ (gif.copy(path=file.absolutePath) to copy.absolutePath)
             }
             onDone()
@@ -391,7 +392,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     fun resume() { networkChanged(); viewModelScope.launch(dispatcher) { handles.keys.toList().forEach { command(Action.Refresh, url = it) } } }
     fun clearError() { mutableState.value = mutableState.value.copy(error = ""); command(Action.ClearError) }
     fun draft(key: String) = preferences.getString("draft/$key", "").orEmpty()
-    fun saveDraft(key: String, text: String) { preferences.edit().putString("draft/$key", text).apply() }
+    fun draftMentions(key:String) = preferences.getString("draft-mentions/$key","[]").orEmpty()
+    fun saveDraft(key: String, text: String, mentions:String="[]") { preferences.edit().putString("draft/$key", text).putString("draft-mentions/$key",mentions).apply() }
+    internal suspend fun encodeMessage(server:ServerState,text:String,mentions:List<ComposerMention>):String = withContext(dispatcher) {
+        check(snapshots[server.url]?.me==server.me) {"Account changed"}
+        val valid=mentions.filter {it.valid(text)}.map {it.native(text)}
+        (handles[server.url] ?: error("Server is closed")).encodeMessage(text,valid)
+    }
 
     override fun onCleared() {
         if (callbackRegistered) connectivity.unregisterNetworkCallback(networkCallback)

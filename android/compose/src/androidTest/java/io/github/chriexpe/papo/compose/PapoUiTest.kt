@@ -13,6 +13,7 @@ import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.stateDescription
 import android.content.SharedPreferences
 import org.junit.runner.RunWith
@@ -74,15 +75,22 @@ class PapoUiTest {
         compose.onNodeWithTag("emoji-picker").assertIsDisplayed()
         compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()
         androidx.test.espresso.Espresso.pressBack()
-        compose.onNode(hasSetTextAction()).assertTextEquals(":papo_wave:")
+        compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString(":papo_wave: ")))
         compose.onNodeWithContentDescription("Send message").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription(":papo_wave:",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onAllNodesWithContentDescription("Message actions").onFirst().performClick()
         compose.onNodeWithContentDescription("More reactions").performClick()
         compose.onNodeWithTag("emoji-picker").assertIsDisplayed()
         compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()
-        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("See who reacted with papo_wave").fetchSemanticsNodes().isNotEmpty()}
-        compose.onNodeWithContentDescription("See who reacted with papo_wave").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Reaction papo_wave").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Reaction papo_wave").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Reaction papo_wave").fetchSemanticsNodes().isEmpty()}
+        compose.onNodeWithTag("reaction-people").assertDoesNotExist()
+        compose.onAllNodesWithContentDescription("Message actions").onFirst().performClick()
+        compose.onNodeWithContentDescription("More reactions").performClick()
+        compose.onNodeWithContentDescription("Sticker :papo_wave:").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Reaction papo_wave").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Reaction papo_wave").performTouchInput {longClick()}
         compose.onNodeWithTag("reaction-people").assertIsDisplayed()
         compose.waitUntil(10_000) {compose.onAllNodesWithText("You",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("Remove my reaction").assertExists()
@@ -114,9 +122,34 @@ class PapoUiTest {
         compose.onNodeWithText("Favorites").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("animation.gif").fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithContentDescription("animation.gif").assertIsDisplayed().performClick()
-        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Remove animation.gif.gif").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Remove animation.gif").fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithContentDescription("Send message").assertIsEnabled()
-        compose.onNodeWithContentDescription("Remove animation.gif.gif").performClick()
+        compose.onNodeWithContentDescription("Remove animation.gif").performClick()
+    }
+
+    @Test fun mentionAndStickerSuggestionsScrollInsertAndRenderInsideTheComposer() {
+        chat()
+        compose.onNodeWithTag("composer-input").performTextInput("@")
+        compose.onNodeWithTag("composer-suggestions").assertIsDisplayed().performScrollToNode(hasText("Dora"))
+        compose.onNodeWithTag("composer-suggestions").performScrollToNode(hasText("Ana"))
+        compose.onNode(hasText("Ana") and hasAnyAncestor(hasTestTag("composer-suggestions"))).performClick()
+        compose.onNodeWithTag("composer-input").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana ")))
+        compose.onNodeWithTag("composer-suggestions").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").performTextInput(":pap")
+        compose.onNode(hasText(":papo_wave:") and hasAnyAncestor(hasTestTag("composer-suggestions"))).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("composer-input") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Contains stickers: papo_wave")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("composer-input").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana :papo_wave: ")))
+        compose.onNodeWithTag("composer-suggestions").assertDoesNotExist()
+        val bitmap=compose.onRoot().captureToImage()
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        context.cacheDir.resolve("composer-suggestions-verified.png").outputStream().use { bitmap.asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG,100,it) }
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("composer-input").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("composer-input").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana :papo_wave: ")))
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithText("@Ana",substring=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
     @Test fun firstLaunchHasNoPrefilledServerAndValidatesAddressesInline() {
@@ -133,8 +166,8 @@ class PapoUiTest {
         val draft = "rascunho 🌱\nsegunda linha"
         compose.onNode(hasSetTextAction()).performTextInput(draft)
         val sendCenter=compose.onNodeWithContentDescription("Send message").fetchSemanticsNode().boundsInRoot.center.y
-        assertEquals(sendCenter,compose.onNodeWithContentDescription("Emoji and stickers").fetchSemanticsNode().boundsInRoot.center.y,1f)
-        assertEquals(sendCenter,compose.onNodeWithContentDescription("GIF picker").fetchSemanticsNode().boundsInRoot.center.y,1f)
+        assertEquals(sendCenter,compose.onNodeWithContentDescription("Emoji and stickers").fetchSemanticsNode().boundsInRoot.center.y,2f)
+        assertEquals(sendCenter,compose.onNodeWithContentDescription("GIF picker").fetchSemanticsNode().boundsInRoot.center.y,2f)
         compose.onNodeWithContentDescription("Back to conversations").performClick()
         compose.onNodeWithText("geral").performClick()
         compose.onNode(hasSetTextAction()).assertTextEquals(draft)

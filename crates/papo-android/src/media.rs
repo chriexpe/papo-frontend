@@ -245,11 +245,12 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
 
 fn resource_url(base: &str, segments: &[String]) -> Result<url::Url, String> {
     let mut url = url::Url::parse(base).map_err(|e| e.to_string())?;
-    url.path_segments_mut().map_err(|_| "Invalid media origin")?
-        .pop_if_empty().extend(segments);
+    url.path_segments_mut()
+        .map_err(|_| "Invalid media origin")?
+        .pop_if_empty()
+        .extend(segments);
     Ok(url)
 }
-
 
 pub fn embed_image(api: Api, id: String, author: bool) -> Result<Vec<u8>, String> {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -331,10 +332,25 @@ mod tests {
     #[test]
     fn media_routes_keep_server_prefix_and_encode_ids_as_one_segment() {
         for base in ["https://chat.example/papo", "https://chat.example/papo/"] {
-            let route = resource_url(base, &["attachments".into(), "id/with?query#fragment".into()]).unwrap();
-            assert_eq!(route.as_str(), "https://chat.example/papo/attachments/id%2Fwith%3Fquery%23fragment");
+            let route = resource_url(
+                base,
+                &["attachments".into(), "id/with?query#fragment".into()],
+            )
+            .unwrap();
+            assert_eq!(
+                route.as_str(),
+                "https://chat.example/papo/attachments/id%2Fwith%3Fquery%23fragment"
+            );
             assert_eq!(route.origin().ascii_serialization(), "https://chat.example");
         }
-        assert_eq!(resource_url("https://chat.example", &["embeds".into(), "id".into(), "video".into()]).unwrap().as_str(), "https://chat.example/embeds/id/video");
+        assert_eq!(
+            resource_url(
+                "https://chat.example",
+                &["embeds".into(), "id".into(), "video".into()]
+            )
+            .unwrap()
+            .as_str(),
+            "https://chat.example/embeds/id/video"
+        );
     }
 }

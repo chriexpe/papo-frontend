@@ -153,44 +153,106 @@ impl NativeClient {
         .map_err(CoreError::from)
     }
 
-    pub fn encode_message(&self, text: String, mentions: Vec<MentionSelection>) -> Result<String, CoreError> {
-        let backend=self.backend.lock().map_err(|_|"Client lock failed".to_owned())?;
-        let store=match backend.as_ref().ok_or("Client is closed".to_owned())? {
-            Backend::Live(client)=> &client.runtime.store,
-            Backend::Demo(client)=> &client.store,
+    pub fn encode_message(
+        &self,
+        text: String,
+        mentions: Vec<MentionSelection>,
+    ) -> Result<String, CoreError> {
+        let backend = self
+            .backend
+            .lock()
+            .map_err(|_| "Client lock failed".to_owned())?;
+        let store = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+            Backend::Live(client) => &client.runtime.store,
+            Backend::Demo(client) => &client.store,
         };
-        let bindings=mentions.into_iter().map(|m|papo_core::state::MentionBinding {start:m.start as usize,label:m.label,user_id:m.user_id}).collect::<Vec<_>>();
-        Ok(store.encode_mentions(&text,&bindings))
+        let bindings = mentions
+            .into_iter()
+            .map(|m| papo_core::state::MentionBinding {
+                start: m.start as usize,
+                label: m.label,
+                user_id: m.user_id,
+            })
+            .collect::<Vec<_>>();
+        Ok(store.encode_mentions(&text, &bindings))
     }
 
     pub fn emoji_image(&self, id: String) -> Result<Vec<u8>, CoreError> {
         use base64::Engine;
         let blob = {
-            let backend=self.backend.lock().map_err(|_|"Client lock failed".to_owned())?;
-            let emojis=match backend.as_ref().ok_or("Client is closed".to_owned())? {
-                Backend::Live(client)=> &client.runtime.store.emojis,
-                Backend::Demo(client)=> &client.store.emojis,
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            let emojis = match backend.as_ref().ok_or("Client is closed".to_owned())? {
+                Backend::Live(client) => &client.runtime.store.emojis,
+                Backend::Demo(client) => &client.store.emojis,
             };
-            emojis.iter().find(|e|e.id==id).and_then(|e|e.blob.clone()).ok_or("Emoji image is unavailable".to_owned())?
+            emojis
+                .iter()
+                .find(|e| e.id == id)
+                .and_then(|e| e.blob.clone())
+                .ok_or("Emoji image is unavailable".to_owned())?
         };
-        let encoded=blob.split_once("base64,").map(|(_,b)|b).unwrap_or(&blob);
-        base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_|CoreError::from("Invalid emoji image".to_owned()))
+        let encoded = blob.split_once("base64,").map(|(_, b)| b).unwrap_or(&blob);
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|_| CoreError::from("Invalid emoji image".to_owned()))
     }
 
     // Provider work runs on Kotlin's IO dispatcher and never takes the server lock.
     pub fn gif_page(&self, query: String, offset: u32) -> Result<GifPageView, CoreError> {
-        let demo = { let backend=self.backend.lock().map_err(|_|"Client lock failed".to_owned())?;
-            matches!(backend.as_ref(),Some(Backend::Demo(_))) };
-        if demo { return Ok(GifPageView { items:vec![GifView { id:"demo-motion".into(),title:"A little motion".into(),gif_url:"file:///android_asset/demo/animation.gif".into(),display_url:"file:///android_asset/demo/animation.gif".into(),preview_url:"file:///android_asset/demo/animation.gif".into(),width:480,height:320 }],more:false }); }
-        let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|CoreError::from(e.to_string()))?;
-        let page=rt.block_on(papo_core::giphy::page(&query,offset)).map_err(CoreError::from)?;
-        Ok(GifPageView { items:page.items.into_iter().map(GifView::from).collect(),more:page.more })
+        let demo = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            matches!(backend.as_ref(), Some(Backend::Demo(_)))
+        };
+        if demo {
+            return Ok(GifPageView {
+                items: vec![GifView {
+                    id: "demo-motion".into(),
+                    title: "A little motion".into(),
+                    gif_url: "file:///android_asset/demo/animation.gif".into(),
+                    display_url: "file:///android_asset/demo/animation.gif".into(),
+                    preview_url: "file:///android_asset/demo/animation.gif".into(),
+                    width: 480,
+                    height: 320,
+                }],
+                more: false,
+            });
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CoreError::from(e.to_string()))?;
+        let page = rt
+            .block_on(papo_core::giphy::page(&query, offset))
+            .map_err(CoreError::from)?;
+        Ok(GifPageView {
+            items: page.items.into_iter().map(GifView::from).collect(),
+            more: page.more,
+        })
     }
     pub fn gif_item(&self, id: String) -> Result<GifView, CoreError> {
-        let demo = { let backend=self.backend.lock().map_err(|_|"Client lock failed".to_owned())?; matches!(backend.as_ref(),Some(Backend::Demo(_))) };
-        if demo && id=="demo-motion" { return Ok(self.gif_page(String::new(),0)?.items.remove(0)); }
-        let rt=tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e|CoreError::from(e.to_string()))?;
-        rt.block_on(papo_core::giphy::item(&id)).map(GifView::from).map_err(CoreError::from)
+        let demo = {
+            let backend = self
+                .backend
+                .lock()
+                .map_err(|_| "Client lock failed".to_owned())?;
+            matches!(backend.as_ref(), Some(Backend::Demo(_)))
+        };
+        if demo && id == "demo-motion" {
+            return Ok(self.gif_page(String::new(), 0)?.items.remove(0));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| CoreError::from(e.to_string()))?;
+        rt.block_on(papo_core::giphy::item(&id))
+            .map(GifView::from)
+            .map_err(CoreError::from)
     }
 
     pub fn embed_image(&self, id: String, author: bool) -> Result<Vec<u8>, CoreError> {
@@ -302,23 +364,62 @@ pub struct MessageView {
 }
 
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
-pub struct EmojiView { pub id: String, pub name: String }
+pub struct EmojiView {
+    pub id: String,
+    pub name: String,
+}
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
-pub struct ReactorView { pub id: String, pub name: String }
+pub struct ReactorView {
+    pub id: String,
+    pub name: String,
+}
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
-pub struct ReactionGroupView { pub emoji: String, pub custom: bool, pub users: Vec<ReactorView> }
+pub struct ReactionGroupView {
+    pub emoji: String,
+    pub custom: bool,
+    pub users: Vec<ReactorView>,
+}
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
-pub struct ReactionDetailsView { pub message_id: String, pub groups: Vec<ReactionGroupView>, pub more: bool }
+pub struct ReactionDetailsView {
+    pub message_id: String,
+    pub groups: Vec<ReactionGroupView>,
+    pub more: bool,
+}
 
 #[derive(Clone, Debug, uniffi::Record)]
-pub struct GifView { pub id:String, pub title:String, pub gif_url:String, pub display_url:String, pub preview_url:String, pub width:u32, pub height:u32 }
+pub struct GifView {
+    pub id: String,
+    pub title: String,
+    pub gif_url: String,
+    pub display_url: String,
+    pub preview_url: String,
+    pub width: u32,
+    pub height: u32,
+}
 impl From<papo_core::giphy::GifItem> for GifView {
-    fn from(g:papo_core::giphy::GifItem)->Self { Self {id:g.id,title:g.title,gif_url:g.gif_url,display_url:g.display_url,preview_url:g.preview_url,width:g.width,height:g.height} }
+    fn from(g: papo_core::giphy::GifItem) -> Self {
+        Self {
+            id: g.id,
+            title: g.title,
+            gif_url: g.gif_url,
+            display_url: g.display_url,
+            preview_url: g.preview_url,
+            width: g.width,
+            height: g.height,
+        }
+    }
 }
 #[derive(Clone, Debug, uniffi::Record)]
-pub struct GifPageView { pub items:Vec<GifView>,pub more:bool }
+pub struct GifPageView {
+    pub items: Vec<GifView>,
+    pub more: bool,
+}
 
 /// Start is a Unicode scalar index, matching papo-core's mention bindings.
 #[derive(Clone, Debug, uniffi::Record)]
-pub struct MentionSelection { pub start:u32, pub label:String, pub user_id:String }
+pub struct MentionSelection {
+    pub start: u32,
+    pub label: String,
+    pub user_id: String,
+}
