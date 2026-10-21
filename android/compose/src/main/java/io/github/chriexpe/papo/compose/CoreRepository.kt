@@ -238,6 +238,27 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private val accountMutex = Mutex()
+    private suspend fun accountClient(server:ServerState):NativeClient = withContext(dispatcher) {
+        check(snapshots[server.url]?.me==server.me) {"Account changed"}
+        handles[server.url] ?: error("Server is closed")
+    }
+    internal suspend fun accountProfile(server:ServerState):io.github.chriexpe.papo.core.AccountProfile = accountMutex.withLock {
+        val client=accountClient(server)
+        val profile=withContext(kotlinx.coroutines.Dispatchers.IO) {client.accountProfile(server.me)}
+        withContext(dispatcher) {poll()}
+        profile
+    }
+    internal suspend fun accountChange(server:ServerState,change:io.github.chriexpe.papo.core.AccountChange) = accountMutex.withLock {
+        val client=accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {client.accountChange(server.me,change)}
+        withContext(dispatcher) {poll()}
+    }
+    internal suspend fun accountSessions(server:ServerState):List<io.github.chriexpe.papo.core.SessionView> = accountMutex.withLock {
+        val client=accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {client.accountSessions(server.me)}
+    }
+
     internal val expressions = ExpressionLibrary(getApplication())
     private val gifLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val pendingGifs = mutableMapOf<String, List<Pair<GifChoice,String>>>()

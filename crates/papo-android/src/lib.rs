@@ -16,6 +16,7 @@ use papo_core::storage::SecretStore;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod account;
 pub mod bindings;
 pub mod demo;
 mod discovery;
