@@ -91,6 +91,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var members by remember { mutableStateOf(false) }
     var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(false) }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
+    var viewedMedia by remember(draftKey) {mutableStateOf<ViewerMedia?>(null)}
     var submitting by remember(draftKey) { mutableStateOf(false) }
     var recording by remember(draftKey) { mutableStateOf(false) }
     var composerFocused by remember(draftKey) {mutableStateOf(false)}
@@ -200,6 +201,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
+    CompositionLocalProvider(LocalMediaViewer provides {media ->activeMedia=null;viewedMedia=media}) {
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
         LazyColumn(state = listState, reverseLayout = true,
             modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("message-list"),
@@ -215,7 +217,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 MessageRow(message, server, model, highlight=highlighted?.first==message.id, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
-                }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
+                }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
             }
             if (server.canLoadOlder) item("history") {
                 TextButton(onClick = { model.command(Action.Older) }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
@@ -288,7 +290,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
                         if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.content}" } ?: "Reply to message",
+                            Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.previewText()}" } ?: "Reply to message",
                                 maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
@@ -331,7 +333,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         dismissButton = { TextButton(onClick = { confirmAttachmentRetry = false }) { Text("Cancel") } })
 
     selected?.let { message -> ModalBottomSheet(onDismissRequest = { selected = null }) {
-        Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp)) {
+        Column(Modifier.navigationBarsPadding().heightIn(max=640.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
             Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
                 val favorites=expressions.favoriteStickers.mapNotNull {id -> server.emojis.firstOrNull {it.id==id}?.let {EmojiChoice(it.id,true,it.name)}}
@@ -345,6 +347,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 SheetAction("Reply", Icons.Outlined.Reply) { reply = message.id; selected = null }
             }
             SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
+            val links=(messageLinks(message.content).map {it.url}+message.embeds.map {it.url}+listOfNotNull(GifChoice.marker(message.content)?.let {"https://giphy.com/gifs/$it"})).filter(::isPublicLink).distinct()
+            var copied by remember(message.id) {mutableStateOf("")}
+            links.forEach {url ->
+                ListItem(headlineContent={Text(url,maxLines=3,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)},
+                    supportingContent=if(copied==url) {{Text("Copied URL")}} else null,
+                    trailingContent={IconButton(onClick={clipboard.setText(AnnotatedString(url));copied=url}) {Icon(Icons.Outlined.ContentCopy,"Copy URL: $url")}})
+            }
             if (message.mine && !message.pending) {
                 SheetAction("Edit message", Icons.Outlined.Edit) { edit = message; selected = null }
                 SheetAction("Delete message", Icons.Outlined.DeleteOutline) { delete = message; selected = null }
@@ -372,6 +381,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { Avatar(person.name) }, modifier = Modifier.clickable(enabled = person.id != server.me) { model.command(Action.OpenDm(person.id)); members = false }) }
         }
     }
+    }
+    viewedMedia?.let {media -> MediaViewer(server,model,media) {viewedMedia=null}}
 }
 
 @Composable
@@ -396,9 +407,10 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
             }
             if (message.replyTo.isNotBlank()) Row(Modifier.testTag("reply-preview-${message.id}").clip(RoundedCornerShape(8.dp)).clickable(role=Role.Button,onClickLabel="Open original message") {onJump(message.replyTo)}.background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(server.messages.firstOrNull {it.id==message.replyTo}?.previewText() ?: message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if (message.content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(message.content,server,model)
+            val content=remember(message.content,message.embeds) {message.visibleContent()}
+            if (content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(content,server,model)
             media()
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.reactions.forEach { reaction ->

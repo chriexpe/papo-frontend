@@ -317,6 +317,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         }
         return waveforms.load(source)
     }
+    internal suspend fun publicAudioWaveform(url:String):AudioWaveform = waveforms.load(publicMediaSource(url))
 
     suspend fun embedImage(server: ServerState, id: String, revision: String, author: Boolean = false): ByteArray {
         val key = EmbedKey(server.url, server.me, id, revision, author)

@@ -832,6 +832,31 @@ impl EmbedMedia {
 pub enum EmbedPlayback { Video, YouTube }
 
 impl LinkPreview {
+    pub fn animated(&self) -> bool {
+        self.fetch_method.as_deref() == Some("gif")
+            || [self.image.as_ref(), self.thumbnail.as_ref()].into_iter().flatten()
+                .filter_map(|media| media.mime_type.as_deref())
+                .any(|mime| mime.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("image/gif"))
+    }
+
+    /// Automatic direct media belongs in the timeline like an attachment.
+    /// A webpage's social image and authored custom cards retain their framing.
+    pub fn native_media(&self) -> bool {
+        if self.source_type.as_deref() == Some("custom") || self.playback() == Some(EmbedPlayback::YouTube) {
+            return false;
+        }
+        let Some(source) = self.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()) else { return false; };
+        if !matches!(source.scheme(), "http" | "https") { return false; }
+        let has_media = self.image.is_some() || self.thumbnail.is_some() || self.video.is_some() || self.image_data.is_some();
+        has_media && (self.animated()
+            || Kind::guess("", source.path()) != Kind::Other
+            || source.path().to_ascii_lowercase().ends_with(".m3u8")
+            || [self.image.as_ref(), self.video.as_ref()].into_iter().flatten().any(|media| {
+                media.url.as_deref().and_then(|raw| url::Url::parse(raw).ok()).as_ref() == Some(&source)
+                    && media.mime_type.as_deref().is_some_and(|mime| matches!(Kind::of(mime), Kind::Image | Kind::Video | Kind::Audio))
+            }))
+    }
+
     /// Backend video URLs are relay inputs, not public image URLs. An absent
     /// MIME means an iframe only for the backend's exact YouTube pattern.
     pub fn playback(&self) -> Option<EmbedPlayback> {

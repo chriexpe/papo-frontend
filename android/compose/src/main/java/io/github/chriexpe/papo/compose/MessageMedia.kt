@@ -11,6 +11,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -38,6 +39,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
+import androidx.core.view.doOnLayout
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -150,13 +152,25 @@ internal object MediaNetwork {
 }
 
 @Composable
-internal fun MessageMedia(message: ChatMessage, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit) {
-    GifChoice.marker(message.content)?.let { ProviderGif(server,model,it) }
+internal fun MessageMedia(message: ChatMessage, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit, onActions: ()->Unit) {
+    GifChoice.marker(message.content)?.let { ProviderGif(server,model,it,onActions) }
     message.attachments.forEach { attachment ->
-        Attachment(attachment, server, model, activePlayer, onPlayer)
+        Attachment(attachment, server, model, activePlayer, onPlayer,onActions)
     }
     message.embeds.forEach { embed ->
-        EmbedCard(embed, server, model, activePlayer, onPlayer)
+        EmbedCard(embed, server, model, activePlayer, onPlayer,onActions)
+    }
+    message.nativeLinks().distinctBy {it.url}.filter {link -> message.embeds.none {it.url==link.url}}.forEach {link ->
+        val kind=directMediaKind(link.url) ?: return@forEach
+        val title=Uri.parse(link.url).lastPathSegment?.takeIf {it.isNotBlank()} ?: "Media"
+        val gif=if(kind=="gif") GifChoice("url:${link.url}",title,url=link.url) else null
+        val media=ViewerMedia("${server.url}/${server.me}/url/${link.url}",title,kind,gif=gif,url=link.url)
+        if(kind=="audio") {
+            AudioPreview(server,model,media,activePlayer,onPlayer)
+        } else ReservedMedia(0,0,tag="direct-media-${message.id}") {
+            if(kind=="video") VideoPreview(server,model,media,onPlayer=onPlayer,onActions=onActions)
+            else MediaImage(server,model,title,publicUrl=link.url,gif=gif,onActions=onActions)
+        }
     }
 }
 
@@ -175,7 +189,7 @@ internal fun ReservedMedia(width: Int, height: Int, fallback: Float = 16f / 9f, 
 }
 
 @Composable
-private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit) {
+private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit,onActions: ()->Unit) {
     var revealed by rememberSaveable(server.url, server.me, a.id) { mutableStateOf(false) }
     val waiting = a.status in listOf("pending", "processing")
     val blocked = a.status in listOf("blocked", "failed")
@@ -192,23 +206,15 @@ private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewMo
     }
     when (a.kind) {
         "image" -> ReservedMedia(0, 0, fallback = 4f / 3f, tag = "attachment-${a.id}") {
-            MediaImage(server, model, "Photo: ${a.name}", resource = MediaResource.Attachment(a.id, false), gif = if(a.mime.substringBefore(';').equals("image/gif",true) || a.name.endsWith(".gif",true)) GifChoice("attachment:${a.id}",a.name,attachment=a.id) else null)
+            MediaImage(server, model, "Photo: ${a.name}", resource = MediaResource.Attachment(a.id, false), gif = if(a.mime.substringBefore(';').equals("image/gif",true) || a.name.endsWith(".gif",true)) GifChoice("attachment:${a.id}",a.name,attachment=a.id) else null,onActions=onActions)
         }
         "video", "audio" -> {
             val id = "${server.url}/${server.me}/attachment/${a.id}"
+            val media=ViewerMedia(id,a.name,a.kind,a.mime,resource=MediaResource.Attachment(a.id,false))
             if (a.kind == "audio") {
-                val resource = MediaResource.Attachment(a.id, false)
-                val waveform by produceState(WaveformState(), server.url, server.me, a.id) {
-                    try { value = WaveformState(model.audioWaveform(server, resource)) }
-                    catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { value = WaveformState(failed = true) }
-                }
-                Box(Modifier.fillMaxWidth().height(104.dp).testTag("audio-attachment-${a.id}").clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
-                    PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, resource, audio = true, waveform = waveform)
-                }
+                AudioPreview(server,model,media,activePlayer,onPlayer,tag="audio-attachment-${a.id}")
             } else ReservedMedia(0, 0, tag = "attachment-${a.id}") {
-                PlayableMedia(server, model, id, a.name, activePlayer == id, { onPlayer(id) }, MediaResource.Attachment(a.id, false),
-                    poster = if (a.thumbnail) MediaResource.Attachment(a.id, true) else null)
+                VideoPreview(server,model,media,poster=if(a.thumbnail) MediaResource.Attachment(a.id,true) else null,onPlayer=onPlayer,onActions=onActions)
             }
         }
         else -> FileAttachment(a, server, model)
@@ -249,7 +255,13 @@ private fun FileAttachment(a: AttachmentView, server: ServerState, model: PapoVi
 }
 
 @Composable
-private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit) {
+private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit,onActions: ()->Unit) {
+    if(e.nativeMedia) {
+        ReservedMedia(e.width,e.height,fallback=if(e.kind=="video") 16f/9f else 4f/3f,tag="embed-${e.id}") {
+            EmbedVisual(e,server,model,onPlayer,onActions)
+        }
+        return
+    }
     val uriHandler = LocalUriHandler.current
     val publicUrl = remember(e.url) { e.url.takeIf(::isPublicLink) }
     val accent = remember(e.color) { runCatching { Color(android.graphics.Color.parseColor(e.color)) }.getOrNull() }
@@ -272,10 +284,9 @@ private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, a
             }
         }
         when (e.kind) {
-            "image", "gif" -> ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") { MediaImage(server, model, e.title.ifBlank { "Image preview" }, embed = e, gif=if(e.kind=="gif") GifChoice("embed:${e.id}",e.title.ifBlank { "GIF" },embed=e.id,revision=e.revision,width=e.width,height=e.height) else null) }
+            "image", "gif" -> ReservedMedia(e.width, e.height, fallback = 4f / 3f, tag = "embed-${e.id}") { EmbedVisual(e,server,model,onPlayer,onActions) }
             "video" -> ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
-                val id = "${server.url}/${server.me}/embed/${e.id}"
-                PlayableMedia(server, model, id, e.title.ifBlank { "Video" }, activePlayer == id, { onPlayer(id) }, MediaResource.EmbedVideo(e.id), embedPoster = e.takeIf { it.hasImage })
+                EmbedVisual(e,server,model,onPlayer,onActions)
             }
             "iframe" -> ReservedMedia(e.width, e.height, tag = "embed-${e.id}") {
                 val id = "${server.url}/${server.me}/iframe/${e.id}"
@@ -292,17 +303,46 @@ private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, a
 }
 
 @Composable
-private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true, gif: GifChoice? = null) {
+private fun BoxScope.EmbedVisual(e:EmbedView,server:ServerState,model:PapoViewModel,onPlayer:(String?)->Unit,onActions:()->Unit) {
+    if(e.kind=="video") VideoPreview(server,model,ViewerMedia("${server.url}/${server.me}/embed/${e.id}",e.title.ifBlank {"Video"},"video",e.mime,e.width,e.height,resource=MediaResource.EmbedVideo(e.id)),embedPoster=e.takeIf {it.hasImage},onPlayer=onPlayer,onActions=onActions)
+    else MediaImage(server,model,e.title.ifBlank {"Image preview"},embed=e,gif=if(e.kind=="gif") GifChoice("embed:${e.id}",e.title.ifBlank {"GIF"},url=e.url,embed=e.id,revision=e.revision,width=e.width,height=e.height) else null,onActions=onActions)
+}
+
+@Composable
+private fun BoxScope.VideoPreview(server:ServerState,model:PapoViewModel,media:ViewerMedia,poster:MediaResource?=null,embedPoster:EmbedView?=null,onPlayer:(String?)->Unit,onActions:()->Unit) {
+    val viewer=LocalMediaViewer.current
+    fun open() {onPlayer(null);viewer(media)}
+    Box(Modifier.fillMaxSize().combinedClickable(onClick=::open,onLongClick=onActions,onLongClickLabel="Message actions")) {
+        if(poster!=null || embedPoster!=null) MediaImage(server,model,media.title,resource=poster,embed=embedPoster,viewer=false)
+        PlayButton(media.title,::open)
+    }
+}
+
+@Composable
+private fun AudioPreview(server:ServerState,model:PapoViewModel,media:ViewerMedia,activePlayer:String?,onPlayer:(String?)->Unit,tag:String="") {
+    val viewer=LocalMediaViewer.current
+    val waveform by produceState(WaveformState(),server.url,server.me,media.id) {
+        try {value=WaveformState(if(media.resource!=null) model.audioWaveform(server,media.resource) else model.publicAudioWaveform(media.url))}
+        catch(e:CancellationException) {throw e} catch(_:Exception) {value=WaveformState(failed=true)}
+    }
+    Box(Modifier.fillMaxWidth().height(104.dp).testTag(tag).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
+        PlayableMedia(server,model,media.id,media.title,activePlayer==media.id,{onPlayer(media.id)},media.resource,audio=true,waveform=waveform,publicUrl=media.url,onExpand={onPlayer(null);viewer(media)})
+    }
+}
+
+@Composable
+private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true, gif: GifChoice? = null,publicUrl:String="",onActions:(()->Unit)?=null) {
     val context = LocalContext.current
     var retry by remember { mutableStateOf(0) }
-    var expanded by remember { mutableStateOf(false) }
+    val openViewer=LocalMediaViewer.current
+    val media=ViewerMedia("${server.url}/${server.me}/image/${embed?.id ?: resource ?: publicUrl}",description.removePrefix("Photo: "),if(gif!=null) "gif" else "image",embed?.mime.orEmpty(),embed?.width ?: 0,embed?.height ?: 0,resource,embed,gif,publicUrl)
     var decodeError by remember(retry, embed?.revision) { mutableStateOf(false) }
     var decoded by remember(retry, embed?.revision) { mutableStateOf(false) }
-    val data by produceState<Pair<Any, MediaRequest?>?>(null, server.url, server.me, resource, embed?.id, embed?.revision, author, retry) {
+    val data by produceState<Pair<Any, MediaRequest?>?>(null, server.url, server.me, resource, embed?.id, embed?.revision, author, retry,publicUrl) {
         value = null
         try {
             value = if (embed != null) model.embedImage(server, embed.id, embed.revision, author) to null
-            else model.mediaRequest(server.url, requireNotNull(resource)).let { it.url to it }
+            else (if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource))).let { it.url to it }
         } catch (e: CancellationException) { throw e }
         catch (e: Exception) { decodeError = true }
     }
@@ -315,7 +355,7 @@ private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, descr
     val request = remember(data, server.url, server.me, embed?.revision) { ImageRequest.Builder(context)
         .data(data?.first).memoryCacheKey(source?.cacheKey ?: "${server.url}/${server.me}/${embed?.id}/${embed?.revision}/$author").build() }
     if (data != null && !decodeError) AsyncImage(request, description, imageLoader = loader,
-        modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.clickable { expanded = true } else Modifier), contentScale = ContentScale.Fit,
+        modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.combinedClickable(onClick={openViewer(media)},onLongClick=onActions,onLongClickLabel="Message actions") else Modifier), contentScale = ContentScale.Fit,
         onSuccess = { decoded = true },
         onError = { decodeError = true })
     else if (!decodeError) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
@@ -325,25 +365,6 @@ private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, descr
         TextButton(onClick = { decodeError = false; retry++ }) { Text("Retry") }
     }
     if (gif!=null) GifStar(server,model,gif,Modifier.align(Alignment.TopEnd))
-    if (expanded) ImageViewer(request, loader, description, favorite = { if(gif!=null) GifStar(server,model,gif,light=true) }) { expanded = false }
-}
-
-@Composable
-private fun ImageViewer(request: ImageRequest, loader: ImageLoader, title: String, favorite: @Composable ()->Unit = {}, onClose: () -> Unit) {
-    var scale by remember { mutableStateOf(1f) }
-    var x by remember { mutableStateOf(0f) }; var y by remember { mutableStateOf(0f) }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            AsyncImage(request, title, loader, Modifier.fillMaxSize().pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ -> scale = (scale * zoom).coerceIn(1f, 5f); x = if (scale == 1f) 0f else x + pan.x; y = if (scale == 1f) 0f else y + pan.y }
-            }.graphicsLayer { scaleX = scale; scaleY = scale; translationX = x; translationY = y }, contentScale = ContentScale.Fit)
-            Row(Modifier.align(Alignment.TopCenter).statusBarsPadding().fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = Color.White, maxLines = 1, modifier = Modifier.weight(1f).padding(12.dp))
-                favorite()
-                IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "Close image", tint = Color.White) }
-            }
-        }
-    }
 }
 
 @Composable
@@ -353,13 +374,13 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState()) {
+internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource?, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState(),publicUrl:String="",onVideoRatio:(Float)->Unit={},onExpand:(()->Unit)?=null,videoScale:Float=1f,videoPan:androidx.compose.ui.geometry.Offset=androidx.compose.ui.geometry.Offset.Zero) {
     var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
         if (audio) Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FilledIconButton(onClick = activate, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.PlayArrow, "Play $title") }
             Column(Modifier.weight(1f)) {
-                Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Text(title, modifier=Modifier.then(if(onExpand!=null) Modifier.clickable(onClickLabel="Open $title",onClick=onExpand) else Modifier),maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                 AudioWaveformSeek(waveform, 0f, waveform.data != null, id, { initialSeek = it; activate() }, Modifier.fillMaxWidth())
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("0:00", style = MaterialTheme.typography.labelSmall)
@@ -378,7 +399,7 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
     var ready by remember(id) { mutableStateOf(false) }
     var retry by remember(id) { mutableStateOf(0) }
     val source by produceState<MediaRequest?>(null, id, retry) {
-        try { value = model.mediaRequest(server.url, resource) }
+        try { value = if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = "Media unavailable. Tap to retry." }
     }
@@ -392,6 +413,7 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
     } }
     DisposableEffect(player, lifecycle) {
         val listener = object : Player.Listener {
+            override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {if(videoSize.width>0 && videoSize.height>0) onVideoRatio(videoSize.width.toFloat()*videoSize.pixelWidthHeightRatio/videoSize.height)}
             override fun onPlayerError(e: PlaybackException) { error = "Playback failed. Tap to retry." }
             override fun onPlaybackStateChanged(state: Int) {
                 ready = state == Player.STATE_READY || state == Player.STATE_ENDED
@@ -408,8 +430,14 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
     }
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     else Box(Modifier.fillMaxSize().testTag("player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
-        if (audio) AudioControls(player, title, waveform, id)
-        else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = { it.player = player }, modifier = Modifier.fillMaxSize())
+        if (audio) AudioControls(player, title, waveform, id,onExpand)
+        else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = {view ->
+            view.player=player
+            // Zoom the video texture, leaving playback controls at touch size.
+            view.videoSurfaceView?.doOnLayout {surface -> (surface as? android.view.TextureView)?.setTransform(android.graphics.Matrix().apply {
+                postScale(videoScale,videoScale,surface.width/2f,surface.height/2f);postTranslate(videoPan.x,videoPan.y)
+            })}
+        }, modifier = Modifier.fillMaxSize())
     }
     if (error.isNotBlank()) Column(Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(error, style = MaterialTheme.typography.bodySmall)
@@ -419,7 +447,7 @@ private fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id
 
 /** Audio has its own controls and never creates a video surface. */
 @Composable
-private fun AudioControls(player: Player, title: String, waveform: WaveformState, id: String) {
+private fun AudioControls(player: Player, title: String, waveform: WaveformState, id: String,onExpand:(()->Unit)?=null) {
     var playing by remember(player) { mutableStateOf(player.isPlaying) }
     var position by remember(player) { mutableLongStateOf(0) }
     var duration by remember(player) { mutableLongStateOf(waveform.data?.durationMs ?: 0) }
@@ -446,7 +474,7 @@ private fun AudioControls(player: Player, title: String, waveform: WaveformState
             Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, if (playing) "Pause $title" else "Play $title")
         }
         Column(Modifier.weight(1f)) {
-            Text(title, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+            Text(title, modifier=Modifier.then(if(onExpand!=null) Modifier.clickable(onClickLabel="Open $title",onClick=onExpand) else Modifier),maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
             AudioWaveformSeek(waveform, if (duration > 0) position.toFloat() / duration else 0f, duration > 0, id,
                 onSeek = { fraction -> val target = (fraction * duration).toLong(); player.seekTo(target); position = target }, modifier = Modifier.fillMaxWidth())
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {

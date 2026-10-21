@@ -1,9 +1,12 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package io.github.chriexpe.papo.compose
 
 import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Star
@@ -33,11 +36,11 @@ import java.security.MessageDigest
 import okhttp3.OkHttpClient
 
 internal fun publicGifSource(url: String): MediaRequest {
-    if(url.startsWith("file:///android_asset/demo/")) return MediaRequest(url,emptyMap(),"demo",url)
+    if(url.startsWith("file:///android_asset/demo/")) return MediaRequest(url=url,headers=emptyMap(),origin="demo",cacheKey=url)
     val uri=Uri.parse(url)
-    require(uri.scheme=="https" && !uri.host.isNullOrBlank() && uri.userInfo==null) { "Invalid GIF address" }
+    require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo==null) { "Invalid GIF address" }
     val origin=uri.buildUpon().path("").query(null).fragment(null).build().toString().trimEnd('/')
-    return MediaRequest(url,emptyMap(),origin,"public/$url")
+    return MediaRequest(url=url,headers=emptyMap(),origin=origin,cacheKey="public/$url")
 }
 internal object ExpressionImages {
     @Volatile private var shared: ImageLoader? = null
@@ -59,7 +62,7 @@ internal fun GifStar(server: ServerState, model: PapoViewModel, gif: GifChoice, 
 }
 
 @Composable
-internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif: GifChoice, preview: Boolean=false, onClick: ()->Unit={}) {
+internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif: GifChoice, preview: Boolean=false,onLongClick:(()->Unit)?=null, onClick: ()->Unit={}) {
     val context=LocalContext.current
     var error by remember(gif.key) { mutableStateOf("") }
     var retry by remember {mutableIntStateOf(0)}
@@ -77,7 +80,7 @@ internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif:
         catch(e:Exception) {error=e.message ?: "GIF unavailable"}
     }
     val loader=remember(context) {ExpressionImages.loader(context)}
-    if(data!=null && error.isBlank()) AsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().clickable(onClick=onClick),contentScale=ContentScale.Fit,onError={error="GIF unavailable"})
+    if(data!=null && error.isBlank()) AsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel="Message actions"),contentScale=ContentScale.Fit,onError={error="GIF unavailable"})
     else if(error.isBlank()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp),strokeWidth=2.dp)
     if(error.isNotBlank()) Column(Modifier.align(Alignment.Center).padding(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
         Text(error,style=MaterialTheme.typography.bodySmall,maxLines=3)
@@ -86,21 +89,12 @@ internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif:
 }
 
 @Composable
-internal fun ProviderGif(server: ServerState, model: PapoViewModel, id: String) {
-    var expanded by remember(id) { mutableStateOf(false) }
+internal fun ProviderGif(server: ServerState, model: PapoViewModel, id: String,onActions:()->Unit) {
+    val viewer=LocalMediaViewer.current
     var gif by remember(id) {mutableStateOf(GifChoice("giphy:$id","GIF",providerId=id))}
     LaunchedEffect(id) { try {gif=model.gifItem(server,id)} catch(e:CancellationException) {throw e} catch(_:Exception) { /* Artwork exposes a retry and the provider error. */ } }
     ReservedMedia(gif.width,gif.height,tag="provider-gif-$id") {
-        GifArtwork(server,model,gif,onClick={expanded=true})
+        GifArtwork(server,model,gif,onLongClick=onActions,onClick={viewer(ViewerMedia("giphy:$id",gif.title,"gif","image/gif",gif.width,gif.height,gif=gif))})
         GifStar(server,model,gif,Modifier.align(Alignment.TopEnd))
-    }
-    if(expanded) Dialog(onDismissRequest={expanded=false},properties=DialogProperties(usePlatformDefaultWidth=false,decorFitsSystemWindows=false)) {
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
-            GifArtwork(server,model,gif)
-            Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),verticalAlignment=Alignment.CenterVertically) {
-                GifStar(server,model,gif,light=true)
-                IconButton(onClick={expanded=false}) {Icon(Icons.Outlined.Close,"Close image",tint=Color.White)}
-            }
-        }
     }
 }

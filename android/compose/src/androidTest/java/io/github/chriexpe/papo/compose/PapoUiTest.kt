@@ -395,15 +395,15 @@ class PapoUiTest {
     @Test fun backendMislabeledM4aUsesAudioControlsAndKeepsItsCompactFrame() {
         media()
         compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play voice-note.m4a"))
-        val frame = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val frame = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().size
         compose.onNodeWithTag("attachment-demo-audio", useUnmergedTree = true).assertDoesNotExist()
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("waveform-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Waveform ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Play voice-note.m4a").performClick()
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("player-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("audio-controls", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Audio position").assertExists()
-        val loaded = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        assertEquals(frame.height, loaded.height, 1f)
+        val loaded = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().size
+        assertEquals(frame.height, loaded.height)
     }
 
     @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {
@@ -422,6 +422,8 @@ class PapoUiTest {
 
     @Test fun videoAttachmentDecodesAndKeepsItsReservedFrame() {
         media()
+        var previous=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        activity.onActivity {previous=it.requestedOrientation}
         compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play clip.mp4"))
         val frame = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         compose.onNodeWithContentDescription("Play clip.mp4").performClick()
@@ -429,6 +431,104 @@ class PapoUiTest {
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         val playing = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertEquals(frame.height, playing.height, 1f)
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Download media").assertIsDisplayed()
+        activity.onActivity {assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR,it.requestedOrientation)}
+        try {
+            activity.onActivity {it.requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE}
+            compose.waitUntil(10_000) {compose.onAllNodesWithTag("media-viewer").fetchSemanticsNodes().any {it.boundsInRoot.width>it.boundsInRoot.height}}
+            compose.onNode(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).assertIsDisplayed()
+            pinchViewer()
+            compose.onNodeWithContentDescription("Close media").performClick()
+            compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+            activity.onActivity {assertEquals("Closing restores the normal orientation policy",previous,it.requestedOrientation)}
+        } finally {activity.onActivity {it.requestedOrientation=previous}}
+    }
+
+    private fun pinchViewer() {
+        compose.onNodeWithTag("viewer-content").performTouchInput {
+            down(0,center.copy(x=center.x-30f));down(1,center.copy(x=center.x+30f))
+            moveTo(0,center.copy(x=center.x-90f));moveTo(1,center.copy(x=center.x+90f))
+            up(0);up(1)
+        }
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("viewer-content").fetchSemanticsNodes().any {it.config[SemanticsProperties.StateDescription]!="Zoom 1.00x"}}
+    }
+
+    @Test fun directMediaHidesItsUrlAndHoldingItCopiesEachLinkSeparately() {
+        media()
+        compose.onNodeWithTag("message-list",useUnmergedTree=true).performScrollToNode(hasTestTag("embed-embed-portrait"))
+        val image=compose.onNodeWithContentDescription("Portrait preview")
+        compose.waitUntil(10_000) {compose.onAllNodes(hasContentDescription("Portrait preview") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("As dimensões chegam antes dos pixels.",substring=true).assertIsDisplayed()
+        compose.onNodeWithText("https://cdn.example.test/portrait.png?sig=fixture",substring=true).assertDoesNotExist()
+        image.performTouchInput {longClick()}
+        val clipboard=InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(android.content.ClipboardManager::class.java)
+        for(url in listOf("https://cdn.example.test/portrait.png?sig=fixture","https://example.test/more")) {
+            compose.onNodeWithContentDescription("Copy URL: $url").performScrollTo().performClick()
+            assertEquals(url,clipboard.primaryClip?.getItemAt(0)?.text.toString())
+        }
+        compose.onNodeWithText("Copy text",substring=false).performScrollTo().performClick()
+        assertTrue(clipboard.primaryClip?.getItemAt(0)?.text.toString().contains("As dimensões"))
+        assertTrue(clipboard.primaryClip?.getItemAt(0)?.text.toString().contains("https://cdn.example.test/portrait.png?sig=fixture"))
+    }
+
+    @Test fun directUrlRendersAndOpensBeforeBackendEmbedMetadataArrives() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val bytes=context.assets.open("demo/portrait.png").use {it.readBytes()}
+        val socket=java.net.ServerSocket(0)
+        val headers=java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val executor=java.util.concurrent.Executors.newSingleThreadExecutor()
+        executor.submit {
+            while(!socket.isClosed) try {
+                socket.accept().use {connection ->
+                    val reader=connection.getInputStream().bufferedReader()
+                    while(true) {val line=reader.readLine() ?: break;if(line.isEmpty()) break;headers.add(line)}
+                    connection.getOutputStream().apply {
+                        write("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray());write(bytes);flush()
+                    }
+                }
+            } catch(_:java.io.IOException) {if(socket.isClosed) break}
+        }
+        try {
+            chat()
+            val url="http://127.0.0.1:${socket.localPort}/fixture.PNG?sig=exact%2Bvalue"
+            compose.onNodeWithTag("composer-input").performTextInput("Keep this caption\n$url")
+            compose.onNodeWithContentDescription("Send message").performClick()
+            compose.waitUntil(10_000) {compose.onAllNodes(hasContentDescription("fixture.PNG") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded")).fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithText("Keep this caption").assertIsDisplayed()
+            compose.onNodeWithText(url,substring=true).assertDoesNotExist()
+            compose.onNodeWithContentDescription("fixture.PNG").performClick()
+            compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("viewer-image") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+            assertTrue(headers.any {it.contains("sig=exact%2Bvalue")})
+            assertTrue(headers.none {it.startsWith("Cookie:",ignoreCase=true)})
+            compose.onNodeWithContentDescription("Close image").performClick()
+        } finally {socket.close();executor.shutdownNow()}
+    }
+
+    @Test fun sharedImageViewerZoomsDownloadsAndDismissesOnlyOutsideItsContent() {
+        media()
+        compose.onNodeWithTag("message-list",useUnmergedTree=true).performScrollToNode(hasTestTag("embed-embed-portrait"))
+        compose.waitUntil(10_000) {compose.onAllNodes(hasContentDescription("Portrait preview") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Portrait preview").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("viewer-image") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("viewer-content").performClick()
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        pinchViewer()
+        val reset=compose.onNodeWithTag("viewer-content").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.CustomActions].single {it.label=="Reset zoom"}
+        compose.runOnIdle {assertTrue(reset.action())}
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val downloads=android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        fun ids():Set<Long> = context.contentResolver.query(downloads,arrayOf(android.provider.MediaStore.MediaColumns._ID),"${android.provider.MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",arrayOf("Portrait preview%"),null)!!.use {cursor ->buildSet {while(cursor.moveToNext()) add(cursor.getLong(0))}}
+        val before=ids()
+        try {
+            compose.onNodeWithContentDescription("Download media").performClick()
+            compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Downloaded").fetchSemanticsNodes().isNotEmpty()}
+            assertTrue(ids().size>before.size)
+        } finally {(ids()-before).forEach {id ->context.contentResolver.delete(android.content.ContentUris.withAppendedId(downloads,id),null,null)}}
+        val content=compose.onNodeWithTag("viewer-content").fetchSemanticsNode().boundsInRoot
+        val backdrop=compose.onNodeWithTag("viewer-backdrop").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("viewer-backdrop").performTouchInput {click(androidx.compose.ui.geometry.Offset(8f,content.top-backdrop.top-12f))}
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
     }
 
 }

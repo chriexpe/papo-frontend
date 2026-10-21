@@ -61,6 +61,7 @@ pub struct EmbedView {
     pub id: String,
     pub kind: String,
     pub source_type: String,
+    pub native_media: bool,
     pub url: String,
     pub title: String,
     pub description: String,
@@ -81,12 +82,7 @@ pub struct EmbedView {
 impl From<&LinkPreview> for EmbedView {
     fn from(e: &LinkPreview) -> Self {
         let has_image = e.image.is_some() || e.thumbnail.is_some() || e.image_data.is_some();
-        let animated = e.fetch_method.as_deref() == Some("gif")
-            || e.thumbnail
-                .as_ref()
-                .or(e.image.as_ref())
-                .and_then(|m| m.mime_type.as_deref())
-                .is_some_and(|m| m == "image/gif");
+        let animated = e.animated();
         let kind = match e.playback() {
             Some(EmbedPlayback::Video) => "video",
             Some(EmbedPlayback::YouTube) => "iframe",
@@ -101,6 +97,7 @@ impl From<&LinkPreview> for EmbedView {
             id: e.id.clone(),
             kind: kind.into(),
             source_type: e.source_type.clone().unwrap_or_else(|| "link".into()),
+            native_media: e.native_media(),
             url: e.url.clone().unwrap_or_default(),
             title: e.title.clone().unwrap_or_default(),
             description: e.description.clone().unwrap_or_default(),
@@ -318,6 +315,35 @@ pub fn demo_image(id: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_media_keeps_custom_cards_and_webpage_previews_distinct() {
+        let mut embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"direct", "url":"https://cdn.example/photo.png?sig=abc", "title":"Image title",
+            "image":{"mime_type":"image/png","width":600,"height":400}
+        })).unwrap();
+        assert!(EmbedView::from(&embed).native_media);
+        embed.source_type=Some("custom".into());
+        assert!(!EmbedView::from(&embed).native_media);
+        embed.source_type=Some("link".into());
+        embed.url=Some("https://example/article".into());
+        assert!(!EmbedView::from(&embed).native_media);
+        embed.image.as_mut().unwrap().url=embed.url.clone();
+        assert!(EmbedView::from(&embed).native_media, "Opaque media URLs are confirmed by matching media metadata");
+        embed.video=Some(serde_json::from_value(serde_json::json!({"url":"https://www.youtube.com/embed/abc123"})).unwrap());
+        assert!(!EmbedView::from(&embed).native_media);
+    }
+
+    #[test]
+    fn static_thumbnail_does_not_hide_an_animated_original() {
+        let embed: LinkPreview = serde_json::from_value(serde_json::json!({
+            "id":"gif", "url":"https://cdn.example/opaque", "thumbnail":{"mime_type":"image/png"},
+            "image":{"mime_type":"IMAGE/GIF; charset=binary"}
+        })).unwrap();
+        let view=EmbedView::from(&embed);
+        assert_eq!(view.kind,"gif");
+        assert!(view.native_media);
+    }
 
     #[test]
     fn backend_labeled_m4a_projects_as_audio_without_rewriting_metadata() {

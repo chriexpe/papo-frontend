@@ -47,6 +47,6 @@ internal fun MessageText(content: String, server: ServerState, model: PapoViewMo
         }
         append(content.substring(end))
     } }
-    SelectionContainer {Text(text,inlineContent=inline,style=MaterialTheme.typography.bodyLarge,lineHeight=if(sticker) 80.sp else 26.sp)}
+    Text(text,inlineContent=inline,style=MaterialTheme.typography.bodyLarge,lineHeight=if(sticker) 80.sp else 26.sp)
     detail?.let {id -> StickerDetails(server,model,id,onDismiss={detail=null})}
 }
