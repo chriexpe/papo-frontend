@@ -52,6 +52,13 @@ pub enum Action {
         content: String,
         reply_to: Option<String>,
     },
+    SendAttachments {
+        local_id: String,
+        channel_id: String,
+        content: String,
+        reply_to: Option<String>,
+        files: Vec<UploadFile>,
+    },
     Edit {
         message_id: String,
         content: String,
@@ -86,6 +93,31 @@ pub enum Action {
     },
     ClearError,
     Logout,
+}
+
+#[derive(Clone, Debug, Deserialize, uniffi::Record)]
+pub struct UploadFile {
+    pub path: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+fn prepare_uploads(files: Vec<UploadFile>) -> Result<Vec<papo_core::api::client::Upload>, String> {
+    if files.is_empty() || files.len() > 10 {
+        return Err("Choose between one and ten attachments".into());
+    }
+    files.into_iter().map(|file| {
+        let path = PathBuf::from(&file.path);
+        let metadata = std::fs::metadata(&path).map_err(|_| format!("{} is no longer available. Choose it again.", file.name))?;
+        if !metadata.is_file() || metadata.len() != file.size {
+            return Err(format!("{} changed. Choose it again.", file.name));
+        }
+        Ok(papo_core::api::client::Upload {
+            path, name: file.name, mime: file.mime, size: file.size,
+            spoiler: false, anonymize: false,
+        })
+    }).collect()
 }
 
 pub fn normalize_url(input: &str) -> Result<String, String> {
@@ -175,6 +207,12 @@ impl Client {
             match &update {
                 Update::Outgoing(item) => {
                     events.push(json!({"type":"accepted", "localId": item.local_id}))
+                }
+                Update::SendConfirmed { local_id, .. } => {
+                    events.push(json!({"type":"accepted", "localId":local_id}));
+                }
+                Update::UploadFailed { local_id, message, state } => {
+                    events.push(json!({"type":if *state == OutgoingState::UnknownOutcome { "unknown" } else { "rejected" }, "localId":local_id,"error":message}));
                 }
                 Update::OutgoingRejected {
                     local_id, message, ..
@@ -269,6 +307,21 @@ impl Client {
                     reply_to,
                     notify_reply: true,
                     created_at: now_millis(),
+                }
+            }
+            Action::SendAttachments { local_id, channel_id, content, reply_to, files } => {
+                if store.screen != Screen::Chat || store.me.is_empty() {
+                    return Err("Sign in before sending attachments".into());
+                }
+                if store.connection != Connection::Online {
+                    return Err("Connect to the server before sending attachments. Your files are kept here.".into());
+                }
+                if local_id.is_empty() || !store.channels.iter().any(|c| c.id == channel_id && matches!(c.kind, ChannelKind::Text | ChannelKind::Direct)) {
+                    return Err("Select a text conversation".into());
+                }
+                Command::SendMessage {
+                    local_id, owner_user_id: store.me.clone(), channel_id, content,
+                    reply_to, notify_reply: true, embeds: vec![], attachments: prepare_uploads(files)?,
                 }
             }
             Action::Edit {

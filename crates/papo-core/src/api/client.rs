@@ -274,6 +274,12 @@ pub enum SendMessageError {
 }
 
 impl SendMessageError {
+    pub fn into_api_error(self) -> ApiError {
+        match self {
+            Self::SafeToRetry(error) | Self::FailedPermanent(error) | Self::UnknownOutcome(error) => error,
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             Self::SafeToRetry(error)
@@ -912,17 +918,32 @@ impl Api {
         attachments: &[Upload],
         embeds: &[super::models::CustomEmbedInput],
     ) -> ApiResult<Message> {
+        self.send_message_classified(channel_id, content, reply_to, notify_reply, attachments, embeds)
+            .await.map_err(SendMessageError::into_api_error)
+    }
+
+    /// Multipart uploads use the same uncertainty rules as text sends: local
+    /// preparation failures are definite, but a failed POST may have arrived.
+    pub async fn send_message_classified(
+        &self,
+        channel_id: &str,
+        content: &str,
+        reply_to: Option<&str>,
+        notify_reply: bool,
+        attachments: &[Upload],
+        embeds: &[super::models::CustomEmbedInput],
+    ) -> Result<Message, SendMessageError> {
         let url = self
             .base
             .join("/messages")
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(e.to_string())))?;
 
         let mut form = reqwest::multipart::Form::new()
             .text("channel_id", channel_id.to_owned())
             .text("content", content.to_owned());
         if !embeds.is_empty() {
             form = form.text("embeds", serde_json::to_string(embeds)
-                .map_err(|e| ApiError::Decode(e.to_string()))?);
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Decode(e.to_string())))?);
         }
         if let Some(reply_to) = reply_to {
             form = form
@@ -947,11 +968,11 @@ impl Api {
             // mandar um pequeno.
             let file = tokio::fs::File::open(&upload.path)
                 .await
-                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?;
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?;
             let length = file
                 .metadata()
                 .await
-                .map_err(|e| ApiError::Network(format!("{}: {e}", upload.name)))?
+                .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(format!("{}: {e}", upload.name))))?
                 .len();
             let chunks = futures_util::stream::try_unfold(file, |mut file| async move {
                 use tokio::io::AsyncReadExt as _;
@@ -971,7 +992,7 @@ impl Api {
             )
             .file_name(upload.name.clone())
             .mime_str(&upload.mime)
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+            .map_err(|e| SendMessageError::FailedPermanent(ApiError::Network(e.to_string())))?;
             form = form.part("attachments", part);
         }
 
@@ -987,13 +1008,21 @@ impl Api {
             request = request.header(COOKIE, value);
         }
         self.governor.wait_turn().await;
-        let response = request
-            .send()
-            .await
-            .map_err(|e| ApiError::Network(e.to_string()))?;
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) if error.is_builder() || error.is_connect() => {
+                return Err(SendMessageError::SafeToRetry(ApiError::Network(error.to_string())));
+            }
+            Err(error) => return Err(SendMessageError::UnknownOutcome(ApiError::Network(error.to_string()))),
+        };
         self.governor.observe_response(&response).await;
         self.session.absorb(&response);
-        Self::parse(response).await
+        let status = response.status();
+        Self::parse(response).await.map_err(|error| match status {
+            StatusCode::TOO_MANY_REQUESTS => SendMessageError::SafeToRetry(error),
+            StatusCode::BAD_REQUEST | StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => SendMessageError::FailedPermanent(error),
+            _ => SendMessageError::UnknownOutcome(error),
+        })
     }
 
     /// Caminho classificado usado exclusivamente pela fila durável de texto.
@@ -1706,6 +1735,56 @@ mod tests {
             all.iter().map(|emoji| emoji.id.as_str()).collect::<Vec<_>>(),
             vec!["a", "b", "c"]
         );
+    }
+
+    #[tokio::test]
+    async fn upload_preparation_failure_is_definite_before_any_post() {
+        let api = Api::new("http://127.0.0.1:9", Arc::new(Session::default())).unwrap();
+        let file = Upload {
+            path: std::env::temp_dir().join(format!("missing-{}", request_id())),
+            name: "missing.txt".into(), mime: "text/plain".into(), size: 10,
+            spoiler: false, anonymize: false,
+        };
+        assert!(matches!(api.send_message_classified("chat", "", None, true, &[file], &[]).await,
+            Err(SendMessageError::FailedPermanent(_))));
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_distinguishes_rejection_from_uncertain_server_outcome() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let path = std::env::temp_dir().join(format!("upload-{}", request_id()));
+        std::fs::write(&path, b"attachment-fixture").unwrap();
+        for (status, expected) in [(400, "rejected"), (500, "unknown"), (429, "safe"), (200, "unknown")] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                stream.read_line(&mut line).await.unwrap();
+                assert!(line.starts_with("POST /messages "));
+                let mut length = 0;
+                loop {
+                    line.clear(); stream.read_line(&mut line).await.unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") { length = value.trim().parse::<usize>().unwrap(); }
+                }
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).await.unwrap();
+                let body = String::from_utf8(body).unwrap();
+                assert!(body.contains("attachment-fixture"));
+                assert!(body.contains("filename=\"fixture.txt\""));
+                assert!(body.contains("name=\"channel_id\""));
+                let response = format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+                stream.get_mut().write_all(response.as_bytes()).await.unwrap();
+            });
+            let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
+            let file = Upload { path: path.clone(), name: "fixture.txt".into(), mime: "text/plain".into(), size: 18, spoiler: false, anonymize: false };
+            let error = api.send_message_classified("chat", "caption", None, true, &[file], &[]).await.unwrap_err();
+            assert_eq!(match error { SendMessageError::FailedPermanent(_) => "rejected", SendMessageError::UnknownOutcome(_) => "unknown", SendMessageError::SafeToRetry(_) => "safe" }, expected);
+            server.await.unwrap();
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     // Replica o contrato do backend: páginas de 25, cursor composto e

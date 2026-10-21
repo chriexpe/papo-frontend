@@ -26,9 +26,12 @@ class PapoUiTest {
 
     private lateinit var savedClient: Map<String, *>
     private lateinit var savedAppearance: Map<String, *>
+    private lateinit var savedAttachments: Map<String, *>
 
     @Before fun launch() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        savedAttachments = context.getSharedPreferences("compose-attachments", 0).all.toMap()
+        context.getSharedPreferences("compose-attachments", 0).edit().clear().commit()
         savedClient = context.getSharedPreferences("compose-client", 0).all.toMap()
         savedAppearance = context.getSharedPreferences("compose-appearance", 0).all.toMap()
         context.getSharedPreferences("compose-client", 0).edit().clear().commit()
@@ -43,6 +46,7 @@ class PapoUiTest {
             values.forEach { (key, value) -> when (value) { is String -> editor.putString(key, value); is Boolean -> editor.putBoolean(key, value) } }
             editor.commit()
         }
+        restore("compose-attachments", savedAttachments)
         restore("compose-client", savedClient)
         restore("compose-appearance", savedAppearance)
     }
@@ -91,6 +95,101 @@ class PapoUiTest {
         demo()
         compose.onNodeWithText("mídia").performClick()
         compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-header").fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun attachmentRollupPicksAndSendsAFileThroughTheNativeCore() {
+        chat()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val file = AttachmentFiles.create(context, "txt").apply { writeText("Compose attachment fixture") }
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        val filter = android.content.IntentFilter(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE); addDataType("*/*")
+        }
+        val monitor = instrumentation.addMonitor(filter, android.app.Instrumentation.ActivityResult(android.app.Activity.RESULT_OK,
+            android.content.Intent().setData(uri).addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)), true)
+        try {
+            compose.onNodeWithContentDescription("Open gallery").performTouchInput { longClick() }
+            compose.onNodeWithText("Record audio").assertIsDisplayed()
+            compose.onNodeWithText("Camera").assertIsDisplayed()
+            compose.onNodeWithText("Choose files").assertIsDisplayed().performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove ${file.name}").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("Send message").assertIsEnabled().performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Open ${file.name}").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("Remove ${file.name}").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        } finally { instrumentation.removeMonitor(monitor); file.delete() }
+    }
+
+    @Test fun tappingTheGalleryButtonOpensThePhotoPickerWithoutOpeningTheRollup() {
+        chat()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val file = AttachmentFiles.create(context, "jpg")
+        val bitmap = android.graphics.Bitmap.createBitmap(24, 24, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.GREEN)
+        file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }; bitmap.recycle()
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+        var galleryOpened = false
+        val monitor = object : android.app.Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: android.content.Intent): android.app.Instrumentation.ActivityResult? {
+                if (intent.action !in listOf("android.provider.action.PICK_IMAGES", android.content.Intent.ACTION_OPEN_DOCUMENT, android.content.Intent.ACTION_GET_CONTENT)) return null
+                galleryOpened = true
+                return android.app.Instrumentation.ActivityResult(android.app.Activity.RESULT_OK, android.content.Intent().setData(uri))
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            compose.onNodeWithContentDescription("Open gallery").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove ${file.name}").fetchSemanticsNodes().isNotEmpty() }
+            assertTrue(galleryOpened)
+            compose.onNodeWithText("Choose files").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Remove ${file.name}").performClick()
+        } finally { instrumentation.removeMonitor(monitor); file.delete() }
+    }
+
+    @Test fun cameraCaptureStagesAPhotoWithoutSendingIt() {
+        chat()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val monitor = object : android.app.Instrumentation.ActivityMonitor() {
+            @Suppress("DEPRECATION")
+            override fun onStartActivity(intent: android.content.Intent): android.app.Instrumentation.ActivityResult? {
+                if (intent.action != android.provider.MediaStore.ACTION_IMAGE_CAPTURE) return null
+                val uri = intent.getParcelableExtra<android.net.Uri>(android.provider.MediaStore.EXTRA_OUTPUT)!!
+                val bitmap = android.graphics.Bitmap.createBitmap(24, 24, android.graphics.Bitmap.Config.ARGB_8888)
+                bitmap.eraseColor(android.graphics.Color.BLUE)
+                context.contentResolver.openOutputStream(uri)!!.use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+                bitmap.recycle()
+                return android.app.Instrumentation.ActivityResult(android.app.Activity.RESULT_OK, null)
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            compose.onNodeWithContentDescription("Open gallery").performTouchInput { longClick() }
+            compose.onNodeWithText("Camera").performClick()
+            compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove Photo ", substring = true).fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("Send message").assertIsEnabled()
+            compose.onNodeWithContentDescription("Remove Photo ", substring = true).performClick()
+            compose.waitUntil(5000) { compose.onAllNodesWithContentDescription("Remove Photo ", substring = true).fetchSemanticsNodes().isEmpty() }
+            compose.onNodeWithContentDescription("Send message").assertIsNotEnabled()
+        } finally { instrumentation.removeMonitor(monitor) }
+    }
+
+    @Test fun recordsAudioAttachesItAndPlaysTheDemoMessage() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName, android.Manifest.permission.RECORD_AUDIO)
+        chat()
+        compose.onNodeWithContentDescription("Open gallery").performTouchInput { longClick() }
+        compose.onNodeWithText("Record audio").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("Recording").fetchSemanticsNodes().isNotEmpty() }
+        android.os.SystemClock.sleep(1200)
+        compose.onNodeWithText("Stop and attach").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Remove Voice note ", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) { compose.onAllNodesWithContentDescription("Play Voice note ", substring = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithContentDescription("Play Voice note ", substring = true).performClick()
+        compose.waitUntil(15_000) { compose.onAllNodes(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready")).fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {

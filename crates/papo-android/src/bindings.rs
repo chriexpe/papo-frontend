@@ -148,7 +148,7 @@ impl NativeClient {
             .ok_or_else(|| "Client is closed".to_owned())?
         {
             Backend::Live(client) => media::request(&client.runtime, resource),
-            Backend::Demo(_) => media::demo_request(resource),
+            Backend::Demo(client) => client.media_request(resource),
         }
         .map_err(CoreError::from)
     }

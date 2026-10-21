@@ -90,6 +90,7 @@ internal object MediaNetwork {
         try {
             partial.outputStream().use { output ->
                 if (source.url.startsWith("file:///android_asset/")) context.assets.open(source.url.removePrefix("file:///android_asset/")).use { it.copyTo(output) }
+                else if (source.origin == "demo" && source.url.startsWith("file://")) File(requireNotNull(Uri.parse(source.url).path)).inputStream().use { it.copyTo(output) }
                 else client(source).newCall(Request.Builder().url(source.url).build()).execute().use { response ->
                     if (!response.isSuccessful) throw IOException("Couldn’t download this file (${response.code})")
                     response.body?.byteStream()?.use { it.copyTo(output) } ?: throw IOException("The file is empty")

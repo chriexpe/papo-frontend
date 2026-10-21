@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
@@ -72,6 +73,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(false) }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
+    var confirmAttachmentRetry by remember(draftKey) { mutableStateOf(false) }
+    val attachmentDrafts by model.attachments.drafts.collectAsState()
+    val attachmentDraft = attachmentDrafts[draftKey] ?: AttachmentDraft()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
@@ -94,6 +98,21 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 if (ids.isNotEmpty()) model.command(Action.Visible(channel.id, ids), url = server.url)
             }
         }
+    }
+
+    val submitMessage: () -> Unit = {
+        val sent = text
+        submitting = true
+        val onResult: (Boolean) -> Unit = { accepted ->
+            submitting = false
+            if (accepted) {
+                if (text == sent) { text = ""; model.saveDraft(draftKey, "") }
+                reply = null
+                scope.launch { listState.animateScrollToItem(0) }
+            }
+        }
+        if (attachmentDraft.files.isEmpty()) model.send(server, sent, reply, onResult)
+        else model.attachments.send(draftKey, server, sent, reply, onResult)
     }
 
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
@@ -163,43 +182,46 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, bottom = 6.dp))
-            GlassPill(Modifier.fillMaxWidth(), radius = 28) {
-                Column {
-                    if (reply != null) Row(Modifier.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                        Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.content}" } ?: "Reply to message",
-                            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
-                        IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
-                    }
-                    Row(Modifier.padding(6.dp), verticalAlignment = Alignment.Bottom) {
-                        BasicTextField(text, onValueChange = {
-                            text = it
-                            model.saveDraft(draftKey, it)
-                            model.typing(server)
-                        }, modifier = Modifier.weight(1f).padding(start = 14.dp, end = 8.dp, top = 14.dp, bottom = 14.dp).heightIn(min = 24.dp, max = 160.dp),
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
-                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                            decorationBox = { inner -> Box { if (text.isEmpty()) Text("Message ${if (channel.kind == "direct") channel.name else "#${channel.name}"}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge); inner() } })
-                        FilledIconButton(onClick = {
-                            val sent = text
-                            submitting = true
-                            model.send(server, sent, reply) { accepted ->
-                                submitting = false
-                                if (accepted) {
-                                    if (text == sent) { text = ""; model.saveDraft(draftKey, "") }
-                                    reply = null
-                                    scope.launch { listState.animateScrollToItem(0) }
-                                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
+                AttachmentActions(draftKey, model, enabled = !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, modifier = Modifier.zIndex(1f))
+                GlassPill(Modifier.weight(1f), radius = 28) {
+                    Column {
+                        PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
+                        if (reply != null) Row(Modifier.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.content}" } ?: "Reply to message",
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                            IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
+                        }
+                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.Bottom) {
+                            BasicTextField(text, onValueChange = {
+                                text = it
+                                model.saveDraft(draftKey, it)
+                                model.typing(server)
+                            }, modifier = Modifier.weight(1f).padding(start = 14.dp, end = 8.dp, top = 12.dp, bottom = 12.dp).heightIn(min = 24.dp, max = 160.dp),
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), maxLines = 6,
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                                decorationBox = { inner -> Box { if (text.isEmpty()) Text("Message ${if (channel.kind == "direct") channel.name else "#${channel.name}"}", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyLarge, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis); inner() } })
+                            FilledIconButton(onClick = {
+                                if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
+                                else submitMessage()
+                            }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing,
+                                modifier = Modifier.size(48.dp)) {
+                                if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
                             }
-                        }, enabled = text.isNotBlank() && !submitting, modifier = Modifier.size(48.dp)) {
-                            if (submitting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
                         }
                     }
                 }
             }
         }
     }
+
+    if (confirmAttachmentRetry) AlertDialog(onDismissRequest = { confirmAttachmentRetry = false },
+        title = { Text("Retry sending attachments?") },
+        text = { Text("The server may already have received the previous upload. Check the conversation first: sending again could duplicate it.") },
+        confirmButton = { TextButton(onClick = { confirmAttachmentRetry = false; submitMessage() }) { Text("Send again") } },
+        dismissButton = { TextButton(onClick = { confirmAttachmentRetry = false }) { Text("Cancel") } })
 
     selected?.let { message -> ModalBottomSheet(onDismissRequest = { selected = null }) {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp)) {

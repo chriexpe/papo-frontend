@@ -32,6 +32,7 @@ import io.github.chriexpe.papo.core.MediaResource
 import io.github.chriexpe.papo.core.MediaRequest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -117,6 +118,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private var networkEpoch = 0L
     private var lastTyping = 0L
     private var callbackRegistered = false
+    private val awaitingUploads = mutableMapOf<String, CompletableDeferred<UploadReceipt>>()
+    internal val attachments = AttachmentDrafts(application, viewModelScope, ::uploadFiles)
     private val awaitingPersistence = mutableMapOf<String, (Boolean) -> Unit>()
     private var networkFingerprint: Pair<Long?, Boolean>? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -164,6 +167,9 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 val snapshot = handle.poll()
                 snapshots[url] = snapshot
                 for (event in snapshot.events) {
+                    awaitingUploads.remove(event.localId)?.complete(UploadReceipt(
+                        event.kind == "accepted", event.kind == "unknown", event.error
+                    ))
                     val callback = awaitingPersistence.remove(event.localId) ?: continue
                     val accepted = event.kind == "accepted"
                     if (!accepted) publish(error = event.error)
@@ -248,6 +254,25 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
             publish(error = e.message ?: "Could not queue message")
             launch(kotlinx.coroutines.Dispatchers.Main) { onResult(false) }
         }
+    }
+
+    private suspend fun uploadFiles(server: ServerState, text: String, reply: String?, files: List<PendingAttachment>): UploadReceipt {
+        val result = withContext(dispatcher) {
+            val id = UUID.randomUUID().toString()
+            val completion = CompletableDeferred<UploadReceipt>()
+            try {
+                val client = handles[server.url] ?: error("Server is closed")
+                check(snapshots[server.url]?.me == server.me) { "Account changed before sending" }
+                awaitingUploads[id] = completion
+                client.dispatch(Action.SendAttachments(id, server.selected, text, reply, files.map { it.native() }))
+                signals.trySend(Unit)
+            } catch (e: Exception) {
+                awaitingUploads.remove(id)
+                completion.complete(UploadReceipt(false, error = e.message ?: "Couldn’t send these attachments"))
+            }
+            completion
+        }
+        return result.await()
     }
 
     fun typing(server: ServerState) {

@@ -7,6 +7,12 @@ use papo_core::state::Store;
 pub struct Demo {
     store: Store,
     events: Vec<Value>,
+    media_files: HashMap<String, PathBuf>,
+}
+impl Drop for Demo {
+    fn drop(&mut self) {
+        for path in self.media_files.values() { let _ = std::fs::remove_file(path); }
+    }
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> T {
@@ -171,6 +177,7 @@ impl Demo {
         Self {
             store,
             events: vec![],
+            media_files: HashMap::new(),
         }
     }
 
@@ -179,6 +186,17 @@ impl Demo {
         value["events"] = json!(std::mem::take(&mut self.events));
         value["more"] = json!(false);
         value
+    }
+
+    pub fn media_request(&self, resource: media::MediaResource) -> Result<media::MediaRequest, String> {
+        if let media::MediaResource::Attachment { id, .. } = &resource
+            && let Some(path) = self.media_files.get(id) {
+                return Ok(media::MediaRequest {
+                    url: url::Url::from_file_path(path).map_err(|_| "Invalid demo attachment")?.to_string(),
+                    headers: HashMap::new(), origin: "demo".into(), cache_key: format!("demo/me/{id}"),
+                });
+        }
+        media::demo_request(resource)
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<(), String> {
@@ -215,6 +233,22 @@ impl Demo {
                 ))));
                 self.events
                     .push(json!({"type":"accepted","localId":local_id}));
+            }
+            Action::SendAttachments { local_id, channel_id, content, reply_to, files } => {
+                let files = prepare_uploads(files)?;
+                let mut sent = message(&local_id, &channel_id, "me", &content, reply_to, now_millis());
+                for file in files {
+                    let id = format!("demo-local-{}", papo_core::cache::new_local_id());
+                    let copy = file.path.parent().ok_or("Attachment folder is unavailable")?.join(&id);
+                    std::fs::copy(&file.path, &copy).map_err(|_| "Could not keep the demo attachment")?;
+                    self.media_files.insert(id.clone(), copy);
+                    sent.attachments.push(decode(json!({
+                        "id":id,"original_file_name":file.name,"mime_type":file.mime,
+                        "size_bytes":file.size,"moderation_status":"clean"
+                    })));
+                }
+                self.store.apply(Update::Sent(Box::new(sent)));
+                self.events.push(json!({"type":"accepted","localId":local_id}));
             }
             Action::Edit {
                 message_id,

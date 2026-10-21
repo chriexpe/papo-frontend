@@ -92,8 +92,9 @@ Compose screens
 Material 3 provides native inputs, selection, dialogs, sheets, and accessibility.
 Papo's floating header, navigation island, composer, and app-wide feedback use
 one `GlassPill` component. Haze captures the content layer and samples a blurred
-backdrop behind controls, leaving their labels sharp. Settings are solid grouped
-surfaces. A Frosted controls toggle provides an opaque fallback; themes follow
+backdrop behind controls, leaving their labels sharp. The conversation header centers the channel name; tapping its main surface
+expands the description, with a 160 dp scrollable cap. Back and People retain
+their own actions. Settings are solid grouped surfaces. A Frosted controls toggle provides an opaque fallback; themes follow
 the system or can be selected explicitly.
 
 Form failures stay inline, connection state has a persistent indicator, delivery
@@ -123,14 +124,40 @@ streaming preserves byte-range requests. The media HTTP client pins credentials
 to one server origin and disables redirects. YouTube runs in an isolated WebView
 without Papo headers or a JavaScript bridge; arbitrary iframe URLs are not run.
 
+## Attachments and capture
+
+The separate gallery squircle opens Android’s image/video picker on tap. A
+long press rolls up Record audio, Choose files and Camera actions. Its ripple
+is clipped to the same squircle. The composer placeholder stays on one line,
+with ellipsis for long channel names; typed messages can still grow normally.
+
+The gallery and document picker grant access only to selected items. Capture
+uses the installed camera app and an app-private FileProvider destination.
+Voice notes request microphone permission, record AAC/M4A, and stop when the
+app leaves the foreground. Recordings attach to the draft before sending.
+
+Up to ten attachments can be staged. Private file copies and their metadata
+are saved per server/account/conversation, including across process death.
+Files and captions remain until the shared core confirms the multipart POST.
+The in-flight marker is saved before dispatch: an interrupted upload becomes
+an uncertain draft on restart and is never automatically resent. Retrying an
+uncertain upload requires an explicit duplicate-delivery confirmation. Offline
+attachment sends keep the files available; durable text sending is unchanged.
+
+The core now classifies multipart failures: local preparation and documented
+rejections are definite, while lost responses, decode failures and server errors
+can have an unknown outcome. Demo attachments stay on-device, render through
+the same message views, and are discarded when the demo closes.
+
 ## Scope
 
 Included: server setup, authentication, channels, DMs/member list, message
 history, offline cache, text drafts, durable text sends, replies, Unicode
 reactions, edit/delete, themes, glass controls, image/GIF viewing with zoom, native video/audio playback,
-file downloads, link/custom cards, and opt-in YouTube playback.
+file downloads/uploads, gallery selection, camera capture, voice notes,
+link/custom cards, and opt-in YouTube playback.
 
-Still to port: attachment uploads, full Markdown and custom emoji rendering, search,
+Still to port: full Markdown and custom emoji rendering, search,
 voice/video, FCM/background reconciliation, notifications, the full client
 settings and server administration panels, account recovery, and release
 packaging. The established egui settings panels are the design reference for
@@ -158,6 +185,11 @@ Unicode/multiline messages, saved drafts, appearance/demo exit, Keystore
 isolation, and wake callbacks from the live network worker. Media tests decode a
 portrait image and play a local video while asserting that reserved frames stay
 unchanged. A local HTTP fixture checks Range requests, session headers, origin
-restrictions and redirect behavior. Android 17 needs
+restrictions and redirect behavior. Attachment tests cover tap/hold actions,
+file and photo picker results, camera capture results, real microphone encoding
+and playback, and draft recovery after an interrupted upload. Picker/camera
+results use local test fixtures; no test messages are posted to a live server.
+Core HTTP fixtures verify multipart bodies and failure classification.
+Android 17 needs
 the test-only Espresso 3.8 alpha because older Espresso reflects a removed
 InputManager API. Production dependencies remain independent of Espresso.

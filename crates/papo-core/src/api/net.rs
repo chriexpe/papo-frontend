@@ -3799,7 +3799,7 @@ async fn handle(
                 return;
             }
             match api
-                .send_message(
+                .send_message_classified(
                     &channel_id,
                     &content,
                     reply_to.as_deref(),
@@ -3818,6 +3818,10 @@ async fn handle(
                     },
                 ),
                 Err(error) => {
+                    let state = if matches!(error, SendMessageError::UnknownOutcome(_)) {
+                        OutgoingState::UnknownOutcome
+                    } else { OutgoingState::FailedPermanent };
+                    let error = error.into_api_error();
                     let dm_blocked = matches!(error, ApiError::DirectMessageBlocked(_));
                     publish(
                         updates,
@@ -3825,9 +3829,7 @@ async fn handle(
                         Update::UploadFailed {
                             local_id,
                             message: error.to_string(),
-                            state: if matches!(error, ApiError::Network(_) | ApiError::Decode(_)) {
-                                OutgoingState::UnknownOutcome
-                            } else { OutgoingState::FailedPermanent },
+                            state,
                         },
                     );
                     report(storage_key, updates, wake, error);
