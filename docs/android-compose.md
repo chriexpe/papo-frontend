@@ -458,3 +458,8 @@ swipes do not reply; media scrubbers retain their own gestures. TalkBack exposes
 the same Reply action. Pending messages and active recording/sending states do
 not accept swipe replies. Left-to-right navigation retains Android's system Back
 gesture.
+
+Latest messages floats above the Send button as a separate frosted control. It
+does not participate in composer measurement, so appearing or disappearing does
+not resize the input or push the timeline. Its position follows the complete
+composer height, including reply/attachment previews and outer padding.

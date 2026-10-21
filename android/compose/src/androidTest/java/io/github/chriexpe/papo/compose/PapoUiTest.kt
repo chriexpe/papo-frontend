@@ -172,6 +172,9 @@ class PapoUiTest {
     @Test fun systemBackReturnsFullscreenVideoToInlineWithoutLeavingChat() {
         media()
         compose.onNodeWithTag("message-list").performScrollToKey("media-3")
+        // Keep native controls clear of the floating Latest messages button.
+        val pixels=InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        compose.onNodeWithTag("message-list").performTouchInput {swipe(center,center.copy(y=center.y-120*pixels),300)}
         compose.onNodeWithContentDescription("Play clip.mp4").performClick()
         val tag="player-demo://papo/me/attachment/demo-video"
         compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
@@ -614,6 +617,22 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").assertIsDisplayed()
     }
 
+    @Test fun latestMessagesFloatsAboveSendWithoutResizingTheComposer() {
+        chat()
+        val before=compose.onNodeWithTag("chat-composer").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        compose.onNodeWithContentDescription("Latest messages").assertIsDisplayed()
+        val after=compose.onNodeWithTag("chat-composer").fetchSemanticsNode().boundsInRoot
+        assertEquals("The jump control must not change composer height",before.height,after.height,1f)
+        assertEquals("The jump control must not move the composer",before.top,after.top,1f)
+        val jump=compose.onNodeWithTag("latest-messages").fetchSemanticsNode().boundsInRoot
+        val send=compose.onNodeWithContentDescription("Send message").fetchSemanticsNode().boundsInRoot
+        assertTrue("The jump control sits above the composer",jump.bottom<=after.top)
+        assertEquals("The jump control lines up with Send",send.center.x,jump.center.x,1f)
+        compose.onNodeWithContentDescription("Latest messages").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithContentDescription("Latest messages").fetchSemanticsNodes().isEmpty()}
+    }
+
     @Test fun replyPreviewsJumpHighlightAndKeepTheComposerDraft() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("Keep this draft @An")
@@ -655,7 +674,7 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("message-general-0"))
         compose.onNode(hasContentDescription("Message actions") and hasAnyAncestor(hasTestTag("message-general-0")),useUnmergedTree=true).performClick()
         compose.onNodeWithText("Reply",substring=false).performClick()
-        compose.onNodeWithText("Latest messages").performClick()
+        compose.onNodeWithContentDescription("Latest messages").performClick()
         compose.waitForIdle()
         fun scrollPosition()=compose.onNodeWithTag("message-list").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
         val before=scrollPosition()
@@ -688,7 +707,7 @@ class PapoUiTest {
         compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-demo-archived-original") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("An older hello from this conversation.").assertIsDisplayed()
         compose.onNodeWithTag("composer-input").assertTextEquals("Still here")
-        compose.onNodeWithText("Latest messages").performClick()
+        compose.onNodeWithContentDescription("Latest messages").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithText("o que vocês estão construindo hoje?").fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("o que vocês estão construindo hoje?").assertIsDisplayed()
         compose.onNodeWithTag("composer-input").assertTextEquals("Still here")
@@ -968,6 +987,9 @@ class PapoUiTest {
         var previous=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         activity.onActivity {previous=it.requestedOrientation}
         compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play clip.mp4"))
+        // Keep native controls clear of the floating Latest messages button.
+        val pixels=InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        compose.onNodeWithTag("message-list").performTouchInput {swipe(center,center.copy(y=center.y-120*pixels),300)}
         val frame = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         compose.onNodeWithContentDescription("Play clip.mp4").performClick()
         val player = "player-demo://papo/me/attachment/demo-video"

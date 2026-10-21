@@ -311,15 +311,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
         }
 
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)
-            .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
-            if ((!nearBottom || server.browsingHistory) && server.messages.isNotEmpty()) Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
-                GlassPill {
-                    TextButton(onClick = ::latestMessages) {
-                        Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Latest messages")
-                    }
-                }
-            }
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+            .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
+            .testTag("chat-composer").padding(12.dp)) {
             if(server.loadingContext) GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
                 Row(Modifier.padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
@@ -358,6 +352,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         }
                     }
                 }
+            }
+        }
+        if ((!nearBottom || server.browsingHistory) && server.messages.isNotEmpty()) {
+            GlassPill(Modifier.align(Alignment.BottomEnd).padding(end=18.dp,bottom=composerHeight+8.dp).testTag("latest-messages"),radius=18) {
+                IconButton(onClick=::latestMessages,modifier=Modifier.size(48.dp)) {Icon(Icons.Outlined.ArrowDownward,"Latest messages",Modifier.size(22.dp))}
             }
         }
     }
