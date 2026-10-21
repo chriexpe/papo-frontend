@@ -2889,7 +2889,7 @@ async fn run_reconcile(
                 success: false,
                 updates: vec![Update::MessageContextFailed {
                     ticket,
-                    message: error.to_string(),
+                    message: if matches!(error, ApiError::NotFound) {"The original message is no longer available.".to_owned()} else {error.to_string()},
                 }],
             },
         },

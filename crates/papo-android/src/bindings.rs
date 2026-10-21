@@ -305,6 +305,11 @@ pub struct ClientSnapshot {
     pub typing: Vec<String>,
     pub can_load_older: bool,
     pub loading_older: bool,
+    pub browsing_history: bool,
+    pub loading_context: bool,
+    pub can_load_newer: bool,
+    pub navigation_serial: u64,
+    pub navigation_target: String,
     pub timeline: String,
     #[serde(default)]
     pub more: bool,

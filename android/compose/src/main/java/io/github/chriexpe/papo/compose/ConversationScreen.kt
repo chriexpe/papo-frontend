@@ -3,7 +3,11 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -89,6 +93,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
     var recording by remember(draftKey) { mutableStateOf(false) }
+    var composerFocused by remember(draftKey) {mutableStateOf(false)}
     var confirmAttachmentRetry by remember(draftKey) { mutableStateOf(false) }
     val attachmentDrafts by model.attachments.drafts.collectAsState()
     val attachmentDraft = attachmentDrafts[draftKey] ?: AttachmentDraft()
@@ -100,12 +105,16 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val keyboard = LocalSoftwareKeyboardController.current
     var headerHeight by remember { mutableStateOf(90.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
+    var handledNavigation by remember(draftKey) {mutableStateOf(0uL)}
+    var highlighted by remember(draftKey) {mutableStateOf<Pair<String,ULong>?>(null)}
+    var returningLatest by remember(draftKey) {mutableStateOf(false)}
     val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 100 } }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
 
     LaunchedEffect(draftKey, server.messages.lastOrNull()?.id) {
-        if (nearBottom && !server.loadingOlder) listState.animateScrollToItem(0)
+        if (nearBottom && !server.loadingOlder && !server.browsingHistory && !server.loadingContext &&
+            (server.navigationTarget.isBlank() || handledNavigation==server.navigationSerial)) listState.animateScrollToItem(0)
     }
     LaunchedEffect(draftKey) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
@@ -115,6 +124,52 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }.distinctUntilChanged().collect { ids ->
                 if (ids.isNotEmpty()) model.command(Action.Visible(channel.id, ids), url = server.url)
             }
+        }
+    }
+
+    fun openOriginal(id:String) {
+        if(id.isNotBlank()) {focus.clearFocus();keyboard?.hide();model.command(Action.JumpToMessage(channel.id,id),url=server.url)}
+    }
+    fun latestMessages() {
+        highlighted=null
+        if(server.browsingHistory || server.loadingContext) {returningLatest=true;model.command(Action.Latest(channel.id),url=server.url)}
+        else scope.launch {listState.animateScrollToItem(0)}
+    }
+    LaunchedEffect(draftKey,server.navigationSerial,server.navigationTarget,server.loadingContext,server.messages.map {it.id},server.canLoadNewer) {
+        if(server.navigationTarget.isBlank() || server.navigationSerial==handledNavigation) return@LaunchedEffect
+        val position=server.messages.indexOfFirst {it.id==server.navigationTarget}
+        if(position<0) return@LaunchedEffect
+        val index=server.messages.lastIndex-position+if(server.canLoadNewer) 1 else 0
+        val layout=listState.layoutInfo
+        val item=layout.visibleItemsInfo.firstOrNull {it.key==server.navigationTarget}
+        val available=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(1)
+        if(item==null) {
+            // A single animation preserves the direction of travel. Snapping to
+            // the row first and then centering it makes an older reply move down.
+            listState.animateScrollToItem(index,-available/3)
+        } else if(item.size<=available) {
+            // Lazy-list offsets follow the list's scroll direction, including
+            // reverseLayout. Leave visible rows still; reveal clipped rows only
+            // as far as needed to clear the floating header or composer.
+            val distance=when {
+                item.offset<0 -> item.offset
+                item.offset+item.size>available -> item.offset+item.size-available
+                else -> 0
+            }
+            if(distance!=0) listState.animateScrollBy(distance.toFloat())
+        }
+        handledNavigation=server.navigationSerial
+        highlighted=server.navigationTarget to server.navigationSerial
+    }
+    LaunchedEffect(draftKey,highlighted) {
+        val shown=highlighted ?: return@LaunchedEffect
+        delay(1800)
+        if(highlighted==shown) highlighted=null
+    }
+    LaunchedEffect(draftKey,returningLatest,server.browsingHistory,server.loadingContext) {
+        if(returningLatest && !server.browsingHistory && !server.loadingContext) {
+            withFrameNanos { }
+            try {listState.animateScrollToItem(0)} finally {returningLatest=false}
         }
     }
 
@@ -130,7 +185,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 model.recordSent(server,draftKey,sent,sentFiles)
                 if (composer.text == original && composer.mentions == originalDraft.mentions) updateComposer(ComposerDraft())
                 reply = null
-                scope.launch { listState.animateScrollToItem(0) }
+                latestMessages()
             }
         }
         val sentReply = reply
@@ -154,8 +209,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 EmptyState(if (server.connection == "online") "The start of something good." else "No saved messages yet.",
                     if (server.connection == "online") "Say hello in ${channel.name}." else "Messages will appear when the server is reachable.")
             }
+            if(server.canLoadNewer) item("newer") {
+                TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text("Load later messages")}
+            }
             items(server.messages.asReversed(), key = { it.id }) { message ->
-                MessageRow(message, server, model, onActions = { selected = message }, onReaction = { r ->
+                MessageRow(message, server, model, highlight=highlighted?.first==message.id, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia) { activeMedia = it } })
             }
@@ -203,16 +261,23 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(12.dp)
             .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }) {
-            if (!nearBottom && server.messages.isNotEmpty()) Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+            if ((!nearBottom || server.browsingHistory) && server.messages.isNotEmpty()) Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
                 GlassPill {
-                    TextButton(onClick = { scope.launch { listState.animateScrollToItem(0) } }) {
+                    TextButton(onClick = ::latestMessages) {
                         Icon(Icons.Outlined.ArrowDownward, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Latest messages")
                     }
                 }
             }
+            if(server.loadingContext) GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
+                Row(Modifier.padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
+                    Text("Opening original message…",style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
+                    TextButton(onClick=::latestMessages) {Text("Cancel")}
+                }
+            }
             if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, bottom = 6.dp))
-            if(!recording && !emojiPicker && !gifPicker) ComposerSuggestions(composer,server,model) {updateComposer(it)}
+            if(composerFocused && !recording && !emojiPicker && !gifPicker) ComposerSuggestions(composer,server,model) {updateComposer(it)}
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
                 AttachmentActions(draftKey, model, enabled = !recording && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, onRecord = { focus.clearFocus(); keyboard?.hide(); recording = true }, modifier = Modifier.zIndex(1f))
                 GlassPill(Modifier.weight(1f), radius = 28) {
@@ -221,14 +286,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     })
                     else Column {
                         PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
-                        if (reply != null) Row(Modifier.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                             Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.content}" } ?: "Reply to message",
                                 maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
                         Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f))
+                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f),onFocusChange={composerFocused=it})
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
@@ -315,9 +380,12 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
-    Row(Modifier.fillMaxWidth().combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 20.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+    val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
+    Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
+        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message"}
+        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Avatar(message.author)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -326,7 +394,7 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = onActions, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.MoreHoriz, "Message actions", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-            if (message.replyTo.isNotBlank()) Row(Modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (message.replyTo.isNotBlank()) Row(Modifier.testTag("reply-preview-${message.id}").clip(RoundedCornerShape(8.dp)).clickable(role=Role.Button,onClickLabel="Open original message") {onJump(message.replyTo)}.background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }

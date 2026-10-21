@@ -202,6 +202,24 @@ with the count, serializes HTTP changes per message/emoji, coalesces rapid taps,
 and restores the previous state on rejection. Loopback HTTP regressions exercise
 POST → DELETE → POST, custom payloads, rapid taps and failed removals.
 
+## Reply navigation
+
+Both the reply preview inside a message and the active reply strip above the
+composer open the original. Visible originals stay in place; clipped rows move
+only enough to clear the floating controls, and offscreen originals scroll into
+view in one animation. The message box receives a brief accent highlight, which
+fades after 1.8 seconds. Repeated taps
+highlight again. Jumping hides the keyboard/suggestions and preserves text,
+mentions, attachments and the selected reply.
+
+Loaded originals open immediately, including offline. Older originals use the
+shared core’s cancellable message-context request and reconciliation tickets;
+no second history fetcher lives in Kotlin. A loading pill offers Cancel, and
+missing/deleted originals report a clear error. Older contexts expose Load later
+messages plus Latest messages to return to the live window. Sending successfully
+also returns to latest. Navigation commands are scoped to their conversation so
+a delayed callback cannot reset another conversation’s history.
+
 ## Scope
 
 Included: server setup, authentication, channels, DMs/member list, message

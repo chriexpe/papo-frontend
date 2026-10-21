@@ -8,6 +8,9 @@ pub struct Demo {
     pub(crate) store: Store,
     events: Vec<Value>,
     media_files: HashMap<String, PathBuf>,
+    navigation_serial: u64,
+    navigation_target: String,
+    archived: models::Message,
 }
 impl Drop for Demo {
     fn drop(&mut self) {
@@ -69,7 +72,7 @@ impl Demo {
             (
                 "general",
                 vec![
-                    ("ana", "bom dia! ☀️", None),
+                    ("ana", "bom dia! ☀️", Some("demo-archived-original")),
                     ("bruno", "bom dia! como ficou a versão nova do Papo?", None),
                     (
                         "me",
@@ -192,6 +195,16 @@ impl Demo {
             store,
             events: vec![],
             media_files: HashMap::new(),
+            navigation_serial: 0,
+            navigation_target: String::new(),
+            archived: message(
+                "demo-archived-original",
+                "general",
+                "ana",
+                "An older hello from this conversation.",
+                None,
+                now - 86_400_000,
+            ),
         }
     }
 
@@ -199,6 +212,8 @@ impl Demo {
         let mut value = project(&self.store, "demo://papo", "demo");
         value["events"] = json!(std::mem::take(&mut self.events));
         value["more"] = json!(false);
+        value["navigationSerial"] = json!(self.navigation_serial);
+        value["navigationTarget"] = json!(self.navigation_target);
         value
     }
 
@@ -223,7 +238,61 @@ impl Demo {
 
     pub fn dispatch(&mut self, action: Action) -> Result<(), String> {
         match action {
-            Action::SelectChannel { channel_id } => self.store.selected_channel = channel_id,
+            Action::SelectChannel { channel_id } => {
+                self.store
+                    .end_message_context(&self.store.selected_channel.clone());
+                self.navigation_target.clear();
+                self.store.selected_channel = channel_id;
+            }
+            Action::JumpToMessage {
+                channel_id,
+                message_id,
+            } => {
+                if channel_id != self.store.selected_channel {
+                    return Err("Open this conversation first".into());
+                }
+                if !self
+                    .store
+                    .messages_in(&channel_id)
+                    .any(|m| m.id == message_id)
+                {
+                    if self
+                        .store
+                        .messages
+                        .iter()
+                        .any(|m| m.id == message_id && m.channel_id == channel_id)
+                    {
+                        self.store.end_message_context(&channel_id);
+                    } else if self.archived.id == message_id
+                        && self.archived.channel_id == channel_id
+                    {
+                        let ticket = self.store.begin_message_context(&channel_id);
+                        self.store.apply(Update::MessageContext {
+                            ticket,
+                            message_id: message_id.clone(),
+                            context: models::MessageContext {
+                                channel_id,
+                                messages: vec![self.archived.clone()],
+                                has_more_before: false,
+                                has_more_after: false,
+                            },
+                        });
+                    } else {
+                        return Err("The original message is no longer available.".into());
+                    }
+                }
+                self.navigation_serial += 1;
+                self.navigation_target = message_id;
+            }
+            Action::Latest { channel_id } => {
+                if channel_id != self.store.selected_channel {
+                    return Ok(());
+                }
+                self.store.end_message_context(&channel_id);
+                self.navigation_target.clear();
+                self.navigation_serial += 1;
+            }
+            Action::Newer { .. } => {}
             Action::OpenDm { user_id } => {
                 let user = self
                     .store
@@ -437,5 +506,63 @@ mod tests {
         assert_eq!(youtube.kind, "iframe");
         demo.shutdown();
         assert!(demo.poll().is_err());
+    }
+}
+
+#[cfg(test)]
+mod reply_navigation_tests {
+    use super::*;
+    #[test]
+    fn reply_jump_loads_original_context_and_latest_restores_the_live_window() {
+        let client = crate::bindings::NativeClient::demo();
+        let before = client.poll().unwrap();
+        let source = before
+            .messages
+            .iter()
+            .find(|m| m.id == "general-0")
+            .unwrap();
+        assert_eq!(source.reply_to, "demo-archived-original");
+        client
+            .dispatch(Action::JumpToMessage {
+                channel_id: "general".into(),
+                message_id: source.reply_to.clone(),
+            })
+            .unwrap();
+        let context = client.poll().unwrap();
+        assert!(context.browsing_history);
+        assert_eq!(context.messages.len(), 1);
+        assert_eq!(context.navigation_target, "demo-archived-original");
+        assert_eq!(context.messages[0].id, context.navigation_target);
+        assert!(context.navigation_serial > before.navigation_serial);
+        // A delayed callback from another conversation must not reset this one.
+        client
+            .dispatch(Action::Latest {
+                channel_id: "design".into(),
+            })
+            .unwrap();
+        assert!(client.poll().unwrap().browsing_history);
+        client
+            .dispatch(Action::Latest {
+                channel_id: "general".into(),
+            })
+            .unwrap();
+        let live = client.poll().unwrap();
+        assert!(!live.browsing_history);
+        assert_eq!(live.messages.len(), 10);
+        assert!(live.navigation_target.is_empty());
+        client
+            .dispatch(Action::JumpToMessage {
+                channel_id: "general".into(),
+                message_id: "general-5".into(),
+            })
+            .unwrap();
+        let first = client.poll().unwrap();
+        client
+            .dispatch(Action::JumpToMessage {
+                channel_id: "general".into(),
+                message_id: "general-5".into(),
+            })
+            .unwrap();
+        assert!(client.poll().unwrap().navigation_serial > first.navigation_serial);
     }
 }

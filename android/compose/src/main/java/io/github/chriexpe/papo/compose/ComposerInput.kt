@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
@@ -85,7 +86,7 @@ private data class LoadedComposerStickers(val owner:String,val size:Int,val imag
  * reserves a measured glyph slot, and animated drawables paint in those exact
  * text-layout bounds, so wrapping and scrolling share the editor's layout. */
 @Composable
-internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier) {
+internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier, onFocusChange:(Boolean)->Unit={}) {
     val stickers=remember(draft.text,server.emojis) {composerStickers(draft.text,server.emojis)}
     val ids=remember(stickers) {stickers.map {it.id}.toSet()}
     val owner="${server.url}/${server.me}"
@@ -128,7 +129,7 @@ internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoVi
     }
     Box(modifier.padding(start=14.dp,end=8.dp,top=12.dp,bottom=12.dp).heightIn(min=24.dp,max=160.dp).verticalScroll(rememberScrollState())) {
         BasicTextField(draft.value,onValueChange={next ->onChange(draft.deleteSticker(next,stickers.filter {it.id in images}.map {it.range}))},
-            modifier=Modifier.fillMaxWidth().testTag("composer-input").semantics {
+            modifier=Modifier.fillMaxWidth().onFocusChanged {onFocusChange(it.isFocused)}.testTag("composer-input").semantics {
                 if(projection.positions.isNotEmpty()) stateDescription="Contains stickers: ${projection.positions.map {it.name}.distinct().joinToString()}"
             }.drawWithContent {
                 frame // AnimatedImageDrawable invalidates this draw without recomposing the editor.

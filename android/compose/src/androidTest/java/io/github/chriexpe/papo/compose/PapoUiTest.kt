@@ -162,6 +162,84 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun replyPreviewsJumpHighlightAndKeepTheComposerDraft() {
+        chat()
+        compose.onNodeWithTag("composer-input").performTextInput("Keep this draft @An")
+        compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("reply-preview-general-6"))
+        compose.onNodeWithTag("reply-preview-general-6",useUnmergedTree=true).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-general-5") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-general-5",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft @An")
+        compose.onNodeWithTag("composer-suggestions").assertDoesNotExist()
+        val preview=compose.onRoot().captureToImage().asAndroidBitmap()
+        InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("reply-jump-verified.png").outputStream().use {preview.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+        compose.waitUntil(4_000) {compose.onAllNodes(hasTestTag("message-general-5") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isEmpty()}
+        compose.onNode(hasContentDescription("Message actions") and hasAnyAncestor(hasTestTag("message-general-5")),useUnmergedTree=true).performClick()
+        compose.onNodeWithText("Reply",substring=false).performClick()
+        compose.onNodeWithTag("composer-reply").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-general-5") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Cancel reply").performClick()
+        compose.onNodeWithTag("composer-reply").assertDoesNotExist()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft @An")
+    }
+
+    @Test fun replyingToAnAlreadyVisibleMessageHighlightsWithoutMovingIt() {
+        chat()
+        compose.onNode(hasContentDescription("Message actions") and hasAnyAncestor(hasTestTag("message-general-8")),useUnmergedTree=true).performClick()
+        compose.onNodeWithText("Reply",substring=false).performClick()
+        compose.waitForIdle()
+        val original=compose.onNodeWithTag("message-general-8",useUnmergedTree=true)
+        val before=original.fetchSemanticsNode().boundsInRoot
+        val header=compose.onNodeWithTag("channel-header").fetchSemanticsNode().boundsInRoot
+        val composer=compose.onNodeWithTag("composer-reply").fetchSemanticsNode().boundsInRoot
+        assertTrue("The original must be fully visible before tapping the reply",before.top>=header.bottom && before.bottom<=composer.top)
+        compose.onNodeWithTag("composer-reply").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-general-8") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        assertEquals("Visible replies should not recenter",before.top,original.fetchSemanticsNode().boundsInRoot.top,1f)
+    }
+
+    @Test fun offscreenReplyStartsMovingTowardTheOriginalWithoutAnInstantJump() {
+        chat()
+        compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("message-general-0"))
+        compose.onNode(hasContentDescription("Message actions") and hasAnyAncestor(hasTestTag("message-general-0")),useUnmergedTree=true).performClick()
+        compose.onNodeWithText("Reply",substring=false).performClick()
+        compose.onNodeWithText("Latest messages").performClick()
+        compose.waitForIdle()
+        fun scrollPosition()=compose.onNodeWithTag("message-list").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
+        val before=scrollPosition()
+        assertTrue("Start at the latest messages",before<1f)
+        val newest=compose.onNodeWithTag("message-general-9",useUnmergedTree=true)
+        val initialTop=newest.fetchSemanticsNode().boundsInRoot.top
+        val viewportHeight=compose.onNodeWithTag("message-list").fetchSemanticsNode().boundsInRoot.height
+        compose.mainClock.autoAdvance=false
+        try {
+            compose.onNodeWithTag("composer-reply").performClick()
+            compose.waitUntil(10_000) {
+                compose.mainClock.advanceTimeByFrame()
+                scrollPosition()>before+0.01f
+            }
+            newest.assertIsDisplayed()
+            val movement=newest.fetchSemanticsNode().boundsInRoot.top-initialTop
+            assertTrue("Older replies should start with a small downward movement of the visible content; got $movement px",movement>0f && movement<viewportHeight/4)
+        } finally {compose.mainClock.autoAdvance=true}
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-general-0") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-general-0",useUnmergedTree=true).assertIsDisplayed()
+    }
+
+    @Test fun oldReplyLoadsItsContextAndReturnsToLatestWithoutLosingDrafts() {
+        chat()
+        compose.onNodeWithTag("composer-input").performTextInput("Still here")
+        compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("reply-preview-general-0"))
+        compose.onNodeWithTag("reply-preview-general-0",useUnmergedTree=true).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-demo-archived-original") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("An older hello from this conversation.").assertIsDisplayed()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Still here")
+        compose.onNodeWithText("Latest messages").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithText("o que vocês estão construindo hoje?").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("o que vocês estão construindo hoje?").assertIsDisplayed()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Still here")
+    }
+
     @Test fun firstLaunchHasNoPrefilledServerAndValidatesAddressesInline() {
         compose.onNodeWithText("Add server").assertIsNotEnabled()
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, AnnotatedString("")))

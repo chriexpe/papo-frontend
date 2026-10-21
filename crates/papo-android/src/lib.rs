@@ -84,6 +84,16 @@ pub enum Action {
     Dismiss {
         local_id: String,
     },
+    JumpToMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    Latest {
+        channel_id: String,
+    },
+    Newer {
+        channel_id: String,
+    },
     Older,
     Refresh,
     Typing {
@@ -158,6 +168,8 @@ pub struct Client {
     runtime: ServerRuntime,
     // Serialize one user's mutation per message/emoji until HTTP settles.
     pending_reactions: HashMap<(String, Emoji), PendingReaction>,
+    navigation_serial: u64,
+    navigation_target: String,
 }
 
 struct PendingReaction {
@@ -200,6 +212,8 @@ impl Client {
         Ok(Self {
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
             pending_reactions: HashMap::new(),
+            navigation_serial: 0,
+            navigation_target: String::new(),
         })
     }
 
@@ -319,6 +333,19 @@ impl Client {
             self.runtime.process_update(update);
             count += 1;
         }
+        if !self.navigation_target.is_empty()
+            && !self
+                .runtime
+                .store
+                .loading_message_context(&self.runtime.store.selected_channel)
+            && !self
+                .runtime
+                .store
+                .messages_in(&self.runtime.store.selected_channel)
+                .any(|m| m.id == self.navigation_target)
+        {
+            self.navigation_target.clear();
+        }
         let more = count == DEFAULT_DRAIN_LIMIT;
         if let Some(id) = self.runtime.store.channel_needing_cache() {
             self.runtime.store.mark_cache_loading(&id);
@@ -369,6 +396,14 @@ impl Client {
                     .ok_or("Channel no longer exists")?;
                 if !matches!(channel.kind, ChannelKind::Text | ChannelKind::Direct) {
                     return Err("Select a text conversation".into());
+                }
+                let previous = store.selected_channel.clone();
+                if previous != channel_id {
+                    store.end_message_context(&previous);
+                    self.runtime.net.send(Command::CancelMessageNavigation {
+                        channel_id: previous,
+                    });
+                    self.navigation_target.clear();
                 }
                 store.reset_read_span(&channel_id);
                 store.selected_channel = channel_id;
@@ -539,6 +574,67 @@ impl Client {
                 local_id,
                 owner_user_id: store.me.clone(),
             },
+            Action::JumpToMessage {
+                channel_id,
+                message_id,
+            } => {
+                if channel_id != store.selected_channel {
+                    return Err("Open this conversation before opening the reply".into());
+                }
+                let visible = store.messages_in(&channel_id).any(|m| m.id == message_id);
+                let in_live = store
+                    .messages
+                    .iter()
+                    .any(|m| m.id == message_id && m.channel_id == channel_id);
+                if !visible && !in_live && store.connection != Connection::Online {
+                    return Err(
+                        "Connect to open an original message outside the loaded history.".into(),
+                    );
+                }
+                self.navigation_serial = self.navigation_serial.saturating_add(1);
+                self.navigation_target = message_id.clone();
+                if visible {
+                    return Ok(());
+                }
+                self.runtime.net.send(Command::CancelMessageNavigation {
+                    channel_id: channel_id.clone(),
+                });
+                if in_live {
+                    store.end_message_context(&channel_id);
+                    return Ok(());
+                }
+                let at = store.message_timestamp(&channel_id, &message_id);
+                let ticket = store.begin_message_context(&channel_id);
+                Command::LoadMessageContext {
+                    ticket,
+                    message_id,
+                    at,
+                }
+            }
+            Action::Latest { channel_id } => {
+                if channel_id != store.selected_channel {
+                    return Ok(());
+                }
+                store.end_message_context(&channel_id);
+                self.navigation_target.clear();
+                self.navigation_serial = self.navigation_serial.saturating_add(1);
+                Command::CancelMessageNavigation { channel_id }
+            }
+            Action::Newer { channel_id } => {
+                if channel_id != store.selected_channel {
+                    return Ok(());
+                }
+                let Some((since, last_id)) = store.begin_load_newer(&channel_id) else {
+                    return Ok(());
+                };
+                Command::LoadNewerMessages {
+                    ticket: store
+                        .history_ticket(&channel_id)
+                        .ok_or("History request expired")?,
+                    since,
+                    last_id,
+                }
+            }
             Action::Older => {
                 let id = store.selected_channel.clone();
                 if let Some(before) = store.begin_load_cached_older(&id) {
@@ -595,11 +691,14 @@ impl Client {
     }
 
     pub fn snapshot(&self) -> Value {
-        project(
+        let mut value = project(
             &self.runtime.store,
             &self.runtime.url,
             &self.runtime.server_key,
-        )
+        );
+        value["navigationSerial"] = json!(self.navigation_serial);
+        value["navigationTarget"] = json!(self.navigation_target);
+        value
     }
 }
 
@@ -635,6 +734,8 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "reactionLoading": s.reaction_details_loading.iter().collect::<Vec<_>>(),
         "messages": messages, "members": members, "dms": dms, "typing": s.typing_names(), "locked": s.locked,
         "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
+        "browsingHistory":s.browsing_history(&s.selected_channel), "loadingContext":s.loading_message_context(&s.selected_channel),
+        "canLoadNewer":s.can_load_newer(&s.selected_channel), "navigationSerial":0, "navigationTarget":"",
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
     })
 }
