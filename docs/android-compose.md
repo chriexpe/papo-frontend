@@ -99,6 +99,12 @@ expands the description, with a 160 dp scrollable cap. Back and People retain
 their own actions. Settings are solid grouped surfaces. A Frosted controls toggle provides an opaque fallback; themes follow
 the system or can be selected explicitly.
 
+System Back dismisses the active viewer, sheet, attachment menu or keyboard
+before leaving the conversation. Back from fullscreen video restores the same
+inline player. Back during recording stops capture into an unsent attachment;
+the draft is preserved. Conversation Back returns to Chats, and Back from
+Settings or Servers also returns to Chats before the activity can exit.
+
 Form failures stay inline, connection state has a persistent indicator, delivery
 state stays on the message, and app-wide failures use one dismissible feedback
 pill. There are no per-screen Android Toast styles.

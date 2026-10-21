@@ -215,6 +215,9 @@ internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () ->
         }
     }
     val latestFinish by rememberUpdatedState(finish)
+    // Leaving the recorder creates an unsent attachment rather than navigating
+    // away from the conversation or silently losing the captured audio.
+    BackHandler { finish(true, false) }
     LaunchedEffect(capture) {
         try { withContext(Dispatchers.IO) { capture.start() }; started = SystemClock.elapsedRealtime(); recording = true }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }

@@ -30,30 +30,54 @@ class PapoUiTest {
     private lateinit var savedExpressions: Map<String, *>
     private lateinit var savedAttachments: Map<String, *>
 
+    private val preferenceBackup get() = android.util.AtomicFile(
+        InstrumentationRegistry.getInstrumentation().targetContext.filesDir.resolve("ui-test-preferences.json"))
+
+    private fun restore(name: String, values: Map<String, *>) {
+        val editor=InstrumentationRegistry.getInstrumentation().targetContext.getSharedPreferences(name,0).edit().clear()
+        values.forEach {(key,value) -> when(value) {
+            is String -> editor.putString(key,value)
+            is Boolean -> editor.putBoolean(key,value)
+        }}
+        check(editor.commit())
+    }
+
+    private fun recoverPreferences() {
+        val bytes=try {preferenceBackup.readFully()} catch(_:java.io.FileNotFoundException) {return}
+        val snapshot=org.json.JSONObject(bytes.toString(Charsets.UTF_8))
+        snapshot.keys().forEach {name ->
+            val values=snapshot.getJSONObject(name)
+            restore(name,values.keys().asSequence().associateWith {values.get(it)})
+        }
+        preferenceBackup.delete()
+    }
+
     @Before fun launch() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
+        // A killed instrumentation process cannot run @After. Recover its
+        // durable snapshot before taking another backup or clearing anything.
+        recoverPreferences()
         savedExpressions = context.getSharedPreferences("compose-expressions", 0).all.toMap()
-        context.getSharedPreferences("compose-expressions", 0).edit().clear().commit()
         savedAttachments = context.getSharedPreferences("compose-attachments", 0).all.toMap()
-        context.getSharedPreferences("compose-attachments", 0).edit().clear().commit()
         savedClient = context.getSharedPreferences("compose-client", 0).all.toMap()
         savedAppearance = context.getSharedPreferences("compose-appearance", 0).all.toMap()
-        context.getSharedPreferences("compose-client", 0).edit().clear().commit()
-        context.getSharedPreferences("compose-appearance", 0).edit().clear().commit()
+        val snapshot=org.json.JSONObject().put("compose-client",org.json.JSONObject(savedClient))
+            .put("compose-appearance",org.json.JSONObject(savedAppearance))
+            .put("compose-expressions",org.json.JSONObject(savedExpressions))
+            .put("compose-attachments",org.json.JSONObject(savedAttachments))
+        val stream=preferenceBackup.startWrite()
+        try {stream.write(snapshot.toString().toByteArray());preferenceBackup.finishWrite(stream)}
+        catch(error:Throwable) {preferenceBackup.failWrite(stream);throw error}
+        listOf("compose-client","compose-appearance","compose-expressions","compose-attachments").forEach {restore(it,emptyMap<String,Any>())}
         activity = ActivityScenario.launch(MainActivity::class.java)
     }
     @After fun close() {
         activity.close()
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        fun restore(name: String, values: Map<String, *>) {
-            val editor = context.getSharedPreferences(name, 0).edit().clear()
-            values.forEach { (key, value) -> when (value) { is String -> editor.putString(key, value); is Boolean -> editor.putBoolean(key, value) } }
-            editor.commit()
-        }
         restore("compose-expressions", savedExpressions)
         restore("compose-attachments", savedAttachments)
         restore("compose-client", savedClient)
         restore("compose-appearance", savedAppearance)
+        preferenceBackup.delete()
     }
 
     private fun demo() {
@@ -67,6 +91,116 @@ class PapoUiTest {
             compose.onAllNodes(hasTestTag("channel-header") and hasText("geral")).fetchSemanticsNodes().isNotEmpty() &&
                 compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()
         }
+    }
+
+    private fun systemBack(gesture: Boolean = false) {
+        compose.waitForIdle()
+        InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(500,5000)
+        val metrics=InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics
+        val command=if(gesture) "input swipe 1 ${metrics.heightPixels/2} ${metrics.widthPixels/3} ${metrics.heightPixels/2} 350" else "input keyevent KEYCODE_BACK"
+        val descriptor=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use {it.readBytes()}
+        InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(500,5000)
+        compose.waitForIdle()
+    }
+    @Test fun systemBackClosesTheViewerThenTheConversation() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToKey("media-0")
+        compose.onNodeWithContentDescription("Photo: landscape.png",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+    }
+    @Test fun backGestureClosesTheViewerThenTheConversation() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToKey("media-0")
+        compose.onNodeWithContentDescription("Photo: landscape.png",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        systemBack(gesture=true)
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        systemBack(gesture=true)
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+    }
+    @Test fun activityBackDispatchClosesOnlyTheActiveViewer() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToKey("media-0")
+        compose.onNodeWithContentDescription("Photo: landscape.png",useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        activity.onActivity {it.onBackPressedDispatcher.onBackPressed()}
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+    }
+    @Test fun systemBackHidesKeyboardBeforeLeavingAndKeepsTheDraft() {
+        chat()
+        compose.onNodeWithTag("composer-input").performClick().performTextInput("Keep this draft")
+        fun keyboardVisible():Boolean {
+            var visible=false
+            activity.onActivity {visible=androidx.core.view.ViewCompat.getRootWindowInsets(it.window.decorView)?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())==true}
+            return visible
+        }
+        compose.waitUntil(5000) {keyboardVisible()}
+        systemBack()
+        compose.waitUntil(5000) {!keyboardVisible()}
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft")
+        systemBack()
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft")
+    }
+    @Test fun systemBackStopsRecordingIntoAnUnsentDraft() {
+        val instrumentation=InstrumentationRegistry.getInstrumentation()
+        instrumentation.uiAutomation.grantRuntimePermission(instrumentation.targetContext.packageName,android.Manifest.permission.RECORD_AUDIO)
+        chat()
+        compose.onNodeWithContentDescription("Open gallery").performTouchInput {longClick()}
+        compose.onNodeWithText("Record audio").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Send recording").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Send recording").assertIsEnabled()
+        android.os.SystemClock.sleep(1200)
+        systemBack()
+        compose.waitUntil(10_000) {compose.onAllNodesWithContentDescription("Remove Voice note ",substring=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Play Voice note ",substring=true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Remove Voice note ",substring=true).performClick()
+    }
+    @Test fun systemBackReturnsFullscreenVideoToInlineWithoutLeavingChat() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToKey("media-3")
+        compose.onNodeWithContentDescription("Play clip.mp4").performClick()
+        val tag="player-demo://papo/me/attachment/demo-video"
+        compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        val label=InstrumentationRegistry.getInstrumentation().targetContext.getString(androidx.media3.ui.R.string.exo_controls_fullscreen_enter_description)
+        androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.withContentDescription(label),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).perform(androidx.test.espresso.action.ViewActions.click())
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+    }
+    @Test fun systemBackLeavesSettingsForChatsBeforeExiting() {
+        demo()
+        compose.onNodeWithText("Settings",substring=false).performClick()
+        systemBack()
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+    }
+
+    @Test fun systemBackClosesProfilesAndPickersBeforeLeavingChat() {
+        chat()
+        compose.onNodeWithTag("author-general-9",useUnmergedTree=true).performClick()
+        systemBack()
+        compose.onNodeWithTag("user-profile").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Emoji and stickers").performClick()
+        systemBack()
+        compose.onNodeWithTag("emoji-picker").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
     }
 
     @Test fun chatProfilesShowImagesAndHeldAuthorsInsertMentions() {

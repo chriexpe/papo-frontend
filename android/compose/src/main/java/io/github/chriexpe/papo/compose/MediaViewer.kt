@@ -1,5 +1,7 @@
 package io.github.chriexpe.papo.compose
 
+import androidx.activity.compose.BackHandler
+
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
@@ -69,6 +71,9 @@ private tailrec fun Context.activity(): Activity? = when(this) {
 
 @Composable
 internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: ViewerMedia, onClose: () -> Unit) {
+    // Keep the viewer ahead of conversation navigation even when a focused
+    // native PlayerView routes Back through the activity's dispatcher.
+    BackHandler(onBack = onClose)
     val context=LocalContext.current
     val activity=remember(context) {context.activity()}
     // FULL_SENSOR follows physical rotation even when the user's auto-rotate

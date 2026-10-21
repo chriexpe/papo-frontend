@@ -125,8 +125,19 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
             var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
             val openProfile:(String)->Unit = {externalProfile=null;profileId=it}
+            val leaveConversation:()->Unit = { inConversation = false; tab = "Chats" }
             CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
-            BackHandler(inConversation) { inConversation = false }
+            // Child dialogs, sheets and the IME consume Back first. Keep the
+            // activity alive until navigation reaches the conversation list.
+            BackHandler(inConversation || tab != "Chats" || profileId != null || externalProfile != null || adding) {
+                when {
+                    adding -> adding = false
+                    profileId != null -> profileId = null
+                    externalProfile != null -> externalProfile = null
+                    inConversation -> leaveConversation()
+                    else -> tab = "Chats"
+                }
+            }
             Box(Modifier.fillMaxSize().background(colors.background)) {
                 if (state.servers.isEmpty()) {
                     Welcome(state.opening, state.error, model::clearError, model::exploreDemo) { model.addServer(it) }
@@ -136,7 +147,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     Authentication(server, state.error, onBack = { tab = "Servers" },
                         onSwitch = { adding = true }, command = { model.command(it) })
                 } else if (inConversation && server.conversation != null) {
-                    ConversationScreen(server, model, onBack = { inConversation = false })
+                    ConversationScreen(server, model, onBack = leaveConversation)
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
