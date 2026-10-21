@@ -70,7 +70,7 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
 }
 
 @Composable
-private fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revision:String,modifier:Modifier) {
+internal fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revision:String,modifier:Modifier) {
     val context=LocalContext.current
     val bytes by produceState<ByteArray?>(null,server.url,server.me,id,revision) {
         value=null

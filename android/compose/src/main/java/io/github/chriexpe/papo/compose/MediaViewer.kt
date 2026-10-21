@@ -148,15 +148,15 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                     GlassPill(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(12.dp),radius=28) {
                         Row(verticalAlignment=Alignment.CenterVertically) {
                             if(saving) CircularProgressIndicator(Modifier.padding(16.dp).size(24.dp),strokeWidth=2.dp)
-                            else IconButton(enabled=download!="Saved to Downloads/Papo",onClick={
+                            else IconButton(enabled=!download.startsWith("Saved to "),onClick={
                                 saving=true;download=""
                                 scope.launch {
-                                    try {downloadViewerMedia(context,server,model,media);download="Saved to Downloads/Papo"}
+                                    try {downloadViewerMedia(context,server,model,media);download="Saved to ${downloadLocation(context)}"}
                                     catch(e:CancellationException) {throw e}
                                     catch(_:Exception) {download="Couldn’t save this media. Try again."}
                                     finally {saving=false}
                                 }
-                            }) {Icon(if(download=="Saved to Downloads/Papo") Icons.Outlined.Check else Icons.Outlined.Download,if(download=="Saved to Downloads/Papo") "Downloaded" else "Download media")}
+                            }) {Icon(if(download.startsWith("Saved to ")) Icons.Outlined.Check else Icons.Outlined.Download,if(download.startsWith("Saved to ")) "Downloaded" else "Download media")}
                             media.gif?.let {GifStar(server,model,it,light=true)}
                             IconButton(onClick=onClose) {Icon(Icons.Outlined.Close,if(media.kind in listOf("image","gif")) "Close image" else "Close media")}
                         }

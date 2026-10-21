@@ -29,7 +29,7 @@ class MessageLinksTest {
         assertEquals("https://media.example.test",source.origin)
         assertEquals("public/https://media.example.test/a.gif?sig=secret",source.cacheKey)
         assertTrue(source.headers.isEmpty())
-        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val context=downloadTestContext()
         val file=context.cacheDir.resolve("download-${System.nanoTime()}.gif")
         file.writeBytes(context.assets.open("demo/animation.gif").use {it.readBytes()})
         try {
@@ -42,4 +42,29 @@ class MessageLinksTest {
             } finally {context.contentResolver.delete(uri,null,null)}
         } finally {file.delete()}
     }
+    private fun downloadTestContext():android.content.Context {
+        val base=InstrumentationRegistry.getInstrumentation().targetContext
+        return object:android.content.ContextWrapper(base) {
+            override fun getSharedPreferences(name:String,mode:Int)=super.getSharedPreferences(if(name=="compose-appearance") "download-test-fixture" else name,mode)
+        }.also {it.getSharedPreferences("compose-appearance",0).edit().clear().commit()}
+    }
+    @Test fun chosenDocumentFolderReceivesExactBytesAndRevokedFoldersFailClearly() = runBlocking {
+        val context=downloadTestContext()
+        val preferences=context.getSharedPreferences("compose-appearance",0)
+        val tree=android.provider.DocumentsContract.buildTreeDocumentUri("io.github.chriexpe.papo.compose.test.documents","root")
+        val file=context.cacheDir.resolve("document-download-${System.nanoTime()}.gif").apply {writeBytes(context.assets.open("demo/animation.gif").use {it.readBytes()})}
+        try {
+            preferences.edit().putString("download-tree",tree.toString()).putString("download-label","Papo test folder").commit()
+            assertEquals("Papo test folder",downloadLocation(context))
+            InstrumentationRegistry.getInstrumentation().uiAutomation.adoptShellPermissionIdentity("android.permission.MANAGE_DOCUMENTS")
+            val uri=saveMediaDownload(context,file,"fixture.gif","image/gif")
+            try {assertArrayEquals(file.readBytes(),context.contentResolver.openInputStream(uri)!!.use {it.readBytes()})}
+            finally {android.provider.DocumentsContract.deleteDocument(context.contentResolver,uri)}
+            preferences.edit().putString("download-tree","content://missing.papo.fixture/tree/root").commit()
+            var failed=false
+            try {saveMediaDownload(context,file,"fixture.gif","image/gif")} catch(_:Exception) {failed=true}
+            assertTrue("An unavailable folder must fail instead of silently saving somewhere else",failed)
+        } finally {InstrumentationRegistry.getInstrumentation().uiAutomation.dropShellPermissionIdentity();preferences.edit().clear().commit();file.delete()}
+    }
+
 }

@@ -309,7 +309,7 @@ InputManager API. Production dependencies remain independent of Espresso.
 ### User profiles
 
 Names and avatars in chat, People and reaction lists open a native profile
-sheet. DM-list avatars and the account row open it too. The sheet shows the
+sheet. DM-list avatars open it too; the settings account row opens the editable account page. The sheet shows the
 server avatar/banner, nickname, username, status, roles, bio and member date,
 with a scrollable body and a direct-message action for other members. Holding
 a chat author inserts a bound mention at the composer cursor, including the
@@ -384,3 +384,37 @@ button beside it. The redundant Channels/Direct/People filter row is removed;
 people and channels remain available through global search (`@` lists people).
 The account avatar beside the server pill opens client settings. Search and
 list state are kept per destination, server and signed-in account.
+
+## Client settings
+
+The account avatar opens a native settings index. Search matches individual
+controls (including descriptions and current values), ignoring case and accents.
+A result opens the relevant page, scrolls to the exact setting and highlights it.
+Back returns to the search and retains its query.
+
+Account editing loads the complete profile before enabling changes. Nickname,
+status message, bio and typing phrase save together; presence, image uploads,
+banner removal and passwords have explicit actions. The adapter uses the core
+API and reducer, with typed UniFFI calls that acknowledge actual HTTP completion.
+Requests freeze their account credentials and reject stale-owner results. Profile
+refresh failure after an acknowledged mutation is reported separately. Unsaved
+profile edits survive rotation and require a discard decision when leaving.
+
+Appearance settings apply immediately on this device: system/light/dark theme,
+frosted controls, message avatars, timestamps, compact spacing, GIF/sticker
+animation and an optional six-second channel-description preview. Android controls
+font and display scaling. The message preview reflects those layout/theme choices.
+
+Files uses Android's document-tree picker with persisted access, or the default
+MediaStore `Downloads/Papo` destination. The shared viewer's download action uses
+that single preference and reports the chosen location. A missing/revoked folder
+fails rather than silently changing destinations; incomplete copies are removed.
+
+Sessions shows only backend-provided session IDs and creation/expiry dates. It
+doesn't invent device names or identify the current session when the API cannot.
+Ending a session requires confirmation. Diagnostics exposes actual connection,
+shared disk-cache usage/clearing, app/Android versions and Android's app settings.
+Clearing media keeps messages, credentials, drafts, favorites and saved downloads.
+Desktop tray/startup controls, desktop activity integration, unimplemented language
+choices and background notification controls are omitted. Demo has no password,
+banner-upload or authenticated-session controls.

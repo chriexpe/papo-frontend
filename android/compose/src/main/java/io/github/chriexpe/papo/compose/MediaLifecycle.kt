@@ -141,7 +141,7 @@ internal fun ManagedAsyncImage(model:Any?,description:String?,imageLoader:ImageL
     val imageKey=if(row!=null && retentionKey.isNotBlank()) "$row/$retentionKey/$occurrence" else ""
     val retained=remember(imageKey,registry) {if(imageKey.isNotBlank()) registry?.image(imageKey) else null}
     var animation by remember(imageKey) {mutableStateOf(retained?.result?.image?.asDrawable(context.resources) as? Animatable)}
-    val visible=activity.visible
+    val visible=activity.visible && LocalClientPreferences.current.animations
     DisposableEffect(animation,registry,row) {
         val old=animation
         registry?.register(owner,row) {old?.stop()}

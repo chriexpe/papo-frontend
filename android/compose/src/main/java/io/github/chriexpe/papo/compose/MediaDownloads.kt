@@ -5,16 +5,32 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Publish only complete files. Interrupted saves never leave broken downloads. */
+/** Android Downloads publish after copying; document providers remove incomplete saves. */
 internal suspend fun saveMediaDownload(context: Context, file: File, name: String, mime: String): Uri = withContext(Dispatchers.IO) {
     val resolver=context.contentResolver
+    val safeName=name.replace(Regex("[/\\\\\\p{Cntrl}]"),"_").take(180).ifBlank {"Papo media"}
+    val tree=context.getSharedPreferences("compose-appearance",0).getString("download-tree","").orEmpty()
+    if(tree.isNotBlank()) {
+        val root=Uri.parse(tree)
+        val parent=DocumentsContract.buildDocumentUriUsingTree(root,DocumentsContract.getTreeDocumentId(root))
+        val uri=DocumentsContract.createDocument(resolver,parent,mime,safeName) ?: error("Couldn’t create the download in your chosen folder")
+        try {
+            requireNotNull(resolver.openOutputStream(uri,"w")).use {out ->file.inputStream().use {input ->
+                val work=kotlinx.coroutines.currentCoroutineContext();val buffer=ByteArray(64*1024)
+                while(true) {work.ensureActive();val count=input.read(buffer);if(count<0) break;out.write(buffer,0,count)}
+            }}
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            return@withContext uri
+        } catch(e:Exception) {runCatching {DocumentsContract.deleteDocument(resolver,uri)};throw e}
+    }
     val values=ContentValues().apply {
-        put(MediaStore.MediaColumns.DISPLAY_NAME,name.replace(Regex("[/\\\\\\p{Cntrl}]"),"_").take(180).ifBlank {"Papo media"})
+        put(MediaStore.MediaColumns.DISPLAY_NAME,safeName)
         put(MediaStore.MediaColumns.MIME_TYPE,mime)
         put(MediaStore.MediaColumns.RELATIVE_PATH,"${Environment.DIRECTORY_DOWNLOADS}/Papo")
         put(MediaStore.MediaColumns.IS_PENDING,1)
@@ -30,4 +46,10 @@ internal suspend fun saveMediaDownload(context: Context, file: File, name: Strin
         check(resolver.update(uri,ContentValues().apply {put(MediaStore.MediaColumns.IS_PENDING,0)},null,null)==1) {"Couldn’t finish the download"}
         uri
     } catch(e:Exception) {resolver.delete(uri,null,null);throw e}
+}
+
+internal fun downloadLocation(context:Context):String {
+    val tree=context.getSharedPreferences("compose-appearance",0).getString("download-tree","").orEmpty()
+    if(tree.isBlank()) return "Downloads/Papo"
+    return context.getSharedPreferences("compose-appearance",0).getString("download-label","Selected folder").orEmpty().ifBlank {"Selected folder"}
 }

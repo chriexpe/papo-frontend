@@ -96,7 +96,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
     var members by remember { mutableStateOf(false) }
-    var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(false) }
+    val appearance=LocalClientPreferences.current
+    var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(appearance.showDescription && channel.topic.isNotBlank()) }
+    var descriptionTouched by remember(draftKey) {mutableStateOf(false)}
+    LaunchedEffect(draftKey) {
+        if(descriptionExpanded) {kotlinx.coroutines.delay(6000);if(!descriptionTouched) descriptionExpanded=false}
+    }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var viewedMedia by remember(draftKey) {mutableStateOf<ViewerMedia?>(null)}
     var submitting by remember(draftKey) { mutableStateOf(false) }
@@ -267,6 +272,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 Column(Modifier.fillMaxWidth().testTag("channel-header")
                     .animateContentSize()
                     .clickable(role = Role.Button, onClickLabel = if (descriptionExpanded) "Hide channel description" else "Show channel description") {
+                        descriptionTouched = true
                         descriptionExpanded = !descriptionExpanded
                     }
                     .semantics { stateDescription = if (descriptionExpanded) "Expanded" else "Collapsed" }) {
@@ -325,7 +331,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
                         Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=viewedMedia==null && !emojiPicker && !gifPicker)
+                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=appearance.animations && viewedMedia==null && !emojiPicker && !gifPicker)
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
@@ -422,6 +428,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 
 @Composable
 private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+    val appearance=LocalClientPreferences.current
     val openProfile=LocalOpenProfile.current
     val openExternal=LocalOpenExternalProfile.current
     val external=message.externalAuthor
@@ -431,14 +438,16 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
     val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
         .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message"}
-        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        if(appearance.avatars) {
         if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
         else UserAvatar(message.authorId,message.author,Modifier.size(48.dp).then(authorAction).padding(2.dp))
+        }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(message.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
                 if(external!=null) AppBadge()
-                Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if(appearance.timestamps) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 IconButton(onClick = onActions, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.MoreHoriz, "Message actions", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
             }

@@ -92,8 +92,9 @@ internal val LocalHaze = compositionLocalOf<HazeState> { error("Missing content 
 fun PapoApp(model: PapoViewModel = viewModel()) {
     val state by model.state.collectAsStateWithLifecycle()
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
-    var theme by rememberSaveable { mutableStateOf(preferences.getString("theme", "System")!!) }
-    var glass by rememberSaveable { mutableStateOf(preferences.getBoolean("glass", true)) }
+    val appearance=remember(preferences) {ClientPreferences(preferences)}
+    val theme=appearance.theme
+    val glass=appearance.glass
     val dark = when (theme) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
     val view = LocalView.current
     SideEffect {
@@ -121,7 +122,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
     )
     MaterialTheme(colorScheme = colors) {
         val haze = remember { HazeState() }
-        CompositionLocalProvider(LocalHaze provides haze, LocalGlass provides glass, LocalContentColor provides colors.onSurface) {
+        CompositionLocalProvider(LocalHaze provides haze, LocalClientPreferences provides appearance, LocalGlass provides glass, LocalContentColor provides colors.onSurface) {
             var adding by rememberSaveable { mutableStateOf(false) }
             var tab by rememberSaveable { mutableStateOf("Chats") }
             var settingsOrigin by rememberSaveable {mutableStateOf("Chats")}
@@ -165,12 +166,10 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                                     model.command(Action.JumpToMessage(channelId,messageId),server.url) {inConversation=true}
                                 }})}
                             "Servers" -> ServerList(state, model, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
-                            else -> ClientSettings(server, theme, glass,
-                                onTheme = { theme = it; preferences.edit().putString("theme", it).apply() },
-                                onGlass = { glass = it; preferences.edit().putBoolean("glass", it).apply() },
+                            else -> ClientSettings(server, model, onBack={tab=settingsOrigin},
                                 onLogout = { if (server.isDemo) model.leaveDemo() else model.command(Action.Logout) })
                         }
-                        FloatingNavigation(tab, onSelect = { tab = it }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
+                        if(tab!="Settings") FloatingNavigation(tab, onSelect = { tab = it }, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
                     }
                 }
                 val error = if (state.servers.isEmpty()) "" else state.error.ifBlank { server?.error.orEmpty() }
@@ -353,35 +352,6 @@ private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit,
                 modifier = Modifier.clip(RoundedCornerShape(22.dp)).clickable { onSelect(server.url) })
         }
         item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("Add server") } }
-    }
-}
-
-@Composable
-private fun ClientSettings(server: ServerState, theme: String, glass: Boolean, onTheme: (String) -> Unit, onGlass: (Boolean) -> Unit, onLogout: () -> Unit) {
-    val openProfile=LocalOpenProfile.current
-    var logout by remember { mutableStateOf(false) }
-    LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(), contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-        item { Text("Settings", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold) }
-        item { SettingsGroup("YOUR ACCOUNT") { ListItem(headlineContent = { Text(server.myName, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.name) }, leadingContent = { UserAvatar(server.me,server.myName) },modifier=Modifier.clickable {openProfile(server.me)}) } }
-        item { SettingsGroup("APPEARANCE") {
-            Column(Modifier.padding(16.dp)) {
-                Text("Theme", style = MaterialTheme.typography.titleMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("System", "Light", "Dark").forEach { choice -> FilterChip(theme == choice, { onTheme(choice) }, label = { Text(choice) }) } }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .4f))
-            ListItem(headlineContent = { Text("Frosted controls") }, supportingContent = { Text("Glass on floating bars and pills") }, trailingContent = { Switch(glass, onGlass, Modifier.semantics { contentDescription = "Frosted controls" }) })
-        } }
-        item { SettingsGroup("ABOUT") { ListItem(headlineContent = { Text("Papo for Android") }, supportingContent = { Text("Native Compose · ${BuildConfig.VERSION_NAME}") }, leadingContent = { Icon(Icons.Outlined.Forum, null) }) } }
-        item { TextButton(onClick = { if (server.isDemo) onLogout() else logout = true }) { Icon(Icons.Outlined.Logout, null); Spacer(Modifier.width(8.dp)); Text(if (server.isDemo) "Leave demo" else "Sign out of ${server.name}") } }
-    }
-    if (logout) AlertDialog(onDismissRequest = { logout = false }, title = { Text("Sign out?") }, text = { Text("You’ll need to sign in again on ${server.name}.") }, confirmButton = { TextButton(onClick = { logout = false; onLogout() }) { Text("Sign out") } }, dismissButton = { TextButton(onClick = { logout = false }) { Text("Cancel") } })
-}
-
-@Composable
-private fun SettingsGroup(label: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp))
-        Column(Modifier.clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.surface), content = content)
     }
 }
 

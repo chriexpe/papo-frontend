@@ -169,6 +169,10 @@ internal class MediaCache private constructor(private val context:Context,direct
         @Synchronized override fun getSize()=length
         @Synchronized override fun close() {reader?.close();reader=null}
     }
+    internal suspend fun clear()=withContext(Dispatchers.IO) {
+        // Active readers retain their open span; removal is safe in SimpleCache.
+        cache.keys.toList().forEach {key -> locks.getOrPut(key) {Mutex()}.withLock {cache.removeResource(key)}}
+    }
     internal val size get()=cache.cacheSpace
     override fun close() {cache.release()}
     companion object {

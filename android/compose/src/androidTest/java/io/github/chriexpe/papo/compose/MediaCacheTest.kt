@@ -93,4 +93,19 @@ class MediaCacheTest {
             }
         }} finally {directory.deleteRecursively()}
     }
+    @Test fun clearingSharedMediaForcesRefetchWithoutDeletingSavedFiles() = runBlocking {
+        val directory=context.cacheDir.resolve("clear-media-${System.nanoTime()}")
+        val saved=context.filesDir.resolve("saved-fixture-${System.nanoTime()}").apply {writeText("saved")}
+        try {MediaCache.isolated(context,directory).use {cache ->
+            cache.blob("sticker") {byteArrayOf(1,2,3)}
+            assertTrue(cache.size>0)
+            cache.clear()
+            assertEquals(0L,cache.size)
+            assertEquals("saved",saved.readText())
+            var reloaded=false
+            assertArrayEquals(byteArrayOf(4),cache.blob("sticker") {reloaded=true;byteArrayOf(4)})
+            assertTrue(reloaded)
+        }} finally {directory.deleteRecursively();saved.delete()}
+    }
+
 }
