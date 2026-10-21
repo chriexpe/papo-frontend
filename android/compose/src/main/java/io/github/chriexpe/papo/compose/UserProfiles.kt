@@ -27,9 +27,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import coil3.ImageLoader
-import coil3.gif.AnimatedImageDecoder
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ImageRequest
 import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.MediaRequest
@@ -66,7 +63,7 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
         },contentAlignment=Alignment.Center) {
             if(!loaded) Avatar(name,Modifier.fillMaxSize())
             if(bytes!=null) ManagedAsyncImage(
-                ImageRequest.Builder(context).data(bytes).size(256).build(),null,ExpressionImages.loader(context),
+                ImageRequest.Builder(context).data(bytes).size(256).build(),null,MediaImages.loader(context),
                 modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false},retentionKey="avatar/$id/$revision")
         }
     }
@@ -75,19 +72,13 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
 @Composable
 private fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revision:String,modifier:Modifier) {
     val context=LocalContext.current
-    val source by produceState<MediaRequest?>(null,server.url,server.me,id,revision) {
+    val bytes by produceState<ByteArray?>(null,server.url,server.me,id,revision) {
         value=null
-        if(revision.isNotBlank()) try {value=model.mediaRequest(server.url,MediaResource.ProfileBanner(id))}
-        catch(e:CancellationException) {throw e}
-        catch(_:Exception) { }
+        if(revision.isNotBlank()) try {MediaCache.get(context).images(model.mediaRequest(server.url,MediaResource.ProfileBanner(id))).collect {value=it}}
+        catch(e:CancellationException) {throw e} catch(_:Exception) { }
     }
-    val loader=remember(source) {ImageLoader.Builder(context).components {
-        add(AnimatedImageDecoder.Factory())
-        source?.let {add(OkHttpNetworkFetcherFactory(callFactory={MediaNetwork.client(it)}))}
-    }.memoryCache(null).build()}
-    DisposableEffect(loader) {onDispose {loader.shutdown()}}
     Box(modifier.background(MaterialTheme.colorScheme.primary.copy(alpha=.16f))) {
-        source?.let {s -> ManagedAsyncImage(ImageRequest.Builder(context).data(s.url).diskCacheKey(s.cacheKey).build(),"Profile banner",loader,Modifier.fillMaxSize(),ContentScale.Crop)}
+        bytes?.let {ManagedAsyncImage(it,"Profile banner",MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop)}
     }
 }
 
@@ -196,13 +187,21 @@ internal fun ExternalAvatar(server:ServerState,author:io.github.chriexpe.papo.co
         if(server.isDemo && author.avatarUrl.startsWith("file:///android_asset/demo/")) author.avatarUrl
         else externalAvatarUrl(server.url,author.avatarUrl)
     }
+    val bytes by produceState<ByteArray?>(null,server.url,server.me,author.source,author.id,url) {
+        value=null
+        if(url!=null) try {
+            val source=if(server.isDemo) publicGifSource(url) else publicMediaSource(url).let {it.copy(cacheKey="${server.url}/${server.me}/external/${author.source}/${author.id}/$url")}
+            MediaCache.get(context).images(source).collect {value=it}
+        } catch(e:CancellationException) {throw e} catch(_:Exception) { }
+    }
+    val image=bytes
     var loaded by remember(url) {mutableStateOf(false)}
     Box(modifier.size(40.dp).clip(CircleShape).testTag("external-avatar-${author.source}-${author.id}").semantics {
         contentDescription="${author.name} avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
     }) {
         if(!loaded) Avatar(author.name,Modifier.fillMaxSize())
-        url?.let {ManagedAsyncImage(it,null,ExpressionImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop,
-            onSuccess={loaded=true},onError={loaded=false},retentionKey="external/${author.source}/${author.id}/$it")}
+        image?.let {ManagedAsyncImage(it,null,MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop,
+            onSuccess={loaded=true},onError={loaded=false},retentionKey="external/${author.source}/${author.id}/$url/${bytes?.contentHashCode()}")}
     }
 }
 

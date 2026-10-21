@@ -434,6 +434,8 @@ pub struct ExternalAuthorView {
 pub struct EmojiView {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub revision: String,
 }
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 pub struct ReactorView {

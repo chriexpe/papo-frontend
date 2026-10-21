@@ -46,15 +46,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.PlaybackException
-import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
-import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.gif.AnimatedImageDecoder
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ImageRequest
 import io.github.chriexpe.papo.core.AttachmentView
 import io.github.chriexpe.papo.core.EmbedView
@@ -75,7 +71,7 @@ import java.io.IOException
 /** Shared network pool, never a global authenticated cookie jar. Each request
  * is pinned to its server origin; provider iframes get no Papo headers. */
 internal object MediaNetwork {
-    private val base = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build()
+    private val base = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).connectTimeout(5,java.util.concurrent.TimeUnit.SECONDS).readTimeout(10,java.util.concurrent.TimeUnit.SECONDS).build()
     fun client(source: MediaRequest): OkHttpClient = base.newBuilder().addInterceptor { chain ->
         val request = chain.request()
         val allowed = source.origin.toHttpUrl()
@@ -85,70 +81,15 @@ internal object MediaNetwork {
         chain.proceed(builder.build())
     }.build()
 
-    private fun fileKey(source: MediaRequest) = java.security.MessageDigest.getInstance("SHA-256").digest(source.cacheKey.toByteArray()).joinToString("") { "%02x".format(it) }
-    private val audioLock = Any()
-    private val audioPins = mutableMapOf<String, Int>()
-    private val audioCleanup = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
-    internal class AudioFile(val file: File, private val release: () -> Unit) : java.io.Closeable {
-        private val closed = java.util.concurrent.atomic.AtomicBoolean()
-        override fun close() { if (closed.compareAndSet(false, true)) release() }
+    suspend fun download(context:Context,source:MediaRequest,name:String):File=withContext(Dispatchers.IO) {
+        val directory=File(context.cacheDir,"media-exports").apply {mkdirs()}
+        directory.listFiles().orEmpty().filter {System.currentTimeMillis()-it.lastModified()>24*60*60*1000L}.forEach {it.delete()}
+        val extension=name.substringAfterLast('.',"bin").filter(Char::isLetterOrDigit).take(12).ifBlank {"bin"}
+        val temporary=File.createTempFile("media-",".$extension",directory)
+        try {MediaCache.get(context).export(source,temporary);temporary}
+        catch(e:Exception) {temporary.delete();throw e}
     }
-    private fun audioFile(context: Context, source: MediaRequest) = File(File(context.cacheDir, "audio"), "${fileKey(source)}.bin")
-    private fun pin(file: File): AudioFile = synchronized(audioLock) {
-        audioPins[file.absolutePath] = (audioPins[file.absolutePath] ?: 0) + 1
-        AudioFile(file) {
-            synchronized(audioLock) {
-                val remaining = (audioPins[file.absolutePath] ?: 1) - 1
-                if (remaining > 0) audioPins[file.absolutePath] = remaining else audioPins.remove(file.absolutePath)
-            }
-            audioCleanup.launch { synchronized(audioLock) { trimAudio(file.parentFile!!) } }
-        }
-    }
-    fun existingAudio(context: Context, source: MediaRequest): AudioFile? = synchronized(audioLock) {
-        audioFile(context, source).takeIf { it.isFile }?.let { file -> file.setLastModified(System.currentTimeMillis()); pin(file) }
-    }
-    suspend fun downloadAudio(context: Context, source: MediaRequest): AudioFile {
-        val file = audioFile(context, source)
-        val lease = pin(file)
-        try {
-            downloadTo(context, source, "audio", requireNotNull(file.parentFile))
-            synchronized(audioLock) { trimAudio(file.parentFile!!) }
-            return lease
-        } catch (e: Exception) { lease.close(); throw e }
-    }
-    private fun trimAudio(directory: File) {
-        val files = directory.listFiles()?.filter { !it.name.endsWith(".part") }?.sortedBy { it.lastModified() }.orEmpty()
-        var bytes = files.sumOf { it.length() }
-        for (file in files) {
-            if (bytes <= 128L * 1024 * 1024) break
-            if (file.absolutePath !in audioPins) { val length = file.length(); if (file.delete()) bytes -= length }
-        }
-    }
-    suspend fun download(context: Context, source: MediaRequest, name: String): File = downloadTo(context, source, name, File(context.cacheDir, "media"))
-    private suspend fun downloadTo(context: Context, source: MediaRequest, name: String, directory: File): File = withContext(Dispatchers.IO) {
-        directory.mkdirs()
-        val extension = name.substringAfterLast('.', "bin").filter(Char::isLetterOrDigit).take(12).ifBlank { "bin" }
-        val file = File(directory, "${fileKey(source)}.$extension")
-        if (file.isFile) { file.setLastModified(System.currentTimeMillis()); return@withContext file }
-        val partial = File.createTempFile("download-", ".part", directory)
-        val work = kotlinx.coroutines.currentCoroutineContext()
-        fun copy(input: java.io.InputStream, output: java.io.OutputStream) {
-            val buffer = ByteArray(64 * 1024)
-            while (true) { work.ensureActive(); val read = input.read(buffer); if (read < 0) break; output.write(buffer, 0, read) }
-        }
-        try {
-            partial.outputStream().use { output ->
-                if (source.url.startsWith("file:///android_asset/")) context.assets.open(source.url.removePrefix("file:///android_asset/")).use { copy(it, output) }
-                else if (source.origin == "demo" && source.url.startsWith("file://")) File(requireNotNull(Uri.parse(source.url).path)).inputStream().use { copy(it, output) }
-                else client(source).newCall(Request.Builder().url(source.url).build()).execute().use { response ->
-                    if (!response.isSuccessful) throw IOException("Couldn’t download this file (${response.code})")
-                    response.body?.byteStream()?.use { copy(it, output) } ?: throw IOException("The file is empty")
-                }
-            }
-            if (!partial.renameTo(file)) throw IOException("Couldn’t save this file")
-            file
-        } finally { partial.delete() }
-    }
+
 }
 
 @Composable
@@ -337,22 +278,18 @@ private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, descr
     val media=ViewerMedia("${server.url}/${server.me}/image/${embed?.id ?: resource ?: publicUrl}",description.removePrefix("Photo: "),if(gif!=null) "gif" else "image",embed?.mime.orEmpty(),embed?.width ?: 0,embed?.height ?: 0,resource,embed,gif,publicUrl)
     var decodeError by remember(retry, embed?.revision) { mutableStateOf(false) }
     var decoded by remember(retry, embed?.revision) { mutableStateOf(false) }
-    val data by produceState<Pair<Any, MediaRequest?>?>(null, server.url, server.me, resource, embed?.id, embed?.revision, author, retry,publicUrl) {
-        value = null
+    val data by produceState<ByteArray?>(null,server.url,server.me,resource,embed?.id,embed?.revision,author,retry,publicUrl) {
+        value=null
         try {
-            value = if (embed != null) model.embedImage(server, embed.id, embed.revision, author) to null
-            else (if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource))).let { it.url to it }
-        } catch (e: CancellationException) { throw e }
-        catch (e: Exception) { decodeError = true }
+            if(embed!=null) value=model.embedImage(server,embed.id,embed.revision,author)
+            else {
+                val source=if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url,requireNotNull(resource))
+                MediaCache.get(context).images(source).collect {value=it}
+            }
+        } catch(e:CancellationException) {throw e} catch(_:Exception) {decodeError=true}
     }
-    val source = data?.second
-    val loader = remember(source) { ImageLoader.Builder(context).components {
-        add(AnimatedImageDecoder.Factory())
-        if (source != null) add(OkHttpNetworkFetcherFactory(callFactory = { MediaNetwork.client(source) }))
-    }.memoryCache(null).build() }
-    DisposableEffect(loader) { onDispose { loader.shutdown() } }
-    val request = remember(data, server.url, server.me, embed?.revision) { ImageRequest.Builder(context)
-        .data(data?.first).memoryCacheKey(source?.cacheKey ?: "${server.url}/${server.me}/${embed?.id}/${embed?.revision}/$author").build() }
+    val loader=remember(context) {MediaImages.loader(context)}
+    val request=remember(data) {ImageRequest.Builder(context).data(data).build()}
     if (data != null && !decodeError) ManagedAsyncImage(request, description, imageLoader = loader,
         modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.combinedClickable(onClick={openViewer(media)},onLongClick=onActions,onLongClickLabel="Message actions") else Modifier), contentScale = ContentScale.Fit,
         onSuccess = { decoded = true },
@@ -372,7 +309,7 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,private val audio:MediaNetwork.AudioFile?,initialPlayIntent:Boolean=true,private val save:(PlaybackBookmark)->Unit={}) {
+internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,initialPlayIntent:Boolean=true,private val save:(PlaybackBookmark)->Unit={}) {
     private val owners=mutableMapOf<Any,Boolean>()
     private var visibilityPaused=true
     private var changingVisibility=false
@@ -401,7 +338,7 @@ internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,priva
         if(owners.isEmpty()) {
         save(PlaybackBookmark(player.currentPosition.coerceAtLeast(0),if(visibilityPaused) playIntent else player.playWhenReady))
         view?.let {native ->(native.parent as? android.view.ViewGroup)?.removeView(native);native.player=null}
-        view=null;inlineHost=null;fullscreenHost=null;player.removeListener(intentListener);player.release();audio?.close()
+        view=null;inlineHost=null;fullscreenHost=null;player.removeListener(intentListener);player.release()
     } else applyVisibility()}
     fun bind(container:android.widget.FrameLayout,fullscreen:Boolean,toggle:(()->Unit)?,scale:Float,pan:androidx.compose.ui.geometry.Offset) {
         val host=Host(container,fullscreen,toggle,scale,pan)
@@ -478,18 +415,16 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = "Media unavailable. Tap to retry." }
     }
-    val cachedAudio = remember(source, audio,existing) { source?.takeIf { audio && existing==null }?.let { MediaNetwork.existingAudio(context, it) } }
     val bookmarks=LocalPlaybackBookmarks.current
     val playback = remember(source,existing) { existing ?: source?.let { request ->
         val bookmark=bookmarks?.get(id)
-        val http = OkHttpDataSource.Factory(MediaNetwork.client(request))
-        val factory = DefaultDataSource.Factory(context, http)
+        val factory = MediaCache.get(context).factory(request)
         val player=ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(factory)).build().apply {
-            setMediaItem(MediaItem.fromUri(cachedAudio?.file?.let(Uri::fromFile) ?: Uri.parse(request.url)))
+            setMediaItem(MediaItem.fromUri(request.url))
             bookmark?.let {seekTo(it.position)}
             playWhenReady = false; prepare()
         }
-        PlaybackHandle(player,request,cachedAudio,bookmark?.playWhenVisible ?: true) {bookmarks?.save(id,it)}
+        PlaybackHandle(player,request,bookmark?.playWhenVisible ?: true) {bookmarks?.save(id,it)}
     } }
     val player=playback?.player
     val owner=remember {Any()}

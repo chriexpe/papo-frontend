@@ -35,10 +35,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import coil3.gif.AnimatedImageDecoder
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.ImageRequest
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.hazeSource
@@ -174,23 +172,28 @@ private fun BoxScope.ViewerImage(server: ServerState, model: PapoViewModel, medi
     var retry by remember(media.id) {mutableIntStateOf(0)}
     var failed by remember(media.id,retry) {mutableStateOf(false)}
     var loaded by remember(media.id,retry) {mutableStateOf(false)}
-    val data by produceState<Pair<Any,MediaRequest?>?>(null,media.id,retry) {
+    val data by produceState<Any?>(null,media.id,retry) {
         value=null
         try {
-            value=when {
-                media.gif!=null -> model.gifCopy(server,media.gif) to null
-                media.embed!=null -> model.embedImage(server,media.embed.id,media.embed.revision) to null
-                else -> (if(media.url.isNotBlank()) publicMediaSource(media.url) else model.mediaRequest(server.url,requireNotNull(media.resource))).let {it.url to it}
+            val gif=media.gif
+            when {
+                gif!=null && model.expressions.file(model.expressions.owner(server),gif.key).isFile ->value=model.expressions.file(model.expressions.owner(server),gif.key)
+                media.embed!=null ->value=model.embedImage(server,media.embed.id,media.embed.revision)
+                gif?.embed?.isNotBlank()==true ->value=model.embedImage(server,gif.embed,gif.revision)
+                else -> {
+                    val source=when {
+                        gif?.attachment?.isNotBlank()==true ->model.mediaRequest(server.url,MediaResource.Attachment(gif.attachment,false))
+                        gif!=null -> publicGifSource((if(gif.url.isBlank() && gif.providerId.isNotBlank()) model.gifItem(server,gif.providerId) else gif).url)
+                        media.url.isNotBlank() ->publicMediaSource(media.url)
+                        else ->model.mediaRequest(server.url,requireNotNull(media.resource))
+                    }
+                    MediaCache.get(context).images(source).collect {value=it}
+                }
             }
         } catch(e:CancellationException) {throw e} catch(_:Exception) {failed=true}
     }
-    val source=data?.second
-    val loader=remember(source) {ImageLoader.Builder(context).components {
-        add(AnimatedImageDecoder.Factory())
-        if(source!=null) add(OkHttpNetworkFetcherFactory(callFactory={MediaNetwork.client(source)}))
-    }.memoryCache(null).build()}
-    DisposableEffect(loader) {onDispose {loader.shutdown()}}
-    if(data!=null && !failed) ManagedAsyncImage(ImageRequest.Builder(context).data(data?.first).build(),media.title,imageLoader=loader,
+    val loader=remember(context) {MediaImages.loader(context)}
+    if(data!=null && !failed) ManagedAsyncImage(ImageRequest.Builder(context).data(data).build(),media.title,imageLoader=loader,
         modifier=Modifier.fillMaxSize().testTag("viewer-image").semantics {stateDescription=if(loaded) "Loaded" else "Loading"},contentScale=ContentScale.Fit,onError={failed=true},onSuccess={result ->
             loaded=true
             val image=result.result.image
@@ -204,14 +207,23 @@ private suspend fun downloadViewerMedia(context: Context, server: ServerState, m
     var temporary: File?=null
     try {
         val file=when {
-            media.gif!=null -> model.gifCopy(server,media.gif)
+            media.gif!=null && model.expressions.file(model.expressions.owner(server),media.gif.key).isFile ->model.expressions.file(model.expressions.owner(server),media.gif.key)
+            media.gif?.embed?.isNotBlank()==true ->withContext(Dispatchers.IO) {
+                File.createTempFile("download-image-",".bin",context.cacheDir).also {temporary=it;it.writeBytes(model.embedImage(server,media.gif.embed,media.gif.revision))}
+            }
+            media.gif!=null -> {
+                val gif=media.gif
+                val source=if(gif.attachment.isNotBlank()) model.mediaRequest(server.url,MediaResource.Attachment(gif.attachment,false))
+                    else publicGifSource((if(gif.url.isBlank() && gif.providerId.isNotBlank()) model.gifItem(server,gif.providerId) else gif).url)
+                MediaNetwork.download(context,source,media.title).also {temporary=it}
+            }
             media.embed!=null && media.kind in listOf("image","gif") -> withContext(Dispatchers.IO) {
                 val bytes=model.embedImage(server,media.embed.id,media.embed.revision)
                 File.createTempFile("download-image-",".bin",context.cacheDir).also {temporary=it;it.writeBytes(bytes)}
             }
             else -> {
                 val source=if(media.url.isNotBlank()) publicMediaSource(media.url) else model.mediaRequest(server.url,requireNotNull(media.resource))
-                MediaNetwork.download(context,source,media.title)
+                MediaNetwork.download(context,source,media.title).also {temporary=it}
             }
         }
         val imageMime=if(media.kind in listOf("image","gif")) withContext(Dispatchers.IO) {

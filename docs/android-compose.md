@@ -7,9 +7,11 @@ so both can be installed without replacing the existing app or its sessions.
 ## Build and run
 
 Use the existing Android SDK (API 37), NDK `30.0.16248370`, Android Studio JDK,
-Rust 1.98+, and `cargo-ndk`:
+Python 3.11+, Rust 1.98+, and `cargo-ndk`:
 
 ```bash
+# Prepare the shared workspace patch once (also done by the build script).
+python3 scripts/prepare-winit.py
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked
 
@@ -150,8 +152,7 @@ Audio uses compact Compose play/pause, seek and time controls without a video
 surface. Its seek control draws a real decoded waveform before playback, with
 played/unplayed progress, touch and accessibility seeking. PCM peaks include
 all channels; silence stays flat. At most two decoders run, work cancels when
-unused, audio cache is bounded to 128 MiB, and account-scoped envelopes are
-cached in memory/on disk. M4A/M4B audio names correct the backend’s broad `video/mp4` container
+unused, audio/video ranges and account-scoped waveform envelopes share the media cache. M4A/M4B audio names correct the backend’s broad `video/mp4` container
 label in the shared core; actual MP4/M4V video keeps its video presentation.
 Files download on demand to private cache and open via Android’s file chooser.
 
@@ -318,3 +319,31 @@ separate external-profile sheet. They never issue a Papo profile lookup, DM or
 bound mention against the bridge account. Public avatar URLs receive no Papo
 credentials; only the documented server-local webhook avatar route is resolved
 relative to the connected server. External profile links accept HTTP(S) only.
+
+
+### Shared media cache
+
+`MediaCache` is the sole Compose client cache for encoded media: native and
+integration avatars, banners, stickers, GIFs, attachment images, direct image
+links, video/audio ranges, embed image bytes and derived waveform envelopes.
+A single Media3 `SimpleCache` has a 256 MiB LRU budget across those resources.
+Image decoding uses one shared Coil loader with its separate disk cache disabled;
+streaming playback and waveform extraction read through the same cache data source.
+Live HLS/DASH playlists bypass storage while their media segments can be cached.
+Only consumed video/audio ranges are cached, so starting a long video does not
+require downloading it in full. Recently accessed spans survive longest, whatever
+their media type; this is a byte budget, not a fixed number of recent messages.
+
+Immutable native blobs use account/resource/revision keys. Public URL images
+(including integration avatars) display cached bytes before conditional refresh
+with ETag/Last-Modified after 15 minutes. A changed URL is a new cache entry.
+Authenticated requests remain pinned to their server origin and account; public
+URLs receive no Papo credentials. Custom emoji revisions invalidate stale image
+bytes when the server changes them. The shared cache is disposable and does not
+contain user-owned GIF favorites or MediaStore downloads. Temporary export copies
+exist only to hand complete files to Android document handlers. Provider-controlled
+web embeds retain their browser-managed network behavior.
+
+This disk cache is independent of viewport retention: playback and animation
+clocks still pause offscreen, and decoded objects/players release around two
+screens away. Scrolling far away does not discard reusable disk bytes.

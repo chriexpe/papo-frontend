@@ -31,34 +31,36 @@ internal val LocalMediaRowId=compositionLocalOf<String?> {null}
 /** Cached lazy compositions can be inactive. Enforce their pause from the
  * conversation itself, rather than waiting for an offscreen recomposition. */
 internal class MediaVisibilityRegistry {
+    // Image decode callbacks may arrive while the UI trims retained rows.
+    // Player ownership and releases still run on the main dispatcher.
     private var rows=emptySet<String>()
     private var foreground=true
     private data class Entry(val row:String,val stop:()->Unit)
     private val entries=mutableMapOf<Any,Entry>()
-    fun isVisible(row:String?)=row==null || (foreground && row in rows)
-    fun register(owner:Any,row:String?,stop:()->Unit) {
+    @Synchronized fun isVisible(row:String?)=row==null || (foreground && row in rows)
+    @Synchronized fun register(owner:Any,row:String?,stop:()->Unit) {
         if(row==null) return
         entries[owner]=Entry(row,stop)
         if(!isVisible(row)) stop()
     }
-    fun unregister(owner:Any) {entries.remove(owner)}
+    @Synchronized fun unregister(owner:Any) {entries.remove(owner)}
     private data class RetainedPlayer(val row:String,val handle:PlaybackHandle,val owner:Any=Any())
     private data class RetainedImage(val row:String,val state:AsyncImagePainter.State.Success)
     private val players=mutableMapOf<String,RetainedPlayer>()
     private val images=mutableMapOf<String,RetainedImage>()
     private val sizes=mutableMapOf<String,Int>()
-    fun player(id:String)=players[id]?.handle
-    fun retainPlayer(id:String,row:String?,handle:PlaybackHandle) {
+    @Synchronized fun player(id:String)=players[id]?.handle
+    @Synchronized fun retainPlayer(id:String,row:String?,handle:PlaybackHandle) {
         if(row==null || players[id]?.handle===handle) return
         players.remove(id)?.let {it.handle.release(it.owner)}
         val entry=RetainedPlayer(row,handle);players[id]=entry;handle.acquire(entry.owner)
         while(players.size>3) players.remove(players.keys.first())?.let {it.handle.release(it.owner)}
     }
-    fun image(key:String)=images[key]?.state
-    fun retainImage(key:String,row:String?,state:AsyncImagePainter.State.Success) {
+    @Synchronized fun image(key:String)=images[key]?.state
+    @Synchronized fun retainImage(key:String,row:String?,state:AsyncImagePainter.State.Success) {
         if(row!=null) {images[key]=RetainedImage(row,state);while(images.size>96) images.remove(images.keys.first())}
     }
-    fun trim(layout:LazyListLayoutInfo,order:List<String>) {
+    @Synchronized fun trim(layout:LazyListLayoutInfo,order:List<String>) {
         val placed=layout.visibleItemsInfo.filter {it.key is String && it.key in order}
         placed.forEach {sizes[it.key as String]=it.size}
         val anchor=placed.firstOrNull() ?: return
@@ -78,8 +80,8 @@ internal class MediaVisibilityRegistry {
         // Channel timelines are bounded separately by core; don't retain old row measurements indefinitely.
         sizes.keys.retainAll(order.toSet())
     }
-    fun close() {players.values.forEach {it.handle.release(it.owner)};players.clear();images.clear();entries.clear()}
-    fun update(visibleRows:Set<String>,enabled:Boolean) {
+    @Synchronized fun close() {players.values.forEach {it.handle.release(it.owner)};players.clear();images.clear();entries.clear()}
+    @Synchronized fun update(visibleRows:Set<String>,enabled:Boolean) {
         if(rows==visibleRows && foreground==enabled) return
         rows=visibleRows;foreground=enabled
         entries.values.toList().forEach {if(!isVisible(it.row)) it.stop()}

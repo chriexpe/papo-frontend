@@ -38,13 +38,13 @@ internal fun EmojiGlyph(server: ServerState, emoji: EmojiChoice, size: Int = 28,
     else {
         val entry=server.emojis.firstOrNull { it.id==emoji.value }
         val context=LocalContext.current
-        val bytes by produceState<ByteArray?>(null,server.url,server.me,emoji.value) {
+        val bytes by produceState<ByteArray?>(null,server.url,server.me,emoji.value,entry?.revision) {
             try { value=model.emojiImage(server,emoji.value) }
             catch(e:CancellationException) {throw e}
             catch(_:Exception) {value=null}
         }
-        val loader=remember(context) { ExpressionImages.loader(context) }
-        if(bytes!=null) ManagedAsyncImage(bytes,":${entry?.name ?: emoji.name}:",imageLoader=loader,modifier=Modifier.size(size.dp),contentScale=ContentScale.Fit,retentionKey="emoji/${emoji.value}/$size")
+        val loader=remember(context) { MediaImages.loader(context) }
+        if(bytes!=null) ManagedAsyncImage(bytes,":${entry?.name ?: emoji.name}:",imageLoader=loader,modifier=Modifier.size(size.dp),contentScale=ContentScale.Fit,retentionKey="emoji/${emoji.value}/${entry?.revision}/$size")
         else Text(":${entry?.name ?: emoji.name}:",style=MaterialTheme.typography.labelSmall,maxLines=1)
     }
 }

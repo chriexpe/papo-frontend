@@ -32,6 +32,7 @@ for target in "${targets[@]}"; do
         exit 1
     fi
 done
+python3 scripts/prepare-winit.py
 tasks=(:compose:assembleDebug)
 if [ "$test_app" = 1 ]; then tasks+=(:compose:assembleDebugAndroidTest :compose:lintDebug); fi
 ./android/gradlew -p android "${tasks[@]}" "-PpapoAbis=$abi" --console=plain

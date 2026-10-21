@@ -706,6 +706,12 @@ impl Client {
     }
 }
 
+fn blob_revision(blob: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    blob.hash(&mut hash);
+    format!("{:016x}", hash.finish())
+}
 fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let channels: Vec<_> = s.channels.iter().map(|c| json!({
             "id": c.id, "name": c.name, "kind": match c.kind { ChannelKind::Text => "text", ChannelKind::Voice => "voice", ChannelKind::Category => "category", ChannelKind::Direct => "direct" },
@@ -734,7 +740,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
         "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
         "me": s.me, "myName": s.my_name, "selectedChannel": s.selected_channel, "channels": channels,
-        "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name})).collect::<Vec<_>>(),
+        "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name,"revision":e.blob.as_deref().map(blob_revision).unwrap_or_default()})).collect::<Vec<_>>(),
         "reactionDetails": s.reaction_details.iter().map(|(id, groups)| json!({"messageId":id,"groups":groups.iter().map(|g| json!({"emoji":g.emoji_id.as_ref().or(g.unicode.as_ref()).cloned().unwrap_or_default(),"custom":g.emoji_id.is_some(),"users":g.users.iter().map(|u| json!({"id":u.user_id,"name":s.members.iter().find(|m|m.id==u.user_id).map(|m|m.name.as_str()).unwrap_or(&u.user_id)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"more":s.reaction_details_has_more.get(id).copied().unwrap_or(false)})).collect::<Vec<_>>(),
         "reactionLoading": s.reaction_details_loading.iter().collect::<Vec<_>>(),
         "profiles": s.members.iter().map(|u| {

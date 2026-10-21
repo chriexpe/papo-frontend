@@ -23,7 +23,7 @@ class MediaLifecycleTest {
                     setMediaItem(MediaItem.fromUri("asset:///demo/$file"));prepare()
                 }
                 var saved:PlaybackBookmark?=null
-                val handle=PlaybackHandle(player,MediaRequest("asset:///demo/$file",emptyMap(),file,"demo"),null,true) {saved=it}
+                val handle=PlaybackHandle(player,MediaRequest("asset:///demo/$file",emptyMap(),file,"demo"),true) {saved=it}
                 val inline=Any();val fullscreen=Any()
                 handle.acquire(inline)
                 assertFalse(player.playWhenReady)

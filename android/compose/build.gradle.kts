@@ -47,7 +47,6 @@ dependencies {
     implementation("dev.chrisbanes.haze:haze:1.6.10")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     implementation("io.coil-kt.coil3:coil-gif:3.3.0")
     implementation("androidx.media3:media3-exoplayer:1.11.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.1")

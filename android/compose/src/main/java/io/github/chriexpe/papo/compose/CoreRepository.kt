@@ -104,13 +104,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences("compose-client", Context.MODE_PRIVATE)
     private val secrets = AndroidSecrets(application)
     private val handles = linkedMapOf<String, NativeClient>()
-    private data class EmbedKey(val server: String, val account: String, val id: String, val revision: String, val author: Boolean)
-    private val waveforms = AudioWaveforms(application, viewModelScope)
-    private val embedLock = Mutex()
-    private val embedLoads = mutableMapOf<EmbedKey, Deferred<ByteArray>>()
-    private val embedCache = object : LruCache<EmbedKey, ByteArray>(16 * 1024 * 1024) {
-        override fun sizeOf(key: EmbedKey, value: ByteArray) = value.size
-    }
+    internal val mediaCache=MediaCache.get(application)
+    private val waveforms=AudioWaveforms(application,viewModelScope)
     private val snapshots = linkedMapOf<String, ServerState>()
     private val mutableState = MutableStateFlow(PapoState())
     val state = mutableState.asStateFlow()
@@ -220,25 +215,19 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         (handles[url] ?: error("Server is closed")).mediaRequest(resource)
     }
 
-    private val emojiImages = object : LruCache<String, ByteArray>(16 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: ByteArray) = value.size
+    internal suspend fun avatarImage(server:ServerState,id:String,revision:String):ByteArray = mediaCache.blob("${server.url}/${server.me}/avatar/$id/$revision") {
+        withContext(dispatcher) {
+            check(snapshots[server.url]?.me==server.me) {"Account changed"}
+            (handles[server.url] ?: error("Server is closed")).avatarImage(id)
+        }
     }
-    private val emojiImageLock = Mutex()
-    private val avatars = object : LruCache<String, ByteArray>(8 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: ByteArray) = value.size
-    }
-    internal suspend fun avatarImage(server: ServerState, id: String, revision: String): ByteArray = withContext(dispatcher) {
-        check(snapshots[server.url]?.me==server.me) { "Account changed" }
-        val key="${server.url}/${server.me}/$id/$revision"
-        avatars.get(key) ?: (handles[server.url] ?: error("Server is closed")).avatarImage(id).also {avatars.put(key,it)}
-    }
-    internal suspend fun emojiImage(server: ServerState, id: String): ByteArray {
-        val key="${server.url}/${server.me}/$id"
-        emojiImages.get(key)?.let { return it }
-        return emojiImageLock.withLock {
-            emojiImages.get(key)?.let { return@withLock it }
-            val client=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me) { "Account changed" }; handles[server.url] ?: error("Server is closed") }
-            withContext(kotlinx.coroutines.Dispatchers.IO) { client.emojiImage(id).also {emojiImages.put(key,it)} }
+    internal suspend fun emojiImage(server:ServerState,id:String):ByteArray {
+        val revision=server.emojis.firstOrNull {it.id==id}?.revision.orEmpty()
+        return mediaCache.blob("${server.url}/${server.me}/emoji/$id/$revision") {
+            withContext(dispatcher) {
+                check(snapshots[server.url]?.me==server.me) {"Account changed"}
+                (handles[server.url] ?: error("Server is closed")).emojiImage(id)
+            }
         }
     }
 
@@ -277,12 +266,12 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 gif.embed.isNotBlank() -> temporary.writeBytes(embedImage(server,gif.embed,gif.revision))
                 gif.attachment.isNotBlank() -> {
                     val source=withContext(dispatcher) { check(snapshots[server.url]?.me==server.me); (handles[server.url] ?: error("Server is closed")).mediaRequest(MediaResource.Attachment(gif.attachment,false)) }
-                    MediaNetwork.download(getApplication(),source,"image.gif").copyTo(temporary,true)
+                    mediaCache.export(source,temporary)
                 }
                 else -> {
                     val resolved=if(gif.url.isBlank() && gif.providerId.isNotBlank()) gifItem(server,gif.providerId) else gif
                     val source=publicGifSource(resolved.url)
-                    MediaNetwork.download(getApplication(),source,"image.gif").copyTo(temporary,true)
+                    mediaCache.export(source,temporary)
                 }
             }
             check(temporary.length()>0) { "GIF is empty" }
@@ -327,28 +316,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
     internal suspend fun publicAudioWaveform(url:String):AudioWaveform = waveforms.load(publicMediaSource(url))
 
-    suspend fun embedImage(server: ServerState, id: String, revision: String, author: Boolean = false): ByteArray {
-        val key = EmbedKey(server.url, server.me, id, revision, author)
-        val load = embedLock.withLock {
-            embedCache.get(key)?.let { return it }
-            embedLoads.getOrPut(key) {
-                viewModelScope.async(kotlinx.coroutines.Dispatchers.IO) {
-                    try {
-                        val client = withContext(dispatcher) {
-                            check(snapshots[server.url]?.me == server.me) { "Account changed" }
-                            handles[server.url] ?: error("Server is closed")
-                        }
-                        val bytes = client.embedImage(id, author)
-                        embedLock.withLock { embedCache.put(key, bytes) }
-                        bytes
-                    } finally {
-                        embedLock.withLock { embedLoads.remove(key) }
-                    }
-                }
+    suspend fun embedImage(server:ServerState,id:String,revision:String,author:Boolean=false):ByteArray =
+        mediaCache.blob("${server.url}/${server.me}/embed/$id/$revision/$author") {
+            val client=withContext(dispatcher) {
+                check(snapshots[server.url]?.me==server.me) {"Account changed"}
+                handles[server.url] ?: error("Server is closed")
             }
+            withContext(kotlinx.coroutines.Dispatchers.IO) {client.embedImage(id,author)}
         }
-        return load.await()
-    }
 
     fun send(server: ServerState, text: String, reply: String?, onResult: (Boolean) -> Unit) = viewModelScope.launch(dispatcher) {
         val id = UUID.randomUUID().toString()

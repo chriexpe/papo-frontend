@@ -90,7 +90,7 @@ private data class LoadedComposerStickers(val owner:String,val size:Int,val imag
 internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier, onFocusChange:(Boolean)->Unit={},animationsAllowed:Boolean=true) {
     val stickers=remember(draft.text,server.emojis) {composerStickers(draft.text,server.emojis)}
     val ids=remember(stickers) {stickers.map {it.id}.toSet()}
-    val owner="${server.url}/${server.me}"
+    val owner="${server.url}/${server.me}/${server.emojis.joinToString {it.revision}}"
     val pixels=with(LocalDensity.current) {28.sp.toPx().roundToInt().coerceAtLeast(1)}
     val loaded by produceState(LoadedComposerStickers(owner,pixels,emptyMap()),owner,ids,pixels) {
         val retained=if(value.owner==owner && value.size==pixels) value.images.filterKeys {it in ids} else emptyMap()

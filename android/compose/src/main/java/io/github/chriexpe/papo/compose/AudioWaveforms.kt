@@ -35,12 +35,14 @@ internal data class AudioWaveform(val levels: FloatArray, val durationMs: Long)
 /** Decodes PCM in bounded buffers, including all channels. No microphone
  * permission, playback or platform visualizer is needed to inspect a file. */
 internal object AudioWaveformDecoder {
-    suspend fun decode(file: File): AudioWaveform = withContext(Dispatchers.IO) {
+    suspend fun decode(file:File):AudioWaveform=decode {it.setDataSource(file.absolutePath)}
+    suspend fun decode(source:android.media.MediaDataSource):AudioWaveform=decode {it.setDataSource(source)}
+    private suspend fun decode(configure:(MediaExtractor)->Unit):AudioWaveform = withContext(Dispatchers.IO) {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         var started = false
         try {
-            extractor.setDataSource(file.absolutePath)
+            configure(extractor)
             val track = (0 until extractor.trackCount).firstOrNull {
                 extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
             } ?: throw IOException("No audio track")
@@ -173,7 +175,7 @@ internal class AudioWaveforms(private val context: Context, private val scope: C
     private val jobs = mutableMapOf<String, Work>()
     private val memory = LruCache<String, AudioWaveform>(128)
     private val decoders = Semaphore(2)
-    private val directory = File(context.cacheDir, "waveforms").apply { mkdirs() }
+    private val mediaCache=MediaCache.get(context)
     suspend fun load(source: MediaRequest): AudioWaveform {
         val key = MessageDigest.getInstance("SHA-256").digest(("v1/" + source.cacheKey).toByteArray()).joinToString("") { "%02x".format(it) }
         val work = lock.withLock {
@@ -181,8 +183,15 @@ internal class AudioWaveforms(private val context: Context, private val scope: C
             jobs.getOrPut(key) {
                 Work(scope.async(Dispatchers.IO) {
                     decoders.withPermit {
-                        val cached = read(File(directory, key))
-                        val result = cached ?: MediaNetwork.downloadAudio(context, source).use { lease -> AudioWaveformDecoder.decode(lease.file) }.also { runCatching { save(key, it) } }
+                        val bytes=mediaCache.blob("waveform/$key",4096) {
+                            val decoded=mediaCache.extractorSource(source).use {AudioWaveformDecoder.decode(it)}
+                            val output=java.io.ByteArrayOutputStream()
+                            DataOutputStream(output).use {stream ->
+                                stream.writeInt(1);stream.writeLong(decoded.durationMs);stream.writeInt(decoded.levels.size);decoded.levels.forEach(stream::writeFloat)
+                            }
+                            output.toByteArray()
+                        }
+                        val result=requireNotNull(read(bytes))
                         lock.withLock { memory.put(key, result) }
                         result
                     }
@@ -202,25 +211,11 @@ internal class AudioWaveforms(private val context: Context, private val scope: C
             }
         }
     }
-    private fun read(file: File): AudioWaveform? = runCatching {
-        DataInputStream(file.inputStream().buffered()).use { input ->
-            require(input.readInt() == 1)
-            val duration = input.readLong()
-            require(duration > 0 && input.readInt() == 96)
-            val levels = FloatArray(96) { input.readFloat().also { require(it.isFinite() && it in 0f..1f) } }
-            file.setLastModified(System.currentTimeMillis())
-            AudioWaveform(levels, duration)
+    private fun read(bytes:ByteArray):AudioWaveform?=runCatching {
+        DataInputStream(bytes.inputStream()).use {input ->
+            require(input.readInt()==1)
+            val duration=input.readLong();require(duration>0 && input.readInt()==96)
+            AudioWaveform(FloatArray(96) {input.readFloat().also {require(it.isFinite() && it in 0f..1f)}},duration)
         }
     }.getOrNull()
-    private fun save(key: String, data: AudioWaveform) {
-        val partial = File.createTempFile("wave-", ".part", directory)
-        try {
-            DataOutputStream(partial.outputStream().buffered()).use { output ->
-                output.writeInt(1); output.writeLong(data.durationMs); output.writeInt(data.levels.size)
-                data.levels.forEach(output::writeFloat)
-            }
-            partial.renameTo(File(directory, key))
-            directory.listFiles()?.filter { it.name.length == 64 }?.sortedByDescending { it.lastModified() }?.drop(512)?.forEach { it.delete() }
-        } finally { partial.delete() }
-    }
 }

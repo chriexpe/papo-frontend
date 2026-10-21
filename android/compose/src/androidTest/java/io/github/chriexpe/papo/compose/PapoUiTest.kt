@@ -90,9 +90,11 @@ class PapoUiTest {
         compose.onNodeWithTag("user-profile").assertDoesNotExist()
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana ")))
         androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-9")
         compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performTouchInput {longClick()}
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana @Ana ")))
         androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-9")
         compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performClick()
         compose.onNodeWithTag("user-profile").assertIsDisplayed()
     }
@@ -291,7 +293,9 @@ class PapoUiTest {
     @Test fun oldReplyLoadsItsContextAndReturnsToLatestWithoutLosingDrafts() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("Still here")
-        compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("reply-preview-general-0"))
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(500,5000)
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
         compose.onNodeWithTag("reply-preview-general-0",useUnmergedTree=true).performClick()
         compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-demo-archived-original") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("An older hello from this conversation.").assertIsDisplayed()
@@ -315,6 +319,7 @@ class PapoUiTest {
         chat()
         val draft = "rascunho 🌱\nsegunda linha"
         compose.onNode(hasSetTextAction()).performTextInput(draft)
+        InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(500,5000)
         val sendCenter=compose.onNodeWithContentDescription("Send message").fetchSemanticsNode().boundsInRoot.center.y
         assertEquals(sendCenter,compose.onNodeWithContentDescription("Emoji and stickers").fetchSemanticsNode().boundsInRoot.center.y,2f)
         assertEquals(sendCenter,compose.onNodeWithContentDescription("GIF picker").fetchSemanticsNode().boundsInRoot.center.y,2f)

@@ -25,15 +25,10 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import coil3.ImageLoader
-import coil3.compose.AsyncImage
-import coil3.gif.AnimatedImageDecoder
-import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import io.github.chriexpe.papo.core.MediaRequest
 import kotlinx.coroutines.CancellationException
 import java.io.File
 import java.security.MessageDigest
-import okhttp3.OkHttpClient
 
 internal fun publicGifSource(url: String): MediaRequest {
     if(url.startsWith("file:///android_asset/demo/")) return MediaRequest(url=url,headers=emptyMap(),origin="demo",cacheKey=url)
@@ -41,13 +36,6 @@ internal fun publicGifSource(url: String): MediaRequest {
     require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo==null) { "Invalid GIF address" }
     val origin=uri.buildUpon().path("").query(null).fragment(null).build().toString().trimEnd('/')
     return MediaRequest(url=url,headers=emptyMap(),origin=origin,cacheKey="public/$url")
-}
-internal object ExpressionImages {
-    @Volatile private var shared: ImageLoader? = null
-    @Synchronized fun loader(context: Context): ImageLoader = shared ?: ImageLoader.Builder(context.applicationContext).components {
-        add(AnimatedImageDecoder.Factory())
-        add(OkHttpNetworkFetcherFactory(callFactory={ OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build() }))
-    }.memoryCache(null).build().also {shared=it}
 }
 
 @Composable
@@ -70,16 +58,21 @@ internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif:
         error=""
         try {
             val saved=model.expressions.file(model.expressions.owner(server),gif.key)
-            value=when {
-                saved.isFile -> saved
-                gif.attachment.isNotBlank() || gif.embed.isNotBlank() -> model.gifCopy(server,gif)
-                gif.providerId.isNotBlank() && gif.url.isBlank() -> model.gifItem(server,gif.providerId).let { publicGifSource(if(preview) it.preview else it.url).url }
-                else -> publicGifSource(if(preview) gif.preview else gif.url).url
+            when {
+                saved.isFile -> value=saved
+                gif.attachment.isNotBlank() || gif.embed.isNotBlank() -> {
+                    if(gif.embed.isNotBlank()) value=model.embedImage(server,gif.embed,gif.revision)
+                    else MediaCache.get(context).images(model.mediaRequest(server.url,io.github.chriexpe.papo.core.MediaResource.Attachment(gif.attachment,false))).collect {value=it}
+                }
+                else -> {
+                    val resolved=if(gif.providerId.isNotBlank() && gif.url.isBlank()) model.gifItem(server,gif.providerId) else gif
+                    MediaCache.get(context).images(publicGifSource(if(preview) resolved.preview else resolved.url)).collect {value=it}
+                }
             }
         } catch(e:CancellationException) {throw e}
         catch(e:Exception) {error=e.message ?: "GIF unavailable"}
     }
-    val loader=remember(context) {ExpressionImages.loader(context)}
+    val loader=remember(context) {MediaImages.loader(context)}
     if(data!=null && error.isBlank()) ManagedAsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel="Message actions"),contentScale=ContentScale.Fit,onError={error="GIF unavailable"},retentionKey="gif/${gif.key}/$preview")
     else if(error.isBlank()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp),strokeWidth=2.dp)
     if(error.isNotBlank()) Column(Modifier.align(Alignment.Center).padding(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
