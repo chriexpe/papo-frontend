@@ -165,7 +165,7 @@ class PapoUiTest {
     @Test fun replyPreviewsJumpHighlightAndKeepTheComposerDraft() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("Keep this draft @An")
-        compose.onNodeWithTag("message-list").performScrollToNode(hasTestTag("reply-preview-general-6"))
+        compose.onNodeWithTag("message-list").performScrollToKey("general-6")
         compose.onNodeWithTag("reply-preview-general-6",useUnmergedTree=true).performClick()
         compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("message-general-5") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithTag("message-general-5",useUnmergedTree=true).assertIsDisplayed()
@@ -394,7 +394,7 @@ class PapoUiTest {
 
     @Test fun backendMislabeledM4aUsesAudioControlsAndKeepsItsCompactFrame() {
         media()
-        compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play voice-note.m4a"))
+        compose.onNodeWithTag("message-list").performScrollToKey("media-4")
         val frame = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().size
         compose.onNodeWithTag("attachment-demo-audio", useUnmergedTree = true).assertDoesNotExist()
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("waveform-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Waveform ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
@@ -431,27 +431,62 @@ class PapoUiTest {
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
         val playing = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertEquals(frame.height, playing.height, 1f)
+        compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+        activity.onActivity {assertEquals("Inline playback respects the normal rotation policy",previous,it.requestedOrientation)}
+        var originalPlayer:androidx.media3.common.Player?=null
+        var originalView:androidx.media3.ui.PlayerView?=null
+        androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java)).check {view,_ ->
+            val native=view as androidx.media3.ui.PlayerView
+            originalView=native
+            originalPlayer=native.player
+            originalPlayer!!.pause();originalPlayer!!.seekTo(300)
+            native.showController()
+        }
+        val fullscreenLabel=InstrumentationRegistry.getInstrumentation().targetContext.getString(androidx.media3.ui.R.string.exo_controls_fullscreen_enter_description)
+        androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.withContentDescription(fullscreenLabel),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).perform(androidx.test.espresso.action.ViewActions.click())
+        try {
+            compose.waitUntil(10_000) {runCatching {compose.onNodeWithTag("media-viewer").assertIsDisplayed();true}.getOrDefault(false)}
+        } catch(e:Exception) {
+            android.util.Log.e("PapoViewerTest",compose.onAllNodesWithTag("media-viewer").fetchSemanticsNodes().joinToString {"size=${it.size}, bounds=${it.boundsInRoot}, ${it.config}"})
+            InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()?.let {bitmap -> InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("video-viewer-failure.png").outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}}
+            throw e
+        }
         compose.onNodeWithTag("media-viewer").assertIsDisplayed()
         compose.onNodeWithContentDescription("Download media").assertIsDisplayed()
         activity.onActivity {assertEquals(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR,it.requestedOrientation)}
         try {
             activity.onActivity {it.requestedOrientation=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE}
             compose.waitUntil(10_000) {compose.onAllNodesWithTag("media-viewer").fetchSemanticsNodes().any {it.boundsInRoot.width>it.boundsInRoot.height}}
+            // Window dimensions update before Android's rotation animation
+            // finishes. Native touch coordinates are usable once it settles.
+            InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(750,5000)
             compose.onNode(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).assertIsDisplayed()
+            androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java)).check {view,_ ->
+                assertTrue("Fullscreen moves the original PlayerView and its controls",view===originalView)
+                assertTrue("Fullscreen keeps the existing player",(view as androidx.media3.ui.PlayerView).player===originalPlayer)
+                assertEquals(300L,originalPlayer!!.currentPosition)
+                assertTrue("Fullscreen keeps the paused state",!originalPlayer!!.playWhenReady)
+            }
             pinchViewer()
-            compose.onNodeWithContentDescription("Close media").performClick()
+            val exitLabel=InstrumentationRegistry.getInstrumentation().targetContext.getString(androidx.media3.ui.R.string.exo_controls_fullscreen_exit_description)
+            androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.withContentDescription(exitLabel),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).perform(androidx.test.espresso.action.ViewActions.click())
+            compose.waitUntil(10_000) {compose.onAllNodesWithTag("media-viewer").fetchSemanticsNodes().isEmpty()}
             compose.onNodeWithTag("media-viewer").assertDoesNotExist()
             activity.onActivity {assertEquals("Closing restores the normal orientation policy",previous,it.requestedOrientation)}
-        } finally {activity.onActivity {it.requestedOrientation=previous}}
+            androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java)).check {view,_ ->
+                assertTrue("Returning inline restores the original PlayerView and controls",view===originalView)
+                assertTrue("Returning inline keeps the existing player",(view as androidx.media3.ui.PlayerView).player===originalPlayer)
+            }
+        } finally {activity.onActivity {it.requestedOrientation=previous};InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(750,5000)}
     }
 
     private fun pinchViewer() {
-        compose.onNodeWithTag("viewer-content").performTouchInput {
+        compose.onNodeWithTag("viewer-content",useUnmergedTree=true).performTouchInput {
             down(0,center.copy(x=center.x-30f));down(1,center.copy(x=center.x+30f))
             moveTo(0,center.copy(x=center.x-90f));moveTo(1,center.copy(x=center.x+90f))
             up(0);up(1)
         }
-        compose.waitUntil(5000) {compose.onAllNodesWithTag("viewer-content").fetchSemanticsNodes().any {it.config[SemanticsProperties.StateDescription]!="Zoom 1.00x"}}
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("viewer-content",useUnmergedTree=true).fetchSemanticsNodes().any {it.config[SemanticsProperties.StateDescription]!="Zoom 1.00x"}}
     }
 
     @Test fun directMediaHidesItsUrlAndHoldingItCopiesEachLinkSeparately() {
@@ -516,6 +551,8 @@ class PapoUiTest {
         pinchViewer()
         val reset=compose.onNodeWithTag("viewer-content").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.CustomActions].single {it.label=="Reset zoom"}
         compose.runOnIdle {assertTrue(reset.action())}
+        val preview=compose.onNodeWithTag("media-viewer").captureToImage().asAndroidBitmap()
+        InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("media-viewer-verified.png").outputStream().use {preview.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val downloads=android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI
         fun ids():Set<Long> = context.contentResolver.query(downloads,arrayOf(android.provider.MediaStore.MediaColumns._ID),"${android.provider.MediaStore.MediaColumns.DISPLAY_NAME} LIKE ?",arrayOf("Portrait preview%"),null)!!.use {cursor ->buildSet {while(cursor.moveToNext()) add(cursor.getLong(0))}}

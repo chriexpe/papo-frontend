@@ -112,9 +112,33 @@ bytes. Video dimensions take precedence for players; image previews follow the
 backend’s thumbnail-first response. Missing or invalid dimensions use a stable
 fallback frame. Decode, error and retry events never resize the frame.
 
+Automatic direct-media links render without card metadata or visible URL text;
+captions and other links remain. Known media extensions work before backend
+metadata arrives, including HTTP links and signed queries. Authored custom cards,
+webpage previews and YouTube keep their own presentation. Holding media opens the
+message actions, where each link has its own Copy URL button; Copy text retains
+the complete original message.
+
+Images, GIFs, video and audio share one viewer outside the scrolling rows. It
+supports bounded pinch zoom/pan, accessibility zoom actions, tap outside to
+dismiss, GIF favorites, and Downloads/Papo saves through MediaStore. Publishing
+is atomic; interrupted saves remove their pending download. Video initially
+plays inline. Its native fullscreen button moves the original PlayerView,
+including its existing controls, into the viewer and back. The view and decoder
+are reused, preserving position and playback state. Zoom transforms the
+video texture while playback controls keep their normal size.
+
+Every open viewer uses Android's FULL_SENSOR orientation policy, following the
+device even with system auto-rotate disabled. Closing restores the prior policy.
+Compose handles size/orientation changes directly so rotation preserves the
+viewer and player. YouTube retains its isolated provider controls.
+
 Coil decodes images/GIFs, and Media3 plays video/audio only after a tap. Leaving
 the app pauses playback; disposed players release their resources. Only one
-player is active per conversation. Original image viewing supports pinch zoom.
+player is active per conversation.
+Offscreen cleanup currently follows lazy-list disposal: there is no explicit
+viewport-edge pause or distance-based release policy yet. Retained offscreen
+rows can keep playback/animation alive until their composition is disposed.
 Audio uses compact Compose play/pause, seek and time controls without a video
 surface. Its seek control draws a real decoded waveform before playback, with
 played/unplayed progress, touch and accessibility seeking. PCM peaks include

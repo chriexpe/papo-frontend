@@ -56,9 +56,12 @@ internal data class ViewerMedia(
     val id: String, val title: String, val kind: String, val mime: String = "",
     val width: Int = 0, val height: Int = 0, val resource: MediaResource? = null,
     val embed: EmbedView? = null, val gif: GifChoice? = null, val url: String = "",
+    val playback: PlaybackHandle? = null,
 )
 
 internal val LocalMediaViewer=staticCompositionLocalOf<(ViewerMedia)->Unit> {error("Missing media viewer")}
+internal val LocalViewedMedia=compositionLocalOf<ViewerMedia?> {null}
+internal val LocalInlinePlayer=compositionLocalOf<String?> {null}
 
 private tailrec fun Context.activity(): Activity? = when(this) {
     is Activity -> this
@@ -102,8 +105,10 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                             // Observe before PlayerView so two-finger zoom also
                             // works over video controls. Single taps/seeks pass on.
                             awaitEachGesture {
-                                val down=awaitFirstDown(requireUnconsumed=false,pass=PointerEventPass.Initial)
-                                val allowPan=media.kind!="video" || down.position.y<center.y+with(density) {(height/2-80.dp).toPx()}
+                                awaitFirstDown(requireUnconsumed=false,pass=PointerEventPass.Initial)
+                                // Video keeps all single-finger gestures for its
+                                // own controls; use two fingers to zoom and pan.
+                                val allowPan=media.kind!="video"
                                 var transforming=false
                                 do {
                                     val event=awaitPointerEvent(PointerEventPass.Initial)
@@ -127,13 +132,13 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                                 CustomAccessibilityAction("Zoom in") {scale=(scale*1.5f).coerceAtMost(5f);true},
                                 CustomAccessibilityAction("Zoom out") {scale=(scale/1.5f).coerceAtLeast(1f);if(scale==1f) offset=Offset.Zero;true},
                                 CustomAccessibilityAction("Reset zoom") {scale=1f;offset=Offset.Zero;true})
-                        }.clickable { /* Content taps must not dismiss the viewer. */ }) {
+                        }.then(if(media.kind=="video") Modifier else Modifier.clickable { /* Content taps must not dismiss the viewer. */ })) {
                             if(media.kind in listOf("video","audio")) {
                                 val waveform by produceState(WaveformState(),media.id) {
                                     if(media.kind=="audio") try {value=WaveformState(if(media.resource!=null) model.audioWaveform(server,media.resource) else model.publicAudioWaveform(media.url))}
                                     catch(e:CancellationException) {throw e} catch(_:Exception) {value=WaveformState(failed=true)}
                                 }
-                                PlayableMedia(server,model,media.id,media.title,true,{},media.resource,audio=media.kind=="audio",waveform=waveform,publicUrl=media.url,onVideoRatio={ratio=it},videoScale=scale,videoPan=bounded)
+                                PlayableMedia(server,model,media.id,media.title,true,{},media.resource,audio=media.kind=="audio",waveform=waveform,publicUrl=media.url,onVideoRatio={ratio=it},videoScale=scale,videoPan=bounded,handoff=media.playback,fullscreen=true,onFullscreen={onClose()})
                             } else ViewerImage(server,model,media,onRatio={ratio=it})
                         }
                     }

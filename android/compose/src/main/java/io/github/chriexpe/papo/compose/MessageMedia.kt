@@ -311,10 +311,9 @@ private fun BoxScope.EmbedVisual(e:EmbedView,server:ServerState,model:PapoViewMo
 @Composable
 private fun BoxScope.VideoPreview(server:ServerState,model:PapoViewModel,media:ViewerMedia,poster:MediaResource?=null,embedPoster:EmbedView?=null,onPlayer:(String?)->Unit,onActions:()->Unit) {
     val viewer=LocalMediaViewer.current
-    fun open() {onPlayer(null);viewer(media)}
-    Box(Modifier.fillMaxSize().combinedClickable(onClick=::open,onLongClick=onActions,onLongClickLabel="Message actions")) {
-        if(poster!=null || embedPoster!=null) MediaImage(server,model,media.title,resource=poster,embed=embedPoster,viewer=false)
-        PlayButton(media.title,::open)
+    val active=LocalInlinePlayer.current==media.id
+    Box(Modifier.fillMaxSize().combinedClickable(onClick={onPlayer(media.id)},onLongClick=onActions,onLongClickLabel="Message actions")) {
+        PlayableMedia(server,model,media.id,media.title,active,{onPlayer(media.id)},media.resource,poster=poster,embedPoster=embedPoster,publicUrl=media.url,onFullscreen={viewer(media.copy(playback=it))})
     }
 }
 
@@ -326,7 +325,7 @@ private fun AudioPreview(server:ServerState,model:PapoViewModel,media:ViewerMedi
         catch(e:CancellationException) {throw e} catch(_:Exception) {value=WaveformState(failed=true)}
     }
     Box(Modifier.fillMaxWidth().height(104.dp).testTag(tag).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer)) {
-        PlayableMedia(server,model,media.id,media.title,activePlayer==media.id,{onPlayer(media.id)},media.resource,audio=true,waveform=waveform,publicUrl=media.url,onExpand={onPlayer(null);viewer(media)})
+        PlayableMedia(server,model,media.id,media.title,activePlayer==media.id,{onPlayer(media.id)},media.resource,audio=true,waveform=waveform,publicUrl=media.url,onExpand={onPlayer(null);viewer(media)},onFullscreen={viewer(media.copy(playback=it))})
     }
 }
 
@@ -373,8 +372,51 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,private val audio:MediaNetwork.AudioFile?) {
+    private var owners=0
+    private var view:PlayerView?=null
+    private data class Host(val container:android.widget.FrameLayout,val fullscreen:Boolean,val toggle:(()->Unit)?,val scale:Float,val pan:androidx.compose.ui.geometry.Offset)
+    private var inlineHost:Host?=null
+    private var fullscreenHost:Host?=null
+    fun acquire() {owners++}
+    fun release() {if(--owners==0) {
+        view?.let {native ->(native.parent as? android.view.ViewGroup)?.removeView(native);native.player=null}
+        view=null;inlineHost=null;fullscreenHost=null;player.release();audio?.close()
+    }}
+    fun bind(container:android.widget.FrameLayout,fullscreen:Boolean,toggle:(()->Unit)?,scale:Float,pan:androidx.compose.ui.geometry.Offset) {
+        val host=Host(container,fullscreen,toggle,scale,pan)
+        if(fullscreen) fullscreenHost=host else inlineHost=host
+        if(view==null) view=(android.view.LayoutInflater.from(container.context).inflate(R.layout.compose_player,null) as PlayerView).apply {this.player=this@PlaybackHandle.player}
+        attach()
+    }
+    fun unbind(container:android.widget.FrameLayout) {
+        if(inlineHost?.container===container) inlineHost=null
+        if(fullscreenHost?.container===container) fullscreenHost=null
+        attach()
+    }
+    private fun attach() {
+        val native=view ?: return
+        val host=fullscreenHost ?: inlineHost
+        if(host==null) {(native.parent as? android.view.ViewGroup)?.removeView(native);return}
+        val moved=native.parent!==host.container
+        if(moved) {
+            (native.parent as? android.view.ViewGroup)?.removeView(native)
+            host.container.addView(native,android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        // Media3 invokes the listener during icon synchronization too. Only
+        // changing modes is a user action; initialization must not exit again.
+        native.setFullscreenButtonClickListener(if(host.toggle!=null) PlayerView.FullscreenButtonClickListener {requested ->if(requested!=host.fullscreen) host.toggle()} else null)
+        native.setFullscreenButtonState(host.fullscreen)
+        native.videoSurfaceView?.doOnLayout {surface -> (surface as? android.view.TextureView)?.setTransform(android.graphics.Matrix().apply {
+            postScale(host.scale,host.scale,surface.width/2f,surface.height/2f);postTranslate(host.pan.x,host.pan.y)
+        })}
+        if(moved) native.showController()
+    }
+}
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource?, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState(),publicUrl:String="",onVideoRatio:(Float)->Unit={},onExpand:(()->Unit)?=null,videoScale:Float=1f,videoPan:androidx.compose.ui.geometry.Offset=androidx.compose.ui.geometry.Offset.Zero) {
+internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource?, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState(),publicUrl:String="",onVideoRatio:(Float)->Unit={},onExpand:(()->Unit)?=null,videoScale:Float=1f,videoPan:androidx.compose.ui.geometry.Offset=androidx.compose.ui.geometry.Offset.Zero,handoff:PlaybackHandle?=null,fullscreen:Boolean=false,onFullscreen:((PlaybackHandle)->Unit)?=null) {
     var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
         if (audio) Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -396,22 +438,25 @@ internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, i
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var error by remember(id) { mutableStateOf("") }
-    var ready by remember(id) { mutableStateOf(false) }
+    var ready by remember(id) { mutableStateOf(handoff?.player?.playbackState in listOf(Player.STATE_READY,Player.STATE_ENDED)) }
     var retry by remember(id) { mutableStateOf(0) }
     val source by produceState<MediaRequest?>(null, id, retry) {
-        try { value = if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
+        try { value = handoff?.source ?: if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = "Media unavailable. Tap to retry." }
     }
-    val cachedAudio = remember(source, audio) { source?.takeIf { audio }?.let { MediaNetwork.existingAudio(context, it) } }
-    val player = remember(source) { source?.let { request ->
+    val cachedAudio = remember(source, audio,handoff) { source?.takeIf { audio && handoff==null }?.let { MediaNetwork.existingAudio(context, it) } }
+    val playback = remember(source,handoff) { handoff ?: source?.let { request ->
         val http = OkHttpDataSource.Factory(MediaNetwork.client(request))
         val factory = DefaultDataSource.Factory(context, http)
-        ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(factory)).build().apply {
+        val player=ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(factory)).build().apply {
             setMediaItem(MediaItem.fromUri(cachedAudio?.file?.let(Uri::fromFile) ?: Uri.parse(request.url))); playWhenReady = true; prepare()
         }
+        PlaybackHandle(player,request,cachedAudio)
     } }
+    val player=playback?.player
     DisposableEffect(player, lifecycle) {
+        playback?.acquire()
         val listener = object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {if(videoSize.width>0 && videoSize.height>0) onVideoRatio(videoSize.width.toFloat()*videoSize.pixelWidthHeightRatio/videoSize.height)}
             override fun onPlayerError(e: PlaybackException) { error = "Playback failed. Tap to retry." }
@@ -424,20 +469,17 @@ internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, i
             }
         }
         player?.addListener(listener)
+        player?.videoSize?.let {size ->if(size.width>0 && size.height>0) onVideoRatio(size.width.toFloat()*size.pixelWidthHeightRatio/size.height)}
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) player?.pause() }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); player?.release(); cachedAudio?.close() }
+        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); playback?.release() }
     }
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
-    else Box(Modifier.fillMaxSize().testTag("player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
-        if (audio) AudioControls(player, title, waveform, id,onExpand)
-        else AndroidView(factory = { android.view.LayoutInflater.from(it).inflate(R.layout.compose_player, null) as PlayerView }, update = {view ->
-            view.player=player
-            // Zoom the video texture, leaving playback controls at touch size.
-            view.videoSurfaceView?.doOnLayout {surface -> (surface as? android.view.TextureView)?.setTransform(android.graphics.Matrix().apply {
-                postScale(videoScale,videoScale,surface.width/2f,surface.height/2f);postTranslate(videoPan.x,videoPan.y)
-            })}
-        }, modifier = Modifier.fillMaxSize())
+    else Box(Modifier.fillMaxSize().testTag(if(!fullscreen && !audio && LocalViewedMedia.current?.id==id) "inline-player-$id" else "player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
+        if (audio) AudioControls(player, title, waveform, id,if(onExpand!=null) {{if(onFullscreen!=null) onFullscreen(requireNotNull(playback)) else onExpand()}} else null)
+        else AndroidView(factory={android.widget.FrameLayout(it)},onRelease={playback?.unbind(it)},update={host ->
+            playback?.bind(host,fullscreen,if(onFullscreen!=null) {{onFullscreen(playback)}} else null,videoScale,videoPan)
+        },modifier=Modifier.fillMaxSize())
     }
     if (error.isNotBlank()) Column(Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(error, style = MaterialTheme.typography.bodySmall)

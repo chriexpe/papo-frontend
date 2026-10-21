@@ -201,7 +201,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
-    CompositionLocalProvider(LocalMediaViewer provides {media ->activeMedia=null;viewedMedia=media}) {
+    CompositionLocalProvider(LocalMediaViewer provides {media ->activeMedia=if(media.playback!=null) media.id else null;viewedMedia=media},LocalViewedMedia provides viewedMedia,LocalInlinePlayer provides activeMedia) {
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
         LazyColumn(state = listState, reverseLayout = true,
             modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("message-list"),
