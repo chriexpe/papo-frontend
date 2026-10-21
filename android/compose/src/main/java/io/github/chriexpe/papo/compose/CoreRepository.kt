@@ -215,6 +215,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         (handles[url] ?: error("Server is closed")).mediaRequest(resource)
     }
 
+    internal suspend fun analyzeSearch(server:ServerState,query:String,cursor:Int):io.github.chriexpe.papo.core.SearchAnalysis = withContext(dispatcher) {
+        (handles[server.url] ?: error("Server is closed")).analyzeSearch(query,cursor.toUInt())
+    }
+    internal suspend fun serverIcon(server:ServerState):ByteArray = mediaCache.blob("${server.url}/${server.me}/server-icon/${server.serverIconRevision}") {
+        withContext(dispatcher) {(handles[server.url] ?: error("Server is closed")).serverIcon()}
+    }
+
     internal suspend fun avatarImage(server:ServerState,id:String,revision:String):ByteArray = mediaCache.blob("${server.url}/${server.me}/avatar/$id/$revision") {
         withContext(dispatcher) {
             check(snapshots[server.url]?.me==server.me) {"Account changed"}

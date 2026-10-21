@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 pub mod bindings;
 pub mod demo;
+mod discovery;
 pub mod media;
 uniffi::setup_scaffolding!();
 
@@ -39,6 +40,32 @@ pub enum Action {
     },
     CreateServer {
         name: String,
+    },
+    Search {
+        query: String,
+        more: bool,
+    },
+    ClearSearch,
+    ChannelNotifications {
+        channel_id: String,
+        setting: String,
+    },
+    MarkServerRead,
+    SaveServer {
+        name: String,
+        public: bool,
+        password: Option<String>,
+    },
+    SaveChannel {
+        channel_id: String,
+        name: String,
+        topic: String,
+    },
+    SaveRole {
+        role_id: String,
+        name: String,
+        color: String,
+        permissions: discovery::Capabilities,
     },
     SelectChannel {
         channel_id: String,
@@ -173,6 +200,7 @@ pub struct Client {
     pending_reactions: HashMap<(String, Emoji), PendingReaction>,
     navigation_serial: u64,
     navigation_target: String,
+    search_query: String,
 }
 
 struct PendingReaction {
@@ -217,6 +245,7 @@ impl Client {
             pending_reactions: HashMap::new(),
             navigation_serial: 0,
             navigation_target: String::new(),
+            search_query: String::new(),
         })
     }
 
@@ -239,6 +268,7 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Value {
+        let previous_owner = self.runtime.store.me.clone();
         // A hard bound prevents a busy socket from monopolizing the actor.
         let mut events = Vec::new();
         let mut count = 0;
@@ -349,6 +379,10 @@ impl Client {
         {
             self.navigation_target.clear();
         }
+        if self.runtime.store.me != previous_owner {
+            self.search_query.clear();
+            self.runtime.store.reset_search();
+        }
         let more = count == DEFAULT_DRAIN_LIMIT;
         if let Some(id) = self.runtime.store.channel_needing_cache() {
             self.runtime.store.mark_cache_loading(&id);
@@ -373,8 +407,105 @@ impl Client {
     }
 
     pub fn dispatch(&mut self, action: Action) -> Result<(), String> {
+        if let Action::Search { query, more } = action {
+            return self.search(query, more);
+        }
         let store = &mut self.runtime.store;
         let command = match action {
+            Action::Search { .. } => unreachable!(),
+            Action::ClearSearch => {
+                store.reset_search();
+                self.search_query.clear();
+                return Ok(());
+            }
+            Action::ChannelNotifications {
+                channel_id,
+                setting,
+            } => {
+                discovery::check_notifications(store, &channel_id, &setting)?;
+                Command::SetChannelNotifications {
+                    channel_id,
+                    setting,
+                }
+            }
+            Action::MarkServerRead => {
+                store.mark_all_read();
+                let ids = store.take_all_open_notifications();
+                if ids.is_empty() {
+                    return Ok(());
+                }
+                Command::MarkNotificationsRead {
+                    user_id: store.me.clone(),
+                    ids,
+                }
+            }
+            Action::SaveServer {
+                name,
+                public,
+                password,
+            } => {
+                if !store.can_manage_server() {
+                    return Err("You cannot change this server".into());
+                }
+                discovery::check_server(store, &name, public, password.as_deref())?;
+                store.busy = true;
+                store.error = None;
+                Command::PatchServer(Box::new(papo_core::api::models::PatchServerRequest {
+                    name: Some(name.trim().into()),
+                    public: Some(public),
+                    password,
+                    ..Default::default()
+                }))
+            }
+            Action::SaveChannel {
+                channel_id,
+                name,
+                topic,
+            } => {
+                if !store.can_manage_channels() {
+                    return Err("You cannot change channels".into());
+                }
+                if name.trim().is_empty()
+                    || name.chars().count() > 64
+                    || store.channel(&channel_id).is_none()
+                {
+                    return Err("Choose a channel name between 1 and 64 characters".into());
+                }
+                Command::UpdateChannel {
+                    channel_id,
+                    name: name.trim().into(),
+                    topic: Some(topic),
+                }
+            }
+            Action::SaveRole {
+                role_id,
+                name,
+                color,
+                permissions,
+            } => {
+                if !store.can_manage_roles() {
+                    return Err("You cannot change roles".into());
+                }
+                if name.trim().is_empty()
+                    || name.chars().count() > 64
+                    || !store.roles.iter().any(|r| r.id == role_id)
+                {
+                    return Err("Choose a role name between 1 and 64 characters".into());
+                }
+                if !color.is_empty()
+                    && !(color.len() == 7
+                        && color.starts_with('#')
+                        && color[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+                {
+                    return Err("Use a color such as #0088FF".into());
+                }
+                Command::UpdateRole {
+                    role_id,
+                    name: name.trim().into(),
+                    color: (!color.is_empty()).then_some(color),
+                    permissions: permissions.into(),
+                }
+            }
             Action::Login { username, password } => {
                 store.busy = true;
                 store.error = None;
@@ -700,6 +831,7 @@ impl Client {
             &self.runtime.url,
             &self.runtime.server_key,
         );
+        value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
         value
@@ -715,7 +847,7 @@ fn blob_revision(blob: &str) -> String {
 fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let channels: Vec<_> = s.channels.iter().map(|c| json!({
             "id": c.id, "name": c.name, "kind": match c.kind { ChannelKind::Text => "text", ChannelKind::Voice => "voice", ChannelKind::Category => "category", ChannelKind::Direct => "direct" },
-            "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions,
+            "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions, "notificationSettings":c.notification_settings,
         })).collect();
     let messages: Vec<_> = s.messages_in(&s.selected_channel).map(|m| {
             let name = m.external_author.as_ref().map(|a| a.name.as_str())
@@ -739,6 +871,13 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
         "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
         "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
+        "serverDescription":s.server.as_ref().and_then(|s|s.description.as_deref()).unwrap_or_default(),
+        "serverIconRevision":s.server.as_ref().and_then(|s|s.icon.as_deref()).map(blob_revision).unwrap_or_default(),
+        "serverPublic":s.server.as_ref().is_some_and(|s|s.public),
+        "capabilities":discovery::Capabilities::from_store(s),
+        "roles":s.roles.iter().map(|r|json!({"id":r.id,"name":r.name,"color":r.color.as_deref().unwrap_or_default(),"permissions":discovery::Capabilities::from(r.permissions)})).collect::<Vec<_>>(),
+        "searchQuery":"", "searching":s.searching,"searchHasMore":s.search_has_more,
+        "searchResults":s.search_results.iter().map(|r|json!({"id":r.id,"kind":r.kind,"content":s.display_mentions(&r.content),"channelId":r.channel_id,"channelName":r.channel_name,"authorId":r.author_id.as_deref().unwrap_or_default(),"author":r.author_id.as_ref().and_then(|id|s.member(id)).map(|u|u.name.as_str()).or(r.author_username.as_deref()).unwrap_or_default(),"at":r.created_at.map(|t|t.timestamp_millis()).unwrap_or_default()})).collect::<Vec<_>>(),
         "me": s.me, "myName": s.my_name, "selectedChannel": s.selected_channel, "channels": channels,
         "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name,"revision":e.blob.as_deref().map(blob_revision).unwrap_or_default()})).collect::<Vec<_>>(),
         "reactionDetails": s.reaction_details.iter().map(|(id, groups)| json!({"messageId":id,"groups":groups.iter().map(|g| json!({"emoji":g.emoji_id.as_ref().or(g.unicode.as_ref()).cloned().unwrap_or_default(),"custom":g.emoji_id.is_some(),"users":g.users.iter().map(|u| json!({"id":u.user_id,"name":s.members.iter().find(|m|m.id==u.user_id).map(|m|m.name.as_str()).unwrap_or(&u.user_id)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"more":s.reaction_details_has_more.get(id).copied().unwrap_or(false)})).collect::<Vec<_>>(),

@@ -353,3 +353,27 @@ web embeds retain their browser-managed network behavior.
 This disk cache is independent of viewport retention: playback and animation
 clocks still pause offscreen, and decoded objects/players release around two
 screens away. Scrolling far away does not discard reusable disk bytes.
+
+## Community header and search
+
+The conversation list header shows the server icon and name. Tapping it opens
+server information, the address copy action, per-channel notification controls
+and mark-as-read. It omits the creator attribution. Icons use the same private
+media cache and decoder as other images.
+
+The settings gear follows `papo-core`'s owner and role capabilities. General,
+Channels and Roles editors appear only for their corresponding permissions;
+mutations are validated in the adapter and confirmed by the backend. A normal
+member still has the community sheet and notification controls.
+
+The search field finds accessible channels and people locally and messages
+through the core's `POST /search` transport. Filter parsing and autocomplete now
+live in `papo-core::search`, shared with egui: `de:`/`from:`, `em:`/`in:`,
+`tem:`/`has:` and `mentions:`. Quoted channel names, stacked link/attachment
+predicates and completion at a UTF-16 caret all use the same grammar. Selecting
+a completed filter inserts one space and preserves surrounding text.
+
+Global search does not inherit a selected DM's scope. Pagination uses the
+backend cursor and stale responses are rejected through the core's search
+generation. A result opens its conversation and jumps to the original message;
+Back restores the search query and results. Another Back clears the search.

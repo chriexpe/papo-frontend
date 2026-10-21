@@ -3,6 +3,7 @@ package io.github.chriexpe.papo.compose
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.text.AnnotatedString
 import androidx.test.core.app.ActivityScenario
 import androidx.test.platform.app.InstrumentationRegistry
@@ -16,6 +17,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.semantics.stateDescription
 import android.content.SharedPreferences
+import androidx.activity.compose.setContent
 import org.junit.runner.RunWith
 import androidx.test.ext.junit.runners.AndroidJUnit4
 
@@ -82,7 +84,7 @@ class PapoUiTest {
 
     private fun demo() {
         compose.onNodeWithText("Explore demo").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("DEMO SPACE").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("server-header").fetchSemanticsNodes().isNotEmpty() }
     }
     private fun chat() {
         demo()
@@ -112,7 +114,7 @@ class PapoUiTest {
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         systemBack()
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
     }
     @Test fun backGestureClosesTheViewerThenTheConversation() {
         media()
@@ -123,7 +125,7 @@ class PapoUiTest {
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         systemBack(gesture=true)
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
     }
     @Test fun activityBackDispatchClosesOnlyTheActiveViewer() {
         media()
@@ -148,7 +150,7 @@ class PapoUiTest {
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft")
         systemBack()
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
         compose.onNodeWithText("geral").performClick()
         compose.onNodeWithTag("composer-input").assertTextEquals("Keep this draft")
     }
@@ -180,13 +182,13 @@ class PapoUiTest {
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         systemBack()
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
     }
     @Test fun systemBackLeavesSettingsForChatsBeforeExiting() {
         demo()
         compose.onNodeWithText("Settings",substring=false).performClick()
         systemBack()
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
     }
 
     @Test fun systemBackClosesProfilesAndPickersBeforeLeavingChat() {
@@ -200,7 +202,91 @@ class PapoUiTest {
         compose.onNodeWithTag("emoji-picker").assertDoesNotExist()
         compose.onNodeWithTag("message-list").assertIsDisplayed()
         systemBack()
-        compose.onNodeWithText("DEMO SPACE").assertIsDisplayed()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
+    }
+
+    @Test fun serverHeaderShowsIconAndPersonalNotificationsWithoutCreatorName() {
+        demo()
+        compose.onNodeWithText("YOUR SPACE").assertDoesNotExist()
+        compose.onNodeWithText("DEMO SPACE").assertDoesNotExist()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("server-icon") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Icon loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("server-header").performClick()
+        compose.onNodeWithTag("server-info").assertIsDisplayed()
+        compose.onNodeWithText("ADDRESS").assertIsDisplayed()
+        compose.onNodeWithText("Christian",substring=true).assertDoesNotExist()
+        compose.onNodeWithTag("channel-notifications-general").performClick()
+        compose.onNodeWithText("Off",substring=false).performClick()
+        compose.onNodeWithTag("channel-notifications-general").assert(hasText("Off"))
+        systemBack()
+        compose.onNodeWithTag("server-info").assertDoesNotExist()
+        compose.onNodeWithTag("server-header").assertIsDisplayed()
+    }
+
+    @Test fun serverGearOpensPermissionScopedSettingsAndSavesTheServer() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNodeWithTag("server-settings").assertIsDisplayed()
+        compose.onNodeWithText("General").assertIsDisplayed()
+        compose.onNode(hasText("Channels",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).assertIsDisplayed()
+        compose.onNodeWithText("Roles").assertIsDisplayed()
+        compose.onNodeWithTag("server-name-field").performTextReplacement("Papo Compose")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithText("Save server").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("Server saved").fetchSemanticsNodes().isNotEmpty()}
+        systemBack()
+        compose.onNodeWithTag("server-header").assert(hasText("Papo Compose"))
+    }
+
+    @Test fun normalMemberCanOpenServerInformationWithoutAnAdminGear() {
+        val client=io.github.chriexpe.papo.core.NativeClient.demo()
+        val server=try {client.poll().let {it.copy(serverIconRevision="",capabilities=it.capabilities.copy(manageServer=false,manageChannels=false,manageRoles=false))}} finally {client.shutdown();client.close()}
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            host.setContentForMemberHeader(server,model)
+        }
+        compose.onNodeWithContentDescription("Server settings").assertDoesNotExist()
+        compose.onNodeWithTag("server-header").performClick()
+        compose.onNodeWithTag("server-info").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Server settings").assertDoesNotExist()
+    }
+
+    @Test fun searchCompletesFiltersFindsMessagesAndReturnsToTheSameQuery() {
+        demo()
+        compose.onNodeWithTag("global-search").performClick().performTextInput("d")
+        compose.waitUntil(5000) {compose.onAllNodesWithText("de:  autor").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("de:  autor").performClick()
+        compose.onNodeWithTag("global-search").performTextInput("an")
+        compose.waitUntil(5000) {compose.onAllNodesWithText("de: @ana  Ana").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("de: @ana  Ana").performClick()
+        compose.onNodeWithTag("global-search").assertTextEquals("de:@ana ").performTextInput("em:")
+        compose.waitUntil(5000) {compose.onAllNodesWithText("em: #geral").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("em: #geral").performClick()
+        val query="de:@ana em:\"#geral\" "
+        compose.onNodeWithTag("global-search").assertTextEquals(query)
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("search-hit-general-9").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("search-hit-general-9").performClick()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        compose.onNodeWithTag("message-general-9").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("global-search").assertTextEquals(query)
+        systemBack()
+        compose.onNodeWithTag("global-search").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("")))
+    }
+
+    @Test fun searchFindsPeopleChannelsAndMessagesOutsideTheCurrentChannel() {
+        demo()
+        compose.onNodeWithTag("global-search").performTextInput("ana")
+        compose.onNodeWithText("@ana",substring=false).assertIsDisplayed()
+        compose.onNodeWithTag("global-search").performTextReplacement("design")
+        compose.onNode(hasText("design",substring=false) and !hasSetTextAction()).assertIsDisplayed()
+        compose.onNodeWithTag("global-search").performTextReplacement("tem:anexo")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.waitUntil(10_000) {compose.onAllNodes(SemanticsMatcher("Search result") {it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("search-hit-")==true}).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("conversation-results").performScrollToNode(hasTestTag("search-hit-media-0"))
+        compose.onNodeWithTag("search-hit-media-0").performClick()
+        compose.onNode(hasTestTag("channel-header") and hasText("mídia")).assertIsDisplayed()
+        compose.onNodeWithTag("message-media-0").assertIsDisplayed()
     }
 
     @Test fun chatProfilesShowImagesAndHeldAuthorsInsertMentions() {
@@ -823,4 +909,14 @@ class PapoUiTest {
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
     }
 
+}
+
+private fun MainActivity.setContentForMemberHeader(server:ServerState,model:PapoViewModel) {
+    setContent {
+        androidx.compose.material3.MaterialTheme {
+            androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState(),LocalGlass provides false) {
+                ServerHeader(server,model,"")
+            }
+        }
+    }
 }

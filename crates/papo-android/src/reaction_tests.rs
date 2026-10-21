@@ -58,7 +58,23 @@ impl Fixture {
                     .unwrap_or_default()
                     .to_owned();
                 let reaction = first.contains("/reactions ");
-                let (status, body) = if reaction {
+                let (status, body) = if first.contains("/search") {
+                    seen.lock()
+                        .unwrap()
+                        .push(("SEARCH".into(), serde_json::from_slice(&bytes).unwrap()));
+                    (
+                        "200 OK",
+                        r#"{"results":[{"type":"message","id":"remote-hit","content":"hello","channel_id":"media","channel_name":"mídia","author_id":"ana","created_at":"2026-10-20T12:00:00Z"}],"has_more":false}"#,
+                    )
+                } else if method == "PATCH" && first.contains("/server ") {
+                    seen.lock()
+                        .unwrap()
+                        .push(("PATCH".into(), serde_json::from_slice(&bytes).unwrap()));
+                    (
+                        "200 OK",
+                        r#"{"id":"demo","name":"Changed","public":true,"owner_id":"me"}"#,
+                    )
+                } else if reaction {
                     seen.lock()
                         .unwrap()
                         .push((method.clone(), serde_json::from_slice(&bytes).unwrap()));
@@ -316,4 +332,105 @@ fn successful_http_reinstates_own_flag_after_an_older_websocket_count_removed_th
             .iter()
             .any(|r| r.emoji == emoji && r.mine && r.count == 1)
     );
+}
+
+#[test]
+fn live_search_uses_resolved_filters_and_discards_a_cleared_request() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client
+        .dispatch(Action::Search {
+            query: "de:@ana em:#mídia tem:link tem:anexo".into(),
+            more: false,
+        })
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.runtime.store.searching {
+        client.poll();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(client.runtime.store.search_results[0].id, "remote-hit");
+    let requests = fixture.requests.lock().unwrap();
+    let body = &requests.iter().find(|r| r.0 == "SEARCH").unwrap().1;
+    assert_eq!(body["author"], "ana");
+    assert_eq!(body["channel_id"], "media");
+    assert_eq!(body["has"], "link");
+    assert_eq!(body["contains_attachment"], true);
+    drop(requests);
+    client
+        .dispatch(Action::Search {
+            query: "hello".into(),
+            more: false,
+        })
+        .unwrap();
+    client.dispatch(Action::ClearSearch).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while fixture
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.0 == "SEARCH")
+        .count()
+        < 2
+    {
+        client.poll();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    client.poll();
+    assert!(client.runtime.store.search_results.is_empty());
+    assert!(client.search_query.is_empty());
+}
+
+#[test]
+fn live_server_edits_are_permission_gated_and_wait_for_confirmation() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client.runtime.store.me = "ana".into();
+    assert!(
+        client
+            .dispatch(Action::SaveServer {
+                name: "Changed".into(),
+                public: true,
+                password: None
+            })
+            .is_err()
+    );
+    assert!(
+        !fixture
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.0 == "PATCH")
+    );
+    client.runtime.store.me = "me".into();
+    client
+        .dispatch(Action::SaveServer {
+            name: "Changed".into(),
+            public: true,
+            password: None,
+        })
+        .unwrap();
+    assert!(client.runtime.store.busy);
+    assert_ne!(
+        client.runtime.store.server.as_ref().unwrap().name,
+        "Changed"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while client.runtime.store.busy {
+        client.poll();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(
+        client.runtime.store.server.as_ref().unwrap().name,
+        "Changed"
+    );
+    let requests = fixture.requests.lock().unwrap();
+    let body = &requests.iter().find(|r| r.0 == "PATCH").unwrap().1;
+    assert_eq!(body["name"], "Changed");
+    assert!(body.get("password").is_none());
 }

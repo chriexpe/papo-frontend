@@ -54,9 +54,9 @@ impl SecretStore for ForeignSecrets {
 
 #[derive(uniffi::Object)]
 pub struct NativeClient {
-    backend: Mutex<Option<Backend>>,
+    pub(super) backend: Mutex<Option<Backend>>,
 }
-enum Backend {
+pub(super) enum Backend {
     Live(Box<Client>),
     Demo(Box<demo::Demo>),
 }
@@ -317,6 +317,15 @@ pub struct ClientSnapshot {
     pub screen: String,
     pub connection: String,
     pub server_name: String,
+    pub server_description: String,
+    pub server_icon_revision: String,
+    pub server_public: bool,
+    pub capabilities: discovery::Capabilities,
+    pub roles: Vec<discovery::RoleView>,
+    pub search_query: String,
+    pub searching: bool,
+    pub search_has_more: bool,
+    pub search_results: Vec<discovery::SearchHit>,
     pub me: String,
     pub my_name: String,
     pub selected_channel: String,
@@ -355,6 +364,8 @@ pub struct ChannelView {
     pub name: String,
     pub kind: String,
     pub topic: String,
+    #[serde(default, rename = "notificationSettings")]
+    pub notification_settings: String,
     pub unread: bool,
     pub mentions: i32,
 }

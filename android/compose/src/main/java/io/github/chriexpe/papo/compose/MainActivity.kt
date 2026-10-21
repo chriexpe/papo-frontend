@@ -33,6 +33,7 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -122,6 +123,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var tab by rememberSaveable { mutableStateOf("Chats") }
             var inConversation by rememberSaveable(state.activeUrl) { mutableStateOf(false) }
             val server = state.active
+            val conversationStates=rememberSaveableStateHolder()
             var profileId by remember(state.activeUrl) {mutableStateOf<String?>(null)}
             var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
             val openProfile:(String)->Unit = {externalProfile=null;profileId=it}
@@ -151,10 +153,13 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 } else {
                     Box(Modifier.fillMaxSize()) {
                         when (tab) {
-                            "Chats" -> ConversationList(server, onServer = { tab = "Servers" },
+                            "Chats" -> conversationStates.SaveableStateProvider("${server.url}/${server.me}") {ConversationList(server, model, appError = state.error,
                                 onOpen = { id -> model.command(Action.SelectChannel(id)); inConversation = true },
-                                onProfile = openProfile)
-                            "Servers" -> ServerList(state, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
+                                onProfile = openProfile,
+                                onMessage = { channelId,messageId ->model.command(Action.SelectChannel(channelId),server.url) {
+                                    model.command(Action.JumpToMessage(channelId,messageId),server.url) {inConversation=true}
+                                }})}
+                            "Servers" -> ServerList(state, model, onAdd = { adding = true }, onSelect = { model.activate(it); tab = "Chats" })
                             else -> ClientSettings(server, theme, glass,
                                 onTheme = { theme = it; preferences.edit().putString("theme", it).apply() },
                                 onGlass = { glass = it; preferences.edit().putBoolean("glass", it).apply() },
@@ -316,51 +321,6 @@ private fun FloatingNavigation(selected: String, onSelect: (String) -> Unit, mod
 }
 
 @Composable
-private fun ConversationList(server: ServerState, onServer: () -> Unit, onOpen: (String) -> Unit, onProfile: (String) -> Unit) {
-    var section by rememberSaveable { mutableStateOf("Channels") }
-    var query by rememberSaveable { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(if (server.isDemo) "DEMO SPACE" else "YOUR SPACE", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.5.sp)
-                Text(server.name, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-            IconButton(onClick = onServer) { Icon(Icons.Outlined.ExpandMore, "Switch server") }
-        }
-        if (server.connection != "online") ConnectionBanner(server.connection) {}
-        OutlinedTextField(query, { query = it }, placeholder = { Text("Find a conversation") }, leadingIcon = { Icon(Icons.Outlined.Search, null) }, singleLine = true,
-            shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp))
-        Row(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Channels", "Direct", "People").forEach { label -> FilterChip(section == label, { section = label }, label = { Text(label) }) }
-        }
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 128.dp)) {
-            val channels = if (section == "Direct") server.dms else server.channels.filter { it.kind != "direct" && it.kind != "voice" }
-            if (section == "People") {
-                val people = server.members.filter { it.id != server.me && it.name.contains(query, true) }
-                if (people.isEmpty()) item { EmptyState("No people here yet", "People in your community will appear here.") }
-                items(people, key = { it.id }) { person -> ListItem(
-                    headlineContent = { Text(person.name, fontWeight = FontWeight.Medium) }, supportingContent = { Text(person.presence.replaceFirstChar(Char::uppercase)) },
-                    leadingContent = { UserAvatar(person.id,person.name) }, trailingContent = { Icon(Icons.Outlined.ChatBubbleOutline, null) },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onProfile(person.id) }) }
-            } else {
-                val filtered = channels.filter { it.name.contains(query, true) }
-                if (filtered.isEmpty()) item { EmptyState(if (query.isNotBlank()) "No conversations found" else if (section == "Direct") "A conversation starts with hello." else "A little quiet here.",
-                    if (section == "Direct") "Find someone in People to start a direct message." else "Your text channels will appear here.") }
-                items(filtered, key = { it.id }) { channel ->
-                    if (channel.kind == "category") Text(channel.name.uppercase(), style = MaterialTheme.typography.labelSmall, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 20.dp, top = 24.dp, bottom = 8.dp))
-                    else ListItem(
-                        headlineContent = { Text(channel.name, fontWeight = if (channel.unread) FontWeight.Bold else FontWeight.Medium) },
-                        supportingContent = if (channel.topic.isNotBlank()) ({ Text(channel.topic, maxLines = 1, overflow = TextOverflow.Ellipsis) }) else null,
-                        leadingContent = { if (section == "Direct") UserAvatar(channel.userId,channel.name,Modifier.clip(CircleShape).clickable {onProfile(channel.userId)}) else Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer), contentAlignment = Alignment.Center) { Text("#", fontSize = 23.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-                        trailingContent = { if (channel.mentions > 0) Badge { Text(channel.mentions.toString()) } else if (channel.unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape)) else Icon(Icons.Outlined.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent), modifier = Modifier.clip(RoundedCornerShape(18.dp)).clickable { onOpen(channel.id) })
-                }
-            }
-        }
-    }
-}
-
-@Composable
 internal fun EmptyState(title: String, detail: String) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Icon(Icons.Outlined.ChatBubbleOutline, null, Modifier.size(36.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -370,13 +330,13 @@ internal fun EmptyState(title: String, detail: String) {
 }
 
 @Composable
-private fun ServerList(state: PapoState, onAdd: () -> Unit, onSelect: (String) -> Unit) {
+private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit, onSelect: (String) -> Unit) {
     LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(), contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("Your servers", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold) }
         item { Text("Different places. The same you.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 16.dp)) }
         items(state.servers, key = { it.url }) { server ->
             ListItem(headlineContent = { Text(server.name, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                leadingContent = { Avatar(server.name) }, trailingContent = { Icon(if (state.activeUrl == server.url) Icons.Outlined.CheckCircle else Icons.Outlined.ChevronRight, null) },
+                leadingContent = { ServerIcon(server,model) }, trailingContent = { Icon(if (state.activeUrl == server.url) Icons.Outlined.CheckCircle else Icons.Outlined.ChevronRight, null) },
                 modifier = Modifier.clip(RoundedCornerShape(22.dp)).clickable { onSelect(server.url) })
         }
         item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("Add server") } }

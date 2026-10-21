@@ -11,6 +11,7 @@ pub struct Demo {
     navigation_serial: u64,
     navigation_target: String,
     archived: models::Message,
+    search_query: String,
 }
 impl Drop for Demo {
     fn drop(&mut self) {
@@ -38,7 +39,7 @@ impl Demo {
             "settings":{"version":1,"config":{}}
         }))))));
         store.apply(Update::Server(Some(Box::new(decode(
-            json!({"id":"demo","name":"Papo","public":true,"owner_id":"me"}),
+            json!({"id":"demo","name":"Papo","public":true,"owner_id":"me","icon_blob":base64::engine::general_purpose::STANDARD.encode(include_bytes!("../../../android/compose/src/main/res/mipmap-xxxhdpi/ic_launcher.png"))}),
         )))));
         store.apply(Update::Channels(decode(json!([
             {"id":"general","name":"geral","type":"text","position":0,"topic":"A little bit of everything."},
@@ -75,6 +76,7 @@ impl Demo {
                 )),
             ),
         }]));
+        store.apply(Update::Roles(decode(json!([{"id":"designers","name":"Designers","color":"#67B989","permissions":{"send_attachment":true}}]))));
         let now = now_millis();
         store.apply(Update::DirectMessages(decode(json!([{"id":"dm-ana","user":{"id":"ana","username":"ana","nickname":"Ana","status":"online"},"created_at":at(now),"unread_count":1}]))));
         for (channel, rows) in [
@@ -217,6 +219,7 @@ impl Demo {
             media_files: HashMap::new(),
             navigation_serial: 0,
             navigation_target: String::new(),
+            search_query: String::new(),
             archived: message(
                 "demo-archived-original",
                 "general",
@@ -232,6 +235,7 @@ impl Demo {
         let mut value = project(&self.store, "demo://papo", "demo");
         value["events"] = json!(std::mem::take(&mut self.events));
         value["more"] = json!(false);
+        value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
         value
@@ -258,6 +262,122 @@ impl Demo {
 
     pub fn dispatch(&mut self, action: Action) -> Result<(), String> {
         match action {
+            Action::Search { query, more } => {
+                let request =
+                    papo_core::search::search_request(&query, &self.store, false, false, None)
+                        .ok_or("Complete the search filters before searching")?;
+                if !more {
+                    self.store.reset_search();
+                    self.search_query = query;
+                }
+                let offset = if more {
+                    self.store.search_results.len()
+                } else {
+                    0
+                };
+                let mut messages: Vec<_> =
+                    self.store
+                        .messages
+                        .iter()
+                        .filter(|m| {
+                            request.text.as_ref().is_none_or(|t| {
+                                m.content.to_lowercase().contains(&t.to_lowercase())
+                            }) && request.author.as_ref().is_none_or(|id| &m.author_id == id)
+                                && request
+                                    .channel_id
+                                    .as_ref()
+                                    .is_none_or(|id| &m.channel_id == id)
+                                && request
+                                    .mention
+                                    .as_ref()
+                                    .is_none_or(|id| m.content.contains(&format!("<@{id}>")))
+                                && request.has.as_ref().is_none_or(|_| {
+                                    m.content.contains("https://") || !m.previews.is_empty()
+                                })
+                                && request
+                                    .contains_attachment
+                                    .is_none_or(|_| !m.attachments.is_empty())
+                        })
+                        .collect();
+                messages.sort_by_key(|m| std::cmp::Reverse((m.at, m.id.clone())));
+                let has_more = messages.len() > offset + 20;
+                let results = messages
+                    .into_iter()
+                    .skip(offset)
+                    .take(20)
+                    .map(|m| models::SearchResult {
+                        kind: "message".into(),
+                        id: m.id.clone(),
+                        content: m.content.clone(),
+                        channel_id: m.channel_id.clone(),
+                        channel_name: self
+                            .store
+                            .channel(&m.channel_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_default(),
+                        author_id: Some(m.author_id.clone()),
+                        author_username: self
+                            .store
+                            .member(&m.author_id)
+                            .map(|u| u.username.clone()),
+                        created_at: Some(m.at.into()),
+                        attachments: m.attachments.clone(),
+                    })
+                    .collect();
+                self.store.apply(Update::SearchResults {
+                    generation: self.store.search_generation,
+                    results,
+                    has_more,
+                    append: more,
+                });
+            }
+            Action::ClearSearch => {
+                self.store.reset_search();
+                self.search_query.clear();
+            }
+            Action::ChannelNotifications {
+                channel_id,
+                setting,
+            } => {
+                discovery::check_notifications(&self.store, &channel_id, &setting)?;
+                if let Some(c) = self.store.channels.iter_mut().find(|c| c.id == channel_id) {
+                    c.notification_settings = setting;
+                }
+            }
+            Action::MarkServerRead => self.store.mark_all_read(),
+            Action::SaveServer {
+                name,
+                public,
+                password,
+            } => {
+                discovery::check_server(&self.store, &name, public, password.as_deref())?;
+                if let Some(server) = self.store.server.as_mut() {
+                    server.name = name.trim().into();
+                    server.public = public;
+                }
+            }
+            Action::SaveChannel {
+                channel_id,
+                name,
+                topic,
+            } => {
+                if let Some(c) = self.store.channels.iter_mut().find(|c| c.id == channel_id) {
+                    c.name = name;
+                    c.topic = Some(topic);
+                }
+            }
+            Action::SaveRole {
+                role_id,
+                name,
+                color,
+                permissions,
+            } => {
+                if let Some(r) = self.store.roles.iter_mut().find(|r| r.id == role_id) {
+                    r.name = name;
+                    r.color = Some(color);
+                    r.permissions = permissions.into();
+                }
+            }
             Action::SelectChannel { channel_id } => {
                 self.store
                     .end_message_context(&self.store.selected_channel.clone());
