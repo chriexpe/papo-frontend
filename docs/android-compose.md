@@ -448,3 +448,13 @@ list and then Servers. Profiles from the global DM list retain their source
 server without activating an unrelated account. The chat-list account button now
 uses a larger squircle image, and the Servers selection/ripple follows its inset
 rounded-square shape.
+
+## Chat touch controls
+
+Swipe a message from right to left to reply and focus the composer with the
+keyboard open. The gesture preserves the existing draft, gives haptic feedback
+at the reply threshold and commits on release. Short, cancelled or vertical
+swipes do not reply; media scrubbers retain their own gestures. TalkBack exposes
+the same Reply action. Pending messages and active recording/sending states do
+not accept swipe replies. Left-to-right navigation retains Android's system Back
+gesture.

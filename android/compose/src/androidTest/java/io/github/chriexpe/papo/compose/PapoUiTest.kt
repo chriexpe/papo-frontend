@@ -577,6 +577,43 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun swipingLeftRepliesAndOpensTheKeyboardWithoutReplacingTheDraft() {
+        chat()
+        compose.onNodeWithTag("composer-input").performTextInput("Keep my draft")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-9")
+        compose.onNodeWithTag("message-general-9",useUnmergedTree=true).performTouchInput {swipeLeft()}
+        compose.onNodeWithTag("composer-reply").assertIsDisplayed().assert(hasText("Reply to Ana",substring=true))
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep my draft").assertIsFocused()
+        compose.waitUntil(5000) {
+            var visible=false
+            activity.onActivity {visible=androidx.core.view.ViewCompat.getRootWindowInsets(it.window.decorView)?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())==true}
+            visible
+        }
+        compose.onNodeWithTag("composer-input").performTextReplacement("A swiped reply")
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {
+            var replied=false
+            activity.onActivity {host ->replied=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java].state.value.active?.messages?.any {it.content=="A swiped reply" && it.replyTo=="general-9"}==true}
+            replied && compose.onAllNodesWithTag("composer-reply").fetchSemanticsNodes().isEmpty()
+        }
+        compose.onNodeWithText("A swiped reply",substring=false).assertIsDisplayed()
+    }
+
+    @Test fun shortOrVerticalSwipesDoNotReplyAndOppositeSwipesDoNotLeaveChat() {
+        chat()
+        val row=compose.onNodeWithTag("message-general-9",useUnmergedTree=true)
+        val pixels=InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        row.performTouchInput {swipe(center,center.copy(x=center.x-28*pixels),300)}
+        compose.onNodeWithTag("composer-reply").assertDoesNotExist()
+        row.performTouchInput {swipeRight()}
+        compose.onNodeWithTag("composer-reply").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+        row.performTouchInput {swipeDown()}
+        compose.onNodeWithTag("composer-reply").assertDoesNotExist()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+    }
+
     @Test fun replyPreviewsJumpHighlightAndKeepTheComposerDraft() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("Keep this draft @An")
@@ -900,6 +937,12 @@ class PapoUiTest {
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("waveform-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Waveform ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithContentDescription("Play voice-note.m4a").performClick()
         compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag("player-demo://papo/me/attachment/demo-audio") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5000) {compose.onAllNodesWithContentDescription("Pause voice-note.m4a").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Pause voice-note.m4a").performClick()
+        val waveform=compose.onNodeWithTag("waveform-demo://papo/me/attachment/demo-audio",useUnmergedTree=true)
+        waveform.performTouchInput {swipe(androidx.compose.ui.geometry.Offset(width*.85f,centerY),androidx.compose.ui.geometry.Offset(width*.15f,centerY),400)}
+        compose.onNodeWithTag("composer-reply").assertDoesNotExist()
+        compose.waitUntil(5000) {waveform.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current in .05f.. .3f}
         compose.onNodeWithTag("audio-controls", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Audio position").assertExists()
         val loaded = compose.onNodeWithTag("audio-attachment-demo-audio", useUnmergedTree = true).fetchSemanticsNode().size

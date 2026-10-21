@@ -57,6 +57,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -164,6 +166,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     fun openOriginal(id:String) {
         if(id.isNotBlank()) {focus.clearFocus();keyboard?.hide();model.command(Action.JumpToMessage(channel.id,id),url=server.url)}
     }
+    fun beginReply(id:String,openKeyboard:Boolean=false) {
+        reply=id
+        selected=null
+        if(openKeyboard && !recording) {
+            emojiPicker=false;gifPicker=false
+            scope.launch {
+                withFrameNanos { }
+                composerFocus.requestFocus()
+                keyboard?.show()
+            }
+        }
+    }
     fun latestMessages() {
         highlighted=null
         if(server.browsingHistory || server.loadingContext) {returningLatest=true;model.command(Action.Latest(channel.id),url=server.url)}
@@ -249,7 +263,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !overlayBlocking),LocalMediaRowId provides message.id) {
-                MessageRow(message, server, model, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
+                MessageRow(message, server, model, canReply=!recording && !submitting && !attachmentDraft.sending && !overlayBlocking && viewedMedia==null,onReply={beginReply(message.id,true)}, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
                 }
@@ -380,7 +394,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     }
                     IconButton(onClick={emojiTarget=message; selected=null; emojiPicker=true}) {Icon(Icons.Outlined.AddReaction,"More reactions")}
                 }
-                SheetAction("Reply", Icons.Outlined.Reply) { reply = message.id; selected = null }
+                SheetAction("Reply", Icons.Outlined.Reply) { beginReply(message.id) }
             }
             SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
             val links=(messageLinks(message.content).map {it.url}+message.embeds.map {it.url}+listOfNotNull(GifChoice.marker(message.content)?.let {"https://giphy.com/gifs/$it"})).filter(::isPublicLink).distinct()
@@ -427,7 +441,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, canReply:Boolean,onReply:()->Unit, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val appearance=LocalClientPreferences.current
     val openProfile=LocalOpenProfile.current
     val openExternal=LocalOpenExternalProfile.current
@@ -436,8 +450,9 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
     val authorAction=Modifier.combinedClickable(onClickLabel="Open ${message.author} profile",onLongClickLabel="Mention ${message.author}",onClick={if(external!=null) openExternal(external) else openProfile(message.authorId)},onLongClick={if(external!=null) openExternal(external) else person?.let(onMention)})
     val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
     val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
+    SwipeToReply(message.id,canReply && !message.pending,onReply) {
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
-        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message"}
+        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message";if(canReply && !message.pending) customActions=listOf(CustomAccessibilityAction("Reply") {onReply();true})}
         .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if(appearance.avatars) {
         if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
@@ -476,6 +491,7 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                 else -> "Queued · saved on this device"
             }, style = MaterialTheme.typography.labelSmall, color = if (message.delivery in listOf("failed", "unknown")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
     }
 }
 
