@@ -418,3 +418,10 @@ Clearing media keeps messages, credentials, drafts, favorites and saved download
 Desktop tray/startup controls, desktop activity integration, unimplemented language
 choices and background notification controls are omitted. Demo has no password,
 banner-upload or authenticated-session controls.
+
+The shared Coil decoder retains up to 24 MiB of shareable static images. Stable
+account/resource/revision keys let profile images and banners reuse decoded
+bitmaps across screens before any disk/native work. Non-shareable animated
+images are decoded independently, retaining the existing viewport pause/release
+rules. Encoded bytes still use the same 256 MiB shared media cache; no additional
+avatar-only disk store is introduced.

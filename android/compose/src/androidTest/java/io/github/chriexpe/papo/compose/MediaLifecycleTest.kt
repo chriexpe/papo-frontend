@@ -60,4 +60,28 @@ class MediaLifecycleTest {
         assertEquals(PlaybackBookmark(700,false),bookmarks["media-139"])
         assertEquals(PlaybackBookmark(138,true),bookmarks["media-138"])
     }
+    @Test fun sharedDecoderReusesStaticImagesWithoutSharingAnimationClocks() = kotlinx.coroutines.runBlocking {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val loader=MediaImages.loader(context)
+        val owner="decode-${System.nanoTime()}"
+        var staticLoads=0
+        fun request(identity:String,asset:String,onLoad:()->Unit)=coil3.request.ImageRequest.Builder(context)
+            .data(CachedImage(identity) {onLoad();context.assets.open(asset).use {it.readBytes()}}).size(256).build()
+        val first=loader.execute(request("$owner/avatar","demo/portrait.png") {staticLoads++}) as coil3.request.SuccessResult
+        val second=loader.execute(request("$owner/avatar","demo/portrait.png") {staticLoads++}) as coil3.request.SuccessResult
+        assertEquals(1,staticLoads)
+        assertEquals(coil3.decode.DataSource.MEMORY_CACHE,second.dataSource)
+        assertSame(first.image,second.image)
+        loader.execute(request("$owner/other-account","demo/portrait.png") {staticLoads++})
+        assertEquals("Identity boundaries must miss the old account’s decoded key",2,staticLoads)
+        var animationLoads=0
+        val animated=loader.execute(request("$owner/animated","demo/animation.gif") {animationLoads++}) as coil3.request.SuccessResult
+        val another=loader.execute(request("$owner/animated","demo/animation.gif") {animationLoads++}) as coil3.request.SuccessResult
+        assertEquals(2,animationLoads)
+        assertFalse(animated.image.shareable)
+        assertNotSame(animated.image,another.image)
+        loader.memoryCache?.clear()
+        Unit
+    }
+
 }

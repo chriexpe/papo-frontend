@@ -18,6 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil3.ImageLoader
 import coil3.asDrawable
+import coil3.request.ImageRequest
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
 
@@ -133,6 +134,14 @@ internal val MediaAnimationRunning=SemanticsPropertyKey<()->Boolean>("MediaAnima
 internal fun ManagedAsyncImage(model:Any?,description:String?,imageLoader:ImageLoader,modifier:Modifier=Modifier,
     contentScale:ContentScale=ContentScale.Fit,onSuccess:(AsyncImagePainter.State.Success)->Unit={},onError:(AsyncImagePainter.State.Error)->Unit={},retentionKey:String="") {
     val context=LocalContext.current
+    val request=remember(model) {
+        val data=(model as? ImageRequest)?.data ?: model
+        if(data is ByteArray) {
+            val digest=java.security.MessageDigest.getInstance("SHA-256").digest(data).joinToString("") {"%02x".format(it)}
+            val builder=(model as? ImageRequest)?.newBuilder(context) ?: ImageRequest.Builder(context).data(data)
+            builder.memoryCacheKey("image-bytes/$digest").build()
+        } else model
+    }
     val activity=rememberMediaActivity()
     val registry=LocalMediaVisibilityRegistry.current
     val row=LocalMediaRowId.current
@@ -151,7 +160,7 @@ internal fun ManagedAsyncImage(model:Any?,description:String?,imageLoader:ImageL
     SideEffect {animation?.let {if(visible && registry?.isVisible(row)!=false) {if(!it.isRunning) it.start()} else it.stop()}}
     Box(modifier.then(activity.modifier).semantics {this[MediaAnimationRunning]={animation?.isRunning==true}}) {
         if(activity.retained && retained!=null) Image(retained.painter,description,Modifier.fillMaxSize(),contentScale=contentScale)
-        else if(activity.retained) AsyncImage(model,description,imageLoader=imageLoader,modifier=Modifier.fillMaxSize(),contentScale=contentScale,
+        else if(activity.retained) AsyncImage(request,description,imageLoader=imageLoader,modifier=Modifier.fillMaxSize(),contentScale=contentScale,
             onSuccess={result -> animation=result.result.image.asDrawable(context.resources) as? Animatable;if(imageKey.isNotBlank()) registry?.retainImage(imageKey,row,result);onSuccess(result)},onError={animation=null;onError(it)})
     }
 }

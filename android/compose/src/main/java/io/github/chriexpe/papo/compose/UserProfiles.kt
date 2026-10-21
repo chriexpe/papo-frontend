@@ -32,6 +32,7 @@ import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.MediaRequest
 import io.github.chriexpe.papo.core.MediaResource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.last
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
@@ -48,22 +49,18 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
     val profile=profileContext?.server?.profiles?.firstOrNull {it.id==id}
     val revision=profile?.avatarRevision.orEmpty()
     val context=LocalContext.current
-    val bytes by produceState<ByteArray?>(null,profileContext?.server?.url,profileContext?.server?.me,id,revision) {
-        value=null
-        if(profileContext!=null && revision.isNotBlank()) {
-            try {value=profileContext.model.avatarImage(profileContext.server,id,revision)}
-            catch(e:CancellationException) {throw e}
-            catch(_:Exception) { /* Initials are also the offline/corrupt-image fallback. */ }
-        }
+    val image=remember(profileContext?.server?.url,profileContext?.server?.me,id,revision) {
+        if(profileContext==null || revision.isBlank()) null
+        else CachedImage("${profileContext.server.url}/${profileContext.server.me}/avatar/$id/$revision") {profileContext.model.avatarImage(profileContext.server,id,revision)}
     }
-    key(id,revision) {
+    key(profileContext?.server?.url,profileContext?.server?.me,id,revision) {
         var loaded by remember {mutableStateOf(false)}
         Box(modifier.size(40.dp).clip(CircleShape).testTag("avatar-$id").semantics {
             contentDescription="$name avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
         },contentAlignment=Alignment.Center) {
             if(!loaded) Avatar(name,Modifier.fillMaxSize())
-            if(bytes!=null) ManagedAsyncImage(
-                ImageRequest.Builder(context).data(bytes).size(256).build(),null,MediaImages.loader(context),
+            if(image!=null) ManagedAsyncImage(
+                ImageRequest.Builder(context).data(image).size(256).build(),null,MediaImages.loader(context),
                 modifier=Modifier.fillMaxSize(),contentScale=ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false},retentionKey="avatar/$id/$revision")
         }
     }
@@ -72,13 +69,13 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier) {
 @Composable
 internal fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revision:String,modifier:Modifier) {
     val context=LocalContext.current
-    val bytes by produceState<ByteArray?>(null,server.url,server.me,id,revision) {
-        value=null
-        if(revision.isNotBlank()) try {MediaCache.get(context).images(model.mediaRequest(server.url,MediaResource.ProfileBanner(id))).collect {value=it}}
-        catch(e:CancellationException) {throw e} catch(_:Exception) { }
+    val image=remember(server.url,server.me,id,revision) {
+        if(revision.isBlank()) null else CachedImage("${server.url}/${server.me}/banner/$id/$revision") {
+            MediaCache.get(context).images(model.mediaRequest(server.url,MediaResource.ProfileBanner(id))).last()
+        }
     }
     Box(modifier.background(MaterialTheme.colorScheme.primary.copy(alpha=.16f))) {
-        bytes?.let {ManagedAsyncImage(it,"Profile banner",MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop)}
+        image?.let {ManagedAsyncImage(it,"Profile banner",MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop)}
     }
 }
 
