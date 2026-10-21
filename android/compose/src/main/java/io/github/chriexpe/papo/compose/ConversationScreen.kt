@@ -3,6 +3,7 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
@@ -14,6 +15,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -39,6 +42,10 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -62,6 +69,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
     var members by remember { mutableStateOf(false) }
+    var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(false) }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
     var submitting by remember(draftKey) { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -117,13 +125,26 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         Column(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
             .onSizeChanged { headerHeight = with(density) { it.height.toDp() } + 32.dp }) {
             GlassPill(Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, "Back to conversations") }
-                    Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
-                        Text(if (channel.kind == "direct") channel.name else "# ${channel.name}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(if (server.isDemo) "Papo · Demo" else server.name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Column(Modifier.fillMaxWidth().testTag("channel-header")
+                    .animateContentSize()
+                    .clickable(role = Role.Button, onClickLabel = if (descriptionExpanded) "Hide channel description" else "Show channel description") {
+                        descriptionExpanded = !descriptionExpanded
                     }
-                    IconButton(onClick = { members = true }) { Icon(Icons.Outlined.PeopleOutline, "Community members") }
+                    .semantics { stateDescription = if (descriptionExpanded) "Expanded" else "Collapsed" }) {
+                    Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, "Back to conversations") }
+                        Text(channel.name, modifier = Modifier.weight(1f).padding(horizontal = 4.dp), textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        IconButton(onClick = { members = true }) { Icon(Icons.Outlined.PeopleOutline, "Community members") }
+                    }
+                    if (descriptionExpanded) {
+                        Text(channel.topic.ifBlank {
+                            if (channel.kind == "direct") "Direct conversation with ${channel.name}." else "No channel description yet."
+                        }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 2.dp, bottom = 18.dp)
+                            .heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
+                            textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
             if (server.connection != "online") GlassPill(Modifier.padding(top = 8.dp), radius = 24) {

@@ -54,7 +54,7 @@ class PapoUiTest {
     private fun chat() {
         demo()
         compose.onNodeWithText("geral").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Papo · Demo").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-header").fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun firstLaunchHasNoPrefilledServerAndValidatesAddressesInline() {
@@ -90,7 +90,7 @@ class PapoUiTest {
     private fun media() {
         demo()
         compose.onNodeWithText("mídia").performClick()
-        compose.waitUntil(10_000) { compose.onAllNodesWithText("Papo · Demo").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(10_000) { compose.onAllNodesWithTag("channel-header").fetchSemanticsNodes().isNotEmpty() }
     }
 
     @Test fun portraitEmbedReservesServerDimensionsAndOpensViewer() {
