@@ -190,7 +190,7 @@ private fun BoxScope.ViewerImage(server: ServerState, model: PapoViewModel, medi
         if(source!=null) add(OkHttpNetworkFetcherFactory(callFactory={MediaNetwork.client(source)}))
     }.memoryCache(null).build()}
     DisposableEffect(loader) {onDispose {loader.shutdown()}}
-    if(data!=null && !failed) AsyncImage(ImageRequest.Builder(context).data(data?.first).build(),media.title,imageLoader=loader,
+    if(data!=null && !failed) ManagedAsyncImage(ImageRequest.Builder(context).data(data?.first).build(),media.title,imageLoader=loader,
         modifier=Modifier.fillMaxSize().testTag("viewer-image").semantics {stateDescription=if(loaded) "Loaded" else "Loading"},contentScale=ContentScale.Fit,onError={failed=true},onSuccess={result ->
             loaded=true
             val image=result.result.image

@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.*
@@ -86,7 +87,7 @@ private data class LoadedComposerStickers(val owner:String,val size:Int,val imag
  * reserves a measured glyph slot, and animated drawables paint in those exact
  * text-layout bounds, so wrapping and scrolling share the editor's layout. */
 @Composable
-internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier, onFocusChange:(Boolean)->Unit={}) {
+internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier, onFocusChange:(Boolean)->Unit={},animationsAllowed:Boolean=true) {
     val stickers=remember(draft.text,server.emojis) {composerStickers(draft.text,server.emojis)}
     val ids=remember(stickers) {stickers.map {it.id}.toSet()}
     val owner="${server.url}/${server.me}"
@@ -114,20 +115,30 @@ internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoVi
     val projection=remember(draft.text,draft.mentions,stickers,images.keys,color) {ComposerProjection(draft,stickers,images.keys,color)}
     var layout by remember {mutableStateOf<TextLayoutResult?>(null)}
     var frame by remember {mutableIntStateOf(0)}
+    val editorScroll=rememberScrollState()
+    var editorHeight by remember {mutableIntStateOf(0)}
+    val visibleStickers by remember(projection,layout) {derivedStateOf {
+        val result=layout
+        if(result==null || result.layoutInput.text.text!=projection.annotated.text) emptySet()
+        else projection.positions.filter {position ->
+            val bounds=result.getBoundingBox(position.offset)
+            bounds.bottom>editorScroll.value && bounds.top<editorScroll.value+editorHeight
+        }.map {it.id}.toSet()
+    }}
     val lifecycle=LocalLifecycleOwner.current.lifecycle
-    DisposableEffect(images,lifecycle) {
+    DisposableEffect(images,lifecycle,visibleStickers,animationsAllowed) {
         val handler=Handler(Looper.getMainLooper())
         val callback=object:Drawable.Callback {
             override fun invalidateDrawable(who:Drawable) {frame++}
             override fun scheduleDrawable(who:Drawable,what:Runnable,`when`:Long) {handler.postAtTime(what,who,`when`)}
             override fun unscheduleDrawable(who:Drawable,what:Runnable) {handler.removeCallbacks(what,who)}
         }
-        fun active() {images.values.forEach {d -> d.callback=callback; (d as? Animatable)?.let {if(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) it.start() else it.stop()} }}
+        fun active() {images.forEach {(id,d) -> d.callback=callback; (d as? Animatable)?.let {if(animationsAllowed && id in visibleStickers && lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) it.start() else it.stop()} }}
         val observer=LifecycleEventObserver {_,_ ->active()}
         lifecycle.addObserver(observer); active()
         onDispose {lifecycle.removeObserver(observer); images.values.forEach {d -> (d as? Animatable)?.stop(); d.callback=null; handler.removeCallbacksAndMessages(d)}}
     }
-    Box(modifier.padding(start=14.dp,end=8.dp,top=12.dp,bottom=12.dp).heightIn(min=24.dp,max=160.dp).verticalScroll(rememberScrollState())) {
+    Box(modifier.padding(start=14.dp,end=8.dp,top=12.dp,bottom=12.dp).heightIn(min=24.dp,max=160.dp).onSizeChanged {editorHeight=it.height}.verticalScroll(editorScroll)) {
         BasicTextField(draft.value,onValueChange={next ->onChange(draft.deleteSticker(next,stickers.filter {it.id in images}.map {it.range}))},
             modifier=Modifier.fillMaxWidth().onFocusChanged {onFocusChange(it.isFocused)}.testTag("composer-input").semantics {
                 if(projection.positions.isNotEmpty()) stateDescription="Contains stickers: ${projection.positions.map {it.name}.distinct().joinToString()}"

@@ -15,6 +15,10 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -98,9 +102,13 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var confirmAttachmentRetry by remember(draftKey) { mutableStateOf(false) }
     val attachmentDrafts by model.attachments.drafts.collectAsState()
     val attachmentDraft = attachmentDrafts[draftKey] ?: AttachmentDraft()
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(cacheWindow=remember {LazyLayoutCacheWindow(aheadFraction=2f,behindFraction=2f)})
+    val playbackBookmarks=remember(draftKey) {PlaybackBookmarks()}
+    val mediaVisibility=remember(draftKey) {MediaVisibilityRegistry()}
+    var listBounds by remember {mutableStateOf(Rect.Zero)}
     val scope = rememberCoroutineScope()
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val mediaLifecycle by lifecycle.currentStateFlow.collectAsState()
     val density = LocalDensity.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -112,6 +120,22 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 100 } }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
+    val viewport=with(density) {Rect(listBounds.left,listBounds.top+(headerHeight+8.dp).toPx(),listBounds.right,(listBounds.bottom-(composerHeight+8.dp).toPx()).coerceAtLeast(listBounds.top+(headerHeight+8.dp).toPx()))}
+    val visibleRows by remember {derivedStateOf {
+        val layout=listState.layoutInfo
+        val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
+        layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet()
+    }}
+    LaunchedEffect(mediaVisibility,listState) {
+        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
+            val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+                mediaVisibility.update(layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet(),enabled)
+                mediaVisibility.trim(layout,order)
+            }
+        }
+    }
+    DisposableEffect(mediaVisibility) {onDispose {mediaVisibility.close()}}
 
     LaunchedEffect(draftKey, server.messages.lastOrNull()?.id) {
         if (nearBottom && !server.loadingOlder && !server.browsingHistory && !server.loadingContext &&
@@ -201,10 +225,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
-    CompositionLocalProvider(LocalMediaViewer provides {media ->activeMedia=if(media.playback!=null) media.id else null;viewedMedia=media},LocalViewedMedia provides viewedMedia,LocalInlinePlayer provides activeMedia) {
+    CompositionLocalProvider(LocalMediaViewer provides {media ->activeMedia=if(media.playback!=null) media.id else null;viewedMedia=media},LocalViewedMedia provides viewedMedia,LocalInlinePlayer provides activeMedia,LocalPlaybackBookmarks provides playbackBookmarks,LocalMediaVisibilityRegistry provides mediaVisibility) {
     Box(Modifier.fillMaxSize().imePadding().navigationBarsPadding()) {
         LazyColumn(state = listState, reverseLayout = true,
-            modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("message-list"),
+            modifier = Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("message-list").onGloballyPositioned {listBounds=it.boundsInWindow()},
             contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = composerHeight + 8.dp),
         ) {
             if (server.messages.isEmpty()) item("empty") {
@@ -215,9 +239,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text("Load later messages")}
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
+                CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null),LocalMediaRowId provides message.id) {
                 MessageRow(message, server, model, highlight=highlighted?.first==message.id, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
+                }
             }
             if (server.canLoadOlder) item("history") {
                 TextButton(onClick = { model.command(Action.Older) }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
@@ -295,7 +321,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
                         }
                         Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f),onFocusChange={composerFocused=it})
+                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f),onFocusChange={composerFocused=it},animationsAllowed=viewedMedia==null && !emojiPicker && !gifPicker)
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
                             IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
                             FilledIconButton(onClick = {
@@ -382,7 +408,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
     }
-    viewedMedia?.let {media -> MediaViewer(server,model,media) {viewedMedia=null}}
+    viewedMedia?.let {media -> CompositionLocalProvider(LocalPlaybackBookmarks provides playbackBookmarks) {MediaViewer(server,model,media) {viewedMedia=null}}}
 }
 
 @Composable

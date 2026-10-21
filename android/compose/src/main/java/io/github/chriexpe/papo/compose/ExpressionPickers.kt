@@ -44,7 +44,7 @@ internal fun EmojiGlyph(server: ServerState, emoji: EmojiChoice, size: Int = 28,
             catch(_:Exception) {value=null}
         }
         val loader=remember(context) { ExpressionImages.loader(context) }
-        if(bytes!=null) AsyncImage(bytes,":${entry?.name ?: emoji.name}:",imageLoader=loader,modifier=Modifier.size(size.dp),contentScale=ContentScale.Fit)
+        if(bytes!=null) ManagedAsyncImage(bytes,":${entry?.name ?: emoji.name}:",imageLoader=loader,modifier=Modifier.size(size.dp),contentScale=ContentScale.Fit,retentionKey="emoji/${emoji.value}/$size")
         else Text(":${entry?.name ?: emoji.name}:",style=MaterialTheme.typography.labelSmall,maxLines=1)
     }
 }

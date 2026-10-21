@@ -480,6 +480,60 @@ class PapoUiTest {
         } finally {activity.onActivity {it.requestedOrientation=previous};InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(750,5000)}
     }
 
+    @Test fun videoPausesOffscreenReleasesFarAwayAndRestoresItsPosition() {
+        media()
+        compose.onNodeWithTag("message-list").performScrollToKey("media-3")
+        compose.onNodeWithContentDescription("Play clip.mp4").performClick()
+        val tag="player-demo://papo/me/attachment/demo-video"
+        compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        var original:androidx.media3.common.Player?=null
+        androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java)).check {view,_ ->
+            original=(view as androidx.media3.ui.PlayerView).player
+            original!!.seekTo(300);original!!.play()
+        }
+        compose.onNodeWithTag("message-list").performScrollToKey("media-6")
+        fun onMain(condition:()->Boolean):Boolean {var result=false;InstrumentationRegistry.getInstrumentation().runOnMainSync {result=condition()};return result}
+        compose.waitUntil(5000) {onMain {!original!!.playWhenReady}}
+        assertTrue("Nearby offscreen playback stays allocated",onMain {original!!.playbackState!=androidx.media3.common.Player.STATE_IDLE})
+        var position=0L
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {position=original!!.currentPosition}
+        compose.onNodeWithTag("message-list").performScrollToKey("media-11")
+        compose.waitUntil(10_000) {onMain {original!!.playbackState==androidx.media3.common.Player.STATE_IDLE}}
+        compose.onNodeWithTag("message-list").performScrollToKey("media-3")
+        compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java)).check {view,_ ->
+            val restored=(view as androidx.media3.ui.PlayerView).player!!
+            assertTrue("Far-away media recreates its released player",restored!==original)
+            assertTrue("The recreated player retains its position",restored.currentPosition>=position)
+        }
+    }
+
+    @Test fun animatedStickersAndGifsStopOffscreenWithoutStoppingOtherOccurrences() {
+        chat()
+        fun send(text:String) {
+            compose.onNodeWithTag("composer-input").performTextInput(text);compose.onNodeWithContentDescription("Send message").performClick()
+            compose.waitUntil(10_000) {compose.onNodeWithTag("composer-input").fetchSemanticsNode().config[SemanticsProperties.InputText].text.isEmpty()}
+        }
+        send(":papo_wave:")
+        fun probes()=compose.onAllNodes(SemanticsMatcher.keyIsDefined(MediaAnimationRunning) and hasAnyAncestor(hasTestTag("message-sticker-demo-wave")),useUnmergedTree=true).fetchSemanticsNodes().map {it.config[MediaAnimationRunning]}
+        compose.waitUntil(10_000) {probes().any {it()}}
+        val first=probes().single()
+        send((1..23).joinToString("\n") {"A little space $it"})
+        send(":papo_wave:")
+        compose.waitUntil(10_000) {probes().any {it()}}
+        compose.waitUntil(5000) {!first()}
+        assertTrue("The visible copy of the same animated sticker keeps running",probes().any {it()})
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("mídia").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithTag("message-list").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-list").performScrollToKey("media-2")
+        fun gifProbe()=compose.onAllNodes(SemanticsMatcher.keyIsDefined(MediaAnimationRunning) and hasAnyAncestor(hasTestTag("attachment-demo-gif")),useUnmergedTree=true).fetchSemanticsNodes().firstOrNull()?.config?.get(MediaAnimationRunning)
+        compose.waitUntil(10_000) {gifProbe()?.invoke()==true}
+        val gif=gifProbe()!!
+        compose.onNodeWithTag("message-list").performScrollToKey("media-7")
+        compose.waitUntil(5000) {!gif()}
+    }
+
     private fun pinchViewer() {
         compose.onNodeWithTag("viewer-content",useUnmergedTree=true).performTouchInput {
             down(0,center.copy(x=center.x-30f));down(1,center.copy(x=center.x+30f))

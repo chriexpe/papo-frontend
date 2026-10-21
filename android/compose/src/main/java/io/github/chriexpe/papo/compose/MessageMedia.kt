@@ -353,10 +353,10 @@ private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, descr
     DisposableEffect(loader) { onDispose { loader.shutdown() } }
     val request = remember(data, server.url, server.me, embed?.revision) { ImageRequest.Builder(context)
         .data(data?.first).memoryCacheKey(source?.cacheKey ?: "${server.url}/${server.me}/${embed?.id}/${embed?.revision}/$author").build() }
-    if (data != null && !decodeError) AsyncImage(request, description, imageLoader = loader,
+    if (data != null && !decodeError) ManagedAsyncImage(request, description, imageLoader = loader,
         modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.combinedClickable(onClick={openViewer(media)},onLongClick=onActions,onLongClickLabel="Message actions") else Modifier), contentScale = ContentScale.Fit,
         onSuccess = { decoded = true },
-        onError = { decodeError = true })
+        onError = { decodeError = true },retentionKey="image/${embed?.id}/${embed?.revision}/$resource/$publicUrl/$author")
     else if (!decodeError) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     if (decodeError) Column(Modifier.align(Alignment.Center).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Outlined.BrokenImage, null)
@@ -372,17 +372,37 @@ private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,private val audio:MediaNetwork.AudioFile?) {
-    private var owners=0
+internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,private val audio:MediaNetwork.AudioFile?,initialPlayIntent:Boolean=true,private val save:(PlaybackBookmark)->Unit={}) {
+    private val owners=mutableMapOf<Any,Boolean>()
+    private var visibilityPaused=true
+    private var changingVisibility=false
+    private var playIntent=initialPlayIntent
+    private val intentListener=object:Player.Listener {
+        override fun onPlayWhenReadyChanged(ready:Boolean,reason:Int) {if(!changingVisibility && !visibilityPaused) playIntent=ready}
+    }
+    init {player.addListener(intentListener)}
     private var view:PlayerView?=null
     private data class Host(val container:android.widget.FrameLayout,val fullscreen:Boolean,val toggle:(()->Unit)?,val scale:Float,val pan:androidx.compose.ui.geometry.Offset)
     private var inlineHost:Host?=null
     private var fullscreenHost:Host?=null
-    fun acquire() {owners++}
-    fun release() {if(--owners==0) {
+    fun acquire(owner:Any) {owners[owner]=false;applyVisibility()}
+    fun setVisible(owner:Any,visible:Boolean) {if(owner in owners) {owners[owner]=visible;applyVisibility()}}
+    private fun applyVisibility() {
+        val visible=owners.values.any {it}
+        if(visible && visibilityPaused) {
+            visibilityPaused=false;changingVisibility=true
+            try {player.playWhenReady=playIntent} finally {changingVisibility=false}
+        } else if(!visible && !visibilityPaused) {
+            playIntent=player.playWhenReady;visibilityPaused=true;changingVisibility=true
+            try {player.pause()} finally {changingVisibility=false}
+        }
+    }
+    fun release(owner:Any) {if(owners.remove(owner)==null) return
+        if(owners.isEmpty()) {
+        save(PlaybackBookmark(player.currentPosition.coerceAtLeast(0),if(visibilityPaused) playIntent else player.playWhenReady))
         view?.let {native ->(native.parent as? android.view.ViewGroup)?.removeView(native);native.player=null}
-        view=null;inlineHost=null;fullscreenHost=null;player.release();audio?.close()
-    }}
+        view=null;inlineHost=null;fullscreenHost=null;player.removeListener(intentListener);player.release();audio?.close()
+    } else applyVisibility()}
     fun bind(container:android.widget.FrameLayout,fullscreen:Boolean,toggle:(()->Unit)?,scale:Float,pan:androidx.compose.ui.geometry.Offset) {
         val host=Host(container,fullscreen,toggle,scale,pan)
         if(fullscreen) fullscreenHost=host else inlineHost=host
@@ -417,6 +437,15 @@ internal class PlaybackHandle(val player:ExoPlayer,val source:MediaRequest,priva
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
 internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource?, audio: Boolean = false, poster: MediaResource? = null, embedPoster: EmbedView? = null, waveform: WaveformState = WaveformState(),publicUrl:String="",onVideoRatio:(Float)->Unit={},onExpand:(()->Unit)?=null,videoScale:Float=1f,videoPan:androidx.compose.ui.geometry.Offset=androidx.compose.ui.geometry.Offset.Zero,handoff:PlaybackHandle?=null,fullscreen:Boolean=false,onFullscreen:((PlaybackHandle)->Unit)?=null) {
+    val activity=rememberMediaActivity()
+    Box(Modifier.fillMaxSize().then(activity.modifier)) {
+        PlayableMediaContent(server,model,id,title,active && (activity.retained || handoff!=null),activate,resource,audio,poster,embedPoster,waveform,publicUrl,onVideoRatio,onExpand,videoScale,videoPan,handoff,fullscreen,onFullscreen,activity.visible)
+    }
+}
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@Composable
+private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewModel, id: String, title: String, active: Boolean, activate: () -> Unit, resource: MediaResource?, audio: Boolean, poster: MediaResource?, embedPoster: EmbedView?, waveform: WaveformState,publicUrl:String,onVideoRatio:(Float)->Unit,onExpand:(()->Unit)?,videoScale:Float,videoPan:androidx.compose.ui.geometry.Offset,handoff:PlaybackHandle?,fullscreen:Boolean,onFullscreen:((PlaybackHandle)->Unit)?,mediaVisible:Boolean) {
     var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
         if (audio) Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -440,23 +469,33 @@ internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, i
     var error by remember(id) { mutableStateOf("") }
     var ready by remember(id) { mutableStateOf(handoff?.player?.playbackState in listOf(Player.STATE_READY,Player.STATE_ENDED)) }
     var retry by remember(id) { mutableStateOf(0) }
+    val registry=LocalMediaVisibilityRegistry.current
+    val row=LocalMediaRowId.current
+    val retainedPlayback=remember(id,retry) {if(retry==0) registry?.player(id) else null}
+    val existing=handoff ?: retainedPlayback
     val source by produceState<MediaRequest?>(null, id, retry) {
-        try { value = handoff?.source ?: if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
+        try { value = existing?.source ?: if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { error = "Media unavailable. Tap to retry." }
     }
-    val cachedAudio = remember(source, audio,handoff) { source?.takeIf { audio && handoff==null }?.let { MediaNetwork.existingAudio(context, it) } }
-    val playback = remember(source,handoff) { handoff ?: source?.let { request ->
+    val cachedAudio = remember(source, audio,existing) { source?.takeIf { audio && existing==null }?.let { MediaNetwork.existingAudio(context, it) } }
+    val bookmarks=LocalPlaybackBookmarks.current
+    val playback = remember(source,existing) { existing ?: source?.let { request ->
+        val bookmark=bookmarks?.get(id)
         val http = OkHttpDataSource.Factory(MediaNetwork.client(request))
         val factory = DefaultDataSource.Factory(context, http)
         val player=ExoPlayer.Builder(context).setMediaSourceFactory(DefaultMediaSourceFactory(factory)).build().apply {
-            setMediaItem(MediaItem.fromUri(cachedAudio?.file?.let(Uri::fromFile) ?: Uri.parse(request.url))); playWhenReady = true; prepare()
+            setMediaItem(MediaItem.fromUri(cachedAudio?.file?.let(Uri::fromFile) ?: Uri.parse(request.url)))
+            bookmark?.let {seekTo(it.position)}
+            playWhenReady = false; prepare()
         }
-        PlaybackHandle(player,request,cachedAudio)
+        PlaybackHandle(player,request,cachedAudio,bookmark?.playWhenVisible ?: true) {bookmarks?.save(id,it)}
     } }
     val player=playback?.player
+    val owner=remember {Any()}
     DisposableEffect(player, lifecycle) {
-        playback?.acquire()
+        playback?.let {registry?.retainPlayer(id,row,it)}
+        playback?.acquire(owner)
         val listener = object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {if(videoSize.width>0 && videoSize.height>0) onVideoRatio(videoSize.width.toFloat()*videoSize.pixelWidthHeightRatio/videoSize.height)}
             override fun onPlayerError(e: PlaybackException) { error = "Playback failed. Tap to retry." }
@@ -472,8 +511,13 @@ internal fun BoxScope.PlayableMedia(server: ServerState, model: PapoViewModel, i
         player?.videoSize?.let {size ->if(size.width>0 && size.height>0) onVideoRatio(size.width.toFloat()*size.pixelWidthHeightRatio/size.height)}
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) player?.pause() }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); playback?.release() }
+        onDispose { lifecycle.removeObserver(observer); player?.removeListener(listener); playback?.release(owner) }
     }
+    DisposableEffect(playback,registry,row) {
+        registry?.register(owner,row) {playback?.setVisible(owner,false)}
+        onDispose {registry?.unregister(owner)}
+    }
+    SideEffect {playback?.setVisible(owner,mediaVisible && registry?.isVisible(row)!=false)}
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     else Box(Modifier.fillMaxSize().testTag(if(!fullscreen && !audio && LocalViewedMedia.current?.id==id) "inline-player-$id" else "player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
         if (audio) AudioControls(player, title, waveform, id,if(onExpand!=null) {{if(onFullscreen!=null) onFullscreen(requireNotNull(playback)) else onExpand()}} else null)
@@ -535,6 +579,15 @@ private fun audioTime(milliseconds: Long): String {
 @Suppress("SetJavaScriptEnabled")
 @Composable
 private fun ProviderPlayer(url: String, server: ServerState, onPlayer: (String?) -> Unit) {
+    val activity=rememberMediaActivity()
+    Box(Modifier.fillMaxSize().then(activity.modifier)) {
+        if(activity.retained) ProviderPlayerContent(url,server,onPlayer,activity.visible)
+    }
+}
+
+@Suppress("SetJavaScriptEnabled")
+@Composable
+private fun ProviderPlayerContent(url: String, server: ServerState, onPlayer: (String?) -> Unit,visible:Boolean) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val webView = remember(url) { WebView(context).apply {
@@ -559,6 +612,13 @@ private fun ProviderPlayer(url: String, server: ServerState, onPlayer: (String?)
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) { webView.onPause(); onPlayer(null) } }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer); webView.stopLoading(); webView.onPause(); webView.destroy() }
+    }
+    LaunchedEffect(webView,visible) {
+        if(visible) webView.onResume()
+        else {
+            webView.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(media){media.pause();});",null)
+            webView.onPause()
+        }
     }
     AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
 }

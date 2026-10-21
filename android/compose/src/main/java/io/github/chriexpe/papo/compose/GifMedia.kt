@@ -47,7 +47,7 @@ internal object ExpressionImages {
     @Synchronized fun loader(context: Context): ImageLoader = shared ?: ImageLoader.Builder(context.applicationContext).components {
         add(AnimatedImageDecoder.Factory())
         add(OkHttpNetworkFetcherFactory(callFactory={ OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).build() }))
-    }.build().also {shared=it}
+    }.memoryCache(null).build().also {shared=it}
 }
 
 @Composable
@@ -80,7 +80,7 @@ internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif:
         catch(e:Exception) {error=e.message ?: "GIF unavailable"}
     }
     val loader=remember(context) {ExpressionImages.loader(context)}
-    if(data!=null && error.isBlank()) AsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel="Message actions"),contentScale=ContentScale.Fit,onError={error="GIF unavailable"})
+    if(data!=null && error.isBlank()) ManagedAsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel="Message actions"),contentScale=ContentScale.Fit,onError={error="GIF unavailable"},retentionKey="gif/${gif.key}/$preview")
     else if(error.isBlank()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp),strokeWidth=2.dp)
     if(error.isNotBlank()) Column(Modifier.align(Alignment.Center).padding(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
         Text(error,style=MaterialTheme.typography.bodySmall,maxLines=3)
