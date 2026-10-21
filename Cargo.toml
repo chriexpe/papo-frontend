@@ -7,7 +7,7 @@ description = "Cliente nativo do Papo — chat self-hosted"
 license = "AGPL-3.0-or-later"
 
 [workspace]
-members = ["crates/papo-core"]
+members = ["crates/papo-core", "crates/papo-android"]
 resolver = "2"
 
 # O Android carrega uma biblioteca, não executa um binário: o sistema abre a

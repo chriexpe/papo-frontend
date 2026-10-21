@@ -78,6 +78,11 @@ cargo clippy --locked --all-targets -- -D warnings
 
 A lógica compartilhada de API, sessões, sincronização, cache e runtime de rede vive em `crates/papo-core`. A UI fica em Rust/egui; mídia, chamadas, WebEmbed e integrações do sistema têm backends específicos por plataforma.
 
+Um cliente Android nativo em Kotlin/Jetpack Compose está em `android/compose`,
+usando o mesmo `papo-core` via JNI. Ele pode ser instalado ao lado do cliente
+egui e inclui um modo demonstração explícito. Veja
+[desenvolvimento e escopo do cliente Compose](docs/android-compose.md).
+
 ## Em andamento
 
 - **Rich presence**
