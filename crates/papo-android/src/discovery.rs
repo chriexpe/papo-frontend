@@ -17,6 +17,9 @@ pub struct Capabilities {
 }
 impl Capabilities {
     pub fn from_store(store: &Store) -> Self {
+        if store.is_server_owner() {
+            return Self {manage_server:true,manage_channels:true,manage_roles:true,ban_members:true,pin_message:true,everyone_message:true,send_attachment:true};
+        }
         let mut value = Self::from(store.my_role_permissions());
         value.manage_server = store.can_manage_server();
         value.manage_channels = store.can_manage_channels();
@@ -99,8 +102,8 @@ pub(crate) fn check_server(
     public: bool,
     password: Option<&str>,
 ) -> Result<(), String> {
-    if name.trim().is_empty() || name.chars().count() > 64 {
-        return Err("Choose a server name between 1 and 64 characters".into());
+    if name.trim().is_empty() || name.chars().count() > 32 {
+        return Err("Choose a server name between 1 and 32 characters".into());
     }
     let making_private = store.server.as_ref().is_some_and(|s| s.public) && !public;
     if (making_private || password.is_some()) && password.is_none_or(|p| p.chars().count() < 8) {

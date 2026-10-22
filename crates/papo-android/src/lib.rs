@@ -23,6 +23,9 @@ mod inbox;
 mod notifications;
 mod legacy;
 pub mod media;
+mod media_edit;
+mod administration;
+mod admin_audit;
 uniffi::setup_scaffolding!();
 
 /// The wire contract is deliberately small and versioned. Kotlin only renders
