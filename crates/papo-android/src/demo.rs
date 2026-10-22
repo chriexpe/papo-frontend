@@ -169,7 +169,7 @@ impl Demo {
             });
         }
         let fixtures = vec![
-            json!({"content":"Uma imagem, sem sair da conversa.","attachments":[{"id":"demo-photo","mime_type":"image/png","original_file_name":"landscape.png","size_bytes":12000,"moderation_status":"clean"}]}),
+            json!({"content":"Uma imagem, sem sair da conversa.","attachments":[{"id":"demo-photo","mime_type":"image/png","original_file_name":"landscape.png","size_bytes":12000,"moderation_status":"pending"}]}),
             json!({"content":"E uma foto em pé.","attachments":[{"id":"demo-portrait","mime_type":"image/png","original_file_name":"portrait.png","moderation_status":"clean"}]}),
             json!({"content":"GIFs também se mexem 🙂","attachments":[{"id":"demo-gif","mime_type":"image/gif","original_file_name":"animation.gif","moderation_status":"clean"}]}),
             json!({"content":"Vídeo com controles nativos.","attachments":[{"id":"demo-video","mime_type":"video/mp4","original_file_name":"clip.mp4","thumbnail_id":"poster","moderation_status":"clean"}]}),

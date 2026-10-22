@@ -756,6 +756,12 @@ impl Attachment {
 
     /// Conteúdo que a moderação marcou como sensível fica embaçado até um
     /// clique.
+    /// Moderation is asynchronous and non-blocking. The backend denies only
+    /// blocked blobs; pending/processing/failed describe the check, not access.
+    pub fn blocked(&self) -> bool {
+        self.moderation_status.as_deref() == Some("blocked")
+    }
+
     pub fn sensitive(&self) -> bool {
         self.moderation_status.as_deref() == Some("sensitive")
     }

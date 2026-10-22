@@ -167,8 +167,7 @@ pub fn check_embed(runtime: &ServerRuntime, id: &str) -> Result<(), String> {
     }
     if !runtime
         .store
-        .messages
-        .iter()
+        .messages_in(&runtime.store.selected_channel)
         .any(|m| m.previews.iter().any(|e| e.id == id))
     {
         return Err("Embed is no longer in the conversation".into());
@@ -185,15 +184,11 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
         MediaResource::Attachment { id, thumbnail } => {
             let attachment = runtime
                 .store
-                .messages
-                .iter()
+                .messages_in(&runtime.store.selected_channel)
                 .flat_map(|m| &m.attachments)
                 .find(|a| a.id == id)
                 .ok_or("Attachment is no longer in the conversation")?;
-            if matches!(
-                attachment.moderation_status.as_deref(),
-                Some("blocked" | "pending" | "processing" | "failed")
-            ) {
+            if attachment.blocked() {
                 return Err("This attachment is not available".into());
             }
             let segments = if thumbnail {
@@ -220,8 +215,7 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
             check_embed(runtime, &id)?;
             let embed = runtime
                 .store
-                .messages
-                .iter()
+                .messages_in(&runtime.store.selected_channel)
                 .flat_map(|m| &m.previews)
                 .find(|e| e.id == id)
                 .ok_or("Embed not found")?;

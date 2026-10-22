@@ -132,14 +132,13 @@ internal fun ReservedMedia(width: Int, height: Int, fallback: Float = 16f / 9f, 
 @Composable
 private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewModel, activePlayer: String?, onPlayer: (String?) -> Unit,onActions: ()->Unit) {
     var revealed by rememberSaveable(server.url, server.me, a.id) { mutableStateOf(false) }
-    val waiting = a.status in listOf("pending", "processing")
-    val blocked = a.status in listOf("blocked", "failed")
+    val blocked = a.status == "blocked"
     val sensitive = a.status == "sensitive" && !revealed
-    if (waiting || blocked || sensitive) {
+    if (blocked || sensitive) {
         ReservedMedia(0, 0, tag = "attachment-${a.id}") {
             Column(Modifier.align(Alignment.Center).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(if (sensitive) Icons.Outlined.VisibilityOff else Icons.Outlined.Shield, null)
-                Text(when { waiting -> "Media is being checked"; blocked -> "Media unavailable"; else -> "Sensitive media" }, modifier = Modifier.padding(top = 8.dp))
+                Text(if (blocked) "Media unavailable" else "Sensitive media", modifier = Modifier.padding(top = 8.dp))
                 if (sensitive) TextButton(onClick = { revealed = true }) { Text("Show media") }
             }
         }

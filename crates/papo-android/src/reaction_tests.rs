@@ -523,3 +523,17 @@ fn leaving_a_catch_up_seek_cancels_future_pagination_without_erasing_the_block()
     assert!(client.navigation_target.is_empty());
     assert_eq!(client.runtime.store.hourglass_range("general"), before);
 }
+
+#[test]
+fn asynchronous_attachment_checks_do_not_block_available_media_but_blocked_files_do() {
+    let fixture=Fixture::new();let mut client=fixture.client();
+    client.runtime.net.session.set_token(Some("fixture".into()));
+    let message=client.runtime.store.messages.iter_mut().find(|m|m.channel_id=="general").unwrap();
+    message.attachments=vec![serde_json::from_value(json!({"id":"pending-file","mime_type":"image/png","moderation_status":"pending"})).unwrap()];
+    for status in ["pending","processing","failed","clean","sensitive"] {
+        client.runtime.store.messages.iter_mut().find(|m|!m.attachments.is_empty()).unwrap().attachments[0].moderation_status=Some(status.into());
+        assert!(media::request(&client.runtime,media::MediaResource::Attachment {id:"pending-file".into(),thumbnail:false}).is_ok(),"{status} describes the check, not authorization");
+    }
+    client.runtime.store.messages.iter_mut().find(|m|!m.attachments.is_empty()).unwrap().attachments[0].moderation_status=Some("blocked".into());
+    assert!(media::request(&client.runtime,media::MediaResource::Attachment {id:"pending-file".into(),thumbnail:false}).is_err());
+}
