@@ -539,7 +539,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 SheetAction("Reply", Icons.Outlined.Reply) { beginReply(message.id) }
             }
             SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
-            val links=(messageLinks(message.content).map {it.url}+message.embeds.map {it.url}+listOfNotNull(GifChoice.marker(message.content)?.let {"https://giphy.com/gifs/$it"})).filter(::isPublicLink).distinct()
+            val links=(message.contextLinks()+message.embeds.map {it.url}+listOfNotNull(GifChoice.marker(message.content)?.let {"https://giphy.com/gifs/$it"})).filter(::isPublicLink).distinct()
             var copied by remember(message.id) {mutableStateOf("")}
             links.forEach {url ->
                 ListItem(headlineContent={Text(url,maxLines=3,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)},
@@ -617,7 +617,7 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                 Text(server.messages.firstOrNull {it.id==message.replyTo}?.previewText() ?: message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             val content=remember(message.content,message.embeds) {message.visibleContent()}
-            if (content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(content,server,model)
+            if (content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(message,server,model,onActions)
             media()
             if(grouped && message.edited) Text(if(appearance.timestamps) "edited · $time" else "edited",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

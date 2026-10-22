@@ -2,6 +2,8 @@ package io.github.chriexpe.papo.compose
 
 import android.net.Uri
 import io.github.chriexpe.papo.core.MediaRequest
+import io.github.chriexpe.papo.core.MarkdownDocument
+import io.github.chriexpe.papo.core.parseMessageMarkdown
 
 internal data class MessageLink(val url: String, val start: Int, val end: Int)
 
@@ -27,9 +29,30 @@ internal fun directMediaKind(url: String): String? {
     }
 }
 
-internal fun ChatMessage.nativeLinks(): List<MessageLink> = messageLinks(content).filter { link ->
+internal fun ChatMessage.document():MarkdownDocument = if(markdown.source==content) markdown else parseMessageMarkdown(content)
+
+internal fun ChatMessage.nativeLinks(): List<MessageLink> {
+    // Code and named Markdown links are never implicit inline players. Keep
+    // original source offsets for previews and exact signed URL spelling.
+    val bare=document().nodes.flatMap {it.spans}.filter {it.kind=="text" && it.link.isBlank()}.flatMap {messageLinks(it.text)}.map {it.url}.toSet()
+    return messageLinks(content).filter { link -> link.url in bare && run {
     val embed=embeds.firstOrNull {it.url==link.url}
     if(embed!=null) embed.nativeMedia else directMediaKind(link.url)!=null
+    }}
+}
+
+internal fun ChatMessage.contextLinks():List<String> = document().nodes.flatMap {node ->
+    messageLinks(node.text).map {it.url} + node.spans.flatMap {span ->
+        if(span.link.isNotBlank()) listOf(span.link) else messageLinks(span.text).map {it.url}
+    }
+}.filter(::isPublicLink).distinct()
+
+internal fun ChatMessage.visibleEmbeds():List<io.github.chriexpe.papo.core.EmbedView> {
+    val doc=document()
+    val images=doc.nodes.flatMap {it.spans}.filter {it.kind=="image"}.map {it.link}.toSet()
+    val code=doc.nodes.flatMap {node -> messageLinks(node.text).map {it.url}+node.spans.filter {it.kind=="code"}.flatMap {messageLinks(it.text)}.map {it.url}}.toSet()
+    val linked=doc.nodes.flatMap {it.spans}.filter {it.kind=="text"}.flatMap {span -> listOf(span.link)+messageLinks(span.text).map {it.url}}.toSet()
+    return embeds.filter {it.sourceType=="custom" || (it.url !in images && (it.url !in code || it.url in linked))}
 }
 
 internal fun ChatMessage.visibleContent(): String {

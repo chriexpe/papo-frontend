@@ -98,7 +98,7 @@ internal fun MessageMedia(message: ChatMessage, server: ServerState, model: Papo
     message.attachments.forEach { attachment ->
         Attachment(attachment, server, model, activePlayer, onPlayer,onActions)
     }
-    message.embeds.forEach { embed ->
+    message.visibleEmbeds().forEach { embed ->
         EmbedCard(embed, server, model, activePlayer, onPlayer,onActions)
     }
     message.nativeLinks().distinctBy {it.url}.filter {link -> message.embeds.none {it.url==link.url}}.forEach {link ->
@@ -270,7 +270,7 @@ private fun AudioPreview(server:ServerState,model:PapoViewModel,media:ViewerMedi
 }
 
 @Composable
-private fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true, gif: GifChoice? = null,publicUrl:String="",onActions:(()->Unit)?=null) {
+internal fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, description: String, resource: MediaResource? = null, embed: EmbedView? = null, author: Boolean = false, viewer: Boolean = true, gif: GifChoice? = null,publicUrl:String="",onActions:(()->Unit)?=null) {
     val context = LocalContext.current
     var retry by remember { mutableStateOf(0) }
     val openViewer=LocalMediaViewer.current
