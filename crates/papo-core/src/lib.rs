@@ -7,6 +7,8 @@ pub mod api;
 pub mod audit;
 pub mod cache;
 pub mod giphy;
+pub mod markdown;
+pub mod format_assist;
 pub mod media_prepare;
 pub mod core;
 pub mod notification;
