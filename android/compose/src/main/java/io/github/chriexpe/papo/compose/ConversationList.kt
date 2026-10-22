@@ -113,7 +113,7 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                 else if(analyzing || !exact || server.searching) item {Box(Modifier.fillMaxWidth().padding(24.dp),contentAlignment=Alignment.Center) {CircularProgressIndicator(Modifier.size(24.dp))}}
                 if(exact && !server.searching && server.error.isNotBlank()) item {SearchNotice(server.error)}
                 if(exact && !server.searching && server.error.isBlank() && results.isEmpty() && analysis?.valid==true && server.connection=="online") item {SearchNotice("No matching messages.")}
-                items(results,key={"message/${it.id}"}) {hit ->ListItem(headlineContent={Text(hit.author.ifBlank {"Message"},fontWeight=FontWeight.SemiBold)},
+                items(results,key={"message/${it.id}"}) {hit ->ListItem(headlineContent={Text(hit.author.ifBlank {"Message"},color=userNameColor(hit.authorId),fontWeight=FontWeight.SemiBold)},
                     overlineContent={Text("#${hit.channelName}")},supportingContent={Text(hit.content.ifBlank {"Attachment"},maxLines=3,overflow=TextOverflow.Ellipsis)},
                     leadingContent={UserAvatar(hit.authorId,hit.author)},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),
                     modifier=Modifier.testTag("search-hit-${hit.id}").clip(RoundedCornerShape(18.dp)).clickable {focus.clearFocus();keyboard?.hide();onMessage(hit.channelId,hit.id)})}
@@ -135,7 +135,7 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
 @Composable private fun SearchHeading(text:String) {Text(text,Modifier.padding(start=20.dp,top=20.dp,bottom=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant)}
 @Composable private fun SearchNotice(text:String) {Text(text,Modifier.padding(20.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)}
 @Composable private fun PersonItem(person:io.github.chriexpe.papo.core.MemberView,onProfile:(String)->Unit) {
-    ListItem(headlineContent={Text(person.name,fontWeight=FontWeight.Medium)},supportingContent={Text("@${person.username}")},leadingContent={UserAvatar(person.id,person.name)},
+    ListItem(headlineContent={Text(person.name,color=userNameColor(person.id),modifier=Modifier.testTag("member-name-${person.id}"),fontWeight=FontWeight.Medium)},supportingContent={Text("@${person.username}")},leadingContent={UserAvatar(person.id,person.name)},
         trailingContent={Icon(Icons.Outlined.PersonOutline,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {onProfile(person.id)})
 }
 @Composable private fun ChannelItem(channel:io.github.chriexpe.papo.core.ChannelView,onOpen:(String)->Unit) {

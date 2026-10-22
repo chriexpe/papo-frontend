@@ -389,6 +389,8 @@ pub struct ChannelView {
 }
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 pub struct MemberView {
+    #[serde(default, rename = "roleColor")]
+    pub role_color: String,
     pub id: String,
     pub username: String,
     pub name: String,

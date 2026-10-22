@@ -580,6 +580,20 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun mainRoleColorIsSharedByChatAndPeople() {
+        chat()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        fun textColor(tag:String):androidx.compose.ui.graphics.Color {
+            val layouts=mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            compose.onNodeWithTag(tag,useUnmergedTree=true).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) {it(layouts)}
+            return layouts.single().layoutInput.style.color
+        }
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF67B989),textColor("author-general-0"))
+        compose.onNodeWithContentDescription("Community members").performClick()
+        assertEquals(androidx.compose.ui.graphics.Color(0xFF67B989),textColor("member-name-ana"))
+        assertTrue(textColor("member-name-bruno")!=androidx.compose.ui.graphics.Color(0xFF67B989))
+    }
+
     @Test fun arrivalsAtTheLiveHeadStayVisibleAndClearTheChannelBadge() {
         chat()
         lateinit var model:PapoViewModel

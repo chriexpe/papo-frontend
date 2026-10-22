@@ -47,7 +47,7 @@ internal fun GlobalAction(title:String,icon:ImageVector,count:Int,onClick:()->Un
 @Composable
 internal fun DirectMessageItem(server:ServerState,model:PapoViewModel,channel:Conversation,onOpen:()->Unit,onProfile:()->Unit,showServer:Boolean=false) {
     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server,model)) {
-        ListItem(headlineContent={Text(channel.name,fontWeight=if(channel.unread) FontWeight.SemiBold else FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)},
+        ListItem(headlineContent={Text(channel.name,color=userNameColor(channel.userId),fontWeight=if(channel.unread) FontWeight.SemiBold else FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)},
             supportingContent=if(showServer) ({Text(server.name,maxLines=1,overflow=TextOverflow.Ellipsis)}) else null,
             leadingContent={UserAvatar(channel.userId,channel.name,Modifier.clickable(onClick=onProfile))},
             trailingContent={if(channel.mentions>0) Badge {Text(channel.mentions.toString())} else if(channel.unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary,CircleShape)) else Icon(Icons.Outlined.ChevronRight,null)},

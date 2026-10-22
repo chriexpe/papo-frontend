@@ -79,7 +79,10 @@ internal fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revi
     }
 }
 
-private fun roleColor(raw:String,fallback:Color):Color = runCatching {Color(android.graphics.Color.parseColor(raw))}.getOrDefault(fallback)
+internal fun roleColor(raw:String,fallback:Color):Color = runCatching {Color(android.graphics.Color.parseColor(raw))}.getOrDefault(fallback)
+
+@Composable
+internal fun userNameColor(id:String):Color = roleColor(LocalProfileContext.current?.server?.members?.firstOrNull {it.id==id}?.roleColor.orEmpty(),MaterialTheme.colorScheme.onSurface)
 
 @Composable
 internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,onDismiss:()->Unit,onMessage:(String)->Unit) {
@@ -113,7 +116,7 @@ internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,o
                     }
                 }
                 Column(Modifier.padding(horizontal=24.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(2.dp)) {
-                    SelectionContainer {Text(name,style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)}
+                    SelectionContainer {Text(name,color=userNameColor(id),style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)}
                     if(username.isNotBlank()) Text("@$username",color=MaterialTheme.colorScheme.onSurfaceVariant,style=MaterialTheme.typography.bodyMedium)
                 }
             }

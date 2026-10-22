@@ -1126,7 +1126,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
                 "reactions": reactions, "attachments": m.attachments.iter().map(media::AttachmentView::from).collect::<Vec<_>>(), "embeds": m.previews.iter().map(media::EmbedView::from).collect::<Vec<_>>(),
             })
         }).collect();
-    let members: Vec<_> = s.members.iter().map(|u| json!({ "id": u.id, "name": u.name, "username":u.username, "presence": format!("{:?}", u.presence).to_lowercase() })).collect();
+    let members: Vec<_> = s.members.iter().map(|u| json!({ "id": u.id, "name": u.name, "username":u.username, "roleColor":u.role_color.map(|[r,g,b]|format!("#{r:02X}{g:02X}{b:02X}")).unwrap_or_default(), "presence": format!("{:?}", u.presence).to_lowercase() })).collect();
     let dms: Vec<_> = s
         .direct_messages
         .iter()

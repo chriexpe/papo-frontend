@@ -549,7 +549,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     if (members) ModalBottomSheet(onDismissRequest = { members = false }) {
         Text("People in ${server.name}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
         LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
-            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name) }, supportingContent = { Text(person.presence) }, leadingContent = { UserAvatar(person.id,person.name) }, modifier = Modifier.clickable {members=false;openProfile(person.id)}) }
+            items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name,color=userNameColor(person.id),modifier=Modifier.testTag("member-name-${person.id}")) }, supportingContent = { Text(person.presence) }, leadingContent = { UserAvatar(person.id,person.name) }, modifier = Modifier.clickable {members=false;openProfile(person.id)}) }
         }
     }
     }
@@ -581,7 +581,7 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(message.author, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
+                Text(message.author, color = if(external==null) userNameColor(message.authorId) else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
                 if(external!=null) AppBadge()
                 if(appearance.timestamps) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
