@@ -84,20 +84,20 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
         Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             ServerHeader(server,model,appError,Modifier.weight(1f))
             GlassPill(Modifier.size(60.dp),radius=20) {
-                Box(Modifier.fillMaxSize().clickable(onClickLabel="Client settings",onClick=onSettings).testTag("account-settings").semantics {contentDescription="Client settings"}.padding(4.dp),contentAlignment=Alignment.Center) {
+                Box(Modifier.fillMaxSize().clickable(onClickLabel=ui(R.string.client_settings),onClick=onSettings).testTag("account-settings").semantics {contentDescription=ui(R.string.client_settings)}.padding(4.dp),contentAlignment=Alignment.Center) {
                     UserAvatar(server.me,server.myName,Modifier.fillMaxSize(),shape=RoundedCornerShape(16.dp))
                 }
             }
         }
         if(server.connection!="online") ConnectionBanner(server.connection) {model.command(Action.Refresh,server.url)}
-        OutlinedTextField(query,::update,placeholder={Text("Search channels, people, messages")},leadingIcon={Icon(Icons.Outlined.Search,null)},
-            trailingIcon=if(query.text.isNotEmpty()) ( {IconButton(onClick={update(TextFieldValue())}) {Icon(Icons.Outlined.Close,"Clear search")}} ) else null,
+        OutlinedTextField(query,::update,placeholder={Text(ui(R.string.search_channels_people_messages))},leadingIcon={Icon(Icons.Outlined.Search,null)},
+            trailingIcon=if(query.text.isNotEmpty()) ( {IconButton(onClick={update(TextFieldValue())}) {Icon(Icons.Outlined.Close,ui(R.string.clear_search))}} ) else null,
             singleLine=true,shape=RoundedCornerShape(24.dp),keyboardOptions=KeyboardOptions(imeAction=ImeAction.Search),
             keyboardActions=KeyboardActions(onSearch={if(hints.isNotEmpty()) pick(hints.first()) else {focus.clearFocus();keyboard?.hide()}}),
             modifier=Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).testTag("global-search").onFocusChanged {focused=it.isFocused})
         if(hints.isNotEmpty()) Surface(Modifier.padding(horizontal=20.dp).fillMaxWidth(),shape=RoundedCornerShape(18.dp),color=MaterialTheme.colorScheme.surfaceContainer) {
             LazyColumn(Modifier.heightIn(max=216.dp).testTag("search-suggestions")) {
-                items(hints,key={it.replacement}) {hint -> ListItem(headlineContent={Text(hint.label,maxLines=2,overflow=TextOverflow.Ellipsis)},
+                items(hints,key={it.replacement}) {hint -> ListItem(headlineContent={Text(searchSuggestionLabel(hint),maxLines=2,overflow=TextOverflow.Ellipsis)},
                     leadingContent={Icon(Icons.Outlined.FilterAlt,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clickable {pick(hint)})}
             }
         }
@@ -115,22 +115,22 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                 if(people.isNotEmpty()) item {SearchHeading("People")}
                 items(people,key={"person/${it.id}"}) {PersonItem(it,onProfile)}
                 item {SearchHeading("Messages")}
-                if(server.connection!="online") item {SearchNotice("Connect to search messages across this server.")}
-                else if(!analyzing && analysis?.valid==false) item {SearchNotice("Complete a filter above, or enter a search term.")}
+                if(server.connection!="online") item {SearchNotice(ui(R.string.connect_to_search_messages_across_this_server))}
+                else if(!analyzing && analysis?.valid==false) item {SearchNotice(ui(R.string.complete_a_filter_above_or_enter_a_search_term))}
                 else if(analyzing || !exact || server.searching) item {Box(Modifier.fillMaxWidth().padding(24.dp),contentAlignment=Alignment.Center) {CircularProgressIndicator(Modifier.size(24.dp))}}
                 if(exact && !server.searching && server.error.isNotBlank()) item {SearchNotice(server.error)}
-                if(exact && !server.searching && server.error.isBlank() && results.isEmpty() && analysis?.valid==true && server.connection=="online") item {SearchNotice("No matching messages.")}
+                if(exact && !server.searching && server.error.isBlank() && results.isEmpty() && analysis?.valid==true && server.connection=="online") item {SearchNotice(ui(R.string.no_matching_messages))}
                 items(results,key={"message/${it.id}"}) {hit ->
                     val row="message/${hit.id}"
                     CompositionLocalProvider(LocalMediaRowId provides row,LocalTimelineMediaVisible provides (row in visible)) {
                         SearchMessageResult(hit,server,model,row in visible,active,onPlayer,{focus.clearFocus();keyboard?.hide();onMessage(hit.channelId,hit.id)},{selectedResult=hit.channelId to it})
                     }
                 }
-                if(exact && server.searchHasMore) item {TextButton(onClick={model.command(Action.Search(query.text,true),server.url)},enabled=!server.searching,modifier=Modifier.fillMaxWidth()) {Text("Load more messages")}}
+                if(exact && server.searchHasMore) item {TextButton(onClick={model.command(Action.Search(query.text,true),server.url)},enabled=!server.searching,modifier=Modifier.fillMaxWidth()) {Text(ui(R.string.load_more_messages))}}
             } else {
-                if(direct) item {SearchHeading("Direct messages")}
+                if(direct) item {SearchHeading(ui(R.string.direct_messages))}
                 val conversations=if(direct) server.dms else server.channels.filter {it.kind!="direct" && it.kind!="voice"}
-                if(conversations.isEmpty()) item {EmptyState("A little quiet here.",if(direct) "Search for someone to start a direct message." else "Your text channels will appear here.")}
+                if(conversations.isEmpty()) item {EmptyState(ui(R.string.a_little_quiet_here),if(direct) ui(R.string.search_for_someone_to_start_a_direct_message) else ui(R.string.your_text_channels_will_appear_here))}
                 items(conversations,key={it.id}) {channel ->
                     if(channel.kind=="category") SearchHeading(channel.name.uppercase())
                     else if(direct) DirectMessageItem(server,model,channel,onOpen={onOpen(channel.id)},onProfile={onProfile(channel.userId)})
@@ -159,4 +159,14 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
         leadingContent={Box(Modifier.size(44.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceContainer),contentAlignment=Alignment.Center) {Text("#",fontSize=23.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}},
         trailingContent={if(channel.mentions>0) Badge {Text(channel.mentions.toString())} else if(channel.unread) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary,CircleShape)) else Icon(Icons.Outlined.ChevronRight,null,tint=MaterialTheme.colorScheme.onSurfaceVariant)},
         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {onOpen(channel.id)})
+}
+
+/** Filter replacements are protocol syntax. Only their explanatory labels use
+ * the app locale; server-provided names and usernames retain their spelling. */
+internal fun searchSuggestionLabel(hint:io.github.chriexpe.papo.core.SearchSuggestion):String = when(hint.replacement) {
+    "de:" -> ui(R.string.search_filter_author,hint.replacement)
+    "em:" -> ui(R.string.search_filter_channel,hint.replacement)
+    "tem:" -> ui(R.string.search_filter_content,hint.replacement)
+    "mentions:" -> ui(R.string.search_filter_mention,hint.replacement)
+    else -> hint.label
 }

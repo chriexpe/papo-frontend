@@ -45,7 +45,7 @@ internal fun ServerIcon(server:ServerState,model:PapoViewModel,modifier:Modifier
     }
     var loaded by remember(server.url,revision) {mutableStateOf(false)}
     Box(modifier.size(48.dp).clip(RoundedCornerShape(16.dp)).testTag("server-icon").semantics {
-        contentDescription="${server.name} server icon";stateDescription=if(loaded) "Icon loaded" else "Initials"
+        contentDescription=ui(R.string.label_1_s_server_icon, server.name);stateDescription=if(loaded) ui(R.string.icon_loaded) else uiLabel("Initials")
     }) {
         if(!loaded) Avatar(server.name,Modifier.fillMaxSize())
         bytes?.let {ManagedAsyncImage(it,null,MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop,onSuccess={loaded=true},onError={loaded=false},retentionKey="server/${server.url}/$revision")}
@@ -58,10 +58,10 @@ internal fun ServerHeader(server:ServerState,model:PapoViewModel,appError:String
     var settingsFromInfo by remember {mutableStateOf(false)}
     val canAdmin=server.capabilities.canAdmin
     GlassPill(modifier.fillMaxWidth(),radius=24) {
-        Row(Modifier.fillMaxWidth().heightIn(min=76.dp).testTag("server-header").clickable(onClickLabel="Server information") {panel="info"}.padding(start=12.dp,end=8.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth().heightIn(min=76.dp).testTag("server-header").clickable(onClickLabel=ui(R.string.server_information)) {panel="info"}.padding(start=12.dp,end=8.dp,top=10.dp,bottom=10.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
             ServerIcon(server,model)
             Text(server.name,Modifier.weight(1f),style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)
-            if(canAdmin) IconButton(onClick={settingsFromInfo=false;panel="settings"}) {Icon(Icons.Outlined.Settings,"Server settings")}
+            if(canAdmin) IconButton(onClick={settingsFromInfo=false;panel="settings"}) {Icon(Icons.Outlined.Settings,ui(R.string.server_settings))}
             else Icon(Icons.Outlined.ExpandMore,null,Modifier.padding(12.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
@@ -81,30 +81,30 @@ private fun ServerInfoSheet(server:ServerState,model:PapoViewModel,appError:Stri
                 ServerIcon(server,model)
                 Column(Modifier.weight(1f)) {
                     Text(server.name,style=MaterialTheme.typography.titleLarge,fontWeight=FontWeight.SemiBold)
-                    Text("${server.members.count {it.presence=="online"}} online · ${server.members.size} people",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui(R.string.online_people,server.members.count {it.presence=="online"},administrationPeople(server.members.size)),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if(server.capabilities.canAdmin) IconButton(onClick=onAdmin) {Icon(Icons.Outlined.Settings,"Server settings")}
-                IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close server information")}
+                if(server.capabilities.canAdmin) IconButton(onClick=onAdmin) {Icon(Icons.Outlined.Settings,ui(R.string.server_settings))}
+                IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,ui(R.string.close_server_information))}
             }}
-            item {CommunitySection("ADDRESS")}
+            item {CommunitySection(ui(R.string.address))}
             item {ListItem(headlineContent={Text(server.url.removePrefix("https://").removePrefix("http://"),style=MaterialTheme.typography.bodyMedium,maxLines=2,overflow=TextOverflow.Ellipsis)},
-                supportingContent=if(copied) ({Text("Copied address")}) else null,trailingContent={Icon(Icons.Outlined.ContentCopy,"Copy server address")},
+                supportingContent=if(copied) ({Text(ui(R.string.copied_address))}) else null,trailingContent={Icon(Icons.Outlined.ContentCopy,ui(R.string.copy_server_address))},
                 colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),modifier=Modifier.clickable {clipboard.setText(AnnotatedString(server.url));copied=true})}
-            if(server.channels.any {it.kind!="category" && it.kind!="direct"}) item {CommunitySection("NOTIFICATIONS")}
+            if(server.channels.any {it.kind!="category" && it.kind!="direct"}) item {CommunitySection(ui(R.string.channel_notifications))}
             items(server.channels.filter {it.kind!="category" && it.kind!="direct"},key={it.id}) {channel ->
                 var expanded by remember {mutableStateOf(false)}
-                val label=when(channel.notificationSettings) {"all"->"All messages";"off"->"Off";else->"Mentions only"}
+                val label=when(channel.notificationSettings) {"all"->ui(R.string.all_messages);"off"->uiLabel("Off");else->ui(R.string.mentions_only)}
                 ListItem(headlineContent={Text(channel.name,maxLines=2,overflow=TextOverflow.Ellipsis)},leadingContent={Icon(if(channel.kind=="voice") Icons.Outlined.VolumeUp else Icons.Outlined.Tag,null)},
                     trailingContent={Box {
                         Row(verticalAlignment=Alignment.CenterVertically) {Text(label,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant);Icon(Icons.Outlined.ChevronRight,null,Modifier.size(20.dp))}
                         DropdownMenu(expanded,{expanded=false}) {
-                            listOf("all" to "All messages","only_mentions" to "Mentions only","off" to "Off").forEach {(value,title) ->
+                            listOf("all" to ui(R.string.all_messages),"only_mentions" to ui(R.string.mentions_only),"off" to uiLabel("Off")).forEach {(value,title) ->
                                 DropdownMenuItem(text={Text(title)},leadingIcon={if(channel.notificationSettings==value) Icon(Icons.Outlined.Check,null)},onClick={expanded=false;model.command(Action.ChannelNotifications(channel.id,value),server.url)})
                             }
                         }
                     }},colors=ListItemDefaults.colors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),modifier=Modifier.testTag("channel-notifications-${channel.id}").clickable {expanded=true})
             }
-            item {HorizontalDivider(Modifier.padding(vertical=12.dp));TextButton(onClick={model.command(Action.MarkServerRead,server.url)},modifier=Modifier.fillMaxWidth()) {Icon(Icons.Outlined.DoneAll,null);Spacer(Modifier.width(8.dp));Text("Mark server as read")}}
+            item {HorizontalDivider(Modifier.padding(vertical=12.dp));TextButton(onClick={model.command(Action.MarkServerRead,server.url)},modifier=Modifier.fillMaxWidth()) {Icon(Icons.Outlined.DoneAll,null);Spacer(Modifier.width(8.dp));Text(ui(R.string.mark_server_as_read))}}
             if(appError.isNotBlank() || server.error.isNotBlank()) item {CommunityError(appError.ifBlank {server.error})}
         }
     }

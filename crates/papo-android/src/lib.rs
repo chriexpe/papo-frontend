@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod account;
+mod recovery;
 pub mod bindings;
 pub mod demo;
 mod discovery;
@@ -1209,6 +1210,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "serverIconRevision":s.server.as_ref().and_then(|s|s.icon.as_deref()).map(blob_revision).unwrap_or_default(),
         "serverPublic":s.server.as_ref().is_some_and(|s|s.public),
         "capabilities":discovery::Capabilities::from_store(s),
+        "canResetPasswords":s.is_server_owner(),
         "roles":s.roles.iter().map(|r|json!({"id":r.id,"name":r.name,"color":r.color.as_deref().unwrap_or_default(),"permissions":discovery::Capabilities::from(r.permissions)})).collect::<Vec<_>>(),
         "searchQuery":"", "searching":s.searching,"searchHasMore":s.search_has_more,
         "searchResults":s.search_results.iter().map(|r|json!({"message":s.search_message(&r.id).filter(|m|m.channel_id==r.channel_id).map(|m|project_message(s,url,m)),"id":r.id,"kind":r.kind,"content":s.display_mentions(&r.content),"channelId":r.channel_id,"channelName":r.channel_name,"authorId":r.author_id.as_deref().unwrap_or_default(),"author":r.author_id.as_ref().and_then(|id|s.member(id)).map(|u|u.name.as_str()).or(r.author_username.as_deref()).unwrap_or_default(),"at":r.created_at.map(|t|t.timestamp_millis()).unwrap_or_default()})).collect::<Vec<_>>(),

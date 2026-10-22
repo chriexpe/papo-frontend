@@ -45,7 +45,7 @@ internal object AudioWaveformDecoder {
             configure(extractor)
             val track = (0 until extractor.trackCount).firstOrNull {
                 extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: throw IOException("No audio track")
+            } ?: throw IOException(ui(R.string.no_audio_track))
             extractor.selectTrack(track)
             val format = extractor.getTrackFormat(track)
             var rate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
@@ -98,9 +98,9 @@ internal object AudioWaveformDecoder {
                         } finally { decoder.releaseOutputBuffer(index, false) }
                     }
                 }
-                if (android.os.SystemClock.elapsedRealtime() - lastProgress > 10_000) throw IOException("Audio decoder stalled")
+                if (android.os.SystemClock.elapsedRealtime() - lastProgress > 10_000) throw IOException(ui(R.string.audio_decoder_stalled))
             }
-            check(peaks.frames > 0 && rate > 0) { "Audio has no decoded samples" }
+            check(peaks.frames > 0 && rate > 0) { ui(R.string.audio_has_no_decoded_samples) }
             AudioWaveform(peaks.finish(), if (durationUs > 0) durationUs / 1000 else (peaks.frames * 1000 / rate).coerceAtLeast(1))
         } finally {
             if (started) runCatching { codec?.stop() }
@@ -109,13 +109,13 @@ internal object AudioWaveformDecoder {
     }
 
     private fun addPcm(buffer: ByteBuffer, encoding: Int, channels: Int, peaks: PeakEnvelope) {
-        require(channels > 0) { "Invalid channel count" }
+        require(channels > 0) { ui(R.string.invalid_channel_count) }
         val bytes = when (encoding) {
             AudioFormat.ENCODING_PCM_8BIT -> 1
             AudioFormat.ENCODING_PCM_16BIT -> 2
             AudioFormat.ENCODING_PCM_24BIT_PACKED -> 3
             AudioFormat.ENCODING_PCM_FLOAT, AudioFormat.ENCODING_PCM_32BIT -> 4
-            else -> throw IOException("Unsupported PCM encoding")
+            else -> throw IOException(ui(R.string.unsupported_pcm_encoding))
         }
         while (buffer.remaining() >= channels * bytes) {
             var peak = 0f

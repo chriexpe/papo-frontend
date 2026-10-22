@@ -11,7 +11,7 @@ internal fun messageDatabasePath(context:Context):String {
     val compose=context.filesDir.resolve("compose-messages.db")
     val legacy=context.filesDir.resolve("data/papo-cache.db")
     val path=(if(!compose.exists() && legacy.exists()) legacy else compose).absolutePath
-    check(preferences.edit().putString("message-database",path).commit()) {"Could not select the message cache"}
+    check(preferences.edit().putString("message-database",path).commit()) {ui(R.string.could_not_select_the_message_cache)}
     return path
 }
 
@@ -27,14 +27,14 @@ internal fun importPreviousAndroid(context:Context,credentials:AndroidSecrets) {
         imported.servers.forEach {if(it !in urls) urls+=it}
         val edit=client.edit().putString("servers",JSONArray(urls).toString())
         if(client.getString("active-server","").isNullOrBlank()) edit.putString("active-server",imported.active)
-        check(edit.commit()) {"Could not import previous servers"}
+        check(edit.commit()) {ui(R.string.could_not_import_previous_servers)}
         val appearance=context.getSharedPreferences("compose-appearance",0)
         val preferences=appearance.edit()
         if(!appearance.contains("theme")) preferences.putString("theme",imported.theme)
         mapOf("glass" to imported.glass,"notifications-enabled" to imported.notifications,"open-newest" to imported.openNewest).forEach {(key,value)->if(!appearance.contains(key)) preferences.putBoolean(key,value)}
-        check(preferences.commit()) {"Could not import previous preferences"}
+        check(preferences.commit()) {ui(R.string.could_not_import_previous_preferences)}
         androidx.work.WorkManager.getInstance(context).cancelAllWorkByTag("papo-reconcile")
     }
     messageDatabasePath(context)
-    check(client.edit().putBoolean("legacy-android-imported",true).commit()) {"Could not complete Android migration"}
+    check(client.edit().putBoolean("legacy-android-imported",true).commit()) {ui(R.string.could_not_complete_android_migration)}
 }

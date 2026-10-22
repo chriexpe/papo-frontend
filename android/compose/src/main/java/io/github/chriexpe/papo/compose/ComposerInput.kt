@@ -149,7 +149,7 @@ internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoVi
                     formatting.skip(draft)?.let {onChange(it);true} ?: false
                 } else false
             }.onFocusChanged {onFocusChange(it.isFocused)}.testTag("composer-input").semantics {
-                if(projection.positions.isNotEmpty()) stateDescription="Contains stickers: ${projection.positions.map {it.name}.distinct().joinToString()}"
+                if(projection.positions.isNotEmpty()) stateDescription=ui(R.string.contains_stickers_1_s, projection.positions.map {it.name}.distinct().joinToString())
             }.drawWithContent {
                 frame // AnimatedImageDrawable invalidates this draw without recomposing the editor.
                 drawContent()
@@ -187,7 +187,7 @@ internal fun ComposerSuggestions(draft:ComposerDraft, server:ServerState, model:
                 SuggestionRow(person.name,person.username,{UserAvatar(person.id,person.name)},"Mention ${person.name}") {onPick(draft.insert("@${person.name}",trigger,person))}
             }
             items(stickers,key={"sticker/${it.id}"}) {e ->
-                SuggestionRow(":${e.name}:","Server sticker",{EmojiGlyph(server,EmojiChoice(e.id,true,e.name),36,model)},"Insert :${e.name}:") {onPick(draft.insert(":${e.name}:",trigger))}
+                SuggestionRow(":${e.name}:",ui(R.string.server_sticker),{EmojiGlyph(server,EmojiChoice(e.id,true,e.name),36,model)},"Insert :${e.name}:") {onPick(draft.insert(":${e.name}:",trigger))}
             }
         }
     }

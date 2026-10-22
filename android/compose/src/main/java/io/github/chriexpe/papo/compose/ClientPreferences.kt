@@ -23,5 +23,8 @@ internal class ClientPreferences(private val storage:SharedPreferences?=null) {
     val catchUpHourglass get()=boolean("catch-up-hourglass")
     val openNewest get()=boolean("open-newest")
     val showDescription get()=boolean("description",false)
+    val trustedDomains get()=runCatching {val items=org.json.JSONArray(string("trusted-domains","[]"));(0 until items.length()).mapNotNull {trustedDomain(items.getString(it))}.toSet()}.getOrDefault(emptySet())
+    fun trust(host:String) {trustedDomain(host)?.let {set("trusted-domains",org.json.JSONArray((trustedDomains+it).sorted()).toString())}}
+    fun untrust(host:String) {set("trusted-domains",org.json.JSONArray((trustedDomains-host).sorted()).toString())}
 }
 internal val LocalClientPreferences=compositionLocalOf {ClientPreferences()}

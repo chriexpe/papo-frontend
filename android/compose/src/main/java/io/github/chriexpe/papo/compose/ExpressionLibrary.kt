@@ -60,7 +60,7 @@ internal class ExpressionLibrary(private val context: Context) {
         val j = JSONObject().put("stickerFavorites",JSONArray(state.favoriteStickers)).put("favorites", JSONArray().apply { state.favorites.forEach { put(it.json()) } })
             .put("recent", JSONArray().apply { state.recent.forEach { put(it.json()) } })
             .put("usage",JSONArray().apply { state.usage.forEach { (e,n) -> put(JSONObject().put("value",e.value).put("custom",e.custom).put("name",e.name).put("count",n)) } })
-        check(preferences.edit().putString(owner,j.toString()).commit()) { "Couldn’t save your expression library" }
+        check(preferences.edit().putString(owner,j.toString()).commit()) { ui(R.string.couldn_t_save_your_expression_library) }
         mutable.value = mutable.value + (owner to state)
     }
     @Synchronized fun used(owner: String, choices: List<EmojiChoice>) {

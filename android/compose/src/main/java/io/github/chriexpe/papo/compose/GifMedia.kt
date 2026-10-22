@@ -33,7 +33,7 @@ import java.security.MessageDigest
 internal fun publicGifSource(url: String): MediaRequest {
     if(url.startsWith("file:///android_asset/demo/")) return MediaRequest(url=url,headers=emptyMap(),origin="demo",cacheKey=url)
     val uri=Uri.parse(url)
-    require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo==null) { "Invalid GIF address" }
+    require(uri.scheme in listOf("http","https") && !uri.host.isNullOrBlank() && uri.userInfo==null) { ui(R.string.invalid_gif_address) }
     val origin=uri.buildUpon().path("").query(null).fragment(null).build().toString().trimEnd('/')
     return MediaRequest(url=url,headers=emptyMap(),origin=origin,cacheKey="public/$url")
 }
@@ -44,8 +44,8 @@ internal fun GifStar(server: ServerState, model: PapoViewModel, gif: GifChoice, 
     val owner=model.expressions.owner(server)
     val state=states[owner] ?: model.expressions.state(owner)
     val selected=state.favorites.any {it.key==gif.key}
-    IconButton(onClick={model.toggleGif(server,gif)},modifier=modifier.padding(4.dp).size(48.dp).semantics {stateDescription=if(selected) "Favorite" else "Not a favorite"}) {
-        Icon(if(selected) Icons.Outlined.Star else Icons.Outlined.StarBorder,if(selected) "Remove GIF from favorites" else "Favorite GIF",tint=if(selected) MaterialTheme.colorScheme.primary else if(light) Color.White else MaterialTheme.colorScheme.onSurface)
+    IconButton(onClick={model.toggleGif(server,gif)},modifier=modifier.padding(4.dp).size(48.dp).semantics {stateDescription=if(selected) uiLabel("Favorite") else ui(R.string.not_favorite)}) {
+        Icon(if(selected) Icons.Outlined.Star else Icons.Outlined.StarBorder,if(selected) ui(R.string.remove_gif_from_favorites) else ui(R.string.favorite_gif),tint=if(selected) MaterialTheme.colorScheme.primary else if(light) Color.White else MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -70,14 +70,14 @@ internal fun BoxScope.GifArtwork(server: ServerState, model: PapoViewModel, gif:
                 }
             }
         } catch(e:CancellationException) {throw e}
-        catch(e:Exception) {error=e.message ?: "GIF unavailable"}
+        catch(e:Exception) {error=e.message ?: ui(R.string.gif_unavailable)}
     }
     val loader=remember(context) {MediaImages.loader(context)}
-    if(data!=null && error.isBlank()) ManagedAsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel="Message actions"),contentScale=ContentScale.Fit,onError={error="GIF unavailable"},retentionKey="gif/${gif.key}/$preview")
+    if(data!=null && error.isBlank()) ManagedAsyncImage(data,gif.title,imageLoader=loader,modifier=Modifier.fillMaxSize().combinedClickable(onClick=onClick,onLongClick=onLongClick,onLongClickLabel=ui(R.string.message_actions)),contentScale=ContentScale.Fit,onError={error=ui(R.string.gif_unavailable)},retentionKey="gif/${gif.key}/$preview")
     else if(error.isBlank()) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp),strokeWidth=2.dp)
     if(error.isNotBlank()) Column(Modifier.align(Alignment.Center).padding(12.dp),horizontalAlignment=Alignment.CenterHorizontally) {
         Text(error,style=MaterialTheme.typography.bodySmall,maxLines=3)
-        TextButton(onClick={retry++}) {Text("Retry")}
+        TextButton(onClick={retry++}) {Text(ui(R.string.retry))}
     }
 }
 

@@ -87,7 +87,7 @@ internal fun PinMessageAction(server:ServerState,model:PapoViewModel,channel:Str
     val busy=model.pinKey(server,channel,message.id) in pending
     var error by remember(server.url,server.me,channel,message.id) {mutableStateOf("")}
     val scope=rememberCoroutineScope()
-    ListItem(headlineContent={Text(if(message.pinned) "Unpin message" else "Pin message")},leadingContent={Icon(Icons.Outlined.PushPin,null)},
+    ListItem(headlineContent={Text(if(message.pinned) ui(R.string.unpin_message) else ui(R.string.pin_message))},leadingContent={Icon(Icons.Outlined.PushPin,null)},
         trailingContent=if(busy) {{CircularProgressIndicator(Modifier.size(20.dp),strokeWidth=2.dp)}} else null,
         supportingContent=if(error.isNotBlank()) {{Text(error,color=MaterialTheme.colorScheme.error)}} else null,
         modifier=Modifier.clip(RoundedCornerShape(16.dp)).clickable(enabled=!busy) {
@@ -95,7 +95,7 @@ internal fun PinMessageAction(server:ServerState,model:PapoViewModel,channel:Str
             scope.launch {
                 try {model.setPinned(server,channel,message.id,!message.pinned);onDone()}
                 catch(e:CancellationException) {throw e}
-                catch(e:Exception) {error=e.message ?: "Couldn’t update this pin. Try again."}
+                catch(e:Exception) {error=e.message ?: ui(R.string.couldn_t_update_this_pin_try_again)}
             }
         })
 }
@@ -105,9 +105,9 @@ internal fun MessageResultCard(message:ChatMessage,channelName:String,server:Ser
     val openProfile=LocalOpenProfile.current
     val external=message.externalAuthor
     val openExternal=LocalOpenExternalProfile.current
-    val date=remember(message.at) {SimpleDateFormat("dd MMM yyyy · HH:mm",Locale.getDefault()).format(Date(message.at))}
+    val date=remember(message.at,AppLanguage.locale) {SimpleDateFormat("dd MMM yyyy · HH:mm",AppLanguage.locale).format(Date(message.at))}
     Column(Modifier.fillMaxWidth().padding(horizontal=4.dp,vertical=6.dp).testTag(tag).clip(RoundedCornerShape(18.dp))
-        .background(MaterialTheme.colorScheme.surfaceContainerLow).combinedClickable(onClick=onOpen,onClickLabel="Go to original message",onLongClick=onActions,onLongClickLabel="Message actions").padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        .background(MaterialTheme.colorScheme.surfaceContainerLow).combinedClickable(onClick=onOpen,onClickLabel=ui(R.string.go_to_original_message),onLongClick=onActions,onLongClickLabel=ui(R.string.message_actions)).padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
             val avatarAction=Modifier.combinedClickable(onClick={if(external!=null) openExternal(external) else openProfile(message.authorId)},onLongClick=onActions)
             // Allocate the whole minimum touch target so it cannot overlap the
@@ -119,7 +119,7 @@ internal fun MessageResultCard(message:ChatMessage,channelName:String,server:Ser
                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
                     Text(message.author,color=if(external==null) userNameColor(message.authorId) else MaterialTheme.colorScheme.onSurface,fontWeight=FontWeight.SemiBold,modifier=Modifier.weight(1f,false),maxLines=2,overflow=TextOverflow.Ellipsis)
                     if(external!=null) AppBadge()
-                    if(message.pinned) Icon(Icons.Outlined.PushPin,"Pinned message",Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary)
+                    if(message.pinned) Icon(Icons.Outlined.PushPin,ui(R.string.pinned_message),Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary)
                 }
             }
             Text(date,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=2,modifier=Modifier.widthIn(max=100.dp))
@@ -135,7 +135,7 @@ internal fun ResultMessageActions(message:ChatMessage,channel:String,server:Serv
     ModalBottomSheet(onDismissRequest=onDismiss) {
         Column(Modifier.navigationBarsPadding().heightIn(max=640.dp).verticalScroll(rememberScrollState()).padding(horizontal=16.dp)) {
             Text(message.author,style=MaterialTheme.typography.titleMedium,modifier=Modifier.padding(16.dp))
-            SheetAction("Copy text",Icons.Outlined.ContentCopy) {clipboard.setText(AnnotatedString(message.content));onDismiss()}
+            SheetAction(ui(R.string.copy_text),Icons.Outlined.ContentCopy) {clipboard.setText(AnnotatedString(message.content));onDismiss()}
             MessageLinkActions(message)
             PinMessageAction(server,model,channel,message,onDismiss)
             Spacer(Modifier.height(16.dp))
@@ -154,7 +154,7 @@ internal fun PinnedMessages(server:ServerState,model:PapoViewModel,onDismiss:()-
         loading=true;error=""
         try {model.loadPins(server,channel)}
         catch(e:CancellationException) {throw e}
-        catch(e:Exception) {error=e.message ?: "Couldn’t load pins. Try again."}
+        catch(e:Exception) {error=e.message ?: ui(R.string.couldn_t_load_pins_try_again)}
         finally {loading=false}
     }
     DisposableEffect(server.url,server.me,channel) {
@@ -167,13 +167,13 @@ internal fun PinnedMessages(server:ServerState,model:PapoViewModel,onDismiss:()-
     ModalBottomSheet(onDismissRequest=onDismiss,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).navigationBarsPadding().testTag("pinned-messages")) {
             Row(Modifier.fillMaxWidth().padding(start=20.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {Text("Pinned messages",style=MaterialTheme.typography.titleLarge);Text(server.conversation?.name.orEmpty(),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                Column(Modifier.weight(1f)) {Text(ui(R.string.pinned_messages),style=MaterialTheme.typography.titleLarge);Text(server.conversation?.name.orEmpty(),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                 if(waiting) CircularProgressIndicator(Modifier.size(24.dp),strokeWidth=2.dp)
-                IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close pinned messages")}
+                IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,ui(R.string.close_pinned_messages))}
             }
-            if(loadError.isNotBlank() && !waiting) Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically) {Text(loadError,Modifier.weight(1f),color=MaterialTheme.colorScheme.error);TextButton(onClick={refresh++}) {Text("Retry")}}
-            if(server.connection!="online") Text("Offline · showing saved pins",Modifier.padding(horizontal=20.dp,vertical=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            if(!waiting && server.pinnedMessages.isEmpty() && loadError.isBlank()) EmptyState("No pinned messages yet.","Important messages can be pinned here for everyone in this conversation.")
+            if(loadError.isNotBlank() && !waiting) Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically) {Text(loadError,Modifier.weight(1f),color=MaterialTheme.colorScheme.error);TextButton(onClick={refresh++}) {Text(ui(R.string.retry))}}
+            if(server.connection!="online") Text(ui(R.string.offline_showing_saved_pins),Modifier.padding(horizontal=20.dp,vertical=8.dp),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            if(!waiting && server.pinnedMessages.isEmpty() && loadError.isBlank()) EmptyState(ui(R.string.no_pinned_messages_yet),ui(R.string.important_messages_can_be_pinned_here_for_everyone_in_this_conversation))
             Box(Modifier.weight(1f)) {
                 MessageResultsMediaHost(server,model,list,server.pinnedMessages.map {"pin/${it.id}"}) {active,onPlayer,visible ->
                     LazyColumn(state=list,modifier=Modifier.fillMaxSize().testTag("pinned-message-list"),contentPadding=PaddingValues(8.dp)) {
@@ -200,17 +200,17 @@ internal fun SearchMessageResult(hit:io.github.chriexpe.papo.core.SearchHit,serv
         loading=true;error=""
         try {model.loadResultMessage(server,hit.channelId,hit.id)}
         catch(e:CancellationException) {throw e}
-        catch(e:Exception) {error=e.message ?: "Couldn’t load this message."}
+        catch(e:Exception) {error=e.message ?: ui(R.string.couldn_t_load_this_message)}
         finally {loading=false}
     }
     val message=hit.message
     if(message!=null) MessageResultCard(message,hit.channelName,server,model,active,onPlayer,onOpen,{onActions(message)},"search-hit-${hit.id}")
     else Column(Modifier.fillMaxWidth().padding(12.dp).testTag("search-hit-${hit.id}").clip(RoundedCornerShape(18.dp)).clickable(onClick=onOpen).padding(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        Text(hit.author.ifBlank {"Message"},fontWeight=FontWeight.SemiBold)
+        Text(hit.author.ifBlank {ui(R.string.message)},fontWeight=FontWeight.SemiBold)
         Text("#${hit.channelName}",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)
-        Text(hit.content.ifBlank {"Attachment"},style=MaterialTheme.typography.bodyLarge)
+        Text(hit.content.ifBlank {ui(R.string.attachment)},style=MaterialTheme.typography.bodyLarge)
         if(loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if(error.isNotBlank()) Row(verticalAlignment=Alignment.CenterVertically) {Text(error,Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error);TextButton(onClick={error="";attempt++}) {Text("Retry")}}
+        if(error.isNotBlank()) Row(verticalAlignment=Alignment.CenterVertically) {Text(error,Modifier.weight(1f),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.error);TextButton(onClick={error="";attempt++}) {Text(ui(R.string.retry))}}
     }
 }
 
@@ -221,8 +221,8 @@ internal fun MessageLinkActions(message:ChatMessage) {
             var copied by remember(message.id) {mutableStateOf("")}
             links.forEach {url ->
                 ListItem(headlineContent={Text(url,maxLines=3,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)},
-                    supportingContent=if(copied==url) {{Text("Copied URL")}} else null,
-                    trailingContent={IconButton(onClick={clipboard.setText(AnnotatedString(url));copied=url}) {Icon(Icons.Outlined.ContentCopy,"Copy URL: $url")}})
+                    supportingContent=if(copied==url) {{Text(ui(R.string.copied_url))}} else null,
+                    trailingContent={IconButton(onClick={clipboard.setText(AnnotatedString(url));copied=url}) {Icon(Icons.Outlined.ContentCopy,ui(R.string.copy_url_1_s, url))}})
             }
 
 }

@@ -35,9 +35,9 @@ internal fun AudioWaveformSeek(state: WaveformState, progress: Float, enabled: B
     val levels = state.data?.levels
     Canvas(modifier.height(48.dp).testTag("waveform-$id")
         .semantics {
-            contentDescription = "Audio position"
+            contentDescription = ui(R.string.audio_position)
             progressBarRangeInfo = ProgressBarRangeInfo(progress.coerceIn(0f, 1f), 0f..1f)
-            stateDescription = when { levels != null -> "Waveform ready"; state.failed -> "Waveform unavailable"; else -> "Loading waveform" }
+            stateDescription = when { levels != null -> ui(R.string.waveform_ready); state.failed -> ui(R.string.waveform_unavailable); else -> ui(R.string.loading_waveform) }
             if (enabled) setProgress { seek(it.coerceIn(0f, 1f)); true } else disabled()
         }
         .pointerInput(enabled) {

@@ -360,7 +360,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 if (!attachmentsOnly && attachmentDraft.files.isEmpty()) model.send(server,encoded,sentReply,onResult)
                 else model.attachments.send(draftKey,server,encoded,sentReply,onResult)
             } catch(e:kotlinx.coroutines.CancellationException) {throw e}
-            catch(e:Exception) {submitting=false; model.attachments.report(draftKey,e.message ?: "Couldn’t prepare this message")}
+            catch(e:Exception) {submitting=false; model.attachments.report(draftKey,e.message ?: ui(R.string.couldn_t_prepare_this_message))}
         }
     }
 
@@ -371,27 +371,27 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             contentPadding = PaddingValues(top = headerHeight + 8.dp, bottom = composerHeight + 8.dp),
         ) {
             if (server.messages.isEmpty()) item("empty") {
-                EmptyState(if (server.connection == "online") "The start of something good." else "No saved messages yet.",
-                    if (server.connection == "online") "Say hello in ${channel.name}." else "Messages will appear when the server is reachable.")
+                EmptyState(if (server.connection == "online") ui(R.string.the_start_of_something_good) else ui(R.string.no_saved_messages_yet),
+                    if (server.connection == "online") ui(R.string.say_hello_in_1_s, channel.name) else ui(R.string.messages_will_appear_when_the_server_is_reachable))
             }
             if(server.canLoadNewer) item("newer") {
-                TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text("Load later messages")}
+                TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text(ui(R.string.load_later_messages))}
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !pins && !overlayBlocking),LocalMediaRowId provides message.id) {
                 Column {
-                if(appearance.catchUpHourglass && message.id==server.reading.gapStart) UnreadDivider("Unread ↓","unread-gap-start")
-                else if(message.id==entryUnread) UnreadDivider("New messages ↓","unread-new")
+                if(appearance.catchUpHourglass && message.id==server.reading.gapStart) UnreadDivider(ui(R.string.unread_below),"unread-gap-start")
+                else if(message.id==entryUnread) UnreadDivider(ui(R.string.new_messages),"unread-new")
                 MessageRow(message, server, model, grouped=message.id in groupedMessages, canReply=!recording && !submitting && !attachmentDraft.sending && !overlayBlocking && viewedMedia==null,onReply={beginReply(message.id,true)}, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
-                if(appearance.catchUpHourglass && message.id==server.reading.gapEnd) UnreadDivider("Unread ↑","unread-gap-end")
+                if(appearance.catchUpHourglass && message.id==server.reading.gapEnd) UnreadDivider(ui(R.string.unread_above),"unread-gap-end")
                 }
                 }
             }
             if (server.canLoadOlder) item("history") {
                 TextButton(onClick = { model.command(Action.Older) }, enabled = !server.loadingOlder, modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                    if (server.loadingOlder) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Load earlier messages")
+                    if (server.loadingOlder) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text(ui(R.string.load_earlier_messages))
                 }
             }
         }
@@ -406,21 +406,21 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             GlassPill(Modifier.fillMaxWidth()) {
                 Column(Modifier.fillMaxWidth().testTag("channel-header")
                     .animateContentSize()
-                    .clickable(role = Role.Button, onClickLabel = if (descriptionExpanded) "Hide channel description" else "Show channel description") {
+                    .clickable(role = Role.Button, onClickLabel = if (descriptionExpanded) ui(R.string.hide_channel_description) else ui(R.string.show_channel_description)) {
                         descriptionTouched = true
                         descriptionExpanded = !descriptionExpanded
                     }
                     .semantics { stateDescription = if (descriptionExpanded) "Expanded" else "Collapsed" }) {
                     Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.width(96.dp)) {IconButton(onClick = onBack) {Icon(Icons.Outlined.ArrowBack,"Back to conversations")}}
+                        Box(Modifier.width(96.dp)) {IconButton(onClick = onBack) {Icon(Icons.Outlined.ArrowBack,ui(R.string.back_to_conversations))}}
                         Text(channel.name, modifier = Modifier.weight(1f).padding(horizontal = 4.dp), textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        IconButton(onClick = {keyboard?.hide();focus.clearFocus();pins=true}) {Icon(Icons.Outlined.PushPin,"Pinned messages")}
-                        IconButton(onClick = { members = true }) { Icon(Icons.Outlined.PeopleOutline, "Community members") }
+                        IconButton(onClick = {keyboard?.hide();focus.clearFocus();pins=true}) {Icon(Icons.Outlined.PushPin,ui(R.string.pinned_messages))}
+                        IconButton(onClick = { members = true }) { Icon(Icons.Outlined.PeopleOutline, ui(R.string.community_members)) }
                     }
                     if (descriptionExpanded) {
                         Text(channel.topic.ifBlank {
-                            if (channel.kind == "direct") "Direct conversation with ${channel.name}." else "No channel description yet."
+                            if (channel.kind == "direct") ui(R.string.direct_conversation_with_1_s, channel.name) else ui(R.string.no_channel_description_yet)
                         }, modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 2.dp, bottom = 18.dp)
                             .heightIn(max = 160.dp).verticalScroll(rememberScrollState()),
                             textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium,
@@ -439,8 +439,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             if(server.loadingContext || server.reading.seekingCatchUp) GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
                 Row(Modifier.padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
-                    Text(if(server.reading.seekingCatchUp) "Loading earlier unread messages…" else "Opening original message…",style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
-                    TextButton(onClick={jumpToLatest()}) {Text("Cancel")}
+                    Text(if(server.reading.seekingCatchUp) ui(R.string.loading_earlier_unread_messages) else ui(R.string.opening_original_message),style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
+                    TextButton(onClick={jumpToLatest()}) {Text(ui(R.string.cancel))}
                 }
             }
             if(composerFocused && !recording && !emojiPicker && !gifPicker) ComposerSuggestions(composer,server,model) {updateComposer(it)}
@@ -454,24 +454,24 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         })
                         else Column {
                             PendingAttachments(attachmentDraft,edit={file ->focus.clearFocus();keyboard?.hide();scope.launch {
-                                try {imageEdit=file to MediaEditorSource.attachment(file)} catch(e:kotlinx.coroutines.CancellationException) {throw e} catch(e:Exception) {model.attachments.report(draftKey,e.message ?: "Couldn’t edit this image")}
+                                try {imageEdit=file to MediaEditorSource.attachment(file)} catch(e:kotlinx.coroutines.CancellationException) {throw e} catch(e:Exception) {model.attachments.report(draftKey,e.message ?: ui(R.string.couldn_t_edit_this_image))}
                             }}) {model.attachments.remove(draftKey,it)}
-                            if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel=ui(R.string.open_original_message)) {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.previewText()}" } ?: "Reply to message",
+                                Text(server.messages.find { it.id == reply }?.let { ui(R.string.reply_to_1_s_2_s, it.author, it.previewText()) } ?: ui(R.string.reply_to_message),
                                     maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
-                                IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
+                                IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, ui(R.string.cancel_reply), Modifier.size(18.dp)) }
                             }
                             Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=appearance.animations && viewedMedia==null && !emojiPicker && !gifPicker)
-                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
-                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
+                                ComposerInput(composer,server,model,ui(R.string.message_to,if(channel.kind=="direct") channel.name else "#${channel.name}"),onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=appearance.animations && viewedMedia==null && !emojiPicker && !gifPicker)
+                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,ui(R.string.emoji_and_stickers),Modifier.size(22.dp)) }
+                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,ui(R.string.gif_picker),Modifier.size(24.dp)) }
                                 FilledIconButton(onClick = {
                                     if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
                                     else submitMessage(false)
                                 }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing && !gifPreparing,
                                     modifier = Modifier.size(48.dp)) {
-                                    if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
+                                    if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, ui(R.string.send_message))
                                 }
                             }
                         }
@@ -483,19 +483,19 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             if(server.reading.mentions.isNotEmpty()) BadgedBox(badge={if(server.reading.mentions.size>1) Badge(Modifier.testTag("mention-count")) {Text(shortcutCount(server.reading.mentions.size))}}) {
                 GlassPill(radius=18) {
                     IconButton(onClick={openOriginal(server.reading.mentions.first())},modifier=Modifier.size(48.dp).testTag("mention-shortcut")) {
-                        Icon(Icons.Outlined.Notifications,"${server.reading.mentions.size} unread mentions; go to newest")
+                        Icon(Icons.Outlined.Notifications,uiQuantity(R.plurals.mention_count,server.reading.mentions.size))
                     }
                 }
             }
             if(appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank()) GlassPill(radius=18) {
                 IconButton(onClick={followingLatest=false;latestPhase=LatestPhase.FirstNew;jumping=true;focus.clearFocus();keyboard?.hide();model.command(Action.CatchUp(channel.id,server.me),url=server.url,onFailure={jumping=false})},modifier=Modifier.size(48.dp).testTag("hourglass-shortcut")) {
-                    Icon(Icons.Outlined.HourglassEmpty,"Go to oldest unread message in catch-up block")
+                    Icon(Icons.Outlined.HourglassEmpty,ui(R.string.go_to_oldest_unread_message_in_catch_up_block))
                 }
             }
             if ((!nearBottom || server.browsingHistory || appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank()) && server.messages.isNotEmpty()) BadgedBox(badge={if(arrived.isNotEmpty()) Badge(Modifier.testTag("latest-count")) {Text(shortcutCount(arrived.size))}}) {
                 GlassPill(Modifier.testTag("latest-messages"),radius=18) {
                     IconButton(onClick=::latestMessages,modifier=Modifier.size(48.dp)) {
-                        Icon(Icons.Outlined.ArrowDownward,if(appearance.catchUpHourglass && nearBottom && latestPhase==LatestPhase.ClearCatchUp && server.reading.hourglassTarget.isNotBlank()) "Clear catch-up block" else if(arrived.isNotEmpty() && latestPhase==LatestPhase.FirstNew) "Go to first new message" else "Latest messages")
+                        Icon(Icons.Outlined.ArrowDownward,if(appearance.catchUpHourglass && nearBottom && latestPhase==LatestPhase.ClearCatchUp && server.reading.hourglassTarget.isNotBlank()) ui(R.string.clear_catch_up_block) else if(arrived.isNotEmpty() && latestPhase==LatestPhase.FirstNew) ui(R.string.go_to_first_new_message) else ui(R.string.latest_messages))
                     }
                 }
             }
@@ -518,52 +518,52 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     reactionPeople?.let { (id,emoji) -> ReactionPeople(server,model,id,emoji,onDismiss={reactionPeople=null}) }
 
     if (confirmAttachmentRetry) AlertDialog(onDismissRequest = { confirmAttachmentRetry = false },
-        title = { Text("Retry sending attachments?") },
-        text = { Text("The server may already have received the previous upload. Check the conversation first: sending again could duplicate it.") },
-        confirmButton = { TextButton(onClick = { confirmAttachmentRetry = false; submitMessage(false) }) { Text("Send again") } },
-        dismissButton = { TextButton(onClick = { confirmAttachmentRetry = false }) { Text("Cancel") } })
+        title = { Text(ui(R.string.retry_sending_attachments)) },
+        text = { Text(ui(R.string.the_server_may_already_have_received_the_previous_upload_check_the_conversa)) },
+        confirmButton = { TextButton(onClick = { confirmAttachmentRetry = false; submitMessage(false) }) { Text(ui(R.string.send_again)) } },
+        dismissButton = { TextButton(onClick = { confirmAttachmentRetry = false }) { Text(ui(R.string.cancel)) } })
 
     selected?.let { message -> ModalBottomSheet(onDismissRequest = { selected = null }) {
         Column(Modifier.navigationBarsPadding().heightIn(max=640.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-            Text("${message.author} · ${remember(message.at) {SimpleDateFormat("dd MMM yyyy · HH:mm",Locale.getDefault()).format(Date(message.at))}}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(horizontal=16.dp,vertical=8.dp))
-            Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+            Text("${message.author} · ${remember(message.at,AppLanguage.locale) {SimpleDateFormat("dd MMM yyyy · HH:mm",AppLanguage.locale).format(Date(message.at))}}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(horizontal=16.dp,vertical=8.dp))
+            Text(message.content.ifBlank { ui(R.string.message) }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
                 val favorites=expressions.favoriteStickers.mapNotNull {id -> server.emojis.firstOrNull {it.id==id}?.let {EmojiChoice(it.id,true,it.name)}}
                 val frequent=favorites + (expressions.usage.map {it.first}.filter { !it.custom || server.emojis.any { e->e.id==it.value } } + server.emojis.map {EmojiChoice(it.id,true,it.name)} + listOf("👍","❤️","😂","🎉","👀").map {EmojiChoice(it)}).distinctBy {it.key}.filter {e -> favorites.none {it.key==e.key}}.take(5)
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
                     LazyRow(Modifier.weight(1f),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                        items(frequent,key={it.key}) { emoji -> IconButton(onClick = { model.react(server,message,emoji); selected=null },modifier=Modifier.semantics {contentDescription="React with ${emoji.token}"}) { EmojiGlyph(server,emoji,28,model) } }
+                        items(frequent,key={it.key}) { emoji -> IconButton(onClick = { model.react(server,message,emoji); selected=null },modifier=Modifier.semantics {contentDescription=ui(R.string.react_with_1_s, emoji.token)}) { EmojiGlyph(server,emoji,28,model) } }
                     }
-                    IconButton(onClick={emojiTarget=message; selected=null; emojiPicker=true}) {Icon(Icons.Outlined.AddReaction,"More reactions")}
+                    IconButton(onClick={emojiTarget=message; selected=null; emojiPicker=true}) {Icon(Icons.Outlined.AddReaction,ui(R.string.more_reactions))}
                 }
-                SheetAction("Reply", Icons.Outlined.Reply) { beginReply(message.id) }
+                SheetAction(ui(R.string.reply), Icons.Outlined.Reply) { beginReply(message.id) }
             }
             PinMessageAction(server,model,channel.id,server.messages.firstOrNull {it.id==message.id} ?: message) {selected=null}
-            SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
+            SheetAction(ui(R.string.copy_text), Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
             MessageLinkActions(message)
             if (message.mine && !message.pending) {
-                SheetAction("Edit message", Icons.Outlined.Edit) { edit = message; selected = null }
-                SheetAction("Delete message", Icons.Outlined.DeleteOutline) { delete = message; selected = null }
+                SheetAction(ui(R.string.edit_message), Icons.Outlined.Edit) { edit = message; selected = null }
+                SheetAction(ui(R.string.delete_message), Icons.Outlined.DeleteOutline) { delete = message; selected = null }
             }
             if (message.delivery in listOf("failed", "unknown")) {
-                SheetAction("Retry sending", Icons.Outlined.Refresh) { retry = message; selected = null }
-                SheetAction("Discard unsent message", Icons.Outlined.DeleteOutline) { model.command(Action.Dismiss(message.id)); selected = null }
+                SheetAction(ui(R.string.retry_sending), Icons.Outlined.Refresh) { retry = message; selected = null }
+                SheetAction(ui(R.string.discard_unsent_message), Icons.Outlined.DeleteOutline) { model.command(Action.Dismiss(message.id)); selected = null }
             }
             Spacer(Modifier.height(16.dp))
         }
     } }
     edit?.let { message ->
         var edited by remember(message.id) { mutableStateOf(message.content) }
-        AlertDialog(onDismissRequest = { edit = null }, title = { Text("Edit message") }, text = {
-            OutlinedTextField(edited, { edited = it }, label = { Text("Message") }, modifier = Modifier.fillMaxWidth(), maxLines = 8)
-        }, confirmButton = { TextButton(onClick = { model.command(Action.Edit(message.id, edited)); edit = null }, enabled = edited.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = { edit = null }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { edit = null }, title = { Text(ui(R.string.edit_message)) }, text = {
+            OutlinedTextField(edited, { edited = it }, label = { Text(ui(R.string.message)) }, modifier = Modifier.fillMaxWidth(), maxLines = 8)
+        }, confirmButton = { TextButton(onClick = { model.command(Action.Edit(message.id, edited)); edit = null }, enabled = edited.isNotBlank()) { Text(ui(R.string.save)) } }, dismissButton = { TextButton(onClick = { edit = null }) { Text(ui(R.string.cancel)) } })
     }
-    delete?.let { message -> AlertDialog(onDismissRequest = { delete = null }, title = { Text("Delete this message?") }, text = { Text("This removes the message for everyone. You can’t undo it.") },
-        confirmButton = { TextButton(onClick = { model.command(Action.Delete(message.id)); delete = null }) { Text("Delete", color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { delete = null }) { Text("Cancel") } }) }
-    retry?.let { message -> AlertDialog(onDismissRequest = { retry = null }, title = { Text("Retry sending?") }, text = { Text(if (message.delivery == "unknown") "The server may already have received this message. Retrying could send it twice." else "Try sending this message again.") },
-        confirmButton = { TextButton(onClick = { model.command(Action.Retry(message.id)); retry = null }) { Text("Retry") } }, dismissButton = { TextButton(onClick = { retry = null }) { Text("Cancel") } }) }
+    delete?.let { message -> AlertDialog(onDismissRequest = { delete = null }, title = { Text(ui(R.string.delete_this_message)) }, text = { Text(ui(R.string.this_removes_the_message_for_everyone_you_can_t_undo_it)) },
+        confirmButton = { TextButton(onClick = { model.command(Action.Delete(message.id)); delete = null }) { Text(ui(R.string.delete), color = MaterialTheme.colorScheme.error) } }, dismissButton = { TextButton(onClick = { delete = null }) { Text(ui(R.string.cancel)) } }) }
+    retry?.let { message -> AlertDialog(onDismissRequest = { retry = null }, title = { Text(ui(R.string.retry_sending_2)) }, text = { Text(if (message.delivery == "unknown") ui(R.string.the_server_may_already_have_received_this_message_retrying_could_send_it_tw) else ui(R.string.try_sending_this_message_again)) },
+        confirmButton = { TextButton(onClick = { model.command(Action.Retry(message.id)); retry = null }) { Text(ui(R.string.retry)) } }, dismissButton = { TextButton(onClick = { retry = null }) { Text(ui(R.string.cancel)) } }) }
     if (members) ModalBottomSheet(onDismissRequest = { members = false }) {
-        Text("People in ${server.name}", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
+        Text(ui(R.string.people_in_1_s, server.name), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp))
         LazyColumn(Modifier.navigationBarsPadding(), contentPadding = PaddingValues(bottom = 24.dp)) {
             items(server.members, key = { it.id }) { person -> ListItem(headlineContent = { Text(person.name,color=userNameColor(person.id),modifier=Modifier.testTag("member-name-${person.id}")) }, supportingContent = { Text(person.presence) }, leadingContent = { UserAvatar(person.id,person.name) }, modifier = Modifier.clickable {members=false;openProfile(person.id)}) }
         }
@@ -585,13 +585,13 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
     val openExternal=LocalOpenExternalProfile.current
     val external=message.externalAuthor
     val person=if(external==null) server.members.firstOrNull {it.id==message.authorId} else null
-    val authorAction=Modifier.combinedClickable(onClickLabel="Open ${message.author} profile",onLongClickLabel="Mention ${message.author}",onClick={if(external!=null) openExternal(external) else openProfile(message.authorId)},onLongClick={if(external!=null) openExternal(external) else person?.let(onMention)})
-    val time = remember(message.at) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.at)) }
-    val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
+    val authorAction=Modifier.combinedClickable(onClickLabel=ui(R.string.open_1_s_profile, message.author),onLongClickLabel=ui(R.string.mention_named,message.author),onClick={if(external!=null) openExternal(external) else openProfile(message.authorId)},onLongClick={if(external!=null) openExternal(external) else person?.let(onMention)})
+    val time = remember(message.at,AppLanguage.locale) { SimpleDateFormat("HH:mm", AppLanguage.locale).format(Date(message.at)) }
+    val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label=ui(R.string.original_message_highlight))
     SwipeToReply(message.id,canReply && !message.pending,onReply) {
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
-        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message" else if(grouped) stateDescription="Continued message from ${message.author} at $time";if(canReply && !message.pending) customActions=listOf(CustomAccessibilityAction("Reply") {onReply();true})}
-        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = if(grouped) {if(appearance.compact) 1.dp else 3.dp} else if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription=ui(R.string.original_message) else if(grouped) stateDescription=ui(R.string.continued_message_from_1_s_at_2_s, message.author, time);if(canReply && !message.pending) customActions=listOf(CustomAccessibilityAction(ui(R.string.reply)) {onReply();true})}
+        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = ui(R.string.message_actions)).padding(horizontal = 12.dp, vertical = if(grouped) {if(appearance.compact) 1.dp else 3.dp} else if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if(appearance.avatars) {
         if(grouped) Spacer(Modifier.width(48.dp))
         else if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
@@ -602,16 +602,16 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                 Text(message.author, color = if(external==null) userNameColor(message.authorId) else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=if(appearance.compact) 22.dp else 28.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
                 if(external!=null) AppBadge()
                 if(appearance.timestamps) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (message.edited) Text(ui(R.string.edited), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
-                    IconButton(onClick = onActions, modifier = Modifier.size(if(appearance.compact) 22.dp else 28.dp)) {Icon(Icons.Outlined.MoreHoriz,"Message actions",Modifier.size(18.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)}
+                    IconButton(onClick = onActions, modifier = Modifier.size(if(appearance.compact) 22.dp else 28.dp)) {Icon(Icons.Outlined.MoreHoriz,ui(R.string.message_actions),Modifier.size(18.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)}
                 }
             }
-            if (message.replyTo.isNotBlank()) Row(Modifier.testTag("reply-preview-${message.id}").clip(RoundedCornerShape(8.dp)).clickable(role=Role.Button,onClickLabel="Open original message") {onJump(message.replyTo)}.background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (message.replyTo.isNotBlank()) Row(Modifier.testTag("reply-preview-${message.id}").clip(RoundedCornerShape(8.dp)).clickable(role=Role.Button,onClickLabel=ui(R.string.open_original_message)) {onJump(message.replyTo)}.background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(server.messages.firstOrNull {it.id==message.replyTo}?.previewText() ?: message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(server.messages.firstOrNull {it.id==message.replyTo}?.previewText() ?: message.replyContent.ifBlank { ui(R.string.reply_to_an_earlier_message) }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if(message.pinned) Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {Icon(Icons.Outlined.PushPin,"Pinned message",Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary);Text("Pinned",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)}
+            if(message.pinned) Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {Icon(Icons.Outlined.PushPin,ui(R.string.pinned_message),Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary);Text(ui(R.string.pinned),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)}
             MessageContent(message,server,model,onActions,media)
             if(grouped && message.edited) Text(if(appearance.timestamps) "edited · $time" else "edited",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -619,17 +619,17 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                     val name=if(reaction.custom) server.emojis.firstOrNull {it.id==reaction.emoji}?.name ?: "sticker" else reaction.emoji
                     Surface(shape=RoundedCornerShape(16.dp),color=if(reaction.mine) MaterialTheme.colorScheme.primaryContainer else if(MaterialTheme.colorScheme.surface.luminance()<.5f) Color(0xFF2E2E32) else Color(0xFFECECEF),
                         modifier=Modifier.padding(vertical=4.dp).clip(RoundedCornerShape(16.dp)).combinedClickable(
-                            onClick={onReaction(reaction)},onLongClick={onReactionPeople(reaction)},onLongClickLabel="See who reacted",role=Role.Button)
-                            .semantics {contentDescription="Reaction $name"; stateDescription=if(reaction.mine) "You reacted, ${reaction.count} reactions" else "${reaction.count} reactions"}) {
+                            onClick={onReaction(reaction)},onLongClick={onReactionPeople(reaction)},onLongClickLabel=ui(R.string.see_who_reacted),role=Role.Button)
+                            .semantics {contentDescription=ui(R.string.reaction_named,name); stateDescription=if(reaction.mine) ui(R.string.you_reacted_count,uiQuantity(R.plurals.reaction_count,reaction.count.toInt())) else uiQuantity(R.plurals.reaction_count,reaction.count.toInt())}) {
                         Row(Modifier.padding(horizontal=10.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically) { EmojiGlyph(server,EmojiChoice(reaction.emoji,reaction.custom),22,model); Text(" ${reaction.count}") }
                     }
                 }
             }
             if (message.pending) Text(when (message.delivery) {
-                "unknown" -> "Delivery unconfirmed · tap ⋯ to retry"
-                "failed" -> "Not sent · tap ⋯ to retry"
-                "sending" -> "Sending…"
-                else -> "Queued · saved on this device"
+                "unknown" -> ui(R.string.delivery_unconfirmed_tap_to_retry)
+                "failed" -> ui(R.string.not_sent_tap_to_retry)
+                "sending" -> ui(R.string.sending)
+                else -> ui(R.string.queued_saved_on_this_device)
             }, style = MaterialTheme.typography.labelSmall, color = if (message.delivery in listOf("failed", "unknown")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

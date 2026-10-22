@@ -57,7 +57,7 @@ internal fun DirectMessageItem(server:ServerState,model:PapoViewModel,channel:Co
 @Composable
 private fun GlobalHeader(title:String,onBack:()->Unit,action:@Composable ()->Unit={}) {
     Row(Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-        GlassPill {IconButton(onClick=onBack) {Icon(Icons.Outlined.ArrowBack,"Back to servers")}}
+        GlassPill {IconButton(onClick=onBack) {Icon(Icons.Outlined.ArrowBack,ui(R.string.back_to_servers))}}
         Text(title,Modifier.weight(1f),style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)
         action()
     }
@@ -72,11 +72,11 @@ internal fun GlobalDirectMessages(state:PapoState,model:PapoViewModel,onBack:()-
     var query by rememberSaveable {mutableStateOf("")}
     BackHandler(onBack=onBack)
     Column(Modifier.fillMaxSize().testTag("global-direct-messages")) {
-        GlobalHeader("Direct messages",onBack)
-        OutlinedTextField(query,{query=it},Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).testTag("direct-search"),placeholder={Text("Search names or servers")},singleLine=true,shape=RoundedCornerShape(24.dp),leadingIcon={Icon(Icons.Outlined.Search,null)},trailingIcon={if(query.isNotBlank()) IconButton(onClick={query=""}) {Icon(Icons.Outlined.Close,"Clear direct search")}})
+        GlobalHeader(ui(R.string.direct_messages),onBack)
+        OutlinedTextField(query,{query=it},Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).testTag("direct-search"),placeholder={Text(ui(R.string.search_names_or_servers))},singleLine=true,shape=RoundedCornerShape(24.dp),leadingIcon={Icon(Icons.Outlined.Search,null)},trailingIcon={if(query.isNotBlank()) IconButton(onClick={query=""}) {Icon(Icons.Outlined.Close,ui(R.string.clear_direct_search))}})
         val rows=globalDirects(state,query)
         LazyColumn(Modifier.weight(1f).hazeSource(LocalHaze.current).testTag("global-direct-list"),contentPadding=PaddingValues(12.dp,8.dp,12.dp,140.dp)) {
-            if(rows.isEmpty()) item {EmptyState(if(query.isBlank()) "No direct messages yet" else "No matching conversations",if(query.isBlank()) "Start a conversation with someone from a server’s search or profile." else "Search by nickname, username or server name.")}
+            if(rows.isEmpty()) item {EmptyState(if(query.isBlank()) ui(R.string.no_direct_messages_yet) else ui(R.string.no_matching_conversations),if(query.isBlank()) ui(R.string.start_a_conversation_with_someone_from_a_server_s_search_or_profile) else ui(R.string.search_by_nickname_username_or_server_name))}
             items(rows,key={"${it.server.url}/${it.server.me}/${it.channel.id}"}) {row ->DirectMessageItem(row.server,model,row.channel,{onOpen(row.server,row.channel)},{onProfile(row.server,row.channel.userId)},showServer=true)}
         }
     }
@@ -99,7 +99,7 @@ internal fun GlobalNotifications(state:PapoState,model:PapoViewModel,onBack:()->
         coroutineScope {servers.forEach {server ->launch {
             val page=try {InboxPage(server.url,server.me,model.inbox(server),loading=false)}
             catch(e:CancellationException) {throw e}
-            catch(e:Exception) {InboxPage(server.url,server.me,items=pages.firstOrNull {it.url==server.url && it.owner==server.me}?.items.orEmpty(),loading=false,error=e.message ?: "Couldn’t load notifications")}
+            catch(e:Exception) {InboxPage(server.url,server.me,items=pages.firstOrNull {it.url==server.url && it.owner==server.me}?.items.orEmpty(),loading=false,error=e.message ?: ui(R.string.couldn_t_load_notifications))}
             pages=pages.map {if(it.url==page.url && it.owner==page.owner) page else it}
         }}}
     }
@@ -107,30 +107,30 @@ internal fun GlobalNotifications(state:PapoState,model:PapoViewModel,onBack:()->
     val rows=activePages.flatMap {page ->val server=servers.first {it.url==page.url && it.me==page.owner};page.items.map {ScopedNotice(server,it)}}.sortedWith(compareByDescending<ScopedNotice> {it.item.at}.thenBy {it.server.url}.thenBy {it.item.id})
     Box(Modifier.fillMaxSize().testTag("global-notifications")) {
         Column(Modifier.fillMaxSize()) {
-            GlobalHeader("Notifications",onBack) {IconButton(onClick={refresh++},enabled=activePages.none {it.loading}) {Icon(Icons.Outlined.Refresh,"Refresh notifications")}}
+            GlobalHeader("Notifications",onBack) {IconButton(onClick={refresh++},enabled=activePages.none {it.loading}) {Icon(Icons.Outlined.Refresh,ui(R.string.refresh_notifications))}}
             if(activePages.any {it.loading}) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal=20.dp))
             LazyColumn(Modifier.weight(1f).hazeSource(LocalHaze.current).testTag("notification-list"),contentPadding=PaddingValues(12.dp,8.dp,12.dp,140.dp),verticalArrangement=Arrangement.spacedBy(6.dp)) {
                 items(activePages.filter {it.error.isNotBlank()},key={"error/${it.url}"}) {page ->Surface(shape=RoundedCornerShape(20.dp),color=MaterialTheme.colorScheme.errorContainer,modifier=Modifier.padding(8.dp)) {
-                    Column(Modifier.padding(16.dp)) {Text(servers.first {it.url==page.url}.name,fontWeight=FontWeight.SemiBold);Text(page.error,style=MaterialTheme.typography.bodyMedium);TextButton(onClick={refresh++}) {Text("Retry")}}
+                    Column(Modifier.padding(16.dp)) {Text(servers.first {it.url==page.url}.name,fontWeight=FontWeight.SemiBold);Text(page.error,style=MaterialTheme.typography.bodyMedium);TextButton(onClick={refresh++}) {Text(ui(R.string.retry))}}
                 }}
-                if(rows.isEmpty() && activePages.none {it.loading || it.error.isNotBlank()}) item {EmptyState("All quiet for now","Notifications from your signed-in servers will appear here.")}
+                if(rows.isEmpty() && activePages.none {it.loading || it.error.isNotBlank()}) item {EmptyState(ui(R.string.all_quiet_for_now),ui(R.string.notifications_from_your_signed_in_servers_will_appear_here))}
                 items(rows,key={"${it.server.url}/${it.server.me}/${it.item.id}"}) {notice ->
                     val server=notice.server;val item=notice.item
                     val key="${server.url}/${server.me}/${item.id}"
                     val canOpen=(server.channels+server.dms).any {it.id==item.channelId && it.kind!="category"}
                     CompositionLocalProvider(LocalProfileContext provides ProfileContext(server,model)) {
-                        ListItem(overlineContent={Text(server.name,maxLines=1,overflow=TextOverflow.Ellipsis)},headlineContent={Text(item.author.ifBlank {"Message"}+(if(item.channelName.isNotBlank()) " · ${item.channelName}" else ""),fontWeight=if(item.read) FontWeight.Normal else FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)},
-                            supportingContent={Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {Text(item.content.ifBlank {"New message"},maxLines=3,overflow=TextOverflow.Ellipsis);if(item.at>0) Text(Instant.ofEpochMilli(item.at).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)),style=MaterialTheme.typography.labelSmall);if(!canOpen) Text("Conversation unavailable",style=MaterialTheme.typography.labelSmall)}},
+                        ListItem(overlineContent={Text(server.name,maxLines=1,overflow=TextOverflow.Ellipsis)},headlineContent={Text(item.author.ifBlank {ui(R.string.message)}+(if(item.channelName.isNotBlank()) " · ${item.channelName}" else ""),fontWeight=if(item.read) FontWeight.Normal else FontWeight.SemiBold,maxLines=2,overflow=TextOverflow.Ellipsis)},
+                            supportingContent={Column(verticalArrangement=Arrangement.spacedBy(4.dp)) {Text(item.content.ifBlank {ui(R.string.new_message)},maxLines=3,overflow=TextOverflow.Ellipsis);if(item.at>0) Text(Instant.ofEpochMilli(item.at).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT).withLocale(AppLanguage.locale)),style=MaterialTheme.typography.labelSmall);if(!canOpen) Text(ui(R.string.conversation_unavailable),style=MaterialTheme.typography.labelSmall)}},
                             leadingContent={if(item.authorId.isNotBlank()) UserAvatar(item.authorId,item.author) else Icon(Icons.Outlined.NotificationsNone,null)},
                             trailingContent={if(!item.read) IconButton(enabled=key !in reading,onClick={
                                 reading=reading+key
                                 scope.launch {try {
                                     model.readInbox(server,listOf(item.id))
                                     pages=pages.map {page ->if(page.url==server.url && page.owner==server.me) page.copy(items=page.items.map {if(it.id==item.id) it.copy(read=true) else it}) else page}
-                                } catch(e:CancellationException) {throw e} catch(e:Exception) {snackbar.showSnackbar(e.message ?: "Couldn’t mark notification as read")} finally {reading=reading-key}}
-                            }) {Icon(Icons.Outlined.Done,"Mark notification as read")} else Icon(Icons.Outlined.ChevronRight,null)},
+                                } catch(e:CancellationException) {throw e} catch(e:Exception) {snackbar.showSnackbar(e.message ?: ui(R.string.couldn_t_mark_notification_as_read))} finally {reading=reading-key}}
+                            }) {Icon(Icons.Outlined.Done,ui(R.string.mark_notification_as_read))} else Icon(Icons.Outlined.ChevronRight,null)},
                             colors=ListItemDefaults.colors(containerColor=if(item.read) MaterialTheme.colorScheme.surfaceContainerLow else MaterialTheme.colorScheme.primaryContainer.copy(alpha=.4f)),
-                            modifier=Modifier.testTag("notification-${server.key}-${item.id}").clip(RoundedCornerShape(20.dp)).semantics {stateDescription=if(item.read) "Read" else "Unread"}.clickable(enabled=canOpen,onClickLabel="Open notification message") {onOpen(server,item)})
+                            modifier=Modifier.testTag("notification-${server.key}-${item.id}").clip(RoundedCornerShape(20.dp)).semantics {stateDescription=if(item.read) uiLabel("Read") else ui(R.string.unread)}.clickable(enabled=canOpen,onClickLabel=ui(R.string.open_notification_message)) {onOpen(server,item)})
                     }
                 }
             }

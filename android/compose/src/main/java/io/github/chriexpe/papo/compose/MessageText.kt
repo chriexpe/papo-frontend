@@ -102,7 +102,7 @@ private fun MarkdownCode(text:String,language:String) {
     Column(Modifier.fillMaxWidth().testTag("markdown-code").background(MaterialTheme.colorScheme.surfaceContainer,RoundedCornerShape(12.dp)).padding(horizontal=12.dp,vertical=4.dp)) {
         Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween) {
             Text(language,style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            IconButton(onClick={scope.launch {clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("Code",text)))}}) {Icon(Icons.Outlined.ContentCopy,"Copy code",Modifier.size(18.dp))}
+            IconButton(onClick={scope.launch {clipboard.setClipEntry(ClipEntry(android.content.ClipData.newPlainText("Code",text)))}}) {Icon(Icons.Outlined.ContentCopy,ui(R.string.copy_code),Modifier.size(18.dp))}
         }
         Text(text.trimEnd('\n'),modifier=Modifier.horizontalScroll(rememberScrollState()).padding(bottom=8.dp),fontFamily=FontFamily.Monospace,style=MaterialTheme.typography.bodyMedium,softWrap=false)
     }
@@ -121,7 +121,7 @@ private fun MarkdownParagraph(spans:List<MarkdownSpan>,server:ServerState,model:
             if(url!=null) {
                 val embed=embeds.firstOrNull {it.url==url && it.hasImage}
                 ReservedMedia(embed?.width ?: 0,embed?.height ?: 0,tag="markdown-image") {
-                    MediaImage(server,model,span.text.ifBlank {"Image"},embed=embed,publicUrl=if(embed==null) url else "",gif=if(directMediaKind(url)=="gif") GifChoice("url:$url",span.text.ifBlank {"GIF"},url=url,embed=embed?.id.orEmpty(),revision=embed?.revision.orEmpty()) else null,onActions=onActions)
+                    MediaImage(server,model,span.text.ifBlank {uiLabel("Image")},embed=embed,publicUrl=if(embed==null) url else "",gif=if(directMediaKind(url)=="gif") GifChoice("url:$url",span.text.ifBlank {"GIF"},url=url,embed=embed?.id.orEmpty(),revision=embed?.revision.orEmpty()) else null,onActions=onActions)
                 }
             }
             start=index+1
@@ -175,7 +175,7 @@ private fun MarkdownInline(spans:List<MarkdownSpan>,server:ServerState,model:Pap
     val inline=parts.filter {it.sticker.isNotBlank()}.associate {part ->
         val emoji=customs.getValue(part.sticker)
         emoji.id to InlineTextContent(Placeholder(size,size,PlaceholderVerticalAlign.TextCenter)) {
-            Box(Modifier.fillMaxSize().testTag("message-sticker-${emoji.id}").clickable(onClickLabel="View sticker :${emoji.name}:") {detail=emoji.id},contentAlignment=Alignment.Center) {EmojiGlyph(server,EmojiChoice(emoji.id,true,emoji.name),if(jumbo) 72 else 24,model)}
+            Box(Modifier.fillMaxSize().testTag("message-sticker-${emoji.id}").clickable(onClickLabel=ui(R.string.view_sticker_1_s, emoji.name)) {detail=emoji.id},contentAlignment=Alignment.Center) {EmojiGlyph(server,EmojiChoice(emoji.id,true,emoji.name),if(jumbo) 72 else 24,model)}
         }
     }
     val codeColor=MaterialTheme.colorScheme.surfaceContainerHighest

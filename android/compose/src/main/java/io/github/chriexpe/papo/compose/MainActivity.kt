@@ -78,25 +78,35 @@ import org.json.JSONArray
 
 class MainActivity : ComponentActivity() {
     private val model: PapoViewModel by viewModels()
+    override fun attachBaseContext(base:android.content.Context) {super.attachBaseContext(AppLanguage.context(base))}
     override fun onCreate(savedInstanceState: Bundle?) {
+        AppLanguage.update(this)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if(savedInstanceState==null) MessageAlerts.target(intent)?.let(model::offerNotification)
+        consumeRecovery(intent)
         setContent { PapoApp(model) }
     }
     override fun onStart() { super.onStart();MessageAlerts.foreground=true;MessageAlerts.refresh();model.resume() }
     override fun onStop() {MessageAlerts.foreground=false;super.onStop()}
     // Notification routes are consumed immediately. Keep the launch intent so
     // recreating the Activity cannot replay a later navigation request.
-    override fun onNewIntent(intent:android.content.Intent) {super.onNewIntent(intent);MessageAlerts.target(intent)?.let(model::offerNotification)}
+    override fun onNewIntent(intent:android.content.Intent) {super.onNewIntent(intent);MessageAlerts.target(intent)?.let(model::offerNotification);consumeRecovery(intent)}
+    private fun consumeRecovery(intent:android.content.Intent?) {
+        val raw=intent?.dataString ?: return
+        if(isRecoveryIntent(raw)) {model.offerRecovery(raw);intent.data=null}
+    }
 }
 
 private val Blue = Color(0xFF0A84FF)
 internal val LocalGlass = compositionLocalOf { true }
-internal val LocalHaze = compositionLocalOf<HazeState> { error("Missing content layer") }
+internal val LocalHaze = compositionLocalOf<HazeState> { error(ui(R.string.missing_content_layer)) }
 
 @Composable
 fun PapoApp(model: PapoViewModel = viewModel()) {
+    val context=LocalContext.current
+    val localeConfiguration=androidx.compose.ui.platform.LocalConfiguration.current
+    LaunchedEffect(localeConfiguration) {AppLanguage.update(context)}
     val state by model.state.collectAsStateWithLifecycle()
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
     val appearance=remember(preferences) {ClientPreferences(preferences)}
@@ -131,6 +141,9 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
     MaterialTheme(colorScheme = colors) {
         val haze = remember { HazeState() }
         CompositionLocalProvider(LocalHaze provides haze, LocalClientPreferences provides appearance, LocalGlass provides glass, LocalContentColor provides colors.onSurface) {
+            ExternalLinkHost(model::offerRecovery) {
+            val recoveryLink by model.recoveryLink.collectAsStateWithLifecycle()
+            if(recoveryLink!=null) AccountRecovery(recoveryLink!!,state.active?.url?.takeUnless {it.startsWith("demo:")}.orEmpty(),model::consumeRecovery)
             var adding by rememberSaveable { mutableStateOf(false) }
             var tab by rememberSaveable { mutableStateOf("Chats") }
             var settingsOrigin by rememberSaveable {mutableStateOf("Chats")}
@@ -163,7 +176,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                     model.navigate(destination,Action.SelectChannel(target.channel),target.message) {
                         adding=false;profileId=null;externalProfile=null;tab="Chats";enterConversation(destination)
                     }
-                } else model.consumeNotification(target,"This notification no longer matches a signed-in conversation.")
+                } else model.consumeNotification(target,ui(R.string.this_notification_no_longer_matches_a_signed_in_conversation))
             }
 
             CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
@@ -182,12 +195,12 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             }
             Box(Modifier.fillMaxSize().background(colors.background)) {
                 if (state.servers.isEmpty()) {
-                    Welcome(state.opening, state.error, model::clearError, model::exploreDemo) { model.addServer(it) }
+                    Welcome(state.opening, state.error, model::clearError, model::exploreDemo, {model.offerRecovery("")}) { model.addServer(it) }
                 } else if (server == null) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 } else if (server.screen != "chat" && tab !in listOf("Servers","GlobalDirect","GlobalNotifications")) {
                     Authentication(server, state.error, onBack = { tab = "Servers" },
-                        onSwitch = { adding = true }, command = { model.command(it) })
+                        onSwitch = { adding = true }, onRecovery={model.offerRecovery("")}, command = { model.command(it) })
                 } else if (showingConversation && server.conversation != null) {
                     ConversationScreen(server, model, onBack = leaveConversation)
                 } else {
@@ -226,6 +239,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
                 }
                 Spacer(Modifier.height(24.dp))
             }
+            }
         }
     }
 }
@@ -247,7 +261,7 @@ internal fun GlassPill(modifier: Modifier = Modifier, radius: Int = 32, content:
 }
 
 @Composable
-private fun Welcome(opening: Boolean, error: String, clearError: () -> Unit, onDemo: () -> Unit, onConnect: (String) -> Unit) {
+private fun Welcome(opening: Boolean, error: String, clearError: () -> Unit, onDemo: () -> Unit, onRecovery:()->Unit, onConnect: (String) -> Unit) {
     Box(Modifier.fillMaxSize().imePadding()) {
         Box(Modifier.fillMaxSize().hazeSource(LocalHaze.current)) {
             Canvas(Modifier.fillMaxSize()) {
@@ -260,19 +274,23 @@ private fun Welcome(opening: Boolean, error: String, clearError: () -> Unit, onD
                 BrandMark()
                 Text("papo", fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
             }
-            Spacer(Modifier.height(52.dp))
-            Text("Good conversations\nstart here.", fontSize = 38.sp, lineHeight = 43.sp, letterSpacing = (-1.5).sp, fontWeight = FontWeight.SemiBold)
+            var choosingLanguage by remember {mutableStateOf(false)}
+            TextButton(onClick={choosingLanguage=true}) {Icon(Icons.Outlined.Language,null);Spacer(Modifier.width(8.dp));Text(ui(R.string.language))}
+            if(choosingLanguage) ModalBottomSheet(onDismissRequest={choosingLanguage=false}) {LanguageSettings();Spacer(Modifier.navigationBarsPadding().height(24.dp))}
+            Spacer(Modifier.height(32.dp))
+            Text(ui(R.string.good_conversations_start_here), fontSize = 38.sp, lineHeight = 43.sp, letterSpacing = (-1.5).sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(16.dp))
-            Text("A place for your people. Connect to a Papo server to make yourself at home.",
+            Text(ui(R.string.a_place_for_your_people_connect_to_a_papo_server_to_make_yourself_at_home),
                 style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(40.dp))
             AddServerForm(opening, error, showHeading = false, onConnect = onConnect)
-            TextButton(onClick = onDemo, Modifier.align(Alignment.CenterHorizontally)) { Text("Explore demo") }
-            if (error.isNotBlank()) TextButton(onClick = clearError) { Text("Dismiss error") }
+            TextButton(onClick=onRecovery,Modifier.align(Alignment.CenterHorizontally)) {Text(ui(R.string.use_a_recovery_link))}
+            TextButton(onClick = onDemo, Modifier.align(Alignment.CenterHorizontally)) { Text(ui(R.string.explore_demo)) }
+            if (error.isNotBlank()) TextButton(onClick = clearError) { Text(ui(R.string.dismiss_error)) }
             Spacer(Modifier.height(40.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Lock, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("Your server. Your community.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(ui(R.string.your_server_your_community), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -292,11 +310,11 @@ private fun AddServerForm(opening: Boolean, error: String, modifier: Modifier = 
     val keyboard = LocalSoftwareKeyboardController.current
     Column(modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (showHeading) {
-            Text("Add a server", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            Text("Enter the address shared by your community.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(ui(R.string.add_a_server), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            Text(ui(R.string.enter_the_address_shared_by_your_community), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        OutlinedTextField(address, { address = it }, label = { Text("Server address") },
-            supportingText = { Text("Use the address shared by your community.") },
+        OutlinedTextField(address, { address = it }, label = { Text(ui(R.string.server_address)) },
+            supportingText = { Text(ui(R.string.use_the_address_shared_by_your_community)) },
             leadingIcon = { Icon(Icons.Outlined.Dns, null) }, singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
             keyboardActions = KeyboardActions(onDone = { keyboard?.hide() }),
@@ -305,28 +323,28 @@ private fun AddServerForm(opening: Boolean, error: String, modifier: Modifier = 
         Button(onClick = { onConnect(address.trim()) }, enabled = address.isNotBlank() && !opening,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp), contentPadding = PaddingValues(16.dp)) {
             if (opening) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            else { Icon(Icons.Outlined.Add, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text("Add server") }
+            else { Icon(Icons.Outlined.Add, null, Modifier.size(20.dp)); Spacer(Modifier.width(8.dp)); Text(ui(R.string.add_server)) }
         }
     }
 }
 
 @Composable
-private fun Authentication(server: ServerState, appError: String, onBack: () -> Unit, onSwitch: () -> Unit, command: (Action) -> Unit) {
+private fun Authentication(server: ServerState, appError: String, onBack: () -> Unit, onSwitch: () -> Unit, onRecovery:()->Unit, command: (Action) -> Unit) {
     var username by rememberSaveable(server.url) { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var register by rememberSaveable(server.url) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().imePadding().statusBarsPadding().navigationBarsPadding().padding(24.dp).verticalScrollCompat(), verticalArrangement = Arrangement.Center) {
         BrandMark()
         Spacer(Modifier.height(32.dp))
-        Text(if (server.locked) "A little privacy." else if (server.screen == "needs_server") "Make it yours." else "Welcome to\n${server.name}",
+        Text(if (server.locked) ui(R.string.a_little_privacy) else if (server.screen == "needs_server") ui(R.string.make_it_yours) else ui(R.string.welcome_to_1_s, server.name),
             style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.SemiBold)
         Text(server.url, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 12.dp))
         if (server.screen == "starting") {
             LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 20.dp))
-            Text("Connecting to your server…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(ui(R.string.connecting_to_your_server), color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            if (!server.locked) OutlinedTextField(username, { username = it }, label = { Text(if (server.screen == "needs_server") "Server name" else "Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !server.busy, shape = RoundedCornerShape(16.dp))
-            if (server.screen != "needs_server") OutlinedTextField(password, { password = it }, label = { Text(if (server.locked) "Server password" else "Password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().padding(top = 12.dp), enabled = !server.busy, shape = RoundedCornerShape(16.dp))
+            if (!server.locked) OutlinedTextField(username, { username = it }, label = { Text(if (server.screen == "needs_server") ui(R.string.server_name) else "Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), enabled = !server.busy, shape = RoundedCornerShape(16.dp))
+            if (server.screen != "needs_server") OutlinedTextField(password, { password = it }, label = { Text(if (server.locked) ui(R.string.server_password) else "Password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth().padding(top = 12.dp), enabled = !server.busy, shape = RoundedCornerShape(16.dp))
             val error = appError.ifBlank { server.error }
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 12.dp))
             Button(onClick = {
@@ -338,12 +356,13 @@ private fun Authentication(server: ServerState, appError: String, onBack: () -> 
                 password = ""
             }, enabled = !server.busy && (if (server.locked) password.isNotBlank() else if (server.screen == "needs_server") username.isNotBlank() else username.isNotBlank() && password.isNotBlank()), modifier = Modifier.fillMaxWidth().padding(top = 24.dp).heightIn(min = 52.dp)) {
                 if (server.busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                else Text(if (server.locked) "Unlock server" else if (server.screen == "needs_server") "Create server" else if (register) "Create account" else "Sign in")
+                else Text(if (server.locked) ui(R.string.unlock_server) else if (server.screen == "needs_server") ui(R.string.create_server) else if (register) ui(R.string.create_account) else ui(R.string.sign_in))
             }
-            if (!server.locked && server.screen == "auth") TextButton(onClick = { register = !register }, Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) "Already have an account? Sign in" else "New here? Create an account") }
+            if (!server.locked && server.screen == "auth") TextButton(onClick = { register = !register }, Modifier.align(Alignment.CenterHorizontally)) { Text(if (register) ui(R.string.already_have_an_account_sign_in) else ui(R.string.new_here_create_an_account)) }
         }
-        TextButton(onClick = onSwitch, Modifier.align(Alignment.CenterHorizontally).padding(top = 20.dp)) { Text("Connect to another server") }
-        TextButton(onClick = onBack, Modifier.align(Alignment.CenterHorizontally)) { Text("Your servers") }
+        if(server.screen=="auth" && !server.locked) TextButton(onClick=onRecovery,Modifier.align(Alignment.CenterHorizontally)) {Text(ui(R.string.use_a_recovery_link))}
+        TextButton(onClick = onSwitch, Modifier.align(Alignment.CenterHorizontally).padding(top = 20.dp)) { Text(ui(R.string.connect_to_another_server)) }
+        TextButton(onClick = onBack, Modifier.align(Alignment.CenterHorizontally)) { Text(ui(R.string.your_servers)) }
     }
 }
 
@@ -368,7 +387,7 @@ private fun NavigationDestination(name:String,icon:ImageVector,active:Boolean,on
         .selectable(selected=active,onClick=onClick,role=Role.Tab).heightIn(min=58.dp).padding(horizontal=10.dp,vertical=8.dp),
         horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(3.dp,Alignment.CenterVertically)) {
         Icon(icon,null,Modifier.size(22.dp),tint=if(active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(name,style=MaterialTheme.typography.labelSmall,fontWeight=if(active) FontWeight.Bold else FontWeight.Normal,maxLines=1)
+        Text(uiLabel(name),style=MaterialTheme.typography.labelSmall,fontWeight=if(active) FontWeight.Bold else FontWeight.Normal,maxLines=1)
     }
 }
 
@@ -386,17 +405,17 @@ private fun ServerList(state: PapoState, model:PapoViewModel, onAdd: () -> Unit,
     LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).statusBarsPadding(), contentPadding = PaddingValues(24.dp, 24.dp, 24.dp, 140.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Row(Modifier.fillMaxWidth().testTag("global-actions"),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                GlobalAction("Direct messages",Icons.Outlined.ChatBubbleOutline,state.servers.filter {it.screen=="chat"}.sumOf {s ->s.dms.count {it.unread}},onDirect,Modifier.weight(1f))
+                GlobalAction(ui(R.string.direct_messages),Icons.Outlined.ChatBubbleOutline,state.servers.filter {it.screen=="chat"}.sumOf {s ->s.dms.count {it.unread}},onDirect,Modifier.weight(1f))
                 GlobalAction("Notifications",Icons.Outlined.NotificationsNone,state.servers.filter {it.screen=="chat"}.sumOf {it.notificationCount.toLong()}.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),onNotifications,Modifier.weight(1f))
             }
         }
-        item {Text("Your servers",style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=16.dp,start=8.dp,bottom=4.dp))}
+        item {Text(ui(R.string.your_servers),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=16.dp,start=8.dp,bottom=4.dp))}
         items(state.servers, key = { it.url }) { server ->
             ListItem(headlineContent = { Text(server.name, fontWeight = FontWeight.SemiBold) }, supportingContent = { Text(server.url, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingContent = { ServerIcon(server,model) }, trailingContent = { Icon(if (state.activeUrl == server.url) Icons.Outlined.CheckCircle else Icons.Outlined.ChevronRight, null) },
                 modifier = Modifier.clip(RoundedCornerShape(22.dp)).clickable { onSelect(server.url) })
         }
-        item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text("Add server") } }
+        item { OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Icon(Icons.Outlined.Add, null); Spacer(Modifier.width(8.dp)); Text(ui(R.string.add_server)) } }
     }
 }
 
@@ -413,8 +432,8 @@ internal fun Avatar(name: String, modifier: Modifier = Modifier, shape:androidx.
 internal fun ConnectionBanner(connection: String, onRetry: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Outlined.CloudOff, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(if (connection == "connecting") "Reconnecting…" else "Offline · saved messages are available", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
-        TextButton(onClick = onRetry) { Text("Retry") }
+        Text(if (connection == "connecting") ui(R.string.reconnecting) else ui(R.string.offline_saved_messages_are_available), style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(horizontal = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = onRetry) { Text(ui(R.string.retry)) }
     }
 }
 
@@ -428,7 +447,7 @@ private fun FeedbackPill(message: String, onDismiss: () -> Unit, modifier: Modif
         Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Icon(Icons.Outlined.ErrorOutline, null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.error)
             Text(message, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
-            IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, "Dismiss notification", Modifier.size(20.dp)) }
+            IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, ui(R.string.dismiss_notification), Modifier.size(20.dp)) }
         }
     }
 }

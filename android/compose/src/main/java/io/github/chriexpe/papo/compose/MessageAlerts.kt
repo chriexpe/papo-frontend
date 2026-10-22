@@ -46,14 +46,20 @@ internal object MessageAlerts {
     @Synchronized fun start(value:Context) {
         if(application!=null) return
         application=value.applicationContext
-        MessageNotifications.ensureChannel(context)
+        AppLanguage.update(value)
+        localizeChannel()
         appearance.registerOnSharedPreferenceChangeListener(preferenceListener)
         if(preferences.getString("firebase-config",null)!=BuildConfig.FIREBASE_CONFIGURATION) {
             preferences.edit().remove("push-token").putString("firebase-config",BuildConfig.FIREBASE_CONFIGURATION).apply()
         }
         if(configured) FirebaseMessaging.getInstance().token.addOnSuccessListener {newToken(it)}
     }
-    fun refresh() {synchronized(this) {changes.value=changes.value+1}}
+    private fun localizeChannel() {
+        if(application==null) return
+        AppLanguage.update(context)
+        MessageNotifications.ensureChannel(context,ui(R.string.notification_channel_name),ui(R.string.notification_channel_description))
+    }
+    fun refresh() {localizeChannel();synchronized(this) {changes.value=changes.value+1}}
     fun newToken(value:String) {
         if(value.isNotBlank() && value!=token) {preferences.edit().putString("push-token",value).apply();refresh()}
     }

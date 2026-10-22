@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
 /** Real REST + WebSocket fixture: received messages pass through the network
  * worker, reducer, UniFFI, actor and Compose, rather than pretending own sends
  * have the same read semantics as another person's arrivals. */
-internal class IncomingChatFixture(private val context:Context):AutoCloseable {
+internal class IncomingChatFixture(private val context:Context,private val ownerIsMe:Boolean=false):AutoCloseable {
     private val listener=ServerSocket(0)
     val url="http://127.0.0.1:"+listener.localPort
     private val workers=Executors.newCachedThreadPool()
@@ -91,7 +91,7 @@ internal class IncomingChatFixture(private val context:Context):AutoCloseable {
             path=="/auth/login" -> "{\"user\":{\"id\":\"me\",\"username\":\"reader\"}}".toByteArray()
             path=="/auth/whoami" -> """{"id":"me","username":"reader","nickname":"Reader","settings":{"version":1,"config":{}}}""".toByteArray()
             path=="/auth/refresh" -> "{}".toByteArray()
-            path=="/server" -> """{"id":"fixture","name":"Incoming fixture","public":true,"owner_id":"other"}""".toByteArray()
+            path=="/server" -> JSONObject().put("id","fixture").put("name","Incoming fixture").put("public",true).put("owner_id",if(ownerIsMe) "me" else "other").toString().toByteArray()
             path=="/channels" -> JSONObject().put("channels",JSONArray().put(JSONObject().put("id","incoming").put("name","incoming").put("type","text").put("last_read_message",acknowledged).put("last_message",synchronized(messages) {messages.last()}))).toString().toByteArray()
             path=="/channels/incoming/messages" -> {
                 val values=synchronized(messages) {messages.map {JSONObject(it.toString())}}
@@ -101,6 +101,7 @@ internal class IncomingChatFixture(private val context:Context):AutoCloseable {
             path=="/channels/incoming/pinned" -> "{\"pinned\":[]}".toByteArray()
             path=="/dms" -> "{\"dms\":[]}".toByteArray()
             path=="/users/blocks" -> "{\"users\":[]}".toByteArray()
+            path=="/users/other/reset" && method=="POST" && ownerIsMe -> JSONObject().put("reset_url","https://papo.cyberasilo.online/passwordchange/fixture_token").put("expires_at",Instant.now().plusSeconds(3600).toString()).toString().toByteArray()
             path=="/users" -> """{"users":[{"id":"me","username":"reader"},{"id":"other","username":"sender"}]}""".toByteArray()
             path=="/users/profile_batch" -> "{\"profiles\":[]}".toByteArray()
             path=="/roles" -> "{\"roles\":[]}".toByteArray()

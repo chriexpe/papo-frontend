@@ -333,6 +333,8 @@ pub struct ClientSnapshot {
     pub server_icon_revision: String,
     pub server_public: bool,
     pub capabilities: discovery::Capabilities,
+    #[serde(default)]
+    pub can_reset_passwords: bool,
     pub roles: Vec<discovery::RoleView>,
     pub search_query: String,
     pub searching: bool,

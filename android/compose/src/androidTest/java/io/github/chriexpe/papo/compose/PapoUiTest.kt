@@ -1768,6 +1768,57 @@ class PapoUiTest {
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
     }
 
+    @Test fun externalLinksAskBeforeOpeningAndTrustOnlyTheSelectedHost() {
+        val opened=java.util.concurrent.CopyOnWriteArrayList<String>()
+        val prefs=ClientPreferences()
+        activity.onActivity {host ->host.setContent {
+            androidx.compose.material3.MaterialTheme {
+                androidx.compose.runtime.CompositionLocalProvider(LocalClientPreferences provides prefs,
+                    androidx.compose.ui.platform.LocalUriHandler provides object:androidx.compose.ui.platform.UriHandler {
+                        override fun openUri(uri:String) {opened.add(uri)}
+                    }) {
+                    ExternalLinkHost({}) {
+                        val links=androidx.compose.ui.platform.LocalUriHandler.current
+                        androidx.compose.foundation.layout.Column {
+                            androidx.compose.material3.Button(onClick={links.openUri("https://example.com/a?original=1")}) {androidx.compose.material3.Text("Visit site")}
+                            androidx.compose.material3.Button(onClick={links.openUri("https://sub.example.com/a")}) {androidx.compose.material3.Text("Visit subdomain")}
+                        }
+                    }
+                }
+            }
+        }}
+        compose.onNodeWithText("Visit site").performClick()
+        compose.onNodeWithTag("external-link-confirmation").assertExists()
+        assertTrue(opened.isEmpty())
+        compose.onNodeWithText("Cancel").performClick();assertTrue(opened.isEmpty());assertTrue(prefs.trustedDomains.isEmpty())
+        compose.onNodeWithText("Visit site").performClick()
+        compose.onNodeWithText("Always trust example.com").performClick()
+        compose.onNodeWithText("Open link").performClick()
+        compose.runOnIdle {assertEquals(listOf("https://example.com/a?original=1"),opened.toList())}
+        compose.onNodeWithText("Visit site").performClick()
+        compose.runOnIdle {assertEquals(2,opened.size)}
+        compose.onNodeWithTag("external-link-confirmation").assertDoesNotExist()
+        compose.onNodeWithText("Visit subdomain").performClick()
+        compose.onNodeWithTag("external-link-confirmation").assertExists()
+        assertEquals(setOf("example.com"),prefs.trustedDomains)
+    }
+
+    @Test fun accountRecoveryRequiresMatchingExplicitServerBeforeSendingPassword() {
+        activity.onActivity {host ->host.setContent {
+            androidx.compose.material3.MaterialTheme {
+                androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState()) {
+                    AccountRecovery("papo-reset://passwordchange/test_token?server=https://example.test","http://127.0.0.1:9",{})
+                }
+            }
+        }}
+        compose.onNodeWithTag("recovery-password").performTextInput("NewPassword!")
+        compose.onNodeWithTag("recovery-confirmation").performTextInput("NewPassword!")
+        compose.onNodeWithTag("recover-account").performScrollTo().performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("recovery-error").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("recovery-error").assertTextEquals("Select the server this recovery link belongs to")
+        compose.onNodeWithTag("account-recovery").assertExists()
+    }
+
 }
 
 private fun MainActivity.setContentForMemberHeader(server:ServerState,model:PapoViewModel) {

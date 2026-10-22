@@ -67,14 +67,14 @@ internal fun ChatMessage.visibleContent(): String {
 
 internal fun ChatMessage.previewText():String = visibleContent().ifBlank {
     when {
-        nativeLinks().isNotEmpty() || embeds.any {it.nativeMedia} -> "Media"
+        nativeLinks().isNotEmpty() || embeds.any {it.nativeMedia} -> uiLabel("Media")
         attachments.isNotEmpty() -> attachments.first().name
-        else -> "Message"
+        else -> uiLabel("Message")
     }
 }
 
 internal fun publicMediaSource(url: String): MediaRequest {
-    require(isPublicLink(url)) {"Invalid media address"}
+    require(isPublicLink(url)) {ui(R.string.invalid_media_address)}
     val uri=Uri.parse(url)
     val origin=uri.buildUpon().path("").query(null).fragment(null).build().toString().trimEnd('/')
     return MediaRequest(url,emptyMap(),"public/$url",origin)

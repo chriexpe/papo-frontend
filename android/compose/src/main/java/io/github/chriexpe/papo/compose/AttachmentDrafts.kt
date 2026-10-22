@@ -80,8 +80,8 @@ internal class AttachmentDrafts(
                 }
                 val uncertain = json.optBoolean("sending") || json.optBoolean("uncertain")
                 key to AttachmentDraft(files, uncertain = uncertain, error = when {
-                    uncertain -> "The previous upload was interrupted and may already have arrived. Check the conversation before retrying."
-                    files.size != array.length() -> "Some attachments are no longer available. Choose them again."
+                    uncertain -> ui(R.string.the_previous_upload_was_interrupted_and_may_already_have_arrived_check_the)
+                    files.size != array.length() -> ui(R.string.some_attachments_are_no_longer_available_choose_them_again)
                     else -> json.optString("error")
                 })
             }.getOrNull()
@@ -100,15 +100,15 @@ internal class AttachmentDrafts(
             put(JSONObject().put("path", file.path).put("name", file.name).put("mime", file.mime).put("size", file.size))
         } }).put("sending", draft.sending).put("uncertain", draft.uncertain).put("error", draft.error)
         withContext(Dispatchers.IO) {
-            check(preferences.edit().putString(key, json.toString()).commit()) { "Couldn’t save the attachment draft" }
+            check(preferences.edit().putString(key, json.toString()).commit()) { ui(R.string.couldn_t_save_the_attachment_draft) }
         }
     }
     /** Persist the replacement before deleting the old private draft file. */
     suspend fun replaceEdited(key:String,original:PendingAttachment,image:io.github.chriexpe.papo.core.PreparedMediaImage) = lock(key).withLock {
         ready()
         val previous=get(key)
-        check(!previous.sending && !previous.preparing && !previous.uncertain) {"Finish the current attachment action before editing"}
-        check(original in previous.files && AttachmentFiles.owns(context,File(original.path))) {"This attachment is no longer in the draft"}
+        check(!previous.sending && !previous.preparing && !previous.uncertain) {ui(R.string.finish_the_current_attachment_action_before_editing)}
+        check(original in previous.files && AttachmentFiles.owns(context,File(original.path))) {ui(R.string.this_attachment_is_no_longer_in_the_draft)}
         val file=AttachmentFiles.create(context,image.extension)
         try {
             val replacement=withContext(Dispatchers.IO) {
@@ -127,8 +127,8 @@ internal class AttachmentDrafts(
         lock(key).withLock {
             ready()
             if (uris.isEmpty()) return@launch
-            if (get(key).sending || get(key).preparing) { report(key, "Wait for the current attachment action to finish."); return@launch }
-            if (get(key).files.size + uris.size > 10) { report(key, "You can attach up to ten files to one message."); return@launch }
+            if (get(key).sending || get(key).preparing) { report(key, ui(R.string.wait_for_the_current_attachment_action_to_finish)); return@launch }
+            if (get(key).files.size + uris.size > 10) { report(key, ui(R.string.you_can_attach_up_to_ten_files_to_one_message)); return@launch }
             update(key, get(key).copy(preparing = true, error = ""))
             val copied = mutableListOf<PendingAttachment>()
             try {
@@ -139,26 +139,26 @@ internal class AttachmentDrafts(
             catch (e: Exception) {
                 val retained = get(key).files.map { it.path }.toSet()
                 withContext(Dispatchers.IO) { copied.filter { it.path !in retained }.forEach { File(it.path).delete() } }
-                update(key, get(key).copy(preparing = false, error = e.message ?: "Couldn’t prepare these files"))
+                update(key, get(key).copy(preparing = false, error = e.message ?: ui(R.string.couldn_t_prepare_these_files)))
             }
         }
     }
     fun finishCapture(key: String, keep: Boolean, name: String, stop: (Boolean) -> File?, onComplete: (Boolean) -> Unit) = scope.launch {
         val file = withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { stop(keep) }
         val staged = if (keep && file != null) addCaptured(key, file, name, "audio/mp4") else false
-        if (keep && file == null) report(key, "The recording was too short or couldn’t be saved. Try again.")
+        if (keep && file == null) report(key, ui(R.string.the_recording_was_too_short_or_couldn_t_be_saved_try_again))
         onComplete(staged)
     }
     fun captured(key: String, file: File, name: String, mime: String) = scope.launch { addCaptured(key, file, name, mime) }
     private suspend fun addCaptured(key: String, file: File, name: String, mime: String): Boolean = lock(key).withLock {
         ready()
         if (!AttachmentFiles.owns(context, file) || !file.isFile || file.length() == 0L) {
-            report(key, "The capture was empty. Try again."); return@withLock false
+            report(key, ui(R.string.the_capture_was_empty_try_again)); return@withLock false
         }
-        if (get(key).files.size >= 10) { file.delete(); report(key, "You can attach up to ten files to one message."); return@withLock false }
+        if (get(key).files.size >= 10) { file.delete(); report(key, ui(R.string.you_can_attach_up_to_ten_files_to_one_message)); return@withLock false }
         update(key, get(key).copy(files = get(key).files + PendingAttachment(file.absolutePath, name, mime, file.length()), error = ""))
         try { persist(key); true }
-        catch (e: Exception) { report(key, e.message ?: "Couldn’t save this attachment"); false }
+        catch (e: Exception) { report(key, e.message ?: ui(R.string.couldn_t_save_this_attachment)); false }
     }
     fun remove(key: String, file: PendingAttachment) = scope.launch {
         lock(key).withLock {
@@ -169,7 +169,7 @@ internal class AttachmentDrafts(
             try {
                 persist(key)
                 withContext(Dispatchers.IO) { File(file.path).takeIf { AttachmentFiles.owns(context, it) }?.delete() }
-            } catch (e: Exception) { report(key, e.message ?: "Couldn’t remove this attachment") }
+            } catch (e: Exception) { report(key, e.message ?: ui(R.string.couldn_t_remove_this_attachment)) }
         }
     }
     fun send(key: String, server: ServerState, text: String, reply: String?, onResult: (Boolean) -> Unit) = scope.launch {
@@ -197,7 +197,7 @@ internal class AttachmentDrafts(
                 }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                update(key, get(key).copy(files = (get(key).files + draft.files).distinctBy { it.path }, sending = false, uncertain = dispatched || draft.uncertain, error = e.message ?: "The upload couldn’t be confirmed. Check the conversation before retrying."))
+                update(key, get(key).copy(files = (get(key).files + draft.files).distinctBy { it.path }, sending = false, uncertain = dispatched || draft.uncertain, error = e.message ?: ui(R.string.the_upload_couldn_t_be_confirmed_check_the_conversation_before_retrying)))
                 runCatching { persist(key) }
                 onResult(false)
             }

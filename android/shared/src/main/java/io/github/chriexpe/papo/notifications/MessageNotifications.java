@@ -28,14 +28,19 @@ public final class MessageNotifications {
 
     public static void ensureChannel(Context context) {
         final NotificationManager manager = context.getSystemService(NotificationManager.class);
-        if (manager == null || manager.getNotificationChannel(CHANNEL_ID) != null) {
-            return;
+        if (manager != null && manager.getNotificationChannel(CHANNEL_ID) == null) {
+            ensureChannel(context, "Mensagens", "Mensagens e menções recebidas no Papo");
         }
+    }
+
+    /** Updating an existing channel changes its display copy, preserving the
+     * user's sound, vibration and importance choices. */
+    public static void ensureChannel(Context context, String name, String description) {
+        final NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
         final NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "Mensagens",
-                NotificationManager.IMPORTANCE_DEFAULT);
-        channel.setDescription("Mensagens e menções recebidas no Papo");
+                CHANNEL_ID, name, NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription(description);
         manager.createNotificationChannel(channel);
     }
 

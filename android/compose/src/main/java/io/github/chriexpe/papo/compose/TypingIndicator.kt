@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 internal fun TypingIndicator(names:List<String>,phrase:String) {
     if(names.isEmpty()) return
-    val verb=if(names.size==1) phrase.ifBlank {"is typing…"} else "are typing…"
+    val verb=if(names.size==1) phrase.ifBlank {ui(R.string.is_typing)} else ui(R.string.are_typing)
     GlassPill(Modifier.padding(bottom=6.dp).testTag("typing-indicator").semantics {liveRegion=LiveRegionMode.Polite},radius=16) {
         Text("${names.sortedWith(String.CASE_INSENSITIVE_ORDER).joinToString()} $verb",
             Modifier.padding(horizontal=12.dp,vertical=5.dp),maxLines=1,overflow=TextOverflow.Ellipsis,

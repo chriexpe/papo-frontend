@@ -547,7 +547,17 @@ impl Api {
 
     /// Use-once reset; never sends the token to another server.
     pub async fn recover_password(&self, token: &str, password: &str) -> ApiResult<()> {
-        let _: serde_json::Value = self.post(
+        // A public bearer token and new password must never follow a 307/308
+        // to another origin or borrow a signed-in account's cookie.
+        let public = Self {
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_secs(30))
+                .build().map_err(|e| ApiError::Network(e.to_string()))?,
+            session: Arc::new(Session::default()),
+            ..self.clone()
+        };
+        let _: serde_json::Value = public.post(
             "/auth/password_reset",
             &serde_json::json!({ "token": token, "password": password }),
         ).await?;

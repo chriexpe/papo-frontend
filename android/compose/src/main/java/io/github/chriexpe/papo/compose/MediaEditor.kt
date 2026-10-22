@@ -70,9 +70,9 @@ internal data class MediaEditorSource(val path:String,val name:String,val width:
             val name=context.contentResolver.query(uri,arrayOf(OpenableColumns.DISPLAY_NAME),null,null,null)?.use {if(it.moveToFirst()) it.getString(0) else null}.orEmpty().ifBlank {"image"}
             val copy=File.createTempFile("source-",".image",directory)
             try {
-                requireNotNull(context.contentResolver.openInputStream(uri)) {"Couldn’t open this image"}.use {input ->copy.outputStream().use {output ->
+                requireNotNull(context.contentResolver.openInputStream(uri)) {ui(R.string.couldn_t_open_this_image)}.use {input ->copy.outputStream().use {output ->
                     val buffer=ByteArray(65536);var total=0L
-                    while(true) {val count=input.read(buffer);if(count<0) break;total+=count;require(total<=32L*1024*1024) {"Choose an image up to 32 MB"};output.write(buffer,0,count)}
+                    while(true) {val count=input.read(buffer);if(count<0) break;total+=count;require(total<=32L*1024*1024) {ui(R.string.choose_an_image_up_to_32_mb)};output.write(buffer,0,count)}
                 }}
                 val info=inspectMediaImage(copy.absolutePath)
                 MediaEditorSource(copy.absolutePath,name,info.width.toInt(),info.height.toInt(),true)
@@ -111,7 +111,7 @@ internal fun MediaEditor(source:MediaEditorSource,purpose:MediaEditPurpose,serve
     val aspect=when(purpose) {MediaEditPurpose.AVATAR,MediaEditPurpose.SERVER_ICON->1f;MediaEditPurpose.BANNER->3f;else->when(mode) {"square"->1f;"wide"->16f/9;else->source.width.toFloat()/source.height}}
     val crop=mediaCrop(source.width,source.height,aspect,zoom,centerX,centerY)
     var prepared by remember {mutableStateOf<Pair<MediaCrop,PreparedMediaImage>?>(null)}
-    val title=when(purpose) {MediaEditPurpose.STICKER->"New sticker";MediaEditPurpose.AVATAR->"Adjust profile photo";MediaEditPurpose.SERVER_ICON->"Adjust server picture";MediaEditPurpose.BANNER->"Adjust banner";else->"Edit image"}
+    val title=when(purpose) {MediaEditPurpose.STICKER->ui(R.string.new_sticker);MediaEditPurpose.AVATAR->ui(R.string.adjust_profile_photo);MediaEditPurpose.SERVER_ICON->ui(R.string.adjust_server_picture);MediaEditPurpose.BANNER->ui(R.string.adjust_banner);else->ui(R.string.edit_image)}
     fun update(value:Float,x:Float=centerX,y:Float=centerY) {
         val next=mediaCrop(source.width,source.height,aspect,value,x,y)
         zoom=value.coerceIn(1f,6f);centerX=next.x+next.width/2;centerY=next.y+next.height/2
@@ -134,8 +134,8 @@ internal fun MediaEditor(source:MediaEditorSource,purpose:MediaEditPurpose,serve
                         val radius=when(purpose) {MediaEditPurpose.AVATAR->min(frame.width,frame.height)/2;MediaEditPurpose.SERVER_ICON->frame.width*.28f;else->16f}
                         Box(Modifier.fillMaxWidth().height(340.dp).clip(RoundedCornerShape(20.dp)).background(Color(0xFF111114)).onSizeChanged {size=it}
                             .testTag("media-crop-area").semantics {
-                                contentDescription="Crop preview. Drag to reposition, pinch to zoom"
-                                customActions=listOf(CustomAccessibilityAction("Zoom in") {update(zoom+.25f);true},CustomAccessibilityAction("Zoom out") {update(zoom-.25f);true},CustomAccessibilityAction("Move crop left") {update(zoom,centerX-.05f);true},CustomAccessibilityAction("Move crop right") {update(zoom,centerX+.05f);true},CustomAccessibilityAction("Move crop up") {update(zoom,centerX,centerY-.05f);true},CustomAccessibilityAction("Move crop down") {update(zoom,centerX,centerY+.05f);true})
+                                contentDescription=ui(R.string.crop_preview_drag_to_reposition_pinch_to_zoom)
+                                customActions=listOf(CustomAccessibilityAction(ui(R.string.zoom_in)) {update(zoom+.25f);true},CustomAccessibilityAction(ui(R.string.zoom_out)) {update(zoom-.25f);true},CustomAccessibilityAction(ui(R.string.move_crop_left)) {update(zoom,centerX-.05f);true},CustomAccessibilityAction(ui(R.string.move_crop_right)) {update(zoom,centerX+.05f);true},CustomAccessibilityAction(ui(R.string.move_crop_up)) {update(zoom,centerX,centerY-.05f);true},CustomAccessibilityAction(ui(R.string.move_crop_down)) {update(zoom,centerX,centerY+.05f);true})
                             }.pointerInput(source.path,aspect,size,busy) {
                                 if(!busy) detectTransformGestures {centroid,pan,scale,_ ->
                                     val before=mediaCrop(source.width,source.height,aspect,zoom,centerX,centerY)
@@ -157,23 +157,23 @@ internal fun MediaEditor(source:MediaEditorSource,purpose:MediaEditPurpose,serve
                                 UserAvatar(server.me,server.myName,Modifier.offset {IntOffset((frame.left+frame.width*16/300).roundToInt(),(frame.bottom-frame.width*44/300).roundToInt())}.size(with(density) {(frame.width*80/300).toDp()}))
                             }
                         }
-                        Text("Drag to reposition. Pinch or use the slider to zoom.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(ui(R.string.drag_to_reposition_pinch_or_use_the_slider_to_zoom),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                             Text("${(zoom*100).roundToInt()}%",style=MaterialTheme.typography.labelLarge)
-                            Slider(zoom,{update(it)},Modifier.weight(1f).testTag("crop-zoom").semantics {contentDescription="Crop zoom";stateDescription="${(zoom*100).roundToInt()} percent"},enabled=!busy,valueRange=1f..6f)
-                            IconButton(enabled=!busy,onClick={zoom=1f;centerX=.5f;centerY=.5f}) {Icon(Icons.Outlined.RestartAlt,"Reset crop")}
+                            Slider(zoom,{update(it)},Modifier.weight(1f).testTag("crop-zoom").semantics {contentDescription=ui(R.string.crop_zoom);stateDescription="${(zoom*100).roundToInt()} percent"},enabled=!busy,valueRange=1f..6f)
+                            IconButton(enabled=!busy,onClick={zoom=1f;centerX=.5f;centerY=.5f}) {Icon(Icons.Outlined.RestartAlt,ui(R.string.reset_crop))}
                         }
                         if(purpose==MediaEditPurpose.STICKER || purpose==MediaEditPurpose.ATTACHMENT) FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                            val modes=if(purpose==MediaEditPurpose.STICKER) listOf("square" to "Square","original" to "Original shape") else listOf("original" to "Original shape","square" to "Square","wide" to "16:9")
+                            val modes=if(purpose==MediaEditPurpose.STICKER) listOf("square" to uiLabel("Square"),"original" to ui(R.string.original_shape)) else listOf("original" to ui(R.string.original_shape),"square" to uiLabel("Square"),"wide" to "16:9")
                             modes.forEach {(value,label)->FilterChip(mode==value,{mode=value;zoom=1f;centerX=.5f;centerY=.5f},label={Text(label)},enabled=!busy)}
                         }
                         if(purpose==MediaEditPurpose.STICKER) {
-                            OutlinedTextField(name,{name=it},Modifier.fillMaxWidth().testTag("sticker-name"),label={Text("Sticker name")},prefix={Text(":")},suffix={Text(":")},singleLine=true,enabled=!busy,isError=!Regex("[A-Za-z0-9_+\\-]{1,32}").matches(name),supportingText={Text("Up to 32 letters, numbers, _ or -")})
+                            OutlinedTextField(name,{name=it},Modifier.fillMaxWidth().testTag("sticker-name"),label={Text(ui(R.string.sticker_name))},prefix={Text(":")},suffix={Text(":")},singleLine=true,enabled=!busy,isError=!Regex("[A-Za-z0-9_+\\-]{1,32}").matches(name),supportingText={Text(ui(R.string.up_to_32_letters_numbers_or))})
                             SettingsCard {
                                 Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-                                    Text("In conversation",style=MaterialTheme.typography.labelLarge)
-                                    Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {UserAvatar(server.me,server.myName);Column {Text(server.myName,style=MaterialTheme.typography.titleSmall);CroppedEditorImage(source,crop,Modifier.width(72.dp).aspectRatio(aspect));Row(verticalAlignment=Alignment.CenterVertically) {Text("Like this ");CroppedEditorImage(source,crop,Modifier.height(22.dp).aspectRatio(aspect))}}}
-                                    Text("In the picker",style=MaterialTheme.typography.labelLarge)
+                                    Text(ui(R.string.in_conversation),style=MaterialTheme.typography.labelLarge)
+                                    Row(horizontalArrangement=Arrangement.spacedBy(12.dp)) {UserAvatar(server.me,server.myName);Column {Text(server.myName,style=MaterialTheme.typography.titleSmall);CroppedEditorImage(source,crop,Modifier.width(72.dp).aspectRatio(aspect));Row(verticalAlignment=Alignment.CenterVertically) {Text(ui(R.string.like_this));CroppedEditorImage(source,crop,Modifier.height(22.dp).aspectRatio(aspect))}}}
+                                    Text(ui(R.string.in_the_picker),style=MaterialTheme.typography.labelLarge)
                                     Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) {CroppedEditorImage(source,crop,Modifier.width(48.dp).aspectRatio(aspect).clip(RoundedCornerShape(10.dp)));Text(":$name:",Modifier.align(Alignment.CenterVertically),style=MaterialTheme.typography.bodySmall)}
                                 }
                             }
@@ -181,22 +181,22 @@ internal fun MediaEditor(source:MediaEditorSource,purpose:MediaEditPurpose,serve
                         val maxWidth=if(purpose==MediaEditPurpose.BANNER) 1536 else if(purpose==MediaEditPurpose.ATTACHMENT) 65535 else 512
                         val maxHeight=if(purpose==MediaEditPurpose.ATTACHMENT) 65535 else 512
                         val scale=min(1f,min(maxWidth/(source.width*crop.width),maxHeight/(source.height*crop.height)))
-                        Text("${(source.width*crop.width*scale).roundToInt().coerceAtLeast(1)} × ${(source.height*crop.height*scale).roundToInt().coerceAtLeast(1)} · ${when(purpose) {MediaEditPurpose.STICKER->"up to 256 KB";MediaEditPurpose.ATTACHMENT->"up to 32 MB";else->"up to 2 MB"}}\nAnimated images stay animated.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(ui(R.string.label_1_s_2_s_3_s_animated_images_stay_animated, (source.width*crop.width*scale).roundToInt().coerceAtLeast(1), (source.height*crop.height*scale).roundToInt().coerceAtLeast(1), when(purpose) {MediaEditPurpose.STICKER->ui(R.string.up_to_256_kb);MediaEditPurpose.ATTACHMENT->ui(R.string.up_to_32_mb);else->ui(R.string.up_to_2_mb)}),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
                         if(error.isNotBlank()) SettingsError(error)
                         Spacer(Modifier.height(8.dp))
                     }
                     if(busy) LinearProgressIndicator(Modifier.fillMaxWidth().testTag("media-editor-saving"))
                     Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.spacedBy(12.dp)) {
-                        OutlinedButton(enabled=!busy,onClick=onDismiss,modifier=Modifier.heightIn(min=48.dp)) {Text("Cancel")}
+                        OutlinedButton(enabled=!busy,onClick=onDismiss,modifier=Modifier.heightIn(min=48.dp)) {Text(ui(R.string.cancel))}
                         Button(enabled=!busy && (purpose!=MediaEditPurpose.STICKER || Regex("[A-Za-z0-9_+\\-]{1,32}").matches(name)),modifier=Modifier.weight(1f).heightIn(min=48.dp).testTag("save-media-edit"),onClick={
                             busy=true;error=""
                             scope.launch {
                                 try {
                                     val output=prepared?.takeIf {it.first==crop}?.second ?: withContext(Dispatchers.IO) {prepareMediaImage(source.path,crop,purpose)}.also {prepared=crop to it}
                                     onApply(output,name);onDismiss()
-                                } catch(e:CancellationException) {throw e} catch(e:Exception) {error=e.message ?: "Couldn’t save this image"} finally {busy=false}
+                                } catch(e:CancellationException) {throw e} catch(e:Exception) {error=e.message ?: ui(R.string.couldn_t_save_this_image)} finally {busy=false}
                             }
-                        }) {Text(if(busy) "Saving…" else if(purpose==MediaEditPurpose.STICKER) "Save sticker" else "Save")}
+                        }) {Text(if(busy) ui(R.string.saving) else if(purpose==MediaEditPurpose.STICKER) ui(R.string.save_sticker) else "Save")}
                     }
                 }
             }

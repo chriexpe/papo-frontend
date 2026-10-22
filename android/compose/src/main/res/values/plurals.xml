@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <plurals name="people_count">
+        <item quantity="one">%d person</item>
+        <item quantity="other">%d people</item>
+    </plurals>
+    <plurals name="reaction_count">
+        <item quantity="one">%d reaction</item>
+        <item quantity="other">%d reactions</item>
+    </plurals>
+    <plurals name="mention_count">
+        <item quantity="one">%d unread mention; go to newest</item>
+        <item quantity="other">%d unread mentions; go to newest</item>
+    </plurals>
+    <plurals name="new_message_count">
+        <item quantity="one">%d new message</item>
+        <item quantity="other">%d new messages</item>
+    </plurals>
+    <plurals name="server_sticker_count">
+        <item quantity="one">%d server sticker</item>
+        <item quantity="other">%d server stickers</item>
+    </plurals>
+</resources>

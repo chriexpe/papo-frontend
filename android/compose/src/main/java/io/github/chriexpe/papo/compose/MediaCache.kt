@@ -56,7 +56,7 @@ internal class MediaCache private constructor(private val context:Context,direct
         return runCatching {DataSourceInputStream(readOnly().createDataSource(),spec(key)).use {readBounded(it,limit)}}.getOrNull()
     }
     private fun store(key:String,bytes:ByteArray) {
-        require(bytes.isNotEmpty()) {"Empty media"}
+        require(bytes.isNotEmpty()) {ui(R.string.empty_media)}
         cache.removeResource(key)
         val factory=CacheDataSource.Factory().setCache(cache).setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
             .setUpstreamDataSourceFactory {ByteArrayDataSource(bytes)}
@@ -65,7 +65,7 @@ internal class MediaCache private constructor(private val context:Context,direct
     suspend fun blob(identity:String,limit:Int=MAX_IMAGE,load:suspend ()->ByteArray):ByteArray=withContext(Dispatchers.IO) {
         val key=hash(identity)
         peek(key,limit) ?: locks.getOrPut(key) {Mutex()}.withLock {
-            peek(key,limit) ?: load().also {require(it.size<=limit) {"Media is too large"};currentCoroutineContext().ensureActive();store(key,it)}
+            peek(key,limit) ?: load().also {require(it.size<=limit) {ui(R.string.media_is_too_large)};currentCoroutineContext().ensureActive();store(key,it)}
         }
     }
     fun images(source:MediaRequest):Flow<ByteArray> = flow {
@@ -86,9 +86,9 @@ internal class MediaCache private constructor(private val context:Context,direct
                 }.build()
                 cancellableRequest(source,request) {response ->
                     val data=if(response.code==304 && latest!=null) latest else {
-                        if(!response.isSuccessful) throw IOException("Media unavailable (${response.code})")
-                        val body=response.body ?: throw IOException("Empty media")
-                        if(body.contentLength()>MAX_IMAGE) throw IOException("Image is too large")
+                        if(!response.isSuccessful) throw IOException(ui(R.string.media_unavailable_1_s, response.code))
+                        val body=response.body ?: throw IOException(ui(R.string.empty_media))
+                        if(body.contentLength()>MAX_IMAGE) throw IOException(ui(R.string.image_is_too_large))
                         body.byteStream().use {readBounded(it,MAX_IMAGE)}
                     }
                     currentCoroutineContext().ensureActive()
@@ -193,8 +193,8 @@ internal class MediaCache private constructor(private val context:Context,direct
         internal fun isolated(context:Context,directory:File,budget:Long=256*1024*1024L,now:()->Long=System::currentTimeMillis,freshFor:Long=15*60*1000L)=MediaCache(context.applicationContext,directory,budget,now,freshFor)
         private fun readBounded(input:java.io.InputStream,limit:Int):ByteArray {
             val output=ByteArrayOutputStream();val buffer=ByteArray(8192)
-            while(true) {val count=input.read(buffer);if(count<0) break;if(output.size()+count>limit) throw IOException("Image is too large");output.write(buffer,0,count)}
-            return output.toByteArray().also {if(it.isEmpty()) throw IOException("Empty image")}
+            while(true) {val count=input.read(buffer);if(count<0) break;if(output.size()+count>limit) throw IOException(ui(R.string.image_is_too_large));output.write(buffer,0,count)}
+            return output.toByteArray().also {if(it.isEmpty()) throw IOException(ui(R.string.empty_image))}
         }
     }
 }

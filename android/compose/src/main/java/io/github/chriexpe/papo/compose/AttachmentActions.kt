@@ -83,21 +83,21 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
     }
     val microphone = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { allowed ->
         if (allowed) onRecord()
-        else model.attachments.report(key, "Microphone permission is needed to record audio. You can enable it in Android settings.")
+        else model.attachments.report(key, ui(R.string.microphone_permission_is_needed_to_record_audio_you_can_enable_it_in_androi))
     }
     BackHandler(expanded) { expanded = false }
     Box(modifier.width(60.dp).height(60.dp)) {
         Column(Modifier.align(Alignment.BottomStart).offset(y = (-72).dp).wrapContentSize(Alignment.BottomStart, unbounded = true)) {
             AnimatedVisibility(expanded && enabled, enter = expandVertically(expandFrom = Alignment.Bottom) + fadeIn(), exit = shrinkVertically(shrinkTowards = Alignment.Bottom) + fadeOut()) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.width(184.dp)) {
-                    AttachmentAction("Record audio", Icons.Outlined.Mic) {
+                    AttachmentAction(ui(R.string.record_audio), Icons.Outlined.Mic) {
                         expanded = false
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) onRecord()
                         else microphone.launch(Manifest.permission.RECORD_AUDIO)
                     }
-                    AttachmentAction("Choose files", Icons.Outlined.AttachFile) {
+                    AttachmentAction(ui(R.string.choose_files), Icons.Outlined.AttachFile) {
                         expanded = false; pickerKey = key
-                        runCatching { files.launch(arrayOf("*/*")) }.onFailure { model.attachments.report(key, "No file picker is available on this device.") }
+                        runCatching { files.launch(arrayOf("*/*")) }.onFailure { model.attachments.report(key, ui(R.string.no_file_picker_is_available_on_this_device)) }
                     }
                     AttachmentAction("Camera", Icons.Outlined.PhotoCamera) {
                         expanded = false
@@ -105,7 +105,7 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
                             val file = withContext(Dispatchers.IO) { AttachmentFiles.create(context, "jpg") }
                             cameraPath = file.absolutePath; cameraKey = key
                             try { camera.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", file)) }
-                            catch (e: Exception) { file.delete(); cameraPath = ""; model.attachments.report(key, "No camera app is available on this device.") }
+                            catch (e: Exception) { file.delete(); cameraPath = ""; model.attachments.report(key, ui(R.string.no_camera_app_is_available_on_this_device)) }
                         }
                     }
                 }
@@ -114,13 +114,13 @@ internal fun AttachmentActions(key: String, model: PapoViewModel, enabled: Boole
         GlassPill(Modifier.fillMaxSize(), radius = 20) {
             Box(Modifier.fillMaxSize().clip(RoundedCornerShape(20.dp))
                 .combinedClickable(enabled = enabled, role = Role.Button,
-                    onClickLabel = "Open gallery", onLongClickLabel = "More attachment options",
+                    onClickLabel = ui(R.string.open_gallery), onLongClickLabel = ui(R.string.more_attachment_options),
                     onClick = {
                         expanded = false; galleryKey = key
                         runCatching { gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }
-                            .onFailure { model.attachments.report(key, "No gallery picker is available on this device.") }
+                            .onFailure { model.attachments.report(key, ui(R.string.no_gallery_picker_is_available_on_this_device)) }
                     }, onLongClick = { expanded = !expanded })
-                .semantics { contentDescription = "Open gallery"; stateDescription = if (expanded) "Expanded" else "Collapsed" },
+                .semantics { contentDescription = ui(R.string.open_gallery); stateDescription = if (expanded) "Expanded" else "Collapsed" },
                 contentAlignment = Alignment.Center) {
                 Icon(Icons.Outlined.PhotoLibrary, null, tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else .38f))
             }
@@ -150,14 +150,14 @@ internal fun PendingAttachments(draft: AttachmentDraft, edit:(PendingAttachment)
                     Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
                     Text(if (file.size >= 1024 * 1024) "${file.size / (1024 * 1024)} MB" else "${(file.size / 1024).coerceAtLeast(1)} KB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if(file.mime.startsWith("image/")) IconButton(onClick={edit(file)},enabled=!draft.sending && !draft.preparing && !draft.uncertain) {Icon(Icons.Outlined.Edit,"Edit ${file.name}",Modifier.size(18.dp))}
-                IconButton(onClick = { remove(file) }, enabled = !draft.sending && !draft.preparing) { Icon(Icons.Outlined.Close, "Remove ${file.name}", Modifier.size(18.dp)) }
+                if(file.mime.startsWith("image/")) IconButton(onClick={edit(file)},enabled=!draft.sending && !draft.preparing && !draft.uncertain) {Icon(Icons.Outlined.Edit,ui(R.string.edit_named,file.name),Modifier.size(18.dp))}
+                IconButton(onClick = { remove(file) }, enabled = !draft.sending && !draft.preparing) { Icon(Icons.Outlined.Close, ui(R.string.remove_named,file.name), Modifier.size(18.dp)) }
             }
         }
     }
     if (draft.preparing || draft.sending) Row(Modifier.padding(horizontal = 18.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp))
-        Text(if (draft.sending) "Sending attachments…" else "Preparing attachments…", style = MaterialTheme.typography.labelMedium)
+        Text(if (draft.sending) ui(R.string.sending_attachments) else ui(R.string.preparing_attachments), style = MaterialTheme.typography.labelMedium)
     }
     if (draft.error.isNotBlank()) Text(draft.error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp))
 }
@@ -209,7 +209,7 @@ internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () ->
     val finish: (Boolean, Boolean) -> Unit = { keep, send ->
         if (!busy) {
             busy = true
-            model.attachments.finishCapture(key, keep && recording, captureName("Voice note", "m4a"), capture::stop) { staged ->
+            model.attachments.finishCapture(key, keep && recording, captureName(ui(R.string.voice_note), "m4a"), capture::stop) { staged ->
                 onClose()
                 if (staged && send) onSend()
             }
@@ -222,7 +222,7 @@ internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () ->
     LaunchedEffect(capture) {
         try { withContext(Dispatchers.IO) { capture.start() }; started = SystemClock.elapsedRealtime(); recording = true }
         catch (e: kotlinx.coroutines.CancellationException) { throw e }
-        catch (e: Exception) { error = "Microphone unavailable" }
+        catch (e: Exception) { error = ui(R.string.microphone_unavailable) }
     }
     LaunchedEffect(recording, busy) {
         while (recording && !busy) {
@@ -238,17 +238,17 @@ internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () ->
         lifecycle.addObserver(observer)
         onDispose {
             lifecycle.removeObserver(observer)
-            if (!busy) { busy = true; model.attachments.finishCapture(key, true, captureName("Voice note", "m4a"), capture::stop) {} }
+            if (!busy) { busy = true; model.attachments.finishCapture(key, true, captureName(ui(R.string.voice_note), "m4a"), capture::stop) {} }
         }
     }
     Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        IconButton(onClick = { finish(false, false) }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, "Discard recording", tint = MaterialTheme.colorScheme.error) }
+        IconButton(onClick = { finish(false, false) }, enabled = !busy) { Icon(Icons.Outlined.DeleteOutline, ui(R.string.discard_recording), tint = MaterialTheme.colorScheme.error) }
         Text("%d:%02d".format(elapsed / 60, elapsed % 60), style = MaterialTheme.typography.labelLarge,
             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
         if (error.isNotEmpty()) Text(error, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
         else {
             val color = MaterialTheme.colorScheme.primary
-            androidx.compose.foundation.Canvas(Modifier.weight(1f).height(28.dp).semantics { contentDescription = "Live microphone waveform" }) {
+            androidx.compose.foundation.Canvas(Modifier.weight(1f).height(28.dp).semantics { contentDescription = ui(R.string.live_microphone_waveform) }) {
                 val gap = 4.dp.toPx()
                 val count = (size.width / gap).toInt().coerceAtLeast(1)
                 val visible = samples.takeLast(count)
@@ -262,7 +262,7 @@ internal fun RecordingComposer(key: String, model: PapoViewModel, onClose: () ->
         }
         FilledIconButton(onClick = { finish(true, true) }, enabled = recording && !busy, modifier = Modifier.size(48.dp)) {
             if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Icon(Icons.Outlined.ArrowUpward, "Send recording")
+            else Icon(Icons.Outlined.ArrowUpward, ui(R.string.send_recording))
         }
     }
 }

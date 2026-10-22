@@ -59,7 +59,7 @@ internal data class ViewerMedia(
     val playback: PlaybackHandle? = null,
 )
 
-internal val LocalMediaViewer=staticCompositionLocalOf<(ViewerMedia)->Unit> {error("Missing media viewer")}
+internal val LocalMediaViewer=staticCompositionLocalOf<(ViewerMedia)->Unit> {error(ui(R.string.missing_media_viewer))}
 internal val LocalViewedMedia=compositionLocalOf<ViewerMedia?> {null}
 internal val LocalInlinePlayer=compositionLocalOf<String?> {null}
 
@@ -103,7 +103,7 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                     val maxY=with(density) {((height*scale-contentHeight)/2).toPx().coerceAtLeast(0f)}
                     val bounded=Offset(offset.x.coerceIn(-maxX,maxX),offset.y.coerceIn(-maxY,maxY))
                     val center=with(density) {Offset(maxWidth.toPx()/2,maxHeight.toPx()/2)}
-                    Box(Modifier.fillMaxSize().hazeSource(haze).testTag("viewer-backdrop").clickable(onClickLabel="Close media",onClick=onClose)
+                    Box(Modifier.fillMaxSize().hazeSource(haze).testTag("viewer-backdrop").clickable(onClickLabel=ui(R.string.close_media),onClick=onClose)
                         .pointerInput(media.id,center,width,height) {
                             // Observe before PlayerView so two-finger zoom also
                             // works over video controls. Single taps/seeks pass on.
@@ -132,9 +132,9 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                         }.testTag("viewer-content").semantics {
                             stateDescription="Zoom ${String.format(Locale.ROOT,"%.2f",scale)}x"
                             customActions=listOf(
-                                CustomAccessibilityAction("Zoom in") {scale=(scale*1.5f).coerceAtMost(5f);true},
-                                CustomAccessibilityAction("Zoom out") {scale=(scale/1.5f).coerceAtLeast(1f);if(scale==1f) offset=Offset.Zero;true},
-                                CustomAccessibilityAction("Reset zoom") {scale=1f;offset=Offset.Zero;true})
+                                CustomAccessibilityAction(ui(R.string.zoom_in)) {scale=(scale*1.5f).coerceAtMost(5f);true},
+                                CustomAccessibilityAction(ui(R.string.zoom_out)) {scale=(scale/1.5f).coerceAtLeast(1f);if(scale==1f) offset=Offset.Zero;true},
+                                CustomAccessibilityAction(ui(R.string.reset_zoom)) {scale=1f;offset=Offset.Zero;true})
                         }.then(if(media.kind=="video") Modifier else Modifier.clickable { /* Content taps must not dismiss the viewer. */ })) {
                             if(media.kind in listOf("video","audio")) {
                                 val waveform by produceState(WaveformState(),media.id) {
@@ -151,14 +151,14 @@ internal fun MediaViewer(server: ServerState, model: PapoViewModel, media: Viewe
                             else IconButton(enabled=!download.startsWith("Saved to "),onClick={
                                 saving=true;download=""
                                 scope.launch {
-                                    try {downloadViewerMedia(context,server,model,media);download="Saved to ${downloadLocation(context)}"}
+                                    try {downloadViewerMedia(context,server,model,media);download=ui(R.string.saved_to_1_s, downloadLocation(context))}
                                     catch(e:CancellationException) {throw e}
-                                    catch(_:Exception) {download="Couldn’t save this media. Try again."}
+                                    catch(_:Exception) {download=ui(R.string.couldn_t_save_this_media_try_again)}
                                     finally {saving=false}
                                 }
-                            }) {Icon(if(download.startsWith("Saved to ")) Icons.Outlined.Check else Icons.Outlined.Download,if(download.startsWith("Saved to ")) "Downloaded" else "Download media")}
+                            }) {Icon(if(download.startsWith("Saved to ")) Icons.Outlined.Check else Icons.Outlined.Download,if(download.startsWith("Saved to ")) "Downloaded" else ui(R.string.download_media))}
                             media.gif?.let {GifStar(server,model,it,light=true)}
-                            IconButton(onClick=onClose) {Icon(Icons.Outlined.Close,if(media.kind in listOf("image","gif")) "Close image" else "Close media")}
+                            IconButton(onClick=onClose) {Icon(Icons.Outlined.Close,if(media.kind in listOf("image","gif")) ui(R.string.close_image) else ui(R.string.close_media))}
                         }
                     }
                     if(download.isNotBlank()) GlassPill(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(24.dp)) {
@@ -199,13 +199,13 @@ private fun BoxScope.ViewerImage(server: ServerState, model: PapoViewModel, medi
     }
     val loader=remember(context) {MediaImages.loader(context)}
     if(data!=null && !failed) ManagedAsyncImage(ImageRequest.Builder(context).data(data).build(),media.title,imageLoader=loader,
-        modifier=Modifier.fillMaxSize().testTag("viewer-image").semantics {stateDescription=if(loaded) "Loaded" else "Loading"},contentScale=ContentScale.Fit,onError={failed=true},onSuccess={result ->
+        modifier=Modifier.fillMaxSize().testTag("viewer-image").semantics {stateDescription=if(loaded) ui(R.string.loaded) else ui(R.string.loading_state)},contentScale=ContentScale.Fit,onError={failed=true},onSuccess={result ->
             loaded=true
             val image=result.result.image
             if(image.width>0 && image.height>0) onRatio(image.width.toFloat()/image.height)
         })
     else if(!failed) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp),strokeWidth=2.dp)
-    if(failed) TextButton(onClick={retry++}) {Text("Image unavailable · Retry")}
+    if(failed) TextButton(onClick={retry++}) {Text(ui(R.string.image_unavailable_retry))}
 }
 
 private suspend fun downloadViewerMedia(context: Context, server: ServerState, model: PapoViewModel, media: ViewerMedia) {
@@ -236,7 +236,7 @@ private suspend fun downloadViewerMedia(context: Context, server: ServerState, m
         } else null
         val mime=imageMime ?: (if(media.kind=="audio" && media.mime.startsWith("video/")) "audio/mp4" else media.mime.takeIf {it.isNotBlank()}) ?: when(media.kind) {"gif" -> "image/gif"; "image" -> "image/png"; "video" -> "video/mp4"; "audio" -> "audio/mp4"; else -> "application/octet-stream"}
         val extension=MimeTypeMap.getSingleton().getExtensionFromMimeType(mime) ?: "bin"
-        val name=media.title.takeIf {it.substringAfterLast('.',"").lowercase()==extension || MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.substringAfterLast('.',"").lowercase())==mime} ?: "${media.title.ifBlank {"Papo media"}}.$extension"
+        val name=media.title.takeIf {it.substringAfterLast('.',"").lowercase()==extension || MimeTypeMap.getSingleton().getMimeTypeFromExtension(it.substringAfterLast('.',"").lowercase())==mime} ?: "${media.title.ifBlank {ui(R.string.papo_media)}}.$extension"
         saveMediaDownload(context,file,name,mime)
     } finally {temporary?.delete()}
 }

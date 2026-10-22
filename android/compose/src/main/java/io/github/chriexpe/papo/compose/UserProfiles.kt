@@ -56,7 +56,7 @@ internal fun UserAvatar(id:String,name:String,modifier:Modifier=Modifier,shape:a
     key(profileContext?.server?.url,profileContext?.server?.me,id,revision) {
         var loaded by remember {mutableStateOf(false)}
         Box(modifier.size(40.dp).clip(shape).testTag("avatar-$id").semantics {
-            contentDescription="$name avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
+            contentDescription=ui(R.string.member_avatar,name);stateDescription=if(loaded) ui(R.string.avatar_loaded) else uiLabel("Initials")
         },contentAlignment=Alignment.Center) {
             if(!loaded) Avatar(name,Modifier.fillMaxSize(),shape)
             if(image!=null) ManagedAsyncImage(
@@ -75,7 +75,7 @@ internal fun ProfileBanner(server:ServerState,model:PapoViewModel,id:String,revi
         }
     }
     Box(modifier.background(MaterialTheme.colorScheme.primary.copy(alpha=.16f))) {
-        image?.let {ManagedAsyncImage(it,"Profile banner",MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop)}
+        image?.let {ManagedAsyncImage(it,ui(R.string.profile_banner),MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop)}
     }
 }
 
@@ -91,6 +91,7 @@ internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,o
     val name=person?.name ?: id
     val username=person?.username.orEmpty()
     val clipboard=LocalClipboardManager.current
+    var resetLink by remember(id) {mutableStateOf(false)}
     var copied by remember(id) {mutableStateOf(false)}
     LaunchedEffect(server.url,server.me,id) {model.command(Action.LoadProfile(id),server.url)}
     ModalBottomSheet(onDismissRequest=onDismiss,dragHandle=null,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
@@ -101,14 +102,14 @@ internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,o
                     ProfileBanner(server,model,id,profile?.banner.orEmpty(),Modifier.fillMaxWidth().height(bannerHeight))
                     Box(Modifier.align(Alignment.TopCenter).padding(top=8.dp).size(32.dp,4.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha=.3f),CircleShape))
                     GlassPill(Modifier.align(Alignment.TopEnd).padding(8.dp)) {
-                        IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close profile")}
+                        IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,ui(R.string.close_profile))}
                     }
                     Row(Modifier.padding(top=bannerHeight-36.dp,start=20.dp,end=20.dp),verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(12.dp)) {
                         Box(Modifier.size(88.dp)) {
                             UserAvatar(id,name,Modifier.size(88.dp).border(4.dp,MaterialTheme.colorScheme.surfaceContainerLow,CircleShape).padding(4.dp))
                             val presence=person?.presence ?: "offline"
                             val color=when(presence) {"online"->Color(0xFF50B77B);"away"->Color(0xFFF0B63F);"busy"->Color(0xFFDC6666);else->MaterialTheme.colorScheme.outline}
-                            Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(18.dp).background(color,CircleShape).border(3.dp,MaterialTheme.colorScheme.surfaceContainerLow,CircleShape).semantics {contentDescription=presence.replaceFirstChar(Char::uppercase)})
+                            Box(Modifier.align(Alignment.BottomEnd).padding(4.dp).size(18.dp).background(color,CircleShape).border(3.dp,MaterialTheme.colorScheme.surfaceContainerLow,CircleShape).semantics {contentDescription=uiLabel(presence.replaceFirstChar(Char::uppercase))})
                         }
                         if(!profile?.statusMessage.isNullOrBlank()) Surface(shape=RoundedCornerShape(16.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh,modifier=Modifier.padding(bottom=6.dp).weight(1f,fill=false)) {
                             Text(profile!!.statusMessage,Modifier.padding(horizontal=12.dp,vertical=8.dp),style=MaterialTheme.typography.bodySmall,maxLines=3,overflow=TextOverflow.Ellipsis)
@@ -121,10 +122,10 @@ internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,o
                 }
             }
             if(profile?.loaded==false && server.connection=="online") item {
-                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal=24.dp).semantics {contentDescription="Loading profile"})
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal=24.dp).semantics {contentDescription=ui(R.string.loading_profile)})
             }
             if(!profile?.roles.isNullOrEmpty()) item {
-                ProfileSection("ROLES") {
+                ProfileSection(ui(R.string.roles)) {
                     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                         profile!!.roles.forEach {role -> Surface(shape=RoundedCornerShape(12.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {
                             Row(Modifier.padding(horizontal=10.dp,vertical=7.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)) {
@@ -136,23 +137,26 @@ internal fun UserProfileSheet(server:ServerState,model:PapoViewModel,id:String,o
                 }
             }
             if(!profile?.description.isNullOrBlank() || !profile?.createdAt.isNullOrBlank()) item {
-                ProfileSection("ABOUT") {
+                ProfileSection(ui(R.string.about_2)) {
                     if(!profile?.description.isNullOrBlank()) SelectionContainer {Text(profile!!.description,style=MaterialTheme.typography.bodyMedium)}
-                    val date=remember(profile?.createdAt) {runCatching {OffsetDateTime.parse(profile?.createdAt).format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM))}.getOrNull()}
-                    date?.let {Text("Member since $it",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
+                    val date=remember(profile?.createdAt,AppLanguage.locale) {runCatching {OffsetDateTime.parse(profile?.createdAt).format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(AppLanguage.locale))}.getOrNull()}
+                    date?.let {Text(ui(R.string.member_since_1_s, it),style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                 }
             }
             item {
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
                 Column(Modifier.padding(horizontal=12.dp).navigationBarsPadding()) {
-                    if(id!=server.me) ListItem(headlineContent={Text("Message ${if(username.isBlank()) name else "@$username"}")},leadingContent={Icon(Icons.Outlined.ChatBubbleOutline,null)},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},
+                    if(id!=server.me) ListItem(headlineContent={Text(ui(R.string.message_person,if(username.isBlank()) name else "@$username"))},leadingContent={Icon(Icons.Outlined.ChatBubbleOutline,null)},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},
                         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {onMessage(id)})
-                    if(username.isNotBlank()) ListItem(headlineContent={Text(if(copied) "Copied username" else "Copy username")},leadingContent={Icon(Icons.Outlined.ContentCopy,null)},
+                    if(server.canResetPasswords && !server.isDemo && id!=server.me) ListItem(headlineContent={Text(ui(R.string.generate_recovery_link_2))},leadingContent={Icon(Icons.Outlined.Key,null)},
+                        colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {resetLink=true})
+                    if(username.isNotBlank()) ListItem(headlineContent={Text(if(copied) ui(R.string.copied_username) else ui(R.string.copy_username))},leadingContent={Icon(Icons.Outlined.ContentCopy,null)},
                         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {clipboard.setText(AnnotatedString(username));copied=true})
                 }
             }
         }
     }
+    if(resetLink) GenerateRecoveryLink(server,model,id,name) {resetLink=false}
 }
 
 @Composable
@@ -197,7 +201,7 @@ internal fun ExternalAvatar(server:ServerState,author:io.github.chriexpe.papo.co
     val image=bytes
     var loaded by remember(url) {mutableStateOf(false)}
     Box(modifier.size(40.dp).clip(CircleShape).testTag("external-avatar-${author.source}-${author.id}").semantics {
-        contentDescription="${author.name} avatar";stateDescription=if(loaded) "Avatar loaded" else "Initials"
+        contentDescription=ui(R.string.member_avatar,author.name);stateDescription=if(loaded) ui(R.string.avatar_loaded) else uiLabel("Initials")
     }) {
         if(!loaded) Avatar(author.name,Modifier.fillMaxSize())
         image?.let {ManagedAsyncImage(it,null,MediaImages.loader(context),Modifier.fillMaxSize(),ContentScale.Crop,
@@ -223,7 +227,7 @@ internal fun ExternalProfileSheet(server:ServerState,author:io.github.chriexpe.p
             item {
                 Box(Modifier.fillMaxWidth().height(112.dp).background(MaterialTheme.colorScheme.primary.copy(alpha=.16f))) {
                     Box(Modifier.align(Alignment.TopCenter).padding(top=8.dp).size(32.dp,4.dp).background(MaterialTheme.colorScheme.onSurface.copy(alpha=.3f),CircleShape))
-                    GlassPill(Modifier.align(Alignment.TopEnd).padding(8.dp)) {IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close profile")}}
+                    GlassPill(Modifier.align(Alignment.TopEnd).padding(8.dp)) {IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,ui(R.string.close_profile))}}
                 }
                 ExternalAvatar(server,author,Modifier.padding(start=20.dp).offset(y=(-36).dp).size(88.dp).border(4.dp,MaterialTheme.colorScheme.surfaceContainerLow,CircleShape).padding(4.dp))
                 Column(Modifier.offset(y=(-24).dp).padding(horizontal=24.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -231,16 +235,16 @@ internal fun ExternalProfileSheet(server:ServerState,author:io.github.chriexpe.p
                         SelectionContainer(Modifier.weight(1f,fill=false)) {Text(author.name,style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)}
                         AppBadge()
                     }
-                    Text("Via ${author.source}",style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui(R.string.via_provider,author.source),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))
-                Text("This identity is provided by an app integration.",Modifier.padding(horizontal=24.dp,vertical=20.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(ui(R.string.this_identity_is_provided_by_an_app_integration),Modifier.padding(horizontal=24.dp,vertical=20.dp),style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item {
                 Column(Modifier.padding(horizontal=12.dp).navigationBarsPadding()) {
-                    if(profile!=null) ListItem(headlineContent={Text("Open external profile")},leadingContent={Icon(Icons.Outlined.OpenInNew,null)},
+                    if(profile!=null) ListItem(headlineContent={Text(ui(R.string.open_external_profile))},leadingContent={Icon(Icons.Outlined.OpenInNew,null)},
                         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {uriHandler.openUri(profile)})
-                    ListItem(headlineContent={Text(if(copied) "Copied name" else "Copy name")},leadingContent={Icon(Icons.Outlined.ContentCopy,null)},
+                    ListItem(headlineContent={Text(if(copied) ui(R.string.copied_name) else ui(R.string.copy_name))},leadingContent={Icon(Icons.Outlined.ContentCopy,null)},
                         colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.clip(RoundedCornerShape(18.dp)).clickable {clipboard.setText(AnnotatedString(author.name));copied=true})
                 }
             }

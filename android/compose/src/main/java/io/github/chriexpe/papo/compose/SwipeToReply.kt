@@ -33,7 +33,7 @@ internal fun SwipeToReply(id:String,enabled:Boolean,onReply:()->Unit,content:@Co
     var offset by remember(id) {mutableFloatStateOf(0f)}
     var dragging by remember(id) {mutableStateOf(false)}
     var notified by remember(id) {mutableStateOf(false)}
-    val position by animateFloatAsState(offset,if(dragging) snap() else tween(180),label="Reply swipe")
+    val position by animateFloatAsState(offset,if(dragging) snap() else tween(180),label=ui(R.string.reply_swipe))
     val progress=(abs(position)/threshold).coerceIn(0f,1f)
     Box(Modifier.fillMaxWidth().clipToBounds().pointerInput(id,enabled,threshold,limit) {
         try {

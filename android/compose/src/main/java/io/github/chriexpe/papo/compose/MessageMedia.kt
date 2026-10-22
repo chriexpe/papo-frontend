@@ -75,7 +75,7 @@ internal object MediaNetwork {
     fun client(source: MediaRequest): OkHttpClient = base.newBuilder().addInterceptor { chain ->
         val request = chain.request()
         val allowed = source.origin.toHttpUrl()
-        if (request.url.scheme != allowed.scheme || request.url.host != allowed.host || request.url.port != allowed.port) throw IOException("The media address changed")
+        if (request.url.scheme != allowed.scheme || request.url.host != allowed.host || request.url.port != allowed.port) throw IOException(ui(R.string.the_media_address_changed))
         val builder = request.newBuilder()
         source.headers.forEach { (key, value) -> builder.header(key, value) }
         chain.proceed(builder.build())
@@ -103,7 +103,7 @@ internal fun MessageMedia(message: ChatMessage, server: ServerState, model: Papo
     }
     message.nativeLinks().distinctBy {it.url}.filter {link -> message.embeds.none {it.url==link.url}}.forEach {link ->
         val kind=directMediaKind(link.url) ?: return@forEach
-        val title=Uri.parse(link.url).lastPathSegment?.takeIf {it.isNotBlank()} ?: "Media"
+        val title=Uri.parse(link.url).lastPathSegment?.takeIf {it.isNotBlank()} ?: uiLabel("Media")
         val gif=if(kind=="gif") GifChoice("url:${link.url}",title,url=link.url) else null
         val media=ViewerMedia("${server.url}/${server.me}/url/${link.url}",title,kind,gif=gif,url=link.url)
         if(kind=="audio") {
@@ -138,8 +138,8 @@ private fun Attachment(a: AttachmentView, server: ServerState, model: PapoViewMo
         ReservedMedia(0, 0, tag = "attachment-${a.id}") {
             Column(Modifier.align(Alignment.Center).padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(if (sensitive) Icons.Outlined.VisibilityOff else Icons.Outlined.Shield, null)
-                Text(if (blocked) "Media unavailable" else "Sensitive media", modifier = Modifier.padding(top = 8.dp))
-                if (sensitive) TextButton(onClick = { revealed = true }) { Text("Show media") }
+                Text(if (blocked) ui(R.string.media_unavailable) else ui(R.string.sensitive_media), modifier = Modifier.padding(top = 8.dp))
+                if (sensitive) TextButton(onClick = { revealed = true }) { Text(ui(R.string.show_media)) }
             }
         }
         return
@@ -183,12 +183,12 @@ private fun FileAttachment(a: AttachmentView, server: ServerState, model: PapoVi
                         val file = MediaNetwork.download(context, request, a.name)
                         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file, a.name)
                         val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, a.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        context.startActivity(Intent.createChooser(intent, "Open ${a.name}"))
+                        context.startActivity(Intent.createChooser(intent, ui(R.string.open_named,a.name)))
                     } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) { error = "Couldn’t open this file. Try again." }
+                    catch (e: Exception) { error = ui(R.string.couldn_t_open_this_file_try_again) }
                     finally { loading = false }
                 }
-            }) { Icon(Icons.Outlined.OpenInNew, "Open ${a.name}") }
+            }) { Icon(Icons.Outlined.OpenInNew, ui(R.string.open_named,a.name)) }
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
@@ -233,26 +233,26 @@ private fun EmbedCard(e: EmbedView, server: ServerState, model: PapoViewModel, a
                 if (activePlayer == id) ProviderPlayer(e.iframeUrl, server, onPlayer)
                 else {
                     if (e.hasImage) MediaImage(server, model, e.title, embed = e, viewer = false)
-                    PlayButton(e.title.ifBlank { "YouTube video" }) { onPlayer(id) }
+                    PlayButton(e.title.ifBlank { ui(R.string.youtube_video) }) { onPlayer(id) }
                 }
             }
         }
         if (e.footer.isNotBlank()) Text(e.footer, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(14.dp))
-        if (e.kind == "gif" && publicUrl != null) TextButton(onClick = { runCatching { uriHandler.openUri(publicUrl) } }) { Text(e.provider.ifBlank { "Open original" }) }
+        if (e.kind == "gif" && publicUrl != null) TextButton(onClick = { runCatching { uriHandler.openUri(publicUrl) } }) { Text(e.provider.ifBlank { ui(R.string.open_original) }) }
     }
 }
 
 @Composable
 private fun BoxScope.EmbedVisual(e:EmbedView,server:ServerState,model:PapoViewModel,onPlayer:(String?)->Unit,onActions:()->Unit) {
-    if(e.kind=="video") VideoPreview(server,model,ViewerMedia("${server.url}/${server.me}/embed/${e.id}",e.title.ifBlank {"Video"},"video",e.mime,e.width,e.height,resource=MediaResource.EmbedVideo(e.id)),embedPoster=e.takeIf {it.hasImage},onPlayer=onPlayer,onActions=onActions)
-    else MediaImage(server,model,e.title.ifBlank {"Image preview"},embed=e,gif=if(e.kind=="gif") GifChoice("embed:${e.id}",e.title.ifBlank {"GIF"},url=e.url,embed=e.id,revision=e.revision,width=e.width,height=e.height) else null,onActions=onActions)
+    if(e.kind=="video") VideoPreview(server,model,ViewerMedia("${server.url}/${server.me}/embed/${e.id}",e.title.ifBlank {uiLabel("Video")},"video",e.mime,e.width,e.height,resource=MediaResource.EmbedVideo(e.id)),embedPoster=e.takeIf {it.hasImage},onPlayer=onPlayer,onActions=onActions)
+    else MediaImage(server,model,e.title.ifBlank {ui(R.string.image_preview)},embed=e,gif=if(e.kind=="gif") GifChoice("embed:${e.id}",e.title.ifBlank {"GIF"},url=e.url,embed=e.id,revision=e.revision,width=e.width,height=e.height) else null,onActions=onActions)
 }
 
 @Composable
 private fun BoxScope.VideoPreview(server:ServerState,model:PapoViewModel,media:ViewerMedia,poster:MediaResource?=null,embedPoster:EmbedView?=null,onPlayer:(String?)->Unit,onActions:()->Unit) {
     val viewer=LocalMediaViewer.current
     val active=LocalInlinePlayer.current==media.id
-    Box(Modifier.fillMaxSize().combinedClickable(onClick={onPlayer(media.id)},onLongClick=onActions,onLongClickLabel="Message actions")) {
+    Box(Modifier.fillMaxSize().combinedClickable(onClick={onPlayer(media.id)},onLongClick=onActions,onLongClickLabel=ui(R.string.message_actions))) {
         PlayableMedia(server,model,media.id,media.title,active,{onPlayer(media.id)},media.resource,poster=poster,embedPoster=embedPoster,publicUrl=media.url,onFullscreen={viewer(media.copy(playback=it))})
     }
 }
@@ -290,21 +290,21 @@ internal fun BoxScope.MediaImage(server: ServerState, model: PapoViewModel, desc
     val loader=remember(context) {MediaImages.loader(context)}
     val request=remember(data) {ImageRequest.Builder(context).data(data).build()}
     if (data != null && !decodeError) ManagedAsyncImage(request, description, imageLoader = loader,
-        modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.combinedClickable(onClick={openViewer(media)},onLongClick=onActions,onLongClickLabel="Message actions") else Modifier), contentScale = ContentScale.Fit,
+        modifier = Modifier.fillMaxSize().semantics { stateDescription = if (decoded) "Loaded" else "Loading" }.then(if (viewer) Modifier.combinedClickable(onClick={openViewer(media)},onLongClick=onActions,onLongClickLabel=ui(R.string.message_actions)) else Modifier), contentScale = ContentScale.Fit,
         onSuccess = { decoded = true },
         onError = { decodeError = true },retentionKey="image/${embed?.id}/${embed?.revision}/$resource/$publicUrl/$author")
     else if (!decodeError) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
     if (decodeError) Column(Modifier.align(Alignment.Center).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(Icons.Outlined.BrokenImage, null)
-        Text("Image unavailable", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = { decodeError = false; retry++ }) { Text("Retry") }
+        Text(ui(R.string.image_unavailable), style = MaterialTheme.typography.bodySmall)
+        TextButton(onClick = { decodeError = false; retry++ }) { Text(ui(R.string.retry)) }
     }
     if (gif!=null) GifStar(server,model,gif,Modifier.align(Alignment.TopEnd))
 }
 
 @Composable
 private fun BoxScope.PlayButton(title: String, play: () -> Unit) {
-    FilledIconButton(onClick = play, modifier = Modifier.align(Alignment.Center).size(56.dp)) { Icon(Icons.Outlined.PlayArrow, "Play $title", Modifier.size(30.dp)) }
+    FilledIconButton(onClick = play, modifier = Modifier.align(Alignment.Center).size(56.dp)) { Icon(Icons.Outlined.PlayArrow, ui(R.string.play_named,title), Modifier.size(30.dp)) }
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -385,7 +385,7 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
     var initialSeek by remember(id) { mutableStateOf<Float?>(null) }
     if (!active) {
         if (audio) Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FilledIconButton(onClick = activate, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.PlayArrow, "Play $title") }
+            FilledIconButton(onClick = activate, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.PlayArrow, ui(R.string.play_named,title)) }
             Column(Modifier.weight(1f)) {
                 Text(title, modifier=Modifier.then(if(onExpand!=null) Modifier.clickable(onClickLabel="Open $title",onClick=onExpand) else Modifier),maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                 AudioWaveformSeek(waveform, 0f, waveform.data != null, id, { initialSeek = it; activate() }, Modifier.fillMaxWidth())
@@ -412,7 +412,7 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
     val source by produceState<MediaRequest?>(null, id, retry) {
         try { value = existing?.source ?: if(publicUrl.isNotBlank()) publicMediaSource(publicUrl) else model.mediaRequest(server.url, requireNotNull(resource)) }
         catch (e: CancellationException) { throw e }
-        catch (e: Exception) { error = "Media unavailable. Tap to retry." }
+        catch (e: Exception) { error = ui(R.string.media_unavailable_tap_to_retry) }
     }
     val bookmarks=LocalPlaybackBookmarks.current
     val playback = remember(source,existing) { existing ?: source?.let { request ->
@@ -432,7 +432,7 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
         playback?.acquire(owner)
         val listener = object : Player.Listener {
             override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {if(videoSize.width>0 && videoSize.height>0) onVideoRatio(videoSize.width.toFloat()*videoSize.pixelWidthHeightRatio/videoSize.height)}
-            override fun onPlayerError(e: PlaybackException) { error = "Playback failed. Tap to retry." }
+            override fun onPlayerError(e: PlaybackException) { error = ui(R.string.playback_failed_tap_to_retry) }
             override fun onPlaybackStateChanged(state: Int) {
                 ready = state == Player.STATE_READY || state == Player.STATE_ENDED
                 if (state == Player.STATE_READY && initialSeek != null && player != null && player.duration > 0) {
@@ -456,7 +456,7 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
     }
     SideEffect {playback?.setVisible(owner,mediaVisible && registry?.isVisible(row)!=false)}
     if (player == null) CircularProgressIndicator(Modifier.align(Alignment.Center).size(24.dp), strokeWidth = 2.dp)
-    else Box(Modifier.fillMaxSize().testTag(if(!fullscreen && !audio && LocalViewedMedia.current?.id==id) "inline-player-$id" else "player-$id").semantics { stateDescription = if (ready) "Ready" else "Loading" }) {
+    else Box(Modifier.fillMaxSize().testTag(if(!fullscreen && !audio && LocalViewedMedia.current?.id==id) "inline-player-$id" else "player-$id").semantics { stateDescription = if (ready) ui(R.string.ready) else ui(R.string.loading_state) }) {
         if (audio) AudioControls(player, title, waveform, id,if(onExpand!=null) {{if(onFullscreen!=null) onFullscreen(requireNotNull(playback)) else onExpand()}} else null)
         else AndroidView(factory={android.widget.FrameLayout(it)},onRelease={playback?.unbind(it)},update={host ->
             playback?.bind(host,fullscreen,if(onFullscreen!=null) {{onFullscreen(playback)}} else null,videoScale,videoPan)
@@ -464,7 +464,7 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
     }
     if (error.isNotBlank()) Column(Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(error, style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = { error = ""; if (player == null) retry++ else { player.prepare(); player.play() } }) { Text("Retry") }
+        TextButton(onClick = { error = ""; if (player == null) retry++ else { player.prepare(); player.play() } }) { Text(ui(R.string.retry)) }
     }
 }
 
@@ -494,7 +494,7 @@ private fun AudioControls(player: Player, title: String, waveform: WaveformState
             if (player.isPlaying) player.pause()
             else { if (player.playbackState == Player.STATE_ENDED) player.seekTo(0); player.play() }
         }, modifier = Modifier.size(48.dp)) {
-            Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, if (playing) "Pause $title" else "Play $title")
+            Icon(if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow, if (playing) "Pause $title" else ui(R.string.play_named,title))
         }
         Column(Modifier.weight(1f)) {
             Text(title, modifier=Modifier.then(if(onExpand!=null) Modifier.clickable(onClickLabel="Open $title",onClick=onExpand) else Modifier),maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
@@ -526,6 +526,7 @@ private fun ProviderPlayer(url: String, server: ServerState, onPlayer: (String?)
 @Composable
 private fun ProviderPlayerContent(url: String, server: ServerState, onPlayer: (String?) -> Unit,visible:Boolean) {
     val context = LocalContext.current
+    val externalLinks by rememberUpdatedState(LocalUriHandler.current)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val webView = remember(url) { WebView(context).apply {
         settings.javaScriptEnabled = true; settings.domStorageEnabled = true
@@ -537,7 +538,7 @@ private fun ProviderPlayerContent(url: String, server: ServerState, onPlayer: (S
                 val target = request?.url ?: return true
                 if (!request.isForMainFrame) return false
                 if (target.scheme == "https" && target.host in listOf("www.youtube.com", "www.youtube-nocookie.com")) return false
-                if (isPublicLink(target.toString())) runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, target)) }
+                if (isPublicLink(target.toString())) runCatching { externalLinks.openUri(target.toString()) }
                 return true
             }
         }
