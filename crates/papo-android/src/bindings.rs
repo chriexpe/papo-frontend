@@ -133,7 +133,7 @@ impl NativeClient {
                     client.reading_debug.record("action", before, after, detail);
                 }
                 result
-            },
+            }
             Backend::Demo(client) => client.dispatch(action),
         }
         .map_err(CoreError::from)
@@ -551,4 +551,6 @@ pub struct MentionSelection {
     pub user_id: String,
 }
 
-fn default_notifications_enabled() -> bool {true}
+fn default_notifications_enabled() -> bool {
+    true
+}

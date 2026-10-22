@@ -66,7 +66,13 @@ impl AuditFilter {
         })
     }
 }
-fn page(s: &Store, filter: &Filter, logs: &[models::AuditLogEntry], has_more: bool, language: AuditLanguage) -> AuditPage {
+fn page(
+    s: &Store,
+    filter: &Filter,
+    logs: &[models::AuditLogEntry],
+    has_more: bool,
+    language: AuditLanguage,
+) -> AuditPage {
     let now = chrono::Local::now();
     let person = |id: &str| s.member(id).map(|p| p.name.clone());
     let channel = |id: &str| s.channel(id).map(|c| c.name.clone());
@@ -136,7 +142,11 @@ impl NativeClient {
         filter: AuditFilter,
     ) -> Result<AuditPage, CoreError> {
         let core = filter.core()?;
-        let language = if filter.portuguese { AuditLanguage::Portuguese } else { AuditLanguage::English };
+        let language = if filter.portuguese {
+            AuditLanguage::Portuguese
+        } else {
+            AuditLanguage::English
+        };
         self.inspect_admin(&owner, |s| {
             if s.can_manage_server() {
                 Ok(())
@@ -174,7 +184,9 @@ impl NativeClient {
         query.last_id = (!filter.cursor.is_empty()).then_some(filter.cursor);
         let logs = crate::account::run(request.api.audit_logs(&query))?;
         self.finish_request(&request, vec![])?;
-        self.inspect_admin(&owner, |s| Ok(page(s, &core, &logs.logs, logs.has_more, language)))
+        self.inspect_admin(&owner, |s| {
+            Ok(page(s, &core, &logs.logs, logs.has_more, language))
+        })
     }
 }
 

@@ -16,21 +16,21 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 mod account;
-mod recovery;
+mod admin_audit;
+mod administration;
 pub mod bindings;
 pub mod demo;
 mod discovery;
 mod inbox;
-mod notifications;
 mod legacy;
+mod markdown;
 pub mod media;
 mod media_edit;
-mod administration;
-mod admin_audit;
-mod markdown;
 mod message_results;
+mod notifications;
 #[cfg(any(test, all(debug_assertions, target_os = "android")))]
 mod reading_debug;
+mod recovery;
 uniffi::setup_scaffolding!();
 
 /// The wire contract is deliberately small and versioned. Kotlin only renders
@@ -287,11 +287,16 @@ impl Client {
         listener: Option<Arc<dyn notifications::NotificationListener>>,
     ) -> Result<Self, String> {
         #[cfg(target_os = "android")]
-        android_logger::init_once(android_logger::Config::default().with_tag("PapoCompose").with_max_level(log::LevelFilter::Info));
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_tag("PapoCompose")
+                .with_max_level(log::LevelFilter::Info),
+        );
         let url = normalize_url(url)?;
         let lease = notifications::InteractiveLease::acquire(&url, &db_path);
         #[cfg(all(debug_assertions, target_os = "android"))]
-        let reading_debug = reading_debug::ReadingDebug::new(&db_path, &papo_core::server_key(&url));
+        let reading_debug =
+            reading_debug::ReadingDebug::new(&db_path, &papo_core::server_key(&url));
         let cache = database(db_path)?;
         let notifications = notifications::coordinator(Arc::clone(&cache), listener.clone());
         Ok(Self {
@@ -348,7 +353,9 @@ impl Client {
                 break;
             };
             #[cfg(all(debug_assertions, target_os = "android"))]
-            if reading_updates.len() < 32 {reading_updates.push(Self::reading_debug_update(&update));}
+            if reading_updates.len() < 32 {
+                reading_updates.push(Self::reading_debug_update(&update));
+            }
             match &update {
                 Update::RemoteReadAnchor {
                     owner_user_id,
@@ -540,7 +547,12 @@ impl Client {
         #[cfg(all(debug_assertions, target_os = "android"))]
         {
             let after = self.reading_debug_state();
-            self.reading_debug.record("poll", reading_before, after, json!({"updates":reading_updates}));
+            self.reading_debug.record(
+                "poll",
+                reading_before,
+                after,
+                json!({"updates":reading_updates}),
+            );
         }
         snapshot
     }
@@ -1149,7 +1161,11 @@ impl Client {
             &self.runtime.url,
             &self.runtime.server_key,
         );
-        value["pushRegistered"] = json!(self.push_registration.as_ref().is_some_and(|(owner,_)|owner==&self.runtime.store.me));
+        value["pushRegistered"] = json!(
+            self.push_registration
+                .as_ref()
+                .is_some_and(|(owner, _)| owner == &self.runtime.store.me)
+        );
         value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
@@ -1167,9 +1183,22 @@ fn blob_revision(blob: &str) -> String {
     blob.hash(&mut hash);
     format!("{:016x}", hash.finish())
 }
-pub(crate) fn project_message(s: &papo_core::state::Store, url: &str, m: &papo_core::state::Message) -> Value {
-    let name = m.external_author.as_ref().map(|a| a.name.as_str())
-        .or_else(|| s.members.iter().find(|u| u.id == m.author_id).map(|u| u.name.as_str())).unwrap_or(&m.author_id);
+pub(crate) fn project_message(
+    s: &papo_core::state::Store,
+    url: &str,
+    m: &papo_core::state::Message,
+) -> Value {
+    let name = m
+        .external_author
+        .as_ref()
+        .map(|a| a.name.as_str())
+        .or_else(|| {
+            s.members
+                .iter()
+                .find(|u| u.id == m.author_id)
+                .map(|u| u.name.as_str())
+        })
+        .unwrap_or(&m.author_id);
     let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(id) => id.clone() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
     json!({ "id": m.id, "authorId": m.author_id, "author": name, "content": m.content, "pinned":m.pinned,
         "markdown": markdown::document(s, url, &m.content).as_ref(),
@@ -1185,7 +1214,10 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
             "id": c.id, "name": c.name, "kind": match c.kind { ChannelKind::Text => "text", ChannelKind::Voice => "voice", ChannelKind::Category => "category", ChannelKind::Direct => "direct" },
             "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions, "notificationSettings":c.notification_settings,
         })).collect();
-    let messages: Vec<_> = s.messages_in(&s.selected_channel).map(|m| project_message(s,url,m)).collect();
+    let messages: Vec<_> = s
+        .messages_in(&s.selected_channel)
+        .map(|m| project_message(s, url, m))
+        .collect();
     let members: Vec<_> = s.members.iter().map(|u| json!({ "id": u.id, "name": u.name, "username":u.username, "roleColor":u.role_color.map(|[r,g,b]|format!("#{r:02X}{g:02X}{b:02X}")).unwrap_or_default(), "presence": format!("{:?}", u.presence).to_lowercase() })).collect();
     let dms: Vec<_> = s
         .direct_messages
@@ -1240,10 +1272,24 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "reading": reading,
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
     });
-    snapshot["notificationsEnabled"] = json!(s.user_settings.as_ref().is_none_or(|settings|settings.config.notifications.enabled));
-    snapshot["pinnedMessages"] = json!(s.pinned_in(&s.selected_channel).into_iter().map(|m|project_message(s,url,m)).collect::<Vec<_>>());
+    snapshot["notificationsEnabled"] = json!(
+        s.user_settings
+            .as_ref()
+            .is_none_or(|settings| settings.config.notifications.enabled)
+    );
+    snapshot["pinnedMessages"] = json!(
+        s.pinned_in(&s.selected_channel)
+            .into_iter()
+            .map(|m| project_message(s, url, m))
+            .collect::<Vec<_>>()
+    );
     snapshot["pinsLoading"] = json!(s.loading_pinned(&s.selected_channel));
-    snapshot["pinsError"] = json!(s.pin_errors.get(&s.selected_channel).cloned().unwrap_or_default());
+    snapshot["pinsError"] = json!(
+        s.pin_errors
+            .get(&s.selected_channel)
+            .cloned()
+            .unwrap_or_default()
+    );
     snapshot["pinsKnown"] = json!(s.pinned_messages.contains_key(&s.selected_channel));
     snapshot["canPin"] = json!(s.can_pin_in(&s.selected_channel));
     snapshot["typingPhrase"] = json!(s.typing_phrase().unwrap_or_default());
@@ -1264,14 +1310,27 @@ mod tests {
     fn typing_projection_preserves_custom_phrase_and_group_fallback() {
         use papo_core::api::ws::Event;
         let mut demo = demo::Demo::new();
-        demo.store.members.iter_mut().find(|m| m.id == "ana").unwrap().typing_label = Some("is sketching…".into());
+        demo.store
+            .members
+            .iter_mut()
+            .find(|m| m.id == "ana")
+            .unwrap()
+            .typing_label = Some("is sketching…".into());
         for id in ["ana", "bruno"] {
             demo.store.apply(Update::Event(Box::new(Event::Typing {
-                channel_id: "general".into(), user_id: id.into(), is_typing: true,
+                channel_id: "general".into(),
+                user_id: id.into(),
+                is_typing: true,
             })));
             let snapshot = project(&demo.store, "demo://papo", "demo");
-            assert_eq!(snapshot["typingPhrase"], if id == "ana" {"is sketching…"} else {""});
-            assert_eq!(snapshot["typing"].as_array().unwrap().len(), if id == "ana" {1} else {2});
+            assert_eq!(
+                snapshot["typingPhrase"],
+                if id == "ana" { "is sketching…" } else { "" }
+            );
+            assert_eq!(
+                snapshot["typing"].as_array().unwrap().len(),
+                if id == "ana" { 1 } else { 2 }
+            );
         }
     }
 

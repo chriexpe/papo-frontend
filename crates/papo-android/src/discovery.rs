@@ -18,7 +18,15 @@ pub struct Capabilities {
 impl Capabilities {
     pub fn from_store(store: &Store) -> Self {
         if store.is_server_owner() {
-            return Self {manage_server:true,manage_channels:true,manage_roles:true,ban_members:true,pin_message:true,everyone_message:true,send_attachment:true};
+            return Self {
+                manage_server: true,
+                manage_channels: true,
+                manage_roles: true,
+                ban_members: true,
+                pin_message: true,
+                everyone_message: true,
+                send_attachment: true,
+            };
         }
         let mut value = Self::from(store.my_role_permissions());
         value.manage_server = store.can_manage_server();
