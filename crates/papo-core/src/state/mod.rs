@@ -2,6 +2,7 @@
 //! WebSocket.
 
 pub mod call;
+mod previews;
 #[cfg(test)]
 mod reading_tests;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -520,6 +521,10 @@ pub struct Store {
     message_contexts: HashMap<String, HistoryContext>,
     context_requests: HashMap<String, ContextRequest>,
     pin_requests: HashMap<String, ContextRequest>,
+    pub pin_errors: HashMap<String, String>,
+    preview_requests: HashMap<String, ContextRequest>,
+    /// Detached result snapshots never establish history coverage or read state.
+    pub preview_messages: Vec<Message>,
     pub emojis: Vec<CustomEmoji>,
     emojis_fresh: bool,
     emojis_cached: bool,
@@ -639,6 +644,9 @@ impl Default for Store {
             message_contexts: HashMap::new(),
             context_requests: HashMap::new(),
             pin_requests: HashMap::new(),
+            pin_errors: HashMap::new(),
+            preview_requests: HashMap::new(),
+            preview_messages: Vec::new(),
             emojis: Vec::new(),
             emojis_fresh: false,
             emojis_cached: false,
@@ -990,6 +998,8 @@ impl Store {
     pub fn reset_search(&mut self) {
         self.search_generation = self.search_generation.wrapping_add(1);
         self.search_results.clear();
+        self.preview_requests.clear();
+        self.preview_messages.clear();
         self.search_has_more = false;
         self.searching = false;
     }
@@ -1214,6 +1224,7 @@ impl Store {
         channel_id: &str,
         report_error: bool,
     ) -> Option<RefreshTicket> {
+        self.pin_errors.remove(channel_id);
         if let Some(request) = self.pin_requests.get_mut(channel_id) {
             request.report_error |= report_error;
             return None;
@@ -1415,6 +1426,9 @@ impl Store {
         self.message_contexts.clear();
         self.context_requests.clear();
         self.pin_requests.clear();
+        self.pin_errors.clear();
+        self.preview_requests.clear();
+        self.preview_messages.clear();
         self.gap_ends.clear();
         self.read_states = metadata
             .read_states
@@ -1536,6 +1550,9 @@ impl Store {
         self.message_contexts.clear();
         self.context_requests.clear();
         self.pin_requests.clear();
+        self.pin_errors.clear();
+        self.preview_requests.clear();
+        self.preview_messages.clear();
         self.emojis.clear();
         self.emojis_fresh = false;
         self.emojis_cached = false;
@@ -2049,6 +2066,9 @@ impl Store {
     }
 
     fn record_timeline_mutation(&mut self, channel_id: &str, mutation: TimelineMutation) {
+        for request in self.preview_requests.values_mut().filter(|r| r.ticket.channel_id == channel_id) {
+            request.mutations.push(mutation.clone());
+        }
         if let Some(request) = self.pin_requests.get_mut(channel_id) {
             request.mutations.push(mutation.clone());
         }
@@ -2080,8 +2100,10 @@ impl Store {
                     .flat_map(|context| context.messages.iter()),
             )
             .chain(self.pinned_messages.values().flatten())
+            .chain(self.preview_messages.iter())
             .find(|message| message.id == message_id)
             .map(|message| message.channel_id.clone())
+            .or_else(|| self.search_results.iter().find(|r|r.id == message_id).map(|r|r.channel_id.clone()))
             .or_else(|| {
                 self.mutation_journals
                     .iter()
@@ -2564,6 +2586,10 @@ impl Store {
             }
             _ => false,
         };
+        project_messages(&mut self.preview_messages, &mutation, false);
+        if let TimelineMutation::MessageDelete {id} = &mutation {
+            self.search_results.retain(|result| &result.id != id);
+        }
         project_messages(&mut self.messages, &mutation, insert_in_head);
         for context in self.message_contexts.values_mut() {
             let insert = match &mutation {
@@ -2582,7 +2608,7 @@ impl Store {
             message_id,
             pinned: true,
         } = &mutation
-            && let Some(message) = self.message(message_id).cloned()
+            && let Some(message) = self.preview_message(message_id).cloned()
             && let Some(pins) = self.pinned_messages.get_mut(&message.channel_id)
             && !pins.iter().any(|pin| pin.id == message.id)
         {
@@ -4509,6 +4535,7 @@ impl Store {
                         .pin_requests
                         .remove(&ticket.channel_id)
                         .expect("current pin request");
+                    self.pin_errors.insert(ticket.channel_id, message.clone());
                     if request.report_error {
                         self.error = Some(message);
                     }
@@ -4535,6 +4562,7 @@ impl Store {
                 } else {
                     Vec::new()
                 };
+                self.pin_errors.remove(&channel_id);
                 let mut messages: Vec<_> = messages
                     .into_iter()
                     .map(|message| {
@@ -4549,7 +4577,7 @@ impl Store {
                         pinned: true,
                     } = &mutation
                         && !messages.iter().any(|message| &message.id == message_id)
-                        && let Some(mut message) = self.message(message_id).cloned()
+                        && let Some(mut message) = self.preview_message(message_id).cloned()
                     {
                         message.pinned = true;
                         messages.push(message);
@@ -4564,6 +4592,7 @@ impl Store {
                             message,
                         )));
                 }
+                for message in &messages {self.reconcile_known_message(message);}
                 self.pinned_messages.insert(channel_id.clone(), messages);
                 self.apply(Update::Pinned { channel_id, ids });
             }
@@ -4582,6 +4611,7 @@ impl Store {
                             .into_iter()
                             .flat_map(|context| &context.messages),
                     )
+                    .chain(self.preview_messages.iter())
                     .filter(|message| message.channel_id == channel_id)
                     .map(|message| (message.id.clone(), pinned.contains(&message.id)))
                     .collect();
@@ -4757,6 +4787,8 @@ impl Store {
                     self.sync_generation = self.sync_generation.saturating_add(1);
                     self.context_requests.clear();
                     self.pin_requests.clear();
+                    self.pin_errors.clear();
+                    self.preview_requests.clear();
                     self.history_requests.clear();
                     self.history_loading.clear();
                     self.history_retry_after.clear();
