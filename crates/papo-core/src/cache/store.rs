@@ -234,8 +234,8 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
             sql: "INSERT INTO channel_read_state (
                       server_key, owner_user_id, channel_id, read_at, read_message_id,
                       seen_to_at, seen_to_message_id, gap_end_at,
-                      gap_end_message_id, unread_mentions, updated_at
-                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                      gap_end_message_id, unread_mentions, updated_at, acknowledged_at, acknowledged_id, synced_id, read_at_exact, seen_to_at_exact, gap_end_at_exact, pending_notification_reads, mention_times
+                  ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                   ON CONFLICT(server_key, owner_user_id, channel_id) DO UPDATE SET
                       read_at = excluded.read_at,
                       read_message_id = excluded.read_message_id,
@@ -244,7 +244,15 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                       gap_end_at = excluded.gap_end_at,
                       gap_end_message_id = excluded.gap_end_message_id,
                       unread_mentions = excluded.unread_mentions,
-                      updated_at = excluded.updated_at"
+                      updated_at = excluded.updated_at,
+                      acknowledged_at = excluded.acknowledged_at,
+                      acknowledged_id = excluded.acknowledged_id,
+                      synced_id = excluded.synced_id,
+                      read_at_exact = excluded.read_at_exact,
+                      seen_to_at_exact = excluded.seen_to_at_exact,
+                      gap_end_at_exact = excluded.gap_end_at_exact,
+                      pending_notification_reads = excluded.pending_notification_reads,
+                      mention_times = excluded.mention_times"
                 .into(),
             params: vec![
                 text(server_key),
@@ -258,6 +266,14 @@ fn statements_for(server_key: &str, op: &CacheOp) -> Vec<Stmt> {
                 opt_text(state.gap_end_message_id.as_deref()),
                 text(&encode_json(&state.unread_mentions)),
                 integer(state.updated_at),
+                state.acknowledged_at.map(Value::Integer).unwrap_or(Value::Null),
+                opt_text(state.acknowledged_id.as_deref()),
+                opt_text(state.synced_id.as_deref()),
+                state.read_at_exact.map(Value::Integer).unwrap_or(Value::Null),
+                state.seen_to_at_exact.map(Value::Integer).unwrap_or(Value::Null),
+                state.gap_end_at_exact.map(Value::Integer).unwrap_or(Value::Null),
+                text(&encode_json(&state.pending_notification_reads)),
+                text(&encode_json(&state.mention_times)),
             ],
         }],
         CacheOp::ReplaceChannels(channels) => {
@@ -1401,7 +1417,7 @@ impl TursoCache {
                 .query(
                     "SELECT channel_id, read_at, read_message_id, seen_to_at,
                             seen_to_message_id, gap_end_at, gap_end_message_id,
-                            unread_mentions, updated_at
+                            unread_mentions, updated_at, acknowledged_at, acknowledged_id, synced_id, read_at_exact, seen_to_at_exact, gap_end_at_exact, pending_notification_reads, mention_times
                      FROM channel_read_state
                      WHERE server_key = ?1 AND owner_user_id = ?2",
                     [server_key, owner],
@@ -1410,6 +1426,16 @@ impl TursoCache {
             while let Some(row) = rows.next().await? {
                 let mentions: String = row.get(7)?;
                 metadata.read_states.push(CachedReadState {
+                    acknowledged_at: row.get(9)?,
+                    acknowledged_id: row.get(10)?,
+                    synced_id: row.get(11)?,
+                    read_at_exact: row.get(12)?,
+                    seen_to_at_exact: row.get(13)?,
+                    gap_end_at_exact: row.get(14)?,
+                    pending_notification_reads: serde_json::from_str(&row.get::<String>(15)?)
+                        .unwrap_or_default(),
+                    mention_times: serde_json::from_str(&row.get::<String>(16)?)
+                        .unwrap_or_default(),
                     owner_user_id: owner.to_owned(),
                     channel_id: row.get(0)?,
                     read_at: row.get(1)?,

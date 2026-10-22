@@ -272,6 +272,15 @@ impl From<&Channel> for CachedChannel {
 /// existe uma lacuna que a ampulheta sabe reencontrar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CachedReadState {
+    /// Nanoseconds since epoch, preserving exact ordering across restarts.
+    pub read_at_exact: Option<i64>,
+    pub seen_to_at_exact: Option<i64>,
+    pub gap_end_at_exact: Option<i64>,
+    pub acknowledged_at: Option<i64>,
+    pub acknowledged_id: Option<String>,
+    pub synced_id: Option<String>,
+    pub pending_notification_reads: Vec<String>,
+    pub mention_times: std::collections::HashMap<String, i64>,
     pub owner_user_id: String,
     pub channel_id: String,
     pub read_at: Option<i64>,

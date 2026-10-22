@@ -434,3 +434,92 @@ fn live_server_edits_are_permission_gated_and_wait_for_confirmation() {
     assert_eq!(body["name"], "Changed");
     assert!(body.get("password").is_none());
 }
+
+#[test]
+fn catch_up_loads_the_missing_prefix_and_never_navigates_to_the_read_anchor() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    let wire:Vec<papo_core::api::models::Message>=client.runtime.store.messages_in("general").map(|m|serde_json::from_value(json!({
+        "id":m.id,"channel_id":m.channel_id,"author_id":m.author_id,"content":m.content,"created_at":m.at.to_rfc3339()
+    })).unwrap()).collect();
+    client
+        .runtime
+        .store
+        .observe_chat_viewport("general", &["general-0".into()], false);
+    client.runtime.store.reset_read_span("general");
+    client
+        .runtime
+        .store
+        .observe_chat_viewport("general", &["general-9".into()], true);
+    client.runtime.store.messages.retain(|message| {
+        message.channel_id != "general" || wire[5..].iter().any(|m| m.id == message.id)
+    });
+    let ticket = client.runtime.store.mark_loading("general");
+    client.runtime.store.apply(Update::Messages {
+        ticket,
+        messages: wire[5..].to_vec(),
+        has_more: true,
+        pinned_ids: None,
+    });
+    client
+        .dispatch(Action::CatchUp {
+            channel_id: "general".into(),
+            owner_user_id: "me".into(),
+        })
+        .unwrap();
+    assert!(
+        client.snapshot()["reading"]["seekingCatchUp"]
+            .as_bool()
+            .unwrap()
+    );
+    client.advance_catch_up();
+    assert!(
+        client.navigation_target.is_empty(),
+        "Do not navigate before the prefix is resolved"
+    );
+    assert!(client.runtime.store.loading_older("general"));
+    let ticket = client.runtime.store.history_ticket("general").unwrap();
+    client.runtime.store.apply(Update::OlderMessages {
+        ticket,
+        messages: wire[..5].to_vec(),
+        has_more: false,
+    });
+    client.advance_catch_up();
+    assert_eq!(client.navigation_target, "general-1");
+    assert_eq!(client.snapshot()["reading"]["gapStart"], "general-1");
+    assert!(
+        !client.snapshot()["reading"]["seekingCatchUp"]
+            .as_bool()
+            .unwrap()
+    );
+}
+
+#[test]
+fn leaving_a_catch_up_seek_cancels_future_pagination_without_erasing_the_block() {
+    let fixture = Fixture::new();
+    let mut client = fixture.client();
+    client
+        .runtime
+        .store
+        .observe_chat_viewport("general", &["general-0".into()], false);
+    client.runtime.store.reset_read_span("general");
+    client
+        .runtime
+        .store
+        .observe_chat_viewport("general", &["general-9".into()], true);
+    let before = client.runtime.store.hourglass_range("general");
+    client
+        .dispatch(Action::CatchUp {
+            channel_id: "general".into(),
+            owner_user_id: "me".into(),
+        })
+        .unwrap();
+    client
+        .dispatch(Action::CancelCatchUp {
+            channel_id: "general".into(),
+        })
+        .unwrap();
+    client.advance_catch_up();
+    assert!(client.navigation_target.is_empty());
+    assert_eq!(client.runtime.store.hourglass_range("general"), before);
+}

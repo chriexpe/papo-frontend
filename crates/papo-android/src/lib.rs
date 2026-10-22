@@ -1,6 +1,6 @@
 //! Thin presentation adapter. All transport, reduction, reconciliation and
 //! outgoing delivery remain in papo-core. No egui or media engine is linked.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
@@ -134,6 +134,22 @@ pub enum Action {
     Visible {
         channel_id: String,
         ids: Vec<String>,
+        at_latest: bool,
+        owner_user_id: String,
+    },
+    CatchUp {
+        channel_id: String,
+        owner_user_id: String,
+    },
+    CancelCatchUp {
+        channel_id: String,
+    },
+    BreakReadSpan {
+        channel_id: String,
+    },
+    ClearCatchUp {
+        channel_id: String,
+        owner_user_id: String,
     },
     Network {
         available: bool,
@@ -203,6 +219,10 @@ pub struct Client {
     navigation_serial: u64,
     navigation_target: String,
     search_query: String,
+    catching_up: Option<(String, String)>,
+    read_in_flight: HashSet<String>,
+    read_attempts: HashMap<String, (String, std::time::Instant)>,
+    read_seeks: HashMap<String, (String, (chrono::DateTime<chrono::Utc>, String))>,
 }
 
 struct PendingReaction {
@@ -248,6 +268,10 @@ impl Client {
             navigation_serial: 0,
             navigation_target: String::new(),
             search_query: String::new(),
+            catching_up: None,
+            read_in_flight: HashSet::new(),
+            read_attempts: HashMap::new(),
+            read_seeks: HashMap::new(),
         })
     }
 
@@ -279,6 +303,63 @@ impl Client {
                 break;
             };
             match &update {
+                Update::RemoteReadAnchor {
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    next,
+                    failed,
+                    ..
+                } if owner_user_id == &self.runtime.store.me => {
+                    let key = format!("anchor/{channel_id}");
+                    self.read_in_flight.remove(&key);
+                    if *failed {
+                        self.read_attempts
+                            .insert(key, (message_id.clone(), std::time::Instant::now()));
+                    } else {
+                        self.read_attempts.remove(&key);
+                    }
+                    if let Some(cursor) = next {
+                        self.read_seeks
+                            .insert(channel_id.clone(), (message_id.clone(), cursor.clone()));
+                    } else if !failed {
+                        self.read_seeks.remove(channel_id);
+                    }
+                }
+                Update::ChannelReadSynced {
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    success,
+                } if owner_user_id == &self.runtime.store.me => {
+                    self.read_in_flight.remove(channel_id);
+                    if *success {
+                        self.read_attempts.remove(channel_id);
+                    } else {
+                        self.read_attempts.insert(
+                            channel_id.clone(),
+                            (message_id.clone(), std::time::Instant::now()),
+                        );
+                    }
+                }
+                Update::NotificationReadsSynced {
+                    owner_user_id,
+                    success,
+                    ..
+                } if owner_user_id == &self.runtime.store.me => {
+                    self.read_in_flight.remove("notifications");
+                    if *success {
+                        self.read_attempts.remove("notifications");
+                    } else {
+                        self.read_attempts.insert(
+                            "notifications".into(),
+                            (String::new(), std::time::Instant::now()),
+                        );
+                    }
+                }
+                Update::Connection(Connection::Offline) => {
+                    self.read_in_flight.clear();
+                }
                 Update::ReactionComplete {
                     message_id,
                     emoji,
@@ -383,9 +464,13 @@ impl Client {
         }
         if self.runtime.store.me != previous_owner {
             self.search_query.clear();
+            self.catching_up = None;
+            self.read_in_flight.clear();
+            self.read_attempts.clear();
+            self.read_seeks.clear();
             self.runtime.store.reset_search();
         }
-        let more = count == DEFAULT_DRAIN_LIMIT;
+        let mut more = count == DEFAULT_DRAIN_LIMIT;
         if let Some(id) = self.runtime.store.channel_needing_cache() {
             self.runtime.store.mark_cache_loading(&id);
             self.hydrate(&id, None, false);
@@ -394,11 +479,131 @@ impl Client {
             let ticket = self.runtime.store.mark_loading(&id);
             self.runtime.net.send(Command::LoadMessages { ticket });
         }
+        more |= self.advance_catch_up();
         self.flush_store();
+        self.sync_read_receipts();
         let mut snapshot = self.snapshot();
         snapshot["more"] = json!(more);
         snapshot["events"] = json!(events);
         snapshot
+    }
+
+    /// Reuse normal cache/server pagination until the persisted frontier is
+    /// covered. Do not navigate to an approximate anchor or expose a fake head.
+    fn advance_catch_up(&mut self) -> bool {
+        let Some((owner, channel)) = self.catching_up.clone() else {
+            return false;
+        };
+        let store = &mut self.runtime.store;
+        if owner != store.me || channel != store.selected_channel || store.error.is_some() {
+            self.catching_up = None;
+            return false;
+        }
+        if store.loading_older(&channel)
+            || store.loading_message_context(&channel)
+            || store.connection == Connection::Online
+                && store.timeline_status(&channel) != TimelineStatus::Fresh
+        {
+            return false;
+        }
+        if store.catch_up_needs_history(&channel) && store.can_load_older(&channel) {
+            let previous = store.messages.len();
+            if let Err(error) = self.dispatch(Action::Older) {
+                self.runtime.store.error = Some(error);
+                self.catching_up = None;
+            }
+            return self.runtime.store.messages.len() != previous;
+        }
+        if store.catch_up_needs_history(&channel) && store.connection != Connection::Online {
+            store.error = Some("Connect to load earlier unread messages.".into());
+            self.catching_up = None;
+            return false;
+        }
+        self.navigation_target = store
+            .hourglass_navigation_target(&channel)
+            .or_else(|| store.newest_loaded(&channel))
+            .unwrap_or_default();
+        self.navigation_serial = self.navigation_serial.saturating_add(1);
+        store.reset_read_span(&channel);
+        self.catching_up = None;
+        false
+    }
+
+    fn sync_read_receipts(&mut self) {
+        let store = &self.runtime.store;
+        if store.connection != Connection::Online || store.me.is_empty() {
+            return;
+        }
+        for (channel_id, message_id) in store.pending_remote_read_anchors() {
+            if channel_id != store.selected_channel {
+                continue;
+            }
+            let key = format!("anchor/{channel_id}");
+            if self.read_in_flight.contains(&key) {
+                continue;
+            }
+            if self
+                .read_attempts
+                .get(&key)
+                .is_some_and(|(id, at)| id == &message_id && at.elapsed() < Duration::from_secs(10))
+            {
+                continue;
+            }
+            self.read_in_flight.insert(key.clone());
+            self.read_attempts
+                .insert(key, (message_id.clone(), std::time::Instant::now()));
+            let before = self
+                .read_seeks
+                .get(&channel_id)
+                .filter(|(target, _)| target == &message_id)
+                .map(|(_, cursor)| cursor.clone());
+            self.runtime.net.send(Command::LoadReadAnchor {
+                owner_user_id: store.me.clone(),
+                channel_id,
+                message_id,
+                before,
+            });
+        }
+        let notifications = store.pending_notification_reads();
+        if !notifications.is_empty()
+            && !self.read_in_flight.contains("notifications")
+            && self
+                .read_attempts
+                .get("notifications")
+                .is_none_or(|(_, at)| at.elapsed() >= Duration::from_secs(10))
+        {
+            self.read_in_flight.insert("notifications".into());
+            self.read_attempts.insert(
+                "notifications".into(),
+                (String::new(), std::time::Instant::now()),
+            );
+            self.runtime.net.send(Command::MarkNotificationsRead {
+                user_id: store.me.clone(),
+                ids: notifications,
+            });
+        }
+        for (channel_id, message_id) in store.pending_read_receipts() {
+            if self.read_in_flight.contains(&channel_id) {
+                continue;
+            }
+            if self
+                .read_attempts
+                .get(&channel_id)
+                .is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(10))
+            {
+                continue;
+            }
+            self.read_in_flight.insert(channel_id.clone());
+            self.read_attempts.insert(
+                channel_id.clone(),
+                (message_id.clone(), std::time::Instant::now()),
+            );
+            self.runtime.net.send(Command::MarkChannelRead {
+                owner_user_id: store.me.clone(),
+                channel_id,
+                message_id,
+            });
+        }
     }
 
     fn flush_store(&mut self) {
@@ -432,14 +637,9 @@ impl Client {
             }
             Action::MarkServerRead => {
                 store.mark_all_read();
-                let ids = store.take_all_open_notifications();
-                if ids.is_empty() {
-                    return Ok(());
-                }
-                Command::MarkNotificationsRead {
-                    user_id: store.me.clone(),
-                    ids,
-                }
+                store.queue_all_notification_reads();
+                self.flush_store();
+                return Ok(());
             }
             Action::SaveServer {
                 name,
@@ -525,6 +725,7 @@ impl Client {
             }
             Action::CreateServer { name } => Command::CreateServer { name },
             Action::SelectChannel { channel_id } => {
+                self.catching_up = None;
                 let channel = store
                     .channels
                     .iter()
@@ -715,9 +916,11 @@ impl Client {
                 channel_id,
                 message_id,
             } => {
+                self.catching_up = None;
                 if channel_id != store.selected_channel {
                     return Err("Open this conversation before opening the reply".into());
                 }
+                store.reset_read_span(&channel_id);
                 let visible = store.messages_in(&channel_id).any(|m| m.id == message_id);
                 let in_live = store
                     .messages
@@ -749,9 +952,11 @@ impl Client {
                 }
             }
             Action::Latest { channel_id } => {
+                self.catching_up = None;
                 if channel_id != store.selected_channel {
                     return Ok(());
                 }
+                store.reset_read_span(&channel_id);
                 store.end_message_context(&channel_id);
                 self.navigation_target.clear();
                 self.navigation_serial = self.navigation_serial.saturating_add(1);
@@ -789,25 +994,79 @@ impl Client {
             }
             Action::Refresh => Command::ProbeConnection,
             Action::Typing { channel_id } => Command::Typing { channel_id },
-            Action::Visible { channel_id, ids } => {
-                if channel_id != store.selected_channel {
+            Action::CancelCatchUp { channel_id } => {
+                if self
+                    .catching_up
+                    .as_ref()
+                    .is_some_and(|(_, channel)| channel == &channel_id)
+                {
+                    self.catching_up = None;
+                }
+                return Ok(());
+            }
+            Action::CatchUp {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id != store.me || channel_id != store.selected_channel {
+                    return Err("Account or conversation changed.".into());
+                }
+                store.error = None;
+                store.reset_read_span(&channel_id);
+                store.end_message_context(&channel_id);
+                self.navigation_target.clear();
+                self.catching_up = Some((owner_user_id, channel_id.clone()));
+                Command::CancelMessageNavigation { channel_id }
+            }
+            Action::BreakReadSpan { channel_id } => {
+                store.reset_read_span(&channel_id);
+                return Ok(());
+            }
+            Action::ClearCatchUp {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id == store.me
+                    && channel_id == store.selected_channel
+                    && !store.browsing_history(&channel_id)
+                {
+                    store.mark_read(&channel_id);
+                    self.flush_store();
+                }
+                return Ok(());
+            }
+            Action::Visible {
+                channel_id,
+                ids,
+                at_latest,
+                owner_user_id,
+            } => {
+                if owner_user_id != store.me || channel_id != store.selected_channel {
                     return Ok(());
                 }
                 if store.connection == Connection::Online
-                    && store.timeline_status(&channel_id) != TimelineStatus::Fresh
+                    && (store.timeline_status(&channel_id) != TimelineStatus::Fresh
+                        || store
+                            .pending_remote_read_anchors()
+                            .iter()
+                            .any(|(channel, _)| channel == &channel_id))
                 {
                     return Ok(());
                 }
-                store.observe_visible_messages_with_policy(&channel_id, &ids, false);
-                let ids = store.take_seen_notifications(&channel_id, &ids);
+                store.observe_chat_viewport(&channel_id, &ids, at_latest);
+                let ids = if at_latest
+                    && !store.browsing_history(&channel_id)
+                    && store
+                        .newest_loaded(&channel_id)
+                        .is_some_and(|id| ids.contains(&id))
+                {
+                    store.take_open_notifications(&channel_id)
+                } else {
+                    store.take_seen_notifications(&channel_id, &ids)
+                };
+                store.queue_notification_reads(&channel_id, ids);
                 self.flush_store();
-                if ids.is_empty() {
-                    return Ok(());
-                }
-                Command::MarkNotificationsRead {
-                    user_id: self.runtime.store.me.clone(),
-                    ids,
-                }
+                return Ok(());
             }
             Action::Network { available, epoch } => Command::NetworkHint(NetworkHint {
                 availability: if available {
@@ -836,6 +1095,10 @@ impl Client {
         value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
+        value["reading"]["seekingCatchUp"] = json!(self.catching_up.is_some());
+        if self.catching_up.is_some() {
+            value["reading"]["syncPending"] = json!(true);
+        }
         value
     }
 }
@@ -867,8 +1130,18 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
     let dms: Vec<_> = s
         .direct_messages
         .iter()
-        .map(|dm| json!({ "id": dm.id, "userId":dm.user.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": dm.unread_count > 0, "mentions": dm.unread_count }))
+        .map(|dm| json!({ "id": dm.id, "userId":dm.user.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": s.channel(&dm.id).is_some_and(|c|c.unread), "mentions": s.channel(&dm.id).map_or(0,|c|c.mentions) }))
         .collect();
+    let reading = json!({
+        "gapStart": if s.catch_up_needs_history(&s.selected_channel) {String::new()} else {s.hourglass_range(&s.selected_channel).map(|r| r.0).unwrap_or_default()},
+        "gapEnd": s.hourglass_range(&s.selected_channel).map(|r| r.1).unwrap_or_default(),
+        "hourglassTarget": s.hourglass_navigation_target(&s.selected_channel).unwrap_or_default(),
+        "unreadStart": s.first_badge_unread(&s.selected_channel).unwrap_or_default(),
+        "mentions": s.unread_mention_ids(&s.selected_channel),
+        "syncPending": !url.starts_with("demo:") && (!s.pending_read_receipts().is_empty() || !s.pending_notification_reads().is_empty() || s.pending_remote_read_anchors().iter().any(|(channel,_)|channel==&s.selected_channel)),
+        "initializing": s.pending_remote_read_anchors().iter().any(|(channel,_)|channel==&s.selected_channel),
+        "liveIds": s.messages.iter().filter(|m| m.channel_id == s.selected_channel && !m.pending).map(|m| m.id.clone()).collect::<Vec<_>>(),
+    });
     json!({ "version": 1, "url": url, "key": key,
         "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
         "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
@@ -903,6 +1176,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
         "browsingHistory":s.browsing_history(&s.selected_channel), "loadingContext":s.loading_message_context(&s.selected_channel),
         "canLoadNewer":s.can_load_newer(&s.selected_channel), "navigationSerial":0, "navigationTarget":"",
+        "reading": reading,
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
     })
 }

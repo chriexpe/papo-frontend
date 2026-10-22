@@ -457,7 +457,20 @@ pub enum Command {
         message_id: String,
         pin: bool,
     },
-    LoadPinned { ticket: RefreshTicket },
+    LoadPinned {
+        ticket: RefreshTicket,
+    },
+    LoadReadAnchor {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        before: Option<(chrono::DateTime<chrono::Utc>, String)>,
+    },
+    MarkChannelRead {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+    },
     MarkNotificationsRead {
         user_id: String,
         ids: Vec<String>,
@@ -641,6 +654,25 @@ pub enum Update {
     },
     /// Terminal marker used only by the bounded background transport.
     BackgroundFinished(BackgroundRunResult),
+    RemoteReadAnchor {
+        failed: bool,
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        next: Option<(chrono::DateTime<chrono::Utc>, String)>,
+    },
+    NotificationReadsSynced {
+        success: bool,
+        owner_user_id: String,
+        ids: Vec<String>,
+    },
+    ChannelReadSynced {
+        owner_user_id: String,
+        channel_id: String,
+        message_id: String,
+        success: bool,
+    },
 }
 
 /// A janela pode parar de pintar quando fica minimizada ou em segundo plano.
@@ -3894,11 +3926,129 @@ async fn handle(
                 Err(error) => report(storage_key, updates, wake, error),
             }
         }
-        Command::MarkNotificationsRead { user_id, ids } => {
-            if !ids.is_empty()
-                && let Err(error) = api.mark_notifications_read(&user_id, ids).await
+        Command::LoadReadAnchor {
+            owner_user_id,
+            channel_id,
+            message_id,
+            before,
+        } => {
+            if me.lock().ok().and_then(|user| user.clone()).as_deref()
+                != Some(owner_user_id.as_str())
             {
-                log::warn!("runtime {storage_key}: marcar notificações: {error}");
+                return;
+            }
+            // One bounded page per command keeps other channels/network actions
+            // responsive. The adapter resumes the exact cursor, never rescans.
+            let page = match api
+                .message_page(
+                    &channel_id,
+                    before.as_ref().map(|(at, id)| (*at, id.as_str())),
+                    false,
+                    100,
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    log::warn!("runtime {storage_key}: read anchor: {error}");
+                    publish(
+                        updates,
+                        wake,
+                        Update::RemoteReadAnchor {
+                            failed: true,
+                            owner_user_id,
+                            channel_id,
+                            message_id,
+                            at: None,
+                            next: None,
+                        },
+                    );
+                    return;
+                }
+            };
+            let at = page
+                .messages
+                .iter()
+                .find(|m| m.id == message_id && m.channel_id == channel_id)
+                .map(|m| m.created_at);
+            let next = if at.is_none() && page.has_more {
+                page.messages
+                    .iter()
+                    .filter(|m| m.channel_id == channel_id)
+                    .map(|m| (m.created_at, m.id.clone()))
+                    .min()
+                    .filter(|key| before.as_ref().is_none_or(|old| key < old))
+            } else {
+                None
+            };
+            publish(
+                updates,
+                wake,
+                Update::RemoteReadAnchor {
+                    failed: false,
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    at,
+                    next,
+                },
+            );
+        }
+        Command::MarkChannelRead {
+            owner_user_id,
+            channel_id,
+            message_id,
+        } => {
+            if me.lock().ok().and_then(|user| user.clone()).as_deref()
+                != Some(owner_user_id.as_str())
+            {
+                return;
+            }
+            let result = api.mark_channel_read(&channel_id, &message_id).await;
+            if let Err(error) = &result {
+                log::warn!("runtime {storage_key}: channel read: {error}");
+            }
+            publish(
+                updates,
+                wake,
+                Update::ChannelReadSynced {
+                    owner_user_id,
+                    channel_id,
+                    message_id,
+                    success: result.is_ok(),
+                },
+            );
+        }
+        Command::MarkNotificationsRead { user_id, ids } => {
+            if ids.is_empty()
+                || me.lock().ok().and_then(|user| user.clone()).as_deref() != Some(user_id.as_str())
+            {
+                return;
+            }
+            match api.mark_notifications_read(&user_id, ids.clone()).await {
+                // The backend returns 404 when every requested row is already
+                // read. A duplicate acknowledgement has reached its goal.
+                Ok(_) | Err(ApiError::NotFound) => publish(
+                    updates,
+                    wake,
+                    Update::NotificationReadsSynced {
+                        success: true,
+                        owner_user_id: user_id,
+                        ids,
+                    },
+                ),
+                Err(error) => {
+                    log::warn!("runtime {storage_key}: notification reads: {error}");
+                    publish(
+                        updates,
+                        wake,
+                        Update::NotificationReadsSynced {
+                            success: false,
+                            owner_user_id: user_id,
+                            ids,
+                        },
+                    );
+                }
             }
         }
         Command::JoinVoice {

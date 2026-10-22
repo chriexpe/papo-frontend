@@ -407,6 +407,7 @@ impl Demo {
                 self.store
                     .end_message_context(&self.store.selected_channel.clone());
                 self.navigation_target.clear();
+                self.store.reset_read_span(&channel_id);
                 self.store.selected_channel = channel_id;
             }
             Action::JumpToMessage {
@@ -416,6 +417,7 @@ impl Demo {
                 if channel_id != self.store.selected_channel {
                     return Err("Open this conversation first".into());
                 }
+                self.store.reset_read_span(&channel_id);
                 if !self
                     .store
                     .messages_in(&channel_id)
@@ -453,6 +455,7 @@ impl Demo {
                 if channel_id != self.store.selected_channel {
                     return Ok(());
                 }
+                self.store.reset_read_span(&channel_id);
                 self.store.end_message_context(&channel_id);
                 self.navigation_target.clear();
                 self.navigation_serial += 1;
@@ -590,19 +593,53 @@ impl Demo {
                 });
             }
             Action::ClearError => self.store.error = None,
-            Action::Visible { channel_id, ids } => {
+            Action::CancelCatchUp { .. } => {}
+            Action::CatchUp {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id != self.store.me {
+                    return Err("Account changed".into());
+                }
+                if let Some(message_id) = self.store.hourglass_navigation_target(&channel_id) {
+                    return self.dispatch(Action::JumpToMessage {
+                        channel_id,
+                        message_id,
+                    });
+                }
+            }
+            Action::BreakReadSpan { channel_id } => self.store.reset_read_span(&channel_id),
+            Action::ClearCatchUp {
+                channel_id,
+                owner_user_id,
+            } => {
+                if owner_user_id == self.store.me {
+                    self.store.mark_read(&channel_id)
+                }
+            }
+            Action::Visible {
+                channel_id,
+                ids,
+                at_latest,
+                owner_user_id,
+            } => {
+                if owner_user_id != self.store.me {
+                    return Ok(());
+                }
+
                 for notification in &mut self.notifications {
                     if notification.channel_id.as_deref() == Some(&channel_id)
-                        && notification
-                            .message_id
-                            .as_ref()
-                            .is_some_and(|id| ids.contains(id))
+                        && (at_latest
+                            || notification
+                                .message_id
+                                .as_ref()
+                                .is_some_and(|id| ids.contains(id)))
                     {
                         notification.read = true;
                     }
                 }
                 self.store
-                    .observe_visible_messages_with_policy(&channel_id, &ids, false)
+                    .observe_chat_viewport(&channel_id, &ids, at_latest)
             }
             Action::Refresh | Action::Network { .. } | Action::Typing { .. } | Action::Older => {}
             _ => return Err("This action needs a real server".into()),

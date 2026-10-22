@@ -206,6 +206,14 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
                 gap_end_message_id: Some("m4".to_owned()),
                 unread_mentions: vec!["m4".to_owned()],
                 updated_at: 2_000,
+                acknowledged_at: Some(5_000_000_001),
+                acknowledged_id: Some("m5".into()),
+                synced_id: Some("m4".into()),
+                pending_notification_reads: vec!["n4".into()],
+                mention_times: [("m4".into(), 4_000_000_003)].into_iter().collect(),
+                read_at_exact: Some(1_000_000_001),
+                seen_to_at_exact: Some(5_000_000_002),
+                gap_end_at_exact: Some(4_000_000_003),
             }),
         ],
     );
@@ -236,6 +244,14 @@ fn read_navigation_state_survives_reconstructible_cache_clear() {
     assert_eq!(state.gap_end_at, Some(4_000));
     assert_eq!(state.gap_end_message_id.as_deref(), Some("m4"));
     assert_eq!(state.unread_mentions, vec!["m4".to_owned()]);
+    assert_eq!(state.acknowledged_at, Some(5_000_000_001));
+    assert_eq!(state.acknowledged_id.as_deref(), Some("m5"));
+    assert_eq!(state.synced_id.as_deref(), Some("m4"));
+    assert_eq!(state.pending_notification_reads, vec!["n4"]);
+    assert_eq!(state.mention_times["m4"], 4_000_000_003);
+    assert_eq!(state.read_at_exact, Some(1_000_000_001));
+    assert_eq!(state.seen_to_at_exact, Some(5_000_000_002));
+    assert_eq!(state.gap_end_at_exact, Some(4_000_000_003));
 }
 
 #[test]

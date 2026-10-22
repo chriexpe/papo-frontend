@@ -352,9 +352,26 @@ pub struct ClientSnapshot {
     pub navigation_target: String,
     pub timeline: String,
     #[serde(default)]
+    pub reading: ReadingView,
+    #[serde(default)]
     pub more: bool,
     #[serde(default)]
     pub events: Vec<DeliveryEvent>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, uniffi::Record)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadingView {
+    pub gap_start: String,
+    pub gap_end: String,
+    pub hourglass_target: String,
+    pub unread_start: String,
+    pub mentions: Vec<String>,
+    pub sync_pending: bool,
+    pub initializing: bool,
+    pub live_ids: Vec<String>,
+    #[serde(default)]
+    pub seeking_catch_up: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]

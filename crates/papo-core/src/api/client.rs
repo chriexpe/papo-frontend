@@ -780,7 +780,7 @@ impl Api {
             .await
     }
 
-    async fn message_page(
+    pub(crate) async fn message_page(
         &self,
         channel_id: &str,
         cursor: Option<(chrono::DateTime<chrono::Utc>, &str)>,
@@ -1593,6 +1593,18 @@ impl Api {
     pub async fn notifications(&self, user_id: &str) -> ApiResult<Vec<NotificationItem>> {
         let list: NotificationList = self.get(&format!("/users/{user_id}/notifications")).await?;
         Ok(list.notifications)
+    }
+
+    /// Explicit channel acknowledgement; listing messages does not mark them read.
+    pub async fn mark_channel_read(&self, channel_id: &str, message_id: &str) -> ApiResult<()> {
+        let response = self
+            .send(
+                Method::PUT,
+                &format!("/channels/{channel_id}/read"),
+                Some(&serde_json::json!({"message_id": message_id})),
+            )
+            .await?;
+        Self::parse::<serde_json::Value>(response).await.map(|_| ())
     }
 
     pub async fn mark_notifications_read(

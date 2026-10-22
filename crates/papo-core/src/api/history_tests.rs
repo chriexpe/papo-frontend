@@ -139,3 +139,42 @@ async fn deleted_target_is_not_reconstructed_from_stale_pin_or_search_text() {
     );
     server.await.unwrap();
 }
+
+#[tokio::test]
+async fn channel_read_put_uses_message_id_and_accepts_no_content() {
+    use tokio::io::AsyncReadExt;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut line = String::new();
+        stream.read_line(&mut line).await.unwrap();
+        assert!(line.starts_with("PUT /channels/chat/read "));
+        let mut length = 0;
+        loop {
+            line.clear();
+            stream.read_line(&mut line).await.unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        stream.read_exact(&mut body).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"message_id":"m050"})
+        );
+        stream
+            .get_mut()
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let api = Api::new(&format!("http://{address}"), Arc::new(Session::default())).unwrap();
+    api.mark_channel_read("chat", "m050").await.unwrap();
+    task.await.unwrap();
+}

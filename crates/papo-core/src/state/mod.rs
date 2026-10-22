@@ -2,6 +2,8 @@
 //! WebSocket.
 
 pub mod call;
+#[cfg(test)]
+mod reading_tests;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -68,25 +70,47 @@ pub struct Channel {
 ///   tela. Saltar para o fim a empurra sem mexer na fronteira.
 /// - `unread_mentions`: menções ainda não vistas.
 ///
-/// "Há lacuna não lida" (a ampulheta) e "há algo novo" (o ponto do canal) são
-/// calculados a partir disso e das mensagens carregadas, nunca guardados.
+/// The catch-up interval is derived from this frontier and its tracked end.
+/// `acknowledged_*` independently clears channel badges and syncs to the server;
+/// arriving at the live head must not discard the catch-up interval.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChannelReadState {
+    /// Channel badge/server receipt, independent of the catch-up frontier.
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    pub acknowledged_id: Option<String>,
+    pub synced_id: Option<String>,
+    pub pending_notification_reads: Vec<String>,
     pub read_at: Option<DateTime<Utc>>,
     pub read_message_id: Option<String>,
     pub seen_to_at: Option<DateTime<Utc>>,
     pub seen_to_id: Option<String>,
     pub unread_mentions: VecDeque<String>,
+    pub mention_times: HashMap<String, DateTime<Utc>>,
 }
 
 impl ChannelReadState {
     fn from_cached(state: CachedReadState) -> Self {
         Self {
-            read_at: state.read_at.and_then(DateTime::from_timestamp_millis),
+            acknowledged_at: state.acknowledged_at.map(DateTime::from_timestamp_nanos),
+            acknowledged_id: state.acknowledged_id,
+            synced_id: state.synced_id,
+            pending_notification_reads: state.pending_notification_reads,
+            read_at: state
+                .read_at_exact
+                .map(DateTime::from_timestamp_nanos)
+                .or_else(|| state.read_at.and_then(DateTime::from_timestamp_millis)),
             read_message_id: state.read_message_id,
-            seen_to_at: state.seen_to_at.and_then(DateTime::from_timestamp_millis),
+            seen_to_at: state
+                .seen_to_at_exact
+                .map(DateTime::from_timestamp_nanos)
+                .or_else(|| state.seen_to_at.and_then(DateTime::from_timestamp_millis)),
             seen_to_id: state.seen_to_message_id,
             unread_mentions: state.unread_mentions.into_iter().collect(),
+            mention_times: state
+                .mention_times
+                .into_iter()
+                .map(|(id, at)| (id, DateTime::from_timestamp_nanos(at)))
+                .collect(),
         }
     }
 
@@ -94,13 +118,25 @@ impl ChannelReadState {
         CachedReadState {
             owner_user_id: owner_user_id.to_owned(),
             channel_id: channel_id.to_owned(),
+            acknowledged_at: self.acknowledged_at.and_then(|at| at.timestamp_nanos_opt()),
+            acknowledged_id: self.acknowledged_id.clone(),
+            synced_id: self.synced_id.clone(),
+            pending_notification_reads: self.pending_notification_reads.clone(),
             read_at: self.read_at.map(|at| at.timestamp_millis()),
             read_message_id: self.read_message_id.clone(),
             seen_to_at: self.seen_to_at.map(|at| at.timestamp_millis()),
             seen_to_message_id: self.seen_to_id.clone(),
             gap_end_at: None,
             gap_end_message_id: None,
+            read_at_exact: self.read_at.and_then(|at| at.timestamp_nanos_opt()),
+            seen_to_at_exact: self.seen_to_at.and_then(|at| at.timestamp_nanos_opt()),
+            gap_end_at_exact: None,
             unread_mentions: self.unread_mentions.iter().cloned().collect(),
+            mention_times: self
+                .mention_times
+                .iter()
+                .filter_map(|(id, at)| at.timestamp_nanos_opt().map(|at| (id.clone(), at)))
+                .collect(),
             updated_at: now_millis(),
         }
     }
@@ -521,6 +557,9 @@ pub struct Store {
     /// quando uma lacuna se abre e recua conforme o usuário rola de baixo para
     /// cima; quando encontra a fronteira, a lacuna inteira se fecha.
     gap_ends: HashMap<String, MessageKey>,
+    /// Server cursors awaiting the referenced message's actual creation key.
+    /// last_read_at is wall-clock acknowledgement time, NOT a message timestamp.
+    remote_read_ids: HashMap<String, String>,
     /// Estado da fila local, indexado pelo id cliente. A linha confirmada do
     /// servidor nunca entra aqui.
     outgoing_states: HashMap<String, OutgoingState>,
@@ -539,8 +578,8 @@ pub struct Store {
     next_refresh_request_id: u64,
     /// Último sinal de digitação de cada pessoa, por canal (não persistido).
     typing: HashMap<String, HashMap<String, Instant>>,
-    /// Até quando cada canal foi visto; é o que define o não lido, já que o
-    /// backend registra `last_read_message` mas nunca o escreve.
+    /// Acknowledged message time per channel, including legacy local marks.
+    /// The catch-up frontier is separate from the backend channel receipt.
     pub read_marks: HashMap<String, DateTime<Utc>>,
     /// Estado preciso de leitura e navegação por mensagem.
     pub read_states: HashMap<String, ChannelReadState>,
@@ -620,6 +659,7 @@ impl Default for Store {
             pending_cache: Vec::new(),
             read_spans: HashMap::new(),
             gap_ends: HashMap::new(),
+            remote_read_ids: HashMap::new(),
             outgoing_states: HashMap::new(),
             loading_channels: HashMap::new(),
             history_has_more: HashMap::new(),
@@ -789,7 +829,24 @@ impl Store {
     fn upsert_direct_message(&mut self, dm: models::DirectConversation) {
         let id = dm.id.clone();
         let name = dm.user.display_name().to_owned();
-        let unread = dm.unread_count > 0;
+        let unread = dm.unread_count > 0
+            && !dm
+                .last_message
+                .as_ref()
+                .and_then(|last| last.created_at.zip(last.id.clone()))
+                .is_some_and(|last| self.acknowledged_key(&id).is_some_and(|mark| last <= mark));
+        if let Some(read) = dm.last_read_message.as_ref() {
+            self.remote_read_ids.insert(id.clone(), read.clone());
+            if let Some(last) = dm
+                .last_message
+                .as_ref()
+                .filter(|last| last.id.as_ref() == Some(read))
+                && let Some(at) = last.created_at
+            {
+                self.merge_remote_read(&id, read, (at, read.clone()));
+                self.remote_read_ids.remove(&id);
+            }
+        }
         if let Some(existing) = self.direct_messages.iter_mut().find(|known| known.id == id) {
             *existing = dm;
         } else {
@@ -1365,14 +1422,15 @@ impl Store {
             .map(|state| {
                 let channel_id = state.channel_id.clone();
                 if let Some((at, id)) = state
-                    .gap_end_at
-                    .and_then(DateTime::from_timestamp_millis)
+                    .gap_end_at_exact
+                    .map(DateTime::from_timestamp_nanos)
+                    .or_else(|| state.gap_end_at.and_then(DateTime::from_timestamp_millis))
                     .zip(state.gap_end_message_id.clone())
                 {
                     self.gap_ends.insert(channel_id.clone(), (at, id));
                 }
                 let restored = ChannelReadState::from_cached(state);
-                if let Some(read_at) = restored.read_at {
+                if let Some(read_at) = restored.acknowledged_at.or(restored.read_at) {
                     self.read_marks
                         .entry(channel_id.clone())
                         .and_modify(|mark| *mark = (*mark).max(read_at))
@@ -2442,6 +2500,9 @@ impl Store {
                     .or_default();
                 if !state.unread_mentions.contains(&message.id) {
                     state.unread_mentions.push_back(message.id.clone());
+                    state
+                        .mention_times
+                        .insert(message.id.clone(), message.at.with_timezone(&Utc));
                 }
                 if let Some(channel) = self
                     .channels
@@ -2588,9 +2649,11 @@ impl Store {
                     .iter()
                     .filter(|(_, message)| {
                         message.as_ref().is_none_or(|id| {
-                            self.read_states
-                                .get(channel_id)
-                                .is_none_or(|state| state.unread_mentions.contains(id))
+                            self.message_key(id).is_none_or(|key| {
+                                self.acknowledged_key(channel_id)
+                                    .max(self.frontier_key(channel_id))
+                                    .is_none_or(|mark| key > mark)
+                            })
                         })
                     })
                     .map(|(id, message)| message.as_ref().unwrap_or(id))
@@ -2614,6 +2677,18 @@ impl Store {
         }
         self.open_notifications
             .retain(|_, entries| !entries.is_empty());
+        if let Some(channel) = notification.channel_id.clone().or_else(|| {
+            notification
+                .message_id
+                .as_deref()
+                .and_then(|id| self.message(id))
+                .map(|m| m.channel_id.clone())
+        }) {
+            let entry = (channel, notification.message_id.clone());
+            if !cleared.contains(&entry) {
+                cleared.push(entry);
+            }
+        }
         for (channel_id, message_id) in cleared {
             if let Some(message_id) = message_id {
                 let still_pending =
@@ -2657,8 +2732,26 @@ impl Store {
     fn frontier_key(&self, channel_id: &str) -> Option<(DateTime<Utc>, String)> {
         self.read_states
             .get(channel_id)
-            .and_then(|state| state.read_at.zip(state.read_message_id.clone()))
+            .and_then(|state| {
+                // A loaded message's creation key is authoritative. Older cache
+                // schemas rounded this timestamp to milliseconds, which must
+                // never turn the already-read anchor into an unread message.
+                state
+                    .read_message_id
+                    .as_deref()
+                    .and_then(|id| self.message(id))
+                    .filter(|message| message.channel_id == channel_id)
+                    .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+                    .or_else(|| state.read_at.zip(state.read_message_id.clone()))
+            })
             .or_else(|| {
+                if self
+                    .read_states
+                    .get(channel_id)
+                    .is_some_and(|s| s.seen_to_id.is_some())
+                {
+                    return None;
+                }
                 self.read_marks
                     .get(channel_id)
                     .copied()
@@ -2670,19 +2763,24 @@ impl Store {
         if self.me.is_empty() {
             return;
         }
-        let Some(state) = self.read_states.get(channel_id) else {
+        let Some(state) = self.read_states.get_mut(channel_id) else {
             return;
         };
+        let mentions = &state.unread_mentions;
+        state.mention_times.retain(|id, _| mentions.contains(id));
         let mut cached = state.to_cached(&self.me, channel_id);
         if let Some((at, id)) = self.gap_ends.get(channel_id) {
             cached.gap_end_at = Some(at.timestamp_millis());
+            cached.gap_end_at_exact = at.timestamp_nanos_opt();
             cached.gap_end_message_id = Some(id.clone());
         }
         self.pending_cache.push(CacheOp::UpsertReadState(cached));
     }
 
     fn refresh_channel_read_badge(&mut self, channel_id: &str) {
-        let frontier = self.frontier_key(channel_id);
+        let frontier = self
+            .acknowledged_key(channel_id)
+            .max(self.frontier_key(channel_id));
         let has_newer = self
             .messages.iter().filter(|message| message.channel_id == channel_id)
             .filter(|message| !message.pending && message.author_id != self.me)
@@ -2776,11 +2874,21 @@ impl Store {
         // A cursor before an unloaded history window is not proof that
         // the intervening messages were read. Wait for older pages.
         let browsing_history = self.browsing_history(channel_id);
-        let unresolved_prefix = browsing_history || self.read_states.get(channel_id)
-            .and_then(|state| state.read_message_id.as_deref())
-            .is_some_and(|id| self.message(id).is_none())
-            && (self.history_has_more.get(channel_id).copied().unwrap_or(false)
-                || self.cache_history_has_more.get(channel_id).copied().unwrap_or(false));
+        let previous_frontier = self.frontier_key(channel_id);
+        let unresolved_prefix = previous_frontier
+            .as_ref()
+            .is_some_and(|frontier| ordered.first().is_none_or(|(oldest, _)| oldest > frontier))
+            && (browsing_history
+                || self
+                    .history_has_more
+                    .get(channel_id)
+                    .copied()
+                    .unwrap_or(false)
+                || self
+                    .cache_history_has_more
+                    .get(channel_id)
+                    .copied()
+                    .unwrap_or(false));
 
         let previous_span = self.read_spans.get(channel_id).cloned();
         let (from, to) = match &previous_span {
@@ -2793,14 +2901,15 @@ impl Store {
         self.read_spans
             .insert(channel_id.to_owned(), (from.clone(), to.clone()));
 
+        let context_has_newer = browsing_history && self.can_load_newer(channel_id);
         let before = self.read_states.get(channel_id).cloned();
         let legacy = self.read_marks.get(channel_id).copied();
-        let previous_frontier = self.frontier_key(channel_id);
         let state = self.read_states.entry(channel_id.to_owned()).or_default();
         if state.read_at.is_none() && state.read_message_id.is_none() {
             state.read_at = legacy;
         }
 
+        let previous_seen = state.seen_to_key();
         // Marca d'água.
         if state.seen_to_key().is_none_or(|seen| hi > seen) {
             state.seen_to_at = Some(hi.0);
@@ -2816,6 +2925,16 @@ impl Store {
         // A jump or viewport reopening must not re-expand a tail that has
         // already been consumed. The seen_to watermark is independent.
         let mut gap_end = before_gap_end.clone().or(seen_to.clone());
+        let skipped_newer = previous_span.is_none()
+            && previous_seen.as_ref().is_some_and(|seen| {
+                hi > *seen
+                    && ordered
+                        .iter()
+                        .any(|(key, own)| !*own && key > seen && key < &lo)
+            });
+        if skipped_newer {
+            gap_end = Some(hi.clone());
+        }
         if previous_span.is_some()
             && let Some(end) = &gap_end
             && to >= *end
@@ -2841,9 +2960,11 @@ impl Store {
         // que ficou para trás. Se o usuário já consumiu a cauda da lacuna de
         // baixo para cima (`(gap_end, seen_to]`), esse trecho também se fecha
         // assim que a fronteira o alcança.
-        let mut frontier: Option<MessageKey> = state
-            .read_at
-            .map(|at| (at, state.read_message_id.clone().unwrap_or_default()));
+        let mut frontier: Option<MessageKey> = previous_frontier.or_else(|| {
+            state
+                .read_at
+                .map(|at| (at, state.read_message_id.clone().unwrap_or_default()))
+        });
         for ((at, id), own) in &ordered {
             let key = (*at, id.clone());
             if frontier.as_ref().is_some_and(|mark| key <= *mark) {
@@ -2860,13 +2981,33 @@ impl Store {
             }
         }
 
-        let has_unread_in_gap = unresolved_prefix || gap_end.as_ref().is_some_and(|end| {
-            ordered.iter().any(|(key, own)| {
-                !*own
-                    && frontier.as_ref().is_none_or(|mark| key > mark)
-                    && key <= end
-            })
-        });
+        let has_unread_in_gap = unresolved_prefix
+            || gap_end.as_ref().is_some_and(|end| {
+                let known_unread = self
+                    .messages
+                    .iter()
+                    .chain(
+                        self.message_contexts
+                            .get(channel_id)
+                            .into_iter()
+                            .flat_map(|context| context.messages.iter()),
+                    )
+                    .filter(|message| {
+                        message.channel_id == channel_id
+                            && !message.pending
+                            && message.author_id != self.me
+                    })
+                    .any(|message| {
+                        let key = (message.at.with_timezone(&Utc), message.id.clone());
+                        frontier.as_ref().is_none_or(|mark| &key > mark) && &key <= end
+                    });
+                // Reaching the end of a context page proves nothing about the
+                // unloaded interval between that page and the preserved gap end.
+                known_unread
+                    || context_has_newer
+                        && frontier.as_ref().is_none_or(|mark| mark < end)
+                        && ordered.last().is_some_and(|(last, _)| last < end)
+            });
         if has_unread_in_gap {
             if let Some(end) = gap_end {
                 self.gap_ends.insert(channel_id.to_owned(), end);
@@ -2916,7 +3057,10 @@ impl Store {
         }
 
         if let Some(read_at) = state.read_at {
-            self.read_marks.insert(channel_id.to_owned(), read_at);
+            self.read_marks
+                .entry(channel_id.to_owned())
+                .and_modify(|mark| *mark = (*mark).max(read_at))
+                .or_insert(read_at);
         }
 
         if self.read_states.get(channel_id) != before.as_ref()
@@ -2929,6 +3073,211 @@ impl Store {
             // badge set even though the state itself already reached the head.
             self.refresh_channel_read_badge(channel_id);
         }
+    }
+
+    /// Android viewport policy: consume the catch-up interval continuously, but
+    /// acknowledge the channel at the live head without destroying that interval.
+    /// Jumps/animations are excluded by the caller and break the read span.
+    pub fn observe_chat_viewport(&mut self, channel_id: &str, visible: &[String], at_latest: bool) {
+        self.observe_visible_messages(channel_id, visible);
+        let newest = self.newest_loaded(channel_id);
+        if at_latest
+            && !self.browsing_history(channel_id)
+            && newest.as_ref().is_some_and(|id| visible.contains(id))
+        {
+            if let Some(key) = newest.and_then(|id| self.message_key(&id)) {
+                self.acknowledge_channel(channel_id, key);
+            }
+        } else if let Some(key) = self.frontier_key(channel_id) {
+            self.acknowledge_channel(channel_id, key);
+        }
+    }
+
+    fn acknowledged_key(&self, channel_id: &str) -> Option<MessageKey> {
+        let state = self.read_states.get(channel_id)?;
+        state.acknowledged_at.zip(state.acknowledged_id.clone())
+    }
+
+    fn acknowledge_channel(&mut self, channel_id: &str, key: MessageKey) {
+        let state = self.read_states.entry(channel_id.to_owned()).or_default();
+        if state
+            .acknowledged_at
+            .zip(state.acknowledged_id.clone())
+            .is_none_or(|known| key > known)
+        {
+            state.acknowledged_at = Some(key.0);
+            state.acknowledged_id = Some(key.1.clone());
+        }
+        // Notifications older than the acknowledged head must never resurrect.
+        let acknowledged = state.acknowledged_at.unwrap_or(key.0);
+        self.read_marks
+            .entry(channel_id.to_owned())
+            .and_modify(|mark| *mark = (*mark).max(acknowledged))
+            .or_insert(acknowledged);
+        let known: HashSet<String> = self
+            .read_states
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|state| &state.unread_mentions)
+            .filter(|id| {
+                self.mention_key(channel_id, id)
+                    .is_some_and(|message| message <= key)
+            })
+            .cloned()
+            .collect();
+        if let Some(state) = self.read_states.get_mut(channel_id) {
+            state.unread_mentions.retain(|id| !known.contains(id));
+        }
+        // At the live head, unloaded notification targets are older too.
+        if self.newest_loaded(channel_id).as_deref() == Some(&key.1)
+            && let Some(state) = self.read_states.get_mut(channel_id)
+        {
+            state.unread_mentions.clear();
+        }
+        self.refresh_channel_read_badge(channel_id);
+        self.persist_read_state(channel_id);
+    }
+
+    pub fn pending_read_receipts(&self) -> Vec<(String, String)> {
+        self.read_states
+            .iter()
+            .filter_map(|(channel, state)| {
+                let id = state.acknowledged_id.as_ref()?;
+                (state.synced_id.as_ref() != Some(id)).then(|| (channel.clone(), id.clone()))
+            })
+            .collect()
+    }
+
+    pub fn queue_notification_reads(&mut self, channel_id: &str, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        let pending = &mut self
+            .read_states
+            .entry(channel_id.to_owned())
+            .or_default()
+            .pending_notification_reads;
+        for id in ids {
+            if !pending.contains(&id) {
+                pending.push(id);
+            }
+        }
+        self.persist_read_state(channel_id);
+    }
+
+    pub fn pending_notification_reads(&self) -> Vec<String> {
+        self.read_states
+            .values()
+            .flat_map(|s| s.pending_notification_reads.iter().cloned())
+            .take(1000)
+            .collect()
+    }
+
+    pub fn queue_all_notification_reads(&mut self) {
+        let channels: Vec<_> = self.open_notifications.keys().cloned().collect();
+        for channel in channels {
+            let ids = self.take_open_notifications(&channel);
+            self.queue_notification_reads(&channel, ids);
+        }
+    }
+
+    /// Only confirmed @mentions belong to the in-chat bell. Backend alerts also
+    /// include DMs and `all` notifications; those must not masquerade as mentions.
+    pub fn unread_mention_ids(&self, channel_id: &str) -> Vec<String> {
+        if !self.read_states.contains_key(channel_id) {
+            return Vec::new();
+        }
+        let mut ids: Vec<_> = self
+            .read_states
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|state| &state.unread_mentions)
+            .filter(|id| {
+                self.message(id).is_none_or(|message| {
+                    message.channel_id == channel_id && self.mentions_me(message)
+                })
+            })
+            .cloned()
+            .collect();
+        let state = &self.read_states[channel_id];
+        let key = |id: &String| {
+            self.message_key(id)
+                .map(|key| key.0)
+                .or_else(|| state.mention_times.get(id).copied())
+        };
+        ids.sort_by(|a, b| {
+            key(b).cmp(&key(a)).then_with(|| {
+                state
+                    .unread_mentions
+                    .iter()
+                    .position(|id| id == b)
+                    .cmp(&state.unread_mentions.iter().position(|id| id == a))
+            })
+        });
+        ids
+    }
+
+    fn mention_key(&self, channel_id: &str, id: &str) -> Option<MessageKey> {
+        self.message_key(id).or_else(|| {
+            self.read_states
+                .get(channel_id)?
+                .mention_times
+                .get(id)
+                .map(|at| (*at, id.to_owned()))
+        })
+    }
+
+    fn text_mentions_me(&self, text: &str, author: &str) -> bool {
+        crate::notification::mentions_user(text, &self.me, &self.my_name, author)
+            || crate::notification::mentions_user(text, &self.me, &self.my_username, author)
+            || (author != self.me && self.mentions_my_role(text))
+    }
+
+    pub fn pending_remote_read_anchors(&self) -> Vec<(String, String)> {
+        self.remote_read_ids
+            .iter()
+            .map(|(c, id)| (c.clone(), id.clone()))
+            .collect()
+    }
+
+    fn merge_remote_read(&mut self, channel: &str, id: &str, key: MessageKey) {
+        let state = self.read_states.entry(channel.to_owned()).or_default();
+        if state.read_at.is_none() && state.read_message_id.is_none() {
+            state.read_at = Some(key.0);
+            state.read_message_id = Some(id.to_owned());
+        }
+        let newer = state
+            .acknowledged_at
+            .zip(state.acknowledged_id.clone())
+            .is_none_or(|known| key >= known);
+        if newer {
+            state.acknowledged_at = Some(key.0);
+            state.acknowledged_id = Some(id.to_owned());
+            state.synced_id = Some(id.to_owned());
+        }
+        // A remote acknowledgement clears the badge, never this device's catch-up block.
+        self.read_marks
+            .entry(channel.to_owned())
+            .and_modify(|mark| *mark = (*mark).max(key.0))
+            .or_insert(key.0);
+        let old_mentions: HashSet<_> = self
+            .read_states
+            .get(channel)
+            .into_iter()
+            .flat_map(|s| &s.unread_mentions)
+            .filter(|id| {
+                self.mention_key(channel, id)
+                    .is_some_and(|message| message <= key)
+            })
+            .cloned()
+            .collect();
+        if let Some(state) = self.read_states.get_mut(channel) {
+            state
+                .unread_mentions
+                .retain(|id| !old_mentions.contains(id));
+        }
+        self.persist_read_state(channel);
+        self.refresh_channel_read_badge(channel);
     }
 
     /// O próximo quadro não é continuação do anterior (salto, abertura de
@@ -2975,8 +3324,17 @@ impl Store {
         let mut first: Option<MessageKey> = None;
         let mut last: Option<MessageKey> = None;
         for message in self
-            .messages_in(channel_id)
-            .filter(|message| !message.pending && message.author_id != self.me)
+            .messages
+            .iter()
+            .chain(
+                self.message_contexts
+                    .get(channel_id)
+                    .into_iter()
+                    .flat_map(|context| context.messages.iter()),
+            )
+            .filter(|message| {
+                message.channel_id == channel_id && !message.pending && message.author_id != self.me
+            })
         {
             let key = (message.at.with_timezone(&Utc), message.id.clone());
             if frontier.as_ref().is_some_and(|mark| key <= *mark) {
@@ -3005,6 +3363,39 @@ impl Store {
     /// marcar como lido) a faz sumir sozinha.
     pub fn hourglass_target(&self, channel_id: &str) -> Option<String> {
         self.hourglass_range(channel_id).map(|(start, _)| start)
+    }
+
+    /// The button and marker use exactly the same boundary. History loading
+    /// resolves an unloaded prefix before navigating; an old read cursor is
+    /// never substituted for an unread destination.
+    pub fn hourglass_navigation_target(&self, channel_id: &str) -> Option<String> {
+        self.hourglass_target(channel_id)
+    }
+
+    pub fn catch_up_needs_history(&self, channel_id: &str) -> bool {
+        let Some(frontier) = self.frontier_key(channel_id) else {
+            return false;
+        };
+        self.messages_in(channel_id)
+            .filter(|message| !message.pending)
+            .map(|message| (message.at.with_timezone(&Utc), message.id.clone()))
+            .min()
+            .is_some_and(|oldest| oldest > frontier)
+    }
+
+    pub fn first_badge_unread(&self, channel_id: &str) -> Option<String> {
+        let frontier = self
+            .acknowledged_key(channel_id)
+            .max(self.frontier_key(channel_id));
+        self.messages_in(channel_id)
+            .filter(|m| !m.pending && m.author_id != self.me)
+            .filter(|m| {
+                frontier
+                    .as_ref()
+                    .is_some_and(|mark| (m.at.with_timezone(&Utc), m.id.clone()) > *mark)
+            })
+            .min_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)))
+            .map(|m| m.id.clone())
     }
 
     pub fn read_anchor_id(&self, channel_id: &str) -> Option<String> {
@@ -3045,9 +3436,9 @@ impl Store {
             .unread_mentions
             .iter()
             .filter_map(|id| self.message_key(id).map(|key| (key, id)))
-            .min_by(|(left, _), (right, _)| left.cmp(right))
+            .max_by(|(left, _), (right, _)| left.cmp(right))
             .map(|(_, id)| id.clone())
-            .or_else(|| state.unread_mentions.front().cloned())
+            .or_else(|| state.unread_mentions.back().cloned())
     }
 
     /// Ação explícita de "marcar lido": ao contrário de viewport normal, aqui
@@ -3070,6 +3461,8 @@ impl Store {
         state.seen_to_at = state.read_at;
         state.seen_to_id = state.read_message_id.clone();
         state.unread_mentions.clear();
+        state.acknowledged_at = state.read_at;
+        state.acknowledged_id = state.read_message_id.clone();
         self.read_marks
             .insert(channel_id.to_owned(), state.read_at.unwrap_or(now));
         self.read_spans.remove(channel_id);
@@ -3256,7 +3649,6 @@ impl Store {
                 let was = std::mem::take(self);
                 self.screen = Screen::Auth;
                 self.error = was.error;
-                self.read_marks = was.read_marks;
                 // Sessão inválida: estado reconstruível não atravessa a
                 // autenticação, mas filas/ledger particionados pelo owner
                 // antigo continuam duráveis caso a mesma conta retorne.
@@ -3315,6 +3707,20 @@ impl Store {
                 }
             }
             Update::Channels(channels) => {
+                for channel in &channels {
+                    if let Some(id) = channel.last_read_message.as_ref() {
+                        self.remote_read_ids.insert(channel.id.clone(), id.clone());
+                        if let Some(last) = channel
+                            .last_message
+                            .as_ref()
+                            .filter(|last| last.id.as_ref() == Some(id))
+                            && let Some(at) = last.created_at
+                        {
+                            self.merge_remote_read(&channel.id, id, (at, id.clone()));
+                            self.remote_read_ids.remove(&channel.id);
+                        }
+                    }
+                }
                 let previous: HashMap<String, (bool, u32)> = self
                     .channels
                     .iter()
@@ -4193,6 +4599,63 @@ impl Store {
                 self.pending_cache
                     .push(CacheOp::ReplacePins { channel_id, ids });
             }
+            Update::NotificationReadsSynced {
+                owner_user_id,
+                ids,
+                success,
+            } => {
+                if success && owner_user_id == self.me {
+                    let changed: Vec<_> = self
+                        .read_states
+                        .iter_mut()
+                        .filter_map(|(channel, state)| {
+                            let old = state.pending_notification_reads.len();
+                            state
+                                .pending_notification_reads
+                                .retain(|id| !ids.contains(id));
+                            (old != state.pending_notification_reads.len()).then(|| channel.clone())
+                        })
+                        .collect();
+                    for channel in changed {
+                        self.persist_read_state(&channel);
+                    }
+                }
+            }
+            Update::RemoteReadAnchor {
+                failed,
+                owner_user_id,
+                channel_id,
+                message_id,
+                at,
+                next,
+            } => {
+                if !failed
+                    && owner_user_id == self.me
+                    && self.remote_read_ids.get(&channel_id) == Some(&message_id)
+                {
+                    if at.is_some() || next.is_none() {
+                        self.remote_read_ids.remove(&channel_id);
+                    }
+                    if let Some(at) = at {
+                        self.merge_remote_read(&channel_id, &message_id, (at, message_id.clone()));
+                    }
+                }
+            }
+            Update::ChannelReadSynced {
+                owner_user_id,
+                channel_id,
+                message_id,
+                success,
+            } => {
+                if success && owner_user_id == self.me {
+                    if let Some(state) = self.read_states.get_mut(&channel_id)
+                        && state.acknowledged_id.as_ref() == Some(&message_id)
+                    {
+                        state.synced_id = Some(message_id);
+                    }
+                    self.persist_read_state(&channel_id);
+                }
+            }
             Update::Notifications(notifications) => {
                 for notification in notifications {
                     if notification.read {
@@ -4203,6 +4666,13 @@ impl Store {
                     let Some(channel_id) = notification.channel_id.clone() else {
                         continue;
                     };
+                    if self
+                        .read_states
+                        .values()
+                        .any(|state| state.pending_notification_reads.contains(&notification.id))
+                    {
+                        continue;
+                    }
                     if !self.counted_notifications.insert(notification.id.clone()) {
                         continue;
                     }
@@ -4212,12 +4682,35 @@ impl Store {
                         .map(|(at, mark)| at > mark)
                         .unwrap_or(true);
                     if !newer {
+                        self.queue_notification_reads(&channel_id, vec![notification.id]);
                         continue;
                     }
-                    if let Some(message_id) = notification.message_id.clone() {
+                    let mention = notification
+                        .message_id
+                        .as_deref()
+                        .and_then(|id| self.message(id))
+                        .map(|message| self.mentions_me(message))
+                        .unwrap_or_else(|| {
+                            notification.message_content.as_deref().is_some_and(|text| {
+                                self.text_mentions_me(
+                                    text,
+                                    notification.author_id.as_deref().unwrap_or(""),
+                                )
+                            })
+                        });
+                    let mention_at = notification
+                        .message_id
+                        .as_deref()
+                        .and_then(|id| self.message_key(id))
+                        .map(|key| key.0)
+                        .or(notification.created_at);
+                    if let Some(message_id) = notification.message_id.clone().filter(|_| mention) {
                         let state = self.read_states.entry(channel_id.clone()).or_default();
                         if !state.unread_mentions.contains(&message_id) {
-                            state.unread_mentions.push_back(message_id);
+                            state.unread_mentions.push_back(message_id.clone());
+                        }
+                        if let Some(at) = mention_at {
+                            state.mention_times.insert(message_id, at);
                         }
                     }
                     let mention_count = self
@@ -4276,6 +4769,18 @@ impl Store {
                 self.busy = false;
             }
             Update::PushDevice { .. } | Update::BackgroundFinished(_) => {}
+        }
+        let resolved: Vec<_> = self
+            .remote_read_ids
+            .iter()
+            .filter_map(|(channel, id)| {
+                self.message_key(id)
+                    .map(|key| (channel.clone(), id.clone(), key))
+            })
+            .collect();
+        for (channel, id, key) in resolved {
+            self.remote_read_ids.remove(&channel);
+            self.merge_remote_read(&channel, &id, key);
         }
     }
 
@@ -4573,9 +5078,25 @@ impl Store {
                     return;
                 }
 
+                let mention = self
+                    .message(&message_id)
+                    .is_some_and(|message| self.mentions_me(message));
+                let already_read = self.message_key(&message_id).is_some_and(|key| {
+                    self.acknowledged_key(&channel_id)
+                        .max(self.frontier_key(&channel_id))
+                        .is_some_and(|mark| key <= mark)
+                });
+                if already_read {
+                    self.queue_notification_reads(&channel_id, vec![id]);
+                    return;
+                }
+                let mention_at = self.message_key(&message_id).map(|key| key.0);
                 let state = self.read_states.entry(channel_id.clone()).or_default();
-                if !state.unread_mentions.contains(&message_id) {
+                if mention && !already_read && !state.unread_mentions.contains(&message_id) {
                     state.unread_mentions.push_back(message_id.clone());
+                    if let Some(at) = mention_at {
+                        state.mention_times.insert(message_id.clone(), at);
+                    }
                 }
                 let mention_count = state.unread_mentions.len() as u32;
                 if let Some(channel) = self
@@ -4584,7 +5105,9 @@ impl Store {
                     .find(|channel| channel.id == channel_id)
                 {
                     channel.mentions = mention_count;
-                    channel.unread = true;
+                    if !already_read {
+                        channel.unread = true;
+                    }
                 }
                 self.open_notifications
                     .entry(channel_id.clone())
