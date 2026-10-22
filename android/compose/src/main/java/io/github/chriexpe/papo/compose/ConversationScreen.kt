@@ -137,6 +137,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var knownLive by remember(draftKey) {mutableStateOf(server.reading.liveIds)}
     var arrived by remember(draftKey) {mutableStateOf(setOf<String>())}
     var entryUnread by remember(draftKey) {mutableStateOf(server.reading.unreadStart)}
+    val groupedMessages=remember(server.messages,entryUnread,server.reading.gapStart,server.reading.gapEnd,appearance.catchUpHourglass) {
+        messageContinuations(server.messages,setOf(entryUnread)+if(appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),if(appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet())
+    }
     val readingBlocked=overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || emojiPicker || gifPicker || reactionPeople!=null
     val currentBlocked by rememberUpdatedState(readingBlocked)
     LaunchedEffect(draftKey,server.reading.liveIds) {
@@ -367,7 +370,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 Column {
                 if(appearance.catchUpHourglass && message.id==server.reading.gapStart) UnreadDivider("Unread ↓","unread-gap-start")
                 else if(message.id==entryUnread) UnreadDivider("New messages ↓","unread-new")
-                MessageRow(message, server, model, canReply=!recording && !submitting && !attachmentDraft.sending && !overlayBlocking && viewedMedia==null,onReply={beginReply(message.id,true)}, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
+                MessageRow(message, server, model, grouped=message.id in groupedMessages, canReply=!recording && !submitting && !attachmentDraft.sending && !overlayBlocking && viewedMedia==null,onReply={beginReply(message.id,true)}, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
                 if(appearance.catchUpHourglass && message.id==server.reading.gapEnd) UnreadDivider("Unread ↑","unread-gap-end")
@@ -505,6 +508,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 
     selected?.let { message -> ModalBottomSheet(onDismissRequest = { selected = null }) {
         Column(Modifier.navigationBarsPadding().heightIn(max=640.dp).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+            Text("${message.author} · ${remember(message.at) {SimpleDateFormat("dd MMM yyyy · HH:mm",Locale.getDefault()).format(Date(message.at))}}",style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(horizontal=16.dp,vertical=8.dp))
             Text(message.content.ifBlank { "Message" }, maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
             if (!message.pending) {
                 val favorites=expressions.favoriteStickers.mapNotNull {id -> server.emojis.firstOrNull {it.id==id}?.let {EmojiChoice(it.id,true,it.name)}}
@@ -562,7 +566,7 @@ private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector
 }
 
 @Composable
-private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, canReply:Boolean,onReply:()->Unit, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
+private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoViewModel, grouped:Boolean, canReply:Boolean,onReply:()->Unit, highlight:Boolean, onMention:(Person)->Unit, onJump:(String)->Unit, onActions: () -> Unit, onReaction: (Reaction) -> Unit, onReactionPeople: (Reaction) -> Unit, media: @Composable () -> Unit) {
     val appearance=LocalClientPreferences.current
     val openProfile=LocalOpenProfile.current
     val openExternal=LocalOpenExternalProfile.current
@@ -573,19 +577,22 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
     val spotlight by animateColorAsState(if(highlight) MaterialTheme.colorScheme.primary.copy(alpha=.14f) else Color.Transparent,animationSpec=tween(250),label="Original message highlight")
     SwipeToReply(message.id,canReply && !message.pending,onReply) {
     Row(Modifier.fillMaxWidth().padding(horizontal=8.dp).testTag("message-${message.id}")
-        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message";if(canReply && !message.pending) customActions=listOf(CustomAccessibilityAction("Reply") {onReply();true})}
-        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        .background(spotlight,RoundedCornerShape(18.dp)).semantics {if(highlight) stateDescription="Original message" else if(grouped) stateDescription="Continued message from ${message.author} at $time";if(canReply && !message.pending) customActions=listOf(CustomAccessibilityAction("Reply") {onReply();true})}
+        .combinedClickable(onClick = {}, onLongClick = onActions, onLongClickLabel = "Message actions").padding(horizontal = 12.dp, vertical = if(grouped) {if(appearance.compact) 1.dp else 3.dp} else if(appearance.compact) 4.dp else 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         if(appearance.avatars) {
-        if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
+        if(grouped) Spacer(Modifier.width(48.dp))
+        else if(external!=null) ExternalAvatar(server,external,Modifier.size(48.dp).then(authorAction).padding(2.dp))
         else UserAvatar(message.authorId,message.author,Modifier.size(48.dp).then(authorAction).padding(2.dp))
         }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(message.author, color = if(external==null) userNameColor(message.authorId) else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=48.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if(appearance.compact) 2.dp else 4.dp)) {
+            if(!grouped) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(message.author, color = if(external==null) userNameColor(message.authorId) else MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).heightIn(min=if(appearance.compact) 22.dp else 28.dp).then(authorAction).wrapContentHeight(Alignment.CenterVertically).testTag("author-${message.id}"))
                 if(external!=null) AppBadge()
                 if(appearance.timestamps) Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (message.edited) Text("edited", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                IconButton(onClick = onActions, modifier = Modifier.size(48.dp)) { Icon(Icons.Outlined.MoreHoriz, "Message actions", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides 0.dp) {
+                    IconButton(onClick = onActions, modifier = Modifier.size(if(appearance.compact) 22.dp else 28.dp)) {Icon(Icons.Outlined.MoreHoriz,"Message actions",Modifier.size(18.dp),tint=MaterialTheme.colorScheme.onSurfaceVariant)}
+                }
             }
             if (message.replyTo.isNotBlank()) Row(Modifier.testTag("reply-preview-${message.id}").clip(RoundedCornerShape(8.dp)).clickable(role=Role.Button,onClickLabel="Open original message") {onJump(message.replyTo)}.background(MaterialTheme.colorScheme.surfaceContainer).padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -594,6 +601,7 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
             val content=remember(message.content,message.embeds) {message.visibleContent()}
             if (content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(content,server,model)
             media()
+            if(grouped && message.edited) Text(if(appearance.timestamps) "edited · $time" else "edited",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.reactions.forEach { reaction ->
                     val name=if(reaction.custom) server.emojis.firstOrNull {it.id==reaction.emoji}?.name ?: "sticker" else reaction.emoji

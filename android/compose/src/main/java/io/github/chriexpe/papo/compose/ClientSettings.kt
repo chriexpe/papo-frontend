@@ -65,7 +65,7 @@ private val appearanceSwitches=listOf(
     AppearanceSwitch("open-newest","Open at newest message","Turn off to return to where you left off"),
     AppearanceSwitch("avatars","Show avatars","Keep profile pictures beside messages"),
     AppearanceSwitch("timestamps","Show timestamps","Display the time beside each author"),
-    AppearanceSwitch("compact","Compact messages","Reduce space between messages",false),
+    AppearanceSwitch("compact","Compact messages","Reduce vertical spacing; consecutive messages still share an author heading",false),
     AppearanceSwitch("animations","Animate GIFs and stickers","Turn off motion while keeping images visible"),
     AppearanceSwitch("description","Show channel description on open","Expand it for six seconds; tap to keep it open",false),
 )

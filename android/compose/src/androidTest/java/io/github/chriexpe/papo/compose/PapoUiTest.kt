@@ -580,6 +580,42 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun consecutiveMessagesShareTheirHeadingAndCompactReducesTheirSpacing() {
+        chat()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        model.command(io.github.chriexpe.papo.core.Action.Send("group-first","general","First grouped message",null))
+        model.command(io.github.chriexpe.papo.core.Action.Send("group-second","general","Second grouped message",null))
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("message-group-second",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("author-group-first",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("author-group-second",useUnmergedTree=true).assertDoesNotExist()
+        fun textBaseline(node:SemanticsNodeInteraction):Float {
+            val layouts=mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            node.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) {it(layouts)}
+            return node.fetchSemanticsNode().boundsInRoot.top+layouts.single().firstBaseline
+        }
+        fun nicknameGap()=textBaseline(compose.onNodeWithText("First grouped message",useUnmergedTree=true))-textBaseline(compose.onNodeWithTag("author-group-first",useUnmergedTree=true))
+        val normalGap=nicknameGap()
+        val normal=compose.onNodeWithTag("message-group-first",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot.height
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        compose.onNodeWithTag("appearance-settings").performScrollToNode(hasContentDescription("Compact messages"))
+        compose.onNodeWithContentDescription("Compact messages").performClick()
+        androidx.test.espresso.Espresso.pressBack();androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("geral").performClick()
+        val compact=compose.onNodeWithTag("message-group-first",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot.height
+        assertTrue("Compact must actually reduce the message row height",compact<normal)
+        assertTrue("Compact must reduce nickname-to-message spacing, not just outer padding",nicknameGap()<normalGap)
+        assertTrue("Compact must not retain the old 48 dp author-header gap",nicknameGap()<=34*InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density)
+        compose.onNodeWithTag("author-group-second",useUnmergedTree=true).assertDoesNotExist()
+        val bitmap=compose.onRoot().captureToImage().asAndroidBitmap()
+        InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("grouped-compact-verified.png").outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+        compose.onNodeWithTag("message-group-second",useUnmergedTree=true).performTouchInput {longClick()}
+        compose.onNodeWithText("Reply",substring=false).performClick()
+        compose.onNodeWithTag("composer-reply").assertIsDisplayed()
+    }
+
     @Test fun mainRoleColorIsSharedByChatAndPeople() {
         chat()
         compose.onNodeWithTag("message-list").performScrollToKey("general-0")
