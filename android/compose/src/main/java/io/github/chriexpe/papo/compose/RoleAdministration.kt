@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -82,24 +83,12 @@ internal fun RoleAdministrationEditor(
     var color by rememberSaveable(id) { mutableStateOf(existing?.color.orEmpty()) }
     val initial =
         existing?.permissions ?: Capabilities(false, false, false, false, false, false, false)
-    var manageServer by rememberSaveable(id) { mutableStateOf(initial.manageServer) }
-    var manageChannels by rememberSaveable(id) { mutableStateOf(initial.manageChannels) }
-    var manageRoles by rememberSaveable(id) { mutableStateOf(initial.manageRoles) }
-    var banMembers by rememberSaveable(id) { mutableStateOf(initial.banMembers) }
-    var pinMessage by rememberSaveable(id) { mutableStateOf(initial.pinMessage) }
-    var everyoneMessage by rememberSaveable(id) { mutableStateOf(initial.everyoneMessage) }
-    var sendAttachment by rememberSaveable(id) { mutableStateOf(initial.sendAttachment) }
+    // Seed once per role. Live server updates affect the dirty comparison, not the user's draft.
+    var permissions by
+        rememberSaveable(id, stateSaver = rolePermissionsSaver) {
+            mutableStateOf(initial)
+        }
     var delete by remember { mutableStateOf(false) }
-    val permissions =
-        Capabilities(
-            manageServer,
-            manageChannels,
-            manageRoles,
-            banMembers,
-            pinMessage,
-            everyoneMessage,
-            sendAttachment,
-        )
     val changed =
         name != existing?.name.orEmpty() ||
             color != existing?.color.orEmpty() ||
@@ -137,124 +126,10 @@ internal fun RoleAdministrationEditor(
             )
         }
         item {
-            SettingsCard {
-                Column(
-                    Modifier.padding(16.dp).then(settingTarget("role-color")),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SettingsLabel(ui(R.string.color))
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(
-                                "#FF6338",
-                                "#F6BB00",
-                                "#2CB34A",
-                                "#32BDF1",
-                                "#168BFF",
-                                "#8454FF",
-                                "#F24691",
-                                "#99999F",
-                            )
-                            .forEach { value ->
-                                FilterChip(
-                                    color.equals(value, true),
-                                    { color = value },
-                                    label = {
-                                        Box(
-                                            Modifier.size(22.dp)
-                                                .background(roleColor(value), CircleShape)
-                                        )
-                                    },
-                                    enabled = !ui.busy,
-                                    modifier =
-                                        Modifier.semantics {
-                                            contentDescription = ui(R.string.color_value, value)
-                                        },
-                                )
-                            }
-                        FilterChip(
-                            color.isEmpty(),
-                            { color = "" },
-                            label = { Text(ui(R.string.default_color)) },
-                            enabled = !ui.busy,
-                        )
-                    }
-                    OutlinedTextField(
-                        color,
-                        { color = it },
-                        Modifier.fillMaxWidth(),
-                        label = { Text(ui(R.string.hex_color)) },
-                        placeholder = { Text("#RRGGBB") },
-                        singleLine = true,
-                        enabled = !ui.busy,
-                        isError = !colorValid,
-                    )
-                }
-            }
+            RoleColorEditor(color, colorValid, !ui.busy) { color = it }
         }
         item {
-            SettingsCard {
-                Column(
-                    Modifier.padding(horizontal = 16.dp).then(settingTarget("role-permissions"))
-                ) {
-                    SettingsLabel(ui(R.string.permissions))
-                    AdministrationToggle(
-                        ui(R.string.manage_server),
-                        manageServer,
-                        !ui.busy,
-                        "role-manage-server",
-                    ) {
-                        manageServer = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.manage_channels),
-                        manageChannels,
-                        !ui.busy,
-                        "role-manage-channels",
-                    ) {
-                        manageChannels = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.manage_roles),
-                        manageRoles,
-                        !ui.busy,
-                        "role-manage-roles",
-                    ) {
-                        manageRoles = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.ban_people),
-                        banMembers,
-                        !ui.busy,
-                        "role-ban-members",
-                    ) {
-                        banMembers = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.pin_messages),
-                        pinMessage,
-                        !ui.busy,
-                        "role-pin-message",
-                    ) {
-                        pinMessage = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.mention_everyone),
-                        everyoneMessage,
-                        !ui.busy,
-                        "role-everyone-message",
-                    ) {
-                        everyoneMessage = it
-                    }
-                    AdministrationToggle(
-                        ui(R.string.send_attachments),
-                        sendAttachment,
-                        !ui.busy,
-                        "role-send-attachment",
-                    ) {
-                        sendAttachment = it
-                    }
-                }
-            }
+            RolePermissionsEditor(permissions, !ui.busy) { permissions = it }
         }
         item {
             Button(
@@ -475,5 +350,149 @@ internal fun PeopleAdministration(server: ServerState, ui: AdministrationUi) {
                 }
             },
         )
+    }
+}
+
+private val rolePermissionsSaver =
+    listSaver<Capabilities, Boolean>(
+        save = {
+            listOf(
+                it.manageServer,
+                it.manageChannels,
+                it.manageRoles,
+                it.banMembers,
+                it.pinMessage,
+                it.everyoneMessage,
+                it.sendAttachment,
+            )
+        },
+        restore = { Capabilities(it[0], it[1], it[2], it[3], it[4], it[5], it[6]) },
+    )
+
+@Composable
+private fun RoleColorEditor(
+    color: String,
+    colorValid: Boolean,
+    enabled: Boolean,
+    onChange: (String) -> Unit,
+) {
+    SettingsCard {
+        Column(
+            Modifier.padding(16.dp).then(settingTarget("role-color")),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SettingsLabel(ui(R.string.color))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                        "#FF6338",
+                        "#F6BB00",
+                        "#2CB34A",
+                        "#32BDF1",
+                        "#168BFF",
+                        "#8454FF",
+                        "#F24691",
+                        "#99999F",
+                    )
+                    .forEach { value ->
+                        FilterChip(
+                            color.equals(value, true),
+                            { onChange(value) },
+                            label = {
+                                Box(Modifier.size(22.dp).background(roleColor(value), CircleShape))
+                            },
+                            enabled = enabled,
+                            modifier =
+                                Modifier.semantics {
+                                    contentDescription = ui(R.string.color_value, value)
+                                },
+                        )
+                    }
+                FilterChip(
+                    color.isEmpty(),
+                    { onChange("") },
+                    label = { Text(ui(R.string.default_color)) },
+                    enabled = enabled,
+                )
+            }
+            OutlinedTextField(
+                color,
+                onChange,
+                Modifier.fillMaxWidth(),
+                label = { Text(ui(R.string.hex_color)) },
+                placeholder = { Text("#RRGGBB") },
+                singleLine = true,
+                enabled = enabled,
+                isError = !colorValid,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RolePermissionsEditor(
+    permissions: Capabilities,
+    enabled: Boolean,
+    onChange: (Capabilities) -> Unit,
+) {
+    SettingsCard {
+        Column(Modifier.padding(horizontal = 16.dp).then(settingTarget("role-permissions"))) {
+            SettingsLabel(ui(R.string.permissions))
+            AdministrationToggle(
+                ui(R.string.manage_server),
+                permissions.manageServer,
+                enabled,
+                "role-manage-server",
+            ) {
+                onChange(permissions.copy(manageServer = it))
+            }
+            AdministrationToggle(
+                ui(R.string.manage_channels),
+                permissions.manageChannels,
+                enabled,
+                "role-manage-channels",
+            ) {
+                onChange(permissions.copy(manageChannels = it))
+            }
+            AdministrationToggle(
+                ui(R.string.manage_roles),
+                permissions.manageRoles,
+                enabled,
+                "role-manage-roles",
+            ) {
+                onChange(permissions.copy(manageRoles = it))
+            }
+            AdministrationToggle(
+                ui(R.string.ban_people),
+                permissions.banMembers,
+                enabled,
+                "role-ban-members",
+            ) {
+                onChange(permissions.copy(banMembers = it))
+            }
+            AdministrationToggle(
+                ui(R.string.pin_messages),
+                permissions.pinMessage,
+                enabled,
+                "role-pin-message",
+            ) {
+                onChange(permissions.copy(pinMessage = it))
+            }
+            AdministrationToggle(
+                ui(R.string.mention_everyone),
+                permissions.everyoneMessage,
+                enabled,
+                "role-everyone-message",
+            ) {
+                onChange(permissions.copy(everyoneMessage = it))
+            }
+            AdministrationToggle(
+                ui(R.string.send_attachments),
+                permissions.sendAttachment,
+                enabled,
+                "role-send-attachment",
+            ) {
+                onChange(permissions.copy(sendAttachment = it))
+            }
+        }
     }
 }

@@ -28,6 +28,8 @@ pub mod media;
 mod media_edit;
 mod message_results;
 mod notifications;
+mod projection;
+use projection::project;
 #[cfg(any(test, all(debug_assertions, target_os = "android")))]
 mod reading_debug;
 mod recovery;
@@ -1175,125 +1177,6 @@ impl Client {
         }
         value
     }
-}
-
-fn blob_revision(blob: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    blob.hash(&mut hash);
-    format!("{:016x}", hash.finish())
-}
-pub(crate) fn project_message(
-    s: &papo_core::state::Store,
-    url: &str,
-    m: &papo_core::state::Message,
-) -> Value {
-    let name = m
-        .external_author
-        .as_ref()
-        .map(|a| a.name.as_str())
-        .or_else(|| {
-            s.members
-                .iter()
-                .find(|u| u.id == m.author_id)
-                .map(|u| u.name.as_str())
-        })
-        .unwrap_or(&m.author_id);
-    let reactions: Vec<_> = m.reactions.iter().map(|r| json!({ "emoji": match &r.emoji { Emoji::Unicode(e) => e.clone(), Emoji::Custom(id) => id.clone() }, "count": r.count, "mine": r.mine, "custom": matches!(r.emoji, Emoji::Custom(_)) })).collect();
-    json!({ "id": m.id, "authorId": m.author_id, "author": name, "content": m.content, "pinned":m.pinned,
-        "markdown": markdown::document(s, url, &m.content).as_ref(),
-        "externalAuthor":m.external_author.as_ref().map(|a|json!({"source":a.source,"id":a.id,"name":a.name,"avatarUrl":a.avatar_url.as_deref().unwrap_or_default(),"profileUrl":a.profile_url.as_deref().unwrap_or_default()})),
-        "at": m.at.timestamp_millis(), "edited": m.edited, "mine": m.mine(&s.me), "replyTo": m.reply_to.as_deref().unwrap_or_default(),
-        "replyContent": m.reply_to.as_ref().and_then(|id| s.message(id)).map(|m| m.content.as_str()).unwrap_or_default(),
-        "pending": m.pending, "delivery": s.outgoing_state(&m.id).map(|state| match state { OutgoingState::Queued => "queued", OutgoingState::Sending => "sending", OutgoingState::UnknownOutcome => "unknown", OutgoingState::FailedPermanent => "failed" }).unwrap_or_default(),
-        "reactions": reactions, "attachments": m.attachments.iter().map(media::AttachmentView::from).collect::<Vec<_>>(), "embeds": m.previews.iter().map(media::EmbedView::from).collect::<Vec<_>>(),
-    })
-}
-fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
-    let channels: Vec<_> = s.channels.iter().map(|c| json!({
-            "id": c.id, "name": c.name, "kind": match c.kind { ChannelKind::Text => "text", ChannelKind::Voice => "voice", ChannelKind::Category => "category", ChannelKind::Direct => "direct" },
-            "topic": c.topic.as_deref().unwrap_or_default(), "unread": c.unread, "mentions": c.mentions, "notificationSettings":c.notification_settings,
-        })).collect();
-    let messages: Vec<_> = s
-        .messages_in(&s.selected_channel)
-        .map(|m| project_message(s, url, m))
-        .collect();
-    let members: Vec<_> = s.members.iter().map(|u| json!({ "id": u.id, "name": u.name, "username":u.username, "roleColor":u.role_color.map(|[r,g,b]|format!("#{r:02X}{g:02X}{b:02X}")).unwrap_or_default(), "presence": format!("{:?}", u.presence).to_lowercase() })).collect();
-    let dms: Vec<_> = s
-        .direct_messages
-        .iter()
-        .map(|dm| json!({ "id": dm.id, "userId":dm.user.id, "name": dm.user.display_name(), "kind": "direct", "topic": "", "unread": s.channel(&dm.id).is_some_and(|c|c.unread), "mentions": s.channel(&dm.id).map_or(0,|c|c.mentions) }))
-        .collect();
-    let reading = json!({
-        "gapStart": if s.catch_up_needs_history(&s.selected_channel) {String::new()} else {s.hourglass_range(&s.selected_channel).map(|r| r.0).unwrap_or_default()},
-        "gapEnd": s.hourglass_range(&s.selected_channel).map(|r| r.1).unwrap_or_default(),
-        "hourglassTarget": s.hourglass_navigation_target(&s.selected_channel).unwrap_or_default(),
-        "unreadStart": s.first_badge_unread(&s.selected_channel).unwrap_or_default(),
-        "mentions": s.unread_mention_ids(&s.selected_channel),
-        "syncPending": !url.starts_with("demo:") && (!s.pending_read_receipts().is_empty() || !s.pending_notification_reads().is_empty() || s.pending_remote_read_anchors().iter().any(|(channel,_)|channel==&s.selected_channel)),
-        "initializing": s.pending_remote_read_anchors().iter().any(|(channel,_)|channel==&s.selected_channel),
-        "liveIds": s.messages.iter().filter(|m| m.channel_id == s.selected_channel && !m.pending).map(|m| m.id.clone()).collect::<Vec<_>>(),
-    });
-    let mut snapshot = json!({ "version": 1, "url": url, "key": key,
-        "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
-        "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
-        "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
-        "serverDescription":s.server.as_ref().and_then(|s|s.description.as_deref()).unwrap_or_default(),
-        "serverIconRevision":s.server.as_ref().and_then(|s|s.icon.as_deref()).map(blob_revision).unwrap_or_default(),
-        "serverPublic":s.server.as_ref().is_some_and(|s|s.public),
-        "capabilities":discovery::Capabilities::from_store(s),
-        "canResetPasswords":s.is_server_owner(),
-        "roles":s.roles.iter().map(|r|json!({"id":r.id,"name":r.name,"color":r.color.as_deref().unwrap_or_default(),"permissions":discovery::Capabilities::from(r.permissions)})).collect::<Vec<_>>(),
-        "searchQuery":"", "searching":s.searching,"searchHasMore":s.search_has_more,
-        "searchResults":s.search_results.iter().map(|r|json!({"message":s.search_message(&r.id).filter(|m|m.channel_id==r.channel_id).map(|m|project_message(s,url,m)),"id":r.id,"kind":r.kind,"content":s.display_mentions(&r.content),"channelId":r.channel_id,"channelName":r.channel_name,"authorId":r.author_id.as_deref().unwrap_or_default(),"author":r.author_id.as_ref().and_then(|id|s.member(id)).map(|u|u.name.as_str()).or(r.author_username.as_deref()).unwrap_or_default(),"at":r.created_at.map(|t|t.timestamp_millis()).unwrap_or_default()})).collect::<Vec<_>>(),
-        "notificationCount":s.pending_notification_count(),
-        "me": s.me, "myName": s.my_name, "selectedChannel": s.selected_channel, "channels": channels,
-        "emojis": s.emojis.iter().map(|e| json!({"id":e.id,"name":e.name,"revision":e.blob.as_deref().map(blob_revision).unwrap_or_default()})).collect::<Vec<_>>(),
-        "reactionDetails": s.reaction_details.iter().map(|(id, groups)| json!({"messageId":id,"groups":groups.iter().map(|g| json!({"emoji":g.emoji_id.as_ref().or(g.unicode.as_ref()).cloned().unwrap_or_default(),"custom":g.emoji_id.is_some(),"users":g.users.iter().map(|u| json!({"id":u.user_id,"name":s.members.iter().find(|m|m.id==u.user_id).map(|m|m.name.as_str()).unwrap_or(&u.user_id)})).collect::<Vec<_>>()})).collect::<Vec<_>>(),"more":s.reaction_details_has_more.get(id).copied().unwrap_or(false)})).collect::<Vec<_>>(),
-        "reactionLoading": s.reaction_details_loading.iter().collect::<Vec<_>>(),
-        "profiles": s.members.iter().map(|u| {
-            use std::hash::{Hash, Hasher};
-            let details=s.profiles.get(&u.id);
-            let revision=s.avatars.get(&u.id).map(|blob| {
-                let mut hash=std::collections::hash_map::DefaultHasher::new();
-                blob.hash(&mut hash); format!("{:016x}",hash.finish())
-            }).unwrap_or_default();
-            json!({"id":u.id,"avatarRevision":revision,"loaded":details.is_some(),
-                "banner":details.and_then(|p|p.banner.as_deref()).unwrap_or_default(),
-                "description":details.and_then(|p|p.description.as_deref()).unwrap_or_default(),
-                "createdAt":details.and_then(|p|p.created_at).map(|at|at.to_rfc3339()).unwrap_or_default(),
-                "statusMessage":u.status_message.as_deref().unwrap_or_default(),
-                "roles":details.map(|p|p.roles.iter().map(|r|json!({"id":r.id,"name":r.name,"color":r.color.as_deref().unwrap_or_default()})).collect::<Vec<_>>()).unwrap_or_default()})
-        }).collect::<Vec<_>>(),
-        "messages": messages, "members": members, "dms": dms, "typing": s.typing_names(), "locked": s.locked,
-        "busy": s.busy, "error": s.error.as_deref().unwrap_or_default(), "canLoadOlder": s.can_load_older(&s.selected_channel),
-        "browsingHistory":s.browsing_history(&s.selected_channel), "loadingContext":s.loading_message_context(&s.selected_channel),
-        "canLoadNewer":s.can_load_newer(&s.selected_channel), "navigationSerial":0, "navigationTarget":"",
-        "reading": reading,
-        "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
-    });
-    snapshot["notificationsEnabled"] = json!(
-        s.user_settings
-            .as_ref()
-            .is_none_or(|settings| settings.config.notifications.enabled)
-    );
-    snapshot["pinnedMessages"] = json!(
-        s.pinned_in(&s.selected_channel)
-            .into_iter()
-            .map(|m| project_message(s, url, m))
-            .collect::<Vec<_>>()
-    );
-    snapshot["pinsLoading"] = json!(s.loading_pinned(&s.selected_channel));
-    snapshot["pinsError"] = json!(
-        s.pin_errors
-            .get(&s.selected_channel)
-            .cloned()
-            .unwrap_or_default()
-    );
-    snapshot["pinsKnown"] = json!(s.pinned_messages.contains_key(&s.selected_channel));
-    snapshot["canPin"] = json!(s.can_pin_in(&s.selected_channel));
-    snapshot["typingPhrase"] = json!(s.typing_phrase().unwrap_or_default());
-    snapshot
 }
 
 impl Drop for Client {

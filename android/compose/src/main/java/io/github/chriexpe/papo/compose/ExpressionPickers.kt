@@ -215,6 +215,7 @@ internal fun GifPicker(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var retry by remember { mutableIntStateOf(0) }
+    // Pagination runs in a separate coroutine. Ignore its late response after a query/tab change.
     var requestEpoch by remember { mutableIntStateOf(0) }
     val all by model.expressions.states.collectAsState()
     val owner = model.expressions.owner(server)

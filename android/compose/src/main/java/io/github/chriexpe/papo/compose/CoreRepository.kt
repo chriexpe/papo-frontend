@@ -129,6 +129,8 @@ data class PapoState(
 }
 
 class PapoViewModel(application: Application) : AndroidViewModel(application) {
+    // Handles, snapshots and active-server selection belong to this one dispatcher. Slow native
+    // calls first capture an account-scoped handle here, then run on IO and revalidate in core.
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "papo-core-actor") }
     private val dispatcher = executor.asCoroutineDispatcher()
     private val signals = Channel<Unit>(Channel.CONFLATED)

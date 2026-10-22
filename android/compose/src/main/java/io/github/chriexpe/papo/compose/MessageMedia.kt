@@ -793,6 +793,8 @@ internal class PlaybackHandle(
         }
     }
 
+    // Inline, fullscreen and near-viewport retention each hold a lease. Detaching one host must
+    // not destroy a player that the shared viewer is still using.
     fun release(owner: Any) {
         if (owners.remove(owner) == null) return
         if (owners.isEmpty()) {

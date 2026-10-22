@@ -19,6 +19,8 @@ internal data class ComposerMention(val start: Int, val label: String, val userI
             (start == 0 || mentionBoundary(text[start - 1])) &&
             (end == text.length || mentionBoundary(text[end]))
 
+    // Compose selections and saved bindings use UTF-16 offsets; core expects Unicode code points.
+    // Convert only at the bridge boundary so emoji before a mention cannot shift its wire offset.
     fun native(text: String) =
         MentionSelection(text.codePointCount(0, start).toUInt(), label, userId)
 }

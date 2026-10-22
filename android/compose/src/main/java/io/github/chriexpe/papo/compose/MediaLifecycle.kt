@@ -108,6 +108,8 @@ internal class MediaVisibilityRegistry {
             trim(layout, order)
         }
 
+    // Stage one pauses as soon as a row leaves the viewport. Stage two releases retained decode
+    // state beyond two viewport heights; the shared disk cache remains independent of this window.
     @Synchronized
     fun trim(layout: LazyListLayoutInfo, order: List<String>) {
         val present = order.toSet()
