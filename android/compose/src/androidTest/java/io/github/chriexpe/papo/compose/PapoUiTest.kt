@@ -509,7 +509,9 @@ class PapoUiTest {
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.waitUntil(10_000) {compose.onAllNodes(SemanticsMatcher("Search result") {it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("search-hit-")==true}).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithTag("conversation-results").performScrollToNode(hasTestTag("search-hit-media-0"))
-        compose.onNodeWithTag("search-hit-media-0").performClick()
+        compose.onNode(hasText("#mídia",substring=false) and hasAnyAncestor(hasTestTag("search-hit-media-0")),useUnmergedTree=true).performScrollTo().assertIsDisplayed().performClick()
+        compose.waitUntil(5000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("mídia")).fetchSemanticsNodes().isNotEmpty() || compose.onAllNodesWithTag("user-profile").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("user-profile").assertDoesNotExist()
         compose.onNode(hasTestTag("channel-header") and hasText("mídia")).assertIsDisplayed()
         compose.onNodeWithTag("message-media-0").assertIsDisplayed()
     }
@@ -669,6 +671,114 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Send message").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithText("@Ana",substring=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
+    }
+
+    @Test fun pinButtonIsLeftOfPeopleAndPinUnpinJumpsToTheOriginal() {
+        chat()
+        val pin=compose.onNodeWithContentDescription("Pinned messages").fetchSemanticsNode().boundsInRoot
+        val people=compose.onNodeWithContentDescription("Community members").fetchSemanticsNode().boundsInRoot
+        assertTrue(pin.right<=people.left)
+        compose.onNodeWithTag("message-list").performScrollToKey("general-9")
+        compose.onNodeWithTag("message-general-9").performTouchInput {longClick()}
+        compose.onNodeWithText("Pin message",substring=false).performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("Pin message",substring=false).fetchSemanticsNodes().isEmpty()}
+        compose.onNodeWithContentDescription("Pinned messages").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("pin-general-9").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Refresh pins").assertDoesNotExist()
+        compose.onNodeWithText("Open conversation",substring=false).assertDoesNotExist()
+        compose.onNode(hasText("Ana",substring=false) and hasAnyAncestor(hasTestTag("pin-general-9")),useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("user-profile").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Close profile").performClick()
+        compose.onNodeWithTag("pinned-messages").assertIsDisplayed()
+        compose.onNode(hasText("o que vocês estão construindo hoje?",substring=false) and hasAnyAncestor(hasTestTag("pin-general-9")),useUnmergedTree=true).performClick()
+        compose.onNodeWithTag("pinned-messages").assertDoesNotExist()
+        compose.waitUntil(5000) {compose.onAllNodes(hasTestTag("message-general-9") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Original message")).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Pinned messages").performClick()
+        compose.onNodeWithTag("pin-general-9").performTouchInput {longClick()}
+        compose.onNodeWithText("Unpin message",substring=false).performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("No pinned messages yet.",substring=false).fetchSemanticsNodes().isNotEmpty()}
+        systemBack()
+        compose.onNodeWithTag("message-list").assertIsDisplayed()
+    }
+
+    @Test fun pinManagementIsHiddenWithoutPermissionButPinsRemainBrowsable() {
+        chat()
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val server=checkNotNull(model.state.value.active).let {it.copy(canPin=false,capabilities=it.capabilities.copy(pinMessage=false))}
+            host.setContent {androidx.compose.material3.MaterialTheme {
+                androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState(),LocalGlass provides false) {ConversationScreen(server,model,{})}
+            }}
+        }
+        compose.onNodeWithContentDescription("Pinned messages").assertIsDisplayed()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-9")
+        compose.onNodeWithTag("message-general-9").performTouchInput {longClick()}
+        compose.onNodeWithText("Reply",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("Pin message",substring=false).assertDoesNotExist()
+        compose.onNodeWithText("Unpin message",substring=false).assertDoesNotExist()
+        systemBack()
+        compose.onNodeWithContentDescription("Pinned messages").performClick()
+        compose.onNodeWithTag("pinned-messages").assertIsDisplayed()
+    }
+
+    @Test fun pinsUseTheSharedVideoPlayerAndImageViewerWithoutLeavingTheSheet() {
+        media()
+        lateinit var model:PapoViewModel
+        lateinit var server:ServerState
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java];server=checkNotNull(model.state.value.active)}
+        kotlinx.coroutines.runBlocking {listOf("media-0","media-3").forEach {model.setPinned(server,server.selected,it,true)}}
+        compose.onNodeWithContentDescription("Pinned messages").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("pin-media-3").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("pinned-message-list").performScrollToKey("pin/media-3")
+        compose.onNode(hasContentDescription("Play clip.mp4") and hasAnyAncestor(hasTestTag("pin-media-3"))).performClick()
+        val tag="player-demo://papo/me/attachment/demo-video"
+        compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        var player:androidx.media3.common.Player?=null
+        androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).check {view,_ ->
+            val native=view as androidx.media3.ui.PlayerView
+            player=native.player
+            native.controllerShowTimeoutMs=0
+            native.showController()
+        }
+        val fullscreen=InstrumentationRegistry.getInstrumentation().targetContext.getString(androidx.media3.ui.R.string.exo_controls_fullscreen_enter_description)
+        // Media3 animates its controller independently of Compose's idling.
+        compose.waitUntil(5000) {
+            var shown=false
+            runCatching {androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.withContentDescription(fullscreen),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).check {view,_ ->shown=androidx.test.espresso.matcher.ViewMatchers.isDisplayingAtLeast(90).matches(view)}}
+            shown
+        }
+        androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.withContentDescription(fullscreen),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).perform(androidx.test.espresso.action.ViewActions.click())
+        compose.onNodeWithTag("media-viewer").assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("pinned-messages").assertIsDisplayed()
+        androidx.test.espresso.Espresso.onView(org.hamcrest.Matchers.allOf(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(androidx.media3.ui.PlayerView::class.java),androidx.test.espresso.matcher.ViewMatchers.isDisplayed())).check {view,_ ->assertTrue((view as androidx.media3.ui.PlayerView).player===player)}
+        compose.waitUntil(5000) {var resumed=false;InstrumentationRegistry.getInstrumentation().runOnMainSync {resumed=player?.playWhenReady==true};resumed}
+        compose.onNodeWithTag("pinned-message-list").performScrollToKey("pin/media-0")
+        compose.onNode(hasContentDescription("Photo: landscape.png") and hasAnyAncestor(hasTestTag("pin-media-0"))).performClick()
+        compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("viewer-image") and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Loaded"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        systemBack()
+        compose.onNodeWithTag("pinned-messages").assertIsDisplayed()
+    }
+
+    @Test fun searchResultsPlayVideoAndWebEmbedsAcrossChannels() {
+        demo()
+        compose.onNodeWithTag("global-search").performTextInput("em:#mídia")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.waitUntil(10_000) {compose.onAllNodes(SemanticsMatcher("Result") {it.config.getOrNull(SemanticsProperties.TestTag)?.startsWith("search-hit-")==true}).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("conversation-results").performScrollToKey("message/media-3")
+        compose.onNodeWithContentDescription("Play clip.mp4").performClick()
+        val tag="player-demo://papo/me/attachment/demo-video"
+        compose.waitUntil(15_000) {compose.onAllNodes(hasTestTag(tag) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"Ready"),useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-list").assertDoesNotExist()
+        compose.onNodeWithTag("conversation-results").performScrollToKey("message/media-10")
+        compose.onNodeWithContentDescription("Play YouTube preview").performClick()
+        androidx.test.espresso.Espresso.onView(androidx.test.espresso.matcher.ViewMatchers.isAssignableFrom(android.webkit.WebView::class.java)).check {view,_ ->
+            assertTrue(view is android.webkit.WebView)
+            assertTrue((view as android.webkit.WebView).settings.javaScriptEnabled)
+            assertTrue(!view.settings.allowFileAccess)
+        }
+        systemBack()
+        compose.onNodeWithTag("global-search").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("")))
     }
 
     @Test fun markdownRendersRichBlocksAndCopiesCode() {

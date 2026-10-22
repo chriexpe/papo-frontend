@@ -97,6 +97,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var edit by remember { mutableStateOf<ChatMessage?>(null) }
     var delete by remember { mutableStateOf<ChatMessage?>(null) }
     var retry by remember { mutableStateOf<ChatMessage?>(null) }
+    var pins by remember(draftKey) {mutableStateOf(false)}
     var members by remember { mutableStateOf(false) }
     val appearance=LocalClientPreferences.current
     var descriptionExpanded by rememberSaveable(draftKey) { mutableStateOf(appearance.showDescription && channel.topic.isNotBlank()) }
@@ -154,7 +155,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val groupedMessages=remember(server.messages,entryUnread,server.reading.gapStart,server.reading.gapEnd,appearance.catchUpHourglass) {
         messageContinuations(server.messages,setOf(entryUnread)+if(appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),if(appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet())
     }
-    val readingBlocked=imageEdit!=null || overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || emojiPicker || gifPicker || reactionPeople!=null
+    val readingBlocked=imageEdit!=null || overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || pins || emojiPicker || gifPicker || reactionPeople!=null
     val currentBlocked by rememberUpdatedState(readingBlocked)
     LaunchedEffect(draftKey,server.reading.liveIds) {
         val live=server.reading.liveIds
@@ -174,12 +175,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet()
     }}
     LaunchedEffect(mediaVisibility,listState) {
-        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && imageEdit==null && !overlayBlocking && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
+        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && imageEdit==null && !pins && !overlayBlocking && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
             val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
-                mediaVisibility.update(layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet(),enabled)
-                mediaVisibility.trim(layout,order)
-            }
+            mediaVisibility.sync(layout,order,layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet(),enabled)
         }
     }
     DisposableEffect(mediaVisibility) {onDispose {mediaVisibility.close()}}
@@ -380,7 +378,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 TextButton(onClick={model.command(Action.Newer(channel.id),url=server.url)},enabled=!server.loadingOlder,modifier=Modifier.fillMaxWidth().padding(12.dp)) {Text("Load later messages")}
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
-                CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !overlayBlocking),LocalMediaRowId provides message.id) {
+                CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !pins && !overlayBlocking),LocalMediaRowId provides message.id) {
                 Column {
                 if(appearance.catchUpHourglass && message.id==server.reading.gapStart) UnreadDivider("Unread ↓","unread-gap-start")
                 else if(message.id==entryUnread) UnreadDivider("New messages ↓","unread-new")
@@ -414,9 +412,10 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     }
                     .semantics { stateDescription = if (descriptionExpanded) "Expanded" else "Collapsed" }) {
                     Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, "Back to conversations") }
+                        Box(Modifier.width(96.dp)) {IconButton(onClick = onBack) {Icon(Icons.Outlined.ArrowBack,"Back to conversations")}}
                         Text(channel.name, modifier = Modifier.weight(1f).padding(horizontal = 4.dp), textAlign = TextAlign.Center,
                             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        IconButton(onClick = {keyboard?.hide();focus.clearFocus();pins=true}) {Icon(Icons.Outlined.PushPin,"Pinned messages")}
                         IconButton(onClick = { members = true }) { Icon(Icons.Outlined.PeopleOutline, "Community members") }
                     }
                     if (descriptionExpanded) {
@@ -503,6 +502,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
 
+    if(pins) PinnedMessages(server,model,onDismiss={pins=false},onOpen=::openOriginal)
     if(emojiPicker) EmojiPicker(server,model,onDismiss={emojiPicker=false},onPick={emoji ->
         val target=emojiTarget
         if(target!=null) { model.react(server,server.messages.firstOrNull {it.id==target.id} ?: target,emoji); emojiPicker=false }
@@ -538,14 +538,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 }
                 SheetAction("Reply", Icons.Outlined.Reply) { beginReply(message.id) }
             }
+            PinMessageAction(server,model,channel.id,server.messages.firstOrNull {it.id==message.id} ?: message) {selected=null}
             SheetAction("Copy text", Icons.Outlined.ContentCopy) { clipboard.setText(AnnotatedString(message.content)); selected = null }
-            val links=(message.contextLinks()+message.embeds.map {it.url}+listOfNotNull(GifChoice.marker(message.content)?.let {"https://giphy.com/gifs/$it"})).filter(::isPublicLink).distinct()
-            var copied by remember(message.id) {mutableStateOf("")}
-            links.forEach {url ->
-                ListItem(headlineContent={Text(url,maxLines=3,overflow=TextOverflow.Ellipsis,style=MaterialTheme.typography.bodySmall)},
-                    supportingContent=if(copied==url) {{Text("Copied URL")}} else null,
-                    trailingContent={IconButton(onClick={clipboard.setText(AnnotatedString(url));copied=url}) {Icon(Icons.Outlined.ContentCopy,"Copy URL: $url")}})
-            }
+            MessageLinkActions(message)
             if (message.mine && !message.pending) {
                 SheetAction("Edit message", Icons.Outlined.Edit) { edit = message; selected = null }
                 SheetAction("Delete message", Icons.Outlined.DeleteOutline) { delete = message; selected = null }
@@ -579,7 +574,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
 }
 
 @Composable
-private fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, action: () -> Unit) {
+internal fun SheetAction(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, action: () -> Unit) {
     ListItem(headlineContent = { Text(label) }, leadingContent = { Icon(icon, null) }, modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = action))
 }
 
@@ -616,9 +611,8 @@ private fun MessageRow(message: ChatMessage, server: ServerState, model: PapoVie
                 Icon(Icons.Outlined.Reply, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(server.messages.firstOrNull {it.id==message.replyTo}?.previewText() ?: message.replyContent.ifBlank { "Reply to an earlier message" }, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            val content=remember(message.content,message.embeds) {message.visibleContent()}
-            if (content.isNotBlank() && GifChoice.marker(message.content)==null) MessageText(message,server,model,onActions)
-            media()
+            if(message.pinned) Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(4.dp)) {Icon(Icons.Outlined.PushPin,"Pinned message",Modifier.size(14.dp),tint=MaterialTheme.colorScheme.primary);Text("Pinned",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.primary)}
+            MessageContent(message,server,model,onActions,media)
             if(grouped && message.edited) Text(if(appearance.timestamps) "edited · $time" else "edited",style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
             if (message.reactions.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 message.reactions.forEach { reaction ->

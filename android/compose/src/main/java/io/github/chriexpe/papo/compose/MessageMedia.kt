@@ -545,19 +545,28 @@ private fun ProviderPlayerContent(url: String, server: ServerState, onPlayer: (S
         val referer = if (server.isDemo) "https://github.com/chriexpe/papo-frontend/" else server.url
         loadUrl(url, mapOf("Referer" to referer))
     } }
+    val registry=LocalMediaVisibilityRegistry.current
+    val row=LocalMediaRowId.current
+    val owner=remember {Any()}
+    DisposableEffect(webView,registry,row) {
+        registry?.register(owner,row) {pauseProviderMedia(webView)}
+        onDispose {registry?.unregister(owner)}
+    }
     DisposableEffect(webView, lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) { webView.onPause(); onPlayer(null) } }
+        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) { pauseProviderMedia(webView); onPlayer(null) } }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer); webView.stopLoading(); webView.onPause(); webView.destroy() }
     }
     LaunchedEffect(webView,visible) {
         if(visible) webView.onResume()
-        else {
-            webView.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(media){media.pause();});",null)
-            webView.onPause()
-        }
+        else pauseProviderMedia(webView)
     }
     AndroidView(factory = { webView }, modifier = Modifier.fillMaxSize())
+}
+
+private fun pauseProviderMedia(webView:WebView) {
+    webView.evaluateJavascript("document.querySelectorAll('video,audio').forEach(function(media){media.pause();});",null)
+    webView.onPause()
 }
 
 internal fun isPublicLink(raw: String): Boolean = runCatching { Uri.parse(raw).let { it.scheme in listOf("http", "https") && !it.host.isNullOrBlank() && it.userInfo.isNullOrEmpty() } }.getOrDefault(false)

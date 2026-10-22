@@ -1,3 +1,4 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 package io.github.chriexpe.papo.compose
 
 import androidx.activity.compose.BackHandler
@@ -6,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -57,6 +60,8 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
     var focused by remember {mutableStateOf(false)}
     var analyzing by remember {mutableStateOf(false)}
     val searching=query.text.isNotBlank()
+    var selectedResult by remember(server.url,server.me) {mutableStateOf<Pair<String,ChatMessage>?>(null)}
+    val resultsList=rememberLazyListState(cacheWindow=remember {LazyLayoutCacheWindow(aheadFraction=2f,behindFraction=2f)})
     val keyboard=LocalSoftwareKeyboardController.current
     val focus=LocalFocusManager.current
     fun update(value:TextFieldValue) {if(value.text!=query.text) analysis=null;query=value}
@@ -101,7 +106,9 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
         val people=server.members.filter {it.id!=server.me && (!searching || ((needle.isNotBlank() || query.text.trim()=="@") && (it.name.contains(needle,true)||it.username.contains(needle,true))))}
         val exact=server.searchQuery==query.text
         val results=if(exact) server.searchResults else emptyList()
-        LazyColumn(Modifier.weight(1f).hazeSource(LocalHaze.current).testTag("conversation-results"),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=128.dp)) {
+        Box(Modifier.weight(1f)) {
+        MessageResultsMediaHost(server,model,resultsList,results.map {"message/${it.id}"},sessionKey=query.text) {active,onPlayer,visible ->
+        LazyColumn(state=resultsList,modifier=Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("conversation-results"),contentPadding=PaddingValues(start=12.dp,end=12.dp,bottom=128.dp)) {
             if(searching) {
                 if(channels.isNotEmpty()) item {SearchHeading("Channels")}
                 items(channels,key={"channel/${it.id}"}) {ChannelItem(it,onOpen)}
@@ -113,10 +120,12 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                 else if(analyzing || !exact || server.searching) item {Box(Modifier.fillMaxWidth().padding(24.dp),contentAlignment=Alignment.Center) {CircularProgressIndicator(Modifier.size(24.dp))}}
                 if(exact && !server.searching && server.error.isNotBlank()) item {SearchNotice(server.error)}
                 if(exact && !server.searching && server.error.isBlank() && results.isEmpty() && analysis?.valid==true && server.connection=="online") item {SearchNotice("No matching messages.")}
-                items(results,key={"message/${it.id}"}) {hit ->ListItem(headlineContent={Text(hit.author.ifBlank {"Message"},color=userNameColor(hit.authorId),fontWeight=FontWeight.SemiBold)},
-                    overlineContent={Text("#${hit.channelName}")},supportingContent={Text(hit.content.ifBlank {"Attachment"},maxLines=3,overflow=TextOverflow.Ellipsis)},
-                    leadingContent={UserAvatar(hit.authorId,hit.author)},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),
-                    modifier=Modifier.testTag("search-hit-${hit.id}").clip(RoundedCornerShape(18.dp)).clickable {focus.clearFocus();keyboard?.hide();onMessage(hit.channelId,hit.id)})}
+                items(results,key={"message/${it.id}"}) {hit ->
+                    val row="message/${hit.id}"
+                    CompositionLocalProvider(LocalMediaRowId provides row,LocalTimelineMediaVisible provides (row in visible)) {
+                        SearchMessageResult(hit,server,model,row in visible,active,onPlayer,{focus.clearFocus();keyboard?.hide();onMessage(hit.channelId,hit.id)},{selectedResult=hit.channelId to it})
+                    }
+                }
                 if(exact && server.searchHasMore) item {TextButton(onClick={model.command(Action.Search(query.text,true),server.url)},enabled=!server.searching,modifier=Modifier.fillMaxWidth()) {Text("Load more messages")}}
             } else {
                 if(direct) item {SearchHeading("Direct messages")}
@@ -128,6 +137,12 @@ internal fun ConversationList(server:ServerState,model:PapoViewModel,appError:St
                     else ChannelItem(channel,onOpen)
                 }
             }
+        }
+        selectedResult?.let {(channel,stale) ->
+            val current=server.searchResults.firstOrNull {it.id==stale.id}?.message ?: stale
+            ResultMessageActions(current,channel,server,model,{selectedResult=null})
+        }
+        }
         }
     }
 }

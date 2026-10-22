@@ -61,7 +61,15 @@ internal class MediaVisibilityRegistry {
     @Synchronized fun retainImage(key:String,row:String?,state:AsyncImagePainter.State.Success) {
         if(row!=null) {images[key]=RetainedImage(row,state);while(images.size>96) images.remove(images.keys.first())}
     }
+    /** Snapshot collectors can resume on their producer thread. Player and
+     * WebView callbacks always enter through Android's main dispatcher. */
+    suspend fun sync(layout:LazyListLayoutInfo,order:List<String>,visible:Set<String>,enabled:Boolean) =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {update(visible,enabled);trim(layout,order)}
     @Synchronized fun trim(layout:LazyListLayoutInfo,order:List<String>) {
+        val present=order.toSet()
+        players.keys.filter {players.getValue(it).row !in present}.forEach {id ->players.remove(id)?.let {it.handle.release(it.owner)}}
+        images.keys.filter {images.getValue(it).row !in present}.forEach {images.remove(it)}
+        sizes.keys.retainAll(present)
         val placed=layout.visibleItemsInfo.filter {it.key is String && it.key in order}
         placed.forEach {sizes[it.key as String]=it.size}
         val anchor=placed.firstOrNull() ?: return

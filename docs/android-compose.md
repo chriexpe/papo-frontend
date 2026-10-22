@@ -247,6 +247,26 @@ existing closer. Programmatic inserts/reset do not infer formatting pairs.
 Android converts UTF-16 cursor positions to core's Unicode scalar offsets;
 formatting edits retain mention bindings and atomic sticker deletion.
 
+The chat header has a pin button immediately left of People. Pins open an
+expandable sheet with full Markdown, playable attachments and supported provider
+embeds. Tapping the card outside media and author controls jumps to the original
+and highlights it through the existing reply/history navigation. Pin/unpin actions only appear
+with the backend's pin permission (or DM participation); mutations await server
+acknowledgement and reconcile an authoritative pin refresh. Cached pins remain
+visible on a failed refresh, with an inline Retry action. Live pin events and
+reconnection refresh the visible list, including pins outside loaded history;
+no manual refresh button is needed. Opening the sheet does not acknowledge messages or
+alter a saved reading position/catch-up block.
+
+Search results use the same complete message body, media components, player,
+viewer, URL-copy actions and viewport retention as chat and pins. The backend's
+text search response is hydrated only for visible results, with at most two
+requests in flight through the core API. Core retains up to 128 detached result
+snapshots; these never create continuous history coverage or read receipts.
+Late responses cannot overwrite a changed query/account, deletion or live edit;
+WebSocket media/moderation/pin updates also reach detached results. Provider
+WebViews retain their inline controls and the existing provider restrictions.
+
 The GIF picker has Favorites, Recent and Trending tabs, search and pagination.
 GIPHY transport lives in `papo-core`; stable `giphy:<id>` messages remain compatible
 with egui. Set `PAPO_GIPHY_API_KEY` in the build environment for live search/trending;
@@ -301,7 +321,7 @@ file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
 Still to port: voice channels and voice/video calls; account recovery; custom
-embed authoring/editing; pinned-message browsing; and the other remaining parity
+embed authoring/editing; and the other remaining parity
 gaps. Server administration now includes channel/category creation and ordering,
 roles and membership, moderation, stickers and audit (see below). Device language
 choices remain unimplemented. Background delivery still needs a real configured Firebase
@@ -332,7 +352,11 @@ restrictions and redirect behavior. Attachment tests cover tap/hold actions,
 file and photo picker results, camera capture results, real microphone encoding
 and playback, and draft recovery after an interrupted upload. Picker/camera
 results use local test fixtures; no test messages are posted to a live server.
-Core HTTP fixtures verify multipart bodies and failure classification.
+Core HTTP fixtures verify multipart bodies and failure classification. Pins and
+search checks cover permission gates, full detached snapshots, concurrent pin
+updates, source navigation, independent author controls and shared inline /
+fullscreen playback. Browsing result lists never establishes history coverage
+or acknowledges unread messages.
 Android 17 needs
 the test-only Espresso 3.8 alpha because older Espresso reflects a removed
 InputManager API. Production dependencies remain independent of Espresso.

@@ -377,6 +377,44 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         withContext(kotlinx.coroutines.Dispatchers.IO) {client.administrationAudit(server.me,filter)}
     }
 
+    private val resultLoads=kotlinx.coroutines.sync.Semaphore(2)
+    private val mutablePendingPins=MutableStateFlow<Set<String>>(emptySet())
+    internal val pendingPins=mutablePendingPins.asStateFlow()
+    internal fun pinKey(server:ServerState,channel:String,id:String)="${server.url}/${server.me}/$channel/$id"
+    internal fun watchPins(server:ServerState,channel:String,enabled:Boolean) = viewModelScope.launch(dispatcher) {
+        runCatching {handles[server.url]?.watchPins(server.me,channel,enabled)}
+        poll()
+    }
+    internal suspend fun loadPins(server:ServerState,channel:String) {
+        val client=accountClient(server)
+        try {withContext(kotlinx.coroutines.Dispatchers.IO) {client.loadPins(server.me,channel)}}
+        finally {withContext(kotlinx.coroutines.NonCancellable+dispatcher) {poll()}}
+    }
+    internal suspend fun loadResultMessage(server:ServerState,channel:String,id:String) {
+        resultLoads.acquire()
+        try {
+            val client=accountClient(server)
+            try {withContext(kotlinx.coroutines.Dispatchers.IO) {client.loadResultMessage(server.me,channel,id)}}
+            finally {withContext(kotlinx.coroutines.NonCancellable+dispatcher) {poll()}}
+        } finally {resultLoads.release()}
+    }
+    internal suspend fun setPinned(server:ServerState,channel:String,id:String,value:Boolean) {
+        val key=pinKey(server,channel,id)
+        val accepted=withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
+            if(key in mutablePendingPins.value) false else {mutablePendingPins.value+=key;true}
+        }
+        if(!accepted) return
+        try {
+            val client=accountClient(server)
+            withContext(kotlinx.coroutines.Dispatchers.IO) {client.setPin(server.me,channel,id,value)}
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable) {
+                withContext(dispatcher) {poll()}
+                withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {mutablePendingPins.value-=key}
+            }
+        }
+    }
+
     internal val expressions = ExpressionLibrary(getApplication())
     private val gifLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val pendingGifs = mutableMapOf<String, List<Pair<GifChoice,String>>>()
