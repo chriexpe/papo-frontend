@@ -1,6 +1,10 @@
 package io.github.chriexpe.papo.compose
 
 import androidx.compose.ui.test.*
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
@@ -665,6 +669,52 @@ class PapoUiTest {
         compose.onNodeWithContentDescription("Send message").performClick()
         compose.waitUntil(10_000) {compose.onAllNodesWithText("@Ana",substring=true).fetchSemanticsNodes().isNotEmpty()}
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
+    }
+
+    @Test fun markdownRendersRichBlocksAndCopiesCode() {
+        chat()
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val server=checkNotNull(model.state.value.active)
+            val text="# Rich message\n\n**Bold** and *italic* with :papo_wave: and @mention(<@ana>).\n\n> A quoted thought\n\n- [x] Completed task\n- [ ] Next task\n\n```kotlin\nval answer = 42\n```\n\n| Name | State |\n| :-- | --: |\n| Papo | Ready |"
+            val fixture=io.github.chriexpe.papo.core.NativeClient.demo()
+            val message=try {
+                fixture.dispatch(io.github.chriexpe.papo.core.Action.Send("markdown-fixture",fixture.poll().selected,"$text",null))
+                fixture.poll().messages.single {it.id=="markdown-fixture"}
+            } finally {fixture.close()}
+            host.setContent {androidx.compose.material3.MaterialTheme {androidx.compose.material3.Surface {
+                androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier
+                    .testTag("markdown-fixture").verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    .padding(16.dp)) {MessageText(message,server,model)}
+            }}}
+        }
+        compose.onNodeWithText("Rich message",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("A quoted thought",substring=false).assertIsDisplayed()
+        compose.onNodeWithTag("message-sticker-demo-wave",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithText("Completed task",substring=false).assertIsDisplayed()
+        compose.onNodeWithText("val answer = 42",substring=false).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithContentDescription("Copy code").performClick()
+        compose.waitForIdle()
+        activity.onActivity {assertEquals("val answer = 42",it.getSystemService(android.content.ClipboardManager::class.java).primaryClip?.getItemAt(0)?.text?.toString())}
+        compose.onNodeWithText("Ready",substring=false).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("markdown-fixture").captureToImage().asAndroidBitmap().let {bitmap ->
+            InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("markdown-verified.png").outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)};bitmap.recycle()
+        }
+    }
+
+    @Test fun composerAutoClosesFormattingAndSendsRenderedText() {
+        chat()
+        val input=compose.onNodeWithTag("composer-input")
+        input.performTextInput("*")
+        input.performTextInput("*")
+        input.assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("****")))
+        input.performTextInput("A formatted thought")
+        input.performTextInput("*")
+        input.performTextInput("*")
+        input.assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("**A formatted thought** ")))
+        compose.onNodeWithContentDescription("Send message").performClick()
+        compose.waitUntil(10_000) {compose.onAllNodesWithText("A formatted thought",substring=false).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithText("**A formatted thought**",substring=true).assertDoesNotExist()
     }
 
     @Test fun typingPillUsesCustomPhraseAndAlignsWithTheTextBox() {

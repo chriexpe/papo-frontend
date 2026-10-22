@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
@@ -88,6 +89,9 @@ private data class LoadedComposerStickers(val owner:String,val size:Int,val imag
  * text-layout bounds, so wrapping and scrolling share the editor's layout. */
 @Composable
 internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoViewModel, placeholder:String, onChange:(ComposerDraft)->Unit, modifier:Modifier=Modifier, onFocusChange:(Boolean)->Unit={},animationsAllowed:Boolean=true) {
+    val formatting=remember(server.url,server.me,server.selected) {ComposerFormatting()}
+    DisposableEffect(formatting) {onDispose {formatting.close()}}
+    SideEffect {formatting.sync(draft)}
     val stickers=remember(draft.text,server.emojis) {composerStickers(draft.text,server.emojis)}
     val ids=remember(stickers) {stickers.map {it.id}.toSet()}
     val owner="${server.url}/${server.me}/${server.emojis.joinToString {it.revision}}"
@@ -139,8 +143,12 @@ internal fun ComposerInput(draft:ComposerDraft, server:ServerState, model:PapoVi
         onDispose {lifecycle.removeObserver(observer); images.values.forEach {d -> (d as? Animatable)?.stop(); d.callback=null; handler.removeCallbacksAndMessages(d)}}
     }
     Box(modifier.padding(start=14.dp,end=8.dp,top=12.dp,bottom=12.dp).heightIn(min=24.dp,max=160.dp).onSizeChanged {editorHeight=it.height}.verticalScroll(editorScroll)) {
-        BasicTextField(draft.value,onValueChange={next ->onChange(draft.deleteSticker(next,stickers.filter {it.id in images}.map {it.range}))},
-            modifier=Modifier.fillMaxWidth().onFocusChanged {onFocusChange(it.isFocused)}.testTag("composer-input").semantics {
+        BasicTextField(draft.value,onValueChange={next ->onChange(formatting.edit(draft,next,stickers.filter {it.id in images}.map {it.range}))},
+            modifier=Modifier.fillMaxWidth().onPreviewKeyEvent {event ->
+                if(event.key==Key.Tab && event.type==KeyEventType.KeyDown && !event.isShiftPressed && !event.isCtrlPressed && !event.isAltPressed) {
+                    formatting.skip(draft)?.let {onChange(it);true} ?: false
+                } else false
+            }.onFocusChanged {onFocusChange(it.isFocused)}.testTag("composer-input").semantics {
                 if(projection.positions.isNotEmpty()) stateDescription="Contains stickers: ${projection.positions.map {it.name}.distinct().joinToString()}"
             }.drawWithContent {
                 frame // AnimatedImageDrawable invalidates this draw without recomposing the editor.

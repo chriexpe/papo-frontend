@@ -229,6 +229,24 @@ animated images in the editor’s measured text layout; cursor mapping, wrapping
 scrolling and atomic backspace use that same layout. Images stop animating when
 the composer leaves the foreground. Decode failures retain editable `:name:` text.
 
+Messages use the same `papo-core` CommonMark parser as egui: emphasis,
+strikethrough, headings, nested quotes/lists, task lists, tables, rules, code
+and fenced code with copy actions. Mentions stay bound to IDs even when names
+contain Markdown characters, and custom animated stickers remain interactive.
+HTML is discarded and link schemes are checked. Markdown images use the shared
+media cache/viewer and server dimensions; code URLs remain literal instead of
+creating inline players. The native snapshot contains the parsed layout, with
+a bounded account-scoped parse cache, so parsing does not cause a later reflow.
+Excessively nested Markdown falls back to readable literal text.
+
+Composer auto-pairing also lives in core. Typed backticks, bold/strikethrough
+and the existing egui markers receive closers; typing a closer advances through
+it, Backspace removes empty pairs, and hardware Tab exits a pending pair. IME
+compositions and paste preserve native text and selections while tracking an
+existing closer. Programmatic inserts/reset do not infer formatting pairs.
+Android converts UTF-16 cursor positions to core's Unicode scalar offsets;
+formatting edits retain mention bindings and atomic sticker deletion.
+
 The GIF picker has Favorites, Recent and Trending tabs, search and pagination.
 GIPHY transport lives in `papo-core`; stable `giphy:<id>` messages remain compatible
 with egui. Set `PAPO_GIPHY_API_KEY` in the build environment for live search/trending;
@@ -282,12 +300,11 @@ inline suggestions, edit/delete, themes, glass controls, image/GIF viewing with 
 file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
-Still to port: voice channels and voice/video calls; full Markdown; account
-recovery; and the remaining server administration surfaces. Existing server
-settings edit general properties and existing channels/roles, but do not yet
-cover creating/deleting/reordering channels and roles, assigning member roles,
-member moderation or server emoji management. Device language choices remain
-unimplemented. Background delivery still needs a real configured Firebase
+Still to port: voice channels and voice/video calls; account recovery; custom
+embed authoring/editing; pinned-message browsing; and the other remaining parity
+gaps. Server administration now includes channel/category creation and ordering,
+roles and membership, moderation, stickers and audit (see below). Device language
+choices remain unimplemented. Background delivery still needs a real configured Firebase
 project/device check; demo fixtures cannot validate external FCM delivery.
 
 Demo checks presentation and local interactions; it cannot validate backend
