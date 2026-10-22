@@ -3398,6 +3398,33 @@ impl Store {
         self.hourglass_target(channel_id)
     }
 
+    /// Debug builds expose cursor metadata for bounded local diagnostics.
+    /// Message bodies, credentials and profile data never enter this snapshot.
+    #[cfg(debug_assertions)]
+    pub fn reading_diagnostics(&self, channel_id: &str) -> serde_json::Value {
+        let state = self.read_states.get(channel_id);
+        let keys: Vec<_> = self.messages_in(channel_id).filter(|m| !m.pending)
+            .map(|m| (m.at.with_timezone(&Utc), m.id.clone())).collect();
+        serde_json::json!({
+            "owner": self.me, "channel": channel_id,
+            "frontier": self.frontier_key(channel_id),
+            "storedFrontier": state.and_then(|s| s.read_at.zip(s.read_message_id.clone())),
+            "seen": state.and_then(ChannelReadState::seen_to_key),
+            "acknowledged": self.acknowledged_key(channel_id),
+            "synced": state.and_then(|s| s.synced_id.as_ref()),
+            "gapEnd": self.gap_ends.get(channel_id),
+            "gapRange": self.hourglass_range(channel_id),
+            "span": self.read_spans.get(channel_id),
+            "unreadStart": self.first_badge_unread(channel_id),
+            "window": {"oldest": keys.iter().min(), "newest": keys.iter().max(), "count": keys.len()},
+            "history": self.browsing_history(channel_id),
+            "historyHasMore": self.history_has_more.get(channel_id),
+            "cachedHasMore": self.cache_history_has_more.get(channel_id),
+            "remoteAnchor": self.remote_read_ids.get(channel_id),
+            "generation": self.sync_generation,
+        })
+    }
+
     pub fn catch_up_needs_history(&self, channel_id: &str) -> bool {
         let Some(frontier) = self.frontier_key(channel_id) else {
             return false;

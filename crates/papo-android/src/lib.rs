@@ -28,6 +28,8 @@ mod administration;
 mod admin_audit;
 mod markdown;
 mod message_results;
+#[cfg(any(test, all(debug_assertions, target_os = "android")))]
+mod reading_debug;
 uniffi::setup_scaffolding!();
 
 /// The wire contract is deliberately small and versioned. Kotlin only renders
@@ -219,6 +221,8 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
 }
 
 pub struct Client {
+    #[cfg(all(debug_assertions, target_os = "android"))]
+    reading_debug: reading_debug::ReadingDebug,
     runtime: ServerRuntime,
     notification_listener: Option<Arc<dyn notifications::NotificationListener>>,
     notification_visible: bool,
@@ -285,9 +289,13 @@ impl Client {
         android_logger::init_once(android_logger::Config::default().with_tag("PapoCompose").with_max_level(log::LevelFilter::Info));
         let url = normalize_url(url)?;
         let lease = notifications::InteractiveLease::acquire(&url, &db_path);
+        #[cfg(all(debug_assertions, target_os = "android"))]
+        let reading_debug = reading_debug::ReadingDebug::new(&db_path, &papo_core::server_key(&url));
         let cache = database(db_path)?;
         let notifications = notifications::coordinator(Arc::clone(&cache), listener.clone());
         Ok(Self {
+            #[cfg(all(debug_assertions, target_os = "android"))]
+            reading_debug,
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
             notification_listener: listener,
             notification_visible: false,
@@ -325,6 +333,10 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Value {
+        #[cfg(all(debug_assertions, target_os = "android"))]
+        let reading_before = self.reading_debug_state();
+        #[cfg(all(debug_assertions, target_os = "android"))]
+        let mut reading_updates = Vec::new();
         self.sync_notification_context();
         let previous_owner = self.runtime.store.me.clone();
         // A hard bound prevents a busy socket from monopolizing the actor.
@@ -334,6 +346,8 @@ impl Client {
             let Some(update) = self.runtime.net.try_recv() else {
                 break;
             };
+            #[cfg(all(debug_assertions, target_os = "android"))]
+            if reading_updates.len() < 32 {reading_updates.push(Self::reading_debug_update(&update));}
             match &update {
                 Update::RemoteReadAnchor {
                     owner_user_id,
@@ -522,6 +536,11 @@ impl Client {
         let mut snapshot = self.snapshot();
         snapshot["more"] = json!(more);
         snapshot["events"] = json!(events);
+        #[cfg(all(debug_assertions, target_os = "android"))]
+        {
+            let after = self.reading_debug_state();
+            self.reading_debug.record("poll", reading_before, after, json!({"updates":reading_updates}));
+        }
         snapshot
     }
 

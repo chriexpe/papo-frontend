@@ -65,6 +65,19 @@ fn frontier_id(store: &Store) -> Option<String> {
 }
 
 #[test]
+fn reading_diagnostics_capture_cursor_evidence_without_message_content() {
+    let mut store = navigation_store(10);
+    store.messages[1].content = "private message body excluded from diagnostics".into();
+    store.observe_chat_viewport("geral", &ids(9..=10), true);
+    let snapshot = store.reading_diagnostics("geral");
+    assert_eq!(snapshot["frontier"][1], "m1");
+    assert_eq!(snapshot["acknowledged"][1], "m10");
+    assert_eq!(snapshot["gapRange"][0], "m2");
+    assert_eq!(snapshot["span"][0][1], "m9");
+    assert!(!snapshot.to_string().contains("private message body"));
+}
+
+#[test]
 fn android_latest_acknowledges_channel_without_erasing_catch_up() {
     let mut store = navigation_store(10);
     store.observe_chat_viewport("geral", &ids(9..=10), true);

@@ -352,7 +352,12 @@ restrictions and redirect behavior. Attachment tests cover tap/hold actions,
 file and photo picker results, camera capture results, real microphone encoding
 and playback, and draft recovery after an interrupted upload. Picker/camera
 results use local test fixtures; no test messages are posted to a live server.
-Core HTTP fixtures verify multipart bodies and failure classification. Pins and
+Core HTTP fixtures verify multipart bodies and failure classification. A local
+REST/WebSocket fixture also exercises actual incoming messages from another
+user: single arrivals, pairs, tall media, late embed resizing, keyboard resizing
+and the first-new shortcut. The new-message divider follows core's unread
+boundary rather than retaining a Compose-local arrival marker after receipt.
+ Pins and
 search checks cover permission gates, full detached snapshots, concurrent pin
 updates, source navigation, independent author controls and shared inline /
 fullscreen playback. Browsing result lists never establishes history coverage
@@ -694,3 +699,12 @@ editing cannot delete the original. An upload with an uncertain outcome cannot
 be edited. The editor uses the same image loader and animated-media lifecycle
 as the rest of the app, and reusable remote resources keep using the shared
 media cache.
+
+Debug APKs keep a local reading-cursor trace beside the message database:
+`reading-debug-<server-key>.jsonl` and its `previous.jsonl` rotation. Each file is
+limited to 128 KiB (256 KiB per server total). It records cursor IDs/timestamps,
+viewport IDs, read spans, history coverage, arrival IDs and before/after catch-up
+boundaries; message bodies, credentials and profile data are excluded. Repeated
+identical reports are omitted. Release builds do not compile this recorder.
+This is diagnostic evidence for the reported false catch-up creation; adding the
+trace does not change the hourglass state machine or establish its root cause.

@@ -121,7 +121,19 @@ impl NativeClient {
             .as_mut()
             .ok_or_else(|| "Client is closed".to_owned())?
         {
-            Backend::Live(client) => client.dispatch(action),
+            Backend::Live(client) => {
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let before = client.reading_debug_state();
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                let detail = client.reading_debug_action(&action);
+                let result = client.dispatch(action);
+                #[cfg(all(debug_assertions, target_os = "android"))]
+                {
+                    let after = client.reading_debug_state();
+                    client.reading_debug.record("action", before, after, detail);
+                }
+                result
+            },
             Backend::Demo(client) => client.dispatch(action),
         }
         .map_err(CoreError::from)
