@@ -173,7 +173,7 @@ private fun ServerSettingsOverview(server:ServerState,model:PapoViewModel,ui:Adm
             if(p.manageRoles) item {SettingsCard {SettingsLink("Roles","${server.roles.size} ${if(server.roles.size==1) "role" else "roles"} · colors, permissions and people",Icons.Outlined.Badge,{open("Roles","")})}}
             if(p.banMembers) item {SettingsCard {SettingsLink("People","Server access and moderation",Icons.Outlined.PeopleOutline,{open("People","")})}}
             if(p.manageServer) {
-                item {SettingsCard {SettingsLink("Stickers","${server.emojis.size} server stickers",Icons.Outlined.EmojiEmotions,{open("Stickers","")})}}
+                item {SettingsCard {SettingsLink("Stickers","${server.emojis.size} server ${if(server.emojis.size==1) "sticker" else "stickers"}",Icons.Outlined.EmojiEmotions,{open("Stickers","")})}}
                 item {SettingsCard {SettingsLink("Audit","Who changed what",Icons.Outlined.History,{open("Audit","")})}}
             }
         }

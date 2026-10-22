@@ -93,7 +93,7 @@ internal fun AuditAdministration(server:ServerState,model:PapoViewModel) {
     }
     LaunchedEffect(person,kind,channel,period) {generation++;rows=emptyList();cursor="";more=false;loading=true;delay(250);fetch(true)}
     LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("admin-audit"),contentPadding=PaddingValues(20.dp,8.dp,20.dp,32.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        item {OutlinedTextField(person,{person=it},Modifier.fillMaxWidth().testTag("audit-person-search"),label={Text("Person (name, @username or ID)")},singleLine=true,leadingIcon={Icon(Icons.Outlined.Search,null)},trailingIcon={if(person.isNotEmpty()) IconButton(onClick={person=""}) {Icon(Icons.Outlined.Close,"Clear person filter")}})}
+        item {OutlinedTextField(person,{person=it},Modifier.fillMaxWidth().testTag("audit-person-search"),label={Text("Person")},placeholder={Text("Name, @username or ID",maxLines=1,overflow=TextOverflow.Ellipsis)},singleLine=true,leadingIcon={Icon(Icons.Outlined.Search,null)},trailingIcon={if(person.isNotEmpty()) IconButton(onClick={person=""}) {Icon(Icons.Outlined.Close,"Clear person filter")}})}
         item {FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp)) {
             FilterChip(kind=="deleted",{kind=if(kind=="deleted") "all" else "deleted"},label={Text("Deleted messages")},leadingIcon={Icon(Icons.Outlined.DeleteOutline,null,Modifier.size(18.dp))})
             AuditFilterChip(kind,"Type",listOf("all" to "All","deleted" to "Deleted messages","messages" to "Messages","channels" to "Channels","roles" to "Roles","members" to "People","server" to "Server")) {kind=it}
