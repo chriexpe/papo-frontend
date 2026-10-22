@@ -30,7 +30,7 @@ class SearchEditorTest {
             assertTrue(result.searchResults.isNotEmpty())
             assertTrue(result.searchResults.all {it.authorId=="ana" && it.channelId=="general"})
             assertTrue(result.capabilities.canAdmin)
-            assertFalse(result.capabilities.copy(manageServer=false,manageChannels=false,manageRoles=false).canAdmin)
+            assertFalse(result.capabilities.copy(manageServer=false,manageChannels=false,manageRoles=false,banMembers=false).canAdmin)
             assertTrue(client.serverIcon().isNotEmpty())
             client.dispatch(Action.ClearSearch)
             assertTrue(client.poll().searchResults.isEmpty())

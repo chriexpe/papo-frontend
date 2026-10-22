@@ -343,6 +343,7 @@ class PapoUiTest {
         compose.onNodeWithText("General").assertIsDisplayed()
         compose.onNode(hasText("Channels",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).assertIsDisplayed()
         compose.onNodeWithText("Roles").assertIsDisplayed()
+        compose.onNodeWithText("General").performClick()
         compose.onNodeWithTag("server-name-field").performTextReplacement("Papo Compose")
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithText("Save server").performClick()
@@ -360,6 +361,7 @@ class PapoUiTest {
         androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithText("Save channel").performClick()
         compose.waitUntil(5000) {compose.onAllNodesWithText("Save channel").fetchSemanticsNodes().isEmpty()}
+        systemBack()
         compose.onNode(hasText("Roles",substring=false) and hasAnyAncestor(hasTestTag("server-settings"))).performClick()
         compose.onNodeWithText("Designers",substring=false).performClick()
         compose.onNode(hasText("Role name") and hasSetTextAction()).performTextReplacement("Creators")
@@ -368,12 +370,97 @@ class PapoUiTest {
         compose.waitUntil(5000) {compose.onAllNodesWithText("Save role").fetchSemanticsNodes().isEmpty()}
         compose.onNodeWithText("Creators",substring=false).assertIsDisplayed()
         systemBack()
+        systemBack()
         compose.onNodeWithText("geral-updated",substring=false).assertIsDisplayed()
+    }
+
+    @Test fun administrationSearchFindsIndividualSettingsAndProtectsUnsavedChanges() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNodeWithTag("server-settings-search").performTextInput("server name")
+        compose.onNodeWithText("Server name",substring=false).performClick()
+        compose.onNodeWithTag("server-name-field").performTextReplacement("Unsaved server")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        systemBack()
+        compose.onNodeWithText("Discard changes?").assertIsDisplayed()
+        compose.onNodeWithText("Keep editing").performClick()
+        compose.onNodeWithTag("server-name-field").assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("Unsaved server")))
+        systemBack()
+        compose.onNodeWithText("Discard",substring=false).performClick()
+        compose.onNodeWithTag("server-settings-search").assertTextEquals("server name")
+    }
+
+    @Test fun administrationSearchScrollsToTheExactRolePermission() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNodeWithTag("server-settings-search").performTextInput("Designers send attachments")
+        compose.onNodeWithText("Designers: Send attachments",substring=false).performClick()
+        compose.onNodeWithContentDescription("Send attachments",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("admin-role-editor").captureToImage().asAndroidBitmap().let {bitmap ->InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("administration-role-editor.png").outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)};bitmap.recycle()}
+    }
+
+    @Test fun administrationCreatesChannelsAndAuditFiltersTheSavedAction() {
+        demo()
+        compose.onNodeWithContentDescription("Server settings").performClick()
+        compose.onNodeWithText("Channels",substring=false).performClick()
+        compose.onNodeWithText("Create channel",substring=false).performClick()
+        compose.onNodeWithTag("admin-channel-name").performTextReplacement("release-room")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("save-channel").performScrollTo().performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("admin-channels").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("admin-channels").performScrollToNode(hasText("release-room",substring=false))
+        compose.onNode(hasText("release-room",substring=false) and hasAnyAncestor(hasTestTag("admin-channels"))).assertIsDisplayed()
+        systemBack()
+        compose.onNodeWithTag("server-settings-overview").performScrollToNode(hasText("Audit",substring=false))
+        compose.onNodeWithText("Audit",substring=false).performClick()
+        compose.waitUntil(5000) {compose.onAllNodes(hasText("release-room",substring=true) and hasAnyAncestor(hasTestTag("admin-audit"))).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("audit-person-search").performTextInput("no-such-person")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.waitUntil(5000) {compose.onAllNodesWithText("No matching activity in these entries.").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithContentDescription("Clear person filter").performClick()
+        compose.waitUntil(5000) {compose.onAllNodes(hasText("release-room",substring=true) and hasAnyAncestor(hasTestTag("admin-audit"))).fetchSemanticsNodes().isNotEmpty()}
+    }
+
+    @Test fun sharedMediaEditorPreviewsTheCropAndKeepsItAfterARejectedSave() {
+        demo()
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val file=java.io.File.createTempFile("editor-ui-",".png",context.cacheDir)
+        val bitmap=android.graphics.Bitmap.createBitmap(800,400,android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas=android.graphics.Canvas(bitmap)
+        canvas.drawColor(android.graphics.Color.rgb(29,114,202))
+        canvas.drawRect(400f,0f,800f,400f,android.graphics.Paint().apply {color=android.graphics.Color.rgb(255,173,40)})
+        file.outputStream().use {bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)};bitmap.recycle()
+        val attempts=java.util.concurrent.atomic.AtomicInteger()
+        val result=java.util.concurrent.atomic.AtomicReference<io.github.chriexpe.papo.core.PreparedMediaImage>()
+        val client=io.github.chriexpe.papo.core.NativeClient.demo()
+        val server=try {client.poll()} finally {client.shutdown();client.close()}
+        try {
+            activity.onActivity {host ->val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+                host.setContent {androidx.compose.material3.MaterialTheme {
+                    val visible=androidx.compose.runtime.remember {androidx.compose.runtime.mutableStateOf(true)}
+                    if(visible.value) MediaEditor(MediaEditorSource(file.absolutePath,"rocket.png",800,400),io.github.chriexpe.papo.core.MediaEditPurpose.STICKER,server,model,onDismiss={visible.value=false}) {output,_ ->
+                        if(attempts.incrementAndGet()==1) error("Upload rejected; try again")
+                        result.set(output)
+                    }
+                }}
+            }
+            compose.onNodeWithTag("media-crop-area").assertIsDisplayed()
+            compose.onNodeWithTag("crop-zoom").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.SetProgress) {it(2f)}
+            compose.onNodeWithTag("media-editor").captureToImage().asAndroidBitmap().let {preview ->context.cacheDir.resolve("administration-media-editor.png").outputStream().use {preview.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)};preview.recycle()}
+            compose.onNodeWithTag("save-media-edit").performClick()
+            compose.waitUntil(10000) {compose.onAllNodesWithText("Upload rejected; try again").fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithTag("media-editor").assertIsDisplayed()
+            compose.onNodeWithTag("save-media-edit").performClick()
+            compose.waitUntil(10000) {result.get()!=null}
+            compose.onNodeWithTag("media-editor").assertDoesNotExist()
+            assertEquals(200u,result.get().width);assertEquals(200u,result.get().height)
+            assertEquals(2,attempts.get());assertTrue(file.exists())
+        } finally {file.delete()}
     }
 
     @Test fun normalMemberCanOpenServerInformationWithoutAnAdminGear() {
         val client=io.github.chriexpe.papo.core.NativeClient.demo()
-        val server=try {client.poll().let {it.copy(serverIconRevision="",capabilities=it.capabilities.copy(manageServer=false,manageChannels=false,manageRoles=false))}} finally {client.shutdown();client.close()}
+        val server=try {client.poll().let {it.copy(serverIconRevision="",capabilities=it.capabilities.copy(manageServer=false,manageChannels=false,manageRoles=false,banMembers=false))}} finally {client.shutdown();client.close()}
         activity.onActivity {host ->
             val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
             host.setContentForMemberHeader(server,model)

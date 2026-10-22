@@ -33,7 +33,7 @@ import io.github.chriexpe.papo.core.Action
 import io.github.chriexpe.papo.core.Capabilities
 import kotlinx.coroutines.CancellationException
 
-internal val Capabilities.canAdmin get()=manageServer || manageChannels || manageRoles
+internal val Capabilities.canAdmin get()=manageServer || manageChannels || manageRoles || banMembers
 
 @Composable
 internal fun ServerIcon(server:ServerState,model:PapoViewModel,modifier:Modifier=Modifier) {
@@ -112,101 +112,3 @@ private fun ServerInfoSheet(server:ServerState,model:PapoViewModel,appError:Stri
 
 @Composable private fun CommunitySection(title:String) {HorizontalDivider(Modifier.padding(top=16.dp,bottom=12.dp));Text(title,Modifier.padding(horizontal=20.dp,vertical=6.dp),style=MaterialTheme.typography.labelSmall,color=MaterialTheme.colorScheme.onSurfaceVariant)}
 @Composable private fun CommunityError(error:String) {Text(error,Modifier.padding(20.dp),color=MaterialTheme.colorScheme.error,style=MaterialTheme.typography.bodyMedium)}
-
-@Composable
-private fun ServerSettingsSheet(server:ServerState,model:PapoViewModel,appError:String,onDismiss:()->Unit) {
-    BackHandler(onBack=onDismiss)
-    val tabs=buildList {if(server.capabilities.manageServer) add("General");if(server.capabilities.manageChannels) add("Channels");if(server.capabilities.manageRoles) add("Roles")}
-    var tab by rememberSaveable(server.url) {mutableStateOf(tabs.firstOrNull().orEmpty())}
-    val selected=tab.takeIf {it in tabs} ?: tabs.firstOrNull().orEmpty()
-    var channelId by rememberSaveable {mutableStateOf<String?>(null)}
-    var roleId by rememberSaveable {mutableStateOf<String?>(null)}
-    ModalBottomSheet(onDismissRequest=onDismiss,sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true)) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight(.9f).imePadding().navigationBarsPadding().testTag("server-settings")) {
-            Row(Modifier.fillMaxWidth().padding(start=24.dp,end=12.dp),verticalAlignment=Alignment.CenterVertically) {
-                Text("Server settings",Modifier.weight(1f),style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)
-                IconButton(onClick=onDismiss) {Icon(Icons.Outlined.Close,"Close server settings")}
-            }
-            Row(Modifier.padding(horizontal=20.dp,vertical=8.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)) {tabs.forEach {title ->FilterChip(selected==title,{tab=title;channelId=null;roleId=null},label={Text(title)})}}
-            if(appError.isNotBlank() || server.error.isNotBlank()) CommunityError(appError.ifBlank {server.error})
-            when(selected) {
-                "General" -> GeneralServerSettings(server,model)
-                "Channels" -> {
-                    val channel=server.channels.firstOrNull {it.id==channelId}
-                    if(channel!=null) key(channel.id) {ChannelSettings(server,channel,model) {channelId=null}}
-                    else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=24.dp)) {items(server.channels.filter {it.kind!="direct"},key={it.id}) {c ->
-                        ListItem(headlineContent={Text(c.name)},supportingContent={Text(c.topic, maxLines=1,overflow=TextOverflow.Ellipsis)},trailingContent={Icon(Icons.Outlined.Edit,null)},
-                            modifier=Modifier.clickable {channelId=c.id})
-                    }}
-                }
-                "Roles" -> {
-                    val role=server.roles.firstOrNull {it.id==roleId}
-                    if(role!=null) key(role.id) {RoleSettings(server,role,model) {roleId=null}}
-                    else LazyColumn(Modifier.weight(1f),contentPadding=PaddingValues(bottom=24.dp)) {
-                        if(server.roles.isEmpty()) item {EmptyState("No roles yet","This server has no roles to edit.")}
-                        items(server.roles,key={it.id}) {r ->ListItem(headlineContent={Text(r.name)},trailingContent={Icon(Icons.Outlined.Edit,null)},modifier=Modifier.clickable {roleId=r.id})}
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun GeneralServerSettings(server:ServerState,model:PapoViewModel) {
-    var name by rememberSaveable(server.url) {mutableStateOf(server.name)}
-    var public by rememberSaveable(server.url) {mutableStateOf(server.serverPublic)}
-    var password by remember {mutableStateOf("")}
-    var saving by remember {mutableStateOf(false)}
-    var saved by remember {mutableStateOf(false)}
-    val error=(!public && server.serverPublic || password.isNotEmpty()) && password.codePointCount(0,password.length)<8
-    val dirty=name.trim()!=server.name || public!=server.serverPublic || password.isNotEmpty()
-    LaunchedEffect(server.busy,server.name,server.serverPublic,server.error) {
-        if(saving && !server.busy) {saving=false;if(server.error.isBlank() && name.trim()==server.name && public==server.serverPublic) {password="";saved=true}}
-    }
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-        ServerIcon(server,model,Modifier.size(72.dp))
-        OutlinedTextField(name,{name=it;saved=false},label={Text("Server name")},singleLine=true,modifier=Modifier.fillMaxWidth().testTag("server-name-field"))
-        ListItem(headlineContent={Text("Public server")},supportingContent={Text("Private servers require a server password.")},trailingContent={Switch(public,{public=it;saved=false})},modifier=Modifier.clip(RoundedCornerShape(18.dp)))
-        if(!public) OutlinedTextField(password,{password=it;saved=false},label={Text(if(server.serverPublic) "Server password" else "New server password (optional)")},visualTransformation=PasswordVisualTransformation(),singleLine=true,isError=error,
-            supportingText=if(error) ({Text("Use at least 8 characters.")}) else null,modifier=Modifier.fillMaxWidth())
-        Button(onClick={saving=true;saved=false;model.command(Action.SaveServer(name,public,password.takeIf {it.isNotEmpty()}),server.url)},enabled=dirty && name.trim().isNotEmpty() && name.codePointCount(0,name.length)<=64 && !error && !saving && !server.busy,modifier=Modifier.align(Alignment.End)) {Text(if(saving) "Saving…" else "Save server")}
-        if(saved) Text("Server saved",color=MaterialTheme.colorScheme.primary)
-    }
-}
-
-@Composable
-private fun ChannelSettings(server:ServerState,channel:io.github.chriexpe.papo.core.ChannelView,model:PapoViewModel,onDone:()->Unit) {
-    var name by rememberSaveable {mutableStateOf(channel.name)}
-    var topic by rememberSaveable {mutableStateOf(channel.topic)}
-    var saving by remember {mutableStateOf(false)}
-    BackHandler(onBack=onDone)
-    LaunchedEffect(channel.name,channel.topic,server.error) {if(saving) {saving=false;if(name==channel.name && topic==channel.topic) onDone()}}
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
-        TextButton(onClick=onDone) {Icon(Icons.Outlined.ArrowBack,null);Spacer(Modifier.width(8.dp));Text("Channels")}
-        OutlinedTextField(name,{name=it},label={Text("Channel name")},singleLine=true,modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(topic,{topic=it},label={Text("Description")},minLines=3,maxLines=6,modifier=Modifier.fillMaxWidth())
-        Button(onClick={saving=true;model.command(Action.SaveChannel(channel.id,name,topic),server.url)},enabled=!saving && name.trim().isNotEmpty() && name.codePointCount(0,name.length)<=64 && (name!=channel.name || topic!=channel.topic),modifier=Modifier.align(Alignment.End)) {Text(if(saving) "Saving…" else "Save channel")}
-    }
-}
-
-@Composable
-private fun RoleSettings(server:ServerState,role:io.github.chriexpe.papo.core.RoleView,model:PapoViewModel,onDone:()->Unit) {
-    var name by rememberSaveable {mutableStateOf(role.name)}
-    var color by rememberSaveable {mutableStateOf(role.color)}
-    var permissions by remember {mutableStateOf(role.permissions)}
-    var saving by remember {mutableStateOf(false)}
-    BackHandler(onBack=onDone)
-    LaunchedEffect(role.name,role.color,role.permissions,server.error) {if(saving) {saving=false;if(name==role.name && color==role.color && permissions==role.permissions) onDone()}}
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
-        TextButton(onClick=onDone) {Icon(Icons.Outlined.ArrowBack,null);Spacer(Modifier.width(8.dp));Text("Roles")}
-        OutlinedTextField(name,{name=it},label={Text("Role name")},singleLine=true,modifier=Modifier.fillMaxWidth())
-        OutlinedTextField(color,{color=it},label={Text("Color (optional)")},placeholder={Text("#0088FF")},singleLine=true,modifier=Modifier.fillMaxWidth())
-        listOf("Manage server" to permissions.manageServer,"Manage channels" to permissions.manageChannels,"Manage roles" to permissions.manageRoles,"Ban members" to permissions.banMembers,"Pin messages" to permissions.pinMessage,"Mention everyone" to permissions.everyoneMessage,"Send attachments" to permissions.sendAttachment).forEachIndexed {index,(label,value) ->
-            ListItem(headlineContent={Text(label)},trailingContent={Switch(value,{enabled ->permissions=when(index) {
-                0->permissions.copy(manageServer=enabled);1->permissions.copy(manageChannels=enabled);2->permissions.copy(manageRoles=enabled);3->permissions.copy(banMembers=enabled);4->permissions.copy(pinMessage=enabled);5->permissions.copy(everyoneMessage=enabled);else->permissions.copy(sendAttachment=enabled)
-            }})})
-        }
-        Button(onClick={saving=true;model.command(Action.SaveRole(role.id,name,color,permissions),server.url)},enabled=!saving && name.trim().isNotEmpty() && name.codePointCount(0,name.length)<=64 && (color.isEmpty() || Regex("#[a-fA-F0-9]{6}").matches(color)) && (name!=role.name || color!=role.color || permissions!=role.permissions),modifier=Modifier.align(Alignment.End)) {Text(if(saving) "Saving…" else "Save role")}
-    }
-}

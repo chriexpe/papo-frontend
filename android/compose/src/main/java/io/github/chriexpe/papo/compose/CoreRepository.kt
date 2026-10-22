@@ -357,6 +357,26 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         withContext(kotlinx.coroutines.Dispatchers.IO) {client.accountSessions(server.me)}
     }
 
+    internal suspend fun administration(server:ServerState,refresh:Boolean=true):io.github.chriexpe.papo.core.AdministrationState = accountMutex.withLock {
+        val client=accountClient(server)
+        val result=withContext(kotlinx.coroutines.Dispatchers.IO) {client.administration(server.me,refresh)}
+        withContext(dispatcher) {poll()}
+        result
+    }
+    internal suspend fun administer(server:ServerState,change:io.github.chriexpe.papo.core.AdministrationChange):io.github.chriexpe.papo.core.AdministrationOutcome = accountMutex.withLock {
+        val client=accountClient(server)
+        try {withContext(kotlinx.coroutines.Dispatchers.IO) {client.administer(server.me,change)}}
+        finally {withContext(dispatcher) {poll()}}
+    }
+    internal suspend fun channelRules(server:ServerState,id:String):List<io.github.chriexpe.papo.core.ChannelRule> = accountMutex.withLock {
+        val client=accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {client.channelRules(server.me,id)}
+    }
+    internal suspend fun administrationAudit(server:ServerState,filter:io.github.chriexpe.papo.core.AuditFilter):io.github.chriexpe.papo.core.AuditPage = accountMutex.withLock {
+        val client=accountClient(server)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {client.administrationAudit(server.me,filter)}
+    }
+
     internal val expressions = ExpressionLibrary(getApplication())
     private val gifLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val pendingGifs = mutableMapOf<String, List<Pair<GifChoice,String>>>()

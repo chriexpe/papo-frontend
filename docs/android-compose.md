@@ -606,3 +606,50 @@ expired session exits cleanly.
 
 Firebase's notification/data routing follows its
 [Android message delivery contract](https://firebase.google.com/docs/cloud-messaging/android/receive-messages).
+
+## Server administration and image editing
+
+The server header opens a permission-scoped settings dialog. Its search finds
+individual controls and channel/role editors. General settings save the server
+name, public/private access, password and picture. Channel editors create text,
+voice and category entries, edit descriptions, change order and confirm deletion.
+Channel access reads and writes the backend's role rules (read, send, delete and
+voice). Roles support names, colors, all seven backend permissions, membership
+and deletion. Moderators can ban/unban people; the owner and current account are
+protected. Sticker administration adds static or animated images and confirms
+deletion. The audit timeline supports person/name/ID, action family, channel,
+date and deleted-message filters, selectable deleted text and pagination.
+
+Changes use the canonical Rust HTTP client through account-scoped UniFFI calls.
+A save is acknowledged by the server before leaving its editor. Refresh failure
+after an accepted mutation is a warning, rather than an invitation to submit the
+same creation/upload twice. Permission checks run at the native boundary as well
+as in the UI. Audit sentences and filtering now live in `papo-core` and are shared
+with egui. Pagination advances using the raw server cursor even when a locally
+filtered page has no matches.
+
+The UI exposes only working backend operations. There is no sticker rename,
+per-person channel ACL, role reorder or server banner control. Categories can be
+created and ordered, but the checked-in backend does not persist the frontend's
+`parent_id` field, so category assignment is not exposed. Its create-channel
+handler also ignores `access_roles`; role access is configured using the actual
+channel-permissions endpoint after creation. No local-only access rules are
+presented as server security.
+
+One crop editor serves profile photos, profile banners, server pictures,
+stickers and outgoing draft images. It supports drag, pinch, an accessible zoom
+slider/reset, destination-shaped masks, square/original sticker crops, names,
+and conversation/picker previews. `papo-core::media_prepare` owns the actual
+orientation, crop, resizing, encoding and byte budgets; egui reuses the same
+processor. GIF, animated WebP and APNG retain frames and timing. Static images
+use WebP or JPEG as appropriate. Inputs are bounded to 32 MiB/40 megapixels and
+animation decoding has frame/pixel limits. Outputs follow backend limits:
+512-pixel/256-KiB stickers, 512-pixel/2-MiB avatars and server icons, and
+1536×512/2-MiB profile banners.
+
+Picked editor sources are private temporary files. Existing attachment drafts
+stay intact until their replacement is durably saved; cancellation and failed
+editing cannot delete the original. An upload with an uncertain outcome cannot
+be edited. The editor uses the same image loader and animated-media lifecycle
+as the rest of the app, and reusable remote resources keep using the shared
+media cache.
