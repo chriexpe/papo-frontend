@@ -1245,14 +1245,27 @@ class PapoUiTest {
         media()
         var previous=android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         activity.onActivity {previous=it.requestedOrientation}
-        compose.onNodeWithTag("message-list").performScrollToNode(hasContentDescription("Play clip.mp4"))
-        // Keep native controls clear of the floating Latest messages button.
-        val pixels=InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
-        compose.onNodeWithTag("message-list").performTouchInput {swipe(center,center.copy(y=center.y-120*pixels),300)}
+        compose.onNodeWithTag("message-list").performScrollToKey("media-3")
+        // Use actual geometry, not a fling based on the old message spacing:
+        // scrolling the video offscreen correctly deactivates its player.
+        val initial=compose.onNodeWithTag("attachment-demo-video",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
+        val header=compose.onNodeWithTag("channel-header").fetchSemanticsNode().boundsInRoot
+        val composer=compose.onNodeWithTag("chat-composer").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("message-list").performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.ScrollBy) {it(0f,(header.bottom+composer.top)/2-initial.center.y)}
+        compose.waitForIdle()
         val frame = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithContentDescription("Play clip.mp4").performClick()
+        assertTrue("Keep the video inside the unobscured viewport: initial=$initial moved=$frame usable=${header.bottom}..${composer.top}",frame.top>=header.bottom && frame.bottom<=composer.top)
+        compose.onNodeWithContentDescription("Play clip.mp4").assertIsDisplayed().performClick()
         val player = "player-demo://papo/me/attachment/demo-video"
-        compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        try {
+            compose.waitUntil(15_000) { compose.onAllNodes(hasTestTag(player) and SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Ready"), useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty() }
+        } catch(failure:Throwable) {
+            val cache=InstrumentationRegistry.getInstrumentation().targetContext.cacheDir
+            cache.resolve("video-failure-state.txt").writeText(compose.onRoot(useUnmergedTree=true).printToString())
+            val image=compose.onRoot().captureToImage().asAndroidBitmap()
+            cache.resolve("video-failure.png").outputStream().use {image.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+            throw failure
+        }
         val playing = compose.onNodeWithTag("attachment-demo-video", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         assertEquals(frame.height, playing.height, 1f)
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
