@@ -442,6 +442,9 @@ private fun BoxScope.PlayableMediaContent(server: ServerState, model: PapoViewMo
             }
         }
         player?.addListener(listener)
+        // A retained player can already be ready before this row attaches its
+        // listener; that state will not necessarily emit another transition.
+        ready = player?.playbackState == Player.STATE_READY || player?.playbackState == Player.STATE_ENDED
         player?.videoSize?.let {size ->if(size.width>0 && size.height>0) onVideoRatio(size.width.toFloat()*size.pixelWidthHeightRatio/size.height)}
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_PAUSE) player?.pause() }
         lifecycle.addObserver(observer)
