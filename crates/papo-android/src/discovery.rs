@@ -63,6 +63,7 @@ pub struct RoleView {
 #[derive(Clone, Debug, Deserialize, uniffi::Record)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
+    pub message: Option<bindings::MessageView>,
     pub id: String,
     pub kind: String,
     pub content: String,

@@ -9,6 +9,7 @@ struct Fixture {
     url: String,
     requests: Arc<Mutex<Vec<(String, Value)>>>,
     fail: Arc<AtomicBool>,
+    pinned: Arc<AtomicBool>,
     stopped: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -19,6 +20,8 @@ impl Fixture {
         listener.set_nonblocking(true).unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let fail = Arc::new(AtomicBool::new(false));
+        let pinned=Arc::new(AtomicBool::new(false));
+        let current_pin=Arc::clone(&pinned);
         let stopped = Arc::new(AtomicBool::new(false));
         let (seen, reject, stop) = (
             Arc::clone(&requests),
@@ -58,7 +61,22 @@ impl Fixture {
                     .unwrap_or_default()
                     .to_owned();
                 let reaction = first.contains("/reactions ");
-                let (status, body) = if first.contains("/search") {
+                let (status, body) = if first.contains("/channels/media/messages/remote-hit/pin") {
+                    seen.lock().unwrap().push((format!("PIN-{method}"),Value::Null));
+                    if reject.swap(false,Ordering::SeqCst) {("403 Forbidden",r#"{"status":403,"detail":"not allowed"}"#)}
+                    else if method=="POST" {current_pin.store(true,Ordering::SeqCst);("200 OK",r#"{"message_id":"remote-hit"}"#)}
+                    else if current_pin.swap(false,Ordering::SeqCst) {("204 No Content","")}
+                    else {("404 Not Found",r#"{"status":404}"#)}
+                } else if first.contains("/channels/media/pinned") {
+                    seen.lock().unwrap().push(("PINS".into(),Value::Null));
+                    if reject.swap(false,Ordering::SeqCst) {("503 Unavailable",r#"{"status":503,"detail":"try again"}"#)}
+                    else if current_pin.load(Ordering::SeqCst) {("200 OK",r#"{"pinned":[{"id":"remote-hit","channel_id":"media","author_id":"ana","content":"full remote message","created_at":"2026-10-20T12:00:00Z","attachments":[{"id":"remote-attachment","mime_type":"image/png","moderation_status":"clean"}],"embeds":[{"id":"remote-embed","url":"https://cdn.test/image.png","image":{"mime_type":"image/png","width":640,"height":480}}]}]}"#)}
+                    else {("200 OK",r#"{"pinned":[]}"#)}
+                } else if first.contains("/channels/media/messages?") {
+                    seen.lock().unwrap().push(("PREVIEW".into(),json!({"request":first.trim()})));
+                    if first.contains("order=desc") {("200 OK",r#"{"messages":[],"has_more":false}"#)}
+                    else {("200 OK",r#"{"messages":[{"id":"remote-hit","channel_id":"media","author_id":"ana","content":"full remote message","created_at":"2026-10-20T12:00:00Z","attachments":[{"id":"remote-attachment","mime_type":"image/png","moderation_status":"clean"}],"embeds":[{"id":"remote-embed","url":"https://cdn.test/image.png","image":{"mime_type":"image/png","width":640,"height":480}}]}],"has_more":false}"#)}
+                } else if first.contains("/search") {
                     seen.lock()
                         .unwrap()
                         .push(("SEARCH".into(), serde_json::from_slice(&bytes).unwrap()));
@@ -99,6 +117,7 @@ impl Fixture {
             url,
             requests,
             fail,
+            pinned,
             stopped,
             thread: Some(thread),
         }
@@ -536,4 +555,105 @@ fn asynchronous_attachment_checks_do_not_block_available_media_but_blocked_files
     }
     client.runtime.store.messages.iter_mut().find(|m|!m.attachments.is_empty()).unwrap().attachments[0].moderation_status=Some("blocked".into());
     assert!(media::request(&client.runtime,media::MediaResource::Attachment {id:"pending-file".into(),thumbnail:false}).is_err());
+}
+
+#[test]
+fn result_hydration_and_acknowledged_pins_share_detached_media_without_reading_the_channel() {
+    use crate::bindings::{Backend, NativeClient};
+    let fixture=Fixture::new();let mut client=fixture.client();
+    client.runtime.net.session.set_token(Some("test-session".into()));
+    client.runtime.store.search_results=serde_json::from_value(json!([{"id":"remote-hit","channel_id":"media","created_at":"2026-10-20T12:00:00Z"}])).unwrap();
+    let native=NativeClient {backend:Mutex::new(Some(Backend::Live(Box::new(client))))};
+    assert!(native.load_result_message("another-account".into(),"media".into(),"remote-hit".into()).is_err());
+    native.load_result_message("me".into(),"media".into(),"remote-hit".into()).unwrap();
+    let snapshot=native.poll().unwrap();assert_eq!(snapshot.selected_channel,"general");
+    let result=snapshot.search_results[0].message.as_ref().unwrap();
+    assert_eq!(result.content,"full remote message");assert_eq!(result.attachments[0].id,"remote-attachment");assert_eq!(result.embeds[0].id,"remote-embed");
+    assert!(!snapshot.messages.iter().any(|m|m.id=="remote-hit"));
+    assert!(native.media_request(media::MediaResource::Attachment {id:"remote-attachment".into(),thumbnail:false}).is_ok());
+    {
+        let backend=native.backend.lock().unwrap();let Some(Backend::Live(client))=backend.as_ref() else {panic!()};
+        assert!(client.runtime.store.pending_read_receipts().is_empty());assert!(!client.runtime.store.browsing_history("media"));
+        media::check_embed(&client.runtime,"remote-embed").unwrap();
+    }
+    let requests=fixture.requests.lock().unwrap().iter().filter(|r|r.0=="PREVIEW").count();
+    native.load_result_message("me".into(),"media".into(),"remote-hit".into()).unwrap();
+    assert_eq!(requests,fixture.requests.lock().unwrap().iter().filter(|r|r.0=="PREVIEW").count());
+    native.set_pin("me".into(),"media".into(),"remote-hit".into(),true).unwrap();
+    native.load_pins("me".into(),"media".into()).unwrap();
+    fixture.fail.store(true,Ordering::SeqCst);
+    assert!(native.set_pin("me".into(),"media".into(),"remote-hit".into(),false).is_err());
+    assert!(native.poll().unwrap().search_results[0].message.as_ref().unwrap().pinned);
+    fixture.fail.store(true,Ordering::SeqCst);
+    assert!(native.load_pins("me".into(),"media".into()).is_err());
+    {
+        let backend=native.backend.lock().unwrap();let Some(Backend::Live(client))=backend.as_ref() else {panic!()};
+        assert_eq!(client.runtime.store.pinned_in("media").len(),1);assert!(!client.runtime.store.loading_pinned("media"));
+    }
+    fixture.pinned.store(false,Ordering::SeqCst);
+    native.load_pins("me".into(),"media".into()).unwrap();
+    assert!(!native.poll().unwrap().search_results[0].message.as_ref().unwrap().pinned);
+    native.set_pin("me".into(),"media".into(),"remote-hit".into(),true).unwrap();
+    fixture.pinned.store(false,Ordering::SeqCst); // A concurrent participant unpinned it first.
+    native.set_pin("me".into(),"media".into(),"remote-hit".into(),false).unwrap();
+    assert!(!native.poll().unwrap().search_results[0].message.as_ref().unwrap().pinned);
+    {
+        let mut backend=native.backend.lock().unwrap();let Some(Backend::Live(client))=backend.as_mut() else {panic!()};
+        client.runtime.store.server.as_mut().unwrap().owner_id=Some("someone-else".into());client.runtime.store.roles.clear();
+    }
+    let before=fixture.requests.lock().unwrap().len();
+    assert!(native.set_pin("me".into(),"media".into(),"remote-hit".into(),true).is_err());
+    assert_eq!(before,fixture.requests.lock().unwrap().len());
+    native.shutdown();
+}
+
+#[test]
+fn visible_pins_refresh_unknown_live_events_and_keep_events_during_inflight_snapshots() {
+    use crate::bindings::{Backend, NativeClient};
+    let fixture = Fixture::new();
+    let client = fixture.client();
+    client.runtime.net.session.set_token(Some("test-session".into()));
+    let native = NativeClient { backend: Mutex::new(Some(Backend::Live(Box::new(client)))) };
+    assert!(native.watch_pins("wrong-account".into(), "media".into(), true).is_err());
+    native.watch_pins("me".into(), "media".into(), true).unwrap();
+    fixture.pinned.store(true, Ordering::SeqCst);
+    {
+        let mut backend = native.backend.lock().unwrap();
+        let Some(Backend::Live(client)) = backend.as_mut() else { panic!() };
+        assert!(client.runtime.store.preview_message("remote-hit").is_none());
+        let ticket = client.runtime.store.begin_load_pinned("media", false).unwrap();
+        let event = Update::Event(Box::new(papo_core::api::ws::Event::MessagePinned {
+            message_id: "remote-hit".into(), pinned: true,
+        }));
+        client.observe_pin_update(&event);
+        client.runtime.store.apply(event);
+        client.refresh_watched_pins();
+        assert!(client.watched_pins_dirty, "Do not lose events behind an older in-flight request");
+        assert!(fixture.requests.lock().unwrap().is_empty());
+        client.runtime.store.apply(Update::PinnedMessages { ticket: Some(ticket), channel_id: "media".into(), messages: vec![] });
+        client.refresh_watched_pins();
+        assert!(!client.watched_pins_dirty);
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        native.poll().unwrap();
+        let backend = native.backend.lock().unwrap();
+        let Some(Backend::Live(client)) = backend.as_ref() else { panic!() };
+        if !client.runtime.store.loading_pinned("media") { break; }
+        assert!(std::time::Instant::now() < deadline);
+        drop(backend);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    {
+        let backend = native.backend.lock().unwrap();
+        let Some(Backend::Live(client)) = backend.as_ref() else { panic!() };
+        assert_eq!(client.runtime.store.pinned_in("media")[0].id, "remote-hit");
+        assert_eq!(client.runtime.store.selected_channel, "general");
+        assert!(client.runtime.store.pending_read_receipts().is_empty());
+    }
+    native.watch_pins("me".into(), "general".into(), false).unwrap();
+    { let backend = native.backend.lock().unwrap(); let Some(Backend::Live(client)) = backend.as_ref() else { panic!() }; assert!(client.watched_pins.is_some()); }
+    native.watch_pins("me".into(), "media".into(), false).unwrap();
+    { let mut backend = native.backend.lock().unwrap(); let Some(Backend::Live(client)) = backend.as_mut() else { panic!() }; client.watched_pins_dirty = true; client.refresh_watched_pins(); assert!(!client.watched_pins_dirty); assert!(!client.runtime.store.loading_pinned("media")); }
+    native.shutdown();
 }

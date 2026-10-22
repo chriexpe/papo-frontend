@@ -167,7 +167,7 @@ pub fn check_embed(runtime: &ServerRuntime, id: &str) -> Result<(), String> {
     }
     if !runtime
         .store
-        .messages_in(&runtime.store.selected_channel)
+        .media_messages()
         .any(|m| m.previews.iter().any(|e| e.id == id))
     {
         return Err("Embed is no longer in the conversation".into());
@@ -184,7 +184,7 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
         MediaResource::Attachment { id, thumbnail } => {
             let attachment = runtime
                 .store
-                .messages_in(&runtime.store.selected_channel)
+                .media_messages()
                 .flat_map(|m| &m.attachments)
                 .find(|a| a.id == id)
                 .ok_or("Attachment is no longer in the conversation")?;
@@ -215,7 +215,7 @@ pub fn request(runtime: &ServerRuntime, resource: MediaResource) -> Result<Media
             check_embed(runtime, &id)?;
             let embed = runtime
                 .store
-                .messages_in(&runtime.store.selected_channel)
+                .media_messages()
                 .flat_map(|m| &m.previews)
                 .find(|e| e.id == id)
                 .ok_or("Embed not found")?;
