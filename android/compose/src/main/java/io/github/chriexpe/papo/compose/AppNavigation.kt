@@ -134,7 +134,7 @@ internal fun ServerList(
                     Modifier.weight(1f),
                 )
                 GlobalAction(
-                    "Notifications",
+                    ui(R.string.notifications),
                     Icons.Outlined.NotificationsNone,
                     state.servers
                         .filter { it.screen == "chat" }

@@ -786,7 +786,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             }
                             .semantics {
                                 stateDescription =
-                                    if (descriptionExpanded) "Expanded" else "Collapsed"
+                                    if (descriptionExpanded) ui(R.string.expanded)
+                                    else ui(R.string.collapsed)
                             }
                     ) {
                         Row(
@@ -1232,12 +1233,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 onDismissRequest = { confirmAttachmentRetry = false },
                 title = { Text(ui(R.string.retry_sending_attachments)) },
                 text = {
-                    Text(
-                        ui(
-                            R.string
-                                .the_server_may_already_have_received_the_previous_upload_check_the_conversa
-                        )
-                    )
+                    Text(ui(R.string.upload_retry_confirmation))
                 },
                 confirmButton = {
                     TextButton(
@@ -1435,11 +1431,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 title = { Text(ui(R.string.retry_sending_2)) },
                 text = {
                     Text(
-                        if (message.delivery == "unknown")
-                            ui(
-                                R.string
-                                    .the_server_may_already_have_received_this_message_retrying_could_send_it_tw
-                            )
+                        if (message.delivery == "unknown") ui(R.string.message_retry_confirmation)
                         else ui(R.string.try_sending_this_message_again)
                     )
                 },

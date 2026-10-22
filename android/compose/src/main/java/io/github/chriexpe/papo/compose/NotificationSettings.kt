@@ -49,7 +49,7 @@ internal fun NotificationSettings(server: ServerState) {
             SettingsCard {
                 SettingsSwitch(
                     ui(R.string.message_notifications),
-                    ui(R.string.notify_for_messages_and_mentions_while_you_re_away_from_their_chat),
+                    ui(R.string.notifications_description),
                     prefs.boolean("notifications-enabled"),
                     "notifications-enabled",
                 ) {
@@ -111,31 +111,17 @@ internal fun NotificationSettings(server: ServerState) {
                                 ui(R.string.notifications_are_off_on_this_device)
                             !available -> ui(R.string.allow_android_notifications_to_receive_alerts)
                             !server.notificationsEnabled ->
-                                ui(
-                                    R.string
-                                        .notifications_are_disabled_in_this_server_account_s_preferences
-                                )
+                                ui(R.string.server_notifications_disabled)
                             server.pushRegistered ->
                                 ui(R.string.push_connected_messages_can_arrive_while_papo_is_closed)
-                            MessageAlerts.configured ->
-                                ui(
-                                    R.string
-                                        .connecting_push_periodic_checks_cover_delivery_until_registration_succeeds
-                                )
-                            else ->
-                                ui(
-                                    R.string
-                                        .this_build_uses_periodic_background_checks_android_may_delay_them_instant_p
-                                )
+                            MessageAlerts.configured -> ui(R.string.push_registration_pending)
+                            else -> ui(R.string.push_unavailable_description)
                         },
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        ui(
-                            R.string
-                                .each_channel_s_notification_preference_still_applies_opening_a_notification
-                        ),
+                        ui(R.string.notification_preferences_description),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

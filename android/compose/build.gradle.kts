@@ -98,6 +98,8 @@ android {
             resValue("string", "app_name", if (debug) "Papo Compose" else "Papo")
         }
     }
+    // Both supported languages must remain available when an installed app changes locale offline.
+    bundle { language { enableSplit = false } }
     buildFeatures {
         compose = true
         buildConfig = true

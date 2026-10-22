@@ -217,7 +217,9 @@ private fun MarkdownCode(text: String, language: String) {
                 onClick = {
                     scope.launch {
                         clipboard.setClipEntry(
-                            ClipEntry(android.content.ClipData.newPlainText("Code", text))
+                            ClipEntry(
+                                android.content.ClipData.newPlainText(ui(R.string.code), text)
+                            )
                         )
                     }
                 }

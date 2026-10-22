@@ -197,11 +197,7 @@ internal fun GlobalDirectMessages(
                     EmptyState(
                         if (query.isBlank()) ui(R.string.no_direct_messages_yet)
                         else ui(R.string.no_matching_conversations),
-                        if (query.isBlank())
-                            ui(
-                                R.string
-                                    .start_a_conversation_with_someone_from_a_server_s_search_or_profile
-                            )
+                        if (query.isBlank()) ui(R.string.direct_messages_empty_description)
                         else ui(R.string.search_by_nickname_username_or_server_name),
                     )
                 }
@@ -294,7 +290,7 @@ internal fun GlobalNotifications(
             )
     Box(Modifier.fillMaxSize().testTag("global-notifications")) {
         Column(Modifier.fillMaxSize()) {
-            GlobalHeader("Notifications", onBack) {
+            GlobalHeader(ui(R.string.notifications), onBack) {
                 IconButton(onClick = { refresh++ }, enabled = activePages.none { it.loading }) {
                     Icon(Icons.Outlined.Refresh, ui(R.string.refresh_notifications))
                 }

@@ -487,8 +487,7 @@ private fun ClientSettingsHome(
         item {
             Text(
                 ui(
-                    R.string
-                        .account_settings_apply_to_1_s_appearance_and_files_are_saved_on_this_device,
+                    R.string.settings_scope_description,
                     server.name,
                 ),
                 Modifier.padding(horizontal = 8.dp),

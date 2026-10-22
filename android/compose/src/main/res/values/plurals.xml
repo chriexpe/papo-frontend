@@ -20,4 +20,8 @@
         <item quantity="one">%d server sticker</item>
         <item quantity="other">%d server stickers</item>
     </plurals>
+    <plurals name="role_count">
+        <item quantity="one">%d role</item>
+        <item quantity="other">%d roles</item>
+    </plurals>
 </resources>

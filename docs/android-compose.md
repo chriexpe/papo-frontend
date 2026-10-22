@@ -320,11 +320,10 @@ inline suggestions, edit/delete, themes, glass controls, image/GIF viewing with 
 file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
-Still to port: voice channels and voice/video calls; account recovery; custom
-embed authoring/editing; and the other remaining parity
-gaps. Server administration now includes channel/category creation and ordering,
-roles and membership, moderation, stickers and audit (see below). Device language
-choices remain unimplemented. Background delivery still needs a real configured Firebase
+Still to port: voice channels and voice/video calls; custom embed authoring/editing;
+and the other remaining parity gaps. Server administration now includes channel/category creation and ordering,
+roles and membership, moderation, stickers and audit (see below). Background delivery
+still needs a real configured Firebase
 project/device check; demo fixtures cannot validate external FCM delivery.
 
 Demo checks presentation and local interactions; it cannot validate backend
@@ -336,6 +335,7 @@ a real server before using this as the primary client.
 ```bash
 cargo test --locked -p papo-core -p papo-android --lib
 cargo clippy --locked -p papo-android --all-targets -- -D warnings
+./android/gradlew -p android :compose:checkComposeFormatting
 scripts/android-compose.sh --x86_64 --test
 ```
 
@@ -476,8 +476,8 @@ doesn't invent device names or identify the current session when the API cannot.
 Ending a session requires confirmation. Diagnostics exposes actual connection,
 shared disk-cache usage/clearing, app/Android versions and Android's app settings.
 Clearing media keeps messages, credentials, drafts, favorites and saved downloads.
-Desktop tray/startup controls, desktop activity integration, unimplemented language
-choices are omitted. Notifications uses real Android permission/channel settings
+Desktop tray/startup controls and desktop activity integration are omitted.
+Notifications uses real Android permission/channel settings
 and reports the active delivery method. Demo has no password,
 banner-upload or authenticated-session controls.
 
@@ -487,6 +487,54 @@ bitmaps across screens before any disk/native work. Non-shareable animated
 images are decoded independently, retaining the existing viewport pause/release
 rules. Encoded bytes still use the same 256 MiB shared media cache; no additional
 avatar-only disk store is introduced.
+
+## Language, external links and recovery
+
+Language settings offer System, Português (Brasil) and English, including from
+the welcome screen before joining a server. Android 13+ uses per-app locales;
+Android 12 persists the same preference and recreates the Activity with the
+selected configuration. App labels, dialogs, accessibility descriptions and
+counts use Android strings/plurals. Server content, custom typing phrases,
+protocol values and identifiers retain their original values. Notification
+channel names update without resetting the user's notification settings.
+
+External HTTP(S) and email links share one confirmation path through Compose's
+URI handler, including Markdown and links leaving a provider WebView. The
+dialog shows the full URL and canonical hostname. Trust applies only to an
+exact hostname; subdomains are separate. Links settings can add/remove trusted
+domains or disable confirmation. File downloads and in-app media viewing keep
+their existing behavior.
+
+Welcome and sign-in offer account recovery. The app accepts the backend's
+`https://papo.cyberasilo.online/passwordchange/<token>` and
+`papo-reset://passwordchange/<token>` links. The user explicitly confirms the
+server; a server hint cannot silently redirect the request to another backend.
+The public core reset route sends no signed-in cookies and does not follow
+redirects. Tokens and passwords are never saved in preferences, navigation state
+or diagnostic actions. A reset ends the previous sessions; sign in afterward.
+
+A server owner can generate a single-use reset link from another native member's
+profile. This is owner-only in the backend, independent of assignable role
+permissions. Generation requires an explicit action and copying requires a
+separate tap; nothing is sent to the member automatically. Recovery validation
+and transport failures cross UniFFI as semantic variants translated by Android.
+Backend-supplied problem details remain server text.
+
+## Compose maintenance
+
+Run `./android/gradlew -p android :compose:formatCompose` before committing.
+The pinned ktfmt formatter uses Kotlin style across checked-in module sources,
+instrumentation tests and the module build file. Generated UniFFI sources are
+excluded. `checkComposeFormatting` verifies the same files without writing them;
+Gradle `check` and the PR's dedicated formatting job enforce it.
+
+`ClientSettings` owns settings navigation and search; individual pages and shared
+controls have separate files. Role permissions and colors, message author rows
+and reactions use components with explicit values and callbacks. `MainActivity`
+keeps lifecycle and app routing while onboarding, navigation and shared surfaces
+live separately. Rust's read-only `projection` module builds snapshots using the
+same message projection for the timeline, search and pins. Keep data reduction,
+read/navigation transitions and account authorization out of presentation helpers.
 
 ## Global direct messages and notifications
 

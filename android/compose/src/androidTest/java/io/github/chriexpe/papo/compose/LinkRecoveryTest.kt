@@ -70,6 +70,10 @@ class LinkRecoveryTest {
         assertEquals("Enviar mensagem", portuguese.getString(R.string.send_message))
         assertEquals("1 pessoa", portuguese.getQuantityString(R.plurals.people_count, 1, 1))
         assertEquals("2 pessoas", portuguese.getQuantityString(R.plurals.people_count, 2, 2))
+        assertEquals("Expanded", english.getString(R.string.expanded))
+        assertEquals("Recolhido", portuguese.getString(R.string.collapsed))
+        assertEquals("1 cargo", portuguese.getQuantityString(R.plurals.role_count, 1, 1))
+        assertEquals("2 cargos", portuguese.getQuantityString(R.plurals.role_count, 2, 2))
         assertEquals("0 new messages", english.getQuantityString(R.plurals.new_message_count, 0, 0))
     }
 

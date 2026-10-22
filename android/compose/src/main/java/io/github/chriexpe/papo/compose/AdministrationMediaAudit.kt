@@ -72,10 +72,7 @@ internal fun ServerStickerAdministration(
                 Text(ui(R.string.add_sticker))
             }
             Text(
-                ui(
-                    R.string
-                        .png_jpeg_webp_or_gif_crop_and_preview_before_uploading_animated_stickers_ke
-                ),
+                ui(R.string.sticker_upload_description),
                 Modifier.padding(top = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -123,10 +120,7 @@ internal fun ServerStickerAdministration(
         }
         item {
             Text(
-                ui(
-                    R.string
-                        .the_server_supports_adding_and_deleting_stickers_to_change_a_name_upload_a
-                ),
+                ui(R.string.sticker_rename_description),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -150,9 +144,7 @@ internal fun ServerStickerAdministration(
         val sticker = server.emojis.find { it.id == id }
         AdministrationDelete(
             ui(R.string.delete_named, ":${sticker?.name.orEmpty()}:"),
-            ui(
-                R.string.this_removes_the_sticker_from_the_server_picker_existing_messages_may_no_lo
-            ),
+            ui(R.string.delete_sticker_confirmation),
             ui.busy,
             { delete = null },
         ) {

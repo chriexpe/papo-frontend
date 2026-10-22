@@ -610,7 +610,7 @@ internal fun MediaEditor(
                                 if (busy) ui(R.string.saving)
                                 else if (purpose == MediaEditPurpose.STICKER)
                                     ui(R.string.save_sticker)
-                                else "Save"
+                                else ui(R.string.save)
                             )
                         }
                     }

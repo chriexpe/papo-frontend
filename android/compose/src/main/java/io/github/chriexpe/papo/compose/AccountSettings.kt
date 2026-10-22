@@ -453,8 +453,7 @@ internal fun AccountSettings(
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
                         ui(
-                            R.string
-                                .use_at_least_eight_characters_this_changes_your_password_on_1_s,
+                            R.string.change_password_description,
                             server.name,
                         )
                     )
@@ -576,10 +575,7 @@ private fun AccountPresence(presence: String, busy: Boolean, onChange: (String) 
                     }
             }
             Text(
-                ui(
-                    R.string
-                        .presence_is_shared_with_this_server_it_doesn_t_change_android_s_notificatio
-                ),
+                ui(R.string.presence_description),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

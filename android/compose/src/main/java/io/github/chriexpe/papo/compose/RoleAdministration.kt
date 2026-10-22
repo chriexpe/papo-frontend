@@ -176,7 +176,7 @@ internal fun RoleAdministrationEditor(
     if (delete && id != null)
         AdministrationDelete(
             ui(R.string.delete_named, name),
-            ui(R.string.this_removes_the_role_from_everyone_and_deletes_its_channel_rules),
+            ui(R.string.delete_role_confirmation),
             ui.busy,
             { delete = false },
         ) {
@@ -321,11 +321,7 @@ internal fun PeopleAdministration(server: ServerState, ui: AdministrationUi) {
             text = {
                 Text(
                     if (person.banned) ui(R.string.restore_this_person_s_server_access)
-                    else
-                        ui(
-                            R.string
-                                .this_person_will_lose_access_to_this_server_their_messages_remain_in_the_co
-                        )
+                    else ui(R.string.ban_member_confirmation)
                 )
             },
             confirmButton = {

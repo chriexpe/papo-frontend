@@ -117,10 +117,7 @@ internal fun AttachmentActions(
             else
                 model.attachments.report(
                     key,
-                    ui(
-                        R.string
-                            .microphone_permission_is_needed_to_record_audio_you_can_enable_it_in_androi
-                    ),
+                    ui(R.string.microphone_permission_description),
                 )
         }
     BackHandler(expanded) { expanded = false }
@@ -221,7 +218,8 @@ internal fun AttachmentActions(
                     )
                     .semantics {
                         contentDescription = ui(R.string.open_gallery)
-                        stateDescription = if (expanded) "Expanded" else "Collapsed"
+                        stateDescription =
+                            if (expanded) ui(R.string.expanded) else ui(R.string.collapsed)
                     },
                 contentAlignment = Alignment.Center,
             ) {

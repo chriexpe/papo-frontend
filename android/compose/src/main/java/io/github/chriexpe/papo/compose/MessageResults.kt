@@ -391,10 +391,7 @@ internal fun PinnedMessages(
             if (!waiting && server.pinnedMessages.isEmpty() && loadError.isBlank())
                 EmptyState(
                     ui(R.string.no_pinned_messages_yet),
-                    ui(
-                        R.string
-                            .important_messages_can_be_pinned_here_for_everyone_in_this_conversation
-                    ),
+                    ui(R.string.pins_empty_description),
                 )
             Box(Modifier.weight(1f)) {
                 MessageResultsMediaHost(

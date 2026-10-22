@@ -632,9 +632,8 @@ private fun ServerSettingsOverview(
                         SettingsLink(
                             uiLabel("Roles"),
                             ui(
-                                R.string.label_1_s_2_s_colors_permissions_and_people,
-                                server.roles.size,
-                                if (server.roles.size == 1) "role" else "roles",
+                                R.string.roles_summary,
+                                uiQuantity(R.plurals.role_count, server.roles.size),
                             ),
                             Icons.Outlined.Badge,
                             { open("Roles", "") },

@@ -74,12 +74,7 @@ internal fun AccountRecovery(initialLink: String, initialServer: String, onDismi
                             ui(R.string.password_updated),
                             style = MaterialTheme.typography.headlineSmall,
                         )
-                        Text(
-                            ui(
-                                R.string
-                                    .sign_in_to_your_server_with_your_new_password_your_previous_sessions_have_b
-                            )
-                        )
+                        Text(ui(R.string.recovery_completed_description))
                         Button(onClick = onDismiss) { Text(ui(R.string.back_to_sign_in)) }
                     } else {
                         Text(ui(R.string.use_the_single_use_link_provided_by_your_server_owner))
@@ -114,10 +109,7 @@ internal fun AccountRecovery(initialLink: String, initialServer: String, onDismi
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         )
                         Text(
-                            ui(
-                                R.string
-                                    .confirm_the_server_address_before_continuing_your_new_password_is_sent_only
-                            ),
+                            ui(R.string.recovery_server_confirmation),
                             style = MaterialTheme.typography.bodySmall,
                         )
                         OutlinedTextField(
@@ -217,13 +209,7 @@ internal fun GenerateRecoveryLink(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(ui(R.string.account_name, name))
-                if (receipt == null)
-                    Text(
-                        ui(
-                            R.string
-                                .generate_a_single_use_password_reset_link_for_this_member_a_previous_unused
-                        )
-                    )
+                if (receipt == null) Text(ui(R.string.recovery_generate_description))
                 else {
                     Text(ui(R.string.share_this_link_privately_with_the_account_owner))
                     Text(receipt!!.url, style = MaterialTheme.typography.bodySmall)
@@ -271,12 +257,12 @@ internal fun GenerateRecoveryLink(
                         copied = true
                     }
                 ) {
-                    Text(if (copied) "Copied" else ui(R.string.copy_link))
+                    Text(if (copied) ui(R.string.copied) else ui(R.string.copy_link))
                 }
         },
         dismissButton = {
             TextButton(enabled = !busy, onClick = onDismiss) {
-                Text(if (receipt == null) "Cancel" else "Done")
+                Text(if (receipt == null) ui(R.string.cancel) else ui(R.string.done))
             }
         },
     )

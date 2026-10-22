@@ -3,21 +3,31 @@
     <plurals name="people_count">
         <item quantity="one">%d pessoa</item>
         <item quantity="other">%d pessoas</item>
+        <item quantity="many">%d pessoas</item>
     </plurals>
     <plurals name="reaction_count">
         <item quantity="one">%d reação</item>
         <item quantity="other">%d reações</item>
+        <item quantity="many">%d reações</item>
     </plurals>
     <plurals name="mention_count">
         <item quantity="one">%d menção não lida; ir para a mais nova</item>
         <item quantity="other">%d menções não lidas; ir para a mais nova</item>
+        <item quantity="many">%d menções não lidas; ir para a mais nova</item>
     </plurals>
     <plurals name="new_message_count">
         <item quantity="one">%d mensagem nova</item>
         <item quantity="other">%d mensagens novas</item>
+        <item quantity="many">%d mensagens novas</item>
     </plurals>
     <plurals name="server_sticker_count">
         <item quantity="one">%d figurinha do servidor</item>
         <item quantity="other">%d figurinhas do servidor</item>
+        <item quantity="many">%d figurinhas do servidor</item>
+    </plurals>
+    <plurals name="role_count">
+        <item quantity="one">%d cargo</item>
+        <item quantity="other">%d cargos</item>
+        <item quantity="many">%d cargos</item>
     </plurals>
 </resources>

@@ -192,7 +192,8 @@ internal fun MessageRow(
                 MessageContent(message, server, model, onActions, media)
                 if (grouped && message.edited)
                     Text(
-                        if (appearance.timestamps) "edited · $time" else "edited",
+                        if (appearance.timestamps) "${ui(R.string.edited)} · $time"
+                        else ui(R.string.edited),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -288,7 +289,8 @@ private fun MessageReactions(
         reactions.forEach { reaction ->
             val name =
                 if (reaction.custom)
-                    server.emojis.firstOrNull { it.id == reaction.emoji }?.name ?: "sticker"
+                    server.emojis.firstOrNull { it.id == reaction.emoji }?.name
+                        ?: ui(R.string.server_sticker)
                 else reaction.emoji
             Surface(
                 shape = RoundedCornerShape(16.dp),

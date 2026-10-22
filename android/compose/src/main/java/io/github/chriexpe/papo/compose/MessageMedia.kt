@@ -681,7 +681,10 @@ internal fun BoxScope.MediaImage(
             imageLoader = loader,
             modifier =
                 Modifier.fillMaxSize()
-                    .semantics { stateDescription = if (decoded) "Loaded" else "Loading" }
+                    .semantics {
+                        stateDescription =
+                            if (decoded) ui(R.string.loaded) else ui(R.string.loading)
+                    }
                     .then(
                         if (viewer)
                             Modifier.combinedClickable(

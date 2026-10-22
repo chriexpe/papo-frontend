@@ -842,9 +842,9 @@ class PapoUiTest {
         demo()
         compose.onNodeWithTag("global-search").performClick().performTextInput("d")
         compose.waitUntil(5000) {
-            compose.onAllNodesWithText("de:  autor").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithText("de:  author").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("de:  autor").performClick()
+        compose.onNodeWithText("de:  author").performClick()
         compose.onNodeWithTag("global-search").performTextInput("an")
         compose.waitUntil(5000) {
             compose.onAllNodesWithText("de: @ana  Ana").fetchSemanticsNodes().isNotEmpty()
@@ -3302,6 +3302,13 @@ class PapoUiTest {
                     it.boundsInRoot.width > it.boundsInRoot.height
                 }
             }
+            activity.onActivity {
+                assertEquals(
+                    "Per-app language must not freeze the Activity's orientation configuration",
+                    android.content.res.Configuration.ORIENTATION_LANDSCAPE,
+                    it.resources.configuration.orientation,
+                )
+            }
             // Window dimensions update before Android's rotation animation
             // finishes. Native touch coordinates are usable once it settles.
             InstrumentationRegistry.getInstrumentation().uiAutomation.waitForIdle(750, 5000)
@@ -3722,6 +3729,46 @@ class PapoUiTest {
             click(androidx.compose.ui.geometry.Offset(8f, content.top - backdrop.top - 12f))
         }
         compose.onNodeWithTag("media-viewer").assertDoesNotExist()
+    }
+
+    @Test
+    fun languageSelectionRecreatesTheUiAndSearchesTranslatedSettings() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val original = AppLanguage.selected(context)
+        try {
+            demo()
+            compose.onNodeWithContentDescription("Client settings").performClick()
+            compose.onNodeWithTag("settings-search").performTextInput("language")
+            androidx.test.espresso.Espresso.closeSoftKeyboard()
+            compose.onNodeWithText("Language", substring = false).performClick()
+            compose.onNodeWithTag("language-pt-BR").performClick()
+            compose.waitUntil(10_000) {
+                compose
+                    .onAllNodesWithText("Idioma", substring = false)
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
+            compose.onNodeWithTag("language-pt-BR").assertIsSelected()
+            systemBack()
+            compose.onNodeWithTag("settings-search").performTextReplacement("compactas")
+            androidx.test.espresso.Espresso.closeSoftKeyboard()
+            compose.onNodeWithText("Mensagens compactas", substring = false).performClick()
+            compose.onNodeWithContentDescription("Mensagens compactas").assertIsOff().performClick()
+            activity.recreate()
+            compose.waitUntil(10_000) {
+                compose
+                    .onAllNodesWithContentDescription("Mensagens compactas")
+                    .fetchSemanticsNodes()
+                    .isNotEmpty()
+            }
+            compose.onNodeWithContentDescription("Mensagens compactas").assertIsOn()
+            systemBack()
+            systemBack()
+            // Channel names remain server content even though the app labels changed language.
+            compose.onNodeWithText("geral", substring = false).assertIsDisplayed()
+        } finally {
+            activity.onActivity { AppLanguage.choose(it, original) }
+        }
     }
 
     @Test

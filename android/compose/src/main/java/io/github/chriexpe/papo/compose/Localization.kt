@@ -37,10 +37,18 @@ internal object AppLanguage {
                 .orEmpty()
 
     fun context(base: Context): Context {
+        // Android 13+ applies LocaleManager itself. Wrapping a complete Configuration here freezes
+        // orientation/density at Activity creation even while the actual window keeps changing.
+        if (Build.VERSION.SDK_INT >= 33) return base
         val tag = selected(base)
         if (tag.isEmpty()) return base
-        val config = Configuration(base.resources.configuration)
-        config.setLocales(LocaleList.forLanguageTags(tag))
+        // Android 12 only needs a locale override. Unspecified fields inherit future device
+        // changes.
+        val config =
+            Configuration().apply {
+                fontScale = 0f
+                setLocales(LocaleList.forLanguageTags(tag))
+            }
         return base.createConfigurationContext(config)
     }
 
@@ -91,9 +99,7 @@ internal fun LanguageSettings() {
         Modifier.fillMaxWidth().padding(20.dp).testTag("language-settings"),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            ui(R.string.choose_the_language_used_by_papo_messages_and_server_content_keep_their_ori)
-        )
+        Text(ui(R.string.language_description))
         SettingsCard {
             Column(Modifier.selectableGroup()) {
                 listOf("" to uiLabel("System"), "pt-BR" to "Português (Brasil)", "en" to "English")
@@ -146,6 +152,7 @@ internal fun uiLabel(value: String): String =
         "Light" -> ui(R.string.light)
         "Dark" -> ui(R.string.dark)
         "Online" -> ui(R.string.online)
+        "Connecting" -> ui(R.string.connecting)
         "Away" -> ui(R.string.away)
         "Busy" -> ui(R.string.busy)
         "Offline" -> ui(R.string.offline)

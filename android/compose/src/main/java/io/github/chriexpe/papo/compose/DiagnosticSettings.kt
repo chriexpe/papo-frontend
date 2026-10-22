@@ -68,7 +68,7 @@ internal fun DiagnosticSettings(
                         Text(
                             if (server.isDemo) ui(R.string.offline_demo_no_server_connection)
                             else
-                                "${server.connection.replaceFirstChar(Char::uppercase)}\n${server.url}"
+                                "${uiLabel(server.connection.replaceFirstChar(Char::uppercase))}\n${server.url}"
                         )
                     },
                     leadingContent = { Icon(Icons.Outlined.Cloud, null) },
@@ -124,10 +124,7 @@ internal fun DiagnosticSettings(
         }
         item {
             Text(
-                ui(
-                    R.string
-                        .saved_downloads_favorite_gif_copies_messages_drafts_and_sign_ins_are_kept
-                ),
+                ui(R.string.clear_cache_keeps_account_data),
                 Modifier.padding(horizontal = 8.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -184,12 +181,7 @@ internal fun DiagnosticSettings(
             onDismissRequest = { confirm = false },
             title = { Text(ui(R.string.clear_cached_media)) },
             text = {
-                Text(
-                    ui(
-                        R.string
-                            .media_will_need_to_download_again_saved_files_and_account_data_are_kept
-                    )
-                )
+                Text(ui(R.string.clear_cache_confirmation))
             },
             confirmButton = {
                 TextButton(

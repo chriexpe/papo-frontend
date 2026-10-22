@@ -156,12 +156,7 @@ internal fun LinkSettings() {
         }
         item { SettingsLabel(ui(R.string.trusted_domains)) }
         item {
-            Text(
-                ui(
-                    R.string
-                        .links_to_these_exact_domains_open_without_asking_subdomains_are_managed_sep
-                )
-            )
+            Text(ui(R.string.trusted_domains_description))
         }
         item {
             SettingsCard {

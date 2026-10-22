@@ -96,10 +96,7 @@ internal fun Welcome(
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                ui(
-                    R.string
-                        .a_place_for_your_people_connect_to_a_papo_server_to_make_yourself_at_home
-                ),
+                ui(R.string.welcome_description),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -252,7 +249,7 @@ internal fun Authentication(
                     label = {
                         Text(
                             if (server.screen == "needs_server") ui(R.string.server_name)
-                            else "Username"
+                            else ui(R.string.username)
                         )
                     },
                     singleLine = true,
@@ -265,7 +262,10 @@ internal fun Authentication(
                     password,
                     { password = it },
                     label = {
-                        Text(if (server.locked) ui(R.string.server_password) else "Password")
+                        Text(
+                            if (server.locked) ui(R.string.server_password)
+                            else ui(R.string.password)
+                        )
                     },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),

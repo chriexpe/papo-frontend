@@ -90,7 +90,7 @@ internal fun StickerDetails(
                             Modifier.size(20.dp),
                         )
                         Spacer(Modifier.width(8.dp))
-                        Text(if (favorite) "Favorited" else "Favorite")
+                        Text(if (favorite) ui(R.string.favorited) else ui(R.string.favorite))
                     }
                     OutlinedButton(
                         onClick = {
@@ -101,7 +101,7 @@ internal fun StickerDetails(
                     ) {
                         Icon(Icons.Outlined.ContentCopy, null, Modifier.size(20.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (copied) "Copied" else ui(R.string.copy_name))
+                        Text(if (copied) ui(R.string.copied) else ui(R.string.copy_name))
                     }
                 }
                 if (error.isNotBlank())

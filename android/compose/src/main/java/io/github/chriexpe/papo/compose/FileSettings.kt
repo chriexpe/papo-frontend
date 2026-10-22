@@ -120,10 +120,7 @@ internal fun FileSettings(feedback: (String) -> Unit) {
         }
         item {
             Text(
-                ui(
-                    R.string
-                        .applies_to_the_download_button_in_the_shared_media_viewer_android_manages_a
-                ),
+                ui(R.string.download_folder_description),
                 Modifier.padding(horizontal = 8.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

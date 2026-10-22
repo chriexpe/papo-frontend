@@ -50,10 +50,7 @@ internal val appearanceSwitches
             AppearanceSwitch(
                 "compact",
                 ui(R.string.compact_messages),
-                ui(
-                    R.string
-                        .reduce_vertical_spacing_consecutive_messages_still_share_an_author_heading
-                ),
+                ui(R.string.compact_messages_description),
                 false,
             ),
             AppearanceSwitch(

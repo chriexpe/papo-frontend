@@ -262,7 +262,11 @@ internal fun ChannelAdministrationEditor(
                         else AdministrationChange.UpdateChannel(id, name, topic)
                     ui.mutate(
                         change,
-                        if (id == null) "${if(kind=="category") "Category" else "Channel"} created"
+                        if (id == null)
+                            ui(
+                                if (kind == "category") R.string.category_created
+                                else R.string.channel_created
+                            )
                         else ui(R.string.channel_saved),
                     ) {
                         onSaved()
@@ -271,7 +275,11 @@ internal fun ChannelAdministrationEditor(
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("save-channel"),
             ) {
                 Text(
-                    if (id == null) "Create ${if(kind=="category") "category" else "channel"}"
+                    if (id == null)
+                        ui(
+                            if (kind == "category") R.string.create_category
+                            else R.string.create_channel
+                        )
                     else ui(R.string.save_channel)
                 )
             }
@@ -289,7 +297,10 @@ internal fun ChannelAdministrationEditor(
                     Icon(Icons.Outlined.DeleteOutline, null)
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        "Delete ${if(kind=="category") "category" else "channel"}",
+                        ui(
+                            if (kind == "category") R.string.delete_category
+                            else R.string.delete_channel
+                        ),
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -297,7 +308,7 @@ internal fun ChannelAdministrationEditor(
     }
     if (delete && id != null)
         AdministrationDelete(
-            "Delete ${name.ifBlank {"channel"}}?",
+            ui(R.string.delete_named, name.ifBlank { ui(R.string.channel) }),
             if (kind == "category")
                 ui(R.string.this_removes_the_category_other_channels_remain_available)
             else ui(R.string.this_permanently_deletes_the_channel_and_its_messages),
@@ -339,10 +350,7 @@ internal fun ChannelAccessAdministration(server: ServerState, ui: Administration
     ) {
         item {
             Text(
-                ui(
-                    R.string
-                        .access_is_saved_on_the_server_and_applies_to_every_device_with_no_role_rule
-                ),
+                ui(R.string.channel_access_description),
                 style = MaterialTheme.typography.bodyMedium,
             )
         }

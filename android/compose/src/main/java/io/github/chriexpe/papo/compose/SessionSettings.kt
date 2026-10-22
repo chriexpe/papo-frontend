@@ -60,10 +60,7 @@ internal fun SessionSettings(
         }
         item {
             Text(
-                ui(
-                    R.string
-                        .the_server_provides_session_ids_and_dates_but_doesn_t_identify_devices_or_w
-                ),
+                ui(R.string.sessions_metadata_description),
                 Modifier.padding(8.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -114,8 +111,7 @@ internal fun SessionSettings(
             text = {
                 Text(
                     ui(
-                        R.string
-                            .session_1_s_will_be_signed_out_if_it_belongs_to_this_app_you_ll_need_to_sig,
+                        R.string.end_session_confirmation,
                         session.id.takeLast(8),
                     )
                 )

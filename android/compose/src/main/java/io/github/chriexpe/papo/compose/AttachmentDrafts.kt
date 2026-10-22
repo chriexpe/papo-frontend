@@ -69,10 +69,11 @@ internal object AttachmentFiles {
             }
         val file = create(context, extension)
         try {
-            (resolver.openInputStream(uri) ?: throw IOException("Couldn’t open $name")).use { input
-                ->
-                file.outputStream().use { input.copyTo(it, 64 * 1024) }
-            }
+            (resolver.openInputStream(uri)
+                    ?: throw IOException(ui(R.string.attachment_open_failed, name)))
+                .use { input ->
+                    file.outputStream().use { input.copyTo(it, 64 * 1024) }
+                }
             return PendingAttachment(file.absolutePath, name, mime, file.length())
         } catch (e: Exception) {
             file.delete()
@@ -124,11 +125,7 @@ internal class AttachmentDrafts(
                                 uncertain = uncertain,
                                 error =
                                     when {
-                                        uncertain ->
-                                            ui(
-                                                R.string
-                                                    .the_previous_upload_was_interrupted_and_may_already_have_arrived_check_the
-                                            )
+                                        uncertain -> ui(R.string.upload_interrupted_description)
                                         files.size != array.length() ->
                                             ui(
                                                 R.string
@@ -425,12 +422,7 @@ internal class AttachmentDrafts(
                             files = (get(key).files + draft.files).distinctBy { it.path },
                             sending = false,
                             uncertain = dispatched || draft.uncertain,
-                            error =
-                                e.message
-                                    ?: ui(
-                                        R.string
-                                            .the_upload_couldn_t_be_confirmed_check_the_conversation_before_retrying
-                                    ),
+                            error = e.message ?: ui(R.string.upload_unconfirmed_description),
                         ),
                 )
                 runCatching { persist(key) }
