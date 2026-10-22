@@ -113,6 +113,7 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private val connectivity = application.getSystemService(ConnectivityManager::class.java)
     private var networkEpoch = 0L
     private var lastTyping = 0L
+    private var readRetry: kotlinx.coroutines.Job? = null
     private var callbackRegistered = false
     private val awaitingUploads = mutableMapOf<String, CompletableDeferred<UploadReceipt>>()
     internal val attachments = AttachmentDrafts(application, viewModelScope, ::uploadFiles)
@@ -174,6 +175,9 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 if (snapshot.more) signals.trySend(Unit)
             }
             publish()
+            if(snapshots.values.any {it.reading.syncPending} && readRetry?.isActive!=true) {
+                readRetry=viewModelScope.launch(dispatcher) {kotlinx.coroutines.delay(10_000);readRetry=null;signals.trySend(Unit)}
+            }
         } catch (e: Exception) { publish(error = e.message ?: "Could not update messages") }
     }
 
@@ -229,13 +233,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
         withContext(dispatcher) {poll()}
     }
 
-    fun command(action: Action, url: String = state.value.activeUrl, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {
+    fun command(action: Action, url: String = state.value.activeUrl, onFailure: () -> Unit = {}, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {
         try {
-            val handle = handles[url] ?: return@launch
+            val handle = handles[url] ?: error("Server is closed")
             handle.dispatch(action)
             poll()
             launch(kotlinx.coroutines.Dispatchers.Main) { onSuccess() }
-        } catch (e: Exception) { publish(error = e.message ?: "Could not complete action") }
+        } catch (e: kotlinx.coroutines.CancellationException) {throw e}
+        catch (e: Exception) { publish(error = e.message ?: "Could not complete action");launch(kotlinx.coroutines.Dispatchers.Main) {onFailure()} }
     }
 
     suspend fun mediaRequest(url: String, resource: MediaResource): MediaRequest = withContext(dispatcher) {
@@ -430,6 +435,14 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resume() { networkChanged(); viewModelScope.launch(dispatcher) { handles.keys.toList().forEach { command(Action.Refresh, url = it) } } }
     fun clearError() { mutableState.value = mutableState.value.copy(error = ""); command(Action.ClearError) }
+    internal fun readingPosition(key:String):Pair<String,Int>? = runCatching {
+        val saved=org.json.JSONObject(preferences.getString("position/$key",null) ?: return null)
+        saved.getString("id") to saved.getInt("offset")
+    }.getOrNull()
+    internal fun saveReadingPosition(key:String,id:String,offset:Int) {
+        preferences.edit().putString("position/$key",org.json.JSONObject().put("id",id).put("offset",offset).toString()).apply()
+    }
+
     fun draft(key: String) = preferences.getString("draft/$key", "").orEmpty()
     fun draftMentions(key:String) = preferences.getString("draft-mentions/$key","[]").orEmpty()
     fun saveDraft(key: String, text: String, mentions:String="[]") { preferences.edit().putString("draft/$key", text).putString("draft-mentions/$key",mentions).apply() }

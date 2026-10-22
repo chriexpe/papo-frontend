@@ -463,3 +463,54 @@ Latest messages floats above the Send button as a separate frosted control. It
 does not participate in composer measurement, so appearing or disappearing does
 not resize the input or push the timeline. Its position follows the complete
 composer height, including reply/attachment previews and outer padding.
+
+## Reading and catch-up
+
+Channel unread badges and catch-up history have independent durable cursors.
+Reaching the live head marks the channel read and clears its outstanding alerts,
+but preserves skipped history for the hourglass. Reading that interval from
+its beginning advances its start; reading upward from its end retracts its end.
+Jumps reset continuity and exclude the animation's intermediate rows from read
+reports. Covered viewers/sheets, background activities, stale online snapshots
+and an unfinished position restore do not advance reading.
+
+The mention bell contains actual @mentions, newest first, with a count when
+there is more than one. General `all` notifications and ordinary DMs do not
+become mention targets. A mention is removed when exposed, or when the channel
+is acknowledged at the live head. Cached mention timestamps preserve the order
+of targets whose messages are not loaded.
+
+While reading behind the head, the down arrow counts incoming messages that
+have not appeared in the viewport. Its first press opens the oldest remaining
+arrival. The next press jumps to the live head, preserving skipped content as
+catch-up history; once at the head, another deliberate press clears the block.
+A small arrival batch that is fully exposed must not create a phantom block.
+If an older catch-up interval still exists, newer skipped content extends the
+single interval rather than dropping the older unread content. The resulting
+interval can include already-seen messages between the two skipped sections.
+
+Hourglass navigation and its markers use the same unread boundary. When the
+prefix is outside the loaded window, the existing cache/server history
+pagination resolves it before the jump. The saved read anchor is not a substitute
+navigation destination. Leaving the chat or cancelling stops further catch-up
+pagination. Deleted anchors and legacy millisecond timestamps must not reopen
+an already-read anchor or prevent progress through continuous history.
+
+Appearance settings include **Open at newest message** and **Catch-up hourglass**.
+Turning the former off restores a message ID and pixel offset scoped to the
+server, account and channel. That position is independent of the hourglass and
+survives leaving the chat or restarting the app. Turning the latter off hides
+the catch-up controls, block markers and explicit clear action; position saving,
+ordinary unread state, mentions and new-message navigation continue to work.
+
+The core uses the backend's explicit `PUT /channels/{id}/read` contract. Merely
+fetching history does not acknowledge reading. Server `last_read_at` is receipt
+wall-clock time, so a remote cursor is resolved to its referenced message's
+creation key before comparison. Read cursors preserve nanosecond ordering in
+cache schema 21, including upgrades from earlier Android builds. Channel and
+notification acknowledgements are owner scoped, retained until successful and
+retried with one request in flight per stream. Duplicate notification reads
+returning 404 are already complete. Late notifications cannot resurrect a
+locally acknowledged mention. Generic channel read synchronization from another
+client is picked up through metadata refresh; the current backend has a live
+read-state update for DMs.

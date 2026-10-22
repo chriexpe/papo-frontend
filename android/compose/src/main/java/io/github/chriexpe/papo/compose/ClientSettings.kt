@@ -61,6 +61,8 @@ private val settingsDestinations=listOf(
 private data class SettingEntry(val id:String,val page:String,val title:String,val summary:String,val keywords:String="")
 private data class AppearanceSwitch(val key:String,val title:String,val summary:String,val default:Boolean=true)
 private val appearanceSwitches=listOf(
+    AppearanceSwitch("catch-up-hourglass","Catch-up hourglass","Show skipped unread blocks and their navigation controls"),
+    AppearanceSwitch("open-newest","Open at newest message","Turn off to return to where you left off"),
     AppearanceSwitch("avatars","Show avatars","Keep profile pictures beside messages"),
     AppearanceSwitch("timestamps","Show timestamps","Display the time beside each author"),
     AppearanceSwitch("compact","Compact messages","Reduce space between messages",false),

@@ -11,6 +11,23 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 
 @RunWith(AndroidJUnit4::class)
 class CoreBridgeTest {
+    @Test fun readViewportCrossesUniFfiWithoutCouplingBadgeToCatchUp() {
+        val handle=NativeClient.demo()
+        try {
+            val start=handle.poll()
+            val messages=start.messages
+            handle.dispatch(io.github.chriexpe.papo.core.Action.Visible(start.selectedChannel,listOf(messages.first().id),false,start.me))
+            handle.dispatch(io.github.chriexpe.papo.core.Action.BreakReadSpan(start.selectedChannel))
+            handle.dispatch(io.github.chriexpe.papo.core.Action.Visible(start.selectedChannel,listOf(messages.last().id),true,start.me))
+            val atNewest=handle.poll()
+            assertFalse(atNewest.channels.first {it.id==start.selectedChannel}.unread)
+            assertTrue(atNewest.reading.hourglassTarget.isNotBlank())
+            assertFalse(atNewest.reading.syncPending)
+            handle.dispatch(io.github.chriexpe.papo.core.Action.ClearCatchUp(start.selectedChannel,start.me))
+            assertTrue(handle.poll().reading.hourglassTarget.isBlank())
+        } finally {handle.shutdown();handle.close()}
+    }
+
     @Test fun keystoreSeparatesServersAndNativeCoreWakesWithoutPollingTimers() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val secrets = AndroidSecrets(context)

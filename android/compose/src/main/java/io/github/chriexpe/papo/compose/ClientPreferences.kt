@@ -17,6 +17,8 @@ internal class ClientPreferences(private val storage:SharedPreferences?=null) {
     val timestamps get()=boolean("timestamps")
     val animations get()=boolean("animations")
     val compact get()=boolean("compact",false)
+    val catchUpHourglass get()=boolean("catch-up-hourglass")
+    val openNewest get()=boolean("open-newest")
     val showDescription get()=boolean("description",false)
 }
 internal val LocalClientPreferences=compositionLocalOf {ClientPreferences()}

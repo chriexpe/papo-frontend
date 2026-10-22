@@ -125,10 +125,29 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val keyboard = LocalSoftwareKeyboardController.current
     var headerHeight by remember { mutableStateOf(90.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
-    var handledNavigation by remember(draftKey) {mutableStateOf(0uL)}
+    var handledNavigation by rememberSaveable(draftKey,stateSaver=androidx.compose.runtime.saveable.Saver<ULong,String>(save={it.toString()},restore={it.toULong()})) {mutableStateOf(0uL)}
     var highlighted by remember(draftKey) {mutableStateOf<Pair<String,ULong>?>(null)}
     var returningLatest by remember(draftKey) {mutableStateOf(false)}
-    val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 100 } }
+    val nearBottom by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset == 0 } }
+    var positionReady by remember(draftKey) {mutableStateOf(false)}
+    var jumping by remember(draftKey) {mutableStateOf(false)}
+    var followingLatest by remember(draftKey) {mutableStateOf(true)}
+    var autoFollowing by remember(draftKey) {mutableStateOf(false)}
+    var latestPhase by remember(draftKey) {mutableStateOf(LatestPhase.FirstNew)}
+    var knownLive by remember(draftKey) {mutableStateOf(server.reading.liveIds)}
+    var arrived by remember(draftKey) {mutableStateOf(setOf<String>())}
+    var entryUnread by remember(draftKey) {mutableStateOf(server.reading.unreadStart)}
+    val readingBlocked=overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || emojiPicker || gifPicker || reactionPeople!=null
+    val currentBlocked by rememberUpdatedState(readingBlocked)
+    LaunchedEffect(draftKey,server.reading.liveIds) {
+        val live=server.reading.liveIds
+        val previousTail=knownLive.lastOrNull()
+        val index=live.indexOf(previousTail)
+        val added=if(index>=0) live.drop(index+1).filter {it !in knownLive} else if(positionReady && knownLive.isEmpty()) live else emptyList()
+        if(added.isNotEmpty() && arrived.isEmpty()) entryUnread=added.first()
+        arrived=arrived+added
+        knownLive=live
+    }
     val clipboard = LocalClipboardManager.current
     val latestServer by rememberUpdatedState(server)
     val viewport=with(density) {Rect(listBounds.left,listBounds.top+(headerHeight+8.dp).toPx(),listBounds.right,(listBounds.bottom-(composerHeight+8.dp).toPx()).coerceAtLeast(listBounds.top+(headerHeight+8.dp).toPx()))}
@@ -149,23 +168,75 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     DisposableEffect(mediaVisibility) {onDispose {mediaVisibility.close()}}
 
     LaunchedEffect(draftKey, server.messages.lastOrNull()?.id) {
-        if (nearBottom && !server.loadingOlder && !server.browsingHistory && !server.loadingContext &&
-            (server.navigationTarget.isBlank() || handledNavigation==server.navigationSerial)) listState.animateScrollToItem(0)
+        if (positionReady && !jumping && followingLatest && !server.loadingOlder && !server.browsingHistory && !server.loadingContext &&
+            (server.navigationTarget.isBlank() || handledNavigation==server.navigationSerial)) {
+            autoFollowing=true
+            try {listState.animateScrollToItem(0)} finally {autoFollowing=false}
+        }
+    }
+    // Restore before reporting any visible row: the initial live window must
+    // not mark the channel read while we are still locating a saved position.
+    val savedPosition=remember(draftKey) {if(appearance.openNewest) null else model.readingPosition(draftKey)}
+    LaunchedEffect(draftKey,server.loadingContext,server.timeline,server.messages.map {it.id}) {
+        if(positionReady || server.messages.isEmpty() || server.loadingContext) return@LaunchedEffect
+        if(server.connection=="online" && server.timeline!="fresh") return@LaunchedEffect
+        if(server.navigationTarget.isNotBlank() && server.navigationSerial!=handledNavigation) {positionReady=true;return@LaunchedEffect}
+        val saved=savedPosition
+        if(saved!=null) {
+            val position=server.messages.indexOfFirst {it.id==saved.first}
+            if(position<0) {
+                jumping=true
+                model.command(Action.JumpToMessage(channel.id,saved.first),url=server.url,onFailure={jumping=false})
+                positionReady=true
+                return@LaunchedEffect
+            }
+            listState.scrollToItem(server.messages.lastIndex-position+if(server.canLoadNewer) 1 else 0,saved.second)
+        } else listState.scrollToItem(0)
+        withFrameNanos { }
+        followingLatest=nearBottom && !server.browsingHistory
+        positionReady=true
     }
     LaunchedEffect(draftKey) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            model.command(Action.BreakReadSpan(channel.id),url=server.url)
+            var wasAllowed=false
             snapshotFlow {
-                val ids = latestServer.messages.map { it.id }.toSet()
-                listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.filter { it in ids }
-            }.distinctUntilChanged().collect { ids ->
-                if (ids.isNotEmpty()) model.command(Action.Visible(channel.id, ids), url = server.url)
+                val current=latestServer
+                val layout=listState.layoutInfo
+                val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
+                val messages=current.messages.map {it.id}.toSet()
+                val exposed=layout.visibleItemsInfo.filter {row ->
+                    val shown=(minOf(row.offset+row.size,height)-maxOf(row.offset,0)).coerceAtLeast(0)
+                    shown>=minOf(row.size/2,with(density) {48.dp.roundToPx()}).coerceAtLeast(1)
+                }.mapNotNull {it.key as? String}.filter {it in messages}
+                val allowed=positionReady && !jumping && !returningLatest && !currentBlocked &&
+                    !current.loadingContext && !current.reading.seekingCatchUp && (current.navigationTarget.isBlank() || handledNavigation==current.navigationSerial) &&
+                    (current.connection!="online" || current.timeline=="fresh" && !current.reading.initializing)
+                val anchor=if(!listState.isScrollInProgress) layout.visibleItemsInfo.firstOrNull {it.key in exposed}?.let {it.key as String to -it.offset} else null
+                ReadViewport(exposed,nearBottom && !listState.isScrollInProgress && !current.browsingHistory,allowed,current.timeline,current.conversation?.mentions ?: 0,current.notificationCount,anchor,arrived)
+            }.distinctUntilChanged().collect {report ->
+                if(!report.allowed && wasAllowed) model.command(Action.BreakReadSpan(channel.id),url=server.url)
+                wasAllowed=report.allowed
+                if(report.allowed && report.ids.isNotEmpty()) {
+                    model.command(Action.Visible(channel.id,report.ids,report.atLatest,server.me),url=server.url)
+                    arrived=if(report.atLatest) emptySet() else arrived-report.ids.toSet()
+                    if(report.atLatest) {
+                        followingLatest=true
+                        if(latestPhase==LatestPhase.Latest) latestPhase=LatestPhase.FirstNew
+                    }
+                    if(entryUnread.isBlank()) entryUnread=latestServer.reading.unreadStart
+                    report.anchor?.let {(id,offset) ->model.saveReadingPosition(draftKey,id,offset)}
+                }
             }
         }
     }
 
-    fun openOriginal(id:String) {
-        if(id.isNotBlank()) {focus.clearFocus();keyboard?.hide();model.command(Action.JumpToMessage(channel.id,id),url=server.url)}
+    DisposableEffect(draftKey) {onDispose {model.command(Action.CancelCatchUp(channel.id),url=server.url);model.command(Action.BreakReadSpan(channel.id),url=server.url)}}
+
+    fun jumpToMessage(id:String) {
+        if(id.isNotBlank()) {followingLatest=false;jumping=true;focus.clearFocus();keyboard?.hide();model.command(Action.JumpToMessage(channel.id,id),url=server.url,onFailure={jumping=false})}
     }
+    fun openOriginal(id:String) {latestPhase=LatestPhase.FirstNew;jumpToMessage(id)}
     fun beginReply(id:String,openKeyboard:Boolean=false) {
         reply=id
         selected=null
@@ -178,13 +249,31 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
         }
     }
-    fun latestMessages() {
+    fun jumpToLatest(armClear:Boolean=false) {
         highlighted=null
-        if(server.browsingHistory || server.loadingContext) {returningLatest=true;model.command(Action.Latest(channel.id),url=server.url)}
-        else scope.launch {listState.animateScrollToItem(0)}
+        latestPhase=if(armClear) LatestPhase.ClearCatchUp else LatestPhase.FirstNew
+        followingLatest=true
+        jumping=true
+        model.command(Action.BreakReadSpan(channel.id),url=server.url)
+        if(server.browsingHistory || server.loadingContext || server.reading.seekingCatchUp) {returningLatest=true;model.command(Action.Latest(channel.id),url=server.url)}
+        else scope.launch {try {listState.animateScrollToItem(0)} finally {
+            model.command(Action.BreakReadSpan(channel.id),url=server.url)
+            jumping=false
+        }}
+    }
+    fun latestMessages() {
+        if(appearance.catchUpHourglass && nearBottom && !server.browsingHistory && latestPhase==LatestPhase.ClearCatchUp && server.reading.hourglassTarget.isNotBlank()) {
+            model.command(Action.ClearCatchUp(channel.id,server.me),url=server.url)
+            latestPhase=LatestPhase.FirstNew
+        } else if(arrived.isNotEmpty() && latestPhase==LatestPhase.FirstNew) {
+            val target=server.reading.liveIds.firstOrNull {it in arrived} ?: arrived.first()
+            latestPhase=LatestPhase.Latest
+            jumpToMessage(target)
+        } else jumpToLatest(armClear=true)
     }
     LaunchedEffect(draftKey,server.navigationSerial,server.navigationTarget,server.loadingContext,server.messages.map {it.id},server.canLoadNewer) {
-        if(server.navigationTarget.isBlank() || server.navigationSerial==handledNavigation) return@LaunchedEffect
+        if(server.navigationTarget.isBlank()) {handledNavigation=server.navigationSerial;return@LaunchedEffect}
+        if(server.navigationSerial==handledNavigation) return@LaunchedEffect
         val position=server.messages.indexOfFirst {it.id==server.navigationTarget}
         if(position<0) return@LaunchedEffect
         val index=server.messages.lastIndex-position+if(server.canLoadNewer) 1 else 0
@@ -207,6 +296,8 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             if(distance!=0) listState.animateScrollBy(distance.toFloat())
         }
         handledNavigation=server.navigationSerial
+        model.command(Action.BreakReadSpan(channel.id),url=server.url)
+        jumping=false
         highlighted=server.navigationTarget to server.navigationSerial
     }
     LaunchedEffect(draftKey,highlighted) {
@@ -214,10 +305,20 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         delay(1800)
         if(highlighted==shown) highlighted=null
     }
-    LaunchedEffect(draftKey,returningLatest,server.browsingHistory,server.loadingContext) {
-        if(returningLatest && !server.browsingHistory && !server.loadingContext) {
+    LaunchedEffect(draftKey,returningLatest,server.browsingHistory,server.loadingContext,server.reading.seekingCatchUp) {
+        if(returningLatest && !server.browsingHistory && !server.loadingContext && !server.reading.seekingCatchUp) {
             withFrameNanos { }
-            try {listState.animateScrollToItem(0)} finally {returningLatest=false}
+            try {listState.animateScrollToItem(0)} finally {model.command(Action.BreakReadSpan(channel.id),url=server.url);returningLatest=false;jumping=false}
+        }
+    }
+
+    LaunchedEffect(draftKey,jumping,server.navigationTarget,server.loadingContext,server.error) {
+        if(jumping && !returningLatest && !server.loadingContext && server.error.isNotBlank()) jumping=false
+    }
+    LaunchedEffect(draftKey,nearBottom,listState.isScrollInProgress) {
+        if(positionReady && !jumping && !returningLatest && !autoFollowing) {
+            followingLatest=nearBottom && !listState.isScrollInProgress
+            if(listState.isScrollInProgress && latestPhase==LatestPhase.ClearCatchUp) latestPhase=LatestPhase.FirstNew
         }
     }
 
@@ -233,7 +334,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 model.recordSent(server,draftKey,sent,sentFiles)
                 if (composer.text == original && composer.mentions == originalDraft.mentions) updateComposer(ComposerDraft())
                 reply = null
-                latestMessages()
+                jumpToLatest()
             }
         }
         val sentReply = reply
@@ -263,9 +364,14 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
             }
             items(server.messages.asReversed(), key = { it.id }) { message ->
                 CompositionLocalProvider(LocalMediaViewport provides viewport,LocalTimelineMediaVisible provides (message.id in visibleRows && viewedMedia==null && !overlayBlocking),LocalMediaRowId provides message.id) {
+                Column {
+                if(appearance.catchUpHourglass && message.id==server.reading.gapStart) UnreadDivider("Unread ↓","unread-gap-start")
+                else if(message.id==entryUnread) UnreadDivider("New messages ↓","unread-new")
                 MessageRow(message, server, model, canReply=!recording && !submitting && !attachmentDraft.sending && !overlayBlocking && viewedMedia==null,onReply={beginReply(message.id,true)}, highlight=highlighted?.first==message.id, onMention={person ->updateComposer(composer.mention(person));if(!recording) {composerFocus.requestFocus();keyboard?.show()}}, onJump=::openOriginal, onActions = { selected = message }, onReaction = { r ->
                     model.react(server,message,EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji))
                 }, onReactionPeople = { r -> reactionPeople = message.id to EmojiChoice(r.emoji,r.custom,server.emojis.firstOrNull {it.id==r.emoji}?.name ?: r.emoji) }, media = { MessageMedia(message, server, model, activeMedia, { activeMedia = it },{selected=message}) })
+                if(appearance.catchUpHourglass && message.id==server.reading.gapEnd) UnreadDivider("Unread ↑","unread-gap-end")
+                }
                 }
             }
             if (server.canLoadOlder) item("history") {
@@ -314,11 +420,11 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
             .onSizeChanged { composerHeight = with(density) { it.height.toDp() } }
             .testTag("chat-composer").padding(12.dp)) {
-            if(server.loadingContext) GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
+            if(server.loadingContext || server.reading.seekingCatchUp) GlassPill(Modifier.fillMaxWidth().padding(bottom=8.dp),radius=24) {
                 Row(Modifier.padding(start=16.dp,end=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(10.dp)) {
                     CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp)
-                    Text("Opening original message…",style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
-                    TextButton(onClick=::latestMessages) {Text("Cancel")}
+                    Text(if(server.reading.seekingCatchUp) "Loading earlier unread messages…" else "Opening original message…",style=MaterialTheme.typography.bodySmall,modifier=Modifier.weight(1f))
+                    TextButton(onClick={jumpToLatest()}) {Text("Cancel")}
                 }
             }
             if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
@@ -354,9 +460,25 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                 }
             }
         }
-        if ((!nearBottom || server.browsingHistory) && server.messages.isNotEmpty()) {
-            GlassPill(Modifier.align(Alignment.BottomEnd).padding(end=18.dp,bottom=composerHeight+8.dp).testTag("latest-messages"),radius=18) {
-                IconButton(onClick=::latestMessages,modifier=Modifier.size(48.dp)) {Icon(Icons.Outlined.ArrowDownward,"Latest messages",Modifier.size(22.dp))}
+        Column(Modifier.align(Alignment.BottomEnd).padding(end=18.dp,bottom=composerHeight+8.dp),verticalArrangement=Arrangement.spacedBy(8.dp),horizontalAlignment=Alignment.End) {
+            if(server.reading.mentions.isNotEmpty()) BadgedBox(badge={if(server.reading.mentions.size>1) Badge(Modifier.testTag("mention-count")) {Text(shortcutCount(server.reading.mentions.size))}}) {
+                GlassPill(radius=18) {
+                    IconButton(onClick={openOriginal(server.reading.mentions.first())},modifier=Modifier.size(48.dp).testTag("mention-shortcut")) {
+                        Icon(Icons.Outlined.Notifications,"${server.reading.mentions.size} unread mentions; go to newest")
+                    }
+                }
+            }
+            if(appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank()) GlassPill(radius=18) {
+                IconButton(onClick={followingLatest=false;latestPhase=LatestPhase.FirstNew;jumping=true;focus.clearFocus();keyboard?.hide();model.command(Action.CatchUp(channel.id,server.me),url=server.url,onFailure={jumping=false})},modifier=Modifier.size(48.dp).testTag("hourglass-shortcut")) {
+                    Icon(Icons.Outlined.HourglassEmpty,"Go to oldest unread message in catch-up block")
+                }
+            }
+            if ((!nearBottom || server.browsingHistory || appearance.catchUpHourglass && server.reading.hourglassTarget.isNotBlank()) && server.messages.isNotEmpty()) BadgedBox(badge={if(arrived.isNotEmpty()) Badge(Modifier.testTag("latest-count")) {Text(shortcutCount(arrived.size))}}) {
+                GlassPill(Modifier.testTag("latest-messages"),radius=18) {
+                    IconButton(onClick=::latestMessages,modifier=Modifier.size(48.dp)) {
+                        Icon(Icons.Outlined.ArrowDownward,if(appearance.catchUpHourglass && nearBottom && latestPhase==LatestPhase.ClearCatchUp && server.reading.hourglassTarget.isNotBlank()) "Clear catch-up block" else if(arrived.isNotEmpty() && latestPhase==LatestPhase.FirstNew) "Go to first new message" else "Latest messages")
+                    }
+                }
             }
         }
     }
@@ -507,3 +629,18 @@ private fun linkedText(content: String): AnnotatedString {
         append(content.substring(end))
     } }
 }
+
+private data class ReadViewport(val ids:List<String>,val atLatest:Boolean,val allowed:Boolean,val timeline:String,val mentions:Int,val notifications:UInt,val anchor:Pair<String,Int>?,val arrivals:Set<String>)
+
+@Composable
+private fun UnreadDivider(label:String,tag:String) {
+    Row(Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=6.dp).testTag(tag),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+        HorizontalDivider(Modifier.weight(1f),color=MaterialTheme.colorScheme.primary.copy(alpha=.4f))
+        Text(label,style=MaterialTheme.typography.labelMedium,color=MaterialTheme.colorScheme.primary)
+        HorizontalDivider(Modifier.weight(1f),color=MaterialTheme.colorScheme.primary.copy(alpha=.4f))
+    }
+}
+
+private fun shortcutCount(count:Int)=if(count>99) "99+" else count.toString()
+
+private enum class LatestPhase { FirstNew, Latest, ClearCatchUp }

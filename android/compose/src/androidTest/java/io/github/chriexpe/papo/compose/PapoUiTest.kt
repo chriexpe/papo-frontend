@@ -580,6 +580,153 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun arrivalsAtTheLiveHeadStayVisibleAndClearTheChannelBadge() {
+        chat()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        for(i in 0 until 5) model.command(io.github.chriexpe.papo.core.Action.Send("head-arrival-$i","general","Live head arrival $i",null))
+        compose.waitUntil(5000) {model.state.value.active?.reading?.liveIds?.contains("head-arrival-4")==true}
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("message-head-arrival-4",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-head-arrival-4",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("latest-count").assertDoesNotExist()
+        assertTrue(model.state.value.active?.conversation?.unread==false)
+    }
+
+    @Test fun countedDownArrowStartsAtFirstArrivalThenReturnsToLatestAndBadgeIsNotClipped() {
+        chat()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        for(i in 0 until 20) model.command(io.github.chriexpe.papo.core.Action.Send("read-arrival-%02d".format(i),"general","New arrival $i\n"+"A longer message to keep separate reading positions. ".repeat(5),null))
+        compose.waitUntil(10_000) {model.state.value.active?.reading?.liveIds?.contains("read-arrival-19")==true && compose.onAllNodesWithTag("latest-count").fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("latest-count").assert(hasAnyDescendant(hasText("20")))
+        val badge=compose.onNodeWithTag("latest-count").fetchSemanticsNode().boundsInRoot
+        val glass=compose.onNodeWithTag("latest-messages").fetchSemanticsNode().boundsInRoot
+        assertTrue("Badge must extend beyond the glass without being clipped",badge.top<glass.top && badge.right>glass.right)
+        val screenshot=compose.onRoot().captureToImage().asAndroidBitmap()
+        val right=screenshot.getPixel((badge.right-3).toInt(),badge.center.y.toInt())
+        val bottom=screenshot.getPixel(badge.center.x.toInt(),(badge.bottom-3).toInt())
+        assertEquals("The right edge of the badge must retain its background",bottom,right)
+        InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.resolve("read-shortcuts-verified.png").outputStream().use {screenshot.compress(android.graphics.Bitmap.CompressFormat.PNG,100,it)}
+        compose.onNodeWithContentDescription("Go to first new message").performClick()
+        compose.waitUntil(5000) {model.state.value.active?.navigationTarget=="read-arrival-00"}
+        compose.onNodeWithTag("message-read-arrival-00",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Latest messages").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("latest-count").fetchSemanticsNodes().isEmpty()}
+        compose.onNodeWithTag("message-read-arrival-19",useUnmergedTree=true).assertIsDisplayed()
+    }
+
+    @Test fun newestClearsChannelBadgeButKeepsCatchUpUntilSecondLatestPress() {
+        demo()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-0"),false,"me"))
+        compose.waitUntil(5000) {model.state.value.active?.reading?.gapStart?.isBlank()==true}
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-9"),true,"me"))
+        compose.waitUntil(5000) {model.state.value.active?.reading?.hourglassTarget?.isNotBlank()==true}
+        compose.onNodeWithText("geral").performClick()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("hourglass-shortcut").fetchSemanticsNodes().isNotEmpty()}
+        compose.waitUntil(5000) {model.state.value.active?.conversation?.unread==false}
+        compose.onNodeWithTag("hourglass-shortcut").assertIsDisplayed()
+        compose.onNodeWithTag("latest-messages").performClick()
+        compose.onNodeWithContentDescription("Clear catch-up block").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Clear catch-up block").performClick()
+        compose.waitUntil(5000) {model.state.value.active?.reading?.hourglassTarget?.isBlank()==true}
+        compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
+        compose.onNodeWithTag("latest-messages").assertDoesNotExist()
+    }
+
+    @Test fun catchUpPositionAndRemainingBlockSurviveLeavingAndActivityRecreation() {
+        demo()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        compose.onNodeWithTag("appearance-settings").performScrollToNode(hasContentDescription("Open at newest message"))
+        compose.onNodeWithContentDescription("Open at newest message").performClick()
+        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.pressBack()
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-0"),false,"me"))
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-9"),true,"me"))
+        compose.waitUntil(5000) {model.state.value.active?.reading?.hourglassTarget?.isNotBlank()==true}
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("hourglass-shortcut").performClick()
+        val key="demo://papo/me/general"
+        compose.waitUntil(5000) {model.readingPosition(key)?.first?.let {it!="general-9"}==true}
+        val anchor=model.readingPosition(key)!!.first
+        val remaining=model.state.value.active!!.reading.hourglassTarget
+        val beforeBounds=compose.onNodeWithTag("message-$anchor",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
+        assertTrue("There is still catch-up content after reading its beginning",remaining.isNotBlank())
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("design",substring=false).performClick()
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-$anchor",useUnmergedTree=true).assertIsDisplayed()
+        assertEquals(remaining,model.state.value.active!!.reading.hourglassTarget)
+        val reopenedBounds=compose.onNodeWithTag("message-$anchor",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
+        assertEquals("Restore the offset, not just a nearby message",beforeBounds.top,reopenedBounds.top,2f)
+        activity.recreate()
+        compose.waitUntil(5000) {compose.onAllNodesWithTag("message-$anchor",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty()}
+        compose.onNodeWithTag("message-$anchor",useUnmergedTree=true).assertIsDisplayed()
+        assertEquals(remaining,model.state.value.active!!.reading.hourglassTarget)
+        val recreatedBounds=compose.onNodeWithTag("message-$anchor",useUnmergedTree=true).fetchSemanticsNode().boundsInRoot
+        assertEquals("Recreation restores the reading offset",beforeBounds.top,recreatedBounds.top,2f)
+    }
+
+    @Test fun hourglassSettingHidesItsControlsWithoutClearingReadingPositionOrMentions() {
+        demo()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-0"),false,"me"))
+        model.command(io.github.chriexpe.papo.core.Action.BreakReadSpan("general"))
+        model.command(io.github.chriexpe.papo.core.Action.Visible("general",listOf("general-9"),true,"me"))
+        compose.waitUntil(5000) {model.state.value.active?.reading?.hourglassTarget?.isNotBlank()==true}
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        compose.onNodeWithTag("appearance-settings").performScrollToNode(hasContentDescription("Catch-up hourglass"))
+        compose.onNodeWithContentDescription("Catch-up hourglass").performClick()
+        compose.onNodeWithTag("appearance-settings").performScrollToNode(hasContentDescription("Open at newest message"))
+        compose.onNodeWithContentDescription("Open at newest message").performClick()
+        androidx.test.espresso.Espresso.pressBack();androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
+        compose.onNodeWithTag("unread-gap-start").assertDoesNotExist()
+        compose.onNodeWithTag("unread-gap-end").assertDoesNotExist()
+        assertTrue(model.state.value.active!!.reading.hourglassTarget.isNotBlank())
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        compose.waitUntil(5000) {model.readingPosition("demo://papo/me/general")?.first?.let {it!="general-9"}==true}
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-0",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
+    }
+
+    @Test fun lastPositionRestoresAfterLeavingTheChatAndKeepsTheDraft() {
+        demo()
+        lateinit var model:PapoViewModel
+        activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        // Load the preference through the Activity's real observable settings source.
+        compose.onNodeWithContentDescription("Client settings").performClick()
+        compose.onNodeWithText("Appearance").performClick()
+        compose.onNodeWithTag("appearance-settings").performScrollToNode(hasText("Open at newest message"))
+        compose.onNodeWithContentDescription("Open at newest message").performClick()
+        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.pressBack()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("composer-input").performTextInput("Keep reading draft")
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        compose.onNodeWithTag("message-list").performScrollToKey("general-0")
+        compose.waitUntil(5000) {model.readingPosition("${model.state.value.active!!.url}/${model.state.value.active!!.me}/general")?.first?.let {it!="general-9"}==true}
+        compose.onNodeWithContentDescription("Back to conversations").performClick()
+        compose.onNodeWithText("geral").performClick()
+        compose.onNodeWithTag("message-general-0",useUnmergedTree=true).assertIsDisplayed()
+        compose.onNodeWithTag("composer-input").assertTextEquals("Keep reading draft")
+        assertTrue(!context.getSharedPreferences("compose-appearance",0).getBoolean("open-newest",true))
+    }
+
     @Test fun swipingLeftRepliesAndOpensTheKeyboardWithoutReplacingTheDraft() {
         chat()
         compose.onNodeWithTag("composer-input").performTextInput("Keep my draft")
