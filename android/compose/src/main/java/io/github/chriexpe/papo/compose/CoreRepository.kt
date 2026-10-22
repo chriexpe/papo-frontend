@@ -114,6 +114,13 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private var networkEpoch = 0L
     private var lastTyping = 0L
     private var readRetry: kotlinx.coroutines.Job? = null
+    private val pushJobs=mutableMapOf<String,kotlinx.coroutines.Job>()
+    private val pushApplied=mutableMapOf<String,Triple<String,String,Boolean>>()
+    private val pushRetryAt=mutableMapOf<String,Long>()
+    private var notificationWorkState:List<Any> = emptyList()
+    @Volatile private var visibleConversationUrl=""
+    private val pendingNotification=MutableStateFlow<NotificationTarget?>(null)
+    internal val notificationTarget=pendingNotification.asStateFlow()
     private var callbackRegistered = false
     private val awaitingUploads = mutableMapOf<String, CompletableDeferred<UploadReceipt>>()
     internal val attachments = AttachmentDrafts(application, viewModelScope, ::uploadFiles)
@@ -126,7 +133,18 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        MessageAlerts.start(application)
+        viewModelScope.launch(dispatcher) {MessageAlerts.changes.collect {signals.trySend(Unit)}}
+        viewModelScope.launch(dispatcher) {MessageAlerts.pushHints.collect {message ->
+            snapshots.values.filter {!it.isDemo && it.screen=="chat" && it.me.isNotBlank()}.forEach {server ->
+                val handle=handles[server.url] ?: return@forEach
+                launch(dispatcher) {try {withContext(kotlinx.coroutines.Dispatchers.IO) {handle.reconcileAlerts(server.me,message)};poll()}
+                    catch(e:kotlinx.coroutines.CancellationException) {throw e} catch(_:Exception) {signals.trySend(Unit)}}
+            }
+        }}
         viewModelScope.launch(dispatcher) {
+            runCatching {importPreviousAndroid(application,secrets)}.onFailure {publish(error=it.message ?: "Could not import previous Android data")}
+            activeUrl=preferences.getString("active-server",activeUrl).orEmpty()
             val saved = runCatching { JSONArray(preferences.getString("servers", "[]")) }.getOrDefault(JSONArray())
             for (i in 0 until saved.length()) open(saved.getString(i), activate = false)
             if (activeUrl !in handles) activeUrl = handles.keys.firstOrNull().orEmpty()
@@ -143,8 +161,8 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun open(input: String, activate: Boolean = true): Boolean = try {
         publish(error = "", opening = true)
-        val path = getApplication<Application>().filesDir.resolve("compose-messages.db").absolutePath
-        val handle = NativeClient.open(input, path, secrets, CoreWake { signals.trySend(Unit) })
+        val path = messageDatabasePath(getApplication())
+        val handle = NativeClient.openNotifying(input, path, secrets, CoreWake { signals.trySend(Unit) },MessageAlerts.listener)
         val server = handle.poll()
         val old = handles[server.url]
         if (old != null) { handle.release() } else {
@@ -161,8 +179,11 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
     private fun poll() {
         try {
             for ((url, handle) in handles) {
+                handle.notificationVisibility(url==visibleConversationUrl)
                 val snapshot = handle.poll()
                 snapshots[url] = snapshot
+                if(!snapshot.isDemo) MessageAlerts.setOwner(url,snapshot.me)
+                if(snapshot.conversation?.unread==false && snapshot.reading.mentions.isEmpty() && snapshot.me.isNotBlank() && !snapshot.isDemo) MessageAlerts.clear(url,snapshot.me,snapshot.selected)
                 for (event in snapshot.events) {
                     awaitingUploads.remove(event.localId)?.complete(UploadReceipt(
                         event.kind == "accepted", event.kind == "unknown", event.error
@@ -175,10 +196,55 @@ class PapoViewModel(application: Application) : AndroidViewModel(application) {
                 if (snapshot.more) signals.trySend(Unit)
             }
             publish()
+            syncNotifications()
             if(snapshots.values.any {it.reading.syncPending} && readRetry?.isActive!=true) {
                 readRetry=viewModelScope.launch(dispatcher) {kotlinx.coroutines.delay(10_000);readRetry=null;signals.trySend(Unit)}
             }
         } catch (e: Exception) { publish(error = e.message ?: "Could not update messages") }
+    }
+
+    internal fun visibleConversation(url:String) {
+        if(visibleConversationUrl==url) return
+        visibleConversationUrl=url
+        viewModelScope.launch(dispatcher) {handles.forEach {(key,client)->client.notificationVisibility(key==url)}}
+    }
+    internal fun offerNotification(target:NotificationTarget) {pendingNotification.value=target}
+    internal fun consumeNotification(target:NotificationTarget,error:String="") {
+        if(pendingNotification.value==target) pendingNotification.value=null
+        if(error.isNotBlank()) publish(error=error)
+    }
+    private fun syncNotifications() {
+        val available=MessageAlerts.listener.available()
+        val token=MessageAlerts.token
+        for((url,handle) in handles) {
+            val server=snapshots[url] ?: continue
+            if(server.isDemo || server.screen!="chat" || server.me.isBlank()) continue
+            val enabled=available && MessageAlerts.configured && server.notificationsEnabled
+            val registered=MessageAlerts.registration(url)?.takeIf {it.first==server.me}?.second
+            val value=if(enabled) token else registered ?: token
+            if(value.isBlank()) continue
+            val desired=Triple(server.me,value,enabled)
+            if(pushApplied[url]==desired || pushJobs[url]?.isActive==true || android.os.SystemClock.elapsedRealtime()<(pushRetryAt[url] ?: 0)) continue
+            pushJobs[url]=viewModelScope.launch(dispatcher) {
+                try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        if(registered!=null && registered!=value) handle.pushDevice(server.me,registered,android.os.Build.MODEL,false)
+                        handle.pushDevice(server.me,value,android.os.Build.MODEL,enabled)
+                    }
+                    if(snapshots[url]?.me==server.me) {MessageAlerts.confirm(url,server.me,value,enabled);pushApplied[url]=desired}
+                    pushRetryAt.remove(url)
+                } catch(e:kotlinx.coroutines.CancellationException) {throw e}
+                catch(_:Exception) {
+                    pushRetryAt[url]=android.os.SystemClock.elapsedRealtime()+30_000
+                    viewModelScope.launch(dispatcher) {kotlinx.coroutines.delay(30_000);signals.trySend(Unit)}
+                } finally {pushJobs.remove(url);signals.trySend(Unit)}
+            }
+        }
+        val workState=listOf(available,token)+snapshots.values.filter {!it.isDemo}.map {listOf(it.url,it.me,it.screen,it.pushRegistered,it.notificationsEnabled,MessageAlerts.registered(it.url,it.me))}
+        if(workState!=notificationWorkState) {
+            notificationWorkState=workState
+            MessageAlerts.schedule(snapshots.values.filter {it.notificationsEnabled})
+        }
     }
 
     fun addServer(address: String, onSuccess: () -> Unit = {}) = viewModelScope.launch(dispatcher) {

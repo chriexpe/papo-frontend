@@ -9,7 +9,6 @@ use papo_core::api::models::ReactionRequest;
 use papo_core::api::net::{Command, NetworkAvailability, NetworkHint, Update, Wake};
 use papo_core::api::ws::Connection;
 use papo_core::cache::{ClientDb, OutgoingState, now_millis};
-use papo_core::notification::NotificationCoordinator;
 use papo_core::runtime::{DEFAULT_DRAIN_LIMIT, ServerRuntime};
 use papo_core::state::{ChannelKind, Emoji, Screen, TimelineStatus};
 use papo_core::storage::SecretStore;
@@ -21,6 +20,8 @@ pub mod bindings;
 pub mod demo;
 mod discovery;
 mod inbox;
+mod notifications;
+mod legacy;
 pub mod media;
 uniffi::setup_scaffolding!();
 
@@ -214,6 +215,10 @@ pub fn normalize_url(input: &str) -> Result<String, String> {
 
 pub struct Client {
     runtime: ServerRuntime,
+    notification_listener: Option<Arc<dyn notifications::NotificationListener>>,
+    notification_visible: bool,
+    push_registration: Option<(String, String)>,
+    _notification_lease: notifications::InteractiveLease,
     // Serialize one user's mutation per message/emoji until HTTP settles.
     pending_reactions: HashMap<(String, Emoji), PendingReaction>,
     navigation_serial: u64,
@@ -259,11 +264,28 @@ impl Client {
         secrets: Arc<dyn SecretStore>,
         wake: Wake,
     ) -> Result<Self, String> {
+        Self::open_notifying(url, db_path, secrets, wake, None)
+    }
+
+    fn open_notifying(
+        url: &str,
+        db_path: PathBuf,
+        secrets: Arc<dyn SecretStore>,
+        wake: Wake,
+        listener: Option<Arc<dyn notifications::NotificationListener>>,
+    ) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        android_logger::init_once(android_logger::Config::default().with_tag("PapoCompose").with_max_level(log::LevelFilter::Info));
         let url = normalize_url(url)?;
+        let lease = notifications::InteractiveLease::acquire(&url, &db_path);
         let cache = database(db_path)?;
-        let notifications = Arc::new(NotificationCoordinator::new(Arc::clone(&cache), None));
+        let notifications = notifications::coordinator(Arc::clone(&cache), listener.clone());
         Ok(Self {
             runtime: ServerRuntime::open(url, wake, secrets, cache, notifications),
+            notification_listener: listener,
+            notification_visible: false,
+            push_registration: None,
+            _notification_lease: lease,
             pending_reactions: HashMap::new(),
             navigation_serial: 0,
             navigation_target: String::new(),
@@ -294,6 +316,7 @@ impl Client {
     }
 
     pub fn poll(&mut self) -> Value {
+        self.sync_notification_context();
         let previous_owner = self.runtime.store.me.clone();
         // A hard bound prevents a busy socket from monopolizing the actor.
         let mut events = Vec::new();
@@ -447,6 +470,7 @@ impl Client {
                 _ => {}
             }
             self.runtime.process_update(update);
+            self.sync_notification_context();
             count += 1;
         }
         if !self.navigation_target.is_empty()
@@ -1092,6 +1116,7 @@ impl Client {
             &self.runtime.url,
             &self.runtime.server_key,
         );
+        value["pushRegistered"] = json!(self.push_registration.as_ref().is_some_and(|(owner,_)|owner==&self.runtime.store.me));
         value["searchQuery"] = json!(self.search_query);
         value["navigationSerial"] = json!(self.navigation_serial);
         value["navigationTarget"] = json!(self.navigation_target);
@@ -1142,7 +1167,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "initializing": s.pending_remote_read_anchors().iter().any(|(channel,_)|channel==&s.selected_channel),
         "liveIds": s.messages.iter().filter(|m| m.channel_id == s.selected_channel && !m.pending).map(|m| m.id.clone()).collect::<Vec<_>>(),
     });
-    json!({ "version": 1, "url": url, "key": key,
+    let mut snapshot = json!({ "version": 1, "url": url, "key": key,
         "screen": match s.screen { Screen::Starting => "starting", Screen::Auth => "auth", Screen::NeedsServer => "needs_server", Screen::Chat => "chat" },
         "connection": match s.connection { Connection::Online => "online", Connection::Connecting => "connecting", Connection::Offline => "offline" },
         "serverName": s.server.as_ref().map(|s| s.name.as_str()).unwrap_or(url),
@@ -1178,7 +1203,9 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "canLoadNewer":s.can_load_newer(&s.selected_channel), "navigationSerial":0, "navigationTarget":"",
         "reading": reading,
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
-    })
+    });
+    snapshot["notificationsEnabled"] = json!(s.user_settings.as_ref().is_none_or(|settings|settings.config.notifications.enabled));
+    snapshot
 }
 
 impl Drop for Client {

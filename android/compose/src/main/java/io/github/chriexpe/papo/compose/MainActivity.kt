@@ -71,6 +71,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 
@@ -79,9 +81,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        if(savedInstanceState==null) MessageAlerts.target(intent)?.let(model::offerNotification)
         setContent { PapoApp(model) }
     }
-    override fun onStart() { super.onStart(); model.resume() }
+    override fun onStart() { super.onStart();MessageAlerts.foreground=true;MessageAlerts.refresh();model.resume() }
+    override fun onStop() {MessageAlerts.foreground=false;super.onStop()}
+    // Notification routes are consumed immediately. Keep the launch intent so
+    // recreating the Activity cannot replay a later navigation request.
+    override fun onNewIntent(intent:android.content.Intent) {super.onNewIntent(intent);MessageAlerts.target(intent)?.let(model::offerNotification)}
 }
 
 private val Blue = Color(0xFF0A84FF)
@@ -93,6 +100,7 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
     val state by model.state.collectAsStateWithLifecycle()
     val preferences = LocalContext.current.getSharedPreferences("compose-appearance", 0)
     val appearance=remember(preferences) {ClientPreferences(preferences)}
+    DisposableEffect(appearance) {onDispose {appearance.close()}}
     val theme=appearance.theme
     val glass=appearance.glass
     val dark = when (theme) { "Dark" -> true; "Light" -> false; else -> isSystemInDarkTheme() }
@@ -140,6 +148,24 @@ fun PapoApp(model: PapoViewModel = viewModel()) {
             var externalProfile by remember(state.activeUrl) {mutableStateOf<io.github.chriexpe.papo.core.ExternalAuthorView?>(null)}
             val openProfile:(String)->Unit = {id ->externalProfile=null;server?.let {openScopedProfile(it,id)}}
             val leaveConversation:()->Unit = { inConversation = false }
+            SideEffect {model.visibleConversation(if(showingConversation && profileId==null && externalProfile==null) server?.url.orEmpty() else "")}
+            val notificationTarget by model.notificationTarget.collectAsStateWithLifecycle()
+            LaunchedEffect(notificationTarget) {
+                val target=notificationTarget ?: return@LaunchedEffect
+                val matches=kotlinx.coroutines.withTimeoutOrNull(20_000) {
+                    model.state.map {current ->current.servers.filter {candidate ->candidate.screen=="chat" && candidate.me.isNotBlank() &&
+                        (target.server.isBlank() || target.server==candidate.url) && (target.owner.isBlank() || target.owner==candidate.me) &&
+                        (candidate.channels+candidate.dms).any {it.id==target.channel}}}.first {it.isNotEmpty()}
+                }.orEmpty()
+                if(matches.size==1) {
+                    val destination=matches.single()
+                    model.consumeNotification(target)
+                    model.navigate(destination,Action.SelectChannel(target.channel),target.message) {
+                        adding=false;profileId=null;externalProfile=null;tab="Chats";enterConversation(destination)
+                    }
+                } else model.consumeNotification(target,"This notification no longer matches a signed-in conversation.")
+            }
+
             CompositionLocalProvider(LocalProfileContext provides server?.let {ProfileContext(it,model)},LocalOpenProfile provides openProfile,LocalOpenExternalProfile provides {author ->profileId=null;externalProfile=author},LocalMediaOverlayBlocking provides (profileId!=null || externalProfile!=null)) {
             // Child dialogs, sheets and the IME consume Back first. Keep the
             // activity alive until navigation reaches the conversation list.

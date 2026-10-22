@@ -7,6 +7,9 @@ import androidx.compose.runtime.*
 @Stable
 internal class ClientPreferences(private val storage:SharedPreferences?=null) {
     private var values by mutableStateOf(storage?.all.orEmpty().toMap())
+    private val listener=SharedPreferences.OnSharedPreferenceChangeListener {_,_->values=storage?.all.orEmpty().toMap()}
+    init {storage?.registerOnSharedPreferenceChangeListener(listener)}
+    fun close() {storage?.unregisterOnSharedPreferenceChangeListener(listener)}
     fun boolean(key:String,default:Boolean=true)=values[key] as? Boolean ?: default
     fun string(key:String,default:String="")=values[key] as? String ?: default
     fun set(key:String,value:Boolean) {storage?.edit()?.putBoolean(key,value)?.apply();values=values+(key to value)}

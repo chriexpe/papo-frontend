@@ -80,6 +80,7 @@ pub struct NotificationContext {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotificationEnvelope {
+    pub owner_user_id: String,
     pub server_key: String,
     pub navigation_server: String,
     pub channel_id: String,
@@ -365,6 +366,7 @@ impl NotificationCoordinator {
             title(&context, candidate.author_id.as_deref(), &candidate.channel_id);
         let envelope_body = display_mentions(&context.members, &candidate.body);
         let envelope = NotificationEnvelope {
+            owner_user_id: context.owner_user_id.clone(),
             server_key: context.server_key.clone(),
             navigation_server: context.navigation_server,
             channel_id: candidate.channel_id,

@@ -1628,7 +1628,7 @@ impl Api {
     }
 
     pub async fn unregister_push_device(&self, token: &str) -> ApiResult<()> {
-        self.delete(
+        let result = self.delete(
             "/users/me/push-device",
             Some(&PushDeviceRequest {
                 token: token.to_owned(),
@@ -1636,7 +1636,13 @@ impl Api {
                 device_name: None,
             }),
         )
-        .await
+        .await;
+        // Token rotation must still register the replacement when the old
+        // token has already expired or been removed on the server.
+        match result {
+            Err(ApiError::NotFound) => Ok(()),
+            result => result,
+        }
     }
 
     pub async fn users(&self) -> ApiResult<Vec<UserSummary>> {

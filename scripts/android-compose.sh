@@ -9,6 +9,8 @@ abi="${PAPO_ANDROID_ABI:-arm64-v8a}"
 install=0
 run=0
 test_app=0
+variant=Debug
+variant_dir=debug
 for arg in "$@"; do
     case "$arg" in
         --x86_64) abi=x86_64 ;;
@@ -17,7 +19,8 @@ for arg in "$@"; do
         --install) install=1 ;;
         --run) install=1; run=1 ;;
         --test) install=1; test_app=1 ;;
-        *) echo "Usage: $0 [--arm64|--x86_64|--all-abis] [--install|--run|--test]" >&2; exit 2 ;;
+        --release) variant=Release;variant_dir=release ;;
+        *) echo "Usage: $0 [--arm64|--x86_64|--all-abis] [--install|--run|--test] [--release]" >&2; exit 2 ;;
     esac
 done
 case "$abi" in
@@ -33,10 +36,12 @@ for target in "${targets[@]}"; do
     fi
 done
 python3 scripts/prepare-winit.py
-tasks=(:compose:assembleDebug)
+if [ "$variant" = Release ] && [ "$test_app" = 1 ]; then echo "Instrumentation tests use the debug variant" >&2;exit 2;fi
+tasks=(":compose:assemble$variant")
 if [ "$test_app" = 1 ]; then tasks+=(:compose:assembleDebugAndroidTest :compose:lintDebug); fi
 ./android/gradlew -p android "${tasks[@]}" "-PpapoAbis=$abi" --console=plain
-apk=android/compose/build/outputs/apk/debug/compose-debug.apk
+apk="android/compose/build/outputs/apk/$variant_dir/compose-$variant_dir.apk"
+if [ ! -f "$apk" ] && [ "$variant" = Release ]; then apk="android/compose/build/outputs/apk/release/compose-release-unsigned.apk"; fi
 echo "APK: $PWD/$apk"
 if [ "$install" = 1 ]; then "$ANDROID_HOME/platform-tools/adb" install -r "$apk"; fi
 if [ "$test_app" = 1 ]; then
@@ -52,4 +57,8 @@ if [ "$test_app" = 1 ]; then
         exit 1
     fi
 fi
-if [ "$run" = 1 ]; then "$ANDROID_HOME/platform-tools/adb" shell am start -n io.github.chriexpe.papo.compose/.MainActivity; fi
+if [ "$run" = 1 ]; then
+    app_id=io.github.chriexpe.papo.compose
+    if [ "$variant" = Release ]; then app_id=io.github.chriexpe.papo; fi
+    "$ANDROID_HOME/platform-tools/adb" shell am start -n "$app_id/io.github.chriexpe.papo.compose.MainActivity"
+fi

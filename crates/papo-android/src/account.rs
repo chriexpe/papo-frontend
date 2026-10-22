@@ -406,6 +406,9 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
             let script = [
+                ("PUT", "/users/me/push-device", 204, ""),
+                ("DELETE", "/users/me/push-device", 204, ""),
+                ("DELETE", "/users/me/push-device", 404, r#"{"status":404,"detail":"device not found"}"#),
                 ("PUT", "/users/owner", 200, r#"{}"#),
                 ("PUT", "/users/owner/status", 200, r#"{}"#),
                 ("PUT", "/users/owner/avatar", 200, r#"{}"#),
@@ -484,6 +487,9 @@ mod tests {
         let session = Arc::new(Session::default());
         session.set_token(Some("fixture".into()));
         let api = Api::new(&url, session).unwrap();
+        run(api.register_push_device(&models::PushDeviceRequest {token:"fcm-token".into(),platform:Some("android".into()),device_name:Some("Phone".into())})).unwrap();
+        run(api.unregister_push_device("fcm-token")).unwrap();
+        run(api.unregister_push_device("already-removed-token")).unwrap();
         let profile = || AccountChange::Profile {
             nickname: "A name".into(),
             status_message: "A status".into(),
@@ -526,6 +532,10 @@ mod tests {
         run(api.mark_notifications_read("owner", vec![notices[0].id.clone()])).unwrap();
         assert!(run(api.mark_notifications_read("owner", vec!["rejected".into()])).is_err());
         let bodies = worker.join().unwrap();
+        assert_eq!(bodies[0],json!({"token":"fcm-token","platform":"android","device_name":"Phone"}));
+        assert_eq!(bodies[1],json!({"token":"fcm-token"}));
+        assert_eq!(bodies[2],json!({"token":"already-removed-token"}));
+        let bodies=&bodies[3..];
         assert_eq!(
             bodies[0],
             json!({"nickname":"A name","status":"A status","description":"Keep my about","typing":"building…"})

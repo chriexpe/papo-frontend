@@ -33,7 +33,7 @@ pub trait WakeListener: Send + Sync {
     fn on_wake(&self);
 }
 
-struct ForeignSecrets(Arc<dyn Credentials>);
+pub(super) struct ForeignSecrets(pub(super) Arc<dyn Credentials>);
 impl SecretStore for ForeignSecrets {
     fn load(&self, server: &str, secret: Secret) -> StorageResult<Option<String>> {
         self.0
@@ -329,6 +329,10 @@ pub struct ClientSnapshot {
     pub me: String,
     pub my_name: String,
     pub notification_count: u32,
+    #[serde(default)]
+    pub push_registered: bool,
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
     pub selected_channel: String,
     pub channels: Vec<ChannelView>,
     pub members: Vec<MemberView>,
@@ -523,3 +527,5 @@ pub struct MentionSelection {
     pub label: String,
     pub user_id: String,
 }
+
+fn default_notifications_enabled() -> bool {true}

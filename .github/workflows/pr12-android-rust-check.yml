@@ -48,3 +48,37 @@ jobs:
             export "SYSTEM_DEPS_${dep}_SEARCH_NATIVE=/tmp/papo-gst"
           done
           cargo ndk -t arm64-v8a --platform 24 clippy --lib --locked -- -D warnings
+
+  android-compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: ./.github/actions/prepare-winit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-compose
+      - name: Install cargo-ndk and Android SDK
+        run: |
+          cargo install cargo-ndk --locked
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;30.0.16248370" "platforms;android-37.0" "platforms;android-37.2"
+      - name: Build native Compose APK and run lint
+        env:
+          PAPO_COMPOSE_FIREBASE_APP_ID: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID }}
+          PAPO_FIREBASE_API_KEY: ${{ secrets.PAPO_FIREBASE_API_KEY }}
+          PAPO_FIREBASE_PROJECT_ID: ${{ secrets.PAPO_FIREBASE_PROJECT_ID }}
+          PAPO_FIREBASE_SENDER_ID: ${{ secrets.PAPO_FIREBASE_SENDER_ID }}
+          PAPO_COMPOSE_REQUIRE_FIREBASE: ${{ secrets.PAPO_COMPOSE_FIREBASE_APP_ID != '' && '1' || '0' }}
+          PAPO_GIPHY_API_KEY: ${{ secrets.PAPO_GIPHY_API_KEY }}
+        run: ./android/gradlew -p android :compose:assembleDebug :compose:lintDebug -PpapoAbis=arm64-v8a,x86_64 --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: papo-compose-debug
+          path: android/compose/build/outputs/apk/debug/compose-debug.apk

@@ -11,6 +11,21 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 
 @RunWith(AndroidJUnit4::class)
 class CoreBridgeTest {
+    @Test fun coldBackgroundReconciliationWithoutASessionIsABoundedNoop() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val task=io.github.chriexpe.papo.core.NotificationReconcile()
+        val listener=object:io.github.chriexpe.papo.core.NotificationListener {
+            override fun available()=true
+            override fun isForeground()=false
+            override fun show(alert:io.github.chriexpe.papo.core.MessageAlert) {fail("No session may publish a notification")}
+        }
+        val before=android.os.SystemClock.elapsedRealtime()
+        try {
+            assertFalse(task.run("http://127.0.0.1:9",context.cacheDir.resolve("background-${System.nanoTime()}.db").absolutePath,AndroidSecrets(context),listener))
+            assertTrue(android.os.SystemClock.elapsedRealtime()-before<5000)
+        } finally {task.destroy()}
+    }
+
     @Test fun readViewportCrossesUniFfiWithoutCouplingBadgeToCatchUp() {
         val handle=NativeClient.demo()
         try {

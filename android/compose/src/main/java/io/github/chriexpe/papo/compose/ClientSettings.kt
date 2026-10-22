@@ -54,6 +54,7 @@ import java.time.format.FormatStyle
 private data class SettingsDestination(val title:String,val subtitle:String,val icon:ImageVector)
 private val settingsDestinations=listOf(
     SettingsDestination("Appearance","Theme, glass and conversations",Icons.Outlined.Palette),
+    SettingsDestination("Notifications","Messages, mentions and Android delivery",Icons.Outlined.NotificationsNone),
     SettingsDestination("Files","Downloads and save location",Icons.Outlined.Folder),
     SettingsDestination("Sessions","Manage signed-in sessions",Icons.Outlined.Devices),
     SettingsDestination("Diagnostics","Connection, media cache and app info",Icons.Outlined.MonitorHeart),
@@ -88,6 +89,9 @@ private fun settingsEntries(server:ServerState,prefs:ClientPreferences):List<Set
     add(SettingEntry("theme","Appearance","Theme",prefs.theme,"light dark system colors"))
     add(SettingEntry("glass","Appearance","Frosted controls",if(prefs.glass) "On · glass on floating bars and pills" else "Off · opaque bars and pills","translucency transparency blur"))
     appearanceSwitches.forEach {item ->add(SettingEntry(item.key,"Appearance",item.title,"${if(prefs.boolean(item.key,item.default)) "On" else "Off"} · ${item.summary}"))}
+    add(SettingEntry("notifications-enabled","Notifications","Message notifications","Messages and mentions on this device","alerts push firebase"))
+    add(SettingEntry("notification-permission","Notifications","Android notification settings","Permission, sound and notification channel","alerts push"))
+    add(SettingEntry("notification-delivery","Notifications","Background delivery","Push and periodic message checks","firebase"))
     add(SettingEntry("download-folder","Files","Save media to",prefs.string("download-label").ifBlank {"Downloads/Papo"},"download downloads folder files storage location"))
     if(prefs.string("download-tree").isNotBlank()) add(SettingEntry("download-reset","Files","Use Downloads/Papo","Return to the default Android download folder","save location reset"))
     if(!server.isDemo) add(SettingEntry("reconnect","Diagnostics","Reconnect","Refresh the connection and server state","offline network"))
@@ -145,6 +149,7 @@ internal fun ClientSettings(server:ServerState,model:PapoViewModel,onBack:()->Un
                     if(server.isDemo) item {TextButton(onClick=onLogout) {Icon(Icons.Outlined.Logout,null);Spacer(Modifier.width(8.dp));Text("Leave demo")}}
                 }
                 "Appearance" -> AppearanceSettings()
+                "Notifications" -> NotificationSettings(server)
                 "Files" -> FileSettings(feedback)
                 "Sessions" -> SessionSettings(server,model,feedback)
                 "Diagnostics" -> DiagnosticSettings(server,model,feedback)
@@ -179,6 +184,39 @@ private fun SettingsSwitch(title:String,subtitle:String,value:Boolean,id:String,
 }
 @Composable
 private fun SettingsDivider() {HorizontalDivider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))}
+
+@Composable
+private fun NotificationSettings(server:ServerState) {
+    val context=LocalContext.current
+    val prefs=LocalClientPreferences.current
+    val lifecycle=androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var available by remember {mutableStateOf(MessageAlerts.listener.available())}
+    val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {available=MessageAlerts.listener.available();MessageAlerts.refresh()}
+    LaunchedEffect(lifecycle) {lifecycle.currentStateFlow.collect {if(it.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {available=MessageAlerts.listener.available();MessageAlerts.refresh()}}}
+    LazyColumn(Modifier.fillMaxSize().hazeSource(LocalHaze.current).testTag("notification-settings"),contentPadding=PaddingValues(20.dp,8.dp,20.dp,40.dp),verticalArrangement=Arrangement.spacedBy(16.dp)) {
+        item {SettingsCard {SettingsSwitch("Message notifications","Notify for messages and mentions while you’re away from their chat",prefs.boolean("notifications-enabled"),"notifications-enabled") {prefs.set("notifications-enabled",it);available=MessageAlerts.listener.available()}}}
+        item {SettingsCard {
+            SettingsLink(if(available) "Android notifications allowed" else "Allow Android notifications","Manage permission, sound and notification channels",Icons.Outlined.NotificationsActive,{
+                if(Build.VERSION.SDK_INT>=33 && context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED) permission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                else context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))
+            },target="notification-permission")
+            SettingsDivider()
+            SettingsLink("Android notification settings","Choose sound, vibration and lock-screen visibility",Icons.Outlined.Settings,{context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE,context.packageName))})
+        }}
+        item {SettingsCard {Column(Modifier.then(settingTarget("notification-delivery")).padding(20.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Text("Background delivery",style=MaterialTheme.typography.titleMedium)
+            Text(when {
+                !prefs.boolean("notifications-enabled") -> "Notifications are off on this device."
+                !available -> "Allow Android notifications to receive alerts."
+                !server.notificationsEnabled -> "Notifications are disabled in this server account’s preferences."
+                server.pushRegistered -> "Push connected. Messages can arrive while Papo is closed."
+                MessageAlerts.configured -> "Connecting push. Periodic checks cover delivery until registration succeeds."
+                else -> "This build uses periodic background checks. Android may delay them; instant push needs a build with Firebase enabled."
+            },style=MaterialTheme.typography.bodyMedium,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Each channel’s notification preference still applies. Opening a notification takes you to its message.",style=MaterialTheme.typography.bodySmall,color=MaterialTheme.colorScheme.onSurfaceVariant)
+        }}}
+    }
+}
 
 @Composable
 private fun AppearanceSettings() {

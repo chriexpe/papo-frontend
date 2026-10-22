@@ -630,6 +630,37 @@ class PapoUiTest {
         assertTrue(textColor("member-name-bruno")!=androidx.compose.ui.graphics.Color(0xFF67B989))
     }
 
+    @Test fun nativeAndFirebaseNotificationTapsOpenTheirMessageWithoutLosingDrafts() {
+        chat()
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val automation=InstrumentationRegistry.getInstrumentation().uiAutomation
+        val permission=android.Manifest.permission.POST_NOTIFICATIONS
+        val server="demo://papo"
+        val manager=context.getSystemService(android.app.NotificationManager::class.java)
+        automation.grantRuntimePermission(context.packageName,permission)
+        try {
+            compose.onNodeWithTag("composer-input").performTextInput("Keep notification draft")
+            androidx.test.espresso.Espresso.closeSoftKeyboard()
+            MessageAlerts.setOwner(server,"me")
+            MessageAlerts.listener.show(io.github.chriexpe.papo.core.MessageAlert(server,"me","design","design-0","test-notice","Design","A notification"))
+            compose.waitUntil(5000) {manager.activeNotifications.any {it.tag=="papo-message:$server:me:design-0"}}
+            val notice=manager.activeNotifications.single {it.tag=="papo-message:$server:me:design-0"}
+            notice.notification.contentIntent.send()
+            compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("design")).fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithTag("message-design-0",useUnmergedTree=true).assertIsDisplayed()
+            val intent=android.content.Intent(context,MainActivity::class.java).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra("google.message_id","fcm-fixture").putExtra("channel_id","general").putExtra("message_id","general-0")
+            context.startActivity(intent)
+            compose.waitUntil(10_000) {compose.onAllNodes(hasTestTag("channel-header") and hasText("geral")).fetchSemanticsNodes().isNotEmpty()}
+            compose.onNodeWithTag("composer-input").assertTextEquals("Keep notification draft")
+            compose.onNodeWithTag("message-general-0",useUnmergedTree=true).assertIsDisplayed()
+            activity.recreate()
+            compose.onNodeWithTag("composer-input").assertTextEquals("Keep notification draft")
+        } finally {
+            MessageAlerts.clear(server,"me","design")
+        }
+    }
+
     @Test fun arrivalsAtTheLiveHeadStayVisibleAndClearTheChannelBadge() {
         chat()
         lateinit var model:PapoViewModel
@@ -964,8 +995,11 @@ class PapoUiTest {
         systemBack()
         compose.onNodeWithTag("settings-search").assertTextContains("timestamps")
         compose.onNodeWithContentDescription("Clear settings search").performClick()
-        compose.onNodeWithText("Notifications",substring=false).assertDoesNotExist()
         compose.onNodeWithText("Activity",substring=false).assertDoesNotExist()
+        compose.onNodeWithTag("settings-search").performTextInput("background delivery")
+        compose.onNodeWithText("Background delivery",substring=false).assertIsDisplayed().performClick()
+        compose.onNodeWithTag("notification-settings").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Message notifications").assertIsDisplayed()
     }
 
     @Test fun accountEditsUseTheCoreAndDiscardingKeepsSavedProfile() {
