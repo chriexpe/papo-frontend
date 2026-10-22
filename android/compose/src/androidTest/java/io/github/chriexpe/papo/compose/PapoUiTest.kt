@@ -580,6 +580,34 @@ class PapoUiTest {
         compose.onNodeWithText("@mention(<@ana>)",substring=true).assertDoesNotExist()
     }
 
+    @Test fun typingPillUsesCustomPhraseAndAlignsWithTheTextBox() {
+        chat()
+        val people=androidx.compose.runtime.mutableStateOf(listOf("Ana"))
+        val phrase=androidx.compose.runtime.mutableStateOf("is sketching…")
+        activity.onActivity {host ->
+            val model=androidx.lifecycle.ViewModelProvider(host)[PapoViewModel::class.java]
+            val server=checkNotNull(model.state.value.active)
+            host.setContent {
+                androidx.compose.material3.MaterialTheme {
+                    androidx.compose.runtime.CompositionLocalProvider(LocalHaze provides dev.chrisbanes.haze.HazeState(),LocalGlass provides false) {
+                        ConversationScreen(server.copy(typing=people.value,typingPhrase=phrase.value),model,{})
+                    }
+                }
+            }
+        }
+        compose.onNodeWithText("Ana is sketching…").assertIsDisplayed()
+        val pill=compose.onNodeWithTag("typing-indicator").fetchSemanticsNode().boundsInRoot
+        val input=compose.onNodeWithTag("composer-input").fetchSemanticsNode().boundsInRoot
+        val gallery=compose.onNodeWithContentDescription("Open gallery").fetchSemanticsNode().boundsInRoot
+        assertTrue("Typing belongs above the text box, beyond the gallery button",pill.left>gallery.right && pill.left<=input.left && pill.bottom<=input.top)
+        compose.runOnIdle {people.value=listOf("Bruno","Ana")}
+        compose.onNodeWithText("Ana, Bruno are typing…").assertIsDisplayed()
+        compose.runOnIdle {people.value=listOf("Ana");phrase.value=""}
+        compose.onNodeWithText("Ana is typing…").assertIsDisplayed()
+        compose.runOnIdle {people.value=emptyList()}
+        compose.onNodeWithTag("typing-indicator").assertDoesNotExist()
+    }
+
     @Test fun consecutiveMessagesShareTheirHeadingAndCompactReducesTheirSpacing() {
         chat()
         lateinit var model:PapoViewModel

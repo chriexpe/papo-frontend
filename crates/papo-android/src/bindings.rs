@@ -347,6 +347,8 @@ pub struct ClientSnapshot {
     pub busy: bool,
     pub error: String,
     pub typing: Vec<String>,
+    #[serde(default)]
+    pub typing_phrase: String,
     pub can_load_older: bool,
     pub loading_older: bool,
     pub browsing_history: bool,

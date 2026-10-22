@@ -1,8 +1,10 @@
 # Native Android client
 
-The Compose client lives in `android/compose`, alongside the existing egui
-client in `android/app`. Its application ID is `io.github.chriexpe.papo.compose`
-so both can be installed without replacing the existing app or its sessions.
+The official Android client lives in `android/compose`; the egui Android shell
+remains in `android/app` for reference. Signed Compose releases keep the existing
+`io.github.chriexpe.papo` package and release key. Debug builds use the
+`.compose` suffix, so existing Compose development installations keep their data
+and can run beside the official app.
 
 ## Build and run
 
@@ -32,7 +34,7 @@ If multiple devices are connected, set `ANDROID_SERIAL` before installing.
 Android Studio can open `android` and run the `compose` module. Gradle builds
 the Rust adapter and generates Kotlin bindings automatically. UniFFI is pinned
 to 0.32.2, and the generator reads metadata from the exact library packaged in
-the APK. Generated sources stay under `compose/build/generated/uniffi`. A direct build supports both ABIs by default:
+the APK. Generated sources stay under `compose/build/generated/uniffi/{debug,release}`. A direct build supports both ABIs by default:
 
 ```bash
 cd android
@@ -42,8 +44,13 @@ cd android
 ```
 
 The APK is `android/compose/build/outputs/apk/debug/compose-debug.apk`.
-This milestone uses development builds; distribution signing and the release
-workflow still belong to the existing egui application.
+`scripts/android-compose.sh --arm64 --release` builds the official release
+variant. Signing uses the existing `PAPO_ANDROID_KEYSTORE`,
+`PAPO_ANDROID_STORE_PASSWORD`, `PAPO_ANDROID_KEY_ALIAS` and
+`PAPO_ANDROID_KEY_PASSWORD` inputs. Without a key, a local release APK is unsigned.
+The tagged release workflow now builds and signs Compose with the existing
+artifact name, package ID and Firebase secrets; it requires complete Firebase
+configuration. PR builds upload a separate debug APK.
 
 ## First launch and demo
 
@@ -79,15 +86,22 @@ Compose screens
   The ViewModel survives rotation and releases its handles when cleared.
 - Credentials use AES-GCM with an Android Keystore key and server/type-specific
   authenticated data. Cache/drafts are app-private; credentials and cache are
-  excluded from backup. egui credentials are not imported.
+  excluded from backup. Official upgrades import egui's private `data/app.ron`
+  server list and compatible preferences, and copy session/server-password files
+  directly into encrypted credential storage without returning secrets to UI.
+  Existing Compose credentials are never overwritten. The old
+  `data/papo-cache.db` is reused when no Compose database already exists, keeping
+  cached history, read state and the outbox. Live and headless paths share the
+  same database selection. The import is idempotent and source files remain intact.
 - The composer keeps its draft until the core acknowledges durable outbox
   storage. Failed enqueue leaves the text available. Ambiguous outcomes require
   a deliberate retry, with a duplicate-delivery warning.
 - Read state advances from actually visible message IDs while the Activity is
   resumed. Opening a conversation alone does not mark the whole channel read.
 - Network availability/path changes are sent to the shared transport, and
-  foreground return probes the connection. Background push and Android services
-  are outside this milestone; background operation is limited to process life.
+  foreground return probes the connection. Native notifications reuse core policy
+  and durable deduplication. Firebase handles background push when configured;
+  otherwise WorkManager runs bounded REST reconciliation.
 
 ## Presentation
 
@@ -268,12 +282,13 @@ inline suggestions, edit/delete, themes, glass controls, image/GIF viewing with 
 file downloads/uploads, gallery selection, camera capture, voice notes,
 link/custom cards, and opt-in YouTube playback.
 
-Still to port: full Markdown, search,
-voice/video calls, FCM/background reconciliation, notifications, the full client
-settings and server administration panels, account recovery, and release
-packaging. The established egui settings panels are the design reference for
-those ports; the Compose settings screen currently covers account, appearance,
-and demo exit only.
+Still to port: voice channels and voice/video calls; full Markdown; account
+recovery; and the remaining server administration surfaces. Existing server
+settings edit general properties and existing channels/roles, but do not yet
+cover creating/deleting/reordering channels and roles, assigning member roles,
+member moderation or server emoji management. Device language choices remain
+unimplemented. Background delivery still needs a real configured Firebase
+project/device check; demo fixtures cannot validate external FCM delivery.
 
 Demo checks presentation and local interactions; it cannot validate backend
 authentication, WebSocket delivery, or reconnect behavior. Verify those against
@@ -416,7 +431,8 @@ Ending a session requires confirmation. Diagnostics exposes actual connection,
 shared disk-cache usage/clearing, app/Android versions and Android's app settings.
 Clearing media keeps messages, credentials, drafts, favorites and saved downloads.
 Desktop tray/startup controls, desktop activity integration, unimplemented language
-choices and background notification controls are omitted. Demo has no password,
+choices are omitted. Notifications uses real Android permission/channel settings
+and reports the active delivery method. Demo has no password,
 banner-upload or authenticated-session controls.
 
 The shared Coil decoder retains up to 24 MiB of shareable static images. Stable
@@ -440,7 +456,7 @@ content, date and read state. A failed account gets its own retry row while othe
 accounts stay usable. Opening a row jumps to its original message; the existing
 visibility-based read path applies. Explicit mark-as-read waits for backend
 acknowledgement and reconciles the core's unread counters. These are in-app inbox
-records; background Android push remains outside this milestone.
+records; native alerts and background push are described below.
 
 Global conversation navigation validates the expected account, selects the target
 and switches servers in one actor turn. Back returns to the originating global
@@ -514,3 +530,79 @@ returning 404 are already complete. Late notifications cannot resurrect a
 locally acknowledged mention. Generic channel read synchronization from another
 client is picked up through metadata refresh; the current backend has a live
 read-state update for DMs.
+
+
+## Author grouping and attachment checks
+
+Chat, people, search and direct-message author labels use the role color already
+chosen by `papo-core` and retained in its member cache. Compose does not infer
+role priority from profile-sheet ordering. External identities keep their APP
+label and do not inherit their bridge account's role color.
+
+Consecutive messages from the same real author share one avatar and heading
+within five minutes on the same local calendar day. External authors group by
+source and external ID, never just their bridge account or display name. Unread
+boundaries split groups. Every message retains its own lazy-list key, highlight,
+reactions, reply action, swipe and long-press menu. Compact messages reduces
+vertical padding and the author-header height/spacing; grouping works in both modes. The action sheet includes the
+message author and timestamp for continued rows that omit a repeated heading.
+
+Attachment moderation is asynchronous. Backend-authorized `pending`,
+`processing` and `failed` checks do not mean a blob is inaccessible. Compose
+renders them like egui, retains the sensitive-media reveal control and rejects
+`blocked` resources. The backend can finish a check clean without a WebSocket
+update, so waiting for that event would leave media permanently covered.
+Attachments and embed requests also resolve against the active history context,
+not just the live timeline.
+
+The typing indicator shares the composer column and uses the same frosted pill surface. A single person uses the core-provided custom typing phrase, falling back to “is typing…”. Multiple people use the standard group phrase. Names are ordered consistently, long labels truncate to one line, and the core expires stale typing signals after ten seconds. The account settings typing-phrase control updates the same backend field.
+
+## Native alerts, Firebase and background checks
+
+Both Android shells use `android/shared`'s notification renderer and the shared
+core notification policy/ledger. Compose supplies an Android lifecycle probe and
+an owner-scoped UniFFI alert callback. Visible-chat, own-message, disabled-account
+and disabled-channel suppression stays in core. Native notifications use stable
+server/account/message identities, an explicit destination and private
+lock-screen visibility. Reading a channel clears its alerts. Stale account
+notifications cannot navigate into a replacement account.
+
+The Notifications settings page has a device enable switch, Android 13+
+notification permission request, system notification-channel settings and actual
+push/fallback status. Desktop tray/startup controls are not exposed.
+
+Official releases reuse these existing Firebase inputs, locally or in CI:
+
+- `PAPO_FIREBASE_APP_ID`
+- `PAPO_FIREBASE_API_KEY`
+- `PAPO_FIREBASE_PROJECT_ID`
+- `PAPO_FIREBASE_SENDER_ID`
+
+`PAPO_REQUIRE_FIREBASE=1` rejects an incomplete official configuration. Debug
+builds have a separate package ID; to enable their FCM, supply
+`PAPO_COMPOSE_FIREBASE_APP_ID` for that debug Firebase Android app, alongside the
+same project values. `PAPO_COMPOSE_REQUIRE_FIREBASE=1` makes that mandatory.
+No Firebase values are committed. A configuration change invalidates the cached
+token before a new registration. Existing GitHub secrets are sufficient for the
+official package; no new Firebase app is needed for that release.
+
+Firebase token registration uses the core's authenticated, frozen account scope.
+Only a confirmed backend registration suppresses duplicate live background
+alerts. Token changes, account changes, permission changes and device preference
+changes reconcile registration, with bounded retry spacing. Foreground Firebase
+wakes fetch authoritative account notifications and use the same ledger as live
+events. Android-rendered background push taps and native notification taps both
+resolve the signed-in server/channel and open the original message. Payloads
+without a server are resolved only when the channel has one matching account.
+
+Without confirmed push, WorkManager keeps a unique 15-minute periodic job per
+signed-in server; Android can delay execution, so this is not realtime delivery.
+Jobs use the existing encrypted credentials, core cache, REST transport and
+notification ledger. Each run has a 25-second core deadline and cancellation;
+interactive startup preempts and waits for a headless transport before taking
+ownership of its refresh token. No permanent foreground service or duplicated
+messaging transport is added. Offline/transient failures retry; a missing or
+expired session exits cleanly.
+
+Firebase's notification/data routing follows its
+[Android message delivery contract](https://firebase.google.com/docs/cloud-messaging/android/receive-messages).

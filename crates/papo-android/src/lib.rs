@@ -1205,6 +1205,7 @@ fn project(s: &papo_core::state::Store, url: &str, key: &str) -> Value {
         "loadingOlder": s.loading_older(&s.selected_channel), "timeline": format!("{:?}", s.timeline_status(&s.selected_channel)).to_lowercase(),
     });
     snapshot["notificationsEnabled"] = json!(s.user_settings.as_ref().is_none_or(|settings|settings.config.notifications.enabled));
+    snapshot["typingPhrase"] = json!(s.typing_phrase().unwrap_or_default());
     snapshot
 }
 
@@ -1218,6 +1219,21 @@ impl Drop for Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typing_projection_preserves_custom_phrase_and_group_fallback() {
+        use papo_core::api::ws::Event;
+        let mut demo = demo::Demo::new();
+        demo.store.members.iter_mut().find(|m| m.id == "ana").unwrap().typing_label = Some("is sketching…".into());
+        for id in ["ana", "bruno"] {
+            demo.store.apply(Update::Event(Box::new(Event::Typing {
+                channel_id: "general".into(), user_id: id.into(), is_typing: true,
+            })));
+            let snapshot = project(&demo.store, "demo://papo", "demo");
+            assert_eq!(snapshot["typingPhrase"], if id == "ana" {"is sketching…"} else {""});
+            assert_eq!(snapshot["typing"].as_array().unwrap().len(), if id == "ana" {1} else {2});
+        }
+    }
+
     #[test]
     fn addresses_are_canonical_and_credentials_are_rejected() {
         assert_eq!(

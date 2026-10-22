@@ -430,33 +430,34 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                     TextButton(onClick={jumpToLatest()}) {Text("Cancel")}
                 }
             }
-            if (server.typing.isNotEmpty()) Text("${server.typing.joinToString()} ${if (server.typing.size == 1) "is" else "are"} typing…",
-                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 18.dp, bottom = 6.dp))
             if(composerFocused && !recording && !emojiPicker && !gifPicker) ComposerSuggestions(composer,server,model) {updateComposer(it)}
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
                 AttachmentActions(draftKey, model, enabled = !recording && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing, onRecord = { focus.clearFocus(); keyboard?.hide(); recording = true }, modifier = Modifier.zIndex(1f))
-                GlassPill(Modifier.weight(1f), radius = 28) {
-                    if (recording) RecordingComposer(draftKey, model, onClose = { recording = false }, onSend = {
-                        if (attachmentDraft.uncertain) confirmAttachmentRetry = true else submitMessage(true)
-                    })
-                    else Column {
-                        PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
-                        if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.previewText()}" } ?: "Reply to message",
-                                maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
-                            IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
-                        }
-                        Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=appearance.animations && viewedMedia==null && !emojiPicker && !gifPicker)
-                            IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
-                            IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
-                            FilledIconButton(onClick = {
-                                if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
-                                else submitMessage(false)
-                            }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing && !gifPreparing,
-                                modifier = Modifier.size(48.dp)) {
-                                if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
+                Column(Modifier.weight(1f)) {
+                    TypingIndicator(server.typing,server.typingPhrase)
+                    GlassPill(radius = 28) {
+                        if (recording) RecordingComposer(draftKey, model, onClose = { recording = false }, onSend = {
+                            if (attachmentDraft.uncertain) confirmAttachmentRetry = true else submitMessage(true)
+                        })
+                        else Column {
+                            PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
+                            if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.previewText()}" } ?: "Reply to message",
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(start = 8.dp))
+                                IconButton(onClick = { reply = null }) { Icon(Icons.Outlined.Close, "Cancel reply", Modifier.size(18.dp)) }
+                            }
+                            Row(Modifier.padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                ComposerInput(composer,server,model,"Message ${if(channel.kind=="direct") channel.name else "#${channel.name}"}",onChange={updateComposer(it); model.typing(server)},modifier=Modifier.weight(1f).focusRequester(composerFocus),onFocusChange={composerFocused=it},animationsAllowed=appearance.animations && viewedMedia==null && !emojiPicker && !gifPicker)
+                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); emojiTarget=null; emojiPicker=true }, enabled=!submitting && !attachmentDraft.sending, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.SentimentSatisfiedAlt,"Emoji and stickers",Modifier.size(22.dp)) }
+                                IconButton(onClick = { focus.clearFocus(); keyboard?.hide(); gifPicker=true }, enabled=!submitting && !attachmentDraft.sending && !gifPreparing, modifier=Modifier.size(40.dp)) { Icon(Icons.Outlined.GifBox,"GIF picker",Modifier.size(24.dp)) }
+                                FilledIconButton(onClick = {
+                                    if (attachmentDraft.files.isNotEmpty() && attachmentDraft.uncertain) confirmAttachmentRetry = true
+                                    else submitMessage(false)
+                                }, enabled = (text.isNotBlank() || attachmentDraft.files.isNotEmpty()) && !submitting && !attachmentDraft.sending && !attachmentDraft.preparing && !gifPreparing,
+                                    modifier = Modifier.size(48.dp)) {
+                                    if (submitting || attachmentDraft.sending) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Outlined.ArrowUpward, "Send message")
+                                }
                             }
                         }
                     }
