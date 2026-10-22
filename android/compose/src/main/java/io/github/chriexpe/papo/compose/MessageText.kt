@@ -132,6 +132,7 @@ private fun MarkdownParagraph(spans:List<MarkdownSpan>,server:ServerState,model:
 
 private data class MarkdownPart(val span:MarkdownSpan,val text:String,val sticker:String="",val href:String="")
 private fun markdownParts(spans:List<MarkdownSpan>,customs:Set<String>,hidden:Set<String>):List<MarkdownPart> = buildList {
+    var hidMedia=false
     val pattern=Regex("https?://[^\\s<>]+|:(?<sticker>[A-Za-z0-9_+\\-]+):",RegexOption.IGNORE_CASE)
     spans.forEach {span ->
         if(span.kind!="text") {add(MarkdownPart(span,span.text));return@forEach}
@@ -143,10 +144,21 @@ private fun markdownParts(spans:List<MarkdownSpan>,customs:Set<String>,hidden:Se
                 if(match.range.first>end) add(MarkdownPart(span,span.text.substring(end,match.range.first)))
                 if(sticker!=null) add(MarkdownPart(span,match.value,sticker=sticker))
                 else if(link !in hidden) add(MarkdownPart(span,requireNotNull(link),href=link))
+                else hidMedia=true
                 end=match.range.first+(link?.length ?: match.value.length)
             }
         }
         if(end<span.text.length) add(MarkdownPart(span,span.text.substring(end)))
+    }
+    if(hidMedia) {
+        // Hiding an inline-media URL also removes the otherwise empty edge
+        // line around it, matching ordinary attachment captions. Code spans
+        // retain their literal whitespace.
+        fun MarkdownPart.emptyEdge()=sticker.isBlank() && span.kind!="code" && text.isBlank()
+        while(isNotEmpty() && first().emptyEdge()) removeAt(0)
+        while(isNotEmpty() && last().emptyEdge()) removeAt(lastIndex)
+        if(isNotEmpty() && first().span.kind=="text") this[0]=first().copy(text=first().text.trimStart())
+        if(isNotEmpty() && last().span.kind=="text") this[lastIndex]=last().copy(text=last().text.trimEnd())
     }
 }
 
