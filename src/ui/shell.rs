@@ -12224,7 +12224,7 @@ mod draft_tests {
     }
 
     #[test]
-    fn direct_messages_leave_mentions_plain_but_keep_sticker_suggestions() {
+    fn direct_messages_hide_mention_suggestions_but_keep_identity_encoding_and_stickers() {
         let mut store = Store::default();
         store.selected_channel = "dm".into();
         store.channels.push(crate::state::Channel {
@@ -12240,10 +12240,12 @@ mod draft_tests {
         let mut state = UiState { composer: "@Ana".into(), ..Default::default() };
         refresh_suggestions(&store, &mut state, true, Some(4));
         assert!(state.suggest.is_none());
-        assert_eq!(store.encode_mentions("@Ana", &[]), "@Ana");
+        // Suggestion visibility is a UI choice. The shared encoder retains
+        // stable user identity in message content in every channel kind.
+        assert_eq!(store.encode_mentions("@Ana", &[]), "@mention(<@u1>)");
         assert_eq!(store.encode_mentions("@Ana", &[MentionBinding {
             start: 0, label: "Ana".into(), user_id: "u1".into(),
-        }]), "@Ana");
+        }]), "@mention(<@u1>)");
         store.emojis.push(crate::state::CustomEmoji {
             id: "e1".into(), name: "test".into(), blob: None,
         });
@@ -13893,6 +13895,7 @@ mod unread_divider_tests {
                 seen_to_at: Some(m1.at.with_timezone(&chrono::Utc)),
                 seen_to_id: Some("m1".into()),
                 unread_mentions: Default::default(),
+                ..Default::default()
             },
         );
         store.messages = vec![m1, m2, m3];
@@ -13994,6 +13997,7 @@ mod unread_divider_tests {
                 seen_to_at: None,
                 seen_to_id: None,
                 unread_mentions: Default::default(),
+                ..Default::default()
             },
         );
         store.messages = vec![m1, m2, m3, m4];
