@@ -140,16 +140,17 @@ private fun AttachmentAction(label: String, icon: ImageVector, onClick: () -> Un
 }
 
 @Composable
-internal fun PendingAttachments(draft: AttachmentDraft, remove: (PendingAttachment) -> Unit) {
+internal fun PendingAttachments(draft: AttachmentDraft, edit:(PendingAttachment)->Unit, remove: (PendingAttachment) -> Unit) {
     if (draft.files.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         draft.files.forEach { file ->
-            Row(Modifier.width(220.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.width(260.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surfaceContainer).padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (file.mime.startsWith("image/")) AsyncImage(File(file.path), "Selected ${file.name}", modifier = Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
                 else Icon(if (file.mime.startsWith("audio/")) Icons.Outlined.Mic else Icons.Outlined.InsertDriveFile, null, Modifier.size(36.dp).padding(4.dp))
                 Column(Modifier.weight(1f).padding(start = 8.dp)) {
                     Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
                     Text(if (file.size >= 1024 * 1024) "${file.size / (1024 * 1024)} MB" else "${(file.size / 1024).coerceAtLeast(1)} KB", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if(file.mime.startsWith("image/")) IconButton(onClick={edit(file)},enabled=!draft.sending && !draft.preparing && !draft.uncertain) {Icon(Icons.Outlined.Edit,"Edit ${file.name}",Modifier.size(18.dp))}
                 IconButton(onClick = { remove(file) }, enabled = !draft.sending && !draft.preparing) { Icon(Icons.Outlined.Close, "Remove ${file.name}", Modifier.size(18.dp)) }
             }
         }

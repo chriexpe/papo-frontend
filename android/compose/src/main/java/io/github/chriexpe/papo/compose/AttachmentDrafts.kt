@@ -103,6 +103,25 @@ internal class AttachmentDrafts(
             check(preferences.edit().putString(key, json.toString()).commit()) { "Couldn’t save the attachment draft" }
         }
     }
+    /** Persist the replacement before deleting the old private draft file. */
+    suspend fun replaceEdited(key:String,original:PendingAttachment,image:io.github.chriexpe.papo.core.PreparedMediaImage) = lock(key).withLock {
+        ready()
+        val previous=get(key)
+        check(!previous.sending && !previous.preparing && !previous.uncertain) {"Finish the current attachment action before editing"}
+        check(original in previous.files && AttachmentFiles.owns(context,File(original.path))) {"This attachment is no longer in the draft"}
+        val file=AttachmentFiles.create(context,image.extension)
+        try {
+            val replacement=withContext(Dispatchers.IO) {
+                file.writeBytes(android.util.Base64.decode(image.blob,android.util.Base64.DEFAULT))
+                PendingAttachment(file.absolutePath,original.name.substringBeforeLast('.')+"."+image.extension,image.mime,file.length())
+            }
+            withContext(kotlinx.coroutines.NonCancellable) {
+                update(key,previous.copy(files=previous.files.map {if(it==original) replacement else it},error=""))
+                try {persist(key)} catch(e:Exception) {update(key,previous);throw e}
+                withContext(Dispatchers.IO) {File(original.path).delete()}
+            }
+        } catch(e:Throwable) {if(get(key).files.none {it.path==file.absolutePath}) file.delete();throw e}
+    }
     fun report(key: String, message: String) = scope.launch { ready(); update(key, get(key).copy(error = message)) }
     fun stage(key: String, uris: List<Uri>) = scope.launch {
         lock(key).withLock {

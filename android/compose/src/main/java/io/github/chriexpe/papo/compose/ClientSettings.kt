@@ -59,7 +59,7 @@ private val settingsDestinations=listOf(
     SettingsDestination("Sessions","Manage signed-in sessions",Icons.Outlined.Devices),
     SettingsDestination("Diagnostics","Connection, media cache and app info",Icons.Outlined.MonitorHeart),
 )
-private data class SettingEntry(val id:String,val page:String,val title:String,val summary:String,val keywords:String="")
+internal data class SettingEntry(val id:String,val page:String,val title:String,val summary:String,val keywords:String="")
 private data class AppearanceSwitch(val key:String,val title:String,val summary:String,val default:Boolean=true)
 private val appearanceSwitches=listOf(
     AppearanceSwitch("catch-up-hourglass","Catch-up hourglass","Show skipped unread blocks and their navigation controls"),
@@ -70,8 +70,8 @@ private val appearanceSwitches=listOf(
     AppearanceSwitch("animations","Animate GIFs and stickers","Turn off motion while keeping images visible"),
     AppearanceSwitch("description","Show channel description on open","Expand it for six seconds; tap to keep it open",false),
 )
-private val LocalSettingTarget=compositionLocalOf {""}
-private fun searchFold(value:String)=java.text.Normalizer.normalize(value,java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"),"").lowercase(java.util.Locale.ROOT)
+internal val LocalSettingTarget=compositionLocalOf {""}
+internal fun searchFold(value:String)=java.text.Normalizer.normalize(value,java.text.Normalizer.Form.NFD).replace(Regex("\\p{M}+"),"").lowercase(java.util.Locale.ROOT)
 private fun settingsEntries(server:ServerState,prefs:ClientPreferences):List<SettingEntry> = buildList {
     add(SettingEntry("nickname","Account","Display name","Your nickname on ${server.name}","profile name username"))
     add(SettingEntry("status","Account","Status message","A short message on your profile","profile bio"))
@@ -103,7 +103,7 @@ private fun settingsEntries(server:ServerState,prefs:ClientPreferences):List<Set
 /** Targets share the same controls as ordinary navigation. Bring the exact row
  * into view after the lazy list composes it, then briefly mark the result. */
 @Composable
-private fun settingTarget(id:String):Modifier {
+internal fun settingTarget(id:String):Modifier {
     val selected=id.isNotBlank() && LocalSettingTarget.current==id
     val requester=remember {BringIntoViewRequester()}
     var highlighted by remember {mutableStateOf(false)}
@@ -161,29 +161,29 @@ internal fun ClientSettings(server:ServerState,model:PapoViewModel,onBack:()->Un
 }
 
 @Composable
-private fun SettingsHeader(title:String,onBack:()->Unit,actions:@Composable RowScope.()->Unit={}) {
+internal fun SettingsHeader(title:String,onBack:()->Unit,close:Boolean=false,enabled:Boolean=true,actions:@Composable RowScope.()->Unit={}) {
     Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal=12.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically) {
-        GlassPill {IconButton(onClick=onBack) {Icon(Icons.Outlined.ArrowBack,"Back from $title")}}
+        GlassPill {IconButton(enabled=enabled,onClick=onBack) {Icon(if(close) Icons.Outlined.Close else Icons.Outlined.ArrowBack,if(close) "Close server settings" else "Back from $title")}}
         Text(title,Modifier.weight(1f).padding(horizontal=16.dp),style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.SemiBold)
         actions()
     }
 }
 @Composable
-private fun SettingsCard(content:@Composable ColumnScope.()->Unit) {
+internal fun SettingsCard(content:@Composable ColumnScope.()->Unit) {
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(MaterialTheme.colorScheme.surfaceContainerLow),content=content)
 }
 @Composable
-private fun SettingsLink(title:String,subtitle:String,icon:ImageVector,onClick:()->Unit,leading:(@Composable ()->Unit)?=null,target:String="") {
+internal fun SettingsLink(title:String,subtitle:String,icon:ImageVector,onClick:()->Unit,leading:(@Composable ()->Unit)?=null,target:String="") {
     ListItem(headlineContent={Text(title,fontWeight=FontWeight.Medium)},supportingContent={Text(subtitle)},leadingContent={if(leading!=null) leading() else Surface(shape=RoundedCornerShape(14.dp),color=MaterialTheme.colorScheme.surfaceContainerHigh) {Icon(icon,null,Modifier.padding(12.dp))}},trailingContent={Icon(Icons.Outlined.ChevronRight,null)},colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.then(settingTarget(target)).clickable(onClick=onClick).heightIn(min=80.dp))
 }
 @Composable
-private fun SettingsLabel(text:String) {Text(text,Modifier.padding(start=12.dp,top=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
+internal fun SettingsLabel(text:String) {Text(text,Modifier.padding(start=12.dp,top=8.dp),style=MaterialTheme.typography.labelLarge,color=MaterialTheme.colorScheme.primary)}
 @Composable
-private fun SettingsSwitch(title:String,subtitle:String,value:Boolean,id:String,onChange:(Boolean)->Unit) {
+internal fun SettingsSwitch(title:String,subtitle:String,value:Boolean,id:String,onChange:(Boolean)->Unit) {
     ListItem(headlineContent={Text(title)},supportingContent={Text(subtitle)},trailingContent={Switch(value,onChange,Modifier.semantics {contentDescription=title})},colors=ListItemDefaults.colors(containerColor=Color.Transparent),modifier=Modifier.then(settingTarget(id)).heightIn(min=72.dp))
 }
 @Composable
-private fun SettingsDivider() {HorizontalDivider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))}
+internal fun SettingsDivider() {HorizontalDivider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.5f))}
 
 @Composable
 private fun NotificationSettings(server:ServerState) {
@@ -306,20 +306,21 @@ private fun AccountSettings(server:ServerState,model:PapoViewModel,onBack:()->Un
     }
     var imageTarget by remember {mutableStateOf("avatar")}
     val context=LocalContext.current
+    var imageSource by remember {mutableStateOf<MediaEditorSource?>(null)}
     val imagePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {uri ->
-        if(uri!=null && !busy) {
+        if(uri!=null && !busy) scope.launch {
             busy=true
-            scope.launch {
-                try {
-                    val image=readProfileImage(context,uri)
-                    model.accountChange(server,if(imageTarget=="avatar") AccountChange.Avatar(image.first,image.second) else AccountChange.Banner(image.first,image.second))
-                    feedback(if(imageTarget=="avatar") "Profile photo updated" else "Profile banner updated")
-                    try {loaded=model.accountProfile(server)} catch(e:CancellationException) {throw e} catch(e:Exception) {error="Image saved, but couldn’t refresh your profile. ${e.message.orEmpty()}"}
-                } catch(e:CancellationException) {throw e} catch(e:Exception) {error=e.message ?: "Couldn’t update the image"}
-                finally {busy=false}
-            }
+            try {imageSource=MediaEditorSource.read(context,uri)} catch(e:CancellationException) {throw e} catch(e:Exception) {error=e.message ?: "Couldn’t open this image"} finally {busy=false}
         }
     }
+    imageSource?.let {source ->MediaEditor(source,if(imageTarget=="avatar") io.github.chriexpe.papo.core.MediaEditPurpose.AVATAR else io.github.chriexpe.papo.core.MediaEditPurpose.BANNER,server,model,onDismiss={imageSource=null}) {prepared,_ ->
+        busy=true
+        try {
+            model.accountChange(server,if(imageTarget=="avatar") AccountChange.Avatar(prepared.blob,prepared.format) else AccountChange.Banner(prepared.blob,prepared.format))
+            feedback(if(imageTarget=="avatar") "Profile photo updated" else "Profile banner updated")
+            try {loaded=model.accountProfile(server)} catch(e:CancellationException) {throw e} catch(e:Exception) {error="Image saved, but couldn’t refresh your profile. ${e.message.orEmpty()}"}
+        } finally {busy=false}
+    }}
     Column(Modifier.fillMaxSize()) {
         SettingsHeader("Account",back) {
             if(busy) CircularProgressIndicator(Modifier.padding(12.dp).size(24.dp),strokeWidth=2.dp)
@@ -380,21 +381,6 @@ private fun AccountSettings(server:ServerState,model:PapoViewModel,onBack:()->Un
         OutlinedTextField(repeatPassword,{repeatPassword=it},label={Text("Repeat password")},singleLine=true,visualTransformation=PasswordVisualTransformation(),keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Password),enabled=!busy)
         if(error.isNotBlank()) Text(error,color=MaterialTheme.colorScheme.error)
     }},confirmButton={TextButton(enabled=!busy && password.codePointCount(0,password.length)>=8 && password==repeatPassword,onClick={change(AccountChange.Password(password),"Password changed")}) {Text(if(busy) "Changing…" else "Change password")}},dismissButton={TextButton(enabled=!busy,onClick={passwordDialog=false;password="";repeatPassword=""}) {Text("Cancel")}})
-}
-
-/** Decode bounds and the actual image format before uploading; never trust a
- * provider's filename or MIME type, and never materialize unbounded input. */
-internal suspend fun readProfileImage(context:android.content.Context,uri:Uri):Pair<String,String> = withContext(Dispatchers.IO) {
-    val bytes=requireNotNull(context.contentResolver.openInputStream(uri)).use {input ->
-        val output=java.io.ByteArrayOutputStream();val buffer=ByteArray(8192)
-        while(true) {val count=input.read(buffer);if(count<0) break;require(output.size()+count<=8*1024*1024) {"Choose an image up to 8 MB"};output.write(buffer,0,count)}
-        output.toByteArray()}
-    require(bytes.size in 1..8*1024*1024) {"Choose an image up to 8 MB"}
-    val bounds=android.graphics.BitmapFactory.Options().apply {inJustDecodeBounds=true}
-    android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.size,bounds)
-    require(bounds.outWidth>0 && bounds.outHeight>0 && bounds.outWidth.toLong()*bounds.outHeight<=40_000_000) {"Choose an image up to 40 megapixels"}
-    val format=when(bounds.outMimeType) {"image/png"->"PNG";"image/jpeg"->"JPEG";"image/gif"->"GIF";"image/webp"->"WEBP";else->error("Choose a PNG, JPEG, GIF or WebP image")}
-    android.util.Base64.encodeToString(bytes,android.util.Base64.NO_WRAP) to format
 }
 
 @Composable
@@ -494,7 +480,7 @@ private fun DiagnosticSettings(server:ServerState,model:PapoViewModel,feedback:(
     if(confirm) AlertDialog(onDismissRequest={confirm=false},title={Text("Clear cached media?")},text={Text("Media will need to download again. Saved files and account data are kept.")},confirmButton={TextButton(onClick={confirm=false;clearing=true;scope.launch {try {model.mediaCache.clear();MediaImages.loader(context).memoryCache?.clear();bytes=model.mediaCache.size;feedback("Media cache cleared")} catch(e:CancellationException) {throw e} catch(e:Exception) {feedback(e.message ?: "Couldn’t clear cache")} finally {clearing=false}}}) {Text("Clear cache")}},dismissButton={TextButton(onClick={confirm=false}) {Text("Cancel")}})
 }
 @Composable
-private fun SettingsError(message:String,retry:(()->Unit)?=null) {
+internal fun SettingsError(message:String,retry:(()->Unit)?=null) {
     Surface(color=MaterialTheme.colorScheme.errorContainer,shape=RoundedCornerShape(18.dp),modifier=Modifier.fillMaxWidth().semantics {liveRegion=LiveRegionMode.Polite}) {
         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {Text(message,color=MaterialTheme.colorScheme.onErrorContainer,style=MaterialTheme.typography.bodyMedium);if(retry!=null) TextButton(onClick=retry) {Text("Try again")}}
     }

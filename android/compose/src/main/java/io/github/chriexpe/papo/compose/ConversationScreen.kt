@@ -105,6 +105,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         if(descriptionExpanded) {kotlinx.coroutines.delay(6000);if(!descriptionTouched) descriptionExpanded=false}
     }
     var activeMedia by remember(draftKey) { mutableStateOf<String?>(null) }
+    var imageEdit by remember(draftKey) {mutableStateOf<Pair<PendingAttachment,MediaEditorSource>?>(null)}
     var viewedMedia by remember(draftKey) {mutableStateOf<ViewerMedia?>(null)}
     var submitting by remember(draftKey) { mutableStateOf(false) }
     var recording by remember(draftKey) { mutableStateOf(false) }
@@ -153,7 +154,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val groupedMessages=remember(server.messages,entryUnread,server.reading.gapStart,server.reading.gapEnd,appearance.catchUpHourglass) {
         messageContinuations(server.messages,setOf(entryUnread)+if(appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),if(appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet())
     }
-    val readingBlocked=overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || emojiPicker || gifPicker || reactionPeople!=null
+    val readingBlocked=imageEdit!=null || overlayBlocking || viewedMedia!=null || selected!=null || edit!=null || delete!=null || retry!=null || members || emojiPicker || gifPicker || reactionPeople!=null
     val currentBlocked by rememberUpdatedState(readingBlocked)
     LaunchedEffect(draftKey,server.reading.liveIds) {
         val live=server.reading.liveIds
@@ -173,7 +174,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet()
     }}
     LaunchedEffect(mediaVisibility,listState) {
-        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && !overlayBlocking && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
+        snapshotFlow {Triple(listState.layoutInfo,latestServer.messages.asReversed().map {it.id},viewedMedia==null && imageEdit==null && !overlayBlocking && mediaLifecycle.isAtLeast(Lifecycle.State.RESUMED))}.collect {(layout,order,enabled) ->
             val height=(layout.viewportSize.height-layout.beforeContentPadding-layout.afterContentPadding).coerceAtLeast(0)
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) {
                 mediaVisibility.update(layout.visibleItemsInfo.filter {it.offset<height && it.offset+it.size>0}.mapNotNull {it.key as? String}.toSet(),enabled)
@@ -453,7 +454,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                             if (attachmentDraft.uncertain) confirmAttachmentRetry = true else submitMessage(true)
                         })
                         else Column {
-                            PendingAttachments(attachmentDraft) { model.attachments.remove(draftKey, it) }
+                            PendingAttachments(attachmentDraft,edit={file ->focus.clearFocus();keyboard?.hide();scope.launch {
+                                try {imageEdit=file to MediaEditorSource.attachment(file)} catch(e:kotlinx.coroutines.CancellationException) {throw e} catch(e:Exception) {model.attachments.report(draftKey,e.message ?: "Couldn’t edit this image")}
+                            }}) {model.attachments.remove(draftKey,it)}
                             if (reply != null) Row(Modifier.testTag("composer-reply").clickable(role=Role.Button,onClickLabel="Open original message") {reply?.let(::openOriginal)}.padding(start = 18.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Outlined.Reply, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                                 Text(server.messages.find { it.id == reply }?.let { "Reply to ${it.author}: ${it.previewText()}" } ?: "Reply to message",
@@ -571,6 +574,7 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         }
     }
     }
+    imageEdit?.let {(file,source) ->MediaEditor(source,io.github.chriexpe.papo.core.MediaEditPurpose.ATTACHMENT,server,model,onDismiss={imageEdit=null}) {prepared,_ ->model.attachments.replaceEdited(draftKey,file,prepared)}}
     viewedMedia?.let {media -> CompositionLocalProvider(LocalPlaybackBookmarks provides playbackBookmarks) {MediaViewer(server,model,media) {viewedMedia=null}}}
 }
 
