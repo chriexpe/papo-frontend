@@ -151,7 +151,9 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     var latestPhase by remember(draftKey) {mutableStateOf(LatestPhase.FirstNew)}
     var knownLive by remember(draftKey) {mutableStateOf(server.reading.liveIds)}
     var arrived by remember(draftKey) {mutableStateOf(setOf<String>())}
-    var entryUnread by remember(draftKey) {mutableStateOf(server.reading.unreadStart)}
+    // The divider reflects the shared unread cursor. A remembered arrival ID
+    // outlives its acknowledgement and creates a second, stale unread marker.
+    val entryUnread=server.reading.unreadStart
     val groupedMessages=remember(server.messages,entryUnread,server.reading.gapStart,server.reading.gapEnd,appearance.catchUpHourglass) {
         messageContinuations(server.messages,setOf(entryUnread)+if(appearance.catchUpHourglass) setOf(server.reading.gapStart) else emptySet(),if(appearance.catchUpHourglass) setOf(server.reading.gapEnd) else emptySet())
     }
@@ -162,7 +164,6 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
         val previousTail=knownLive.lastOrNull()
         val index=live.indexOf(previousTail)
         val added=if(index>=0) live.drop(index+1).filter {it !in knownLive} else if(positionReady && knownLive.isEmpty()) live else emptyList()
-        if(added.isNotEmpty() && arrived.isEmpty()) entryUnread=added.first()
         arrived=arrived+added
         knownLive=live
     }
@@ -239,7 +240,6 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
                         followingLatest=true
                         if(latestPhase==LatestPhase.Latest) latestPhase=LatestPhase.FirstNew
                     }
-                    if(entryUnread.isBlank()) entryUnread=latestServer.reading.unreadStart
                     report.anchor?.let {(id,offset) ->model.saveReadingPosition(draftKey,id,offset)}
                 }
             }

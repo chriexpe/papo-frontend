@@ -15,6 +15,7 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import androidx.compose.ui.geometry.Rect
@@ -933,6 +934,67 @@ class PapoUiTest {
             compose.onNodeWithTag("composer-input").assertTextEquals("Keep notification draft")
         } finally {
             MessageAlerts.clear(server,"me","design")
+        }
+    }
+
+    @Test fun incomingTextAndMediaAtTheLiveHeadNeverResurrectAnOldUnreadBlock() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        compose.waitForIdle()
+        IncomingChatFixture(context).use {fixture ->
+            val secrets=AndroidSecrets(context)
+            lateinit var model:PapoViewModel
+            activity.onActivity {model=androidx.lifecycle.ViewModelProvider(it)[PapoViewModel::class.java]}
+            try {
+                model.addServer(fixture.url)
+                compose.waitUntil(5000) {model.state.value.active?.url==fixture.url}
+                model.command(io.github.chriexpe.papo.core.Action.Login("reader","fixture"),fixture.url)
+                compose.waitUntil(30_000) {model.state.value.active?.let {it.url==fixture.url && it.connection=="online" && it.timeline=="fresh" && it.messages.any {m ->m.id=="m30"}}==true}
+                compose.onNodeWithText("incoming",substring=false).performClick()
+                compose.waitUntil(10_000) {compose.onAllNodesWithTag("message-m30",useUnmergedTree=true).fetchSemanticsNodes().isNotEmpty() && model.readingPosition(fixture.url+"/me/incoming")!=null}
+                assertTrue(model.state.value.active!!.reading.hourglassTarget.isBlank())
+                val unexpected=java.util.concurrent.CopyOnWriteArrayList<String>()
+                val observer=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined).launch {
+                    model.state.collect {state ->state.active?.takeIf {it.url==fixture.url}?.reading?.let {read ->
+                        if(read.hourglassTarget.isNotBlank()) unexpected.add("target="+read.hourglassTarget+", gap="+read.gapStart+".."+read.gapEnd+", new="+read.unreadStart)
+                    }}
+                }
+                fun settle(id:String) {
+                    compose.waitUntil(10_000) {model.state.value.active?.let {it.reading.liveIds.contains(id) && it.conversation?.unread==false && !it.reading.syncPending}==true}
+                    compose.onNodeWithTag("message-"+id,useUnmergedTree=true).assertIsDisplayed()
+                    compose.onNodeWithTag("hourglass-shortcut").assertDoesNotExist()
+                    compose.onNodeWithTag("unread-new",useUnmergedTree=true).assertDoesNotExist()
+                    assertTrue("Following incoming messages must not manufacture catch-up: "+unexpected,unexpected.isEmpty())
+                }
+                try {
+                    fixture.incoming("incoming-one","One incoming message")
+                    settle("incoming-one")
+                    fixture.incoming("incoming-two-a","First of two incoming messages")
+                    fixture.incoming("incoming-two-b","Second incoming message")
+                    settle("incoming-two-b")
+                    fixture.incoming("incoming-portrait","Portrait media pushes the viewport",portrait=true)
+                    fixture.incoming("incoming-after-media","Text after tall media")
+                    settle("incoming-after-media")
+                    fixture.expandWithPortrait("incoming-after-media")
+                    compose.waitUntil(5000) {model.state.value.active?.messages?.firstOrNull {it.id=="incoming-after-media"}?.embeds?.isNotEmpty()==true}
+                    fixture.incoming("incoming-after-reflow","Text after the embed changes height")
+                    settle("incoming-after-reflow")
+                    compose.onNodeWithTag("composer-input").performClick()
+                    fixture.incoming("incoming-keyboard","Incoming message while the keyboard resizes the chat")
+                    settle("incoming-keyboard")
+                    systemBack()
+                    compose.onNodeWithTag("message-list").performScrollToKey("m28")
+                    compose.waitForIdle()
+                    compose.waitUntil(5000) {model.readingPosition(fixture.url+"/me/incoming")?.first=="m28"}
+                    fixture.incoming("incoming-behind-one","First incoming message while slightly behind")
+                    fixture.incoming("incoming-behind-two","Second incoming message while slightly behind")
+                    compose.waitUntil(5000) {compose.onAllNodesWithTag("latest-count").fetchSemanticsNodes().isNotEmpty()}
+                    compose.onNodeWithContentDescription("Go to first new message").performClick()
+                    settle("incoming-behind-two")
+                } finally {observer.cancel()}
+            } catch(error:Throwable) {
+                context.cacheDir.resolve("incoming-read-failure.txt").writeText("state="+model.state.value+"\nrequests="+fixture.requests+"\nfailures="+fixture.failures+"\n"+compose.onAllNodes(isRoot(),useUnmergedTree=true).printToString(maxDepth=20))
+                throw error
+            } finally {model.state.value.active?.takeIf {it.url==fixture.url}?.key?.let {secrets.remove(it,"token")}}
         }
     }
 
