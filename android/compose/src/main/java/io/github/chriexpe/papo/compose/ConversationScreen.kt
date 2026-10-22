@@ -123,11 +123,18 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val density = LocalDensity.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
-    // IME dismissal must win even when the platform forwards Back to the
-    // Activity while its keyboard callback is being attached or detached.
-    androidx.activity.compose.BackHandler(WindowInsets.ime.getBottom(density)>0) {
-        keyboard?.hide()
-        focus.clearFocus()
+    // Check the platform at dispatch time: Compose's IME insets can lag (or
+    // stay zero) after a dialog on newer Android versions. Keep this callback
+    // registered so a stale visibility snapshot cannot fall through to leaving.
+    val nativeView=androidx.compose.ui.platform.LocalView.current
+    val imeInsets=WindowInsets.ime
+    androidx.activity.compose.BackHandler(!overlayBlocking) {
+        val keyboardVisible=androidx.core.view.ViewCompat.getRootWindowInsets(nativeView)
+            ?.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())==true
+        if(keyboardVisible || imeInsets.getBottom(density)>0) {
+            keyboard?.hide()
+            focus.clearFocus()
+        } else onBack()
     }
     var headerHeight by remember { mutableStateOf(90.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }

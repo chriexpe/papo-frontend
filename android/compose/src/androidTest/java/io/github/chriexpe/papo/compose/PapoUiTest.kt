@@ -443,11 +443,11 @@ class PapoUiTest {
         compose.onNodeWithTag("author-general-9",useUnmergedTree=true).performTouchInput {longClick()}
         compose.onNodeWithTag("user-profile").assertDoesNotExist()
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana ")))
-        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("message-list").performScrollToKey("general-9")
         compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performTouchInput {longClick()}
         compose.onNode(hasSetTextAction()).assert(SemanticsMatcher.expectValue(SemanticsProperties.InputText,AnnotatedString("@Ana @Ana ")))
-        androidx.test.espresso.Espresso.pressBack()
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         compose.onNodeWithTag("message-list").performScrollToKey("general-9")
         compose.onNode(hasTestTag("avatar-ana") and hasAnyAncestor(hasTestTag("message-general-9")),useUnmergedTree=true).performClick()
         compose.onNodeWithTag("user-profile").assertIsDisplayed()
