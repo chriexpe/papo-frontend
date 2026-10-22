@@ -445,6 +445,7 @@ pub struct MessageView {
     #[serde(default)]
     pub external_author: Option<ExternalAuthorView>,
     pub content: String,
+    pub markdown: crate::markdown::MarkdownDocument,
     pub at: i64,
     pub edited: bool,
     pub mine: bool,
