@@ -123,6 +123,12 @@ internal fun ConversationScreen(server: ServerState, model: PapoViewModel, onBac
     val density = LocalDensity.current
     val focus = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+    // IME dismissal must win even when the platform forwards Back to the
+    // Activity while its keyboard callback is being attached or detached.
+    androidx.activity.compose.BackHandler(WindowInsets.ime.getBottom(density)>0) {
+        keyboard?.hide()
+        focus.clearFocus()
+    }
     var headerHeight by remember { mutableStateOf(90.dp) }
     var composerHeight by remember { mutableStateOf(90.dp) }
     var handledNavigation by rememberSaveable(draftKey,stateSaver=androidx.compose.runtime.saveable.Saver<ULong,String>(save={it.toString()},restore={it.toULong()})) {mutableStateOf(0uL)}
