@@ -236,6 +236,7 @@ internal fun ManagedAsyncImage(
     retentionKey: String = "",
 ) {
     val context = LocalContext.current
+    val frame = LocalMediaFrame.current
     val request =
         remember(model) {
             val data = (model as? ImageRequest)?.data ?: model
@@ -276,7 +277,13 @@ internal fun ManagedAsyncImage(
             old?.stop()
         }
     }
-    LaunchedEffect(retained) { retained?.let(onSuccess) }
+    fun reportSuccess(result: AsyncImagePainter.State.Success) {
+        val image = result.result.image
+        if (image.width > 0 && image.height > 0)
+            frame?.reportImageRatio(image.width.toFloat() / image.height)
+        onSuccess(result)
+    }
+    LaunchedEffect(retained, frame) { retained?.let(::reportSuccess) }
     SideEffect {
         animation?.let {
             if (visible && registry?.isVisible(row) != false) {
@@ -306,7 +313,7 @@ internal fun ManagedAsyncImage(
                 onSuccess = { result ->
                     animation = result.result.image.asDrawable(context.resources) as? Animatable
                     if (imageKey.isNotBlank()) registry?.retainImage(imageKey, row, result)
-                    onSuccess(result)
+                    reportSuccess(result)
                 },
                 onError = {
                     animation = null

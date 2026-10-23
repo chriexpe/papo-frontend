@@ -633,3 +633,31 @@ Compiled UI coverage checks portrait attachment/embed geometry before/after
 loading and viewer opening, plus wide-media sizing without a minimum-height gap.
 Device execution remains deferred for the user's review. APK:
 `target/android-apks/papo-android-0.8.5-media-dimensions.apk`.
+
+### Resolve missing-metadata frames instead of retaining fallback padding
+
+Read-only inspection of the emulator's cached Wordle and Duolingo examples
+confirmed that both attachment records have no original or thumbnail dimensions.
+There is no remaining minimum media height. The visible padding came from the
+4:3 fallback reservation surrounding a shorter decoded image: only the inner
+artwork had adapted, leaving the outer fallback in place.
+
+The shared image decoder now reports its ratio to the containing media frame,
+including retained-image results, and inline video reports its actual video ratio.
+When backend metadata is absent, the frame replaces its temporary fallback with
+that ratio. This corrects the outer layout for old cached attachments, bare links
+and GIFs without another cache, network request or parser. It supersedes the
+earlier blanket fixed-reservation rule for unknown sizes: supplied backend
+dimensions still remain authoritative and stable during decoding/playback.
+Actual video geometry takes precedence over its returning poster; small
+downsampling differences do not feed repeated measure/decode changes. Frame
+state follows the existing account-scoped visibility registry. No production
+reading/navigation transitions change.
+
+Formatting, universal APK, instrumentation APK compilation and lint pass. Two new
+compiled lifecycle regressions cover ratio validation, downsampling tolerance,
+video/poster precedence and backend-metadata authority. The UI regression now
+checks that a short decoded image shrinks the fallback frame, with no letterbox
+padding, followed by portrait/video geometry; the known-metadata stability flow
+remains in place. Device execution stays deferred for the user's review. APK:
+`target/android-apks/papo-android-0.8.5-media-fallback.apk`.

@@ -550,6 +550,7 @@ internal fun BoxScope.VideoPreview(
 ) {
     val viewer = LocalMediaViewer.current
     val active = LocalInlinePlayer.current == media.id
+    val frame = LocalMediaFrame.current
     var ratio by
         remember(media.id, media.width, media.height) {
             mutableStateOf(
@@ -577,7 +578,10 @@ internal fun BoxScope.VideoPreview(
                 poster = poster,
                 embedPoster = embedPoster,
                 publicUrl = media.url,
-                onVideoRatio = { ratio = it },
+                onVideoRatio = {
+                    ratio = it
+                    frame?.reportVideoRatio(it)
+                },
                 onFullscreen = { viewer(media.copy(playback = it)) },
             )
         }

@@ -4082,8 +4082,8 @@ class PapoUiTest {
     }
 
     @Test
-    fun directMediaFitsAndRoundsContentWithoutPaintingOrResizingItsReservation() {
-        val ratio = androidx.compose.runtime.mutableStateOf<Float?>(null)
+    fun missingMetadataFrameShrinksToDecodedContentWithoutPaintingLetterboxSpace() {
+        lateinit var frame: MediaFrameState
         activity.onActivity {
             it.setContent {
                 androidx.compose.material3.MaterialTheme {
@@ -4093,7 +4093,9 @@ class PapoUiTest {
                             .testTag("media-backdrop")
                     ) {
                         ReservedMedia(0, 0, fallback = 4f / 3f, tag = "media-reservation") {
-                            FittedMediaContent(ratio.value, Modifier.testTag("fitted-artwork")) {
+                            val current = requireNotNull(LocalMediaFrame.current)
+                            androidx.compose.runtime.SideEffect { frame = current }
+                            FittedMediaContent(current.ratio, Modifier.testTag("fitted-artwork")) {
                                 androidx.compose.foundation.layout.Box(
                                     Modifier.fillMaxSize()
                                         .background(androidx.compose.ui.graphics.Color.Blue)
@@ -4106,26 +4108,34 @@ class PapoUiTest {
         }
         fun bounds(tag: String) = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
         val reserved = bounds("media-reservation")
-        compose.runOnIdle { ratio.value = 540f / 960f }
+        compose.runOnIdle { frame.reportImageRatio(2f) }
+        val short = bounds("media-reservation")
+        assertTrue(
+            "A short image must shrink the old fallback area",
+            short.height < reserved.height,
+        )
+        assertEquals(2f, short.width / short.height, .01f)
+        assertEquals(short, bounds("fitted-artwork"))
+        compose.runOnIdle { frame.reportImageRatio(540f / 960f) }
         val portrait = bounds("fitted-artwork")
         assertEquals(reserved.center.x, portrait.center.x, 1f)
         assertEquals(540f / 960f, portrait.width / portrait.height, .01f)
-        assertEquals(reserved, bounds("media-reservation"))
+        assertEquals(portrait, bounds("media-reservation"))
         val backdrop = bounds("media-backdrop")
         val pixels = compose.onNodeWithTag("media-backdrop").captureToImage().asAndroidBitmap()
         assertEquals(android.graphics.Color.RED, pixels.getPixel(4, pixels.height / 2))
         assertEquals(
-            "Rounding follows the portrait rather than the wide reservation",
+            "Rounding follows the decoded portrait",
             android.graphics.Color.RED,
             pixels.getPixel(
                 (portrait.left - backdrop.left).toInt() + 1,
                 (portrait.top - backdrop.top).toInt() + 1,
             ),
         )
-        compose.runOnIdle { ratio.value = 16f / 9f }
+        compose.runOnIdle { frame.reportVideoRatio(16f / 9f) }
         val landscape = bounds("fitted-artwork")
         assertEquals(16f / 9f, landscape.width / landscape.height, .01f)
-        assertEquals(reserved, bounds("media-reservation"))
+        assertEquals(landscape, bounds("media-reservation"))
     }
 
     @Test

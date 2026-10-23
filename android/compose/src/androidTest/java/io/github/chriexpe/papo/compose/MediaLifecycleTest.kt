@@ -9,6 +9,41 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MediaLifecycleTest {
+    @Test
+    fun missingGeometryLearnsDecodedSizeAndVideoOutranksItsPoster() {
+        val frame = MediaFrameState(null)
+        assertNull(frame.ratio)
+        frame.reportImageRatio(Float.NaN)
+        frame.reportVideoRatio(0f)
+        assertNull(frame.ratio)
+        frame.reportImageRatio(4f / 3f)
+        assertEquals(4f / 3f, requireNotNull(frame.ratio), .0001f)
+        frame.reportImageRatio(1.334f)
+        assertEquals(
+            "Downsampling rounding must not feed back into layout",
+            4f / 3f,
+            requireNotNull(frame.ratio),
+            .0001f,
+        )
+        frame.reportVideoRatio(16f / 9f)
+        frame.reportImageRatio(4f / 3f)
+        assertEquals(
+            "Reattaching the poster must not resize a known video",
+            16f / 9f,
+            requireNotNull(frame.ratio),
+            .0001f,
+        )
+    }
+
+    @Test
+    fun suppliedGeometryStaysAuthoritativeThroughDecodingAndPlayback() {
+        val frame = MediaFrameState(540f / 960f)
+        frame.reportImageRatio(4f / 3f)
+        frame.reportVideoRatio(16f / 9f)
+        assertEquals(540f / 960f, requireNotNull(frame.ratio), .0001f)
+        assertNull(MediaFrameState(null).ratio)
+    }
+
     private fun onMain(block: () -> Unit) {
         var failure: Throwable? = null
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
